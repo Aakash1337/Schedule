@@ -69,6 +69,7 @@ export const activityEventType = pgEnum("activity_event_type", [
   "duration_corrected",
   "completion_reversed",
 ]);
+export const planInteractionType = pgEnum("plan_interaction_type", ["locked", "unlocked"]);
 
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -295,6 +296,30 @@ export const dailyPlans = pgTable(
   ],
 );
 
+export const dailyPlanHeads = pgTable(
+  "daily_plan_heads",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    localDate: date("local_date").notNull(),
+    currentPlanId: uuid("current_plan_id").notNull(),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("daily_plan_heads_workspace_date_uq").on(table.workspaceId, table.localDate),
+    foreignKey({
+      name: "daily_plan_heads_plan_tenant_fk",
+      columns: [table.workspaceId, table.currentPlanId],
+      foreignColumns: [dailyPlans.workspaceId, dailyPlans.id],
+    }).onDelete("cascade"),
+    check("daily_plan_heads_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
 export const activityEvents = pgTable(
   "activity_events",
   {
@@ -388,6 +413,7 @@ export const dailyPlanItems = pgTable(
   },
   (table) => [
     unique("daily_plan_items_workspace_id_id_uq").on(table.workspaceId, table.id),
+    unique("daily_plan_items_workspace_plan_id_uq").on(table.workspaceId, table.planId, table.id),
     unique("daily_plan_items_plan_position_uq").on(table.workspaceId, table.planId, table.position),
     unique("daily_plan_items_plan_routine_uq").on(table.workspaceId, table.planId, table.routineId),
     foreignKey({
@@ -403,6 +429,72 @@ export const dailyPlanItems = pgTable(
     check("daily_plan_items_position_nonnegative", sql`${table.position} >= 0`),
     check("daily_plan_items_window_nonnegative", sql`${table.windowIndex} >= 0`),
     check("daily_plan_items_duration_positive", sql`${table.scheduledMinutes} > 0`),
+  ],
+);
+
+export const dailyPlanItemStates = pgTable(
+  "daily_plan_item_states",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    planId: uuid("plan_id").notNull(),
+    itemId: uuid("item_id").notNull(),
+    locked: boolean("locked").notNull().default(false),
+    version: integer("version").notNull().default(1),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("daily_plan_item_states_item_uq").on(table.workspaceId, table.planId, table.itemId),
+    foreignKey({
+      name: "daily_plan_item_states_item_tenant_fk",
+      columns: [table.workspaceId, table.planId, table.itemId],
+      foreignColumns: [dailyPlanItems.workspaceId, dailyPlanItems.planId, dailyPlanItems.id],
+    }).onDelete("cascade"),
+    check("daily_plan_item_states_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
+export const planInteractionEvents = pgTable(
+  "plan_interaction_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ingestedSequence: bigserial("ingested_sequence", { mode: "number" }).notNull(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    localDate: date("local_date").notNull(),
+    planId: uuid("plan_id").notNull(),
+    itemId: uuid("item_id").notNull(),
+    type: planInteractionType("type").notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    payloadHash: varchar("payload_hash", { length: 64 }).notNull(),
+    resultHeadVersion: integer("result_head_version").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("plan_interaction_events_workspace_idempotency_uq").on(
+      table.workspaceId,
+      table.idempotencyKey,
+    ),
+    index("plan_interaction_events_day_sequence_idx").on(
+      table.workspaceId,
+      table.localDate,
+      table.ingestedSequence,
+    ),
+    foreignKey({
+      name: "plan_interaction_events_head_tenant_fk",
+      columns: [table.workspaceId, table.localDate],
+      foreignColumns: [dailyPlanHeads.workspaceId, dailyPlanHeads.localDate],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "plan_interaction_events_item_tenant_fk",
+      columns: [table.workspaceId, table.planId, table.itemId],
+      foreignColumns: [dailyPlanItems.workspaceId, dailyPlanItems.planId, dailyPlanItems.id],
+    }).onDelete("restrict"),
+    check("plan_interaction_events_hash_length", sql`char_length(${table.payloadHash}) = 64`),
+    check("plan_interaction_events_head_version_positive", sql`${table.resultHeadVersion} > 0`),
   ],
 );
 

@@ -4,6 +4,7 @@ import type {
   LocalDate,
   Routine,
   RoutineStatus,
+  PlanItemId,
   ScheduleBlock,
   ScheduleBlockId,
   WorkItem,
@@ -11,6 +12,29 @@ import type {
   Workspace,
   WorkspaceId,
 } from "@schedule/domain";
+
+export interface CurrentDailyPlan {
+  readonly plan: DailyPlan;
+  readonly headVersion: number;
+}
+
+export interface SetPlanItemLockInput {
+  readonly workspaceId: WorkspaceId;
+  readonly date: LocalDate;
+  readonly expectedPlanId: DailyPlan["id"];
+  readonly itemId: PlanItemId;
+  readonly expectedHeadVersion: number;
+  readonly locked: boolean;
+  readonly idempotencyKey: string;
+  readonly now: Date;
+}
+
+export interface PlanItemLockResult {
+  readonly planId: DailyPlan["id"];
+  readonly itemId: PlanItemId;
+  readonly locked: boolean;
+  readonly headVersion: number;
+}
 
 export interface WorkItemRepository {
   findById(workspaceId: WorkspaceId, id: WorkItemId): Promise<WorkItem | null>;
@@ -75,6 +99,8 @@ export interface DailyPlanRepository {
   ): Promise<DailyPlan | null>;
   /** Atomically inserts the revision or returns the plan already stored for that revision. */
   insertForRevision(plan: DailyPlan): Promise<DailyPlan>;
+  findCurrent(workspaceId: WorkspaceId, date: LocalDate): Promise<CurrentDailyPlan | null>;
+  setItemLock(input: SetPlanItemLockInput): Promise<PlanItemLockResult>;
 }
 
 export interface TransactionContext {

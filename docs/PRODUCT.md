@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-12
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. The local product API now covers routine creation, retrieval, listing, optimistic updates, stable activity history, activity append, and daily-plan revisions; see [API.md](./API.md). The user interface remains intentionally deferred while its workflows and visual direction are still open.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 backend work now includes stable plan-item identities, an authoritative Today-plan head, and audited optimistic lock/unlock interactions. The local product API covers routine management, stable activity history, daily-plan revisions, current-plan retrieval, and item locking; see [API.md](./API.md). The user interface remains intentionally deferred while its workflows and visual direction are still open.
 
 ## 1. Product summary
 

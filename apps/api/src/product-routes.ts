@@ -5,12 +5,16 @@ import type {
   ActivityHistoryPage,
   CreateRoutineCommand,
   CreateWorkspaceCommand,
+  CurrentDailyPlan,
   GenerateDailyPlanCommand,
+  GetCurrentDailyPlanQuery,
   GetDailyPlanQuery,
   GetRoutineQuery,
   ListRoutineActivityQuery,
   ListRoutinesQuery,
+  PlanItemLockResult,
   RecordActivityEventCommand,
+  SetPlanItemLockCommand,
   UpdateRoutineCommand,
 } from "@schedule/application";
 import {
@@ -21,6 +25,7 @@ import {
   createStructuredTags,
   dailyPlanId,
   localDate,
+  planItemId,
   routineId,
   workspaceId,
   type ActivityEvent,
@@ -49,6 +54,8 @@ export interface ProductServices {
   listRoutineActivity(query: ListRoutineActivityQuery): Promise<ActivityHistoryPage>;
   recordActivityEvent(command: RecordActivityEventCommand): Promise<ActivityEvent>;
   generateDailyPlan(command: GenerateDailyPlanCommand): Promise<DailyPlan>;
+  getCurrentDailyPlan(query: GetCurrentDailyPlanQuery): Promise<CurrentDailyPlan>;
+  setPlanItemLock(command: SetPlanItemLockCommand): Promise<PlanItemLockResult>;
   getDailyPlan(query: GetDailyPlanQuery): Promise<DailyPlan | null>;
 }
 
@@ -91,6 +98,7 @@ const instant = z.string().datetime({ offset: true });
 const workspaceParams = z.strictObject({ workspaceId: uuid });
 const routineParams = z.strictObject({ workspaceId: uuid, routineId: uuid });
 const planParams = z.strictObject({ workspaceId: uuid, date: localDateText });
+const planItemParams = z.strictObject({ workspaceId: uuid, date: localDateText, itemId: uuid });
 
 const workspaceBody = z.strictObject({ name: z.string().trim().min(1).max(160) });
 const tagsBody = z
@@ -266,6 +274,11 @@ const planBody = z.strictObject({
   requestRevision: z.number().int().positive().max(1_000_000).default(1),
 });
 const planQuery = z.strictObject({ revision: z.coerce.number().int().positive().max(1_000_000) });
+const planItemLockBody = z.strictObject({
+  expectedPlanId: uuid,
+  expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
+  locked: z.boolean(),
+});
 const idempotencyKey = z.string().trim().min(1).max(160);
 
 function publicPlan(
@@ -509,5 +522,29 @@ export async function registerProductRoutes(
     });
     if (plan === null) throw new ResourceNotFoundError("plan");
     return publicPlan(plan);
+  });
+
+  app.get("/v1/workspaces/:workspaceId/plans/:date/current", async (request) => {
+    const params = parseRequest(planParams, request.params);
+    const current = await services.getCurrentDailyPlan({
+      workspaceId: workspaceId(params.workspaceId),
+      date: localDate(params.date),
+    });
+    return { ...publicPlan(current.plan), headVersion: current.headVersion };
+  });
+
+  app.patch("/v1/workspaces/:workspaceId/plans/:date/items/:itemId/lock", async (request) => {
+    const params = parseRequest(planItemParams, request.params);
+    const body = parseRequest(planItemLockBody, request.body);
+    const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+    return services.setPlanItemLock({
+      workspaceId: workspaceId(params.workspaceId),
+      date: localDate(params.date),
+      expectedPlanId: dailyPlanId(body.expectedPlanId),
+      itemId: planItemId(params.itemId),
+      expectedHeadVersion: body.expectedHeadVersion,
+      locked: body.locked,
+      idempotencyKey: key,
+    });
   });
 }

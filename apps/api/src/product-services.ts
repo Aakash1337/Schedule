@@ -2,11 +2,13 @@ import {
   CreateRoutine,
   CreateWorkspace,
   GenerateDailyPlan,
+  GetCurrentDailyPlan,
   GetDailyPlan,
   GetRoutine,
   ListRoutineActivity,
   ListRoutines,
   RecordActivityEvent,
+  SetPlanItemLock,
   UpdateRoutine,
   type Clock,
   type UnitOfWork,
@@ -23,6 +25,8 @@ export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): Pro
   const listRoutineActivity = new ListRoutineActivity(unitOfWork);
   const recordActivityEvent = new RecordActivityEvent(unitOfWork, clock);
   const generateDailyPlan = new GenerateDailyPlan(unitOfWork, clock);
+  const getCurrentDailyPlan = new GetCurrentDailyPlan(unitOfWork);
+  const setPlanItemLock = new SetPlanItemLock(unitOfWork, clock);
   const getDailyPlan = new GetDailyPlan(unitOfWork);
 
   return {
@@ -34,6 +38,8 @@ export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): Pro
     listRoutineActivity: (query) => listRoutineActivity.execute(query),
     recordActivityEvent: (command) => recordActivityEvent.execute(command),
     generateDailyPlan: (command) => generateDailyPlan.execute(command),
+    getCurrentDailyPlan: (query) => getCurrentDailyPlan.execute(query),
+    setPlanItemLock: (command) => setPlanItemLock.execute(command),
     getDailyPlan: (query) => getDailyPlan.execute(query),
   };
 }

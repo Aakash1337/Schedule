@@ -97,6 +97,16 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       });
       return storedPlan;
     },
+    getCurrentDailyPlan: async () => {
+      if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
+      return { plan: storedPlan, headVersion: 1 };
+    },
+    setPlanItemLock: async (command) => ({
+      planId: command.expectedPlanId,
+      itemId: command.itemId,
+      locked: command.locked,
+      headVersion: command.expectedHeadVersion + 1,
+    }),
     getDailyPlan: async () => storedPlan,
     ...overrides,
   };
@@ -395,6 +405,41 @@ describe("local product API", () => {
     expect(generated.json().request.availableWindows).toHaveLength(1);
     expect(retrieved.statusCode).toBe(200);
     expect(retrieved.json()).toEqual(generated.json());
+  });
+
+  it("retrieves the current Today plan and locks an item optimistically", async () => {
+    const app = await appWith(createHarness().services);
+    const generated = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans`,
+      payload: {
+        date: "2026-07-15",
+        timeZone: "UTC",
+        availableWindows: [
+          { startsAt: "2026-07-15T08:00:00.000Z", endsAt: "2026-07-15T09:00:00.000Z" },
+        ],
+        targetMinutes: 30,
+        targetTaskCount: 1,
+        availableContexts: ["computer"],
+        seed: "today-plan",
+      },
+    });
+    const itemId = generated.json().items[0].id as string;
+    const current = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/current`,
+    });
+    const locked = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/items/${itemId}/lock`,
+      headers: { "idempotency-key": "lock-first-item" },
+      payload: { expectedPlanId: planUuid, expectedHeadVersion: 1, locked: true },
+    });
+
+    expect(current.statusCode).toBe(200);
+    expect(current.json()).toMatchObject({ id: planUuid, headVersion: 1 });
+    expect(locked.statusCode).toBe(200);
+    expect(locked.json()).toMatchObject({ itemId, locked: true, headVersion: 2 });
   });
 
   it("returns 404 for an absent exact plan and 409 for idempotency conflicts", async () => {

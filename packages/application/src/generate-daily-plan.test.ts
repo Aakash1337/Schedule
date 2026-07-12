@@ -14,7 +14,9 @@ import {
 } from "@schedule/domain";
 
 import { GenerateDailyPlan } from "./generate-daily-plan.js";
+import { GetCurrentDailyPlan } from "./get-current-daily-plan.js";
 import type { TransactionContext, UnitOfWork } from "./ports.js";
+import { SetPlanItemLock } from "./set-plan-item-lock.js";
 
 describe("GenerateDailyPlan", () => {
   const workspace = workspaceId("application-planner-workspace");
@@ -70,6 +72,13 @@ describe("GenerateDailyPlan", () => {
           stored ??= plan;
           return stored;
         },
+        findCurrent: async () => (stored === undefined ? null : { plan: stored, headVersion: 1 }),
+        setItemLock: async (input) => ({
+          planId: input.expectedPlanId,
+          itemId: input.itemId,
+          locked: input.locked,
+          headVersion: input.expectedHeadVersion + 1,
+        }),
       },
       workItems: {} as TransactionContext["workItems"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
@@ -80,6 +89,10 @@ describe("GenerateDailyPlan", () => {
     return {
       useCase: new GenerateDailyPlan(unitOfWork, {
         now: () => new Date("2026-07-15T07:00:00.000Z"),
+      }),
+      getCurrent: new GetCurrentDailyPlan(unitOfWork),
+      setLock: new SetPlanItemLock(unitOfWork, {
+        now: () => new Date("2026-07-15T07:05:00.000Z"),
       }),
       getStored: () => stored,
     };
@@ -102,5 +115,24 @@ describe("GenerateDailyPlan", () => {
     await expect(useCase.execute({ request })).rejects.toMatchObject<Partial<DomainError>>({
       code: "planning.revision_conflict",
     });
+  });
+
+  it("retrieves current plan state and applies an optimistic item lock", async () => {
+    const test = harness();
+    const plan = await test.useCase.execute({ request });
+    const current = await test.getCurrent.execute({ workspaceId: workspace, date: request.date });
+    const item = plan.items[0]!;
+    const result = await test.setLock.execute({
+      workspaceId: workspace,
+      date: request.date,
+      expectedPlanId: plan.id,
+      itemId: item.id,
+      expectedHeadVersion: current.headVersion,
+      locked: true,
+      idempotencyKey: "lock-item",
+    });
+
+    expect(current.plan).toBe(plan);
+    expect(result).toEqual({ planId: plan.id, itemId: item.id, locked: true, headVersion: 2 });
   });
 });

@@ -19,6 +19,7 @@ The following Phase 1 capabilities exist in code:
 - Concrete PostgreSQL repositories for routine creation/loading/versioned updates, idempotent activity append, stable history pagination, and atomic plan revision insertion
 - Application use cases for creating, retrieving, listing, and updating routines; listing and recording activity; and generating a workspace/date/revision plan
 - A validated, local-only HTTP API for workspaces, routines, activity events, and exact plan revisions
+- Stable plan-item identities, an authoritative per-day plan head, and optimistic idempotent item locking
 
 The planner is implemented as a pure domain operation in `packages/domain/src/daily-planning.ts`. It does not require PostgreSQL, a network connection, or a language model.
 
@@ -62,6 +63,9 @@ The database migration adds:
 - `activity_events`
 - `daily_plans`
 - `daily_plan_items`
+- `daily_plan_heads`
+- `daily_plan_item_states`
+- `plan_interaction_events`
 
 All planner relationships carry `workspace_id` in their foreign keys. Activity idempotency is unique within a workspace. Daily plan revisions are unique by workspace and local date. Plan items cannot repeat a routine or position within one plan.
 
@@ -75,6 +79,8 @@ Each activity append receives a monotonic ingestion sequence after taking a per-
 
 Database triggers make `activity_events` append-only and require corrections and reversals to reference a completion from the same workspace and routine. A completion may be reversed only once. An explicit administrative purge can set `schedule.allow_activity_event_mutation` to `on` locally within its transaction; routine application operations do not set this escape hatch. This local owner-role escape hatch is operational protection, not an authorization boundary. Hosted deployment requires separate non-owner runtime and maintenance roles before product routes are enabled.
 
+The highest generated revision becomes the authoritative per-day head. Plan items expose stable UUIDs, while mutable interaction state is stored separately from immutable plan snapshots. Lock and unlock commands use the current plan ID, an optimistic head version, and a workspace-scoped idempotency key. Each command appends an immutable interaction event; the item-state projection and head version support fast Today reads and stale-client rejection.
+
 Run the database-backed vertical-slice verification while PostgreSQL is available:
 
 ```powershell
@@ -86,7 +92,7 @@ pnpm verify:planner-db
 - Authentication, authorization, and public network exposure
 - Routine and Today user interfaces
 - Exact start-time placement within a selected window
-- Locked items, replacement, regeneration, and alternative-plan workflows
+- Locked-item carry-forward, replacement, regeneration, and alternative-plan workflows
 - Work-item deadlines and dependency integration
 - Learned duration and preference adjustments
 - User-editable scoring profiles
