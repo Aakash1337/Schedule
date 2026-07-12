@@ -15,6 +15,7 @@ import {
   runComposeCommand,
   type ScheduleArchiveCatalog,
   verifyBackup,
+  withPreparedRestoreArchive,
 } from "./backup-database.js";
 
 const restoreConfirmation = "replace-schedule";
@@ -54,6 +55,7 @@ interface RollbackRoleNames {
 
 export interface RecoveryDatabaseOperations {
   readonly databaseExists: (databaseName: string) => Promise<boolean>;
+  readonly databaseIdentity: (databaseName: string) => Promise<number | null>;
   readonly databaseAllowsConnections: (databaseName: string) => Promise<boolean>;
   readonly setDatabaseAllowsConnections: (
     databaseName: string,
@@ -203,6 +205,21 @@ export async function databaseExists(databaseName: string): Promise<boolean> {
   return result === "true" || result === "t";
 }
 
+export async function databaseIdentity(databaseName: string): Promise<number | null> {
+  quoteIdentifier(databaseName);
+  const result = (
+    await runPsql(
+      "postgres",
+      `SELECT COALESCE((SELECT oid::text FROM pg_database WHERE datname = '${databaseName}'), '');`,
+    )
+  ).trim();
+  if (result === "") return null;
+  if (!/^\d+$/.test(result)) {
+    throw new Error(`Could not read database identity for ${databaseName}.`);
+  }
+  return Number(result);
+}
+
 export async function databaseAllowsConnections(databaseName: string): Promise<boolean> {
   quoteIdentifier(databaseName);
   const result = (
@@ -257,6 +274,7 @@ async function renameDatabase(sourceDatabase: string, targetDatabase: string): P
 
 const postgresRecoveryOperations: RecoveryDatabaseOperations = {
   databaseExists,
+  databaseIdentity,
   databaseAllowsConnections,
   setDatabaseAllowsConnections,
   terminateDatabaseConnections,
@@ -642,6 +660,31 @@ async function collectRecoveryError(
   }
 }
 
+export async function cleanupOwnedRestoreStagingAfterFailure(
+  originalError: unknown,
+  stagingDatabase: string,
+  stagingIdentity: number | null,
+  operations: RecoveryDatabaseOperations = postgresRecoveryOperations,
+): Promise<never> {
+  if (stagingIdentity === null) throw originalError;
+  const cleanupErrors: Error[] = [];
+  await collectRecoveryError(
+    cleanupErrors,
+    `remove failed staging database ${stagingDatabase}`,
+    async () => {
+      await cleanupDatabaseInternal(stagingDatabase, operations, false, stagingIdentity);
+    },
+  );
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [originalError, ...cleanupErrors],
+      `Restore validation failed and staging cleanup was incomplete. Retained staging identifier: ${stagingDatabase}.`,
+      { cause: originalError },
+    );
+  }
+  throw originalError;
+}
+
 export type DisposablePreflightPhase = "initialize" | "restore" | "rollback";
 
 function expectedDisposableExistence(
@@ -908,20 +951,35 @@ async function restoreDatabaseUsingRoles(
       `Active database ${names.activeDatabase} does not match a freshly migrated current schema; restore refused so rollback state remains trustworthy.`,
     );
   }
-  const archiveCatalog = await verifyBackup(resolvedPath);
+  let stagingIdentity: number | null = null;
+  const discardFailedStaging = (originalError: unknown): Promise<never> =>
+    cleanupOwnedRestoreStagingAfterFailure(originalError, names.stagingDatabase, stagingIdentity);
+  const archiveCatalog = await withPreparedRestoreArchive(
+    resolvedPath,
+    async ({ snapshotPath }): Promise<ScheduleArchiveCatalog> => {
+      const catalog = await verifyBackup(snapshotPath);
+      await assertRoleExistence(
+        [
+          [names.stagingDatabase, false],
+          [names.previousDatabase, false],
+        ],
+        postgresRecoveryOperations,
+        "Staging creation",
+      );
+      await createEmptyDatabase(names.stagingDatabase);
+      stagingIdentity = await postgresRecoveryOperations.databaseIdentity(names.stagingDatabase);
+      if (stagingIdentity === null) {
+        throw new Error(
+          `Created staging database identity could not be confirmed; retained identifier: ${names.stagingDatabase}.`,
+        );
+      }
+      await restoreArchiveIntoDatabase(snapshotPath, names.stagingDatabase);
+      return catalog;
+    },
+  ).catch(discardFailedStaging);
 
-  await assertRoleExistence(
-    [
-      [names.stagingDatabase, false],
-      [names.previousDatabase, false],
-    ],
-    postgresRecoveryOperations,
-    "Staging creation",
-  );
-  await createEmptyDatabase(names.stagingDatabase);
   let promotionStarted = false;
   try {
-    await restoreArchiveIntoDatabase(resolvedPath, names.stagingDatabase);
     await assertScheduleDatabase(names.stagingDatabase, { expectedCatalog: archiveCatalog });
     await migrateAndVerifyStagingDatabase(names.stagingDatabase, expectedSchemaSignal);
     await assertScheduleDatabase(names.stagingDatabase, { requireCurrentMigrations: true });
@@ -930,22 +988,7 @@ async function restoreDatabaseUsingRoles(
     });
   } catch (originalError) {
     if (promotionStarted) throw originalError;
-    const cleanupErrors: Error[] = [];
-    await collectRecoveryError(
-      cleanupErrors,
-      `remove failed staging database ${names.stagingDatabase}`,
-      async () => {
-        await cleanupDatabaseInternal(names.stagingDatabase, postgresRecoveryOperations, false);
-      },
-    );
-    if (cleanupErrors.length > 0) {
-      throw new AggregateError(
-        [originalError, ...cleanupErrors],
-        `Restore validation failed and staging cleanup was incomplete. Retained staging identifier: ${names.stagingDatabase}.`,
-        { cause: originalError },
-      );
-    }
-    throw originalError;
+    await discardFailedStaging(originalError);
   }
 }
 
@@ -1176,16 +1219,42 @@ async function cleanupDatabaseInternal(
   databaseName: string,
   operations: RecoveryDatabaseOperations,
   requireExisting: boolean,
+  expectedIdentity?: number,
 ): Promise<boolean> {
   quoteIdentifier(databaseName);
-  if (!(await operations.databaseExists(databaseName))) {
+  const identity =
+    expectedIdentity === undefined ? undefined : await operations.databaseIdentity(databaseName);
+  if (
+    (expectedIdentity === undefined && !(await operations.databaseExists(databaseName))) ||
+    (expectedIdentity !== undefined && identity === null)
+  ) {
     if (requireExisting) throw new Error(`Retained database does not exist: ${databaseName}`);
     return false;
   }
+  if (expectedIdentity !== undefined && identity !== expectedIdentity) {
+    throw new Error(
+      `Database identity changed for ${databaseName}; refusing to remove an unowned replacement.`,
+    );
+  }
+  // The random name and repeated OID checks prevent accidental or stale-name cleanup. They are not
+  // a security boundary against another concurrent PostgreSQL administrator using the same role.
+  const assertExpectedIdentity = async (phase: string): Promise<void> => {
+    if (
+      expectedIdentity !== undefined &&
+      (await operations.databaseIdentity(databaseName)) !== expectedIdentity
+    ) {
+      throw new Error(
+        `Database identity changed for ${databaseName} ${phase}; refusing to alter an unowned replacement.`,
+      );
+    }
+  };
   if (await operations.databaseAllowsConnections(databaseName)) {
+    await assertExpectedIdentity("before disabling connections");
     await operations.setDatabaseAllowsConnections(databaseName, false);
   }
+  await assertExpectedIdentity("before terminating connections");
   await operations.terminateDatabaseConnections(databaseName);
+  await assertExpectedIdentity("before removal");
   await operations.dropDatabase(databaseName);
   return true;
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -12,6 +12,7 @@ import {
   databaseAllowsConnections,
   databaseContentSignal,
   databaseExists,
+  databaseSchemaSignal,
   disposableRecoveryVerificationSentinel,
   dropDatabase,
   errorMessage,
@@ -168,6 +169,8 @@ const plan = createDisposableRecoveryPlan();
 assertDisposableRecoveryPlan(plan);
 const temporaryDirectory = await mkdtemp(path.join(tmpdir(), "schedule-recovery-state-"));
 const archivePath = path.join(temporaryDirectory, "private-recovery.dump");
+const rejectedArchivePath = path.join(temporaryDirectory, "rejected-recovery.dump");
+const incompatibleArchivePath = path.join(temporaryDirectory, "incompatible-recovery.dump");
 const markerId = randomUUID();
 const archivedMarker = `archived-${plan.nonce}`;
 const currentMarker = `current-${plan.nonce}`;
@@ -197,12 +200,86 @@ try {
     `INSERT INTO workspaces (id, name) VALUES ('${markerId}'::uuid, '${archivedMarker}');`,
   );
   const archivedContent = await databaseContentSignal(plan.activeDatabase);
+  const archivedSchema = await databaseSchemaSignal(plan.activeDatabase);
   await createBackup(archivePath, plan.activeDatabase);
   await chmod(archivePath, 0o600);
   if (process.platform !== "win32") {
     assert.equal((await stat(temporaryDirectory)).mode & 0o077, 0, "archive directory is private");
     assert.equal((await stat(archivePath)).mode & 0o077, 0, "archive file is private");
   }
+
+  const rejectedArchiveMarker = `private-rejected-archive-${plan.nonce}`;
+  await writeFile(rejectedArchivePath, rejectedArchiveMarker, { mode: 0o600 });
+  await assert.rejects(restoreDisposableScheduleDatabase(rejectedArchivePath, plan), (error) => {
+    const message = errorMessage(error);
+    assert.match(message, /Docker Compose command failed/);
+    assert.doesNotMatch(message, new RegExp(rejectedArchiveMarker));
+    return true;
+  });
+  await assertRoleExistence(plan, {
+    activeDatabase: true,
+    stagingDatabase: false,
+    previousDatabase: false,
+    rejectedDatabase: false,
+    referenceDatabase: false,
+  });
+  assert.equal(
+    await databaseOid(plan.activeDatabase),
+    originalActiveOid,
+    "rejected restore input must not replace the active database",
+  );
+  assert.equal(
+    await databaseContentSignal(plan.activeDatabase),
+    archivedContent,
+    "rejected restore input must not alter active content",
+  );
+
+  const incompatibleArchiveMarker = `private-incompatible-archive-${plan.nonce}`;
+  await runPsql(
+    plan.activeDatabase,
+    `CREATE TABLE restore_validation_probe (value text NOT NULL); INSERT INTO restore_validation_probe (value) VALUES ('${incompatibleArchiveMarker}');`,
+  );
+  try {
+    await createBackup(incompatibleArchivePath, plan.activeDatabase);
+  } finally {
+    await runPsql(plan.activeDatabase, "DROP TABLE IF EXISTS restore_validation_probe;");
+  }
+  assert.equal(
+    await databaseSchemaSignal(plan.activeDatabase),
+    archivedSchema,
+    "creating an incompatible archive fixture must leave the active schema unchanged",
+  );
+  assert.equal(
+    await databaseContentSignal(plan.activeDatabase),
+    archivedContent,
+    "creating an incompatible archive fixture must leave active content unchanged",
+  );
+  await assert.rejects(
+    restoreDisposableScheduleDatabase(incompatibleArchivePath, plan),
+    (error) => {
+      const message = errorMessage(error);
+      assert.match(message, /unexpected Schedule table set|Staging schema does not match/);
+      assert.doesNotMatch(message, new RegExp(incompatibleArchiveMarker));
+      return true;
+    },
+  );
+  await assertRoleExistence(plan, {
+    activeDatabase: true,
+    stagingDatabase: false,
+    previousDatabase: false,
+    rejectedDatabase: false,
+    referenceDatabase: false,
+  });
+  assert.equal(
+    await databaseOid(plan.activeDatabase),
+    originalActiveOid,
+    "post-restore validation failure must not replace the active database",
+  );
+  assert.equal(
+    await databaseContentSignal(plan.activeDatabase),
+    archivedContent,
+    "post-restore validation failure must not alter active content",
+  );
 
   await runPsql(
     plan.activeDatabase,
@@ -277,7 +354,7 @@ try {
   await cleanupDisposableRecoveryDatabase(plan, "rejected");
   assert.equal(await databaseExists(plan.rejectedDatabase), false);
   console.log(
-    "Disposable recovery state-machine verification passed restore, promotion, rollback, and cleanup.",
+    "Disposable recovery state-machine verification passed rejected-input isolation, post-restore failure cleanup, restore, promotion, rollback, and cleanup.",
   );
 } catch (error) {
   verificationFailure = error;

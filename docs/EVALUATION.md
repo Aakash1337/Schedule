@@ -41,7 +41,7 @@ project.
 
 ## Current scorecard
 
-The initial audited baseline contains 36 test files and 279 runtime test cases. Parameterized state
+The current audited suite contains 37 test files and 291 runtime test cases. Parameterized state
 matrices expand into many cases, so this number must not be compared as though every case were an
 independent product feature.
 
@@ -63,8 +63,8 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     56.62% |   58.63% |    60.28% | 57.35% |
-| Whole repository, required |        56% |      58% |       59% |    56% |
+| Whole repository, measured |      57.2% |   60.13% |    61.42% | 57.95% |
+| Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     92.66% |   84.43% |    93.33% | 94.13% |
 | Domain, required           |        91% |      82% |       92% |    93% |
 | Application, measured      |     84.92% |   78.42% |      100% | 84.85% |
@@ -74,7 +74,7 @@ quality levels.
 | Worker, measured           |      94.9% |   89.04% |    92.59% | 97.85% |
 | Worker, required           |        85% |      87% |       89% |    87% |
 | Web, measured              |     76.57% |   64.41% |    70.33% | 80.41% |
-| Web, required              |        75% |      63% |       69% |    79% |
+| Web, required              |        75% |      63% |       70% |    79% |
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -104,7 +104,9 @@ The audit deliberately leaves these visible instead of turning them into false g
   a representative matrix of every prior release;
 - PostgreSQL recovery verifies the successful swap/rollback path, while compensation fault injection
   is currently operation-level rather than process-kill testing;
-- corrupted and adversarial backup archives do not yet have a complete rejection matrix;
+- backup rejection covers empty, plain-SQL, truncated, schema-only, and migration-ledger-filtered
+  archives plus caller-path replacement; it does not authenticate a structurally complete foreign
+  Schedule archive, so backup custody remains part of the recovery trust boundary;
 - worker fencing and retries are covered, but the downstream side-effect-before-acknowledgement crash
   window still requires idempotent consumers and a process-level fault harness;
 - web behavior is component-tested rather than exercised through a real browser and API process; and

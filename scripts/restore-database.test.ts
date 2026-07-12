@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertDisposableRecoveryPlan,
   assertDisposableRecoveryPreflight,
+  cleanupOwnedRestoreStagingAfterFailure,
   createDisposableRecoveryPlan,
   promoteDisposableRecoveryStaging,
   rollbackDisposableRecoveryNames,
@@ -23,8 +24,21 @@ function fakeOperations(
   databases: Map<string, FakeDatabase>,
   hooks: FakeFailureHooks = {},
 ): RecoveryDatabaseOperations {
+  const identities = new WeakMap<FakeDatabase, number>();
+  let nextIdentity = 1;
   return {
     databaseExists: async (databaseName) => databases.has(databaseName),
+    databaseIdentity: async (databaseName) => {
+      const database = databases.get(databaseName);
+      if (database === undefined) return null;
+      let identity = identities.get(database);
+      if (identity === undefined) {
+        identity = nextIdentity;
+        nextIdentity += 1;
+        identities.set(database, identity);
+      }
+      return identity;
+    },
     databaseAllowsConnections: async (databaseName) => {
       const database = databases.get(databaseName);
       if (database === undefined) throw new Error(`missing database ${databaseName}`);
@@ -113,6 +127,58 @@ describe("disposable recovery plan", () => {
 });
 
 describe("disposable recovery compensation", () => {
+  it("cleans only a staging database whose creation was positively acknowledged", async () => {
+    const plan = createDisposableRecoveryPlan();
+    const originalFailure = new Error("restore failed");
+    const unownedDatabases = new Map<string, FakeDatabase>([
+      [plan.stagingDatabase, { allowsConnections: true, marker: "collision" }],
+    ]);
+
+    await expect(
+      cleanupOwnedRestoreStagingAfterFailure(
+        originalFailure,
+        plan.stagingDatabase,
+        null,
+        fakeOperations(unownedDatabases),
+      ),
+    ).rejects.toBe(originalFailure);
+    expect(unownedDatabases.get(plan.stagingDatabase)?.marker).toBe("collision");
+
+    const ownedDatabases = new Map<string, FakeDatabase>([
+      [plan.stagingDatabase, { allowsConnections: true, marker: "owned" }],
+    ]);
+    const ownedOperations = fakeOperations(ownedDatabases);
+    const ownedIdentity = await ownedOperations.databaseIdentity(plan.stagingDatabase);
+    await expect(
+      cleanupOwnedRestoreStagingAfterFailure(
+        originalFailure,
+        plan.stagingDatabase,
+        ownedIdentity,
+        ownedOperations,
+      ),
+    ).rejects.toBe(originalFailure);
+    expect(ownedDatabases.has(plan.stagingDatabase)).toBe(false);
+
+    const replacedDatabases = new Map<string, FakeDatabase>([
+      [plan.stagingDatabase, { allowsConnections: true, marker: "original-owned" }],
+    ]);
+    const replacedOperations = fakeOperations(replacedDatabases);
+    const replacedIdentity = await replacedOperations.databaseIdentity(plan.stagingDatabase);
+    replacedDatabases.set(plan.stagingDatabase, {
+      allowsConnections: true,
+      marker: "same-name-replacement",
+    });
+    await expect(
+      cleanupOwnedRestoreStagingAfterFailure(
+        originalFailure,
+        plan.stagingDatabase,
+        replacedIdentity,
+        replacedOperations,
+      ),
+    ).rejects.toBeInstanceOf(AggregateError);
+    expect(replacedDatabases.get(plan.stagingDatabase)?.marker).toBe("same-name-replacement");
+  });
+
   it("restores the original active name when staging promotion fails mid-swap", async () => {
     const plan = createDisposableRecoveryPlan();
     const databases = new Map<string, FakeDatabase>([

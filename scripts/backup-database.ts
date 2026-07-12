@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
-import { open, mkdir, rm, stat, type FileHandle } from "node:fs/promises";
-import { homedir } from "node:os";
+import { constants, type BigIntStats } from "node:fs";
+import { chmod, lstat, mkdtemp, open, mkdir, rm, stat, type FileHandle } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -34,6 +35,12 @@ export const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.met
 interface ComposeCommandOptions {
   readonly inputPath?: string;
   readonly outputPath?: string;
+}
+
+export interface PreparedRestoreArchive {
+  readonly sourcePath: string;
+  readonly snapshotPath: string;
+  readonly sizeBytes: number;
 }
 
 function errorMessage(error: unknown): string {
@@ -184,7 +191,7 @@ async function readSourceCatalog(databaseName: string): Promise<ScheduleArchiveC
   return { tables, sequences };
 }
 
-function parseArchiveCatalog(listing: string): ScheduleArchiveCatalog {
+export function parseArchiveCatalog(listing: string): ScheduleArchiveCatalog {
   const catalogLines = listing.split(/\r?\n/);
   const unexpectedSchemas = catalogLines
     .map((line) => /\bSCHEMA - ([^\s]+)/.exec(line)?.[1])
@@ -244,6 +251,15 @@ function parseArchiveCatalog(listing: string): ScheduleArchiveCatalog {
       "Backup sequence definitions and value-set sections are incomplete or filtered.",
     );
   }
+  const requiredBaselineSequences = ["drizzle.__drizzle_migrations_id_seq"];
+  const missingBaselineSequences = requiredBaselineSequences.filter(
+    (sequence) => !sequenceDefinitions.includes(sequence),
+  );
+  if (missingBaselineSequences.length > 0) {
+    throw new Error(
+      `Backup is missing baseline Schedule sequences: ${missingBaselineSequences.join(", ")}`,
+    );
+  }
 
   const tables = tableDefinitions
     .filter((table) => table.startsWith("public."))
@@ -270,6 +286,147 @@ function parseArchiveCatalog(listing: string): ScheduleArchiveCatalog {
       return { schema: value.slice(0, separator), name: value.slice(separator + 1) };
     }),
   };
+}
+
+async function copyOpenedArchive(
+  source: FileHandle,
+  destination: FileHandle,
+  initialState: BigIntStats,
+): Promise<number> {
+  if (initialState.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error("Restore archive is too large to snapshot safely.");
+  }
+  const sizeBytes = Number(initialState.size);
+  const buffer = Buffer.allocUnsafe(Math.min(sizeBytes, 1024 * 1024));
+  let sourceOffset = 0;
+  while (sourceOffset < sizeBytes) {
+    const requested = Math.min(buffer.length, sizeBytes - sourceOffset);
+    const { bytesRead } = await source.read(buffer, 0, requested, sourceOffset);
+    if (bytesRead === 0) {
+      throw new Error("Restore archive changed while its private snapshot was being created.");
+    }
+    let written = 0;
+    while (written < bytesRead) {
+      const { bytesWritten } = await destination.write(
+        buffer,
+        written,
+        bytesRead - written,
+        sourceOffset + written,
+      );
+      if (bytesWritten === 0) {
+        throw new Error("Could not write the complete private restore archive snapshot.");
+      }
+      written += bytesWritten;
+    }
+    sourceOffset += bytesRead;
+  }
+  const finalState = await source.stat({ bigint: true });
+  if (
+    finalState.dev !== initialState.dev ||
+    finalState.ino !== initialState.ino ||
+    finalState.size !== initialState.size ||
+    finalState.mtimeNs !== initialState.mtimeNs ||
+    finalState.ctimeNs !== initialState.ctimeNs
+  ) {
+    throw new Error("Restore archive changed while its private snapshot was being created.");
+  }
+  await destination.sync();
+  return sizeBytes;
+}
+
+async function prepareRestoreArchive(backupPath: string): Promise<{
+  readonly archive: PreparedRestoreArchive;
+  readonly cleanup: () => Promise<void>;
+}> {
+  const sourcePath = path.resolve(backupPath);
+  const pathMetadata = await lstat(sourcePath, { bigint: true });
+  if (pathMetadata.isSymbolicLink() || !pathMetadata.isFile() || pathMetadata.size === 0n) {
+    throw new Error(`Restore archive must be a non-empty, non-symlink regular file: ${sourcePath}`);
+  }
+
+  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), "schedule-restore-archive-"));
+  const snapshotPath = path.join(temporaryDirectory, "archive.dump");
+  let source: FileHandle | undefined;
+  let destination: FileHandle | undefined;
+
+  try {
+    await chmod(temporaryDirectory, 0o700);
+    const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+    source = await open(sourcePath, constants.O_RDONLY | noFollow);
+    const openedMetadata = await source.stat({ bigint: true });
+    if (
+      !openedMetadata.isFile() ||
+      openedMetadata.size <= 0n ||
+      openedMetadata.dev !== pathMetadata.dev ||
+      openedMetadata.ino !== pathMetadata.ino ||
+      openedMetadata.size !== pathMetadata.size ||
+      openedMetadata.mtimeNs !== pathMetadata.mtimeNs ||
+      openedMetadata.ctimeNs !== pathMetadata.ctimeNs
+    ) {
+      throw new Error(`Restore archive path changed before it could be snapshotted: ${sourcePath}`);
+    }
+    destination = await open(snapshotPath, "wx", 0o600);
+    const sizeBytes = await copyOpenedArchive(source, destination, openedMetadata);
+    await destination.close();
+    destination = undefined;
+    await source.close();
+    source = undefined;
+
+    let cleanupPromise: Promise<void> | undefined;
+    return {
+      archive: { sourcePath, snapshotPath, sizeBytes },
+      cleanup: () => {
+        cleanupPromise ??= rm(temporaryDirectory, { recursive: true, force: true });
+        return cleanupPromise;
+      },
+    };
+  } catch (error) {
+    await Promise.allSettled([source?.close(), destination?.close()]);
+    try {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Preparing a private restore archive failed and its temporary directory could not be removed.",
+        { cause: cleanupError },
+      );
+    }
+    throw error;
+  }
+}
+
+export async function withPreparedRestoreArchive<Result>(
+  backupPath: string,
+  operation: (archive: PreparedRestoreArchive) => Promise<Result>,
+): Promise<Result> {
+  const prepared = await prepareRestoreArchive(backupPath);
+  let operationCompleted = false;
+  let operationResult: Result | undefined;
+  let operationError: unknown;
+  try {
+    operationResult = await operation(prepared.archive);
+    operationCompleted = true;
+  } catch (error) {
+    operationError = error;
+  }
+  let cleanupError: unknown;
+  try {
+    await prepared.cleanup();
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (!operationCompleted) {
+    if (cleanupError !== undefined) {
+      throw new AggregateError(
+        [operationError, cleanupError],
+        "Restore archive processing failed and its private snapshot could not be removed.",
+        { cause: operationError },
+      );
+    }
+    throw operationError;
+  }
+  if (cleanupError !== undefined) throw cleanupError;
+  return operationResult as Result;
 }
 
 export async function verifyBackup(

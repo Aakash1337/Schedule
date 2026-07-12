@@ -29,9 +29,9 @@ export default defineConfig({
       skipFull: false,
       thresholds: {
         statements: 56,
-        branches: 58,
-        functions: 59,
-        lines: 56,
+        branches: 59,
+        functions: 60,
+        lines: 57,
         "packages/domain/src/**/*.ts": {
           statements: 91,
           branches: 82,
@@ -59,7 +59,7 @@ export default defineConfig({
         "apps/web/src/**/*.{ts,tsx}": {
           statements: 75,
           branches: 63,
-          functions: 69,
+          functions: 70,
           lines: 79,
         },
       },
