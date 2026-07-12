@@ -4,14 +4,22 @@ import type {
   ActivityHistoryCursor,
   ActivityHistoryPage,
   CreateRoutineCommand,
+  CreateScheduleBlockCommand,
+  CreateWorkItemCommand,
   CreateWorkspaceCommand,
   CurrentDailyPlan,
   GenerateDailyPlanCommand,
   GetCurrentDailyPlanQuery,
   GetDailyPlanQuery,
   GetRoutineQuery,
+  GetScheduleBlockQuery,
+  GetWorkItemQuery,
+  GetWorkspaceQuery,
   ListRoutineActivityQuery,
   ListRoutinesQuery,
+  ListScheduleBlocksQuery,
+  ListWorkItemsQuery,
+  ListWorkspacesQuery,
   PlanItemLockResult,
   PlanItemActivityResult,
   RecordActivityEventCommand,
@@ -20,6 +28,12 @@ import type {
   ReplacePlanItemCommand,
   SetPlanItemLockCommand,
   UpdateRoutineCommand,
+  UpdateScheduleBlockCommand,
+  UpdateWorkItemCommand,
+  DeleteScheduleBlockCommand,
+  ScheduleBlockPage,
+  WorkItemPage,
+  WorkspacePage,
 } from "@schedule/application";
 import {
   activityEventId,
@@ -31,11 +45,15 @@ import {
   localDate,
   planItemId,
   routineId,
+  scheduleBlockId,
+  workItemId,
   workspaceId,
   type ActivityEvent,
   type DailyPlan,
   type JsonValue,
   type Routine,
+  type ScheduleBlock,
+  type WorkItem,
   type Workspace,
   type Weekday,
 } from "@schedule/domain";
@@ -51,7 +69,18 @@ import {
 
 export interface ProductServices {
   createWorkspace(command: CreateWorkspaceCommand): Promise<Workspace>;
+  getWorkspace(query: GetWorkspaceQuery): Promise<Workspace>;
+  listWorkspaces(query: ListWorkspacesQuery): Promise<WorkspacePage>;
   createRoutine(command: CreateRoutineCommand): Promise<Routine>;
+  createWorkItem(command: CreateWorkItemCommand): Promise<WorkItem>;
+  getWorkItem(query: GetWorkItemQuery): Promise<WorkItem>;
+  listWorkItems(query: ListWorkItemsQuery): Promise<WorkItemPage>;
+  updateWorkItem(command: UpdateWorkItemCommand): Promise<WorkItem>;
+  createScheduleBlock(command: CreateScheduleBlockCommand): Promise<ScheduleBlock>;
+  getScheduleBlock(query: GetScheduleBlockQuery): Promise<ScheduleBlock>;
+  listScheduleBlocks(query: ListScheduleBlocksQuery): Promise<ScheduleBlockPage>;
+  updateScheduleBlock(command: UpdateScheduleBlockCommand): Promise<ScheduleBlock>;
+  deleteScheduleBlock(command: DeleteScheduleBlockCommand): Promise<void>;
   getRoutine(query: GetRoutineQuery): Promise<Routine>;
   updateRoutine(command: UpdateRoutineCommand): Promise<Routine>;
   listRoutines(query: ListRoutinesQuery): Promise<readonly Routine[]>;
@@ -104,10 +133,87 @@ const localDateText = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-
 const instant = z.string().datetime({ offset: true });
 const workspaceParams = z.strictObject({ workspaceId: uuid });
 const routineParams = z.strictObject({ workspaceId: uuid, routineId: uuid });
+const workItemParams = z.strictObject({ workspaceId: uuid, workItemId: uuid });
+const scheduleBlockParams = z.strictObject({ workspaceId: uuid, scheduleBlockId: uuid });
 const planParams = z.strictObject({ workspaceId: uuid, date: localDateText });
 const planItemParams = z.strictObject({ workspaceId: uuid, date: localDateText, itemId: uuid });
 
 const workspaceBody = z.strictObject({ name: z.string().trim().min(1).max(160) });
+const workspaceQuery = z.strictObject({
+  limit: z.coerce.number().int().min(1).max(20).default(20),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
+const workItemStatus = z.enum([
+  "backlog",
+  "planned",
+  "in_progress",
+  "blocked",
+  "done",
+  "cancelled",
+]);
+const workItemPriority = z.enum(["none", "low", "medium", "high", "urgent"]);
+const workItemBody = z.strictObject({
+  title: z.string().trim().min(1).max(240),
+  description: z.string().max(4_000).nullable().default(null),
+  status: workItemStatus.default("backlog"),
+  priority: workItemPriority.default("none"),
+});
+const workItemQuery = z.strictObject({
+  status: workItemStatus.optional(),
+  priority: workItemPriority.optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
+const updateWorkItemBody = z
+  .strictObject({
+    expectedVersion: z.number().int().positive().max(2_147_483_647),
+    title: z.string().trim().min(1).max(240).optional(),
+    description: z.string().max(4_000).nullable().optional(),
+    status: workItemStatus.optional(),
+    priority: workItemPriority.optional(),
+  })
+  .refine(
+    (body) =>
+      body.title !== undefined ||
+      body.description !== undefined ||
+      body.status !== undefined ||
+      body.priority !== undefined,
+    { message: "At least one work item change is required." },
+  );
+const scheduleBlockBody = z.strictObject({
+  workItemId: uuid.nullable().default(null),
+  title: z.string().max(240).nullable().default(null),
+  startsAt: instant,
+  endsAt: instant,
+  timeZone: z.string().trim().min(1).max(80),
+});
+const scheduleBlockQuery = z.strictObject({
+  from: instant,
+  to: instant,
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
+const updateScheduleBlockBody = z
+  .strictObject({
+    expectedVersion: z.number().int().positive().max(2_147_483_647),
+    workItemId: uuid.nullable().optional(),
+    title: z.string().max(240).nullable().optional(),
+    startsAt: instant.optional(),
+    endsAt: instant.optional(),
+    timeZone: z.string().trim().min(1).max(80).optional(),
+  })
+  .refine(
+    (body) =>
+      body.workItemId !== undefined ||
+      body.title !== undefined ||
+      body.startsAt !== undefined ||
+      body.endsAt !== undefined ||
+      body.timeZone !== undefined,
+    { message: "At least one schedule block change is required." },
+  );
+const deleteScheduleBlockBody = z.strictObject({
+  expectedVersion: z.number().int().positive().max(2_147_483_647),
+});
 const tagsBody = z
   .strictObject({
     priority: z.enum(["low", "medium", "high", "critical"]).default("medium"),
@@ -417,6 +523,131 @@ export async function registerProductRoutes(
     const created = await services.createWorkspace(body);
     return reply.code(201).send(created);
   });
+
+  app.get("/v1/workspaces", async (request) => {
+    const query = parseRequest(workspaceQuery, request.query);
+    const page = await services.listWorkspaces({ limit: query.limit, offset: query.offset });
+    return { items: page.items, page: { limit: page.limit, offset: page.offset } };
+  });
+
+  app.get("/v1/workspaces/:workspaceId", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    return services.getWorkspace({ workspaceId: workspaceId(params.workspaceId) });
+  });
+
+  app.post("/v1/workspaces/:workspaceId/work-items", async (request, reply) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const body = parseRequest(workItemBody, request.body);
+    const created = await services.createWorkItem({
+      workspaceId: workspaceId(params.workspaceId),
+      title: body.title,
+      description: body.description,
+      status: body.status,
+      priority: body.priority,
+    });
+    return reply.code(201).send(created);
+  });
+
+  app.get("/v1/workspaces/:workspaceId/work-items", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(workItemQuery, request.query);
+    const page = await services.listWorkItems({
+      workspaceId: workspaceId(params.workspaceId),
+      ...(query.status === undefined ? {} : { status: query.status }),
+      ...(query.priority === undefined ? {} : { priority: query.priority }),
+      limit: query.limit,
+      offset: query.offset,
+    });
+    return { items: page.items, page: { limit: page.limit, offset: page.offset } };
+  });
+
+  app.get("/v1/workspaces/:workspaceId/work-items/:workItemId", async (request) => {
+    const params = parseRequest(workItemParams, request.params);
+    return services.getWorkItem({
+      workspaceId: workspaceId(params.workspaceId),
+      workItemId: workItemId(params.workItemId),
+    });
+  });
+
+  app.patch("/v1/workspaces/:workspaceId/work-items/:workItemId", async (request) => {
+    const params = parseRequest(workItemParams, request.params);
+    const body = parseRequest(updateWorkItemBody, request.body);
+    return services.updateWorkItem({
+      workspaceId: workspaceId(params.workspaceId),
+      workItemId: workItemId(params.workItemId),
+      expectedVersion: body.expectedVersion,
+      ...(body.title === undefined ? {} : { title: body.title }),
+      ...(body.description === undefined ? {} : { description: body.description }),
+      ...(body.status === undefined ? {} : { status: body.status }),
+      ...(body.priority === undefined ? {} : { priority: body.priority }),
+    });
+  });
+
+  app.post("/v1/workspaces/:workspaceId/schedule-blocks", async (request, reply) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const body = parseRequest(scheduleBlockBody, request.body);
+    const created = await services.createScheduleBlock({
+      workspaceId: workspaceId(params.workspaceId),
+      workItemId: body.workItemId === null ? null : workItemId(body.workItemId),
+      title: body.title,
+      startsAt: new Date(body.startsAt),
+      endsAt: new Date(body.endsAt),
+      timeZone: body.timeZone,
+    });
+    return reply.code(201).send(created);
+  });
+
+  app.get("/v1/workspaces/:workspaceId/schedule-blocks", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(scheduleBlockQuery, request.query);
+    const page = await services.listScheduleBlocks({
+      workspaceId: workspaceId(params.workspaceId),
+      from: new Date(query.from),
+      to: new Date(query.to),
+      limit: query.limit,
+      offset: query.offset,
+    });
+    return { items: page.items, page: { limit: page.limit, offset: page.offset } };
+  });
+
+  app.get("/v1/workspaces/:workspaceId/schedule-blocks/:scheduleBlockId", async (request) => {
+    const params = parseRequest(scheduleBlockParams, request.params);
+    return services.getScheduleBlock({
+      workspaceId: workspaceId(params.workspaceId),
+      scheduleBlockId: scheduleBlockId(params.scheduleBlockId),
+    });
+  });
+
+  app.patch("/v1/workspaces/:workspaceId/schedule-blocks/:scheduleBlockId", async (request) => {
+    const params = parseRequest(scheduleBlockParams, request.params);
+    const body = parseRequest(updateScheduleBlockBody, request.body);
+    return services.updateScheduleBlock({
+      workspaceId: workspaceId(params.workspaceId),
+      scheduleBlockId: scheduleBlockId(params.scheduleBlockId),
+      expectedVersion: body.expectedVersion,
+      ...(body.workItemId === undefined
+        ? {}
+        : { workItemId: body.workItemId === null ? null : workItemId(body.workItemId) }),
+      ...(body.title === undefined ? {} : { title: body.title }),
+      ...(body.startsAt === undefined ? {} : { startsAt: new Date(body.startsAt) }),
+      ...(body.endsAt === undefined ? {} : { endsAt: new Date(body.endsAt) }),
+      ...(body.timeZone === undefined ? {} : { timeZone: body.timeZone }),
+    });
+  });
+
+  app.delete(
+    "/v1/workspaces/:workspaceId/schedule-blocks/:scheduleBlockId",
+    async (request, reply) => {
+      const params = parseRequest(scheduleBlockParams, request.params);
+      const body = parseRequest(deleteScheduleBlockBody, request.body);
+      await services.deleteScheduleBlock({
+        workspaceId: workspaceId(params.workspaceId),
+        scheduleBlockId: scheduleBlockId(params.scheduleBlockId),
+        expectedVersion: body.expectedVersion,
+      });
+      return reply.code(204).send();
+    },
+  );
 
   app.post("/v1/workspaces/:workspaceId/routines", async (request, reply) => {
     const params = parseRequest(workspaceParams, request.params);

@@ -13,6 +13,8 @@ import type {
   ScheduleBlockId,
   WorkItem,
   WorkItemId,
+  WorkItemPriority,
+  WorkItemStatus,
   Workspace,
   WorkspaceId,
 } from "@schedule/domain";
@@ -78,17 +80,47 @@ export interface PlanMutationRecord {
 
 export interface WorkItemRepository {
   findById(workspaceId: WorkspaceId, id: WorkItemId): Promise<WorkItem | null>;
+  list(
+    workspaceId: WorkspaceId,
+    status: WorkItemStatus | undefined,
+    priority: WorkItemPriority | undefined,
+    limit: number,
+    offset: number,
+  ): Promise<readonly WorkItem[]>;
   insert(item: WorkItem): Promise<void>;
   save(item: WorkItem, expectedVersion: number): Promise<void>;
 }
 
 export interface ScheduleBlockRepository {
   findById(workspaceId: WorkspaceId, id: ScheduleBlockId): Promise<ScheduleBlock | null>;
+  listOverlapping(
+    workspaceId: WorkspaceId,
+    from: Date,
+    to: Date,
+    limit: number,
+    offset: number,
+  ): Promise<readonly ScheduleBlock[]>;
   insert(block: ScheduleBlock): Promise<void>;
+  save(block: ScheduleBlock, expectedVersion: number): Promise<void>;
+  delete(block: ScheduleBlock, expectedVersion: number): Promise<void>;
+}
+
+export interface AuditEventRecord {
+  readonly workspaceId: WorkspaceId;
+  readonly action: string;
+  readonly entityType: string;
+  readonly entityId: string;
+  readonly data: Readonly<Record<string, unknown>>;
+  readonly occurredAt: Date;
+}
+
+export interface AuditEventRepository {
+  append(event: AuditEventRecord): Promise<void>;
 }
 
 export interface WorkspaceRepository {
   findById(id: WorkspaceId): Promise<Workspace | null>;
+  list(limit: number, offset: number): Promise<readonly Workspace[]>;
   insert(workspace: Workspace): Promise<void>;
 }
 
@@ -155,6 +187,7 @@ export interface TransactionContext {
   readonly workspaces: WorkspaceRepository;
   readonly workItems: WorkItemRepository;
   readonly scheduleBlocks: ScheduleBlockRepository;
+  readonly auditEvents: AuditEventRepository;
   readonly routines: RoutineRepository;
   readonly activityEvents: ActivityEventRepository;
   readonly dailyPlans: DailyPlanRepository;

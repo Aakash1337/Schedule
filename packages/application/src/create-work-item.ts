@@ -1,7 +1,9 @@
 import {
+  DomainError,
   createWorkItem,
   type WorkItem,
   type WorkItemPriority,
+  type WorkItemStatus,
   type WorkspaceId,
 } from "@schedule/domain";
 
@@ -12,6 +14,7 @@ export interface CreateWorkItemCommand {
   readonly title: string;
   readonly description?: string | null;
   readonly priority?: WorkItemPriority;
+  readonly status?: WorkItemStatus;
 }
 
 export class CreateWorkItem {
@@ -22,7 +25,10 @@ export class CreateWorkItem {
 
   async execute(command: CreateWorkItemCommand): Promise<WorkItem> {
     const item = createWorkItem({ ...command, now: this.clock.now() });
-    return this.unitOfWork.run(async ({ workItems }) => {
+    return this.unitOfWork.run(async ({ workItems, workspaces }) => {
+      if ((await workspaces.findById(command.workspaceId)) === null) {
+        throw new DomainError("workspace.not_found", "The workspace does not exist.");
+      }
       await workItems.insert(item);
       return item;
     });

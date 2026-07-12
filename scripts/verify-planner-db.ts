@@ -27,6 +27,7 @@ async function removeVerificationWorkspace(): Promise<void> {
   if (workspace === null) return;
   await connection.sql.begin(async (sql) => {
     await sql`select set_config('schedule.allow_activity_event_mutation', 'on', true)`;
+    await sql`select set_config('schedule.allow_audit_event_mutation', 'on', true)`;
     await sql`delete from workspaces where id = ${workspace}`;
   });
 }

@@ -114,6 +114,14 @@ export const workItems = pgTable(
   (table) => [
     unique("work_items_workspace_id_id_uq").on(table.workspaceId, table.id),
     index("work_items_workspace_status_idx").on(table.workspaceId, table.status),
+    index("work_items_workspace_created_id_idx").on(table.workspaceId, table.createdAt, table.id),
+    index("work_items_workspace_status_priority_created_id_idx").on(
+      table.workspaceId,
+      table.status,
+      table.priority,
+      table.createdAt,
+      table.id,
+    ),
     check("work_items_version_positive", sql`${table.version} > 0`),
   ],
 );
@@ -162,6 +170,12 @@ export const scheduleBlocks = pgTable(
       table.workspaceId,
       table.startsAt,
       table.endsAt,
+    ),
+    index("schedule_blocks_workspace_range_order_idx").on(
+      table.workspaceId,
+      table.startsAt,
+      table.endsAt,
+      table.id,
     ),
     foreignKey({
       name: "schedule_blocks_work_item_tenant_fk",

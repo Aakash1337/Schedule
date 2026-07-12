@@ -1,4 +1,5 @@
 import {
+  DomainError,
   createScheduleBlock,
   type ScheduleBlock,
   type WorkItemId,
@@ -24,7 +25,16 @@ export class CreateScheduleBlock {
 
   async execute(command: CreateScheduleBlockCommand): Promise<ScheduleBlock> {
     const block = createScheduleBlock({ ...command, now: this.clock.now() });
-    return this.unitOfWork.run(async ({ scheduleBlocks }) => {
+    return this.unitOfWork.run(async ({ scheduleBlocks, workItems, workspaces }) => {
+      if ((await workspaces.findById(command.workspaceId)) === null) {
+        throw new DomainError("workspace.not_found", "The workspace does not exist.");
+      }
+      if (
+        block.workItemId !== null &&
+        (await workItems.findById(command.workspaceId, block.workItemId)) === null
+      ) {
+        throw new DomainError("work_item.not_found", "The linked work item does not exist.");
+      }
       await scheduleBlocks.insert(block);
       return block;
     });

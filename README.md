@@ -17,6 +17,8 @@ This repository starts as a TypeScript modular monolith:
 
 The domain now includes a pure, seeded daily planner that balances cadence, time budget, task count, context, and recent completion history.
 
+The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface.
+
 `WorkItem` represents intent and workflow state. `ScheduleBlock` represents reserved time and may
 optionally reference a work item. Their lifecycles remain independent.
 
@@ -47,7 +49,7 @@ Local unauthenticated product routes are enabled only for non-production loopbac
 pnpm check
 ```
 
-With PostgreSQL running, verify routine creation and optimistic updates, stable activity-history pagination, idempotent routine and Today-item activity recording, deterministic plan generation, and atomic plan-revision persistence:
+With PostgreSQL running, verify backlog/Kanban and calendar management, routine creation and optimistic updates, stable activity-history pagination, idempotent routine and Today-item activity recording, deterministic plan generation, and atomic plan-revision persistence:
 
 ```powershell
 pnpm verify:planner-db

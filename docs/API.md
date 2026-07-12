@@ -14,24 +14,39 @@ The local product API exposes the deterministic planner without committing the p
 
 ## Routes
 
-| Method  | Route                                                                            | Result                                           |
-| ------- | -------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `POST`  | `/v1/workspaces`                                                                 | Create a workspace (`201`)                       |
-| `POST`  | `/v1/workspaces/{workspaceId}/routines`                                          | Create a routine (`201`)                         |
-| `GET`   | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`         | List a bounded routine page (`200`)              |
-| `GET`   | `/v1/workspaces/{workspaceId}/routines/{routineId}`                              | Retrieve one routine (`200` or `404`)            |
-| `PATCH` | `/v1/workspaces/{workspaceId}/routines/{routineId}`                              | Version-checked partial update (`200` or `409`)  |
-| `GET`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`              | List stable, cursor-paginated history (`200`)    |
-| `POST`  | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`              | Idempotently record activity (`200`)             |
-| `POST`  | `/v1/workspaces/{workspaceId}/plans`                                             | Generate or retry a daily plan revision (`200`)  |
-| `GET`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}?revision=1`                     | Retrieve an exact revision (`200` or `404`)      |
-| `GET`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/current`                        | Retrieve the current Today plan and head version |
-| `PATCH` | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/lock`            | Idempotently lock or unlock a current plan item  |
-| `POST`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/activity-events` | Record a current item action                     |
-| `POST`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/regenerations`                  | Regenerate around locked items                   |
-| `POST`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/replacement`     | Replace one unlocked item                        |
+| Method   | Route                                                                            | Result                                           |
+| -------- | -------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `POST`   | `/v1/workspaces`                                                                 | Create a workspace (`201`)                       |
+| `GET`    | `/v1/workspaces`                                                                 | List local workspaces                            |
+| `GET`    | `/v1/workspaces/{workspaceId}`                                                   | Retrieve one workspace                           |
+| `POST`   | `/v1/workspaces/{workspaceId}/work-items`                                        | Create a backlog/Kanban item (`201`)             |
+| `GET`    | `/v1/workspaces/{workspaceId}/work-items`                                        | List a bounded work-item page                    |
+| `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                           | Retrieve one work item                           |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                           | Version-checked work-item update                 |
+| `POST`   | `/v1/workspaces/{workspaceId}/schedule-blocks`                                   | Create a calendar block (`201`)                  |
+| `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks?from={instant}&to={instant}`       | List blocks overlapping a bounded range          |
+| `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                 | Retrieve one calendar block                      |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                 | Version-checked calendar-block update            |
+| `DELETE` | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                 | Version-checked audited deletion (`204`)         |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines`                                          | Create a routine (`201`)                         |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`         | List a bounded routine page (`200`)              |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}`                              | Retrieve one routine (`200` or `404`)            |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/routines/{routineId}`                              | Version-checked partial update (`200` or `409`)  |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`              | List stable, cursor-paginated history (`200`)    |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`              | Idempotently record activity (`200`)             |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans`                                             | Generate or retry a daily plan revision (`200`)  |
+| `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}?revision=1`                     | Retrieve an exact revision (`200` or `404`)      |
+| `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/current`                        | Retrieve the current Today plan and head version |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/lock`            | Idempotently lock or unlock a current plan item  |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/activity-events` | Record a current item action                     |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/regenerations`                  | Regenerate around locked items                   |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/replacement`     | Replace one unlocked item                        |
 
 Activity requests require an `Idempotency-Key` header containing 1–160 characters. Reusing a key with identical event content returns the original event. Reusing it for different content returns `409 activity.idempotency_conflict`. Public event responses omit the key because the caller already owns it and it is retry metadata, not activity history.
+
+Work items provide the initial backlog and status-column Kanban model through `backlog`, `planned`, `in_progress`, `blocked`, `done`, and `cancelled`. List requests accept optional `status` and `priority` filters plus `limit` from 1–200 and `offset` from 0–1,000,000. Ordering is stable by creation time and ID. Updates require `expectedVersion`, increment exactly once for a real semantic change, and preserve the version for a normalized no-op. Work-item hard deletion and manual card ranking are not part of this MVP surface; cancellation is the removal workflow, and clients group items by status.
+
+Schedule-block range reads require offset-bearing `from` and `to` instants, use half-open overlap (`startsAt < to` and `endsAt > from`), and accept ranges no longer than 93 days with the same bounded pagination convention. Absolute instants remain authoritative when `timeZone` changes. A block may reference a work item from the same workspace, but their lifecycles remain independent. Create and update validate the workspace and optional link. Update and deletion require `expectedVersion`; deletion returns `204` and appends an immutable audit snapshot in the same transaction. Recurrence authoring, conflict detection, and automatic placement are deferred.
 
 Routine updates require `expectedVersion`. Scalar fields are partial; if `tags`, `duration`, or `cadence` is supplied, that nested object is a complete replacement. A real change increments the routine version once. A semantic no-op returns the current routine without writing or incrementing its version. A stale version returns `409 routine.version_conflict`.
 
@@ -59,7 +74,7 @@ Regeneration and replacement require the same optimistic identity and idempotenc
 }
 ```
 
-Malformed request data returns `400`, domain validation returns `422`, absent workspace/routine/plan resources return `404`, idempotency or revision conflicts return `409`, oversized bodies return `413`, rate or concurrency limits return `429`, and unexpected failures return a redacted `500`.
+Malformed request data returns `400`, domain validation returns `422`, absent workspace/work-item/schedule-block/routine/plan resources return `404`, idempotency or version/revision conflicts return `409`, oversized bodies return `413`, rate or concurrency limits return `429`, and unexpected failures return a redacted `500`.
 
 ## Minimal local flow
 

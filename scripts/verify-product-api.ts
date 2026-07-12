@@ -34,6 +34,7 @@ async function removeWorkspace(): Promise<void> {
   if (createdWorkspaceId === null) return;
   await connection.sql.begin(async (sql) => {
     await sql`select set_config('schedule.allow_activity_event_mutation', 'on', true)`;
+    await sql`select set_config('schedule.allow_audit_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_plan_interaction_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_plan_mutation_change', 'on', true)`;
     await sql`delete from workspaces where id = ${createdWorkspaceId}`;
@@ -51,6 +52,205 @@ try {
   });
   assert.equal(workspaceResponse.statusCode, 201, workspaceResponse.body);
   createdWorkspaceId = workspaceResponse.json<{ id: string }>().id;
+  const workspaceListResponse = await app.inject({ method: "GET", url: "/v1/workspaces" });
+  assert.equal(workspaceListResponse.statusCode, 200, workspaceListResponse.body);
+  assert.equal(
+    workspaceListResponse
+      .json<{ items: { id: string }[] }>()
+      .items.some((workspace) => workspace.id === createdWorkspaceId),
+    true,
+  );
+  const workspaceGetResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}`,
+  });
+  assert.equal(workspaceGetResponse.statusCode, 200, workspaceGetResponse.body);
+
+  const workItemResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items`,
+    payload: {
+      title: "Ship local MVP",
+      description: "Exercise the backlog and calendar vertical slice",
+      status: "planned",
+      priority: "urgent",
+    },
+  });
+  assert.equal(workItemResponse.statusCode, 201, workItemResponse.body);
+  const createdWorkItem = workItemResponse.json<{ id: string; version: number }>();
+  const secondWorkItemResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items`,
+    payload: { title: "Exercise stable pagination", status: "backlog", priority: "low" },
+  });
+  assert.equal(secondWorkItemResponse.statusCode, 201, secondWorkItemResponse.body);
+  const secondWorkItem = secondWorkItemResponse.json<{ id: string; version: number }>();
+  const workItemListResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items?status=planned&priority=urgent&limit=20`,
+  });
+  assert.equal(workItemListResponse.statusCode, 200, workItemListResponse.body);
+  assert.deepEqual(
+    workItemListResponse.json<{ items: { id: string }[] }>().items.map((item) => item.id),
+    [createdWorkItem.id],
+  );
+  const allWorkItemsResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items?limit=20`,
+  });
+  const firstWorkItemPage = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items?limit=1&offset=0`,
+  });
+  const secondWorkItemPage = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items?limit=1&offset=1`,
+  });
+  const emptyWorkItemPage = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items?limit=1&offset=2`,
+  });
+  assert.equal(allWorkItemsResponse.statusCode, 200, allWorkItemsResponse.body);
+  assert.equal(firstWorkItemPage.statusCode, 200, firstWorkItemPage.body);
+  assert.equal(secondWorkItemPage.statusCode, 200, secondWorkItemPage.body);
+  assert.equal(emptyWorkItemPage.statusCode, 200, emptyWorkItemPage.body);
+  assert.deepEqual(
+    [
+      ...firstWorkItemPage.json<{ items: { id: string }[] }>().items,
+      ...secondWorkItemPage.json<{ items: { id: string }[] }>().items,
+    ].map((item) => item.id),
+    allWorkItemsResponse.json<{ items: { id: string }[] }>().items.map((item) => item.id),
+  );
+  assert.equal(emptyWorkItemPage.json<{ items: unknown[] }>().items.length, 0);
+  const workItemUpdateResponse = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items/${createdWorkItem.id}`,
+    payload: { expectedVersion: 1, status: "in_progress", priority: "high" },
+  });
+  assert.equal(workItemUpdateResponse.statusCode, 200, workItemUpdateResponse.body);
+  assert.equal(workItemUpdateResponse.json<{ version: number }>().version, 2);
+  const staleWorkItemUpdate = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items/${createdWorkItem.id}`,
+    payload: { expectedVersion: 1, status: "done" },
+  });
+  assert.equal(staleWorkItemUpdate.statusCode, 409, staleWorkItemUpdate.body);
+  const concurrentWorkItemUpdates = await Promise.all([
+    app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${createdWorkspaceId}/work-items/${secondWorkItem.id}`,
+      payload: { expectedVersion: 1, status: "planned" },
+    }),
+    app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${createdWorkspaceId}/work-items/${secondWorkItem.id}`,
+      payload: { expectedVersion: 1, status: "done" },
+    }),
+  ]);
+  assert.deepEqual(
+    concurrentWorkItemUpdates.map((response) => response.statusCode).sort(),
+    [200, 409],
+  );
+
+  const scheduleBlockResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/schedule-blocks`,
+    payload: {
+      workItemId: createdWorkItem.id,
+      title: "MVP focus block",
+      startsAt: "2026-07-15T13:00:00.000Z",
+      endsAt: "2026-07-15T14:00:00.000Z",
+      timeZone: "UTC",
+    },
+  });
+  assert.equal(scheduleBlockResponse.statusCode, 201, scheduleBlockResponse.body);
+  const createdScheduleBlock = scheduleBlockResponse.json<{
+    id: string;
+    startsAt: string;
+    endsAt: string;
+    version: number;
+  }>();
+  const overlappingBlocksResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/schedule-blocks?from=2026-07-15T13%3A30%3A00.000Z&to=2026-07-15T14%3A30%3A00.000Z`,
+  });
+  assert.equal(overlappingBlocksResponse.statusCode, 200, overlappingBlocksResponse.body);
+  assert.deepEqual(
+    overlappingBlocksResponse.json<{ items: { id: string }[] }>().items.map((block) => block.id),
+    [createdScheduleBlock.id],
+  );
+  const touchingBlocksResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/schedule-blocks?from=2026-07-15T14%3A00%3A00.000Z&to=2026-07-15T15%3A00%3A00.000Z`,
+  });
+  assert.equal(touchingBlocksResponse.statusCode, 200, touchingBlocksResponse.body);
+  assert.equal(touchingBlocksResponse.json<{ items: unknown[] }>().items.length, 0);
+  const scheduleBlockUpdateResponse = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${createdWorkspaceId}/schedule-blocks/${createdScheduleBlock.id}`,
+    payload: { expectedVersion: 1, title: "Deep MVP focus", timeZone: "America/La_Paz" },
+  });
+  assert.equal(scheduleBlockUpdateResponse.statusCode, 200, scheduleBlockUpdateResponse.body);
+  const updatedScheduleBlock = scheduleBlockUpdateResponse.json<{
+    startsAt: string;
+    endsAt: string;
+    version: number;
+  }>();
+  assert.equal(updatedScheduleBlock.version, 2);
+  assert.equal(updatedScheduleBlock.startsAt, createdScheduleBlock.startsAt);
+  assert.equal(updatedScheduleBlock.endsAt, createdScheduleBlock.endsAt);
+  const staleScheduleBlockUpdate = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${createdWorkspaceId}/schedule-blocks/${createdScheduleBlock.id}`,
+    payload: { expectedVersion: 1, title: "Stale title" },
+  });
+  assert.equal(staleScheduleBlockUpdate.statusCode, 409, staleScheduleBlockUpdate.body);
+  const scheduleBlockDeleteResponse = await app.inject({
+    method: "DELETE",
+    url: `/v1/workspaces/${createdWorkspaceId}/schedule-blocks/${createdScheduleBlock.id}`,
+    payload: { expectedVersion: 2 },
+  });
+  assert.equal(scheduleBlockDeleteResponse.statusCode, 204, scheduleBlockDeleteResponse.body);
+  const [scheduleBlockAudit] = await connection.sql<
+    { action: string; entity_id: string; data: { title: string; version: number } }[]
+  >`
+    select action, entity_id::text, data
+    from audit_events
+    where workspace_id = ${createdWorkspaceId}
+      and action = 'schedule_block.deleted'
+  `;
+  assert.equal(scheduleBlockAudit?.entity_id, createdScheduleBlock.id);
+  assert.deepEqual(scheduleBlockAudit?.data, {
+    workItemId: createdWorkItem.id,
+    title: "Deep MVP focus",
+    startsAt: createdScheduleBlock.startsAt,
+    endsAt: createdScheduleBlock.endsAt,
+    timeZone: "America/La_Paz",
+    version: 2,
+    createdAt: scheduleBlockResponse.json<{ createdAt: string }>().createdAt,
+    updatedAt: scheduleBlockUpdateResponse.json<{ updatedAt: string }>().updatedAt,
+  });
+  await assert.rejects(
+    connection.sql`
+      update audit_events
+      set action = 'tampered'
+      where workspace_id = ${createdWorkspaceId}
+        and entity_id = ${createdScheduleBlock.id}
+    `,
+    (error) => hasDatabaseCode(error, "55000"),
+  );
+  await assert.rejects(
+    connection.sql`
+      delete from audit_events
+      where workspace_id = ${createdWorkspaceId}
+        and entity_id = ${createdScheduleBlock.id}
+    `,
+    (error) => hasDatabaseCode(error, "55000"),
+  );
+  await assert.rejects(
+    connection.sql`delete from workspaces where id = ${createdWorkspaceId}`,
+    (error) => hasDatabaseCode(error, "55000"),
+  );
 
   const routineResponse = await app.inject({
     method: "POST",

@@ -1,16 +1,27 @@
 import {
   CreateRoutine,
+  CreateScheduleBlock,
+  CreateWorkItem,
   CreateWorkspace,
   GenerateDailyPlan,
   GetCurrentDailyPlan,
   GetDailyPlan,
   GetRoutine,
+  GetScheduleBlock,
+  GetWorkItem,
+  GetWorkspace,
   ListRoutineActivity,
   ListRoutines,
+  ListScheduleBlocks,
+  ListWorkItems,
+  ListWorkspaces,
   MutateDailyPlan,
   RecordActivityEvent,
   RecordPlanItemActivity,
   SetPlanItemLock,
+  DeleteScheduleBlock,
+  UpdateScheduleBlock,
+  UpdateWorkItem,
   UpdateRoutine,
   type Clock,
   type UnitOfWork,
@@ -20,7 +31,18 @@ import type { ProductServices } from "./product-routes.js";
 
 export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): ProductServices {
   const createWorkspace = new CreateWorkspace(unitOfWork, clock);
+  const getWorkspace = new GetWorkspace(unitOfWork);
+  const listWorkspaces = new ListWorkspaces(unitOfWork);
   const createRoutine = new CreateRoutine(unitOfWork, clock);
+  const createWorkItem = new CreateWorkItem(unitOfWork, clock);
+  const getWorkItem = new GetWorkItem(unitOfWork);
+  const listWorkItems = new ListWorkItems(unitOfWork);
+  const updateWorkItem = new UpdateWorkItem(unitOfWork, clock);
+  const createScheduleBlock = new CreateScheduleBlock(unitOfWork, clock);
+  const getScheduleBlock = new GetScheduleBlock(unitOfWork);
+  const listScheduleBlocks = new ListScheduleBlocks(unitOfWork);
+  const updateScheduleBlock = new UpdateScheduleBlock(unitOfWork, clock);
+  const deleteScheduleBlock = new DeleteScheduleBlock(unitOfWork, clock);
   const getRoutine = new GetRoutine(unitOfWork);
   const updateRoutine = new UpdateRoutine(unitOfWork, clock);
   const listRoutines = new ListRoutines(unitOfWork);
@@ -35,7 +57,18 @@ export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): Pro
 
   return {
     createWorkspace: (command) => createWorkspace.execute(command),
+    getWorkspace: (query) => getWorkspace.execute(query),
+    listWorkspaces: (query) => listWorkspaces.execute(query),
     createRoutine: (command) => createRoutine.execute(command),
+    createWorkItem: (command) => createWorkItem.execute(command),
+    getWorkItem: (query) => getWorkItem.execute(query),
+    listWorkItems: (query) => listWorkItems.execute(query),
+    updateWorkItem: (command) => updateWorkItem.execute(command),
+    createScheduleBlock: (command) => createScheduleBlock.execute(command),
+    getScheduleBlock: (query) => getScheduleBlock.execute(query),
+    listScheduleBlocks: (query) => listScheduleBlocks.execute(query),
+    updateScheduleBlock: (command) => updateScheduleBlock.execute(command),
+    deleteScheduleBlock: (command) => deleteScheduleBlock.execute(command),
     getRoutine: (query) => getRoutine.execute(query),
     updateRoutine: (command) => updateRoutine.execute(command),
     listRoutines: (query) => listRoutines.execute(query),

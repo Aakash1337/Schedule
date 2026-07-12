@@ -78,6 +78,13 @@
       "when": 1783843504854,
       "tag": "0010_clear_titanium_man",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1783844953932,
+      "tag": "0011_wandering_the_anarchist",
+      "breakpoints": true
     }
   ]
 }
