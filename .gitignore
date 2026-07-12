@@ -6,5 +6,10 @@ dist/
 coverage/
 .DS_Store
 *.log
+*.dump
+*.backup
+*.sql.gz
+.schedule/
+backups/
 .pnpm-debug.log
 packages/database/drizzle/meta/_journal.json.bak

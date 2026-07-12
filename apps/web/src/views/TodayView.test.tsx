@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -64,6 +64,14 @@ const plan: CurrentDailyPlan = {
   headVersion: 2,
 };
 
+function deferred<Value>() {
+  let resolve!: (value: Value | PromiseLike<Value>) => void;
+  const promise = new Promise<Value>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 beforeEach(() => {
   vi.resetAllMocks();
   apiMocks.getCurrentPlan.mockResolvedValue(plan);
@@ -72,6 +80,56 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Today commands", () => {
+  it("ignores a late plan response from the previously selected workspace", async () => {
+    const firstRequest = deferred<CurrentDailyPlan>();
+    const secondRequest = deferred<CurrentDailyPlan>();
+    const secondWorkspace = { ...workspace, id: "workspace-2", name: "Shared" };
+    const secondPlan: CurrentDailyPlan = {
+      ...plan,
+      id: "plan-2",
+      workspaceId: secondWorkspace.id,
+      items: plan.items.map((item) => ({
+        ...item,
+        id: "plan-item-2",
+        title: "Review the budget",
+      })),
+    };
+    apiMocks.getCurrentPlan.mockImplementation((workspaceId: string) =>
+      workspaceId === workspace.id ? firstRequest.promise : secondRequest.promise,
+    );
+
+    const { rerender } = render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await waitFor(() =>
+      expect(apiMocks.getCurrentPlan).toHaveBeenCalledWith(
+        workspace.id,
+        plan.date,
+        expect.any(AbortSignal),
+      ),
+    );
+
+    rerender(<TodayView workspace={secondWorkspace} onNavigate={vi.fn()} />);
+    await waitFor(() =>
+      expect(apiMocks.getCurrentPlan).toHaveBeenCalledWith(
+        secondWorkspace.id,
+        secondPlan.date,
+        expect.any(AbortSignal),
+      ),
+    );
+
+    await act(async () => {
+      secondRequest.resolve(secondPlan);
+      await secondRequest.promise;
+    });
+    expect(await screen.findByText("Review the budget")).toBeInTheDocument();
+
+    await act(async () => {
+      firstRequest.resolve(plan);
+      await firstRequest.promise;
+    });
+    expect(screen.getByText("Review the budget")).toBeInTheDocument();
+    expect(screen.queryByText("Practice Spanish")).not.toBeInTheDocument();
+  });
+
   it("reloads the current plan after a head-version conflict", async () => {
     const user = userEvent.setup();
     const latest = {

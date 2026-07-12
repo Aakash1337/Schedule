@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "ignoreDeprecations": "6.0",
+    "paths": {
+      "@schedule/application": ["packages/application/src/index.ts"],
+      "@schedule/config": ["packages/config/src/index.ts"],
+      "@schedule/database": ["packages/database/src/index.ts"],
+      "@schedule/domain": ["packages/domain/src/index.ts"]
+    }
+  },
+  "include": ["scripts/**/*.ts"]
+}

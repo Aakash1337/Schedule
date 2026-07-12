@@ -85,6 +85,27 @@
       "when": 1783844953932,
       "tag": "0011_wandering_the_anarchist",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1783851911941,
+      "tag": "0012_first_freak",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1783854531424,
+      "tag": "0013_magenta_matthew_murdock",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1783856436508,
+      "tag": "0014_curvy_boom_boom",
+      "breakpoints": true
     }
   ]
 }

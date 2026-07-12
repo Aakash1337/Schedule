@@ -1,4 +1,5 @@
 import { getTableName } from "drizzle-orm";
+import { getTableConfig } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -30,5 +31,21 @@ describe("database schema", () => {
     expect(getTableName(dailyPlanItemStates)).toBe("daily_plan_item_states");
     expect(getTableName(planInteractionEvents)).toBe("plan_interaction_events");
     expect(getTableName(planMutations)).toBe("plan_mutations");
+  });
+
+  it("constrains routine weekday arrays at the database boundary", () => {
+    const checkNames = getTableConfig(routines).checks.map((constraint) => constraint.name);
+
+    expect(checkNames).toEqual(
+      expect.arrayContaining([
+        "routines_preferred_weekdays_valid",
+        "routines_preferred_weekdays_unique",
+        "routines_preferred_weekdays_one_dimensional",
+        "routines_excluded_weekdays_valid",
+        "routines_excluded_weekdays_unique",
+        "routines_excluded_weekdays_one_dimensional",
+        "routines_weekdays_disjoint",
+      ]),
+    );
   });
 });

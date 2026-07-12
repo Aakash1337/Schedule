@@ -42,6 +42,7 @@ import {
   createDurationRange,
   createStructuredTags,
   dailyPlanId,
+  isValidLocalDate,
   localDate,
   planItemId,
   routineId,
@@ -108,7 +109,7 @@ const DEFAULT_PRODUCT_API_LIMITS: ProductApiLimits = {
 function installRateLimit(app: FastifyInstance, requestsPerMinute: number): void {
   const buckets = new Map<string, { startedAt: number; count: number }>();
   let requestCount = 0;
-  app.addHook("onRequest", async (request) => {
+  app.addHook("onRequest", async (request, reply) => {
     const now = Date.now();
     const current = buckets.get(request.ip);
     const bucket =
@@ -117,7 +118,11 @@ function installRateLimit(app: FastifyInstance, requestsPerMinute: number): void
         : current;
     bucket.count += 1;
     buckets.set(request.ip, bucket);
-    if (bucket.count > requestsPerMinute) throw new RequestThrottledError();
+    if (bucket.count > requestsPerMinute) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((60_000 - (now - bucket.startedAt)) / 1_000));
+      reply.header("retry-after", String(retryAfterSeconds));
+      throw new RequestThrottledError();
+    }
 
     requestCount += 1;
     if (requestCount % 256 === 0) {
@@ -129,7 +134,9 @@ function installRateLimit(app: FastifyInstance, requestsPerMinute: number): void
 }
 
 const uuid = z.string().uuid();
-const localDateText = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD.");
+const localDateText = z
+  .string()
+  .refine(isValidLocalDate, "Expected a valid Gregorian date in YYYY-MM-DD format.");
 const instant = z.string().datetime({ offset: true });
 const workspaceParams = z.strictObject({ workspaceId: uuid });
 const routineParams = z.strictObject({ workspaceId: uuid, routineId: uuid });
@@ -518,6 +525,19 @@ export async function registerProductRoutes(
   installRateLimit(app, limits.requestsPerMinute);
   const cursorSigningKey = randomBytes(32);
   let concurrentPlans = 0;
+  const runPlanningOperation = async <Result>(
+    operation: () => Promise<Result>,
+  ): Promise<Result> => {
+    if (concurrentPlans >= limits.maxConcurrentPlans) {
+      throw new RequestThrottledError("planning.concurrency_limit_reached");
+    }
+    concurrentPlans += 1;
+    try {
+      return await operation();
+    } finally {
+      concurrentPlans -= 1;
+    }
+  };
   app.post("/v1/workspaces", async (request, reply) => {
     const body = parseRequest(workspaceBody, request.body);
     const created = await services.createWorkspace(body);
@@ -765,16 +785,14 @@ export async function registerProductRoutes(
   });
 
   app.post("/v1/workspaces/:workspaceId/plans", async (request) => {
-    if (concurrentPlans >= limits.maxConcurrentPlans) {
-      throw new RequestThrottledError("planning.concurrency_limit_reached");
-    }
-    concurrentPlans += 1;
-    try {
-      const params = parseRequest(workspaceParams, request.params);
-      const body = parseRequest(planBody, request.body);
+    const params = parseRequest(workspaceParams, request.params);
+    const body = parseRequest(planBody, request.body);
+    return runPlanningOperation(async () => {
+      const parsedWorkspaceId = workspaceId(params.workspaceId);
+      const parsedDate = localDate(body.date);
       const planningRequest = createDailyPlanningRequest({
-        workspaceId: workspaceId(params.workspaceId),
-        date: body.date,
+        workspaceId: parsedWorkspaceId,
+        date: parsedDate,
         timeZone: body.timeZone,
         availableWindows: body.availableWindows.map((window) => ({
           startsAt: new Date(window.startsAt),
@@ -793,9 +811,7 @@ export async function registerProductRoutes(
         requestRevision: body.requestRevision,
       });
       return publicPlan(await services.generateDailyPlan({ request: planningRequest }));
-    } finally {
-      concurrentPlans -= 1;
-    }
+    });
   });
 
   app.get("/v1/workspaces/:workspaceId/plans/:date", async (request) => {
@@ -862,28 +878,32 @@ export async function registerProductRoutes(
     const params = parseRequest(planParams, request.params);
     const body = parseRequest(planMutationBody, request.body);
     const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
-    const result = await services.regenerateDailyPlan({
-      workspaceId: workspaceId(params.workspaceId),
-      expectedPlanId: dailyPlanId(body.expectedPlanId),
-      expectedHeadVersion: body.expectedHeadVersion,
-      request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
-      idempotencyKey: key,
+    return runPlanningOperation(async () => {
+      const result = await services.regenerateDailyPlan({
+        workspaceId: workspaceId(params.workspaceId),
+        expectedPlanId: dailyPlanId(body.expectedPlanId),
+        expectedHeadVersion: body.expectedHeadVersion,
+        request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
+        idempotencyKey: key,
+      });
+      return { ...publicPlan(result.plan), headVersion: result.headVersion };
     });
-    return { ...publicPlan(result.plan), headVersion: result.headVersion };
   });
 
   app.post("/v1/workspaces/:workspaceId/plans/:date/items/:itemId/replacement", async (request) => {
     const params = parseRequest(planItemParams, request.params);
     const body = parseRequest(planMutationBody, request.body);
     const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
-    const result = await services.replacePlanItem({
-      workspaceId: workspaceId(params.workspaceId),
-      expectedPlanId: dailyPlanId(body.expectedPlanId),
-      expectedHeadVersion: body.expectedHeadVersion,
-      targetItemId: planItemId(params.itemId),
-      request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
-      idempotencyKey: key,
+    return runPlanningOperation(async () => {
+      const result = await services.replacePlanItem({
+        workspaceId: workspaceId(params.workspaceId),
+        expectedPlanId: dailyPlanId(body.expectedPlanId),
+        expectedHeadVersion: body.expectedHeadVersion,
+        targetItemId: planItemId(params.itemId),
+        request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
+        idempotencyKey: key,
+      });
+      return { ...publicPlan(result.plan), headVersion: result.headVersion };
     });
-    return { ...publicPlan(result.plan), headVersion: result.headVersion };
   });
 }

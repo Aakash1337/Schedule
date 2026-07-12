@@ -36,16 +36,32 @@ const studioWorkspace: Workspace = {
 };
 
 const page = <Item,>(items: readonly Item[]) => ({ items, page: { limit: 20, offset: 0 } });
+const originalScrollIntoView = Object.getOwnPropertyDescriptor(
+  HTMLElement.prototype,
+  "scrollIntoView",
+);
+const scrollIntoView = vi.fn();
 
 beforeEach(() => {
   vi.resetAllMocks();
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: scrollIntoView,
+  });
   apiMocks.getCurrentPlan.mockRejectedValue(
     new ApiError(404, "daily_plan.not_found", "No plan exists yet.", null),
   );
   apiMocks.listWorkItems.mockResolvedValue(page([]));
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  if (originalScrollIntoView === undefined) {
+    delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+  } else {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView);
+  }
+});
 
 describe("local application shell", () => {
   it("onboards an empty installation and enters the created workspace", async () => {
@@ -91,6 +107,7 @@ describe("local application shell", () => {
     expect(await screen.findByRole("heading", { name: "Work board" })).toBeInTheDocument();
     expect(window.location.hash).toBe("#work");
     await waitFor(() => expect(screen.getByRole("main", { name: "Work view" })).toHaveFocus());
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ block: "start", inline: "nearest" });
     expect(apiMocks.listWorkItems).toHaveBeenCalledWith(
       studioWorkspace.id,
       {},

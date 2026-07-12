@@ -97,7 +97,7 @@ pnpm verify:planner-db
 ## Deliberately deferred
 
 - Authentication, authorization, and public network exposure
-- Routine and Today user interfaces
+- Selecting ordinary Work-board items as planner candidates; planner v1 selects routines only
 - Exact start-time placement within a selected window
 - Alternative-plan branching and multi-step undo workflows
 - Work-item deadlines and dependency integration

@@ -25,6 +25,23 @@ export class GenerateDailyPlan {
         throw new DomainError("workspace.not_found", "The workspace does not exist.");
       }
       await dailyPlans.lockDay(command.request.workspaceId, command.request.date);
+      const existingRevision = await dailyPlans.findByRevision(
+        command.request.workspaceId,
+        command.request.date,
+        command.request.requestRevision,
+      );
+      if (existingRevision === null) {
+        const current = await dailyPlans.findCurrent(
+          command.request.workspaceId,
+          command.request.date,
+        );
+        if (current !== null || command.request.requestRevision !== 1) {
+          throw new DomainError(
+            "planning.revision_creation_conflict",
+            "Generic plan generation may create only revision 1 or retry an existing revision; use a plan mutation endpoint to create later revisions.",
+          );
+        }
+      }
       const [candidates, events] = await Promise.all([
         routines.listPlanningCandidates(command.request.workspaceId, command.request.date),
         activityEvents.listForPlanning(command.request.workspaceId, command.request.date),

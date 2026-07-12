@@ -83,27 +83,80 @@ function workspacePath(workspaceId: string, suffix: string): string {
 }
 
 const OFFSET_PAGE_LIMIT = 200;
+const MAX_OFFSET_PAGES = 1_000;
+const PAGINATION_CHANGED_MESSAGE =
+  "The collection changed while it was loading. Refresh and try again.";
 
-async function listAllOffsetPages<Item>(
+interface OffsetPass<Item> {
+  readonly items: Item[];
+  readonly pagesRead: number;
+}
+
+async function readOffsetPass<Item extends { readonly id: string }>(
   path: string,
   values: Readonly<Record<string, string | number | undefined>>,
   signal?: AbortSignal,
-): Promise<Page<Item>> {
+): Promise<OffsetPass<Item>> {
   const items: Item[] = [];
+  const seenIds = new Set<string>();
+  const seenPages = new Set<string>();
   let offset = 0;
 
-  for (;;) {
+  for (let pageNumber = 0; pageNumber < MAX_OFFSET_PAGES; pageNumber += 1) {
     const page = await request<Page<Item>>(
       queryPath(path, { ...values, limit: OFFSET_PAGE_LIMIT, offset }),
       signal === undefined ? {} : { signal },
     );
-    items.push(...page.items);
+    const pageSignature = JSON.stringify(page.items.map((item) => item.id));
+    const repeatedPage = seenPages.has(pageSignature);
+    seenPages.add(pageSignature);
 
-    if (page.items.length < page.page.limit || page.items.length === 0) break;
-    offset += page.items.length;
+    let newItemCount = 0;
+    for (const item of page.items) {
+      if (seenIds.has(item.id)) continue;
+      seenIds.add(item.id);
+      items.push(item);
+      newItemCount += 1;
+    }
+
+    const nextOffset = offset + page.items.length;
+    if (page.items.length === 0) return { items, pagesRead: pageNumber + 1 };
+    if (repeatedPage || newItemCount === 0 || nextOffset <= offset) {
+      throw new Error(PAGINATION_CHANGED_MESSAGE);
+    }
+    if (page.items.length < page.page.limit) {
+      return { items, pagesRead: pageNumber + 1 };
+    }
+    offset = nextOffset;
   }
 
-  return { items, page: { limit: OFFSET_PAGE_LIMIT, offset: 0 } };
+  throw new Error("The collection is too large to load safely. Narrow the result and try again.");
+}
+
+function sameItemOrder<Item extends { readonly id: string }>(
+  first: readonly Item[],
+  second: readonly Item[],
+): boolean {
+  return (
+    first.length === second.length && first.every((item, index) => item.id === second[index]?.id)
+  );
+}
+
+async function listAllOffsetPages<Item extends { readonly id: string }>(
+  path: string,
+  values: Readonly<Record<string, string | number | undefined>>,
+  signal?: AbortSignal,
+): Promise<Page<Item>> {
+  const first = await readOffsetPass<Item>(path, values, signal);
+  if (first.pagesRead === 1) {
+    return { items: first.items, page: { limit: OFFSET_PAGE_LIMIT, offset: 0 } };
+  }
+
+  // Offset pagination has no server snapshot. Require two identical traversals
+  // before treating a multi-page collection as authoritative.
+  const confirmed = await readOffsetPass<Item>(path, values, signal);
+  if (!sameItemOrder(first.items, confirmed.items)) throw new Error(PAGINATION_CHANGED_MESSAGE);
+  return { items: confirmed.items, page: { limit: OFFSET_PAGE_LIMIT, offset: 0 } };
 }
 
 export function newIdempotencyKey(): string {

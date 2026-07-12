@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -70,6 +70,14 @@ const routine: Routine = {
   updatedAt: "2026-07-12T09:00:00.000Z",
 };
 
+function deferred<Value>() {
+  let resolve!: (value: Value | PromiseLike<Value>) => void;
+  const promise = new Promise<Value>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 beforeEach(() => {
   vi.resetAllMocks();
   apiMocks.listRoutines.mockResolvedValue({
@@ -81,6 +89,57 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("routine pool", () => {
+  it("ignores a late routine response from the previously selected status", async () => {
+    const user = userEvent.setup();
+    const activeRequest = deferred<{
+      items: readonly Routine[];
+      page: { limit: number; offset: number };
+    }>();
+    const pausedRequest = deferred<{
+      items: readonly Routine[];
+      page: { limit: number; offset: number };
+    }>();
+    const pausedRoutine: Routine = {
+      ...routine,
+      id: "routine-paused",
+      title: "Evening walk",
+      status: "paused",
+    };
+    apiMocks.listRoutines.mockImplementation((_workspaceId: string, status: Routine["status"]) =>
+      status === "paused" ? pausedRequest.promise : activeRequest.promise,
+    );
+
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    await waitFor(() =>
+      expect(apiMocks.listRoutines).toHaveBeenCalledWith(
+        workspace.id,
+        "active",
+        expect.any(AbortSignal),
+      ),
+    );
+    await user.click(screen.getByRole("tab", { name: "Paused" }));
+    await waitFor(() =>
+      expect(apiMocks.listRoutines).toHaveBeenCalledWith(
+        workspace.id,
+        "paused",
+        expect.any(AbortSignal),
+      ),
+    );
+
+    await act(async () => {
+      pausedRequest.resolve({ items: [pausedRoutine], page: { limit: 200, offset: 0 } });
+      await pausedRequest.promise;
+    });
+    expect(await screen.findByText(pausedRoutine.title)).toBeInTheDocument();
+
+    await act(async () => {
+      activeRequest.resolve({ items: [routine], page: { limit: 200, offset: 0 } });
+      await activeRequest.promise;
+    });
+    expect(screen.getByText(pausedRoutine.title)).toBeInTheDocument();
+    expect(screen.queryByText(routine.title)).not.toBeInTheDocument();
+  });
+
   it("creates a routine from the default duration and cadence policy", async () => {
     const user = userEvent.setup();
     const created = { ...routine, id: "routine-created", title: "Strength training", version: 1 };
@@ -159,6 +218,27 @@ describe("routine pool", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "The latest values are loaded; your unsaved edits were not applied.",
     );
+  });
+
+  it("prevents status changes while a routine save is pending", async () => {
+    const user = userEvent.setup();
+    const save = deferred<Routine>();
+    const created = { ...routine, id: "routine-created", title: "Strength training", version: 1 };
+    apiMocks.createRoutine.mockReturnValue(save.promise);
+
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "New routine" }));
+    await user.type(screen.getByRole("textbox", { name: "Title" }), created.title);
+    await user.click(screen.getByRole("button", { name: "Create routine" }));
+
+    await waitFor(() => expect(apiMocks.createRoutine).toHaveBeenCalledOnce());
+    expect(screen.getByRole("tab", { name: "Paused" })).toBeDisabled();
+
+    await act(async () => {
+      save.resolve(created);
+      await save.promise;
+    });
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Paused" })).toBeEnabled());
   });
 
   it("supports arrow-key navigation across status tabs", async () => {

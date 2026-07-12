@@ -29,6 +29,8 @@
   --danger-soft: oklch(0.94 0.04 24);
   --shadow: 0 16px 48px oklch(0.28 0.025 62 / 0.08);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --mobile-header-height: 62px;
+  --mobile-route-offset: calc(var(--mobile-header-height) + 12px);
 }
 
 * {
@@ -273,6 +275,7 @@ h3 {
 .content-shell {
   min-width: 0;
   padding: 40px clamp(24px, 4vw, 64px) 72px;
+  scroll-margin-block-start: 16px;
 }
 
 .mobile-header,
@@ -1916,9 +1919,13 @@ textarea:focus {
 }
 
 @media (max-width: 760px) {
+  html {
+    scroll-padding-block-start: var(--mobile-route-offset);
+  }
+
   .app-shell {
     display: block;
-    padding: 62px 0 72px;
+    padding: var(--mobile-header-height) 0 72px;
   }
 
   .sidebar {
@@ -1934,7 +1941,7 @@ textarea:focus {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    height: 62px;
+    height: var(--mobile-header-height);
     padding: 0 16px;
     background: var(--paper);
     border-bottom: 1px solid var(--line);
@@ -1943,11 +1950,41 @@ textarea:focus {
   .mobile-header select {
     width: auto;
     max-width: 46vw;
-    min-height: 34px;
+    min-height: 44px;
   }
 
   .content-shell {
     padding: 26px 17px 54px;
+    scroll-margin-block-start: var(--mobile-route-offset);
+  }
+
+  .button {
+    min-height: 44px;
+  }
+
+  .icon-button,
+  .work-card-edit-button,
+  .routines-item-actions .button,
+  .calendar-day-add {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+
+  input,
+  select,
+  textarea,
+  .routines-weekday-options button,
+  .routines-tabs button,
+  .calendar-block {
+    min-height: 44px;
+  }
+
+  .work-composer-form textarea,
+  .work-card-editor-actions .button,
+  .work-card-control select,
+  .today-completion-duration input {
+    min-height: 44px;
   }
 
   .mobile-nav {
@@ -1970,6 +2007,7 @@ textarea:focus {
     place-items: center;
     align-content: center;
     gap: 3px;
+    min-height: 44px;
     color: var(--ink-faint);
     background: transparent;
     border: 0;

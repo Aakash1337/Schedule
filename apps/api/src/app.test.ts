@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildApp } from "./app.js";
+import { buildApp, isAllowedLocalProductHost } from "./app.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 
@@ -9,6 +9,38 @@ afterEach(async () => {
 });
 
 describe("API infrastructure", () => {
+  it("accepts only well-formed loopback authorities for the local product API", () => {
+    for (const host of [
+      "localhost",
+      "LOCALHOST:5173",
+      "127.0.0.1",
+      "127.42.7.9:4000",
+      "[::1]",
+      "[0:0:0:0:0:0:0:1]:5173",
+    ]) {
+      expect(isAllowedLocalProductHost(host), host).toBe(true);
+    }
+
+    for (const host of [
+      undefined,
+      "",
+      " localhost",
+      "localhost.",
+      "localhost:0",
+      "localhost:65536",
+      "localhost:invalid",
+      "localhost.attacker.example",
+      "127.0.0.1.attacker.example",
+      "2130706433",
+      "::1",
+      "[::1",
+      "[::1].attacker.example",
+      "[::ffff:127.0.0.1]",
+    ]) {
+      expect(isAllowedLocalProductHost(host), String(host)).toBe(false);
+    }
+  });
+
   it("reports process liveness", async () => {
     const app = await buildApp();
     apps.push(app);
@@ -35,5 +67,16 @@ describe("API infrastructure", () => {
     apps.push(app);
     const response = await app.inject({ method: "GET", url: "/v1/system/info" });
     expect(response.json()).toMatchObject({ productEndpointsEnabled: false });
+  });
+
+  it("keeps health endpoints independent from the product Host guard", async () => {
+    const app = await buildApp();
+    apps.push(app);
+    const response = await app.inject({
+      method: "GET",
+      url: "/health/live",
+      headers: { host: "attacker.example" },
+    });
+    expect(response.statusCode).toBe(200);
   });
 });

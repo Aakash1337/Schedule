@@ -21,6 +21,12 @@ let createdWorkspaceId: string | null = null;
 let releaseConcurrencyLock: (() => void) | null = null;
 let heldLock: Promise<unknown> | null = null;
 
+function releaseHeldConcurrencyLock(): void {
+  const release = releaseConcurrencyLock;
+  if (release !== null) release();
+  releaseConcurrencyLock = null;
+}
+
 function hasDatabaseCode(error: unknown, code: string): boolean {
   return (
     typeof error === "object" &&
@@ -329,6 +335,20 @@ try {
   });
   assert.equal(retrievedResponse.statusCode, 200, retrievedResponse.body);
   assert.equal(retrievedResponse.json<{ id: string }>().id, plan.id);
+
+  const missingGenericRevisionResponse = await app.inject({
+    ...planRequest,
+    payload: {
+      ...planRequest.payload,
+      seed: "product-api-forbidden-generic-revision",
+      requestRevision: 2,
+    },
+  });
+  assert.equal(missingGenericRevisionResponse.statusCode, 409, missingGenericRevisionResponse.body);
+  assert.equal(
+    missingGenericRevisionResponse.json<{ error: { code: string } }>().error.code,
+    "planning.revision_creation_conflict",
+  );
 
   const currentPlanResponse = await app.inject({
     method: "GET",
@@ -725,8 +745,7 @@ try {
     select last_value::text as value from activity_events_ingested_sequence_seq
   `;
   assert.equal(sequenceWhileBlocked?.value, sequenceBefore?.value);
-  releaseConcurrencyLock?.();
-  releaseConcurrencyLock = null;
+  releaseHeldConcurrencyLock();
   await heldLock;
   heldLock = null;
   const orderedAppendResponse = await blockedAppend;
@@ -777,7 +796,7 @@ try {
 
   process.stdout.write("product API verification passed\n");
 } finally {
-  releaseConcurrencyLock?.();
+  releaseHeldConcurrencyLock();
   if (heldLock !== null) await heldLock.catch(() => undefined);
   await Promise.all([app.close(), lockConnection.close(), observerConnection.close()]);
   await removeWorkspace();

@@ -270,6 +270,34 @@ export const routines = pgTable(
       sql`(${table.cadencePeriod} = 'rolling_days' AND ${table.rollingIntervalDays} IS NOT NULL AND ${table.rollingIntervalDays} > 0) OR (${table.cadencePeriod} <> 'rolling_days' AND ${table.rollingIntervalDays} IS NULL)`,
     ),
     check("routines_spacing_nonnegative", sql`${table.minimumSpacingDays} >= 0`),
+    check(
+      "routines_preferred_weekdays_valid",
+      sql`${table.preferredWeekdays} <@ ARRAY[0, 1, 2, 3, 4, 5, 6]::integer[]`,
+    ),
+    check(
+      "routines_preferred_weekdays_unique",
+      sql`schedule_integer_array_is_unique(${table.preferredWeekdays})`,
+    ),
+    check(
+      "routines_preferred_weekdays_one_dimensional",
+      sql`cardinality(${table.preferredWeekdays}) = 0 OR (array_ndims(${table.preferredWeekdays}) = 1 AND array_lower(${table.preferredWeekdays}, 1) = 1)`,
+    ),
+    check(
+      "routines_excluded_weekdays_valid",
+      sql`${table.excludedWeekdays} <@ ARRAY[0, 1, 2, 3, 4, 5, 6]::integer[]`,
+    ),
+    check(
+      "routines_excluded_weekdays_unique",
+      sql`schedule_integer_array_is_unique(${table.excludedWeekdays})`,
+    ),
+    check(
+      "routines_excluded_weekdays_one_dimensional",
+      sql`cardinality(${table.excludedWeekdays}) = 0 OR (array_ndims(${table.excludedWeekdays}) = 1 AND array_lower(${table.excludedWeekdays}, 1) = 1)`,
+    ),
+    check(
+      "routines_weekdays_disjoint",
+      sql`NOT (${table.preferredWeekdays} && ${table.excludedWeekdays})`,
+    ),
     check("routines_week_start_valid", sql`${table.weekStartsOn} BETWEEN 0 AND 6`),
     check(
       "routines_consecutive_policy_valid",
