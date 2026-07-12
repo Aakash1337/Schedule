@@ -65,7 +65,8 @@ pnpm verify:database
 
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 legacy weekday-migration verification after applying every migration to a fresh PostgreSQL 17
-database.
+Compose project. It also verifies a complete archive round trip and the real disposable
+restore/promote/rollback/cleanup state machine.
 
 ## Local data protection
 
@@ -78,7 +79,8 @@ pnpm db:backup
 
 Backups default to `~/.schedule/backups`, outside the repository. Restoring replaces the local
 `schedule` database only after staging, current migrations, and real database verification. The
-previous database remains available for explicit rollback until a separately confirmed cleanup. See the
+previous database remains available for explicit rollback until a separately confirmed cleanup. The
+same mechanics are exercised automatically against nonce-bound disposable databases in CI. See the
 [operations guide](./docs/OPERATIONS.md) before using `pnpm db:restore`.
 
 ## Deployment boundary

@@ -70,6 +70,32 @@ It then drops the disposable database and removes the temporary archive. It neve
 `schedule` database. Avoid writes during this check, because an intentional concurrent source change
 makes source-to-restore comparison ambiguous.
 
+## Verify the recovery state machine
+
+The complete restore, promotion, rollback, and cleanup path has a separate destructive verifier. It
+requires two explicit test-only guards and operates only on five exact, nonce-bound
+`schedule_recovery_*` database names:
+
+```powershell
+$env:NODE_ENV = "test"
+$env:SCHEDULE_RECOVERY_STATE_MACHINE_SENTINEL = "schedule-disposable-recovery-state-machine-v1"
+pnpm verify:recovery-state-machine
+```
+
+The verifier creates and migrates a disposable active database, adds a private marker, backs up that
+database, and then changes the live disposable marker. It runs the real staged restore and promotion,
+proves the archived state is active while the newer state is retained with connections disabled,
+runs the real rollback, and proves both database identities, content signals, and connection states
+were exchanged correctly. It then exercises the supported cleanup path. A final independent cleanup
+pass inspects and removes every generated role database and temporary archive even if an earlier
+assertion fails. A name that existed before the verifier began is never treated as owned or removed.
+
+This command never names or replaces the real `schedule` database. The generated plan must contain
+five distinct role names bound to one 128-bit nonce, and startup is refused if any role already
+exists. Run it only against a disposable local PostgreSQL instance; GitHub CI supplies a fresh,
+job-scoped Compose project and tears down its volume afterward. It verifies the mechanics, but it
+does not replace user inspection before accepting a restore of real data.
+
 ## Restore and pre-swap validation
 
 Restoring is intentionally refused unless the Compose service is healthy, the archive has the full
@@ -149,11 +175,14 @@ pnpm verify:database
 pnpm verify:backup-restore
 ```
 
+Run the separately guarded `pnpm verify:recovery-state-machine` command from the preceding section
+when testing against a disposable PostgreSQL instance.
+
 GitHub CI keeps static checks and PostgreSQL integration checks in separate jobs. The integration job
-starts a fresh PostgreSQL 17 service, applies every migration, and runs the planner, local product
-API, outbox lease/fencing, and weekday-migration upgrade verifiers. Backup/restore verification
-remains local because it deliberately exercises the repository's Docker Compose service and host
-filesystem.
+starts a fresh PostgreSQL 17 Compose project, applies every migration, and runs the planner, local
+product API, outbox lease/fencing, weekday-migration upgrade, complete archive round-trip, and
+recovery state-machine verifiers. Diagnostics are captured on failure, and the job always removes
+the disposable database volume.
 
 Migration `0012` adds weekday range, uniqueness, and exclusion/preference overlap constraints. It
 removes out-of-range legacy values, deduplicates in first-occurrence order, and resolves overlaps in

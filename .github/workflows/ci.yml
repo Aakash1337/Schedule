@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   static:
     name: Static checks and tests
@@ -24,25 +27,14 @@ jobs:
   postgres-integration:
     name: PostgreSQL integration
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_DB: schedule
-          POSTGRES_USER: schedule
-          POSTGRES_PASSWORD: schedule
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready --username=schedule --dbname=schedule"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
+    timeout-minutes: 25
     env:
+      CI: true
+      COMPOSE_PROJECT_NAME: schedule-ci-${{ github.run_id }}-${{ github.run_attempt }}
       DATABASE_URL: postgres://schedule:schedule@127.0.0.1:5432/schedule
       NODE_ENV: test
       PRODUCT_API_MODE: local_unauthenticated
+      SCHEDULE_RECOVERY_STATE_MACHINE_SENTINEL: schedule-disposable-recovery-state-machine-v1
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -53,12 +45,21 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Start disposable PostgreSQL Compose service
+        run: docker compose up -d --wait postgres
       - name: Build workspace packages
         run: pnpm build:packages
       - name: Apply database migrations
         run: pnpm db:migrate
       - name: Verify database integrations against PostgreSQL
         run: pnpm verify:database
+      - name: Verify complete backup and restore path
+        run: pnpm verify:backup-restore
+      - name: Verify restore, promotion, rollback, and cleanup state machine
+        run: pnpm verify:recovery-state-machine
       - name: PostgreSQL diagnostics
         if: failure()
-        run: docker logs "${{ job.services.postgres.id }}"
+        run: docker compose logs --no-color postgres
+      - name: Remove disposable PostgreSQL Compose service
+        if: always()
+        run: docker compose down -v --remove-orphans

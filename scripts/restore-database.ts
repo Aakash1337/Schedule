@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -22,6 +22,47 @@ const rollbackConfirmation = "rollback-to-retained";
 const retainedDatabasePattern = /^schedule_(previous|rejected)_[a-f0-9]{32}$/;
 const cleanupDatabasePattern =
   /^schedule_(previous|rejected|restore|schema|verify|outbox_verify|weekday_verify)_[a-f0-9]{32}$/;
+const disposableNoncePattern = /^[a-f0-9]{32}$/;
+
+export const disposableRecoveryVerificationSentinel =
+  "schedule-disposable-recovery-state-machine-v1";
+
+export type DisposableRecoveryRole = "active" | "staging" | "previous" | "rejected" | "reference";
+
+export interface DisposableRecoveryPlan {
+  readonly nonce: string;
+  readonly activeDatabase: string;
+  readonly stagingDatabase: string;
+  readonly previousDatabase: string;
+  readonly rejectedDatabase: string;
+  readonly referenceDatabase: string;
+}
+
+interface RestoreRoleNames {
+  readonly activeDatabase: string;
+  readonly stagingDatabase: string;
+  readonly previousDatabase: string;
+  readonly referenceDatabase: string;
+}
+
+interface RollbackRoleNames {
+  readonly activeDatabase: string;
+  readonly previousDatabase: string;
+  readonly rejectedDatabase: string;
+  readonly referenceDatabase: string;
+}
+
+export interface RecoveryDatabaseOperations {
+  readonly databaseExists: (databaseName: string) => Promise<boolean>;
+  readonly databaseAllowsConnections: (databaseName: string) => Promise<boolean>;
+  readonly setDatabaseAllowsConnections: (
+    databaseName: string,
+    allowsConnections: boolean,
+  ) => Promise<void>;
+  readonly terminateDatabaseConnections: (databaseName: string) => Promise<void>;
+  readonly renameDatabase: (sourceDatabase: string, targetDatabase: string) => Promise<void>;
+  readonly dropDatabase: (databaseName: string) => Promise<void>;
+}
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -62,6 +103,73 @@ export function assertCleanupDatabaseIdentifier(identifier: string): void {
 
 function createDatabaseIdentifier(prefix: string): string {
   return `${prefix}${randomUUID().replaceAll("-", "")}`;
+}
+
+function disposableDatabaseName(role: DisposableRecoveryRole, nonce: string): string {
+  return `schedule_recovery_${role}_${nonce}`;
+}
+
+export function createDisposableRecoveryPlan(): DisposableRecoveryPlan {
+  const nonce = randomBytes(16).toString("hex");
+  return {
+    nonce,
+    activeDatabase: disposableDatabaseName("active", nonce),
+    stagingDatabase: disposableDatabaseName("staging", nonce),
+    previousDatabase: disposableDatabaseName("previous", nonce),
+    rejectedDatabase: disposableDatabaseName("rejected", nonce),
+    referenceDatabase: disposableDatabaseName("reference", nonce),
+  };
+}
+
+function disposablePlanEntries(
+  plan: DisposableRecoveryPlan,
+): readonly (readonly [DisposableRecoveryRole, string])[] {
+  return [
+    ["active", plan.activeDatabase],
+    ["staging", plan.stagingDatabase],
+    ["previous", plan.previousDatabase],
+    ["rejected", plan.rejectedDatabase],
+    ["reference", plan.referenceDatabase],
+  ];
+}
+
+export function assertDisposableRecoveryPlan(plan: DisposableRecoveryPlan): void {
+  if (!disposableNoncePattern.test(plan.nonce)) {
+    throw new Error("Disposable recovery nonce must be exactly 128 bits encoded as lowercase hex.");
+  }
+
+  const entries = disposablePlanEntries(plan);
+  for (const [, databaseName] of entries) {
+    quoteIdentifier(databaseName);
+    if (databaseName === composeDatabaseName) {
+      throw new Error("Disposable recovery plans may never target the bare schedule database.");
+    }
+  }
+
+  const names = entries.map(([, databaseName]) => databaseName);
+  if (new Set(names).size !== names.length) {
+    throw new Error("Every disposable recovery role must have a distinct database identifier.");
+  }
+
+  for (const [role, databaseName] of entries) {
+    const expected = disposableDatabaseName(role, plan.nonce);
+    if (databaseName !== expected) {
+      throw new Error(
+        `Disposable recovery ${role} database is not exactly bound to the plan nonce.`,
+      );
+    }
+  }
+  if (names.includes(composeDatabaseName)) {
+    throw new Error("Disposable recovery plans may never target the bare schedule database.");
+  }
+}
+
+export function disposableRecoveryDatabaseName(
+  plan: DisposableRecoveryPlan,
+  role: DisposableRecoveryRole,
+): string {
+  assertDisposableRecoveryPlan(plan);
+  return Object.fromEntries(disposablePlanEntries(plan))[role] as string;
 }
 
 export async function runPsql(databaseName: string, statement: string): Promise<string> {
@@ -121,6 +229,40 @@ export async function dropDatabase(databaseName: string): Promise<void> {
     `DROP DATABASE IF EXISTS ${quoteIdentifier(databaseName)} WITH (FORCE);`,
   );
 }
+
+async function setDatabaseAllowsConnections(
+  databaseName: string,
+  allowsConnections: boolean,
+): Promise<void> {
+  await runPsql(
+    "postgres",
+    `ALTER DATABASE ${quoteIdentifier(databaseName)} WITH ALLOW_CONNECTIONS ${allowsConnections ? "true" : "false"};`,
+  );
+}
+
+async function terminateDatabaseConnections(databaseName: string): Promise<void> {
+  quoteIdentifier(databaseName);
+  await runPsql(
+    "postgres",
+    `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${databaseName}' AND pid <> pg_backend_pid();`,
+  );
+}
+
+async function renameDatabase(sourceDatabase: string, targetDatabase: string): Promise<void> {
+  await runPsql(
+    "postgres",
+    `ALTER DATABASE ${quoteIdentifier(sourceDatabase)} RENAME TO ${quoteIdentifier(targetDatabase)};`,
+  );
+}
+
+const postgresRecoveryOperations: RecoveryDatabaseOperations = {
+  databaseExists,
+  databaseAllowsConnections,
+  setDatabaseAllowsConnections,
+  terminateDatabaseConnections,
+  renameDatabase,
+  dropDatabase,
+};
 
 export async function restoreArchiveIntoDatabase(
   backupPath: string,
@@ -268,12 +410,10 @@ export async function assertScheduleDatabase(
       `Database ${databaseName} migration ledger is not a supported ordered source-migration prefix.`,
     );
   }
-  if (options.requireCurrentMigrations === true) {
-    if (ledgerRows.length !== currentMigrations.length) {
-      throw new Error(
-        `Database ${databaseName} has ${ledgerRows.length} migrations; current source requires ${currentMigrations.length}.`,
-      );
-    }
+  if (options.requireCurrentMigrations === true && ledgerRows.length !== currentMigrations.length) {
+    throw new Error(
+      `Database ${databaseName} has ${ledgerRows.length} migrations; current source requires ${currentMigrations.length}.`,
+    );
   }
 }
 
@@ -490,8 +630,77 @@ async function runRepositoryCommand(
   });
 }
 
-async function currentSchemaSignalFromFreshDatabase(): Promise<string> {
-  const referenceDatabase = createDatabaseIdentifier("schedule_schema_");
+async function collectRecoveryError(
+  errors: Error[],
+  label: string,
+  action: () => Promise<void>,
+): Promise<void> {
+  try {
+    await action();
+  } catch (error) {
+    errors.push(new Error(`${label}: ${errorMessage(error)}`, { cause: error }));
+  }
+}
+
+export type DisposablePreflightPhase = "initialize" | "restore" | "rollback";
+
+function expectedDisposableExistence(
+  phase: DisposablePreflightPhase,
+): Readonly<Record<DisposableRecoveryRole, boolean>> {
+  return {
+    active: phase !== "initialize",
+    staging: false,
+    previous: phase === "rollback",
+    rejected: false,
+    reference: false,
+  };
+}
+
+export async function assertDisposableRecoveryPreflight(
+  plan: DisposableRecoveryPlan,
+  phase: DisposablePreflightPhase,
+  operations: Pick<RecoveryDatabaseOperations, "databaseExists"> = postgresRecoveryOperations,
+): Promise<void> {
+  assertDisposableRecoveryPlan(plan);
+  const expected = expectedDisposableExistence(phase);
+  const collisions: string[] = [];
+  for (const [role, databaseName] of disposablePlanEntries(plan)) {
+    const exists = await operations.databaseExists(databaseName);
+    if (exists !== expected[role]) {
+      collisions.push(`${role}=${databaseName} expected ${expected[role] ? "present" : "absent"}`);
+    }
+  }
+  if (collisions.length > 0) {
+    throw new Error(
+      `Disposable recovery ${phase} preflight refused before mutation: ${collisions.join("; ")}.`,
+    );
+  }
+}
+
+async function assertRoleExistence(
+  expectations: readonly (readonly [string, boolean])[],
+  operations: Pick<RecoveryDatabaseOperations, "databaseExists">,
+  label: string,
+): Promise<void> {
+  const mismatches: string[] = [];
+  for (const [databaseName, shouldExist] of expectations) {
+    quoteIdentifier(databaseName);
+    if ((await operations.databaseExists(databaseName)) !== shouldExist) {
+      mismatches.push(`${databaseName} expected ${shouldExist ? "present" : "absent"}`);
+    }
+  }
+  if (mismatches.length > 0) {
+    throw new Error(`${label} refused before mutation: ${mismatches.join("; ")}.`);
+  }
+}
+
+async function currentSchemaSignalFromFreshDatabase(referenceDatabase: string): Promise<string> {
+  quoteIdentifier(referenceDatabase);
+  await assertRoleExistence(
+    [[referenceDatabase, false]],
+    postgresRecoveryOperations,
+    "Reference schema creation",
+  );
   await createEmptyDatabase(referenceDatabase);
   let signal: string | undefined;
   let originalError: unknown;
@@ -509,7 +718,7 @@ async function currentSchemaSignalFromFreshDatabase(): Promise<string> {
     cleanupErrors,
     `remove reference schema database ${referenceDatabase}`,
     async () => {
-      await dropDatabase(referenceDatabase);
+      await cleanupDatabaseInternal(referenceDatabase, postgresRecoveryOperations, false);
     },
   );
   if (originalError !== undefined) {
@@ -553,64 +762,190 @@ async function migrateAndVerifyStagingDatabase(
   }
 }
 
-async function collectRecoveryError(
-  errors: Error[],
-  label: string,
-  action: () => Promise<void>,
-): Promise<void> {
-  try {
-    await action();
-  } catch (error) {
-    errors.push(new Error(`${label}: ${errorMessage(error)}`, { cause: error }));
-  }
-}
-
-function swapRecoveryInstructions(previousDatabase: string, stagingDatabase: string): string {
+function recoveryInstructions(
+  activeDatabase: string,
+  previousDatabase: string,
+  candidateDatabase: string,
+): string {
   return [
-    `Recovery identifiers: active=${composeDatabaseName}, previous=${previousDatabase}, staging=${stagingDatabase}.`,
+    `Recovery identifiers: active=${activeDatabase}, previous=${previousDatabase}, candidate=${candidateDatabase}.`,
     "Do not drop any of these databases until their state is inspected.",
-    `Inspect with: docker compose exec -T ${composeDatabaseService} psql -U ${composeDatabaseUser} -d postgres -c "SELECT datname, datallowconn FROM pg_database WHERE datname IN ('${composeDatabaseName}', '${previousDatabase}', '${stagingDatabase}') ORDER BY datname;"`,
-    `If ${composeDatabaseName} is missing and ${previousDatabase} exists, run: docker compose exec -T ${composeDatabaseService} psql -U ${composeDatabaseUser} -d postgres -v ON_ERROR_STOP=1 -c "ALTER DATABASE ${quoteIdentifier(previousDatabase)} RENAME TO ${quoteIdentifier(composeDatabaseName)};"`,
-    `Then enable the recovered database: docker compose exec -T ${composeDatabaseService} psql -U ${composeDatabaseUser} -d postgres -v ON_ERROR_STOP=1 -c "ALTER DATABASE ${quoteIdentifier(composeDatabaseName)} WITH ALLOW_CONNECTIONS true;"`,
+    `Inspect with: docker compose exec -T ${composeDatabaseService} psql -U ${composeDatabaseUser} -d postgres -c "SELECT datname, datallowconn FROM pg_database WHERE datname IN ('${activeDatabase}', '${previousDatabase}', '${candidateDatabase}') ORDER BY datname;"`,
+    `If ${activeDatabase} is missing and ${previousDatabase} exists, run: docker compose exec -T ${composeDatabaseService} psql -U ${composeDatabaseUser} -d postgres -v ON_ERROR_STOP=1 -c "ALTER DATABASE ${quoteIdentifier(previousDatabase)} RENAME TO ${quoteIdentifier(activeDatabase)};"`,
+    `Then enable the recovered database: docker compose exec -T ${composeDatabaseService} psql -U ${composeDatabaseUser} -d postgres -v ON_ERROR_STOP=1 -c "ALTER DATABASE ${quoteIdentifier(activeDatabase)} WITH ALLOW_CONNECTIONS true;"`,
   ].join("\n");
 }
 
-async function swapDatabase(stagingDatabase: string): Promise<string> {
-  const previousDatabase = createDatabaseIdentifier("schedule_previous_");
-  const current = quoteIdentifier(composeDatabaseName);
-  const staging = quoteIdentifier(stagingDatabase);
-  const previous = quoteIdentifier(previousDatabase);
-  let currentRenamed = false;
+async function promoteStagingDatabase(
+  names: Pick<RestoreRoleNames, "activeDatabase" | "stagingDatabase" | "previousDatabase">,
+  operations: RecoveryDatabaseOperations,
+  onMutationStart: () => void = () => undefined,
+): Promise<void> {
+  const { activeDatabase, stagingDatabase, previousDatabase } = names;
+  await assertRoleExistence(
+    [
+      [activeDatabase, true],
+      [stagingDatabase, true],
+      [previousDatabase, false],
+    ],
+    operations,
+    "Database promotion",
+  );
+  onMutationStart();
 
+  let activeRenamed = false;
+  let stagingPromoted = false;
   try {
-    await runPsql("postgres", `ALTER DATABASE ${current} WITH ALLOW_CONNECTIONS false;`);
-    await runPsql(
-      "postgres",
-      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${composeDatabaseName}' AND pid <> pg_backend_pid();`,
-    );
-    await runPsql("postgres", `ALTER DATABASE ${current} RENAME TO ${previous};`);
-    currentRenamed = true;
-    await runPsql("postgres", `ALTER DATABASE ${staging} RENAME TO ${current};`);
-    return previousDatabase;
+    await operations.setDatabaseAllowsConnections(activeDatabase, false);
+    await operations.terminateDatabaseConnections(activeDatabase);
+    await operations.renameDatabase(activeDatabase, previousDatabase);
+    activeRenamed = true;
+    await operations.renameDatabase(stagingDatabase, activeDatabase);
+    stagingPromoted = true;
+    await operations.setDatabaseAllowsConnections(activeDatabase, true);
   } catch (originalError) {
     const recoveryErrors: Error[] = [];
-    if (currentRenamed) {
+    if (stagingPromoted) {
+      await collectRecoveryError(
+        recoveryErrors,
+        "disable promoted database connections",
+        async () => {
+          await operations.setDatabaseAllowsConnections(activeDatabase, false);
+        },
+      );
+      await collectRecoveryError(recoveryErrors, "close promoted database sessions", async () => {
+        await operations.terminateDatabaseConnections(activeDatabase);
+      });
+      let promotedDemoted = false;
+      try {
+        await operations.renameDatabase(activeDatabase, stagingDatabase);
+        promotedDemoted = true;
+      } catch (error) {
+        recoveryErrors.push(
+          new Error(`restore staging database name: ${errorMessage(error)}`, { cause: error }),
+        );
+      }
+      if (promotedDemoted) {
+        await collectRecoveryError(recoveryErrors, "restore previous database name", async () => {
+          await operations.renameDatabase(previousDatabase, activeDatabase);
+        });
+      } else {
+        recoveryErrors.push(
+          new Error(
+            `restore previous database name skipped because ${activeDatabase} could not be vacated safely.`,
+          ),
+        );
+      }
+    } else if (activeRenamed) {
       await collectRecoveryError(recoveryErrors, "restore previous database name", async () => {
-        await runPsql("postgres", `ALTER DATABASE ${previous} RENAME TO ${current};`);
+        await operations.renameDatabase(previousDatabase, activeDatabase);
       });
     }
     await collectRecoveryError(
       recoveryErrors,
       "re-enable active database connections",
       async () => {
-        await runPsql("postgres", `ALTER DATABASE ${current} WITH ALLOW_CONNECTIONS true;`);
+        await operations.setDatabaseAllowsConnections(activeDatabase, true);
       },
     );
     throw new AggregateError(
       [originalError, ...recoveryErrors],
-      `Database swap failed. ${swapRecoveryInstructions(previousDatabase, stagingDatabase)}`,
+      `Database promotion failed. ${recoveryInstructions(activeDatabase, previousDatabase, stagingDatabase)}`,
       { cause: originalError },
     );
+  }
+}
+
+export async function promoteDisposableRecoveryStaging(
+  plan: DisposableRecoveryPlan,
+  operations: RecoveryDatabaseOperations = postgresRecoveryOperations,
+): Promise<void> {
+  assertDisposableRecoveryPlan(plan);
+  await assertRoleExistence(
+    [
+      [plan.activeDatabase, true],
+      [plan.stagingDatabase, true],
+      [plan.previousDatabase, false],
+      [plan.rejectedDatabase, false],
+      [plan.referenceDatabase, false],
+    ],
+    operations,
+    "Disposable database promotion",
+  );
+  await promoteStagingDatabase(plan, operations);
+}
+
+async function restoreDatabaseUsingRoles(
+  backupPath: string,
+  names: RestoreRoleNames,
+): Promise<void> {
+  const resolvedPath = path.resolve(backupPath);
+  const databaseNames = [
+    names.activeDatabase,
+    names.stagingDatabase,
+    names.previousDatabase,
+    names.referenceDatabase,
+  ];
+  for (const databaseName of databaseNames) quoteIdentifier(databaseName);
+  if (new Set(databaseNames).size !== databaseNames.length) {
+    throw new Error("Recovery database roles must use distinct identifiers.");
+  }
+  await assertRoleExistence(
+    [
+      [names.activeDatabase, true],
+      [names.stagingDatabase, false],
+      [names.previousDatabase, false],
+      [names.referenceDatabase, false],
+    ],
+    postgresRecoveryOperations,
+    "Restore",
+  );
+  await assertScheduleDatabase(names.activeDatabase, { requireCurrentMigrations: true });
+  await runRepositoryCommand(["build:packages"], "Pre-restore package build", names.activeDatabase);
+  const expectedSchemaSignal = await currentSchemaSignalFromFreshDatabase(names.referenceDatabase);
+  if ((await databaseSchemaSignal(names.activeDatabase)) !== expectedSchemaSignal) {
+    throw new Error(
+      `Active database ${names.activeDatabase} does not match a freshly migrated current schema; restore refused so rollback state remains trustworthy.`,
+    );
+  }
+  const archiveCatalog = await verifyBackup(resolvedPath);
+
+  await assertRoleExistence(
+    [
+      [names.stagingDatabase, false],
+      [names.previousDatabase, false],
+    ],
+    postgresRecoveryOperations,
+    "Staging creation",
+  );
+  await createEmptyDatabase(names.stagingDatabase);
+  let promotionStarted = false;
+  try {
+    await restoreArchiveIntoDatabase(resolvedPath, names.stagingDatabase);
+    await assertScheduleDatabase(names.stagingDatabase, { expectedCatalog: archiveCatalog });
+    await migrateAndVerifyStagingDatabase(names.stagingDatabase, expectedSchemaSignal);
+    await assertScheduleDatabase(names.stagingDatabase, { requireCurrentMigrations: true });
+    await promoteStagingDatabase(names, postgresRecoveryOperations, () => {
+      promotionStarted = true;
+    });
+  } catch (originalError) {
+    if (promotionStarted) throw originalError;
+    const cleanupErrors: Error[] = [];
+    await collectRecoveryError(
+      cleanupErrors,
+      `remove failed staging database ${names.stagingDatabase}`,
+      async () => {
+        await cleanupDatabaseInternal(names.stagingDatabase, postgresRecoveryOperations, false);
+      },
+    );
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [originalError, ...cleanupErrors],
+        `Restore validation failed and staging cleanup was incomplete. Retained staging identifier: ${names.stagingDatabase}.`,
+        { cause: originalError },
+      );
+    }
+    throw originalError;
   }
 }
 
@@ -620,56 +955,37 @@ export interface RestoreResult {
 }
 
 export async function restoreScheduleDatabase(backupPath: string): Promise<RestoreResult> {
-  const resolvedPath = path.resolve(backupPath);
+  const names: RestoreRoleNames = {
+    activeDatabase: composeDatabaseName,
+    stagingDatabase: createDatabaseIdentifier("schedule_restore_"),
+    previousDatabase: createDatabaseIdentifier("schedule_previous_"),
+    referenceDatabase: createDatabaseIdentifier("schedule_schema_"),
+  };
   await assertComposeDatabaseReady();
-  await assertScheduleDatabase(composeDatabaseName, { requireCurrentMigrations: true });
-  await runRepositoryCommand(["build:packages"], "Pre-restore package build", composeDatabaseName);
-  const expectedSchemaSignal = await currentSchemaSignalFromFreshDatabase();
-  if ((await databaseSchemaSignal(composeDatabaseName)) !== expectedSchemaSignal) {
-    throw new Error(
-      "Active schedule database does not match a freshly migrated current schema; restore refused so rollback state remains trustworthy.",
-    );
-  }
-  const archiveCatalog = await verifyBackup(resolvedPath);
-
-  const stagingDatabase = createDatabaseIdentifier("schedule_restore_");
-  await createEmptyDatabase(stagingDatabase);
-  let swapStarted = false;
-  try {
-    await restoreArchiveIntoDatabase(resolvedPath, stagingDatabase);
-    await assertScheduleDatabase(stagingDatabase, { expectedCatalog: archiveCatalog });
-    await migrateAndVerifyStagingDatabase(stagingDatabase, expectedSchemaSignal);
-    await assertScheduleDatabase(stagingDatabase, { requireCurrentMigrations: true });
-    swapStarted = true;
-    const previousDatabase = await swapDatabase(stagingDatabase);
-    return { previousDatabase, activeDatabase: composeDatabaseName };
-  } catch (originalError) {
-    if (swapStarted) throw originalError;
-    const cleanupErrors: Error[] = [];
-    await collectRecoveryError(
-      cleanupErrors,
-      `remove failed staging database ${stagingDatabase}`,
-      async () => {
-        await dropDatabase(stagingDatabase);
-      },
-    );
-    if (cleanupErrors.length > 0) {
-      throw new AggregateError(
-        [originalError, ...cleanupErrors],
-        `Restore validation failed and staging cleanup was incomplete. Retained staging identifier: ${stagingDatabase}.`,
-        { cause: originalError },
-      );
-    }
-    throw originalError;
-  }
+  await restoreDatabaseUsingRoles(backupPath, names);
+  return { previousDatabase: names.previousDatabase, activeDatabase: composeDatabaseName };
 }
 
-export interface RollbackResult {
-  readonly activeDatabase: typeof composeDatabaseName;
-  readonly rejectedDatabase: string;
+export interface DisposableRestoreResult {
+  readonly previousDatabase: string;
+  readonly activeDatabase: string;
 }
 
-async function validateRetainedRollbackDatabase(previousDatabase: string): Promise<void> {
+export async function restoreDisposableScheduleDatabase(
+  backupPath: string,
+  plan: DisposableRecoveryPlan,
+): Promise<DisposableRestoreResult> {
+  assertDisposableRecoveryPlan(plan);
+  await assertComposeDatabaseReady("postgres");
+  await assertDisposableRecoveryPreflight(plan, "restore");
+  await restoreDatabaseUsingRoles(backupPath, plan);
+  return { previousDatabase: plan.previousDatabase, activeDatabase: plan.activeDatabase };
+}
+
+async function validateRetainedRollbackDatabase(
+  previousDatabase: string,
+  referenceDatabase: string,
+): Promise<void> {
   if (await databaseAllowsConnections(previousDatabase)) {
     throw new Error(
       `Rollback refused because retained database ${previousDatabase} unexpectedly allows connections.`,
@@ -677,14 +993,11 @@ async function validateRetainedRollbackDatabase(previousDatabase: string): Promi
   }
 
   let validationError: unknown;
-  await runPsql(
-    "postgres",
-    `ALTER DATABASE ${quoteIdentifier(previousDatabase)} WITH ALLOW_CONNECTIONS true;`,
-  );
+  await setDatabaseAllowsConnections(previousDatabase, true);
   try {
     await assertScheduleDatabase(previousDatabase, { requireCurrentMigrations: true });
     await runRepositoryCommand(["build:packages"], "Rollback package build", previousDatabase);
-    const expectedSchemaSignal = await currentSchemaSignalFromFreshDatabase();
+    const expectedSchemaSignal = await currentSchemaSignalFromFreshDatabase(referenceDatabase);
     if ((await databaseSchemaSignal(previousDatabase)) !== expectedSchemaSignal) {
       throw new Error(
         `Retained rollback database ${previousDatabase} does not match the current Schedule schema.`,
@@ -696,19 +1009,13 @@ async function validateRetainedRollbackDatabase(previousDatabase: string): Promi
 
   const recoveryErrors: Error[] = [];
   await collectRecoveryError(recoveryErrors, "disable retained database connections", async () => {
-    await runPsql(
-      "postgres",
-      `ALTER DATABASE ${quoteIdentifier(previousDatabase)} WITH ALLOW_CONNECTIONS false;`,
-    );
+    await setDatabaseAllowsConnections(previousDatabase, false);
   });
   await collectRecoveryError(
     recoveryErrors,
     "close retained database validation sessions",
     async () => {
-      await runPsql(
-        "postgres",
-        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${previousDatabase}' AND pid <> pg_backend_pid();`,
-      );
+      await terminateDatabaseConnections(previousDatabase);
     },
   );
 
@@ -727,6 +1034,99 @@ async function validateRetainedRollbackDatabase(previousDatabase: string): Promi
   }
 }
 
+async function rollbackDatabaseNames(
+  names: Pick<RollbackRoleNames, "activeDatabase" | "previousDatabase" | "rejectedDatabase">,
+  operations: RecoveryDatabaseOperations,
+): Promise<void> {
+  const { activeDatabase, previousDatabase, rejectedDatabase } = names;
+  await assertRoleExistence(
+    [
+      [activeDatabase, true],
+      [previousDatabase, true],
+      [rejectedDatabase, false],
+    ],
+    operations,
+    "Database rollback",
+  );
+
+  let activeRenamed = false;
+  let previousPromoted = false;
+  try {
+    await operations.setDatabaseAllowsConnections(previousDatabase, false);
+    await operations.terminateDatabaseConnections(previousDatabase);
+    await operations.setDatabaseAllowsConnections(activeDatabase, false);
+    await operations.terminateDatabaseConnections(activeDatabase);
+    await operations.renameDatabase(activeDatabase, rejectedDatabase);
+    activeRenamed = true;
+    await operations.renameDatabase(previousDatabase, activeDatabase);
+    previousPromoted = true;
+    await operations.setDatabaseAllowsConnections(activeDatabase, true);
+  } catch (originalError) {
+    const recoveryErrors: Error[] = [];
+    if (previousPromoted) {
+      await collectRecoveryError(recoveryErrors, "disable promoted rollback database", async () => {
+        await operations.setDatabaseAllowsConnections(activeDatabase, false);
+      });
+      await collectRecoveryError(recoveryErrors, "close promoted rollback sessions", async () => {
+        await operations.terminateDatabaseConnections(activeDatabase);
+      });
+      let previousNameRestored = false;
+      try {
+        await operations.renameDatabase(activeDatabase, previousDatabase);
+        previousNameRestored = true;
+      } catch (error) {
+        recoveryErrors.push(
+          new Error(`restore retained database name: ${errorMessage(error)}`, { cause: error }),
+        );
+      }
+      if (previousNameRestored) {
+        await collectRecoveryError(recoveryErrors, "restore rejected database name", async () => {
+          await operations.renameDatabase(rejectedDatabase, activeDatabase);
+        });
+      } else {
+        recoveryErrors.push(
+          new Error(
+            `restore rejected database name skipped because ${activeDatabase} could not be vacated safely.`,
+          ),
+        );
+      }
+    } else if (activeRenamed) {
+      await collectRecoveryError(recoveryErrors, "restore rejected database name", async () => {
+        await operations.renameDatabase(rejectedDatabase, activeDatabase);
+      });
+    }
+    await collectRecoveryError(
+      recoveryErrors,
+      "re-enable active database connections",
+      async () => {
+        await operations.setDatabaseAllowsConnections(activeDatabase, true);
+      },
+    );
+    throw new AggregateError(
+      [originalError, ...recoveryErrors],
+      [
+        "Rollback failed; automatic compensation steps were attempted conservatively.",
+        recoveryInstructions(activeDatabase, previousDatabase, rejectedDatabase),
+      ].join("\n"),
+      { cause: originalError },
+    );
+  }
+}
+
+export async function rollbackDisposableRecoveryNames(
+  plan: DisposableRecoveryPlan,
+  operations: RecoveryDatabaseOperations = postgresRecoveryOperations,
+): Promise<void> {
+  assertDisposableRecoveryPlan(plan);
+  await assertDisposableRecoveryPreflight(plan, "rollback", operations);
+  await rollbackDatabaseNames(plan, operations);
+}
+
+export interface RollbackResult {
+  readonly activeDatabase: typeof composeDatabaseName;
+  readonly rejectedDatabase: string;
+}
+
 export async function rollbackToRetainedDatabase(
   previousDatabase: string,
 ): Promise<RollbackResult> {
@@ -734,60 +1134,110 @@ export async function rollbackToRetainedDatabase(
   if (!previousDatabase.startsWith("schedule_previous_")) {
     throw new Error("Rollback requires the schedule_previous_* identifier printed by db:restore.");
   }
-  if (!(await databaseExists(previousDatabase))) {
-    throw new Error(`Retained rollback database does not exist: ${previousDatabase}`);
+  const names: RollbackRoleNames = {
+    activeDatabase: composeDatabaseName,
+    previousDatabase,
+    rejectedDatabase: createDatabaseIdentifier("schedule_rejected_"),
+    referenceDatabase: createDatabaseIdentifier("schedule_schema_"),
+  };
+  await assertComposeDatabaseReady("postgres");
+  await assertRoleExistence(
+    [
+      [names.activeDatabase, true],
+      [names.previousDatabase, true],
+      [names.rejectedDatabase, false],
+      [names.referenceDatabase, false],
+    ],
+    postgresRecoveryOperations,
+    "Rollback",
+  );
+  await validateRetainedRollbackDatabase(names.previousDatabase, names.referenceDatabase);
+  await rollbackDatabaseNames(names, postgresRecoveryOperations);
+  return { activeDatabase: composeDatabaseName, rejectedDatabase: names.rejectedDatabase };
+}
+
+export interface DisposableRollbackResult {
+  readonly activeDatabase: string;
+  readonly rejectedDatabase: string;
+}
+
+export async function rollbackDisposableScheduleDatabase(
+  plan: DisposableRecoveryPlan,
+): Promise<DisposableRollbackResult> {
+  assertDisposableRecoveryPlan(plan);
+  await assertComposeDatabaseReady("postgres");
+  await assertDisposableRecoveryPreflight(plan, "rollback");
+  await validateRetainedRollbackDatabase(plan.previousDatabase, plan.referenceDatabase);
+  await rollbackDatabaseNames(plan, postgresRecoveryOperations);
+  return { activeDatabase: plan.activeDatabase, rejectedDatabase: plan.rejectedDatabase };
+}
+
+async function cleanupDatabaseInternal(
+  databaseName: string,
+  operations: RecoveryDatabaseOperations,
+  requireExisting: boolean,
+): Promise<boolean> {
+  quoteIdentifier(databaseName);
+  if (!(await operations.databaseExists(databaseName))) {
+    if (requireExisting) throw new Error(`Retained database does not exist: ${databaseName}`);
+    return false;
   }
-  await validateRetainedRollbackDatabase(previousDatabase);
+  if (await operations.databaseAllowsConnections(databaseName)) {
+    await operations.setDatabaseAllowsConnections(databaseName, false);
+  }
+  await operations.terminateDatabaseConnections(databaseName);
+  await operations.dropDatabase(databaseName);
+  return true;
+}
 
-  const rejectedDatabase = createDatabaseIdentifier("schedule_rejected_");
-  const current = quoteIdentifier(composeDatabaseName);
-  const previous = quoteIdentifier(previousDatabase);
-  const rejected = quoteIdentifier(rejectedDatabase);
-  let currentRenamed = false;
-  let previousPromoted = false;
+export async function cleanupGeneratedRecoveryDatabase(databaseName: string): Promise<void> {
+  assertCleanupDatabaseIdentifier(databaseName);
+  await assertComposeDatabaseReady("postgres");
+  await cleanupDatabaseInternal(databaseName, postgresRecoveryOperations, true);
+}
 
+export async function cleanupDisposableRecoveryDatabase(
+  plan: DisposableRecoveryPlan,
+  role: DisposableRecoveryRole,
+): Promise<void> {
+  const databaseName = disposableRecoveryDatabaseName(plan, role);
+  await assertComposeDatabaseReady("postgres");
+  await cleanupDatabaseInternal(databaseName, postgresRecoveryOperations, true);
+}
+
+export async function initializeDisposableRecoveryActiveDatabase(
+  plan: DisposableRecoveryPlan,
+): Promise<void> {
+  assertDisposableRecoveryPlan(plan);
+  await assertComposeDatabaseReady("postgres");
+  await assertDisposableRecoveryPreflight(plan, "initialize");
+  await createEmptyDatabase(plan.activeDatabase);
+  let originalError: unknown;
   try {
-    await runPsql("postgres", `ALTER DATABASE ${previous} WITH ALLOW_CONNECTIONS false;`);
-    await runPsql(
-      "postgres",
-      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${previousDatabase}' AND pid <> pg_backend_pid();`,
+    await runRepositoryCommand(
+      ["db:migrate"],
+      "Disposable active database migration",
+      plan.activeDatabase,
     );
-    await runPsql("postgres", `ALTER DATABASE ${current} WITH ALLOW_CONNECTIONS false;`);
-    await runPsql(
-      "postgres",
-      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${composeDatabaseName}' AND pid <> pg_backend_pid();`,
-    );
-    await runPsql("postgres", `ALTER DATABASE ${current} RENAME TO ${rejected};`);
-    currentRenamed = true;
-    await runPsql("postgres", `ALTER DATABASE ${previous} RENAME TO ${current};`);
-    previousPromoted = true;
-    await runPsql("postgres", `ALTER DATABASE ${current} WITH ALLOW_CONNECTIONS true;`);
-    return { activeDatabase: composeDatabaseName, rejectedDatabase };
-  } catch (originalError) {
-    const recoveryErrors: Error[] = [];
-    if (currentRenamed && !previousPromoted) {
-      await collectRecoveryError(recoveryErrors, "restore rejected database name", async () => {
-        await runPsql("postgres", `ALTER DATABASE ${rejected} RENAME TO ${current};`);
-      });
-    }
-    await collectRecoveryError(
-      recoveryErrors,
-      "re-enable active database connections",
-      async () => {
-        await runPsql("postgres", `ALTER DATABASE ${current} WITH ALLOW_CONNECTIONS true;`);
-      },
-    );
-    throw new AggregateError(
-      [originalError, ...recoveryErrors],
-      [
-        "Rollback failed; automatic compensation steps were attempted independently.",
-        `Recovery identifiers: active=${composeDatabaseName}, retained=${previousDatabase}, rejected=${rejectedDatabase}.`,
-        "Do not drop any database until all three identifiers are inspected in pg_database.",
-        swapRecoveryInstructions(previousDatabase, rejectedDatabase),
-      ].join("\n"),
-      { cause: originalError },
-    );
+    await assertScheduleDatabase(plan.activeDatabase, { requireCurrentMigrations: true });
+  } catch (error) {
+    originalError = error;
   }
+  if (originalError === undefined) return;
+
+  const cleanupErrors: Error[] = [];
+  await collectRecoveryError(
+    cleanupErrors,
+    `remove failed disposable active database ${plan.activeDatabase}`,
+    async () => {
+      await cleanupDatabaseInternal(plan.activeDatabase, postgresRecoveryOperations, false);
+    },
+  );
+  throw new AggregateError(
+    [originalError, ...cleanupErrors],
+    `Disposable active database initialization failed for nonce ${plan.nonce}.`,
+    { cause: originalError },
+  );
 }
 
 type Command =

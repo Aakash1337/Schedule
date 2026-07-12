@@ -6,6 +6,6 @@ Durable product and engineering specifications live here so the repository root 
 - [Deterministic planner](./PLANNER.md): implemented planning rules, determinism, persistence, and concurrency contracts.
 - [Local product API](./API.md): local-only HTTP safety boundary, routes, errors, and example usage.
 - [Local web application](./WEB.md): interface architecture, local runtime, and interaction contract.
-- [Local operations](./OPERATIONS.md): verified backup, staged restore, recovery checks, and database maintenance.
+- [Local operations](./OPERATIONS.md): verified backup, staged restore, automated recovery state-machine checks, and database maintenance.
 
 The root [README](../README.md) remains the installation and repository entry point.
