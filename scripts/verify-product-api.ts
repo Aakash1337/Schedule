@@ -25,6 +25,7 @@ async function removeWorkspace(): Promise<void> {
   if (createdWorkspaceId === null) return;
   await connection.sql.begin(async (sql) => {
     await sql`select set_config('schedule.allow_activity_event_mutation', 'on', true)`;
+    await sql`select set_config('schedule.allow_plan_interaction_event_mutation', 'on', true)`;
     await sql`delete from workspaces where id = ${createdWorkspaceId}`;
   });
 }
@@ -109,7 +110,7 @@ try {
   } as const;
   const planResponse = await app.inject(planRequest);
   assert.equal(planResponse.statusCode, 200, planResponse.body);
-  const plan = planResponse.json<{ id: string; items: { routineId: string }[] }>();
+  const plan = planResponse.json<{ id: string; items: { id: string; routineId: string }[] }>();
   assert.equal(plan.items[0]?.routineId, createdRoutineId);
 
   const retrievedResponse = await app.inject({
@@ -118,6 +119,40 @@ try {
   });
   assert.equal(retrievedResponse.statusCode, 200, retrievedResponse.body);
   assert.equal(retrievedResponse.json<{ id: string }>().id, plan.id);
+
+  const currentPlanResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/current`,
+  });
+  assert.equal(currentPlanResponse.statusCode, 200, currentPlanResponse.body);
+  assert.equal(currentPlanResponse.json<{ headVersion: number }>().headVersion, 1);
+  const lockRequest = {
+    method: "PATCH" as const,
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/items/${plan.items[0]!.id}/lock`,
+    headers: { "idempotency-key": "product-api-lock" },
+    payload: { expectedPlanId: plan.id, expectedHeadVersion: 1, locked: true },
+  };
+  const lockResponse = await app.inject(lockRequest);
+  const retriedLockResponse = await app.inject(lockRequest);
+  assert.equal(lockResponse.statusCode, 200, lockResponse.body);
+  assert.equal(retriedLockResponse.statusCode, 200, retriedLockResponse.body);
+  assert.deepEqual(retriedLockResponse.json(), lockResponse.json());
+  assert.equal(lockResponse.json<{ headVersion: number }>().headVersion, 2);
+  const staleLockResponse = await app.inject({
+    ...lockRequest,
+    headers: { "idempotency-key": "product-api-stale-lock" },
+  });
+  assert.equal(staleLockResponse.statusCode, 409, staleLockResponse.body);
+  const currentLockedResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/current`,
+  });
+  assert.equal(currentLockedResponse.statusCode, 200, currentLockedResponse.body);
+  assert.equal(currentLockedResponse.json<{ headVersion: number }>().headVersion, 2);
+  assert.equal(
+    currentLockedResponse.json<{ items: { locked: boolean }[] }>().items[0]?.locked,
+    true,
+  );
 
   const activityRequest = {
     method: "POST" as const,

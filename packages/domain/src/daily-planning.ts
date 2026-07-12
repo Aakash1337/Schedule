@@ -9,7 +9,14 @@ import {
   weekdayOf,
   type LocalDate,
 } from "./calendar.js";
-import { dailyPlanId, type DailyPlanId, type RoutineId, type WorkspaceId } from "./ids.js";
+import {
+  dailyPlanId,
+  planItemId,
+  type DailyPlanId,
+  type PlanItemId,
+  type RoutineId,
+  type WorkspaceId,
+} from "./ids.js";
 import { energyLevels, type EnergyLevel } from "./structured-tags.js";
 import type { ActivityEvent } from "./activity-event.js";
 import type { CadencePolicy } from "./cadence-policy.js";
@@ -151,6 +158,7 @@ export interface RoutineEvaluation {
 }
 
 export interface PlanItem {
+  readonly id: PlanItemId;
   readonly routineId: RoutineId;
   readonly title: string;
   readonly position: number;
@@ -160,6 +168,7 @@ export interface PlanItem {
   readonly score: number;
   readonly scoreComponents: Readonly<Record<string, number>>;
   readonly reasons: readonly string[];
+  readonly locked: boolean;
 }
 
 export interface PlanExclusion {
@@ -869,7 +878,19 @@ function createInputSnapshot(
   });
 }
 
+function deterministicPlanItemId(
+  plan: DailyPlanId,
+  routine: RoutineId,
+  position: number,
+): PlanItemId {
+  const hex = createHash("sha256").update(`${plan}:${routine}:${position}`).digest("hex");
+  return planItemId(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`,
+  );
+}
+
 export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
+  const id = input.id ?? dailyPlanId();
   const config = input.config ?? DEFAULT_PLANNER_CONFIG;
   invariant(
     config.algorithmVersion === PLANNER_ALGORITHM_VERSION,
@@ -1020,6 +1041,7 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
   const inputSnapshot = createInputSnapshot(input.request, input.routines, input.events, config);
   const inputHash = createHash("sha256").update(JSON.stringify(inputSnapshot)).digest("hex");
   const items = chosen.placements.map((placement, position): PlanItem => ({
+    id: deterministicPlanItemId(id, placement.candidate.routine.id, position),
     routineId: placement.candidate.routine.id,
     title: placement.candidate.routine.title,
     position,
@@ -1029,10 +1051,11 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
     score: placement.candidate.evaluation.score,
     scoreComponents: placement.candidate.evaluation.scoreComponents,
     reasons: placement.candidate.evaluation.reasons,
+    locked: false,
   }));
 
   return {
-    id: input.id ?? dailyPlanId(),
+    id,
     workspaceId: input.request.workspaceId,
     date: input.request.date,
     timeZone: input.request.timeZone,

@@ -1,6 +1,6 @@
 # Schedule
 
-The evolving product definition is documented in [PRODUCT.md](./PRODUCT.md). The implemented deterministic-planner contract is documented in [PLANNER.md](./PLANNER.md), and the local HTTP surface is documented in [API.md](./API.md).
+Project documentation is indexed in [docs/README.md](./docs/README.md). The main specifications are the [product definition](./docs/PRODUCT.md), [deterministic planner contract](./docs/PLANNER.md), and [local HTTP API](./docs/API.md).
 
 Provider-neutral infrastructure for a customizable work-management and scheduling system.
 
