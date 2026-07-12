@@ -8,7 +8,7 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "dev": "pnpm run build:packages && pnpm --parallel --filter @schedule/api --filter @schedule/worker run dev",
+    "dev": "pnpm run build:packages && pnpm --parallel --filter @schedule/api --filter @schedule/worker --filter @schedule/web run dev",
     "clean": "node scripts/clean.mjs",
     "build:packages": "pnpm clean && pnpm -r --filter \"./packages/**\" run build",
     "build": "pnpm clean && pnpm -r run build",

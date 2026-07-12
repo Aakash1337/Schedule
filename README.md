@@ -1,6 +1,9 @@
 # Schedule
 
-Project documentation is indexed in [docs/README.md](./docs/README.md). The main specifications are the [product definition](./docs/PRODUCT.md), [deterministic planner contract](./docs/PLANNER.md), and [local HTTP API](./docs/API.md).
+Project documentation is indexed in [docs/README.md](./docs/README.md). The main specifications are
+the [product definition](./docs/PRODUCT.md),
+[deterministic planner contract](./docs/PLANNER.md), [local HTTP API](./docs/API.md), and
+[local web application](./docs/WEB.md).
 
 Provider-neutral infrastructure for a customizable work-management and scheduling system.
 
@@ -13,6 +16,7 @@ This repository starts as a TypeScript modular monolith:
 - `packages/config`: validated runtime configuration.
 - `packages/database`: PostgreSQL schema, migrations, and adapters.
 - `apps/api`: HTTP transport and health endpoints.
+- `apps/web`: local React interface for Today, routines, work, and calendar blocks.
 - `apps/worker`: database-backed outbox processing.
 
 The domain now includes a pure, seeded daily planner that balances cadence, time budget, task count, context, and recent completion history.
@@ -22,7 +26,8 @@ The local API also exposes status-based backlog/Kanban work items and bounded no
 `WorkItem` represents intent and workflow state. `ScheduleBlock` represents reserved time and may
 optionally reference a work item. Their lifecycles remain independent.
 
-The frontend is intentionally deferred until product workflows and visual direction are defined.
+The local web app uses the API through a Vite same-origin development proxy. CORS remains disabled,
+and the unauthenticated product surface remains limited to loopback development.
 
 ## Local development
 
@@ -38,8 +43,9 @@ pnpm db:migrate
 pnpm dev
 ```
 
-The API listens on `http://127.0.0.1:4000` by default. Use `/health/live` for process health and
-`/health/ready` for database readiness.
+The web app listens on `http://127.0.0.1:5173` and the API listens on
+`http://127.0.0.1:4000` by default. Use `/health/live` for process health and `/health/ready` for
+database readiness.
 
 Local unauthenticated product routes are enabled only for non-production loopback development. Configuration rejects attempts to enable them in production or on a non-loopback bind; authentication will be required before hosted product routes are introduced.
 
