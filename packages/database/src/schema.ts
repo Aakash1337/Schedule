@@ -70,6 +70,7 @@ export const activityEventType = pgEnum("activity_event_type", [
   "completion_reversed",
 ]);
 export const planInteractionType = pgEnum("plan_interaction_type", ["locked", "unlocked"]);
+export const planMutationKind = pgEnum("plan_mutation_kind", ["regenerate", "replace"]);
 
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -495,6 +496,43 @@ export const planInteractionEvents = pgTable(
     }).onDelete("restrict"),
     check("plan_interaction_events_hash_length", sql`char_length(${table.payloadHash}) = 64`),
     check("plan_interaction_events_head_version_positive", sql`${table.resultHeadVersion} > 0`),
+  ],
+);
+
+export const planMutations = pgTable(
+  "plan_mutations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    localDate: date("local_date").notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    payloadHash: varchar("payload_hash", { length: 64 }).notNull(),
+    kind: planMutationKind("kind").notNull(),
+    sourcePlanId: uuid("source_plan_id").notNull(),
+    resultPlanId: uuid("result_plan_id").notNull(),
+    resultHeadVersion: integer("result_head_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("plan_mutations_workspace_date_idempotency_uq").on(
+      table.workspaceId,
+      table.localDate,
+      table.idempotencyKey,
+    ),
+    foreignKey({
+      name: "plan_mutations_source_plan_tenant_fk",
+      columns: [table.workspaceId, table.sourcePlanId],
+      foreignColumns: [dailyPlans.workspaceId, dailyPlans.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "plan_mutations_result_plan_tenant_fk",
+      columns: [table.workspaceId, table.resultPlanId],
+      foreignColumns: [dailyPlans.workspaceId, dailyPlans.id],
+    }).onDelete("cascade"),
+    check("plan_mutations_hash_length", sql`char_length(${table.payloadHash}) = 64`),
+    check("plan_mutations_head_version_positive", sql`${table.resultHeadVersion} > 0`),
   ],
 );
 

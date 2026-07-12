@@ -9,6 +9,7 @@ import type {
   CurrentDailyPlan,
   DailyPlanRepository,
   PlanItemLockResult,
+  PlanMutationRecord,
   RoutineRepository,
   ScheduleBlockRepository,
   SetPlanItemLockInput,
@@ -56,6 +57,7 @@ import {
   dailyPlanItems,
   dailyPlans,
   planInteractionEvents,
+  planMutations,
   routines,
   scheduleBlocks,
   workItems,
@@ -1088,6 +1090,57 @@ class PostgresDailyPlanRepository implements DailyPlanRepository {
       locked: input.locked,
       headVersion: resultHeadVersion,
     };
+  }
+
+  async lockDay(workspace: WorkspaceId, date: LocalDate): Promise<void> {
+    await this.database.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`${workspace}:${date}`}, 0))`,
+    );
+  }
+
+  async findMutation(
+    workspace: WorkspaceId,
+    date: LocalDate,
+    idempotencyKey: string,
+  ): Promise<PlanMutationRecord | null> {
+    const [row] = await this.database
+      .select()
+      .from(planMutations)
+      .where(
+        and(
+          eq(planMutations.workspaceId, workspace),
+          eq(planMutations.localDate, date),
+          eq(planMutations.idempotencyKey, idempotencyKey),
+        ),
+      )
+      .limit(1);
+    return row === undefined
+      ? null
+      : {
+          workspaceId: workspaceId(row.workspaceId),
+          date: localDate(row.localDate),
+          idempotencyKey: row.idempotencyKey,
+          payloadHash: row.payloadHash,
+          kind: row.kind,
+          sourcePlanId: dailyPlanId(row.sourcePlanId),
+          resultPlanId: dailyPlanId(row.resultPlanId),
+          resultHeadVersion: row.resultHeadVersion,
+          createdAt: new Date(row.createdAt),
+        };
+  }
+
+  async insertMutation(record: PlanMutationRecord): Promise<void> {
+    await this.database.insert(planMutations).values({
+      workspaceId: record.workspaceId,
+      localDate: record.date,
+      idempotencyKey: record.idempotencyKey,
+      payloadHash: record.payloadHash,
+      kind: record.kind,
+      sourcePlanId: record.sourcePlanId,
+      resultPlanId: record.resultPlanId,
+      resultHeadVersion: record.resultHeadVersion,
+      createdAt: record.createdAt,
+    });
   }
 }
 

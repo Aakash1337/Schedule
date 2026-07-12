@@ -9,6 +9,7 @@ import {
   dailyPlans,
   outboxEvents,
   planInteractionEvents,
+  planMutations,
   routines,
   scheduleBlocks,
   workItems,
@@ -28,5 +29,6 @@ describe("database schema", () => {
     expect(getTableName(dailyPlanHeads)).toBe("daily_plan_heads");
     expect(getTableName(dailyPlanItemStates)).toBe("daily_plan_item_states");
     expect(getTableName(planInteractionEvents)).toBe("plan_interaction_events");
+    expect(getTableName(planMutations)).toBe("plan_mutations");
   });
 });

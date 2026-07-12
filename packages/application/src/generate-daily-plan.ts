@@ -24,6 +24,7 @@ export class GenerateDailyPlan {
       if ((await workspaces.findById(command.request.workspaceId)) === null) {
         throw new DomainError("workspace.not_found", "The workspace does not exist.");
       }
+      await dailyPlans.lockDay(command.request.workspaceId, command.request.date);
       const [candidates, events] = await Promise.all([
         routines.listPlanningCandidates(command.request.workspaceId, command.request.date),
         activityEvents.listForPlanning(command.request.workspaceId, command.request.date),

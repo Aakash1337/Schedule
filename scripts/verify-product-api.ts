@@ -26,6 +26,7 @@ async function removeWorkspace(): Promise<void> {
   await connection.sql.begin(async (sql) => {
     await sql`select set_config('schedule.allow_activity_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_plan_interaction_event_mutation', 'on', true)`;
+    await sql`select set_config('schedule.allow_plan_mutation_change', 'on', true)`;
     await sql`delete from workspaces where id = ${createdWorkspaceId}`;
   });
 }
@@ -153,6 +154,85 @@ try {
     currentLockedResponse.json<{ items: { locked: boolean }[] }>().items[0]?.locked,
     true,
   );
+
+  const mutationRequest = {
+    timeZone: "UTC",
+    availableWindows: [
+      {
+        startsAt: "2026-07-15T08:00:00.000Z",
+        endsAt: "2026-07-15T09:00:00.000Z",
+      },
+    ],
+    targetMinutes: 30,
+    targetTaskCount: 1,
+    availableContexts: ["computer"],
+    seed: "product-api-regeneration",
+  };
+  const regenerationRequest = {
+    method: "POST" as const,
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/regenerations`,
+    headers: { "idempotency-key": "product-api-regeneration" },
+    payload: {
+      expectedPlanId: plan.id,
+      expectedHeadVersion: 2,
+      request: mutationRequest,
+    },
+  };
+  const regenerationResponse = await app.inject(regenerationRequest);
+  const retriedRegeneration = await app.inject(regenerationRequest);
+  assert.equal(regenerationResponse.statusCode, 200, regenerationResponse.body);
+  assert.deepEqual(retriedRegeneration.json(), regenerationResponse.json());
+  const regenerated = regenerationResponse.json<{
+    id: string;
+    headVersion: number;
+    requestRevision: number;
+    items: { id: string; routineId: string; locked: boolean }[];
+  }>();
+  assert.equal(regenerated.headVersion, 3);
+  assert.equal(regenerated.requestRevision, 2);
+  assert.notEqual(regenerationResponse.json<{ request: unknown }>().request, null);
+  assert.equal(regenerated.items[0]?.routineId, createdRoutineId);
+  assert.equal(regenerated.items[0]?.locked, true);
+
+  const unlockResponse = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/items/${regenerated.items[0]!.id}/lock`,
+    headers: { "idempotency-key": "product-api-unlock-regenerated" },
+    payload: { expectedPlanId: regenerated.id, expectedHeadVersion: 3, locked: false },
+  });
+  assert.equal(unlockResponse.statusCode, 200, unlockResponse.body);
+
+  const alternativeRoutineResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines`,
+    payload: {
+      title: "Replacement routine",
+      tags: { priority: "medium", contexts: ["computer"], categories: ["verification"] },
+      duration: { expectedMinutes: 30 },
+      cadence: { period: "week", targetCompletions: 1 },
+    },
+  });
+  assert.equal(alternativeRoutineResponse.statusCode, 201, alternativeRoutineResponse.body);
+  const alternativeRoutineId = alternativeRoutineResponse.json<{ id: string }>().id;
+  const replacementResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/items/${regenerated.items[0]!.id}/replacement`,
+    headers: { "idempotency-key": "product-api-replacement" },
+    payload: {
+      expectedPlanId: regenerated.id,
+      expectedHeadVersion: 4,
+      request: { ...mutationRequest, seed: "product-api-replacement" },
+    },
+  });
+  assert.equal(replacementResponse.statusCode, 200, replacementResponse.body);
+  const replacement = replacementResponse.json<{
+    headVersion: number;
+    requestRevision: number;
+    items: { routineId: string }[];
+  }>();
+  assert.equal(replacement.headVersion, 5);
+  assert.equal(replacement.requestRevision, 3);
+  assert.equal(replacement.items[0]?.routineId, alternativeRoutineId);
 
   const activityRequest = {
     method: "POST" as const,
