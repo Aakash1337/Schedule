@@ -6,6 +6,8 @@ import {
   createStructuredTags,
   createWorkspace,
   dailyPlanId,
+  activityEventId,
+  routineId,
   workspaceId,
   type ActivityEvent,
   type Routine,
@@ -147,5 +149,38 @@ describe("routine planning commands", () => {
         idempotencyKey: "invalid-correction",
       }),
     ).rejects.toMatchObject({ code: "activity.reference_invalid" });
+  });
+
+  it("rejects missing routines and missing activity references with stable codes", async () => {
+    const test = harness();
+    await expect(
+      test.recordEvent.execute({
+        workspaceId: workspace,
+        routineId: routineId("missing-routine"),
+        type: "completed",
+        occurredAt: new Date("2026-07-15T10:00:00.000Z"),
+        timeZone: "UTC",
+        idempotencyKey: "missing-routine-event",
+      }),
+    ).rejects.toMatchObject({ code: "routine.not_found" });
+
+    const routine = await test.createRoutine.execute({
+      workspaceId: workspace,
+      title: "Reference lookup routine",
+      tags: createStructuredTags(),
+      duration: createDurationRange({ expectedMinutes: 30 }),
+      cadence: createCadencePolicy({ period: "week" }),
+    });
+    await expect(
+      test.recordEvent.execute({
+        workspaceId: workspace,
+        routineId: routine.id,
+        type: "completion_reversed",
+        occurredAt: new Date("2026-07-15T10:00:00.000Z"),
+        timeZone: "UTC",
+        referenceEventId: activityEventId("missing-reference"),
+        idempotencyKey: "missing-reference-event",
+      }),
+    ).rejects.toMatchObject({ code: "activity.reference_not_found" });
   });
 });

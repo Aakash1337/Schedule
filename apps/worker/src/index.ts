@@ -2,6 +2,7 @@ import { loadWorkerConfig } from "@schedule/config";
 import { createDatabase } from "@schedule/database";
 
 import { OutboxDispatcher } from "./dispatcher.js";
+import { runWorkerRuntime } from "./runtime.js";
 import { runOutboxWorker } from "./worker.js";
 
 const config = loadWorkerConfig();
@@ -13,17 +14,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => controller.abort(signal));
 }
 
-try {
-  await runOutboxWorker(config, database, dispatcher, controller.signal);
-} catch {
-  console.error(
-    JSON.stringify({
-      level: "error",
-      failureClass: "worker_runtime_error",
-      message: "worker stopped unexpectedly",
-    }),
-  );
-  process.exitCode = 1;
-} finally {
-  await database.close();
-}
+await runWorkerRuntime({
+  run: () => runOutboxWorker(config, database, dispatcher, controller.signal),
+  close: () => database.close(),
+});

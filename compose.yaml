@@ -35,6 +35,7 @@ services:
 
   worker:
     profiles: ["app"]
+    restart: on-failure
     build:
       context: .
       dockerfile: infra/docker/worker.Dockerfile

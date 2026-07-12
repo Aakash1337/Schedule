@@ -7,7 +7,10 @@ Implementation note: deterministic Phase 1 is implemented across the domain, app
 
 ## 1. Product summary
 
-This application combines conventional task and schedule management with an adaptive daily planner. It supports ordinary one-time work, projects, boards, calendars, and recurring activities, while also maintaining a pool of reusable routines from which it can generate a practical daily plan.
+The target application combines conventional task and schedule management with an adaptive daily
+planner. The current local MVP supports ordinary one-time work, a status-based board, bounded
+non-recurring calendar blocks, and a pool of reusable routines from which it generates a practical
+daily plan. Projects and the broader conventional feature set in section 12 remain product targets.
 
 The planner considers both the user's available time and desired number of tasks. It uses explicit rules, completion history, and controlled randomness to balance priority, cadence, variety, urgency, effort, and personal context. An optional local language model may advise the planner, but the deterministic scheduling engine remains authoritative.
 
@@ -325,6 +328,10 @@ The system should measure algorithm quality without requiring cloud telemetry:
 - User overrides and explanation views
 
 Local evaluation should support replaying historical days against a new algorithm version without changing actual records. Algorithm versions, configuration, random seeds, input snapshots, and outputs must be recorded for reproducibility.
+
+Current executable evidence, coverage floors, planner contract metrics, and known evaluation gaps are
+maintained in [EVALUATION.md](./EVALUATION.md). Feature evidence is CI-gated; production outcome
+metrics remain non-gating until real local usage provides a defined denominator and sufficient sample.
 
 Success is not simply "more tasks completed." Useful measures include realistic plans, sustainable cadence attainment, low duration error, fewer unwanted regenerations, and continued user control.
 

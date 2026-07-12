@@ -4,7 +4,8 @@ Project documentation is indexed in [docs/README.md](./docs/README.md). The main
 the [product definition](./docs/PRODUCT.md),
 [deterministic planner contract](./docs/PLANNER.md), [local HTTP API](./docs/API.md), and
 [local web application](./docs/WEB.md). Local data protection and recovery procedures are in the
-[operations guide](./docs/OPERATIONS.md).
+[operations guide](./docs/OPERATIONS.md). Behavioral confidence and known test limitations are tracked
+in the [evaluation guide](./docs/EVALUATION.md).
 
 Provider-neutral infrastructure for a customizable work-management and scheduling system.
 
@@ -55,7 +56,14 @@ Local unauthenticated product routes are enabled only for non-production loopbac
 
 ```powershell
 pnpm check
+pnpm eval
 ```
+
+`pnpm eval` validates the feature-to-evidence registry and runs all unit and component tests with
+coverage floors. PostgreSQL integrations and recovery drills run under `pnpm eval:full`. Test count
+and line coverage are diagnostics; critical features must also point to passing PostgreSQL or
+recovery-drill evidence. See the [evaluation guide](./docs/EVALUATION.md) for the scorecard and known
+gaps.
 
 With PostgreSQL running, verify backlog/Kanban and calendar management, routine creation and optimistic updates, stable activity-history pagination, idempotent routine and Today-item activity recording, deterministic plan generation, and atomic plan-revision persistence:
 

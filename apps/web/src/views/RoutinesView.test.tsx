@@ -193,6 +193,87 @@ describe("routine pool", () => {
     expect(screen.getByText("30m")).toBeInTheDocument();
   });
 
+  it("suppresses duplicate activity pages and ignores a stale response for a previously selected routine", async () => {
+    const user = userEvent.setup();
+    const firstRoutineHistory = deferred<{
+      items: readonly {
+        id: string;
+        routineId: string;
+        type: string;
+        occurredAt: string;
+        localDate: string;
+        durationMinutes: number | null;
+        reason: string | null;
+      }[];
+      page: { limit: number; nextCursor: string | null };
+    }>();
+    const secondRoutine: Routine = { ...routine, id: "routine-2", title: "Morning walk" };
+    const firstEvent = {
+      id: "activity-shared",
+      routineId: secondRoutine.id,
+      type: "completed",
+      occurredAt: "2026-07-12T14:00:00.000Z",
+      localDate: "2026-07-12",
+      durationMinutes: 30,
+      reason: "Most recent walk",
+    };
+    const olderEvent = {
+      ...firstEvent,
+      id: "activity-older",
+      occurredAt: "2026-07-10T14:00:00.000Z",
+      reason: "Older walk",
+    };
+    apiMocks.listRoutines.mockResolvedValue({
+      items: [routine, secondRoutine],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.listRoutineActivity.mockImplementation(
+      (_workspaceId: string, routineId: string, cursor?: string) => {
+        if (routineId === routine.id) return firstRoutineHistory.promise;
+        if (cursor === undefined) {
+          return Promise.resolve({ items: [firstEvent], page: { limit: 20, nextCursor: "older" } });
+        }
+        return Promise.resolve({
+          items: [firstEvent, olderEvent],
+          page: { limit: 20, nextCursor: null },
+        });
+      },
+    );
+
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const firstButton = (await screen.findByText(routine.title)).closest("button");
+    if (firstButton === null) throw new Error("First routine selection button was not rendered.");
+    await user.click(firstButton);
+    await user.click(screen.getByRole("button", { name: "Show history" }));
+
+    const secondButton = screen.getByText(secondRoutine.title).closest("button");
+    if (secondButton === null) throw new Error("Second routine selection button was not rendered.");
+    await user.click(secondButton);
+    await user.click(screen.getByRole("button", { name: "Show history" }));
+    expect(await screen.findByText("Most recent walk")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Load older activity" }));
+    expect(await screen.findByText("Older walk")).toBeInTheDocument();
+    expect(screen.getAllByText("Most recent walk")).toHaveLength(1);
+
+    await act(async () => {
+      firstRoutineHistory.resolve({
+        items: [
+          {
+            ...firstEvent,
+            id: "activity-stale",
+            routineId: routine.id,
+            reason: "Stale Spanish history",
+          },
+        ],
+        page: { limit: 20, nextCursor: null },
+      });
+      await firstRoutineHistory.promise;
+    });
+    expect(screen.queryByText("Stale Spanish history")).not.toBeInTheDocument();
+    expect(screen.getByText("Most recent walk")).toBeInTheDocument();
+  });
+
   it("reloads authoritative values instead of advancing a stale full draft", async () => {
     const user = userEvent.setup();
     const latest = { ...routine, title: "Spanish conversation", version: 3 };

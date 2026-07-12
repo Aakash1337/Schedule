@@ -11,6 +11,8 @@ const apiMocks = vi.hoisted(() => ({
   generatePlan: vi.fn(),
   getCurrentPlan: vi.fn(),
   recordPlanItemActivity: vi.fn(),
+  regeneratePlan: vi.fn(),
+  replacePlanItem: vi.fn(),
   setPlanItemLock: vi.fn(),
 }));
 
@@ -60,7 +62,28 @@ const plan: CurrentDailyPlan = {
   exclusions: [],
   warnings: [],
   generatedAt: "2026-07-12T09:00:00.000Z",
-  request: null,
+  request: {
+    workspaceId: workspace.id,
+    date: todayKey(),
+    timeZone: "America/La_Paz",
+    availableWindows: [
+      {
+        startsAt: `${todayKey()}T09:00:00.000Z`,
+        endsAt: `${todayKey()}T12:00:00.000Z`,
+      },
+    ],
+    targetMinutes: 180,
+    minimumMinutes: 120,
+    maximumMinutes: 240,
+    targetTaskCount: 4,
+    minimumTaskCount: 3,
+    maximumTaskCount: 5,
+    fitPreference: "balanced",
+    energy: null,
+    availableContexts: [],
+    seed: "seed",
+    requestRevision: 1,
+  },
   headVersion: 2,
 };
 
@@ -206,6 +229,65 @@ describe("Today commands", () => {
       expect.any(String),
     );
     expect(apiMocks.getCurrentPlan).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders successful regenerate and replace responses with versioned idempotent commands", async () => {
+    const user = userEvent.setup();
+    const regenerated: CurrentDailyPlan = {
+      ...plan,
+      headVersion: 3,
+      items: plan.items.map((item) => ({ ...item, title: "Review grammar" })),
+    };
+    const replaced: CurrentDailyPlan = {
+      ...regenerated,
+      headVersion: 4,
+      items: regenerated.items.map((item) => ({ ...item, title: "Listen to a podcast" })),
+    };
+    apiMocks.regeneratePlan.mockResolvedValue(regenerated);
+    apiMocks.replacePlanItem.mockResolvedValue(replaced);
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await user.click(await screen.findByRole("button", { name: "Regenerate unlocked" }));
+    await waitFor(() => expect(apiMocks.regeneratePlan).toHaveBeenCalledOnce());
+    const regenerateCall = apiMocks.regeneratePlan.mock.calls[0];
+    expect(regenerateCall?.[0]).toBe(workspace.id);
+    expect(regenerateCall?.[1]).toBe(plan.date);
+    expect(regenerateCall?.[2]).toEqual(
+      expect.objectContaining({
+        expectedPlanId: plan.id,
+        expectedHeadVersion: plan.headVersion,
+        request: expect.objectContaining({
+          seed: expect.stringMatching(
+            new RegExp(`^today:${plan.date}:revision:${plan.requestRevision + 1}:`),
+          ),
+        }),
+      }),
+    );
+    expect(regenerateCall?.[3]).toEqual(expect.any(String));
+    expect(await screen.findByText("Review grammar")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("regenerated");
+
+    await user.click(screen.getByRole("button", { name: "Replace" }));
+    await waitFor(() => expect(apiMocks.replacePlanItem).toHaveBeenCalledOnce());
+    const replaceCall = apiMocks.replacePlanItem.mock.calls[0];
+    expect(replaceCall?.[0]).toBe(workspace.id);
+    expect(replaceCall?.[1]).toBe(plan.date);
+    expect(replaceCall?.[2]).toBe(plan.items[0]?.id);
+    expect(replaceCall?.[3]).toEqual(
+      expect.objectContaining({
+        expectedPlanId: regenerated.id,
+        expectedHeadVersion: regenerated.headVersion,
+        request: expect.objectContaining({
+          seed: expect.stringMatching(
+            new RegExp(`^today:${plan.date}:revision:${regenerated.requestRevision + 1}:`),
+          ),
+        }),
+      }),
+    );
+    expect(replaceCall?.[4]).toEqual(expect.any(String));
+    expect(await screen.findByText("Listen to a podcast")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("replaced");
   });
 
   it("reuses the same idempotency key and timestamp after an ambiguous failure", async () => {

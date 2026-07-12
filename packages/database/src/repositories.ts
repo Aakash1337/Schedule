@@ -60,6 +60,7 @@ import {
 } from "@schedule/domain";
 
 import type { DatabaseConnection } from "./database.js";
+import { databaseErrorCode, databaseErrorConstraint } from "./database-errors.js";
 import {
   activityEvents,
   auditEvents,
@@ -87,18 +88,6 @@ type ActivityEventRow = typeof activityEvents.$inferSelect;
 type DailyPlanRow = typeof dailyPlans.$inferSelect;
 type DailyPlanItemRow = typeof dailyPlanItems.$inferSelect;
 type DailyPlanItemStateRow = typeof dailyPlanItemStates.$inferSelect;
-
-function databaseErrorCode(error: unknown): string | undefined {
-  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
-  return typeof error.code === "string" ? error.code : undefined;
-}
-
-function databaseErrorConstraint(error: unknown): string | undefined {
-  if (typeof error !== "object" || error === null || !("constraint_name" in error)) {
-    return undefined;
-  }
-  return typeof error.constraint_name === "string" ? error.constraint_name : undefined;
-}
 
 function mapWorkspace(row: WorkspaceRow): Workspace {
   return {

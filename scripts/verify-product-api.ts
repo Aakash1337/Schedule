@@ -18,6 +18,7 @@ const app = await buildApp({
   }),
 });
 let createdWorkspaceId: string | null = null;
+let isolatedWorkspaceId: string | null = null;
 let releaseConcurrencyLock: (() => void) | null = null;
 let heldLock: Promise<unknown> | null = null;
 
@@ -37,13 +38,16 @@ function hasDatabaseCode(error: unknown, code: string): boolean {
 }
 
 async function removeWorkspace(): Promise<void> {
-  if (createdWorkspaceId === null) return;
+  const workspaceIds = [createdWorkspaceId, isolatedWorkspaceId].filter(
+    (workspaceId): workspaceId is string => workspaceId !== null,
+  );
+  if (workspaceIds.length === 0) return;
   await connection.sql.begin(async (sql) => {
     await sql`select set_config('schedule.allow_activity_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_audit_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_plan_interaction_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_plan_mutation_change', 'on', true)`;
-    await sql`delete from workspaces where id = ${createdWorkspaceId}`;
+    await sql`delete from workspaces where id = any(${workspaceIds})`;
   });
 }
 
@@ -71,6 +75,13 @@ try {
     url: `/v1/workspaces/${createdWorkspaceId}`,
   });
   assert.equal(workspaceGetResponse.statusCode, 200, workspaceGetResponse.body);
+  const isolatedWorkspaceResponse = await app.inject({
+    method: "POST",
+    url: "/v1/workspaces",
+    payload: { name: "Product API isolation verification" },
+  });
+  assert.equal(isolatedWorkspaceResponse.statusCode, 201, isolatedWorkspaceResponse.body);
+  isolatedWorkspaceId = isolatedWorkspaceResponse.json<{ id: string }>().id;
 
   const workItemResponse = await app.inject({
     method: "POST",
@@ -91,6 +102,28 @@ try {
   });
   assert.equal(secondWorkItemResponse.statusCode, 201, secondWorkItemResponse.body);
   const secondWorkItem = secondWorkItemResponse.json<{ id: string; version: number }>();
+  const crossWorkspaceWorkItemRead = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${createdWorkItem.id}`,
+  });
+  assert.equal(crossWorkspaceWorkItemRead.statusCode, 404, crossWorkspaceWorkItemRead.body);
+  const crossWorkspaceWorkItemMutation = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${createdWorkItem.id}`,
+    payload: { expectedVersion: 1, title: "Cross-workspace write" },
+  });
+  assert.equal(crossWorkspaceWorkItemMutation.statusCode, 404, crossWorkspaceWorkItemMutation.body);
+  const sourceWorkItemAfterIsolationCheck = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items/${createdWorkItem.id}`,
+  });
+  assert.equal(
+    sourceWorkItemAfterIsolationCheck.statusCode,
+    200,
+    sourceWorkItemAfterIsolationCheck.body,
+  );
+  assert.equal(sourceWorkItemAfterIsolationCheck.json<{ title: string }>().title, "Ship local MVP");
+  assert.equal(sourceWorkItemAfterIsolationCheck.json<{ version: number }>().version, 1);
   const workItemListResponse = await app.inject({
     method: "GET",
     url: `/v1/workspaces/${createdWorkspaceId}/work-items?status=planned&priority=urgent&limit=20`,
@@ -158,6 +191,22 @@ try {
     [200, 409],
   );
 
+  const crossWorkspaceScheduleBlockCreation = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/schedule-blocks`,
+    payload: {
+      workItemId: createdWorkItem.id,
+      title: "Cross-workspace linked block",
+      startsAt: "2026-07-15T12:00:00.000Z",
+      endsAt: "2026-07-15T13:00:00.000Z",
+      timeZone: "UTC",
+    },
+  });
+  assert.equal(
+    crossWorkspaceScheduleBlockCreation.statusCode,
+    404,
+    crossWorkspaceScheduleBlockCreation.body,
+  );
   const scheduleBlockResponse = await app.inject({
     method: "POST",
     url: `/v1/workspaces/${createdWorkspaceId}/schedule-blocks`,
@@ -176,6 +225,49 @@ try {
     endsAt: string;
     version: number;
   }>();
+  const crossWorkspaceScheduleBlockRead = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/schedule-blocks/${createdScheduleBlock.id}`,
+  });
+  assert.equal(
+    crossWorkspaceScheduleBlockRead.statusCode,
+    404,
+    crossWorkspaceScheduleBlockRead.body,
+  );
+  const crossWorkspaceScheduleBlockMutation = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/schedule-blocks/${createdScheduleBlock.id}`,
+    payload: { expectedVersion: 1, title: "Cross-workspace block write" },
+  });
+  assert.equal(
+    crossWorkspaceScheduleBlockMutation.statusCode,
+    404,
+    crossWorkspaceScheduleBlockMutation.body,
+  );
+  const crossWorkspaceScheduleBlockDelete = await app.inject({
+    method: "DELETE",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/schedule-blocks/${createdScheduleBlock.id}`,
+    payload: { expectedVersion: 1 },
+  });
+  assert.equal(
+    crossWorkspaceScheduleBlockDelete.statusCode,
+    404,
+    crossWorkspaceScheduleBlockDelete.body,
+  );
+  const sourceScheduleBlockAfterIsolationCheck = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/schedule-blocks/${createdScheduleBlock.id}`,
+  });
+  assert.equal(
+    sourceScheduleBlockAfterIsolationCheck.statusCode,
+    200,
+    sourceScheduleBlockAfterIsolationCheck.body,
+  );
+  assert.equal(
+    sourceScheduleBlockAfterIsolationCheck.json<{ title: string }>().title,
+    "MVP focus block",
+  );
+  assert.equal(sourceScheduleBlockAfterIsolationCheck.json<{ version: number }>().version, 1);
   const overlappingBlocksResponse = await app.inject({
     method: "GET",
     url: `/v1/workspaces/${createdWorkspaceId}/schedule-blocks?from=2026-07-15T13%3A30%3A00.000Z&to=2026-07-15T14%3A30%3A00.000Z`,
@@ -274,6 +366,65 @@ try {
   });
   assert.equal(routineResponse.statusCode, 201, routineResponse.body);
   const createdRoutineId = routineResponse.json<{ id: string }>().id;
+  const crossWorkspaceRoutineRead = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/routines/${createdRoutineId}`,
+  });
+  assert.equal(crossWorkspaceRoutineRead.statusCode, 404, crossWorkspaceRoutineRead.body);
+  const crossWorkspaceRoutineMutation = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/routines/${createdRoutineId}`,
+    payload: { expectedVersion: 1, title: "Cross-workspace routine write" },
+  });
+  assert.equal(crossWorkspaceRoutineMutation.statusCode, 404, crossWorkspaceRoutineMutation.body);
+  const sourceRoutineAfterIsolationCheck = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}`,
+  });
+  assert.equal(
+    sourceRoutineAfterIsolationCheck.statusCode,
+    200,
+    sourceRoutineAfterIsolationCheck.body,
+  );
+  assert.equal(
+    sourceRoutineAfterIsolationCheck.json<{ title: string }>().title,
+    "API-backed routine",
+  );
+  assert.equal(sourceRoutineAfterIsolationCheck.json<{ status: string }>().status, "active");
+  assert.equal(sourceRoutineAfterIsolationCheck.json<{ version: number }>().version, 1);
+  const crossWorkspaceRoutineActivityRead = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/routines/${createdRoutineId}/activity-events`,
+  });
+  assert.equal(
+    crossWorkspaceRoutineActivityRead.statusCode,
+    404,
+    crossWorkspaceRoutineActivityRead.body,
+  );
+  const crossWorkspaceRoutineActivity = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/routines/${createdRoutineId}/activity-events`,
+    headers: { "idempotency-key": "cross-workspace-routine-activity" },
+    payload: {
+      type: "skipped",
+      occurredAt: "2026-07-15T08:00:00.000Z",
+      timeZone: "UTC",
+    },
+  });
+  assert.equal(crossWorkspaceRoutineActivity.statusCode, 404, crossWorkspaceRoutineActivity.body);
+  const sourceRoutineActivityAfterIsolationCheck = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/activity-events`,
+  });
+  assert.equal(
+    sourceRoutineActivityAfterIsolationCheck.statusCode,
+    200,
+    sourceRoutineActivityAfterIsolationCheck.body,
+  );
+  assert.equal(
+    sourceRoutineActivityAfterIsolationCheck.json<{ items: unknown[] }>().items.length,
+    0,
+  );
 
   const listResponse = await app.inject({
     method: "GET",
@@ -336,6 +487,57 @@ try {
   assert.equal(retrievedResponse.statusCode, 200, retrievedResponse.body);
   assert.equal(retrievedResponse.json<{ id: string }>().id, plan.id);
 
+  const crossWorkspaceRevisionPlanRead = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans/2026-07-15?revision=1`,
+  });
+  assert.equal(crossWorkspaceRevisionPlanRead.statusCode, 404, crossWorkspaceRevisionPlanRead.body);
+
+  const crossWorkspaceCurrentPlanRead = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans/2026-07-15/current`,
+  });
+  assert.equal(crossWorkspaceCurrentPlanRead.statusCode, 404, crossWorkspaceCurrentPlanRead.body);
+  const crossWorkspacePlanMutation = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans/2026-07-15/items/${plan.items[0]!.id}/lock`,
+    headers: { "idempotency-key": "cross-workspace-plan-lock" },
+    payload: { expectedPlanId: plan.id, expectedHeadVersion: 1, locked: true },
+  });
+  assert.equal(crossWorkspacePlanMutation.statusCode, 404, crossWorkspacePlanMutation.body);
+  const crossWorkspacePlanItemActivity = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans/2026-07-15/items/${plan.items[0]!.id}/activity-events`,
+    headers: { "idempotency-key": "cross-workspace-plan-item-activity" },
+    payload: {
+      expectedPlanId: plan.id,
+      expectedHeadVersion: 1,
+      type: "completed",
+      occurredAt: "2026-07-15T08:30:00.000Z",
+      timeZone: "UTC",
+      durationMinutes: 30,
+    },
+  });
+  assert.equal(crossWorkspacePlanItemActivity.statusCode, 404, crossWorkspacePlanItemActivity.body);
+  const sourcePlanAfterIsolationCheck = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/current`,
+  });
+  assert.equal(sourcePlanAfterIsolationCheck.statusCode, 200, sourcePlanAfterIsolationCheck.body);
+  assert.equal(sourcePlanAfterIsolationCheck.json<{ headVersion: number }>().headVersion, 1);
+  assert.equal(
+    sourcePlanAfterIsolationCheck.json<{
+      items: { locked: boolean; activityState: string }[];
+    }>().items[0]?.locked,
+    false,
+  );
+  assert.equal(
+    sourcePlanAfterIsolationCheck.json<{
+      items: { locked: boolean; activityState: string }[];
+    }>().items[0]?.activityState,
+    "pending",
+  );
+
   const missingGenericRevisionResponse = await app.inject({
     ...planRequest,
     payload: {
@@ -368,6 +570,51 @@ try {
   assert.equal(retriedLockResponse.statusCode, 200, retriedLockResponse.body);
   assert.deepEqual(retriedLockResponse.json(), lockResponse.json());
   assert.equal(lockResponse.json<{ headVersion: number }>().headVersion, 2);
+  const planInteractionAuditBeforeConflict = await connection.sql<
+    { count: number; resultHeadVersion: number }[]
+  >`
+    select count(*)::int as count, max(result_head_version)::int as "resultHeadVersion"
+    from plan_interaction_events
+    where workspace_id = ${createdWorkspaceId}
+      and idempotency_key = 'product-api-lock'
+  `;
+  assert.equal(planInteractionAuditBeforeConflict.length, 1);
+  assert.equal(planInteractionAuditBeforeConflict[0]?.count, 1);
+  assert.equal(planInteractionAuditBeforeConflict[0]?.resultHeadVersion, 2);
+  const changedPayloadLockConflict = await app.inject({
+    ...lockRequest,
+    payload: { ...lockRequest.payload, locked: false },
+  });
+  assert.equal(changedPayloadLockConflict.statusCode, 409, changedPayloadLockConflict.body);
+  assert.equal(
+    changedPayloadLockConflict.json<{ error: { code: string } }>().error.code,
+    "planning.idempotency_conflict",
+  );
+  const sourcePlanAfterIdempotencyConflict = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/current`,
+  });
+  assert.equal(
+    sourcePlanAfterIdempotencyConflict.statusCode,
+    200,
+    sourcePlanAfterIdempotencyConflict.body,
+  );
+  assert.equal(sourcePlanAfterIdempotencyConflict.json<{ headVersion: number }>().headVersion, 2);
+  assert.equal(
+    sourcePlanAfterIdempotencyConflict.json<{ items: { locked: boolean }[] }>().items[0]?.locked,
+    true,
+  );
+  const planInteractionAuditAfterConflict = await connection.sql<
+    { count: number; resultHeadVersion: number }[]
+  >`
+    select count(*)::int as count, max(result_head_version)::int as "resultHeadVersion"
+    from plan_interaction_events
+    where workspace_id = ${createdWorkspaceId}
+      and idempotency_key = 'product-api-lock'
+  `;
+  assert.equal(planInteractionAuditAfterConflict.length, 1);
+  assert.equal(planInteractionAuditAfterConflict[0]?.count, 1);
+  assert.equal(planInteractionAuditAfterConflict[0]?.resultHeadVersion, 2);
   const staleLockResponse = await app.inject({
     ...lockRequest,
     headers: { "idempotency-key": "product-api-stale-lock" },
@@ -407,6 +654,25 @@ try {
       request: mutationRequest,
     },
   };
+  const crossWorkspacePlanRegeneration = await app.inject({
+    ...regenerationRequest,
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans/2026-07-15/regenerations`,
+    headers: { "idempotency-key": "cross-workspace-plan-regeneration" },
+  });
+  assert.equal(crossWorkspacePlanRegeneration.statusCode, 404, crossWorkspacePlanRegeneration.body);
+  const sourcePlanAfterCrossWorkspaceRegeneration = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/current`,
+  });
+  assert.equal(
+    sourcePlanAfterCrossWorkspaceRegeneration.statusCode,
+    200,
+    sourcePlanAfterCrossWorkspaceRegeneration.body,
+  );
+  assert.equal(
+    sourcePlanAfterCrossWorkspaceRegeneration.json<{ headVersion: number }>().headVersion,
+    2,
+  );
   const regenerationResponse = await app.inject(regenerationRequest);
   const retriedRegeneration = await app.inject(regenerationRequest);
   assert.equal(regenerationResponse.statusCode, 200, regenerationResponse.body);
@@ -443,6 +709,33 @@ try {
   });
   assert.equal(alternativeRoutineResponse.statusCode, 201, alternativeRoutineResponse.body);
   const alternativeRoutineId = alternativeRoutineResponse.json<{ id: string }>().id;
+  const crossWorkspacePlanReplacement = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans/2026-07-15/items/${regenerated.items[0]!.id}/replacement`,
+    headers: { "idempotency-key": "cross-workspace-plan-replacement" },
+    payload: {
+      expectedPlanId: regenerated.id,
+      expectedHeadVersion: 4,
+      request: { ...mutationRequest, seed: "cross-workspace-plan-replacement" },
+    },
+  });
+  assert.equal(crossWorkspacePlanReplacement.statusCode, 404, crossWorkspacePlanReplacement.body);
+  const sourcePlanAfterCrossWorkspaceReplacement = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/current`,
+  });
+  assert.equal(
+    sourcePlanAfterCrossWorkspaceReplacement.statusCode,
+    200,
+    sourcePlanAfterCrossWorkspaceReplacement.body,
+  );
+  const unchangedBeforeReplacement = sourcePlanAfterCrossWorkspaceReplacement.json<{
+    headVersion: number;
+    items: { routineId: string; locked: boolean }[];
+  }>();
+  assert.equal(unchangedBeforeReplacement.headVersion, 4);
+  assert.equal(unchangedBeforeReplacement.items[0]?.routineId, createdRoutineId);
+  assert.equal(unchangedBeforeReplacement.items[0]?.locked, false);
   const replacementResponse = await app.inject({
     method: "POST",
     url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/items/${regenerated.items[0]!.id}/replacement`,

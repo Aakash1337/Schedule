@@ -26,6 +26,7 @@ export const DEFAULT_OUTBOX_SHUTDOWN_GRACE_PERIOD_MS = 30_000;
 
 const HANDLER_FAILURE_DETAIL = "Outbox handler execution failed";
 const UNHANDLED_TOPIC_FAILURE_DETAIL = "No outbox handler is registered for this topic";
+const LEASE_LOSS_FAILURE_DETAIL = "outbox lease lost; worker restart required";
 
 const sleep = (milliseconds: number, signal: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
@@ -122,6 +123,11 @@ const processClaimedEvent = async (
   let currentEvent = initialEvent;
   const handlerController = new AbortController();
   const heartbeatController = new AbortController();
+  let leaseLost = false;
+  let resolveLeaseLoss: (() => void) | undefined;
+  const leaseLoss = new Promise<{ readonly kind: "lease_lost" }>((resolve) => {
+    resolveLeaseLoss = () => resolve({ kind: "lease_lost" });
+  });
   const heartbeat = (async (): Promise<void> => {
     while (!heartbeatController.signal.aborted) {
       await sleep(heartbeatIntervalMs, heartbeatController.signal);
@@ -130,7 +136,13 @@ const processClaimedEvent = async (
       try {
         const renewal = await renewOutboxEventLease(database, currentEvent);
         if (renewal.status === "stale") {
+          // The fencing token is no longer ours. Do not allow a cooperative
+          // handler to continue side effects, and do not wait indefinitely for
+          // a non-cooperative one before allowing another worker to recover it.
+          leaseLost = true;
           logStaleClaim(currentEvent, "renew");
+          handlerController.abort("outbox lease lost");
+          resolveLeaseLoss?.();
           return;
         }
         currentEvent = renewal.event;
@@ -167,7 +179,7 @@ const processClaimedEvent = async (
   shutdownSignal.addEventListener("abort", beginShutdownGracePeriod, { once: true });
   if (shutdownSignal.aborted) beginShutdownGracePeriod();
 
-  const outcome = await Promise.race([dispatch, shutdownDeadline]);
+  const outcome = await Promise.race([dispatch, shutdownDeadline, leaseLoss]);
   shutdownSignal.removeEventListener("abort", beginShutdownGracePeriod);
   if (shutdownTimer !== undefined) clearTimeout(shutdownTimer);
 
@@ -187,8 +199,21 @@ const processClaimedEvent = async (
     return;
   }
 
+  if (outcome.kind === "lease_lost") {
+    heartbeatController.abort("outbox lease lost");
+    // `dispatch` translates handler rejections into a value, so leaving an
+    // uncooperative handler running cannot create an unhandled rejection.
+    void dispatch;
+    await heartbeat;
+    throw new Error(LEASE_LOSS_FAILURE_DETAIL);
+  }
+
   heartbeatController.abort("handler settled");
   await heartbeat;
+
+  // A heartbeat can discover a superseded token while the handler is
+  // settling. Never persist a completion or failure after that fence loss.
+  if (leaseLost) throw new Error(LEASE_LOSS_FAILURE_DETAIL);
 
   if (outcome.kind === "failed") {
     await recordFailure(
