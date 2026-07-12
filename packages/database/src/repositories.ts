@@ -9,7 +9,9 @@ import type {
   CurrentDailyPlan,
   DailyPlanRepository,
   PlanItemLockResult,
+  PlanItemActivityResult,
   PlanMutationRecord,
+  RecordPlanItemActivityInput,
   RoutineRepository,
   ScheduleBlockRepository,
   SetPlanItemLockInput,
@@ -28,8 +30,12 @@ import {
   dailyPlanId,
   localDate,
   planItemId,
+  isPlanItemActivityActionType,
+  recordActivityEvent,
+  reversePlanItemCompletion,
   routineId,
   scheduleBlockId,
+  transitionPlanItemActivity,
   workItemId,
   workspaceId,
   type ActivityEvent,
@@ -183,6 +189,7 @@ function mapActivityEvent(row: ActivityEventRow): ActivityEvent {
     workspaceId: workspaceId(row.workspaceId),
     routineId: routineId(row.routineId),
     planId: row.planId === null ? null : dailyPlanId(row.planId),
+    planItemId: row.planItemId === null ? null : planItemId(row.planItemId),
     type: row.type,
     occurredAt: new Date(row.occurredAt),
     localDate: localDate(row.localDate),
@@ -211,6 +218,7 @@ function resolveIdempotentActivity(
   const sameEvent =
     existing.routineId === requested.routineId &&
     existing.planId === requested.planId &&
+    existing.planItemId === requested.planItemId &&
     existing.type === requested.type &&
     existing.occurredAt.getTime() === requested.occurredAt.getTime() &&
     existing.localDate === requested.localDate &&
@@ -228,7 +236,7 @@ function resolveIdempotentActivity(
   return existing;
 }
 
-function mapPlanItem(row: DailyPlanItemRow, locked = false): PlanItem {
+function mapPlanItem(row: DailyPlanItemRow, state?: DailyPlanItemStateRow): PlanItem {
   return {
     id: planItemId(row.id),
     routineId: routineId(row.routineId),
@@ -240,7 +248,16 @@ function mapPlanItem(row: DailyPlanItemRow, locked = false): PlanItem {
     score: row.score,
     scoreComponents: row.scoreComponents,
     reasons: row.reasons,
-    locked,
+    locked: state?.locked ?? false,
+    activityState: state?.activityState ?? "pending",
+    lastActivityEventId:
+      state?.lastActivityEventId === null || state?.lastActivityEventId === undefined
+        ? null
+        : activityEventId(state.lastActivityEventId),
+    activityUpdatedAt:
+      state?.activityUpdatedAt === null || state?.activityUpdatedAt === undefined
+        ? null
+        : new Date(state.activityUpdatedAt),
   };
 }
 
@@ -249,13 +266,13 @@ function mapDailyPlan(
   itemRows: readonly DailyPlanItemRow[],
   stateRows: readonly DailyPlanItemStateRow[] = [],
 ): DailyPlan {
-  const lockedByItem = new Map(stateRows.map((state) => [state.itemId, state.locked]));
+  const stateByItem = new Map(stateRows.map((state) => [state.itemId, state]));
   return {
     id: dailyPlanId(row.id),
     workspaceId: workspaceId(row.workspaceId),
     date: localDate(row.localDate),
     timeZone: row.timeZone,
-    items: itemRows.map((item) => mapPlanItem(item, lockedByItem.get(item.id) ?? false)),
+    items: itemRows.map((item) => mapPlanItem(item, stateByItem.get(item.id))),
     totalMinutes: row.totalMinutes,
     fitness: row.fitness,
     algorithmVersion: row.algorithmVersion,
@@ -650,6 +667,7 @@ class PostgresActivityEventRepository implements ActivityEventRepository {
           workspaceId: event.workspaceId,
           routineId: event.routineId,
           planId: event.planId,
+          planItemId: event.planItemId,
           type: event.type,
           occurredAt: event.occurredAt,
           localDate: event.localDate,
@@ -899,6 +917,9 @@ class PostgresDailyPlanRepository implements DailyPlanRepository {
             planId: plan.id,
             itemId: item.id,
             locked: item.locked,
+            activityState: item.activityState,
+            lastActivityEventId: item.lastActivityEventId,
+            activityUpdatedAt: item.activityUpdatedAt,
             version: 1,
             updatedAt: plan.generatedAt,
           })),
@@ -1088,6 +1109,199 @@ class PostgresDailyPlanRepository implements DailyPlanRepository {
       planId: input.expectedPlanId,
       itemId: input.itemId,
       locked: input.locked,
+      headVersion: resultHeadVersion,
+    };
+  }
+
+  async recordItemActivity(input: RecordPlanItemActivityInput): Promise<PlanItemActivityResult> {
+    const normalizedReason = input.reason?.trim() || null;
+    const payloadHash = createHash("sha256")
+      .update(
+        JSON.stringify({
+          date: input.date,
+          expectedPlanId: input.expectedPlanId,
+          itemId: input.itemId,
+          expectedHeadVersion: input.expectedHeadVersion,
+          type: input.type,
+          occurredAt: input.occurredAt.getTime(),
+          timeZone: input.timeZone,
+          durationMinutes: input.durationMinutes,
+          reason: normalizedReason,
+          metadata: canonicalMetadata(input.metadata),
+        }),
+      )
+      .digest("hex");
+    await this.lockDay(input.workspaceId, input.date);
+    const [prior] = await this.database
+      .select()
+      .from(planInteractionEvents)
+      .where(
+        and(
+          eq(planInteractionEvents.workspaceId, input.workspaceId),
+          eq(planInteractionEvents.idempotencyKey, input.idempotencyKey),
+        ),
+      )
+      .limit(1);
+    if (prior !== undefined) {
+      if (prior.payloadHash !== payloadHash) {
+        throw new DomainError(
+          "planning.idempotency_conflict",
+          "This plan interaction key already belongs to a different command.",
+        );
+      }
+      if (prior.activityEventId === null || !isPlanItemActivityActionType(prior.type)) {
+        throw new DomainError(
+          "planning.activity_result_not_found",
+          "The recorded plan item activity result is unavailable.",
+        );
+      }
+      const [activity] = await this.database
+        .select()
+        .from(activityEvents)
+        .where(
+          and(
+            eq(activityEvents.workspaceId, input.workspaceId),
+            eq(activityEvents.id, prior.activityEventId),
+          ),
+        )
+        .limit(1);
+      if (activity === undefined) {
+        throw new DomainError(
+          "planning.activity_result_not_found",
+          "The recorded plan item activity result is unavailable.",
+        );
+      }
+      return {
+        planId: dailyPlanId(prior.planId),
+        itemId: planItemId(prior.itemId),
+        activityState: prior.type === "completion_reversed" ? "pending" : prior.type,
+        activityEvent: mapActivityEvent(activity),
+        headVersion: prior.resultHeadVersion,
+      };
+    }
+    const [head] = await this.database
+      .select()
+      .from(dailyPlanHeads)
+      .where(
+        and(
+          eq(dailyPlanHeads.workspaceId, input.workspaceId),
+          eq(dailyPlanHeads.localDate, input.date),
+        ),
+      )
+      .limit(1);
+    if (head === undefined) {
+      throw new DomainError("planning.current_not_found", "No current plan exists for this date.");
+    }
+    if (head.currentPlanId !== input.expectedPlanId || head.version !== input.expectedHeadVersion) {
+      throw new DomainError(
+        "planning.head_conflict",
+        "The current plan changed before this interaction could be applied.",
+      );
+    }
+    const [item] = await this.database
+      .select()
+      .from(dailyPlanItems)
+      .where(
+        and(
+          eq(dailyPlanItems.workspaceId, input.workspaceId),
+          eq(dailyPlanItems.planId, input.expectedPlanId),
+          eq(dailyPlanItems.id, input.itemId),
+        ),
+      )
+      .limit(1);
+    if (item === undefined) {
+      throw new DomainError("planning.item_not_found", "The plan item does not exist.");
+    }
+    const [state] = await this.database
+      .select()
+      .from(dailyPlanItemStates)
+      .where(
+        and(
+          eq(dailyPlanItemStates.workspaceId, input.workspaceId),
+          eq(dailyPlanItemStates.planId, input.expectedPlanId),
+          eq(dailyPlanItemStates.itemId, input.itemId),
+        ),
+      )
+      .limit(1);
+    const currentActivityState = state?.activityState ?? "pending";
+    const activityState =
+      input.type === "completion_reversed"
+        ? reversePlanItemCompletion(currentActivityState)
+        : transitionPlanItemActivity(currentActivityState, input.type);
+    const referenceEventId =
+      input.type === "completion_reversed" ? (state?.lastActivityEventId ?? null) : null;
+    const activityEvent = await new PostgresActivityEventRepository(this.database).append(
+      recordActivityEvent({
+        workspaceId: input.workspaceId,
+        routineId: routineId(item.routineId),
+        planId: input.expectedPlanId,
+        planItemId: input.itemId,
+        type: input.type,
+        occurredAt: input.occurredAt,
+        timeZone: input.timeZone,
+        durationMinutes: input.durationMinutes,
+        reason: normalizedReason,
+        referenceEventId:
+          referenceEventId === null || referenceEventId === undefined
+            ? null
+            : activityEventId(referenceEventId),
+        idempotencyKey: input.idempotencyKey,
+        metadata: input.metadata,
+        recordedAt: input.now,
+      }),
+    );
+    if (state === undefined) {
+      await this.database.insert(dailyPlanItemStates).values({
+        workspaceId: input.workspaceId,
+        planId: input.expectedPlanId,
+        itemId: input.itemId,
+        activityState,
+        lastActivityEventId: activityEvent.id,
+        activityUpdatedAt: input.now,
+        version: 1,
+        updatedAt: input.now,
+      });
+    } else {
+      await this.database
+        .update(dailyPlanItemStates)
+        .set({
+          activityState,
+          lastActivityEventId: activityEvent.id,
+          activityUpdatedAt: input.now,
+          version: state.version + 1,
+          updatedAt: input.now,
+        })
+        .where(eq(dailyPlanItemStates.id, state.id));
+    }
+    const resultHeadVersion = head.version + 1;
+    const updated = await this.database
+      .update(dailyPlanHeads)
+      .set({ version: resultHeadVersion, updatedAt: input.now })
+      .where(and(eq(dailyPlanHeads.id, head.id), eq(dailyPlanHeads.version, head.version)))
+      .returning({ id: dailyPlanHeads.id });
+    if (updated.length === 0) {
+      throw new DomainError(
+        "planning.write_conflict",
+        "The plan interaction could not update the current head.",
+      );
+    }
+    await this.database.insert(planInteractionEvents).values({
+      workspaceId: input.workspaceId,
+      localDate: input.date,
+      planId: input.expectedPlanId,
+      itemId: input.itemId,
+      type: input.type,
+      activityEventId: activityEvent.id,
+      idempotencyKey: input.idempotencyKey,
+      payloadHash,
+      resultHeadVersion,
+      recordedAt: input.now,
+    });
+    return {
+      planId: input.expectedPlanId,
+      itemId: input.itemId,
+      activityState,
+      activityEvent,
       headVersion: resultHeadVersion,
     };
   }

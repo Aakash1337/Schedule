@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-12
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 backend work now includes stable plan-item identities, an authoritative Today-plan head, audited lock state, and immutable regeneration/replacement revisions. The local product API covers routine management, stable activity history, current-plan retrieval, item locking, regeneration, and replacement; see [API.md](./API.md). The user interface remains intentionally deferred while its workflows and visual direction are still open.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 backend work now includes stable plan-item identities, an authoritative Today-plan head, audited lock and activity state, and immutable regeneration/replacement revisions. The local product API covers routine management, stable activity history, current-plan retrieval, item locking, item start/completion/skip/defer/dismiss and completion-undo actions, regeneration, and replacement; see [API.md](./API.md). The user interface remains intentionally deferred while its workflows and visual direction are still open.
 
 ## 1. Product summary
 

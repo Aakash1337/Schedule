@@ -79,6 +79,9 @@ describe("GenerateDailyPlan", () => {
           locked: input.locked,
           headVersion: input.expectedHeadVersion + 1,
         }),
+        recordItemActivity: async () => {
+          throw new Error("not used");
+        },
         lockDay: async () => undefined,
         findMutation: async () => null,
         insertMutation: async () => undefined,

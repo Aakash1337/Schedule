@@ -11,5 +11,6 @@ export * from "./list-routines.js";
 export * from "./mutate-daily-plan.js";
 export * from "./ports.js";
 export * from "./record-activity-event.js";
+export * from "./record-plan-item-activity.js";
 export * from "./set-plan-item-lock.js";
 export * from "./update-routine.js";

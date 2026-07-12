@@ -69,7 +69,24 @@ export const activityEventType = pgEnum("activity_event_type", [
   "duration_corrected",
   "completion_reversed",
 ]);
-export const planInteractionType = pgEnum("plan_interaction_type", ["locked", "unlocked"]);
+export const planInteractionType = pgEnum("plan_interaction_type", [
+  "locked",
+  "unlocked",
+  "started",
+  "completed",
+  "skipped",
+  "deferred",
+  "dismissed",
+  "completion_reversed",
+]);
+export const planItemActivityState = pgEnum("plan_item_activity_state", [
+  "pending",
+  "started",
+  "completed",
+  "skipped",
+  "deferred",
+  "dismissed",
+]);
 export const planMutationKind = pgEnum("plan_mutation_kind", ["regenerate", "replace"]);
 
 export const workspaces = pgTable("workspaces", {
@@ -331,6 +348,7 @@ export const activityEvents = pgTable(
       .references(() => workspaces.id, { onDelete: "cascade" }),
     routineId: uuid("routine_id").notNull(),
     planId: uuid("plan_id"),
+    planItemId: uuid("plan_item_id"),
     type: activityEventType("type").notNull(),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
     localDate: date("local_date").notNull(),
@@ -347,6 +365,12 @@ export const activityEvents = pgTable(
   },
   (table) => [
     unique("activity_events_workspace_id_id_uq").on(table.workspaceId, table.id),
+    unique("activity_events_workspace_plan_item_id_uq").on(
+      table.workspaceId,
+      table.planId,
+      table.planItemId,
+      table.id,
+    ),
     unique("activity_events_workspace_routine_id_id_uq").on(
       table.workspaceId,
       table.routineId,
@@ -375,6 +399,11 @@ export const activityEvents = pgTable(
       foreignColumns: [dailyPlans.workspaceId, dailyPlans.id],
     }).onDelete("restrict"),
     foreignKey({
+      name: "activity_events_plan_item_tenant_fk",
+      columns: [table.workspaceId, table.planId, table.planItemId],
+      foreignColumns: [dailyPlanItems.workspaceId, dailyPlanItems.planId, dailyPlanItems.id],
+    }).onDelete("restrict"),
+    foreignKey({
       name: "activity_events_reference_tenant_fk",
       columns: [table.workspaceId, table.routineId, table.referenceEventId],
       foreignColumns: [table.workspaceId, table.routineId, table.id],
@@ -386,6 +415,10 @@ export const activityEvents = pgTable(
     check(
       "activity_events_reference_policy",
       sql`(${table.type} = 'duration_corrected' AND ${table.referenceEventId} IS NOT NULL AND ${table.durationMinutes} IS NOT NULL) OR (${table.type} = 'completion_reversed' AND ${table.referenceEventId} IS NOT NULL AND ${table.durationMinutes} IS NULL) OR (${table.type} NOT IN ('duration_corrected', 'completion_reversed') AND ${table.referenceEventId} IS NULL)`,
+    ),
+    check(
+      "activity_events_plan_item_requires_plan",
+      sql`${table.planItemId} IS NULL OR ${table.planId} IS NOT NULL`,
     ),
   ],
 );
@@ -443,6 +476,9 @@ export const dailyPlanItemStates = pgTable(
     planId: uuid("plan_id").notNull(),
     itemId: uuid("item_id").notNull(),
     locked: boolean("locked").notNull().default(false),
+    activityState: planItemActivityState("activity_state").notNull().default("pending"),
+    lastActivityEventId: uuid("last_activity_event_id"),
+    activityUpdatedAt: timestamp("activity_updated_at", { withTimezone: true }),
     version: integer("version").notNull().default(1),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -453,7 +489,21 @@ export const dailyPlanItemStates = pgTable(
       columns: [table.workspaceId, table.planId, table.itemId],
       foreignColumns: [dailyPlanItems.workspaceId, dailyPlanItems.planId, dailyPlanItems.id],
     }).onDelete("cascade"),
+    foreignKey({
+      name: "daily_plan_item_states_activity_tenant_fk",
+      columns: [table.workspaceId, table.planId, table.itemId, table.lastActivityEventId],
+      foreignColumns: [
+        activityEvents.workspaceId,
+        activityEvents.planId,
+        activityEvents.planItemId,
+        activityEvents.id,
+      ],
+    }).onDelete("restrict"),
     check("daily_plan_item_states_version_positive", sql`${table.version} > 0`),
+    check(
+      "daily_plan_item_states_activity_projection_consistent",
+      sql`(${table.activityState} = 'pending' AND ${table.lastActivityEventId} IS NULL AND ${table.activityUpdatedAt} IS NULL) OR (${table.lastActivityEventId} IS NOT NULL AND ${table.activityUpdatedAt} IS NOT NULL)`,
+    ),
   ],
 );
 
@@ -469,6 +519,7 @@ export const planInteractionEvents = pgTable(
     planId: uuid("plan_id").notNull(),
     itemId: uuid("item_id").notNull(),
     type: planInteractionType("type").notNull(),
+    activityEventId: uuid("activity_event_id"),
     idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
     payloadHash: varchar("payload_hash", { length: 64 }).notNull(),
     resultHeadVersion: integer("result_head_version").notNull(),
@@ -494,8 +545,22 @@ export const planInteractionEvents = pgTable(
       columns: [table.workspaceId, table.planId, table.itemId],
       foreignColumns: [dailyPlanItems.workspaceId, dailyPlanItems.planId, dailyPlanItems.id],
     }).onDelete("restrict"),
+    foreignKey({
+      name: "plan_interaction_events_activity_tenant_fk",
+      columns: [table.workspaceId, table.planId, table.itemId, table.activityEventId],
+      foreignColumns: [
+        activityEvents.workspaceId,
+        activityEvents.planId,
+        activityEvents.planItemId,
+        activityEvents.id,
+      ],
+    }).onDelete("restrict"),
     check("plan_interaction_events_hash_length", sql`char_length(${table.payloadHash}) = 64`),
     check("plan_interaction_events_head_version_positive", sql`${table.resultHeadVersion} > 0`),
+    check(
+      "plan_interaction_events_activity_policy",
+      sql`(${table.type} IN ('locked', 'unlocked') AND ${table.activityEventId} IS NULL) OR (${table.type} NOT IN ('locked', 'unlocked') AND ${table.activityEventId} IS NOT NULL)`,
+    ),
   ],
 );
 

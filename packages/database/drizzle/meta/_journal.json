@@ -64,6 +64,20 @@
       "when": 1783840069515,
       "tag": "0008_melodic_power_pack",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1783842831211,
+      "tag": "0009_tan_freak",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783843504854,
+      "tag": "0010_clear_titanium_man",
+      "breakpoints": true
     }
   ]
 }

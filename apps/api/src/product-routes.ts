@@ -13,7 +13,9 @@ import type {
   ListRoutineActivityQuery,
   ListRoutinesQuery,
   PlanItemLockResult,
+  PlanItemActivityResult,
   RecordActivityEventCommand,
+  RecordPlanItemActivityCommand,
   RegenerateDailyPlanCommand,
   ReplacePlanItemCommand,
   SetPlanItemLockCommand,
@@ -55,6 +57,7 @@ export interface ProductServices {
   listRoutines(query: ListRoutinesQuery): Promise<readonly Routine[]>;
   listRoutineActivity(query: ListRoutineActivityQuery): Promise<ActivityHistoryPage>;
   recordActivityEvent(command: RecordActivityEventCommand): Promise<ActivityEvent>;
+  recordPlanItemActivity(command: RecordPlanItemActivityCommand): Promise<PlanItemActivityResult>;
   generateDailyPlan(command: GenerateDailyPlanCommand): Promise<DailyPlan>;
   getCurrentDailyPlan(query: GetCurrentDailyPlanQuery): Promise<CurrentDailyPlan>;
   setPlanItemLock(command: SetPlanItemLockCommand): Promise<PlanItemLockResult>;
@@ -282,6 +285,21 @@ const planItemLockBody = z.strictObject({
   expectedPlanId: uuid,
   expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
   locked: z.boolean(),
+});
+const planItemActivityBody = z.strictObject({
+  expectedPlanId: uuid,
+  expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
+  type: z.enum(["started", "completed", "skipped", "deferred", "dismissed", "completion_reversed"]),
+  occurredAt: instant,
+  timeZone: z.string().trim().min(1).max(80),
+  durationMinutes: z.number().int().positive().max(43_200).nullable().default(null),
+  reason: z.string().max(500).nullable().default(null),
+  metadata: z
+    .record(z.string().min(1).max(64), metadataValue)
+    .refine((value) => Object.keys(value).length <= 8, {
+      message: "Metadata cannot contain more than 8 fields.",
+    })
+    .default({}),
 });
 const planMutationRequestBody = planBody.omit({ date: true, requestRevision: true });
 const planMutationBody = z.strictObject({
@@ -584,6 +602,30 @@ export async function registerProductRoutes(
       idempotencyKey: key,
     });
   });
+
+  app.post(
+    "/v1/workspaces/:workspaceId/plans/:date/items/:itemId/activity-events",
+    async (request) => {
+      const params = parseRequest(planItemParams, request.params);
+      const body = parseRequest(planItemActivityBody, request.body);
+      const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+      const result = await services.recordPlanItemActivity({
+        workspaceId: workspaceId(params.workspaceId),
+        date: localDate(params.date),
+        expectedPlanId: dailyPlanId(body.expectedPlanId),
+        itemId: planItemId(params.itemId),
+        expectedHeadVersion: body.expectedHeadVersion,
+        type: body.type,
+        occurredAt: new Date(body.occurredAt),
+        timeZone: body.timeZone,
+        durationMinutes: body.durationMinutes,
+        reason: body.reason,
+        metadata: body.metadata,
+        idempotencyKey: key,
+      });
+      return { ...result, activityEvent: publicActivityEvent(result.activityEvent) };
+    },
+  );
 
   app.post("/v1/workspaces/:workspaceId/plans/:date/regenerations", async (request) => {
     const params = parseRequest(planParams, request.params);

@@ -14,21 +14,22 @@ The local product API exposes the deterministic planner without committing the p
 
 ## Routes
 
-| Method  | Route                                                                        | Result                                           |
-| ------- | ---------------------------------------------------------------------------- | ------------------------------------------------ |
-| `POST`  | `/v1/workspaces`                                                             | Create a workspace (`201`)                       |
-| `POST`  | `/v1/workspaces/{workspaceId}/routines`                                      | Create a routine (`201`)                         |
-| `GET`   | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`     | List a bounded routine page (`200`)              |
-| `GET`   | `/v1/workspaces/{workspaceId}/routines/{routineId}`                          | Retrieve one routine (`200` or `404`)            |
-| `PATCH` | `/v1/workspaces/{workspaceId}/routines/{routineId}`                          | Version-checked partial update (`200` or `409`)  |
-| `GET`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`          | List stable, cursor-paginated history (`200`)    |
-| `POST`  | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`          | Idempotently record activity (`200`)             |
-| `POST`  | `/v1/workspaces/{workspaceId}/plans`                                         | Generate or retry a daily plan revision (`200`)  |
-| `GET`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}?revision=1`                 | Retrieve an exact revision (`200` or `404`)      |
-| `GET`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/current`                    | Retrieve the current Today plan and head version |
-| `PATCH` | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/lock`        | Idempotently lock or unlock a current plan item  |
-| `POST`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/regenerations`              | Regenerate around locked items                   |
-| `POST`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/replacement` | Replace one unlocked item                        |
+| Method  | Route                                                                            | Result                                           |
+| ------- | -------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `POST`  | `/v1/workspaces`                                                                 | Create a workspace (`201`)                       |
+| `POST`  | `/v1/workspaces/{workspaceId}/routines`                                          | Create a routine (`201`)                         |
+| `GET`   | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`         | List a bounded routine page (`200`)              |
+| `GET`   | `/v1/workspaces/{workspaceId}/routines/{routineId}`                              | Retrieve one routine (`200` or `404`)            |
+| `PATCH` | `/v1/workspaces/{workspaceId}/routines/{routineId}`                              | Version-checked partial update (`200` or `409`)  |
+| `GET`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`              | List stable, cursor-paginated history (`200`)    |
+| `POST`  | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`              | Idempotently record activity (`200`)             |
+| `POST`  | `/v1/workspaces/{workspaceId}/plans`                                             | Generate or retry a daily plan revision (`200`)  |
+| `GET`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}?revision=1`                     | Retrieve an exact revision (`200` or `404`)      |
+| `GET`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/current`                        | Retrieve the current Today plan and head version |
+| `PATCH` | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/lock`            | Idempotently lock or unlock a current plan item  |
+| `POST`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/activity-events` | Record a current item action                     |
+| `POST`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/regenerations`                  | Regenerate around locked items                   |
+| `POST`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/replacement`     | Replace one unlocked item                        |
 
 Activity requests require an `Idempotency-Key` header containing 1–160 characters. Reusing a key with identical event content returns the original event. Reusing it for different content returns `409 activity.idempotency_conflict`. Public event responses omit the key because the caller already owns it and it is retry metadata, not activity history.
 
@@ -40,7 +41,11 @@ A plan is identified by workspace, local date, and positive request revision. Re
 
 Every plan item has a stable UUID and a projected `locked` flag. The current-plan response adds `headVersion`. Lock changes require an `Idempotency-Key` plus `expectedPlanId` and `expectedHeadVersion`; stale state returns `409 planning.head_conflict`. Identical retries return the original result, while key reuse for another command returns `409 planning.idempotency_conflict`. Lock and unlock facts are append-only even though the current flag is projected for efficient reads.
 
-Regeneration and replacement require the same optimistic identity and idempotency header plus a complete planning request with a new seed. The server allocates the next revision. Regeneration carries locked items exactly and plans only residual capacity. Replacement anchors every sibling, rejects a locked target, excludes the removed routine, and fills the released capacity. Prior revisions remain immutable and mutation provenance is retained for replay. A retry resolves to the same immutable plan revision and recorded head version; its `locked` flags reflect the latest projected lock state for that revision.
+Current plan items also expose `activityState`, `lastActivityEventId`, and `activityUpdatedAt`. An item activity request uses the same optimistic identity and idempotency requirements as locking, and supports `started`, `completed`, `skipped`, `deferred`, `dismissed`, or `completion_reversed`. A pending item may enter any direct action state; a started item may enter any terminal state. Terminal states cannot transition again, except that reversing a completion reopens it as pending. Only completion may include an actual `durationMinutes`. The resulting activity event records both the plan and plan-item identity, advances the Today head once, and feeds later planner history. Lock state remains independent, and an action does not automatically regenerate the plan.
+
+Generic routine activity may still be recorded outside a plan. Item completion reversal uses the item endpoint so its append-only event, Today projection, and head version change atomically; generic reversal remains appropriate for routine activity recorded outside a plan.
+
+Regeneration and replacement require the same optimistic identity and idempotency header plus a complete planning request with a new seed. The server allocates the next revision. Regeneration carries locked items exactly and plans only residual capacity. Replacement anchors every sibling, rejects a locked target, excludes the removed routine, and fills the released capacity. Prior revisions remain immutable and mutation provenance is retained for replay. A retry resolves to the same immutable plan revision and recorded head version; its projected lock and activity fields reflect the latest state for that revision.
 
 ## Error shape
 

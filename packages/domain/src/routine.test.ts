@@ -7,6 +7,7 @@ import {
   createDurationRange,
   createRoutine,
   createStructuredTags,
+  planItemId,
   recordActivityEvent,
   routineId,
   updateRoutine,
@@ -125,6 +126,19 @@ describe("routine domain model", () => {
         occurredAt: new Date("2026-07-13T12:00:00.000Z"),
         timeZone: "UTC",
         referenceEventId: activityEventId("unrelated-event"),
+      }),
+    ).toThrowError(DomainError);
+  });
+
+  it("requires a plan when activity is attributed to a plan item", () => {
+    expect(() =>
+      recordActivityEvent({
+        workspaceId: workspace,
+        routineId: routineId("routine-study"),
+        planItemId: planItemId("today-item"),
+        type: "completed",
+        occurredAt: new Date("2026-07-13T12:00:00.000Z"),
+        timeZone: "UTC",
       }),
     ).toThrowError(DomainError);
   });

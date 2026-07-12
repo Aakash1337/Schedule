@@ -21,6 +21,15 @@ let createdWorkspaceId: string | null = null;
 let releaseConcurrencyLock: (() => void) | null = null;
 let heldLock: Promise<unknown> | null = null;
 
+function hasDatabaseCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === code
+  );
+}
+
 async function removeWorkspace(): Promise<void> {
   if (createdWorkspaceId === null) return;
   await connection.sql.begin(async (sql) => {
@@ -226,13 +235,167 @@ try {
   });
   assert.equal(replacementResponse.statusCode, 200, replacementResponse.body);
   const replacement = replacementResponse.json<{
+    id: string;
     headVersion: number;
     requestRevision: number;
-    items: { routineId: string }[];
+    items: { id: string; routineId: string }[];
   }>();
   assert.equal(replacement.headVersion, 5);
   assert.equal(replacement.requestRevision, 3);
   assert.equal(replacement.items[0]?.routineId, alternativeRoutineId);
+
+  const planItemActivityRequest = {
+    method: "POST" as const,
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/items/${replacement.items[0]!.id}/activity-events`,
+    headers: { "idempotency-key": "product-api-plan-item-completion" },
+    payload: {
+      expectedPlanId: replacement.id,
+      expectedHeadVersion: 5,
+      type: "completed",
+      occurredAt: "2026-07-15T09:30:00.000Z",
+      timeZone: "UTC",
+      durationMinutes: 29,
+      metadata: { source: "today" },
+    },
+  };
+  const planItemActivityResponse = await app.inject(planItemActivityRequest);
+  const retriedPlanItemActivity = await app.inject(planItemActivityRequest);
+  assert.equal(planItemActivityResponse.statusCode, 200, planItemActivityResponse.body);
+  assert.deepEqual(retriedPlanItemActivity.json(), planItemActivityResponse.json());
+  const planItemActivity = planItemActivityResponse.json<{
+    activityState: string;
+    headVersion: number;
+    activityEvent: { id: string; planId: string; planItemId: string; routineId: string };
+  }>();
+  assert.equal(planItemActivity.activityState, "completed");
+  assert.equal(planItemActivity.headVersion, 6);
+  assert.equal(planItemActivity.activityEvent.planId, replacement.id);
+  assert.equal(planItemActivity.activityEvent.planItemId, replacement.items[0]!.id);
+  assert.equal(planItemActivity.activityEvent.routineId, alternativeRoutineId);
+  const projectedActivityResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/current`,
+  });
+  assert.equal(projectedActivityResponse.statusCode, 200, projectedActivityResponse.body);
+  const projectedActivity = projectedActivityResponse.json<{
+    headVersion: number;
+    items: { activityState: string; lastActivityEventId: string | null }[];
+  }>();
+  assert.equal(projectedActivity.headVersion, 6);
+  assert.equal(projectedActivity.items[0]?.activityState, "completed");
+  assert.equal(projectedActivity.items[0]?.lastActivityEventId, planItemActivity.activityEvent.id);
+  const unsupportedPlanItemReversal = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${alternativeRoutineId}/activity-events`,
+    headers: { "idempotency-key": "product-api-plan-item-reversal" },
+    payload: {
+      type: "completion_reversed",
+      occurredAt: "2026-07-15T09:45:00.000Z",
+      timeZone: "UTC",
+      referenceEventId: planItemActivity.activityEvent.id,
+    },
+  });
+  assert.equal(unsupportedPlanItemReversal.statusCode, 422, unsupportedPlanItemReversal.body);
+  assert.equal(
+    unsupportedPlanItemReversal.json<{ error: { code: string } }>().error.code,
+    "planning.item_activity_reversal_requires_item_flow",
+  );
+  await assert.rejects(
+    connection.sql`
+      insert into activity_events (
+        workspace_id,
+        routine_id,
+        type,
+        occurred_at,
+        local_date,
+        time_zone,
+        reference_event_id,
+        idempotency_key,
+        recorded_at
+      ) values (
+        ${createdWorkspaceId},
+        ${alternativeRoutineId},
+        'completion_reversed',
+        '2026-07-15T09:46:00.000Z',
+        '2026-07-15',
+        'UTC',
+        ${planItemActivity.activityEvent.id},
+        'invalid-unattributed-plan-item-reversal',
+        '2026-07-15T09:46:00.000Z'
+      )
+    `,
+    (error) => hasDatabaseCode(error, "23514"),
+  );
+  const invalidTerminalTransition = await app.inject({
+    ...planItemActivityRequest,
+    headers: { "idempotency-key": "product-api-plan-item-restart" },
+    payload: {
+      ...planItemActivityRequest.payload,
+      expectedHeadVersion: 6,
+      type: "started",
+      durationMinutes: null,
+    },
+  });
+  assert.equal(invalidTerminalTransition.statusCode, 422, invalidTerminalTransition.body);
+  assert.equal(
+    invalidTerminalTransition.json<{ error: { code: string } }>().error.code,
+    "planning.item_activity_transition_invalid",
+  );
+  const planItemReversalRequest = {
+    ...planItemActivityRequest,
+    headers: { "idempotency-key": "product-api-plan-item-reversal-audited" },
+    payload: {
+      ...planItemActivityRequest.payload,
+      expectedHeadVersion: 6,
+      type: "completion_reversed",
+      occurredAt: "2026-07-15T09:50:00.000Z",
+      durationMinutes: null,
+    },
+  };
+  const planItemReversalResponse = await app.inject(planItemReversalRequest);
+  const retriedPlanItemReversal = await app.inject(planItemReversalRequest);
+  assert.equal(planItemReversalResponse.statusCode, 200, planItemReversalResponse.body);
+  assert.deepEqual(retriedPlanItemReversal.json(), planItemReversalResponse.json());
+  const planItemReversal = planItemReversalResponse.json<{
+    activityState: string;
+    headVersion: number;
+    activityEvent: { id: string; type: string; referenceEventId: string | null };
+  }>();
+  assert.equal(planItemReversal.activityState, "pending");
+  assert.equal(planItemReversal.headVersion, 7);
+  assert.equal(planItemReversal.activityEvent.type, "completion_reversed");
+  assert.equal(planItemReversal.activityEvent.referenceEventId, planItemActivity.activityEvent.id);
+  const reopenedActivityResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/current`,
+  });
+  assert.equal(reopenedActivityResponse.statusCode, 200, reopenedActivityResponse.body);
+  const reopenedActivity = reopenedActivityResponse.json<{
+    headVersion: number;
+    items: { activityState: string; lastActivityEventId: string | null }[];
+  }>();
+  assert.equal(reopenedActivity.headVersion, 7);
+  assert.equal(reopenedActivity.items[0]?.activityState, "pending");
+  assert.equal(reopenedActivity.items[0]?.lastActivityEventId, planItemReversal.activityEvent.id);
+  await assert.rejects(
+    connection.sql`
+      update daily_plan_item_states
+      set activity_state = 'skipped'
+      where workspace_id = ${createdWorkspaceId}
+        and plan_id = ${replacement.id}
+        and item_id = ${replacement.items[0]!.id}
+    `,
+    (error) => hasDatabaseCode(error, "23514"),
+  );
+  await assert.rejects(
+    connection.sql`
+      update plan_interaction_events
+      set result_head_version = 999
+      where workspace_id = ${createdWorkspaceId}
+        and idempotency_key = 'product-api-plan-item-reversal-audited'
+    `,
+    (error) => hasDatabaseCode(error, "55000"),
+  );
 
   const activityRequest = {
     method: "POST" as const,

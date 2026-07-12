@@ -47,7 +47,7 @@ Local unauthenticated product routes are enabled only for non-production loopbac
 pnpm check
 ```
 
-With PostgreSQL running, verify routine creation and optimistic updates, stable activity-history pagination, idempotent activity recording, deterministic plan generation, and atomic plan-revision persistence:
+With PostgreSQL running, verify routine creation and optimistic updates, stable activity-history pagination, idempotent routine and Today-item activity recording, deterministic plan generation, and atomic plan-revision persistence:
 
 ```powershell
 pnpm verify:planner-db

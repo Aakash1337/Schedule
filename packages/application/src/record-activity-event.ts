@@ -62,6 +62,12 @@ export class RecordActivityEvent {
             "A correction or reversal must reference a completion for the same routine.",
           );
         }
+        if (command.type === "completion_reversed" && referenced.planItemId !== null) {
+          throw new DomainError(
+            "planning.item_activity_reversal_requires_item_flow",
+            "Reverse a plan item completion through its current Today item endpoint.",
+          );
+        }
       }
       return activityEvents.append(event);
     });

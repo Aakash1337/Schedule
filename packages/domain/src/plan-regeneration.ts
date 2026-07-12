@@ -155,6 +155,9 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
     ...input.anchoredItems.map((item) => ({
       ...item,
       id: derivePlanItemId(residual.id, item.routineId, item.position),
+      activityState: "pending" as const,
+      lastActivityEventId: null,
+      activityUpdatedAt: null,
     })),
     ...residual.items.map((item) => {
       while (usedPositions.has(nextPosition)) nextPosition += 1;
