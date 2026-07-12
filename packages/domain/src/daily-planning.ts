@@ -878,7 +878,7 @@ function createInputSnapshot(
   });
 }
 
-function deterministicPlanItemId(
+export function derivePlanItemId(
   plan: DailyPlanId,
   routine: RoutineId,
   position: number,
@@ -1041,7 +1041,7 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
   const inputSnapshot = createInputSnapshot(input.request, input.routines, input.events, config);
   const inputHash = createHash("sha256").update(JSON.stringify(inputSnapshot)).digest("hex");
   const items = chosen.placements.map((placement, position): PlanItem => ({
-    id: deterministicPlanItemId(id, placement.candidate.routine.id, position),
+    id: derivePlanItemId(id, placement.candidate.routine.id, position),
     routineId: placement.candidate.routine.id,
     title: placement.candidate.routine.title,
     position,

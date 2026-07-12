@@ -13,6 +13,7 @@ import {
   evaluateRoutineForPlan,
   generateDailyPlan,
   recordActivityEvent,
+  replanDailyPlan,
   routineId,
   workspaceId,
   type ActivityEvent,
@@ -231,6 +232,182 @@ describe("deterministic daily planning", () => {
         generatedAt,
       }),
     ).toThrowError(DomainError);
+  });
+
+  it("regenerates only residual capacity while carrying locked items exactly", () => {
+    const routines = [routine("anchor"), routine("second"), routine("alternative")];
+    const source = generateDailyPlan({
+      id: dailyPlanId("source-regeneration"),
+      request: request("source-seed", { targetMinutes: 60, targetTaskCount: 2 }),
+      routines,
+      events: [],
+      generatedAt,
+    });
+    const anchored = { ...source.items[0]!, locked: true };
+    const regenerated = replanDailyPlan({
+      id: dailyPlanId("regenerated-plan"),
+      sourcePlan: source,
+      request: request("regenerated-seed", {
+        targetMinutes: 60,
+        targetTaskCount: 2,
+        requestRevision: 2,
+      }),
+      routines,
+      events: [],
+      anchoredItems: [anchored],
+      kind: "regenerate",
+      generatedAt,
+    });
+
+    const retained = regenerated.items.find((item) => item.routineId === anchored.routineId)!;
+    expect(retained).toMatchObject({
+      position: anchored.position,
+      windowIndex: anchored.windowIndex,
+      scheduledMinutes: anchored.scheduledMinutes,
+      locked: true,
+    });
+    expect(retained.id).not.toBe(anchored.id);
+    expect(new Set(regenerated.items.map((item) => item.routineId)).size).toBe(
+      regenerated.items.length,
+    );
+    expect(regenerated.inputSnapshot).toMatchObject({
+      kind: "regenerate",
+      sourcePlanId: source.id,
+    });
+  });
+
+  it("replaces one item without reshuffling anchored siblings", () => {
+    const routines = [routine("replace-me"), routine("keep-me"), routine("replacement")];
+    const source = generateDailyPlan({
+      id: dailyPlanId("source-replacement"),
+      request: request("replace-source", { targetMinutes: 60, targetTaskCount: 2 }),
+      routines: routines.slice(0, 2),
+      events: [],
+      generatedAt,
+    });
+    const target = source.items[0]!;
+    const sibling = source.items[1]!;
+    const replaced = replanDailyPlan({
+      id: dailyPlanId("replacement-plan"),
+      sourcePlan: source,
+      request: request("replace-next", {
+        targetMinutes: 60,
+        targetTaskCount: 2,
+        requestRevision: 2,
+      }),
+      routines,
+      events: [],
+      anchoredItems: [sibling],
+      excludedRoutineIds: [target.routineId],
+      kind: "replace",
+      generatedAt,
+    });
+
+    expect(replaced.items.some((item) => item.routineId === target.routineId)).toBe(false);
+    expect(replaced.items.find((item) => item.routineId === sibling.routineId)).toMatchObject({
+      position: sibling.position,
+      scheduledMinutes: sibling.scheduledMinutes,
+    });
+    expect(replaced.items).toHaveLength(2);
+  });
+
+  it("rejects retained items that no longer fit the requested windows", () => {
+    const candidate = routine("too-large", { expectedMinutes: 45 });
+    const source = generateDailyPlan({
+      id: dailyPlanId("source-infeasible"),
+      request: request("wide-window"),
+      routines: [candidate],
+      events: [],
+      generatedAt,
+    });
+    expect(() =>
+      replanDailyPlan({
+        sourcePlan: source,
+        request: request("narrow-window", {
+          requestRevision: 2,
+          availableWindows: [
+            {
+              startsAt: new Date("2026-07-15T08:00:00.000Z"),
+              endsAt: new Date("2026-07-15T08:30:00.000Z"),
+            },
+          ],
+        }),
+        routines: [candidate],
+        events: [],
+        anchoredItems: [{ ...source.items[0]!, locked: true }],
+        kind: "regenerate",
+      }),
+    ).toThrowError(DomainError);
+  });
+
+  it("preserves original window indices and canonicalizes anchor order", () => {
+    const twoWindows = [
+      {
+        startsAt: new Date("2026-07-15T08:00:00.000Z"),
+        endsAt: new Date("2026-07-15T08:30:00.000Z"),
+      },
+      {
+        startsAt: new Date("2026-07-15T09:00:00.000Z"),
+        endsAt: new Date("2026-07-15T09:30:00.000Z"),
+      },
+    ];
+    const candidates = [routine("window-anchor"), routine("window-second"), routine("window-new")];
+    const source = generateDailyPlan({
+      id: dailyPlanId("window-source"),
+      request: request("window-source", {
+        availableWindows: twoWindows,
+        targetMinutes: 60,
+        maximumMinutes: 60,
+        targetTaskCount: 2,
+        maximumTaskCount: 2,
+      }),
+      routines: candidates.slice(0, 2),
+      events: [],
+      generatedAt,
+    });
+    const anchors = source.items.map((item) => ({ ...item, locked: true }));
+    const nextRequest = request("window-next", {
+      requestRevision: 2,
+      availableWindows: twoWindows,
+      targetMinutes: 60,
+      maximumMinutes: 60,
+      targetTaskCount: 2,
+      maximumTaskCount: 2,
+    });
+    const forward = replanDailyPlan({
+      id: dailyPlanId("window-result"),
+      sourcePlan: source,
+      request: nextRequest,
+      routines: candidates,
+      events: [],
+      anchoredItems: anchors,
+      kind: "regenerate",
+      generatedAt,
+    });
+    const reversed = replanDailyPlan({
+      id: dailyPlanId("window-result"),
+      sourcePlan: source,
+      request: nextRequest,
+      routines: candidates,
+      events: [],
+      anchoredItems: [...anchors].reverse(),
+      kind: "regenerate",
+      generatedAt,
+    });
+    const partial = replanDailyPlan({
+      id: dailyPlanId("window-partial"),
+      sourcePlan: source,
+      request: nextRequest,
+      routines: candidates,
+      events: [],
+      anchoredItems: [anchors.find((item) => item.windowIndex === 0)!],
+      kind: "regenerate",
+      generatedAt,
+    });
+
+    expect(forward.items.map((item) => item.windowIndex)).toEqual([0, 1]);
+    expect(partial.items.map((item) => item.windowIndex)).toEqual([0, 1]);
+    expect(reversed.inputHash).toBe(forward.inputHash);
   });
 
   it("rejects fractional custom scoring configuration", () => {

@@ -20,6 +20,7 @@ The following Phase 1 capabilities exist in code:
 - Application use cases for creating, retrieving, listing, and updating routines; listing and recording activity; and generating a workspace/date/revision plan
 - A validated, local-only HTTP API for workspaces, routines, activity events, and exact plan revisions
 - Stable plan-item identities, an authoritative per-day plan head, and optimistic idempotent item locking
+- Immutable regeneration and replacement revisions with exact anchored-item carry-forward
 
 The planner is implemented as a pure domain operation in `packages/domain/src/daily-planning.ts`. It does not require PostgreSQL, a network connection, or a language model.
 
@@ -81,6 +82,8 @@ Database triggers make `activity_events` append-only and require corrections and
 
 The highest generated revision becomes the authoritative per-day head. Plan items expose stable UUIDs, while mutable interaction state is stored separately from immutable plan snapshots. Lock and unlock commands use the current plan ID, an optimistic head version, and a workspace-scoped idempotency key. Each command appends an immutable interaction event; the item-state projection and head version support fast Today reads and stale-client rejection.
 
+Regeneration and replacement take the per-day transaction lock, resolve command idempotency before checking the head, and allocate `current revision + 1` on the server. Retained items preserve position, window, duration, and lock state. Their occupied time and routine identities are removed from the residual planner input. Replacement anchors every sibling and excludes the target routine. The resulting snapshot hashes the source plan, anchors, exclusions, and residual planner input; the source revision is never mutated.
+
 Run the database-backed vertical-slice verification while PostgreSQL is available:
 
 ```powershell
@@ -92,7 +95,7 @@ pnpm verify:planner-db
 - Authentication, authorization, and public network exposure
 - Routine and Today user interfaces
 - Exact start-time placement within a selected window
-- Locked-item carry-forward, replacement, regeneration, and alternative-plan workflows
+- Alternative-plan branching and multi-step undo workflows
 - Work-item deadlines and dependency integration
 - Learned duration and preference adjustments
 - User-editable scoring profiles

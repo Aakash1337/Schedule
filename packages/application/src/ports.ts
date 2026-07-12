@@ -5,6 +5,7 @@ import type {
   Routine,
   RoutineStatus,
   PlanItemId,
+  PlanMutationKind,
   ScheduleBlock,
   ScheduleBlockId,
   WorkItem,
@@ -34,6 +35,18 @@ export interface PlanItemLockResult {
   readonly itemId: PlanItemId;
   readonly locked: boolean;
   readonly headVersion: number;
+}
+
+export interface PlanMutationRecord {
+  readonly workspaceId: WorkspaceId;
+  readonly date: LocalDate;
+  readonly idempotencyKey: string;
+  readonly payloadHash: string;
+  readonly kind: PlanMutationKind;
+  readonly sourcePlanId: DailyPlan["id"];
+  readonly resultPlanId: DailyPlan["id"];
+  readonly resultHeadVersion: number;
+  readonly createdAt: Date;
 }
 
 export interface WorkItemRepository {
@@ -101,6 +114,13 @@ export interface DailyPlanRepository {
   insertForRevision(plan: DailyPlan): Promise<DailyPlan>;
   findCurrent(workspaceId: WorkspaceId, date: LocalDate): Promise<CurrentDailyPlan | null>;
   setItemLock(input: SetPlanItemLockInput): Promise<PlanItemLockResult>;
+  lockDay(workspaceId: WorkspaceId, date: LocalDate): Promise<void>;
+  findMutation(
+    workspaceId: WorkspaceId,
+    date: LocalDate,
+    idempotencyKey: string,
+  ): Promise<PlanMutationRecord | null>;
+  insertMutation(record: PlanMutationRecord): Promise<void>;
 }
 
 export interface TransactionContext {

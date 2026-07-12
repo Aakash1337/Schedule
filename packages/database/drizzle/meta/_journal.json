@@ -50,6 +50,20 @@
       "when": 1783839245865,
       "tag": "0006_worthless_nebula",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783840032051,
+      "tag": "0007_whole_baron_strucker",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783840069515,
+      "tag": "0008_melodic_power_pack",
+      "breakpoints": true
     }
   ]
 }

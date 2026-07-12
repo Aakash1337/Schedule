@@ -14,6 +14,8 @@ import type {
   ListRoutinesQuery,
   PlanItemLockResult,
   RecordActivityEventCommand,
+  RegenerateDailyPlanCommand,
+  ReplacePlanItemCommand,
   SetPlanItemLockCommand,
   UpdateRoutineCommand,
 } from "@schedule/application";
@@ -56,6 +58,8 @@ export interface ProductServices {
   generateDailyPlan(command: GenerateDailyPlanCommand): Promise<DailyPlan>;
   getCurrentDailyPlan(query: GetCurrentDailyPlanQuery): Promise<CurrentDailyPlan>;
   setPlanItemLock(command: SetPlanItemLockCommand): Promise<PlanItemLockResult>;
+  regenerateDailyPlan(command: RegenerateDailyPlanCommand): Promise<CurrentDailyPlan>;
+  replacePlanItem(command: ReplacePlanItemCommand): Promise<CurrentDailyPlan>;
   getDailyPlan(query: GetDailyPlanQuery): Promise<DailyPlan | null>;
 }
 
@@ -279,6 +283,12 @@ const planItemLockBody = z.strictObject({
   expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
   locked: z.boolean(),
 });
+const planMutationRequestBody = planBody.omit({ date: true, requestRevision: true });
+const planMutationBody = z.strictObject({
+  expectedPlanId: uuid,
+  expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
+  request: planMutationRequestBody,
+});
 const idempotencyKey = z.string().trim().min(1).max(160);
 
 function publicPlan(
@@ -347,6 +357,33 @@ function decodeActivityCursor(
   } catch {
     throw new RequestValidationError([{ path: "cursor", message: "Invalid activity cursor." }]);
   }
+}
+
+function mutationPlanningRequest(
+  workspace: string,
+  date: string,
+  body: z.infer<typeof planMutationRequestBody>,
+) {
+  return createDailyPlanningRequest({
+    workspaceId: workspaceId(workspace),
+    date,
+    timeZone: body.timeZone,
+    availableWindows: body.availableWindows.map((window) => ({
+      startsAt: new Date(window.startsAt),
+      endsAt: new Date(window.endsAt),
+    })),
+    targetMinutes: body.targetMinutes,
+    ...(body.minimumMinutes === undefined ? {} : { minimumMinutes: body.minimumMinutes }),
+    ...(body.maximumMinutes === undefined ? {} : { maximumMinutes: body.maximumMinutes }),
+    targetTaskCount: body.targetTaskCount,
+    ...(body.minimumTaskCount === undefined ? {} : { minimumTaskCount: body.minimumTaskCount }),
+    ...(body.maximumTaskCount === undefined ? {} : { maximumTaskCount: body.maximumTaskCount }),
+    fitPreference: body.fitPreference,
+    energy: body.energy,
+    availableContexts: body.availableContexts,
+    seed: body.seed,
+    requestRevision: 1,
+  });
 }
 
 export async function registerProductRoutes(
@@ -546,5 +583,34 @@ export async function registerProductRoutes(
       locked: body.locked,
       idempotencyKey: key,
     });
+  });
+
+  app.post("/v1/workspaces/:workspaceId/plans/:date/regenerations", async (request) => {
+    const params = parseRequest(planParams, request.params);
+    const body = parseRequest(planMutationBody, request.body);
+    const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+    const result = await services.regenerateDailyPlan({
+      workspaceId: workspaceId(params.workspaceId),
+      expectedPlanId: dailyPlanId(body.expectedPlanId),
+      expectedHeadVersion: body.expectedHeadVersion,
+      request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
+      idempotencyKey: key,
+    });
+    return { ...publicPlan(result.plan), headVersion: result.headVersion };
+  });
+
+  app.post("/v1/workspaces/:workspaceId/plans/:date/items/:itemId/replacement", async (request) => {
+    const params = parseRequest(planItemParams, request.params);
+    const body = parseRequest(planMutationBody, request.body);
+    const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+    const result = await services.replacePlanItem({
+      workspaceId: workspaceId(params.workspaceId),
+      expectedPlanId: dailyPlanId(body.expectedPlanId),
+      expectedHeadVersion: body.expectedHeadVersion,
+      targetItemId: planItemId(params.itemId),
+      request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
+      idempotencyKey: key,
+    });
+    return { ...publicPlan(result.plan), headVersion: result.headVersion };
   });
 }

@@ -6,6 +6,7 @@ export * from "./duration.js";
 export * from "./errors.js";
 export * from "./ids.js";
 export * from "./routine.js";
+export * from "./plan-regeneration.js";
 export * from "./schedule-block.js";
 export * from "./structured-tags.js";
 export * from "./work-item.js";

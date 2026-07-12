@@ -8,6 +8,7 @@ export * from "./get-current-daily-plan.js";
 export * from "./get-routine.js";
 export * from "./list-routine-activity.js";
 export * from "./list-routines.js";
+export * from "./mutate-daily-plan.js";
 export * from "./ports.js";
 export * from "./record-activity-event.js";
 export * from "./set-plan-item-lock.js";

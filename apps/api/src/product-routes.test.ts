@@ -107,6 +107,14 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       locked: command.locked,
       headVersion: command.expectedHeadVersion + 1,
     }),
+    regenerateDailyPlan: async (command) => {
+      if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
+      return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
+    },
+    replacePlanItem: async (command) => {
+      if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
+      return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
+    },
     getDailyPlan: async () => storedPlan,
     ...overrides,
   };
