@@ -3,6 +3,7 @@ import {
   activityEventId,
   type ActivityEventId,
   type DailyPlanId,
+  type PlanItemId,
   type RoutineId,
   type WorkspaceId,
 } from "./ids.js";
@@ -27,6 +28,7 @@ export interface ActivityEvent {
   readonly workspaceId: WorkspaceId;
   readonly routineId: RoutineId;
   readonly planId: DailyPlanId | null;
+  readonly planItemId: PlanItemId | null;
   readonly type: ActivityEventType;
   readonly occurredAt: Date;
   readonly localDate: LocalDate;
@@ -44,6 +46,7 @@ export interface RecordActivityEventInput {
   readonly workspaceId: WorkspaceId;
   readonly routineId: RoutineId;
   readonly planId?: DailyPlanId | null;
+  readonly planItemId?: PlanItemId | null;
   readonly type: ActivityEventType;
   readonly occurredAt: Date;
   readonly timeZone: string;
@@ -78,6 +81,13 @@ export function recordActivityEvent(input: RecordActivityEventInput): ActivityEv
     "A valid activity recording timestamp is required.",
   );
   const durationMinutes = input.durationMinutes ?? null;
+  const planId = input.planId ?? null;
+  const planItemId = input.planItemId ?? null;
+  invariant(
+    planItemId === null || planId !== null,
+    "activity.plan_item_requires_plan",
+    "A plan item activity event must reference its plan.",
+  );
   invariant(
     durationMinutes === null || (Number.isInteger(durationMinutes) && durationMinutes > 0),
     "activity.duration_invalid",
@@ -147,7 +157,8 @@ export function recordActivityEvent(input: RecordActivityEventInput): ActivityEv
     id,
     workspaceId: input.workspaceId,
     routineId: input.routineId,
-    planId: input.planId ?? null,
+    planId,
+    planItemId,
     type: input.type,
     occurredAt: new Date(input.occurredAt),
     localDate: instantToLocalDate(input.occurredAt, input.timeZone),

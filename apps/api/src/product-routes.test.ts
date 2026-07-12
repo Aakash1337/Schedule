@@ -87,6 +87,20 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
         id: activityEventId(eventUuid),
         recordedAt: new Date("2026-07-15T12:01:00.000Z"),
       }),
+    recordPlanItemActivity: async (command) => ({
+      planId: command.expectedPlanId,
+      itemId: command.itemId,
+      activityState: command.type === "completion_reversed" ? "pending" : command.type,
+      activityEvent: recordActivityEvent({
+        ...command,
+        id: activityEventId(eventUuid),
+        routineId: routine.id,
+        planId: command.expectedPlanId,
+        planItemId: command.itemId,
+        recordedAt: new Date("2026-07-15T12:01:00.000Z"),
+      }),
+      headVersion: command.expectedHeadVersion + 1,
+    }),
     generateDailyPlan: async (command) => {
       storedPlan = generateDailyPlan({
         id: dailyPlanId(planUuid),
@@ -448,6 +462,55 @@ describe("local product API", () => {
     expect(current.json()).toMatchObject({ id: planUuid, headVersion: 1 });
     expect(locked.statusCode).toBe(200);
     expect(locked.json()).toMatchObject({ itemId, locked: true, headVersion: 2 });
+  });
+
+  it("records activity against an exact current-plan item", async () => {
+    const app = await appWith(createHarness().services);
+    const generated = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans`,
+      payload: {
+        date: "2026-07-15",
+        timeZone: "UTC",
+        availableWindows: [
+          { startsAt: "2026-07-15T08:00:00.000Z", endsAt: "2026-07-15T09:00:00.000Z" },
+        ],
+        targetMinutes: 30,
+        targetTaskCount: 1,
+        availableContexts: ["computer"],
+        seed: "today-activity",
+      },
+    });
+    const itemId = generated.json().items[0].id as string;
+    const completed = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/items/${itemId}/activity-events`,
+      headers: { "idempotency-key": "complete-first-item" },
+      payload: {
+        expectedPlanId: planUuid,
+        expectedHeadVersion: 1,
+        type: "completed",
+        occurredAt: "2026-07-15T10:00:00.000Z",
+        timeZone: "UTC",
+        durationMinutes: 28,
+      },
+    });
+
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json()).toMatchObject({
+      planId: planUuid,
+      itemId,
+      activityState: "completed",
+      headVersion: 2,
+      activityEvent: {
+        planId: planUuid,
+        planItemId: itemId,
+        routineId: routineUuid,
+        type: "completed",
+        durationMinutes: 28,
+      },
+    });
+    expect(completed.json().activityEvent).not.toHaveProperty("idempotencyKey");
   });
 
   it("returns 404 for an absent exact plan and 409 for idempotency conflicts", async () => {

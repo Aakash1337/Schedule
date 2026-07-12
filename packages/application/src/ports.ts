@@ -1,10 +1,13 @@
 import type {
   ActivityEvent,
+  ActivityMetadataValue,
   DailyPlan,
   LocalDate,
   Routine,
   RoutineStatus,
   PlanItemId,
+  PlanItemActivityState,
+  PlanItemActivityActionType,
   PlanMutationKind,
   ScheduleBlock,
   ScheduleBlockId,
@@ -34,6 +37,30 @@ export interface PlanItemLockResult {
   readonly planId: DailyPlan["id"];
   readonly itemId: PlanItemId;
   readonly locked: boolean;
+  readonly headVersion: number;
+}
+
+export interface RecordPlanItemActivityInput {
+  readonly workspaceId: WorkspaceId;
+  readonly date: LocalDate;
+  readonly expectedPlanId: DailyPlan["id"];
+  readonly itemId: PlanItemId;
+  readonly expectedHeadVersion: number;
+  readonly type: PlanItemActivityActionType;
+  readonly occurredAt: Date;
+  readonly timeZone: string;
+  readonly durationMinutes: number | null;
+  readonly reason: string | null;
+  readonly metadata: Readonly<Record<string, ActivityMetadataValue>>;
+  readonly idempotencyKey: string;
+  readonly now: Date;
+}
+
+export interface PlanItemActivityResult {
+  readonly planId: DailyPlan["id"];
+  readonly itemId: PlanItemId;
+  readonly activityState: PlanItemActivityState;
+  readonly activityEvent: ActivityEvent;
   readonly headVersion: number;
 }
 
@@ -114,6 +141,7 @@ export interface DailyPlanRepository {
   insertForRevision(plan: DailyPlan): Promise<DailyPlan>;
   findCurrent(workspaceId: WorkspaceId, date: LocalDate): Promise<CurrentDailyPlan | null>;
   setItemLock(input: SetPlanItemLockInput): Promise<PlanItemLockResult>;
+  recordItemActivity(input: RecordPlanItemActivityInput): Promise<PlanItemActivityResult>;
   lockDay(workspaceId: WorkspaceId, date: LocalDate): Promise<void>;
   findMutation(
     workspaceId: WorkspaceId,

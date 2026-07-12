@@ -19,6 +19,7 @@ import {
 } from "./ids.js";
 import { energyLevels, type EnergyLevel } from "./structured-tags.js";
 import type { ActivityEvent } from "./activity-event.js";
+import type { PlanItemActivityState } from "./plan-item-activity.js";
 import type { CadencePolicy } from "./cadence-policy.js";
 import type { Routine } from "./routine.js";
 
@@ -169,6 +170,9 @@ export interface PlanItem {
   readonly scoreComponents: Readonly<Record<string, number>>;
   readonly reasons: readonly string[];
   readonly locked: boolean;
+  readonly activityState: PlanItemActivityState;
+  readonly lastActivityEventId: ActivityEvent["id"] | null;
+  readonly activityUpdatedAt: Date | null;
 }
 
 export interface PlanExclusion {
@@ -1052,6 +1056,9 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
     scoreComponents: placement.candidate.evaluation.scoreComponents,
     reasons: placement.candidate.evaluation.reasons,
     locked: false,
+    activityState: "pending",
+    lastActivityEventId: null,
+    activityUpdatedAt: null,
   }));
 
   return {

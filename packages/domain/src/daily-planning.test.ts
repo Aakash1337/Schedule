@@ -243,7 +243,13 @@ describe("deterministic daily planning", () => {
       events: [],
       generatedAt,
     });
-    const anchored = { ...source.items[0]!, locked: true };
+    const anchored = {
+      ...source.items[0]!,
+      locked: true,
+      activityState: "started" as const,
+      lastActivityEventId: activityEventId("source-started"),
+      activityUpdatedAt: new Date("2026-07-15T08:15:00.000Z"),
+    };
     const regenerated = replanDailyPlan({
       id: dailyPlanId("regenerated-plan"),
       sourcePlan: source,
@@ -265,6 +271,9 @@ describe("deterministic daily planning", () => {
       windowIndex: anchored.windowIndex,
       scheduledMinutes: anchored.scheduledMinutes,
       locked: true,
+      activityState: "pending",
+      lastActivityEventId: null,
+      activityUpdatedAt: null,
     });
     expect(retained.id).not.toBe(anchored.id);
     expect(new Set(regenerated.items.map((item) => item.routineId)).size).toBe(

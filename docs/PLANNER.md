@@ -21,6 +21,7 @@ The following Phase 1 capabilities exist in code:
 - A validated, local-only HTTP API for workspaces, routines, activity events, and exact plan revisions
 - Stable plan-item identities, an authoritative per-day plan head, and optimistic idempotent item locking
 - Immutable regeneration and replacement revisions with exact anchored-item carry-forward
+- Plan-item-scoped start, completion, skip, defer, and dismiss actions with projected Today state
 
 The planner is implemented as a pure domain operation in `packages/domain/src/daily-planning.ts`. It does not require PostgreSQL, a network connection, or a language model.
 
@@ -67,6 +68,7 @@ The database migration adds:
 - `daily_plan_heads`
 - `daily_plan_item_states`
 - `plan_interaction_events`
+- `plan_mutations`
 
 All planner relationships carry `workspace_id` in their foreign keys. Activity idempotency is unique within a workspace. Daily plan revisions are unique by workspace and local date. Plan items cannot repeat a routine or position within one plan.
 
@@ -83,6 +85,8 @@ Database triggers make `activity_events` append-only and require corrections and
 The highest generated revision becomes the authoritative per-day head. Plan items expose stable UUIDs, while mutable interaction state is stored separately from immutable plan snapshots. Lock and unlock commands use the current plan ID, an optimistic head version, and a workspace-scoped idempotency key. Each command appends an immutable interaction event; the item-state projection and head version support fast Today reads and stale-client rejection.
 
 Regeneration and replacement take the per-day transaction lock, resolve command idempotency before checking the head, and allocate `current revision + 1` on the server. Retained items preserve position, window, duration, and lock state. Their occupied time and routine identities are removed from the residual planner input. Replacement anchors every sibling and excludes the target routine. The resulting snapshot hashes the source plan, anchors, exclusions, and residual planner input; the source revision is never mutated.
+
+Today item actions use the same per-day lock, current plan identity, head version, and workspace-scoped idempotency ledger. Each accepted action appends an activity event attributed to the exact plan item, advances the head, and transactionally updates a fast item-state projection. Pending items may be started or made terminal; started items may be completed, skipped, deferred, or dismissed; terminal items reject further transitions. A completion reversal is the narrow audited exception and reopens the item as pending while removing that completion from later cadence calculations. This does not auto-regenerate the plan. The append-only activity record is the planner input, while the projection exists only for fast Today reads.
 
 Run the database-backed vertical-slice verification while PostgreSQL is available:
 

@@ -90,6 +90,9 @@ describe("MutateDailyPlan", () => {
         setItemLock: async () => {
           throw new Error("not used");
         },
+        recordItemActivity: async () => {
+          throw new Error("not used");
+        },
         lockDay: async () => undefined,
         findMutation: async (_workspace, date, key) =>
           mutations.find((mutation) => mutation.date === date && mutation.idempotencyKey === key) ??
