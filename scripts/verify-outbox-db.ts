@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { verifyOutboxProcessFaultRecovery } from "../apps/worker/test-fixtures/outbox-process-fault-harness.js";
+
 import {
   claimNextOutboxEvent,
   completeOutboxEvent,
@@ -157,6 +159,10 @@ try {
   databaseCreated = true;
 
   await applyCurrentMigrations();
+  await verifyOutboxProcessFaultRecovery({
+    databaseUrl: disposableDatabaseUrl,
+    repositoryRoot,
+  });
 
   firstWorker = createDatabase(disposableDatabaseUrl, 1);
   secondWorker = createDatabase(disposableDatabaseUrl, 1);
@@ -389,7 +395,9 @@ try {
   assert.equal(reclaimedAfterRelease.attempts, 1);
   assert.equal(await completeOutboxEvent(secondWorker, reclaimedAfterRelease), "applied");
 
-  process.stdout.write(`outbox database verification passed in ${verificationDatabase}\n`);
+  process.stdout.write(
+    `outbox database verification passed claim, fencing, process-crash recovery, retry, and cleanup in ${verificationDatabase}\n`,
+  );
 } finally {
   await Promise.all([closeIfOpen(firstWorker), closeIfOpen(secondWorker)]);
   if (databaseCreated) {

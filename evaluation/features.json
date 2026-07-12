@@ -273,7 +273,7 @@
           "level": "integration",
           "file": "scripts/verify-outbox-db.ts",
           "command": "outbox-db",
-          "anchors": ["outbox database verification passed"]
+          "anchors": ["outbox database verification passed claim, fencing, process-crash recovery"]
         }
       ]
     },
