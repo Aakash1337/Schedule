@@ -378,8 +378,10 @@ Success is not simply "more tasks completed." Useful measures include realistic 
 
 ### Phase 5 — Hosting and synchronization
 
-The local MVP now includes verified logical backup and staged restore commands. Phase 5 covers the
-managed retention, point-in-time recovery, automation, and operational controls required for hosting.
+The local MVP now includes verified logical backups and staged restore commands. Its automated
+disposable recovery drill exercises archive creation, staged restore, promotion, rollback, and exact
+cleanup without touching the real local database. Phase 5 still covers provider-managed retention,
+point-in-time recovery, hosted restore drills, and the operational controls required for hosting.
 
 - Authentication and secure workspace isolation
 - Cloud deployment selected from measured operational needs

@@ -1,14 +1,10 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { assertComposeDatabaseReady } from "./backup-database.js";
 import {
   assertCleanupDatabaseIdentifier,
-  databaseAllowsConnections,
-  databaseExists,
-  dropDatabase,
+  cleanupGeneratedRecoveryDatabase,
   errorMessage,
-  runPsql,
 } from "./restore-database.js";
 
 const cleanupConfirmation = "drop-retained-database";
@@ -37,23 +33,7 @@ async function main(): Promise<void> {
         `Cleanup refused. Verify the retained identifier, then pass --confirm=${cleanupConfirmation}.`,
       );
     }
-
-    await assertComposeDatabaseReady("postgres");
-    if (!(await databaseExists(args.databaseName))) {
-      throw new Error(`Retained database does not exist: ${args.databaseName}`);
-    }
-    if (await databaseAllowsConnections(args.databaseName)) {
-      await runPsql(
-        "postgres",
-        `ALTER DATABASE "${args.databaseName}" WITH ALLOW_CONNECTIONS false;`,
-      );
-      await runPsql(
-        "postgres",
-        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${args.databaseName}' AND pid <> pg_backend_pid();`,
-      );
-    }
-
-    await dropDatabase(args.databaseName);
+    await cleanupGeneratedRecoveryDatabase(args.databaseName);
     console.log(`Retained database removed: ${args.databaseName}`);
   } catch (error) {
     console.error(`Retained database cleanup failed: ${errorMessage(error)}`);
