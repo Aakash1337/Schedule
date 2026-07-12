@@ -1,0 +1,40 @@
+{
+  "name": "schedule",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm run build:packages && pnpm --parallel --filter @schedule/api --filter @schedule/worker run dev",
+    "clean": "node scripts/clean.mjs",
+    "build:packages": "pnpm clean && pnpm -r --filter \"./packages/**\" run build",
+    "build": "pnpm clean && pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:generate": "pnpm --filter @schedule/database run db:generate",
+    "db:migrate": "pnpm --filter @schedule/database run db:migrate",
+    "db:studio": "pnpm --filter @schedule/database run db:studio",
+    "verify:planner-db": "tsx scripts/verify-planner-db.ts",
+    "verify:product-api": "tsx scripts/verify-product-api.ts",
+    "infra:up": "docker compose up -d postgres",
+    "infra:down": "docker compose down",
+    "infra:logs": "docker compose logs -f postgres",
+    "check": "pnpm build:packages && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "^24.10.0",
+    "eslint": "10.7.0",
+    "prettier": "3.9.5",
+    "tsx": "4.23.0",
+    "typescript": "6.0.2",
+    "typescript-eslint": "8.63.0",
+    "vitest": "4.1.10"
+  }
+}

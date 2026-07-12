@@ -1,0 +1,54 @@
+import {
+  DomainError,
+  generateDailyPlan,
+  type DailyPlan,
+  type DailyPlanningRequest,
+  type PlannerConfig,
+} from "@schedule/domain";
+
+import type { Clock, UnitOfWork } from "./ports.js";
+
+export interface GenerateDailyPlanCommand {
+  readonly request: DailyPlanningRequest;
+  readonly config?: PlannerConfig;
+}
+
+export class GenerateDailyPlan {
+  constructor(
+    private readonly unitOfWork: UnitOfWork,
+    private readonly clock: Clock,
+  ) {}
+
+  async execute(command: GenerateDailyPlanCommand): Promise<DailyPlan> {
+    return this.unitOfWork.run(async ({ workspaces, routines, activityEvents, dailyPlans }) => {
+      if ((await workspaces.findById(command.request.workspaceId)) === null) {
+        throw new DomainError("workspace.not_found", "The workspace does not exist.");
+      }
+      const [candidates, events] = await Promise.all([
+        routines.listPlanningCandidates(command.request.workspaceId, command.request.date),
+        activityEvents.listForPlanning(command.request.workspaceId, command.request.date),
+      ]);
+      if (candidates.length > 500) {
+        throw new DomainError(
+          "planning.candidate_pool_too_large",
+          "The workspace has more than 500 active routines; archive or pause routines before planning.",
+        );
+      }
+      const generated = generateDailyPlan({
+        request: command.request,
+        routines: candidates,
+        events,
+        generatedAt: this.clock.now(),
+        ...(command.config === undefined ? {} : { config: command.config }),
+      });
+      const persisted = await dailyPlans.insertForRevision(generated);
+      if (persisted.inputHash !== generated.inputHash) {
+        throw new DomainError(
+          "planning.revision_conflict",
+          "This planning revision already exists for a different input snapshot.",
+        );
+      }
+      return persisted;
+    });
+  }
+}
