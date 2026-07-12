@@ -113,13 +113,19 @@ function blockTimeLabel(block: ScheduleBlock): string {
   })} ${formatTime(block.endsAt)}`;
 }
 
+function calendarQueryKey(workspaceId: string, rangeFrom: string, rangeTo: string): string {
+  return JSON.stringify([workspaceId, rangeFrom, rangeTo]);
+}
+
 export function CalendarView({ workspace }: WorkspaceViewProps) {
   const agendaRef = useRef<HTMLDivElement>(null);
   const editorOpenerRef = useRef<HTMLElement | null>(null);
+  const handledAgendaLoadRevisionRef = useRef(-1);
   const [anchorDate, setAnchorDate] = useState(() => new Date());
   const [blocks, setBlocks] = useState<readonly ScheduleBlock[]>([]);
   const [workItems, setWorkItems] = useState<readonly WorkItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [agendaLoadRevision, setAgendaLoadRevision] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
@@ -136,9 +142,15 @@ export function CalendarView({ workspace }: WorkspaceViewProps) {
   const rangeFrom = useMemo(() => weekStart.toISOString(), [weekStart]);
   const rangeTo = useMemo(() => weekEnd.toISOString(), [weekEnd]);
   const visibleDateKeys = useMemo(() => weekDays.map(localDateKey), [weekDays]);
+  const activeQueryKey = calendarQueryKey(workspace.id, rangeFrom, rangeTo);
+  const activeQueryKeyRef = useRef(activeQueryKey);
+  activeQueryKeyRef.current = activeQueryKey;
 
   const loadWeek = useCallback(
     async (signal?: AbortSignal) => {
+      const requestKey = calendarQueryKey(workspace.id, rangeFrom, rangeTo);
+      const requestIsActive = () =>
+        signal?.aborted !== true && activeQueryKeyRef.current === requestKey;
       setLoading(true);
       setLoadError(null);
       try {
@@ -146,15 +158,16 @@ export function CalendarView({ workspace }: WorkspaceViewProps) {
           api.listScheduleBlocks(workspace.id, rangeFrom, rangeTo, signal),
           api.listWorkItems(workspace.id, {}, signal),
         ]);
-        if (signal?.aborted === true) return;
+        if (!requestIsActive()) return;
         setBlocks(blockPage.items);
         setWorkItems(workItemPage.items);
+        setAgendaLoadRevision((current) => current + 1);
       } catch (error) {
-        if (!isAbortError(error)) {
+        if (requestIsActive() && !isAbortError(error)) {
           setLoadError(errorMessage(error, "The calendar could not be loaded."));
         }
       } finally {
-        if (signal?.aborted !== true) setLoading(false);
+        if (requestIsActive()) setLoading(false);
       }
     },
     [rangeFrom, rangeTo, workspace.id],
@@ -169,20 +182,42 @@ export function CalendarView({ workspace }: WorkspaceViewProps) {
   useEffect(() => {
     setEditor(null);
     setEditorError(null);
+    setSaving(false);
+    setDeleting(false);
     setConfirmingDelete(false);
   }, [workspace.id]);
 
   useEffect(() => {
-    if (loading || typeof window.matchMedia !== "function") return;
-    if (!window.matchMedia("(max-width: 760px)").matches) return;
+    setSaving(false);
+    setDeleting(false);
+    setConfirmingDelete(false);
+  }, [activeQueryKey]);
+
+  useEffect(() => {
+    if (loading) return;
+    if (
+      typeof window.matchMedia !== "function" ||
+      !window.matchMedia("(max-width: 760px)").matches
+    ) {
+      handledAgendaLoadRevisionRef.current = agendaLoadRevision;
+      return;
+    }
     const agenda = agendaRef.current;
-    const today = agenda?.querySelector<HTMLElement>(`[data-calendar-date="${todayKey()}"]`);
-    if (agenda === null || today === null || today === undefined) return;
+    if (agenda === null) return;
+    if (blocks.length === 0) {
+      agenda.scrollLeft = 0;
+      handledAgendaLoadRevisionRef.current = agendaLoadRevision;
+      return;
+    }
+    if (handledAgendaLoadRevisionRef.current === agendaLoadRevision) return;
+    handledAgendaLoadRevisionRef.current = agendaLoadRevision;
+    const today = agenda.querySelector<HTMLElement>(`[data-calendar-date="${todayKey()}"]`);
+    if (today === null) return;
     agenda.scrollLeft = Math.max(
       0,
       today.offsetLeft - (agenda.clientWidth - today.clientWidth) / 2,
     );
-  }, [loading, weekStart]);
+  }, [agendaLoadRevision, blocks.length, loading, weekStart]);
 
   const workItemsById = useMemo(
     () => new Map(workItems.map((workItem) => [workItem.id, workItem])),
@@ -269,10 +304,15 @@ export function CalendarView({ workspace }: WorkspaceViewProps) {
     });
   }
 
-  async function reconcileConflict(submitted: Extract<EditorState, { mode: "edit" }>) {
+  async function reconcileConflict(
+    submitted: Extract<EditorState, { mode: "edit" }>,
+    requestKey: string,
+  ) {
+    if (activeQueryKeyRef.current !== requestKey) return;
     setConfirmingDelete(false);
     try {
       const latest = await api.getScheduleBlock(workspace.id, submitted.blockId);
+      if (activeQueryKeyRef.current !== requestKey) return;
       const latestLocalDate = isoToLocalDate(latest.startsAt);
       storeBlock(latest);
       if (!includeInVisibleWeek(latest)) setAnchorDate(new Date(latest.startsAt));
@@ -281,6 +321,7 @@ export function CalendarView({ workspace }: WorkspaceViewProps) {
         `This block changed elsewhere. The latest values from ${latestLocalDate} are loaded; your unsaved changes were not applied.`,
       );
     } catch (error) {
+      if (activeQueryKeyRef.current !== requestKey) return;
       if (error instanceof ApiError && error.status === 404) {
         setBlocks((current) => current.filter((block) => block.id !== submitted.blockId));
         setEditor((current) => {
@@ -309,6 +350,7 @@ export function CalendarView({ workspace }: WorkspaceViewProps) {
     if (editor === null) return;
 
     const submitted = editor;
+    const requestKey = activeQueryKey;
     const title = submitted.draft.title.trim();
     const timeZone = submitted.draft.timeZone.trim();
     if (title.length === 0 && submitted.draft.workItemId.length === 0) {
@@ -353,36 +395,41 @@ export function CalendarView({ workspace }: WorkspaceViewProps) {
               expectedVersion: submitted.expectedVersion,
               ...input,
             });
+      if (activeQueryKeyRef.current !== requestKey) return;
       storeBlock(saved);
       dismissEditor();
     } catch (error) {
+      if (activeQueryKeyRef.current !== requestKey) return;
       if (error instanceof ApiError && error.status === 409 && submitted.mode === "edit") {
-        await reconcileConflict(submitted);
+        await reconcileConflict(submitted, requestKey);
       } else {
         setEditorError(errorMessage(error, "The block could not be saved."));
       }
     } finally {
-      setSaving(false);
+      if (activeQueryKeyRef.current === requestKey) setSaving(false);
     }
   }
 
   async function deleteBlock() {
     if (editor?.mode !== "edit") return;
     const submitted = editor;
+    const requestKey = activeQueryKey;
     setDeleting(true);
     setEditorError(null);
     try {
       await api.deleteScheduleBlock(workspace.id, submitted.blockId, submitted.expectedVersion);
+      if (activeQueryKeyRef.current !== requestKey) return;
       setBlocks((current) => current.filter((block) => block.id !== submitted.blockId));
       dismissEditor();
     } catch (error) {
+      if (activeQueryKeyRef.current !== requestKey) return;
       if (error instanceof ApiError && error.status === 409) {
-        await reconcileConflict(submitted);
+        await reconcileConflict(submitted, requestKey);
       } else {
         setEditorError(errorMessage(error, "The block could not be deleted."));
       }
     } finally {
-      setDeleting(false);
+      if (activeQueryKeyRef.current === requestKey) setDeleting(false);
     }
   }
 

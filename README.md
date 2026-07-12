@@ -3,7 +3,8 @@
 Project documentation is indexed in [docs/README.md](./docs/README.md). The main specifications are
 the [product definition](./docs/PRODUCT.md),
 [deterministic planner contract](./docs/PLANNER.md), [local HTTP API](./docs/API.md), and
-[local web application](./docs/WEB.md).
+[local web application](./docs/WEB.md). Local data protection and recovery procedures are in the
+[operations guide](./docs/OPERATIONS.md).
 
 Provider-neutral infrastructure for a customizable work-management and scheduling system.
 
@@ -27,7 +28,8 @@ The local API also exposes status-based backlog/Kanban work items and bounded no
 optionally reference a work item. Their lifecycles remain independent.
 
 The local web app uses the API through a Vite same-origin development proxy. CORS remains disabled,
-and the unauthenticated product surface remains limited to loopback development.
+and product routes accept only loopback `Host` authorities, preventing DNS rebinding from expanding
+the unauthenticated surface beyond local development.
 
 ## Local development
 
@@ -47,7 +49,7 @@ The web app listens on `http://127.0.0.1:5173` and the API listens on
 `http://127.0.0.1:4000` by default. Use `/health/live` for process health and `/health/ready` for
 database readiness.
 
-Local unauthenticated product routes are enabled only for non-production loopback development. Configuration rejects attempts to enable them in production or on a non-loopback bind; authentication will be required before hosted product routes are introduced.
+Local unauthenticated product routes are enabled only for non-production loopback development. Configuration rejects attempts to enable them in production or on a non-loopback bind, and the API rejects non-loopback product-route `Host` headers. Authentication will be required before hosted product routes are introduced. Health and system-information endpoints intentionally remain available independently of the product Host guard for local diagnostics.
 
 ## Verification
 
@@ -58,9 +60,26 @@ pnpm check
 With PostgreSQL running, verify backlog/Kanban and calendar management, routine creation and optimistic updates, stable activity-history pagination, idempotent routine and Today-item activity recording, deterministic plan generation, and atomic plan-revision persistence:
 
 ```powershell
-pnpm verify:planner-db
-pnpm verify:product-api
+pnpm verify:database
 ```
+
+GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
+legacy weekday-migration verification after applying every migration to a fresh PostgreSQL 17
+database.
+
+## Local data protection
+
+Create a verified PostgreSQL custom-format backup **before** migrations, upgrades, or other risky
+local work:
+
+```powershell
+pnpm db:backup
+```
+
+Backups default to `~/.schedule/backups`, outside the repository. Restoring replaces the local
+`schedule` database only after staging, current migrations, and real database verification. The
+previous database remains available for explicit rollback until a separately confirmed cleanup. See the
+[operations guide](./docs/OPERATIONS.md) before using `pnpm db:restore`.
 
 ## Deployment boundary
 

@@ -8,6 +8,7 @@ The local product API exposes the deterministic planner without committing the p
 - Production is always `disabled`; configuration rejects attempts to enable unauthenticated routes in production or on a non-loopback application bind.
 - This mode must not be exposed to an untrusted network. Authentication and authorization are required before public hosting.
 - CORS is disabled, JSON bodies are limited to 256 KiB, request objects reject unknown fields, and error responses do not include stack traces.
+- Product routes reject missing, malformed, or non-loopback `Host` authorities before routing. This protects the unauthenticated loopback service from browser DNS-rebinding attacks; `localhost`, IPv4 `127.0.0.0/8`, and IPv6 loopback (`[::1]`) are accepted with an optional valid port. Health and system-information endpoints remain outside this product-route guard for local process and container diagnostics.
 - Product routes are limited to 240 requests per minute per source address and two concurrent plan generations per API process.
 - Local mode caps an installation at 20 workspaces; each workspace is capped at 500 routines, 5,000 activity events, 2,000 plan revisions, and 50 revisions for one date.
 - Plan responses expose the original planning request, input hash, and algorithm versions, but not routine snapshots or activity history from the complete persisted input snapshot.
@@ -34,7 +35,7 @@ The local product API exposes the deterministic planner without committing the p
 | `PATCH`  | `/v1/workspaces/{workspaceId}/routines/{routineId}`                              | Version-checked partial update (`200` or `409`)  |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`              | List stable, cursor-paginated history (`200`)    |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`              | Idempotently record activity (`200`)             |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans`                                             | Generate or retry a daily plan revision (`200`)  |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans`                                             | Create revision 1 or retry an exact revision     |
 | `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}?revision=1`                     | Retrieve an exact revision (`200` or `404`)      |
 | `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/current`                        | Retrieve the current Today plan and head version |
 | `PATCH`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/lock`            | Idempotently lock or unlock a current plan item  |
@@ -52,7 +53,9 @@ Routine updates require `expectedVersion`. Scalar fields are partial; if `tags`,
 
 Routine activity history is ordered by newest ingestion first and accepts `limit` from 1–200 (default 50) plus an opaque, integrity-protected `cursor`. The cursor is bound to its workspace and routine. The first page captures a high-water mark, so later appends do not shift subsequent pages. A non-null `page.nextCursor` retrieves the next page. Local cursor signing keys are process-bound, so clients should restart pagination after an API restart.
 
-A plan is identified by workspace, local date, and positive request revision. Retrying against an unchanged input snapshot returns the persisted plan. If routine or activity history has changed, reusing the revision returns `409 planning.revision_conflict`; the caller must intentionally increment the revision.
+A plan is identified by workspace, real Gregorian local date, and positive request revision. Generic `POST /plans` creates only the initial revision 1. It may also retry an already persisted exact generic revision: the server recomputes the deterministic input and returns the persisted plan when the input hash is unchanged. If routine or activity history has changed, retrying that revision returns `409 planning.revision_conflict`.
+
+Generic generation never allocates a later revision. A missing revision greater than 1, or any new generic revision after a current head exists, returns `409 planning.revision_creation_conflict`. Clients must use regeneration or replacement with the current plan identity, head version, and an idempotency key; those mutation endpoints allocate the next revision atomically and preserve the Today interaction contract. Mutation retries must return to the original mutation endpoint with the same idempotency key.
 
 Every plan item has a stable UUID and a projected `locked` flag. The current-plan response adds `headVersion`. Lock changes require an `Idempotency-Key` plus `expectedPlanId` and `expectedHeadVersion`; stale state returns `409 planning.head_conflict`. Identical retries return the original result, while key reuse for another command returns `409 planning.idempotency_conflict`. Lock and unlock facts are append-only even though the current flag is projected for efficient reads.
 
@@ -74,7 +77,7 @@ Regeneration and replacement require the same optimistic identity and idempotenc
 }
 ```
 
-Malformed request data returns `400`, domain validation returns `422`, absent workspace/work-item/schedule-block/routine/plan resources return `404`, idempotency or version/revision conflicts return `409`, oversized bodies return `413`, rate or concurrency limits return `429`, and unexpected failures return a redacted `500`.
+Malformed request data returns `400`, a disallowed local product-route Host returns `403`, domain validation returns `422`, absent workspace/work-item/schedule-block/routine/plan resources return `404`, idempotency or version/revision conflicts return `409`, oversized bodies return `413`, rate or concurrency limits return `429`, and unexpected failures return a redacted `500`. Minute-bucket request throttling includes a positive `Retry-After` header; the in-process planning concurrency limit does not promise a retry interval.
 
 ## Minimal local flow
 

@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-12
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface for the complete core loop. See [API.md](./API.md) and [WEB.md](./WEB.md). Alternative-plan comparison, undo, recurrence authoring, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface for the complete routine-planning loop. Planner v1 selects routines; ordinary Work-board items are not yet daily-plan candidates. See [API.md](./API.md) and [WEB.md](./WEB.md). Alternative-plan comparison, generalized undo, recurrence authoring, and public hosting remain deferred.
 
 ## 1. Product summary
 
@@ -120,6 +120,10 @@ Observed duration is stored separately from the user's estimate. Once enough his
 - Deadlines, priorities, cadence policies, and locked items
 - Temporary instructions such as "not this week"
 
+The list above describes the target product contract. The implemented planner v1 currently draws
+candidate plan items from routines only. Work items and calendar blocks are managed in the same
+application, but their planner eligibility and automatic placement remain future integrations.
+
 ### 7.2 Hard constraints
 
 The engine first removes impossible choices, including:
@@ -204,6 +208,11 @@ For a routine targeted three times per week:
 This is based on completions, not merely suggestions. Dismissals and skips influence fatigue separately.
 
 ## 9. Daily-plan interaction
+
+The current interface supports stable generation, lock/unlock, lock-preserving regeneration,
+single-item replacement, activity transitions, completion reversal, and selection/exclusion
+explanations. The remaining bullets describe the broader interaction target; alternatives,
+frequency-feedback shortcuts, and generalized plan undo are not implemented yet.
 
 The user can:
 
@@ -348,10 +357,10 @@ Success is not simply "more tasks completed." Useful measures include realistic 
 
 ### Phase 2 — Daily planning experience
 
-- Today view and planning controls
-- Lock, replace, regenerate, defer, dismiss, and completion flows
-- Kanban, backlog, and calendar integration
-- Alternative plans and "why selected" details
+- Implemented: Today view and planning controls
+- Implemented: lock, replace, regenerate, defer, dismiss, and completion flows
+- Partial: Kanban, backlog, and calendar management; Work items are not planner candidates yet
+- Partial: "why selected" details are implemented; alternative-plan comparison is deferred
 
 ### Phase 3 — Transparent adaptation
 
@@ -369,10 +378,13 @@ Success is not simply "more tasks completed." Useful measures include realistic 
 
 ### Phase 5 — Hosting and synchronization
 
+The local MVP now includes verified logical backup and staged restore commands. Phase 5 covers the
+managed retention, point-in-time recovery, automation, and operational controls required for hosting.
+
 - Authentication and secure workspace isolation
 - Cloud deployment selected from measured operational needs
 - Offline-capable synchronization and conflict handling, if required
-- Backup, restore, monitoring, and deployment automation
+- Managed backup retention, point-in-time recovery, monitoring, and deployment automation
 
 ## 17. Decisions still open
 

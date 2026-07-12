@@ -8,17 +8,24 @@ export type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 const LOCAL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DAY_MILLISECONDS = 86_400_000;
 
+export function isValidLocalDate(value: string): value is LocalDate {
+  if (!LOCAL_DATE_PATTERN.test(value)) return false;
+
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+  if (year < 1 || month < 1 || month > 12 || day < 1) return false;
+
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= daysInMonth[month - 1]!;
+}
+
 export function localDate(value: string): LocalDate {
   invariant(
-    LOCAL_DATE_PATTERN.test(value),
+    isValidLocalDate(value),
     "calendar.local_date_invalid",
-    "A local date must use YYYY-MM-DD format.",
-  );
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  invariant(
-    Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value,
-    "calendar.local_date_invalid",
-    "A valid local calendar date is required.",
+    "A valid Gregorian local date in YYYY-MM-DD format is required.",
   );
   return value as LocalDate;
 }

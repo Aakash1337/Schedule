@@ -29,6 +29,10 @@ interface PendingIdempotentCommand {
   readonly occurredAt: string;
 }
 
+function planQueryKey(workspaceId: string, date: string): string {
+  return JSON.stringify([workspaceId, date]);
+}
+
 function messageForError(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
@@ -194,6 +198,9 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const [contexts, setContexts] = useState("");
   const [durationByItem, setDurationByItem] = useState<Readonly<Record<string, string>>>({});
   const pendingCommandsRef = useRef(new Map<string, PendingIdempotentCommand>());
+  const activeQueryKey = planQueryKey(workspace.id, date);
+  const activeQueryKeyRef = useRef(activeQueryKey);
+  activeQueryKeyRef.current = activeQueryKey;
 
   const dayLabel = useMemo(
     () =>
@@ -207,20 +214,23 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
 
   const loadCurrentPlan = useCallback(
     async (signal?: AbortSignal) => {
+      const requestKey = planQueryKey(workspace.id, date);
+      const requestIsActive = () =>
+        signal?.aborted !== true && activeQueryKeyRef.current === requestKey;
       setLoading(true);
       setLoadError(null);
       try {
         const current = await api.getCurrentPlan(workspace.id, date, signal);
-        setPlan(current);
+        if (requestIsActive()) setPlan(current);
       } catch (error) {
-        if (signal?.aborted) return;
+        if (!requestIsActive()) return;
         if (error instanceof ApiError && error.status === 404) {
           setPlan(null);
         } else {
           setLoadError(messageForError(error));
         }
       } finally {
-        if (!signal?.aborted) setLoading(false);
+        if (requestIsActive()) setLoading(false);
       }
     },
     [date, workspace.id],
@@ -232,6 +242,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     setCommandError(null);
     setFeedback(null);
     setBusyAction(null);
+    pendingCommandsRef.current.clear();
     void loadCurrentPlan(controller.signal);
     return () => controller.abort();
   }, [loadCurrentPlan]);
@@ -246,17 +257,23 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     );
   }, [plan]);
 
-  async function refreshPlan(): Promise<void> {
+  async function refreshPlan(requestKey = activeQueryKey): Promise<boolean> {
+    if (activeQueryKeyRef.current !== requestKey) return false;
     const current = await api.getCurrentPlan(workspace.id, date);
+    if (activeQueryKeyRef.current !== requestKey) return false;
     setPlan(current);
+    return true;
   }
 
-  async function handleCommandFailure(error: unknown): Promise<void> {
+  async function handleCommandFailure(error: unknown, requestKey: string): Promise<void> {
+    if (activeQueryKeyRef.current !== requestKey) return;
     if (error instanceof ApiError && error.status === 409) {
       try {
-        await refreshPlan();
+        const refreshed = await refreshPlan(requestKey);
+        if (!refreshed) return;
         setCommandError("This plan changed in another action. The latest version is now shown.");
       } catch (refreshError) {
+        if (activeQueryKeyRef.current !== requestKey) return;
         if (refreshError instanceof ApiError && refreshError.status === 404) setPlan(null);
         setCommandError(
           `This plan changed, and the latest version could not be loaded. ${messageForError(refreshError)}`,
@@ -269,24 +286,26 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
 
   async function runCommand(
     key: string,
-    operation: () => Promise<void>,
+    operation: (requestKey: string) => Promise<void>,
     successMessage: string,
     retryIdentity?: string,
   ): Promise<void> {
+    const requestKey = activeQueryKey;
     setBusyAction(key);
     setCommandError(null);
     setFeedback(null);
     try {
-      await operation();
+      await operation(requestKey);
       if (retryIdentity !== undefined) pendingCommandsRef.current.delete(retryIdentity);
+      if (activeQueryKeyRef.current !== requestKey) return;
       setFeedback(successMessage);
     } catch (error) {
       if (retryIdentity !== undefined && error instanceof ApiError && error.status === 409) {
         pendingCommandsRef.current.delete(retryIdentity);
       }
-      await handleCommandFailure(error);
+      await handleCommandFailure(error, requestKey);
     } finally {
-      setBusyAction(null);
+      if (activeQueryKeyRef.current === requestKey) setBusyAction(null);
     }
   }
 
@@ -349,7 +368,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
 
     await runCommand(
       "generate",
-      async () => {
+      async (requestKey) => {
         await api.generatePlan(workspace.id, {
           date,
           timeZone,
@@ -362,7 +381,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
           seed,
           requestRevision: 1,
         });
-        await refreshPlan();
+        await refreshPlan(requestKey);
       },
       "Today's plan is ready.",
     );
@@ -375,7 +394,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     const command = pendingCommand(retryIdentity);
     await runCommand(
       key,
-      async () => {
+      async (requestKey) => {
         const result = await api.setPlanItemLock(
           workspace.id,
           date,
@@ -387,6 +406,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
           },
           command.key,
         );
+        if (activeQueryKeyRef.current !== requestKey) return;
         setPlan((current) =>
           current?.id !== result.planId
             ? current
@@ -421,7 +441,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     const command = pendingCommand(retryIdentity);
     await runCommand(
       key,
-      async () => {
+      async (requestKey) => {
         const result = await api.recordPlanItemActivity(
           workspace.id,
           date,
@@ -438,6 +458,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
           },
           command.key,
         );
+        if (activeQueryKeyRef.current !== requestKey) return;
         setPlan((current) =>
           current?.id !== result.planId
             ? current
@@ -468,7 +489,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     const command = pendingCommand(retryIdentity);
     await runCommand(
       "regenerate",
-      async () => {
+      async (requestKey) => {
         const current = await api.regeneratePlan(
           workspace.id,
           date,
@@ -479,7 +500,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
           },
           command.key,
         );
-        setPlan(current);
+        if (activeQueryKeyRef.current === requestKey) setPlan(current);
       },
       "The unlocked part of today's plan was regenerated.",
       retryIdentity,
@@ -498,7 +519,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     const command = pendingCommand(retryIdentity);
     await runCommand(
       key,
-      async () => {
+      async (requestKey) => {
         const current = await api.replacePlanItem(
           workspace.id,
           date,
@@ -510,7 +531,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
           },
           command.key,
         );
-        setPlan(current);
+        if (activeQueryKeyRef.current === requestKey) setPlan(current);
       },
       `${item.title} was replaced while the rest of the plan stayed in place.`,
       retryIdentity,

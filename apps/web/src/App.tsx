@@ -156,7 +156,12 @@ export function App() {
     previousSectionRef.current = section;
     previousWorkspaceIdRef.current = selectedWorkspace.id;
     if (!workspaceChanged && !sectionChanged) return;
-    window.requestAnimationFrame(() => contentRef.current?.focus());
+    window.requestAnimationFrame(() => {
+      const content = contentRef.current;
+      if (content === null) return;
+      content.focus({ preventScroll: true });
+      content.scrollIntoView?.({ block: "start", inline: "nearest" });
+    });
   }, [section, selectedWorkspace]);
 
   function selectWorkspace(id: string) {

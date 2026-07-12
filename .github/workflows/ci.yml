@@ -5,8 +5,10 @@ on:
   pull_request:
 
 jobs:
-  verify:
+  static:
+    name: Static checks and tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -18,3 +20,45 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+
+  postgres-integration:
+    name: PostgreSQL integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: schedule
+          POSTGRES_USER: schedule
+          POSTGRES_PASSWORD: schedule
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --username=schedule --dbname=schedule"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://schedule:schedule@127.0.0.1:5432/schedule
+      NODE_ENV: test
+      PRODUCT_API_MODE: local_unauthenticated
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build workspace packages
+        run: pnpm build:packages
+      - name: Apply database migrations
+        run: pnpm db:migrate
+      - name: Verify database integrations against PostgreSQL
+        run: pnpm verify:database
+      - name: PostgreSQL diagnostics
+        if: failure()
+        run: docker logs "${{ job.services.postgres.id }}"

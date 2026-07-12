@@ -195,13 +195,29 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       headVersion: command.expectedHeadVersion + 1,
     }),
     generateDailyPlan: async (command) => {
-      storedPlan = generateDailyPlan({
+      const generated = generateDailyPlan({
         id: dailyPlanId(planUuid),
         request: command.request,
         routines: [routine],
         events: [],
         generatedAt: new Date("2026-07-15T07:00:00.000Z"),
       });
+      if (storedPlan === null) {
+        if (command.request.requestRevision !== 1) {
+          throw new DomainError(
+            "planning.revision_creation_conflict",
+            "Generic generation cannot allocate a later revision.",
+          );
+        }
+        storedPlan = generated;
+      } else if (storedPlan.requestRevision !== command.request.requestRevision) {
+        throw new DomainError(
+          "planning.revision_creation_conflict",
+          "Generic generation cannot allocate a later revision.",
+        );
+      } else if (storedPlan.inputHash !== generated.inputHash) {
+        throw new DomainError("planning.revision_conflict", "The revision input changed.");
+      }
       return storedPlan;
     },
     getCurrentDailyPlan: async () => {
@@ -222,7 +238,8 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
       return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
     },
-    getDailyPlan: async () => storedPlan,
+    getDailyPlan: async (query) =>
+      storedPlan?.requestRevision === query.requestRevision ? storedPlan : null,
     ...overrides,
   };
   return { services };
@@ -235,6 +252,55 @@ async function appWith(services: ProductServices) {
 }
 
 describe("local product API", () => {
+  it("rejects DNS-rebinding and hostname-suffix tricks before product routing", async () => {
+    const app = await appWith(createHarness().services);
+
+    for (const host of [
+      "attacker.example",
+      "localhost:invalid",
+      "localhost.attacker.example",
+      "127.0.0.1.attacker.example",
+      "::1",
+      "[::1].attacker.example",
+    ]) {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/workspaces",
+        headers: { host },
+      });
+      expect(response.statusCode, host).toBe(403);
+      expect(response.json(), host).toMatchObject({
+        error: { code: "request.host_not_allowed" },
+      });
+    }
+
+    const health = await app.inject({
+      method: "GET",
+      url: "/health/live",
+      headers: { host: "attacker.example" },
+    });
+    const info = await app.inject({
+      method: "GET",
+      url: "/v1/system/info",
+      headers: { host: "attacker.example" },
+    });
+    expect(health.statusCode).toBe(200);
+    expect(info.statusCode).toBe(200);
+  });
+
+  it("accepts direct and Vite-proxied loopback Host authorities", async () => {
+    const app = await appWith(createHarness().services);
+
+    for (const host of ["localhost:5173", "127.0.0.1:4000", "127.20.30.40:5173", "[::1]:4000"]) {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/workspaces",
+        headers: { host },
+      });
+      expect(response.statusCode, host).toBe(200);
+    }
+  });
+
   it("creates a workspace and reports product endpoints enabled", async () => {
     const app = await appWith(createHarness().services);
     const response = await app.inject({
@@ -568,6 +634,48 @@ describe("local product API", () => {
     expect(invalidCadence.body).not.toContain("daily-planning.ts");
   });
 
+  it("rejects impossible local dates at every HTTP boundary", async () => {
+    const app = await appWith(createHarness().services);
+    const invalidCadenceDate = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/routines`,
+      payload: {
+        title: "Impossible cadence",
+        duration: { expectedMinutes: 30 },
+        cadence: { period: "week", targetCompletions: 1, startsOn: "2026-02-29" },
+      },
+    });
+    const invalidPlanDate = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans`,
+      payload: {
+        date: "2026-02-29",
+        timeZone: "UTC",
+        targetMinutes: 30,
+        targetTaskCount: 1,
+        seed: "impossible-date",
+      },
+    });
+    const invalidPathDate = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/plans/1900-02-29/current`,
+    });
+
+    for (const response of [invalidCadenceDate, invalidPlanDate, invalidPathDate]) {
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        error: {
+          code: "request.validation_failed",
+          details: [
+            expect.objectContaining({
+              message: "Expected a valid Gregorian date in YYYY-MM-DD format.",
+            }),
+          ],
+        },
+      });
+    }
+  });
+
   it("requires an idempotency key and records an activity event", async () => {
     const app = await appWith(createHarness().services);
     const payload = {
@@ -633,6 +741,41 @@ describe("local product API", () => {
     expect(generated.json().request.availableWindows).toHaveLength(1);
     expect(retrieved.statusCode).toBe(200);
     expect(retrieved.json()).toEqual(generated.json());
+  });
+
+  it("allows exact generic retries but rejects generic creation of a later revision", async () => {
+    const app = await appWith(createHarness().services);
+    const payload = {
+      date: "2026-07-15",
+      timeZone: "UTC",
+      targetMinutes: 30,
+      targetTaskCount: 1,
+      seed: "generic-retry",
+      requestRevision: 1,
+    };
+    const created = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans`,
+      payload,
+    });
+    const retried = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans`,
+      payload,
+    });
+    const laterRevision = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans`,
+      payload: { ...payload, seed: "generic-revision-2", requestRevision: 2 },
+    });
+
+    expect(created.statusCode).toBe(200);
+    expect(retried.statusCode).toBe(200);
+    expect(retried.json()).toEqual(created.json());
+    expect(laterRevision.statusCode).toBe(409);
+    expect(laterRevision.json()).toMatchObject({
+      error: { code: "planning.revision_creation_conflict" },
+    });
   });
 
   it("retrieves the current Today plan and locks an item optimistically", async () => {
@@ -773,6 +916,7 @@ describe("local product API", () => {
     expect(first.statusCode).toBe(201);
     expect(throttled.statusCode).toBe(429);
     expect(throttled.json()).toMatchObject({ error: { code: "request.rate_limit_exceeded" } });
+    expect(Number(throttled.headers["retry-after"])).toBeGreaterThan(0);
     expect(health.statusCode).toBe(200);
 
     const bodyLimitApp = await appWith(createHarness().services);
@@ -785,7 +929,7 @@ describe("local product API", () => {
     expect(oversized.json()).toMatchObject({ error: { code: "request.body_too_large" } });
   });
 
-  it("limits concurrent plan generation", async () => {
+  it("shares the concurrency limit across generation, regeneration, and replacement", async () => {
     let releasePlan: () => void = () => undefined;
     let markStarted: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
@@ -831,17 +975,38 @@ describe("local product API", () => {
       payload,
     });
     await started;
-    const throttled = await app.inject({
+    const mutationPayload = {
+      expectedPlanId: planUuid,
+      expectedHeadVersion: 1,
+      request: {
+        timeZone: payload.timeZone,
+        availableWindows: payload.availableWindows,
+        targetMinutes: payload.targetMinutes,
+        targetTaskCount: payload.targetTaskCount,
+        availableContexts: payload.availableContexts,
+        seed: "concurrency-mutation-test",
+      },
+    };
+    const throttledRegeneration = await app.inject({
       method: "POST",
-      url: `/v1/workspaces/${workspaceUuid}/plans`,
-      payload,
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/regenerations`,
+      headers: { "idempotency-key": "concurrency-regeneration" },
+      payload: mutationPayload,
+    });
+    const throttledReplacement = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/items/${routineUuid}/replacement`,
+      headers: { "idempotency-key": "concurrency-replacement" },
+      payload: mutationPayload,
     });
     releasePlan();
 
-    expect(throttled.statusCode).toBe(429);
-    expect(throttled.json()).toMatchObject({
-      error: { code: "planning.concurrency_limit_reached" },
-    });
+    for (const throttled of [throttledRegeneration, throttledReplacement]) {
+      expect(throttled.statusCode).toBe(429);
+      expect(throttled.json()).toMatchObject({
+        error: { code: "planning.concurrency_limit_reached" },
+      });
+    }
     expect((await firstResponse).statusCode).toBe(200);
   });
 

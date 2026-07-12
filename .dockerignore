@@ -7,3 +7,8 @@ dist
 **/dist
 coverage
 *.log
+*.dump
+*.backup
+*.sql.gz
+.schedule
+backups

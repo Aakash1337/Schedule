@@ -15,12 +15,12 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 
 try {
   await runOutboxWorker(config, database, dispatcher, controller.signal);
-} catch (error) {
+} catch {
   console.error(
     JSON.stringify({
       level: "error",
+      failureClass: "worker_runtime_error",
       message: "worker stopped unexpectedly",
-      error: String(error),
     }),
   );
   process.exitCode = 1;

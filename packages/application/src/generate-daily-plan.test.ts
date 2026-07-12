@@ -8,6 +8,8 @@ import {
   createRoutine,
   createStructuredTags,
   createWorkspace,
+  dailyPlanId,
+  generateDailyPlan,
   routineId,
   workspaceId,
   type DailyPlan,
@@ -68,7 +70,8 @@ describe("GenerateDailyPlan", () => {
       },
       dailyPlans: {
         findById: async () => stored ?? null,
-        findByRevision: async () => stored ?? null,
+        findByRevision: async (_workspaceId, _date, requestRevision) =>
+          stored?.requestRevision === requestRevision ? stored : null,
         insertForRevision: async (plan: DailyPlan) => {
           stored ??= plan;
           return stored;
@@ -122,6 +125,52 @@ describe("GenerateDailyPlan", () => {
 
     await expect(useCase.execute({ request })).rejects.toMatchObject<Partial<DomainError>>({
       code: "planning.revision_conflict",
+    });
+  });
+
+  it("returns the same persisted plan for an exact deterministic retry", async () => {
+    const first = await harness().useCase.execute({ request });
+    const { useCase } = harness(first);
+
+    await expect(useCase.execute({ request })).resolves.toBe(first);
+  });
+
+  it("can exactly retry a later generic revision that was already persisted", async () => {
+    const laterRequest = {
+      ...request,
+      requestRevision: 2,
+      seed: "persisted-generic-revision",
+    };
+    const laterPlan = generateDailyPlan({
+      id: dailyPlanId("persisted-generic-plan"),
+      request: laterRequest,
+      routines: [routine],
+      events: [],
+      generatedAt: new Date("2026-07-15T07:00:00.000Z"),
+    });
+    const { useCase } = harness(laterPlan);
+
+    await expect(useCase.execute({ request: laterRequest })).resolves.toBe(laterPlan);
+  });
+
+  it("requires mutation endpoints to allocate every revision after the initial plan", async () => {
+    const first = await harness().useCase.execute({ request });
+    const { useCase } = harness(first);
+
+    await expect(
+      useCase.execute({ request: { ...request, requestRevision: 2, seed: "generic-revision-2" } }),
+    ).rejects.toMatchObject<Partial<DomainError>>({
+      code: "planning.revision_creation_conflict",
+    });
+  });
+
+  it("requires an initial generic plan to start at revision 1", async () => {
+    const { useCase } = harness();
+
+    await expect(
+      useCase.execute({ request: { ...request, requestRevision: 2 } }),
+    ).rejects.toMatchObject<Partial<DomainError>>({
+      code: "planning.revision_creation_conflict",
     });
   });
 

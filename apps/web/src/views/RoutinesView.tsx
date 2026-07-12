@@ -329,6 +329,10 @@ function eventTimestamp(event: ActivityEvent): string {
   return `${formatDay(date, { month: "short", day: "numeric", year: "numeric" })}, ${formatTime(event.occurredAt)}`;
 }
 
+function routinesQueryKey(workspaceId: string, status: RoutineStatus): string {
+  return JSON.stringify([workspaceId, status]);
+}
+
 export function RoutinesView({ workspace }: WorkspaceViewProps) {
   const [activeStatus, setActiveStatus] = useState<RoutineStatus>("active");
   const [routines, setRoutines] = useState<readonly Routine[]>([]);
@@ -351,6 +355,9 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState<string | null>(null);
   const activityRequest = useRef(0);
+  const activeQueryKey = routinesQueryKey(workspace.id, activeStatus);
+  const activeQueryKeyRef = useRef(activeQueryKey);
+  activeQueryKeyRef.current = activeQueryKey;
 
   const selectedRoutine = useMemo(
     () => routines.find((routine) => routine.id === selectedRoutineId) ?? null,
@@ -359,20 +366,24 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
 
   const loadRoutines = useCallback(
     async (signal?: AbortSignal) => {
+      const requestKey = routinesQueryKey(workspace.id, activeStatus);
+      const requestIsActive = () =>
+        signal?.aborted !== true && activeQueryKeyRef.current === requestKey;
       setLoading(true);
       setLoadError(null);
       try {
         const result = await api.listRoutines(workspace.id, activeStatus, signal);
+        if (!requestIsActive()) return;
         setRoutines(result.items);
         setSelectedRoutineId((current) =>
           result.items.some((routine) => routine.id === current) ? current : null,
         );
       } catch (error) {
-        if (!isAbortError(error)) {
+        if (requestIsActive() && !isAbortError(error)) {
           setLoadError(requestError(error, "The routine pool could not be loaded."));
         }
       } finally {
-        if (signal?.aborted !== true) setLoading(false);
+        if (requestIsActive()) setLoading(false);
       }
     },
     [activeStatus, workspace.id],
@@ -386,7 +397,10 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     setActivityItems([]);
     setActivityCursor(null);
     setActivityLoaded(false);
+    setActivityLoading(false);
     setActivityError(null);
+    setFormBusy(false);
+    setBusyRoutineId(null);
     void loadRoutines(controller.signal);
     return () => controller.abort();
   }, [loadRoutines]);
@@ -394,6 +408,8 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
   useEffect(() => {
     setDraft(null);
     setEditingRoutine(null);
+    setFormBusy(false);
+    setBusyRoutineId(null);
     setFormError(null);
     setConflictMessage(null);
     setMutationError(null);
@@ -467,12 +483,14 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     }
   }
 
-  async function refreshAfterConflict(routineId: string) {
+  async function refreshAfterConflict(routineId: string, requestKey: string): Promise<void> {
+    if (activeQueryKeyRef.current !== requestKey) return;
     try {
       const [currentPage, latest] = await Promise.all([
         api.listRoutines(workspace.id, activeStatus),
         api.getRoutine(workspace.id, routineId),
       ]);
+      if (activeQueryKeyRef.current !== requestKey) return;
       setRoutines(currentPage.items);
       if (editingRoutine?.id === routineId) {
         setEditingRoutine(latest);
@@ -482,6 +500,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
         currentPage.items.some((routine) => routine.id === current) ? current : null,
       );
     } catch (error) {
+      if (activeQueryKeyRef.current !== requestKey) return;
       setMutationError(
         requestError(error, "The latest routine could not be loaded after the conflict."),
       );
@@ -491,6 +510,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (draft === null) return;
+    const requestKey = activeQueryKey;
     const result = parseDraft(draft, editingRoutine?.status ?? "active");
     if (result.payload === null) {
       setFormError(result.error);
@@ -514,6 +534,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
               duration: result.payload.duration,
               cadence: result.payload.cadence,
             });
+      if (activeQueryKeyRef.current !== requestKey) return;
 
       closeEditor();
       if (saved.status !== activeStatus) {
@@ -529,16 +550,17 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
       setSelectedRoutineId(saved.id);
       resetActivity();
     } catch (error) {
+      if (activeQueryKeyRef.current !== requestKey) return;
       if (error instanceof ApiError && error.status === 409 && editingRoutine !== null) {
         setConflictMessage(
           "This routine changed elsewhere. The latest values are loaded; your unsaved edits were not applied.",
         );
-        await refreshAfterConflict(editingRoutine.id);
+        await refreshAfterConflict(editingRoutine.id, requestKey);
       } else {
         setFormError(requestError(error, "The routine could not be saved."));
       }
     } finally {
-      setFormBusy(false);
+      if (activeQueryKeyRef.current === requestKey) setFormBusy(false);
     }
   }
 
@@ -560,6 +582,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
   }
 
   async function changeStatus(routine: Routine, status: RoutineStatus) {
+    const requestKey = activeQueryKey;
     setBusyRoutineId(routine.id);
     setMutationError(null);
     setConflictMessage(null);
@@ -568,6 +591,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
         expectedVersion: routine.version,
         status,
       });
+      if (activeQueryKeyRef.current !== requestKey) return;
       setRoutines((current) => current.filter((item) => item.id !== routine.id));
       if (selectedRoutineId === routine.id) {
         setSelectedRoutineId(null);
@@ -577,21 +601,23 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
         setEditingRoutine(updated);
       }
     } catch (error) {
+      if (activeQueryKeyRef.current !== requestKey) return;
       if (error instanceof ApiError && error.status === 409) {
         setConflictMessage(
           "This routine changed elsewhere. The latest version was reloaded, so you can try the action again.",
         );
-        await refreshAfterConflict(routine.id);
+        await refreshAfterConflict(routine.id, requestKey);
       } else {
         setMutationError(requestError(error, "The routine status could not be changed."));
       }
     } finally {
-      setBusyRoutineId(null);
+      if (activeQueryKeyRef.current === requestKey) setBusyRoutineId(null);
     }
   }
 
   async function loadActivity(reset: boolean) {
     if (selectedRoutine === null || (activityLoaded && !reset && activityCursor === null)) return;
+    const requestKey = activeQueryKey;
     const requestId = activityRequest.current + 1;
     activityRequest.current = requestId;
     setActivityLoading(true);
@@ -602,7 +628,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
         selectedRoutine.id,
         reset ? undefined : (activityCursor ?? undefined),
       );
-      if (activityRequest.current !== requestId) return;
+      if (activityRequest.current !== requestId || activeQueryKeyRef.current !== requestKey) return;
       setActivityLoaded(true);
       setActivityCursor(result.page.nextCursor);
       setActivityItems((current) => {
@@ -611,11 +637,13 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
         return [...current, ...result.items.filter((event) => !existingIds.has(event.id))];
       });
     } catch (error) {
-      if (activityRequest.current === requestId) {
+      if (activityRequest.current === requestId && activeQueryKeyRef.current === requestKey) {
         setActivityError(requestError(error, "Activity history could not be loaded."));
       }
     } finally {
-      if (activityRequest.current === requestId) setActivityLoading(false);
+      if (activityRequest.current === requestId && activeQueryKeyRef.current === requestKey) {
+        setActivityLoading(false);
+      }
     }
   }
 
@@ -1096,6 +1124,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
             aria-selected={activeStatus === tab.id}
             aria-controls="routine-pool-panel"
             tabIndex={activeStatus === tab.id ? 0 : -1}
+            disabled={formBusy || busyRoutineId !== null}
             onClick={() => setActiveStatus(tab.id)}
             onKeyDown={(event) => handleStatusTabKey(event, tab.id)}
           >
