@@ -21,7 +21,7 @@ describe("RecordPlanItemActivity", () => {
   const occurredAt = new Date("2026-07-15T10:00:00.000Z");
   const now = new Date("2026-07-15T10:01:00.000Z");
 
-  function harness() {
+  function harness(clockNow = now) {
     let captured: RecordPlanItemActivityInput | null = null;
     let transactionRuns = 0;
     const context = {
@@ -43,6 +43,9 @@ describe("RecordPlanItemActivity", () => {
               timeZone: input.timeZone,
               durationMinutes: input.durationMinutes,
               reason: input.reason,
+              ...(input.type === "completion_reversed"
+                ? { referenceEventId: activityEventId("prior-completion") }
+                : {}),
               metadata: input.metadata,
               idempotencyKey: input.idempotencyKey,
               recordedAt: input.now,
@@ -59,7 +62,7 @@ describe("RecordPlanItemActivity", () => {
       },
     };
     return {
-      useCase: new RecordPlanItemActivity(unitOfWork, { now: () => new Date(now) }),
+      useCase: new RecordPlanItemActivity(unitOfWork, { now: () => new Date(clockNow) }),
       captured: () => captured,
       transactionRuns: () => transactionRuns,
     };
@@ -107,6 +110,71 @@ describe("RecordPlanItemActivity", () => {
         idempotencyKey: "invalid-duration",
       }),
     ).toThrowError(DomainError);
+    expect(test.transactionRuns()).toBe(0);
+  });
+
+  it("delegates completion reversal with its normalized nullable fields", async () => {
+    const test = harness();
+    const result = await test.useCase.execute({
+      workspaceId: workspace,
+      date: localDate("2026-07-15"),
+      expectedPlanId: plan,
+      itemId: item,
+      expectedHeadVersion: 4,
+      type: "completion_reversed",
+      occurredAt,
+      timeZone: "UTC",
+      reason: "  corrected duplicate  ",
+      idempotencyKey: " reverse-completion ",
+    });
+
+    expect(result.activityState).toBe("pending");
+    expect(test.captured()).toMatchObject({
+      type: "completion_reversed",
+      durationMinutes: null,
+      reason: "  corrected duplicate  ",
+      idempotencyKey: "reverse-completion",
+      metadata: {},
+    });
+  });
+
+  it.each([
+    ["invalid head", { expectedHeadVersion: 0 }, "planning.head_version_invalid"],
+    ["blank idempotency key", { idempotencyKey: "   " }, "planning.idempotency_key_invalid"],
+  ] as const)("rejects %s before opening a transaction", (_label, override, code) => {
+    const test = harness();
+    expect(() =>
+      test.useCase.execute({
+        workspaceId: workspace,
+        date: localDate("2026-07-15"),
+        expectedPlanId: plan,
+        itemId: item,
+        expectedHeadVersion: 4,
+        type: "started",
+        occurredAt,
+        timeZone: "UTC",
+        idempotencyKey: "valid-key",
+        ...override,
+      }),
+    ).toThrowError(expect.objectContaining({ code }));
+    expect(test.transactionRuns()).toBe(0);
+  });
+
+  it("rejects an invalid interaction clock before opening a transaction", () => {
+    const test = harness(new Date("invalid"));
+    expect(() =>
+      test.useCase.execute({
+        workspaceId: workspace,
+        date: localDate("2026-07-15"),
+        expectedPlanId: plan,
+        itemId: item,
+        expectedHeadVersion: 4,
+        type: "started",
+        occurredAt,
+        timeZone: "UTC",
+        idempotencyKey: "invalid-clock",
+      }),
+    ).toThrowError(expect.objectContaining({ code: "planning.timestamp_invalid" }));
     expect(test.transactionRuns()).toBe(0);
   });
 });

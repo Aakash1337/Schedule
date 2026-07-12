@@ -1,0 +1,401 @@
+{
+  "schemaVersion": 1,
+  "ciWorkflow": ".github/workflows/ci.yml",
+  "commands": {
+    "unit": { "command": "pnpm check", "ci": true },
+    "coverage": { "command": "pnpm test:coverage", "ci": true },
+    "planner-db": { "command": "pnpm verify:database", "ci": true },
+    "product-api": { "command": "pnpm verify:database", "ci": true },
+    "outbox-db": { "command": "pnpm verify:database", "ci": true },
+    "weekday-migrations": { "command": "pnpm verify:database", "ci": true },
+    "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
+    "recovery-state": {
+      "command": "pnpm verify:recovery-state-machine",
+      "ci": true
+    }
+  },
+  "features": [
+    {
+      "id": "planner-daily-selection",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": { "file": "docs/PLANNER.md", "anchor": "## Planning process" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/planner-evaluation.test.ts",
+          "command": "unit",
+          "anchors": [
+            "enforces every hard eligibility boundary independently",
+            "never violates minute, task-count, or window capacity invariants"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-planner-db.ts",
+          "command": "planner-db",
+          "anchors": ["planner database verification passed"]
+        }
+      ]
+    },
+    {
+      "id": "planner-ranking-and-variety",
+      "status": "implemented",
+      "risk": "high",
+      "contract": { "file": "docs/PRODUCT.md", "anchor": "### 7.3 Scoring" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/planner-evaluation.test.ts",
+          "command": "unit",
+          "anchors": [
+            "preserves priority and history ranking under paired deterministic inputs",
+            "prefers category diversity across paired deterministic scenarios"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/domain/src/daily-planning.test.ts",
+          "command": "unit",
+          "anchors": ["retains a low but nonzero exploration rate after the cadence target is met"]
+        }
+      ]
+    },
+    {
+      "id": "planner-deterministic-replay",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": { "file": "docs/PLANNER.md", "anchor": "## Determinism contract" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/planner-evaluation.test.ts",
+          "command": "unit",
+          "anchors": ["is repeatable across seeds and preserves plan-item invariants"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-planner-db.ts",
+          "command": "planner-db",
+          "anchors": ["planner database verification passed"]
+        }
+      ]
+    },
+    {
+      "id": "today-plan-revisions-and-mutations",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": { "file": "docs/PLANNER.md", "anchor": "## Persistence and concurrency" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/mutate-daily-plan.test.ts",
+          "command": "unit",
+          "anchors": [
+            "replaces one unlocked item, preserves its sibling, and replays the allocated revision",
+            "rejects stale heads, conflicting mutation keys, and invalid replacement targets"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-product-api.ts",
+          "command": "product-api",
+          "anchors": ["product API verification passed"]
+        }
+      ]
+    },
+    {
+      "id": "plan-item-activity-lifecycle",
+      "status": "implemented",
+      "risk": "high",
+      "contract": { "file": "docs/PRODUCT.md", "anchor": "## 9. Daily-plan interaction" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/plan-item-activity.test.ts",
+          "command": "unit",
+          "anchors": ["enforces the transition oracle for %s + %s"]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/record-plan-item-activity.test.ts",
+          "command": "unit",
+          "anchors": ["delegates completion reversal with its normalized nullable fields"]
+        }
+      ]
+    },
+    {
+      "id": "routine-management",
+      "status": "implemented",
+      "risk": "high",
+      "contract": { "file": "docs/API.md", "anchor": "## Routes" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/routine-management.test.ts",
+          "command": "unit",
+          "anchors": ["gets and atomically updates a scoped routine"]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/RoutinesView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "suppresses duplicate activity pages and ignores a stale response for a previously selected routine"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "work-board-management",
+      "status": "implemented",
+      "risk": "high",
+      "contract": { "file": "docs/PRODUCT.md", "anchor": "### 3.1 Work item" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/work-item-management.test.ts",
+          "command": "unit",
+          "anchors": ["creates, retrieves, and filters backlog items"]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/WorkView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "keeps the latest priority-filter response when an earlier response finishes late",
+            "removes an item that no longer matches the active priority filter"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-product-api.ts",
+          "command": "product-api",
+          "anchors": ["concurrentWorkItemUpdates"]
+        }
+      ]
+    },
+    {
+      "id": "calendar-block-management",
+      "status": "implemented",
+      "risk": "high",
+      "contract": { "file": "docs/PRODUCT.md", "anchor": "### 3.3 Schedule block" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/schedule-block-management.test.ts",
+          "command": "unit",
+          "anchors": ["creates a linked block and lists half-open overlaps"]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/CalendarView.test.tsx",
+          "command": "unit",
+          "anchors": ["reports accessible invalid-time and end-before-start errors without saving"]
+        }
+      ]
+    },
+    {
+      "id": "workspace-isolation",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": { "file": "docs/API.md", "anchor": "## Safety boundary" },
+      "evidence": [
+        {
+          "level": "integration",
+          "file": "scripts/verify-product-api.ts",
+          "command": "product-api",
+          "anchors": [
+            "Product API isolation verification",
+            "crossWorkspaceScheduleBlockDelete",
+            "cross-workspace-routine-activity",
+            "cross-workspace-plan-item-activity",
+            "cross-workspace-plan-regeneration",
+            "cross-workspace-plan-replacement"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "local-api-safety-and-errors",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": { "file": "docs/API.md", "anchor": "## Error shape" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "rejects DNS-rebinding and hostname-suffix tricks before product routing",
+            "redacts unexpected service errors"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-product-api.ts",
+          "command": "product-api",
+          "anchors": ["product API verification passed"]
+        }
+      ]
+    },
+    {
+      "id": "web-today-loop",
+      "status": "implemented",
+      "risk": "high",
+      "contract": { "file": "docs/WEB.md", "anchor": "## Mutation and conflict contract" },
+      "evidence": [
+        {
+          "level": "component",
+          "file": "apps/web/src/views/TodayView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "renders successful regenerate and replace responses with versioned idempotent commands",
+            "reuses the same idempotency key and timestamp after an ambiguous failure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "outbox-reliable-delivery",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": { "file": "README.md", "anchor": "database-backed outbox processing" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/worker/src/worker.test.ts",
+          "command": "unit",
+          "anchors": ["aborts a handler on stale lease renewal and never persists a completion"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-outbox-db.ts",
+          "command": "outbox-db",
+          "anchors": ["outbox database verification passed"]
+        }
+      ]
+    },
+    {
+      "id": "database-migration-integrity",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": { "file": "docs/OPERATIONS.md", "anchor": "## Routine verification" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": ["constrains routine weekday arrays at the database boundary"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-weekday-migrations.ts",
+          "command": "weekday-migrations",
+          "anchors": ["Weekday migration upgrade verification passed"]
+        }
+      ]
+    },
+    {
+      "id": "backup-archive-integrity",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": { "file": "docs/OPERATIONS.md", "anchor": "## Verify the complete archive path" },
+      "evidence": [
+        {
+          "level": "drill",
+          "file": "scripts/verify-backup-restore.ts",
+          "command": "backup-restore",
+          "anchors": ["Backup/restore verification passed for every application table"]
+        }
+      ]
+    },
+    {
+      "id": "recovery-state-machine",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/OPERATIONS.md",
+        "anchor": "## Verify the recovery state machine"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "scripts/restore-database.test.ts",
+          "command": "unit",
+          "anchors": [
+            "restores the original active name when staging promotion fails mid-swap",
+            "undoes a rollback if enabling the promoted previous database fails"
+          ]
+        },
+        {
+          "level": "drill",
+          "file": "scripts/verify-recovery-state-machine.ts",
+          "command": "recovery-state",
+          "anchors": ["Disposable recovery state-machine verification passed"]
+        }
+      ]
+    },
+    {
+      "id": "runtime-safety-configuration",
+      "status": "implemented",
+      "risk": "high",
+      "contract": { "file": "README.md", "anchor": "Local unauthenticated product routes" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/config/src/config.test.ts",
+          "command": "unit",
+          "anchors": ["rejects attempts to expose the unauthenticated product API"]
+        }
+      ]
+    },
+    {
+      "id": "ordinary-work-planner-eligibility",
+      "status": "partial",
+      "risk": "high",
+      "contract": {
+        "file": "docs/PRODUCT.md",
+        "anchor": "candidate plan items from routines only"
+      },
+      "limitations": ["Work items are managed but are not candidates in planner v1."],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/work-item-management.test.ts",
+          "command": "unit",
+          "anchors": ["creates, retrieves, and filters backlog items"]
+        }
+      ]
+    },
+    {
+      "id": "transparent-adaptation",
+      "status": "deferred",
+      "risk": "normal",
+      "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 3 — Transparent adaptation" },
+      "limitations": ["No learned-duration or preference model is implemented."],
+      "evidence": []
+    },
+    {
+      "id": "local-model-advisor",
+      "status": "deferred",
+      "risk": "normal",
+      "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 4 — Local-model advisor" },
+      "limitations": ["No Gemma or other advisor provider is integrated."],
+      "evidence": []
+    },
+    {
+      "id": "hosted-authentication-and-sync",
+      "status": "deferred",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/PRODUCT.md",
+        "anchor": "### Phase 5 — Hosting and synchronization"
+      },
+      "limitations": [
+        "Public authentication, workspace isolation across users, and synchronization are not implemented."
+      ],
+      "evidence": []
+    }
+  ]
+}

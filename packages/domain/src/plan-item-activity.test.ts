@@ -9,25 +9,55 @@ import {
 } from "./plan-item-activity.js";
 
 describe("plan item activity lifecycle", () => {
-  it.each(planItemActivityTypes)("allows pending to transition to %s", (action) => {
-    expect(transitionPlanItemActivity("pending", action)).toBe(action);
-  });
-
-  it.each(["completed", "skipped", "deferred", "dismissed"] as const)(
-    "allows started to transition to %s",
-    (action) => {
-      expect(transitionPlanItemActivity("started", action)).toBe(action);
+  const transitionOracle = {
+    pending: {
+      started: "started",
+      completed: "completed",
+      skipped: "skipped",
+      deferred: "deferred",
+      dismissed: "dismissed",
     },
-  );
+    started: {
+      started: "planning.item_activity_transition_invalid",
+      completed: "completed",
+      skipped: "skipped",
+      deferred: "deferred",
+      dismissed: "dismissed",
+    },
+    completed: Object.fromEntries(
+      planItemActivityTypes.map((action) => [action, "planning.item_activity_transition_invalid"]),
+    ),
+    skipped: Object.fromEntries(
+      planItemActivityTypes.map((action) => [action, "planning.item_activity_transition_invalid"]),
+    ),
+    deferred: Object.fromEntries(
+      planItemActivityTypes.map((action) => [action, "planning.item_activity_transition_invalid"]),
+    ),
+    dismissed: Object.fromEntries(
+      planItemActivityTypes.map((action) => [action, "planning.item_activity_transition_invalid"]),
+    ),
+  } as const;
 
-  it.each([
-    ["started", "started"],
-    ["completed", "started"],
-    ["skipped", "completed"],
-    ["deferred", "dismissed"],
-    ["dismissed", "started"],
-  ] as const)("rejects %s to %s", (current, action) => {
-    expect(() => transitionPlanItemActivity(current, action)).toThrowError(DomainError);
+  it.each(
+    Object.entries(transitionOracle).flatMap(([current, outcomes]) =>
+      Object.entries(outcomes).map(([action, outcome]) => [current, action, outcome] as const),
+    ),
+  )("enforces the transition oracle for %s + %s", (current, action, outcome) => {
+    if (outcome === "planning.item_activity_transition_invalid") {
+      expect(() =>
+        transitionPlanItemActivity(
+          current as Parameters<typeof transitionPlanItemActivity>[0],
+          action as Parameters<typeof transitionPlanItemActivity>[1],
+        ),
+      ).toThrowError(expect.objectContaining({ code: outcome }));
+      return;
+    }
+    expect(
+      transitionPlanItemActivity(
+        current as Parameters<typeof transitionPlanItemActivity>[0],
+        action as Parameters<typeof transitionPlanItemActivity>[1],
+      ),
+    ).toBe(outcome);
   });
 
   it("identifies only completed, skipped, deferred, and dismissed as terminal", () => {
@@ -44,5 +74,7 @@ describe("plan item activity lifecycle", () => {
     expect(() => reversePlanItemCompletion("pending")).toThrowError(DomainError);
     expect(() => reversePlanItemCompletion("started")).toThrowError(DomainError);
     expect(() => reversePlanItemCompletion("skipped")).toThrowError(DomainError);
+    expect(() => reversePlanItemCompletion("deferred")).toThrowError(DomainError);
+    expect(() => reversePlanItemCompletion("dismissed")).toThrowError(DomainError);
   });
 });

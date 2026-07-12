@@ -389,6 +389,8 @@ describe("outbox worker", () => {
       leaseDurationMs: 300,
       heartbeatIntervalMs: 100,
     });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dispatch).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(100);
     controller.abort("test complete");
     finish?.({ handled: true });
@@ -405,18 +407,17 @@ describe("outbox worker", () => {
     expect(consoleError.mock.calls.flat().join(" ")).not.toContain("customer/42");
   });
 
-  it("surfaces a stale lease renewal and cannot acknowledge with a superseded token", async () => {
+  it("aborts a handler on stale lease renewal and never persists a completion", async () => {
     vi.useFakeTimers();
     const controller = new AbortController();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     databaseMocks.claimNextOutboxEvent.mockResolvedValue(claim(firstEvent));
     databaseMocks.renewOutboxEventLease.mockResolvedValue({ status: "stale" });
-    databaseMocks.completeOutboxEvent.mockResolvedValue("stale");
-    let finish: ((result: { handled: boolean }) => void) | undefined;
+    let handlerSignal: AbortSignal | undefined;
     const dispatch = vi.fn(
-      async () =>
-        new Promise<{ handled: boolean }>((resolve) => {
-          finish = resolve;
+      async (_event: ClaimedOutboxEvent, signal: AbortSignal) =>
+        new Promise<{ handled: boolean }>(() => {
+          handlerSignal = signal;
         }),
     );
 
@@ -424,18 +425,55 @@ describe("outbox worker", () => {
       leaseDurationMs: 300,
       heartbeatIntervalMs: 100,
     });
-    await vi.advanceTimersByTimeAsync(100);
-    controller.abort("test complete");
-    finish?.({ handled: true });
-    await vi.advanceTimersByTimeAsync(0);
-    await worker;
-
-    expect(parsedLogs(consoleError)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ operation: "renew" }),
-        expect.objectContaining({ operation: "complete" }),
-      ]),
+    const workerFailure = expect(worker).rejects.toThrow(
+      "outbox lease lost; worker restart required",
     );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(databaseMocks.renewOutboxEventLease).toHaveBeenCalledWith(database, firstEvent);
+    await workerFailure;
+
+    expect(handlerSignal?.aborted).toBe(true);
+    expect(parsedLogs(consoleError)).toContainEqual(
+      expect.objectContaining({ operation: "renew" }),
+    );
+    expect(databaseMocks.completeOutboxEvent).not.toHaveBeenCalled();
+    expect(databaseMocks.failOutboxEvent).not.toHaveBeenCalled();
+    expect(databaseMocks.releaseOutboxEvent).not.toHaveBeenCalled();
+    expect(databaseMocks.claimNextOutboxEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates a failure to persist a handler retry without acknowledging the event", async () => {
+    const controller = new AbortController();
+    databaseMocks.claimNextOutboxEvent.mockResolvedValue(claim(firstEvent));
+    databaseMocks.failOutboxEvent.mockRejectedValueOnce(new Error("database unavailable"));
+    const dispatch = vi.fn(async () => {
+      controller.abort("test complete");
+      throw new Error("handler failed");
+    });
+
+    await expect(
+      runOutboxWorker(config, database, dispatcherWith(dispatch), controller.signal),
+    ).rejects.toThrow("database unavailable");
+
+    expect(databaseMocks.completeOutboxEvent).not.toHaveBeenCalled();
+  });
+
+  it("propagates a failure to persist completion without retrying a completed handler", async () => {
+    const controller = new AbortController();
+    databaseMocks.claimNextOutboxEvent.mockResolvedValue(claim(firstEvent));
+    databaseMocks.completeOutboxEvent.mockRejectedValueOnce(new Error("database unavailable"));
+    const dispatch = vi.fn(async () => {
+      controller.abort("test complete");
+      return { handled: true };
+    });
+
+    await expect(
+      runOutboxWorker(config, database, dispatcherWith(dispatch), controller.signal),
+    ).rejects.toThrow("database unavailable");
+
+    expect(databaseMocks.failOutboxEvent).not.toHaveBeenCalled();
   });
 
   it("releases a claim acquired concurrently with shutdown before dispatch", async () => {

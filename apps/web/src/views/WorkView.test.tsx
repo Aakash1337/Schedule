@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -35,6 +35,14 @@ const item: WorkItem = {
   createdAt: "2026-07-12T09:00:00.000Z",
   updatedAt: "2026-07-12T09:00:00.000Z",
 };
+
+function deferred<Value>() {
+  let resolve!: (value: Value | PromiseLike<Value>) => void;
+  const promise = new Promise<Value>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -145,5 +153,84 @@ describe("work board", () => {
       }),
     );
     expect(await screen.findByRole("heading", { name: updated.title })).toBeInTheDocument();
+  });
+
+  it("keeps the latest priority-filter response when an earlier response finishes late", async () => {
+    const user = userEvent.setup();
+    const all = deferred<{ items: readonly WorkItem[]; page: { limit: number; offset: number } }>();
+    const urgent = deferred<{
+      items: readonly WorkItem[];
+      page: { limit: number; offset: number };
+    }>();
+    const urgentItem = {
+      ...item,
+      id: "item-urgent",
+      title: "Respond to incident",
+      priority: "urgent" as const,
+    };
+    apiMocks.listWorkItems.mockImplementation(
+      (_workspaceId: string, filters: { priority?: string }) =>
+        filters.priority === "urgent" ? urgent.promise : all.promise,
+    );
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Filter by priority" }),
+      "urgent",
+    );
+    await waitFor(() =>
+      expect(apiMocks.listWorkItems).toHaveBeenCalledWith(
+        workspace.id,
+        { priority: "urgent" },
+        expect.any(AbortSignal),
+      ),
+    );
+
+    await act(async () => {
+      urgent.resolve({ items: [urgentItem], page: { limit: 200, offset: 0 } });
+      await urgent.promise;
+    });
+    expect(await screen.findByRole("heading", { name: urgentItem.title })).toBeInTheDocument();
+
+    await act(async () => {
+      all.resolve({ items: [item], page: { limit: 200, offset: 0 } });
+      await all.promise;
+    });
+    expect(screen.getByRole("heading", { name: urgentItem.title })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: item.title })).not.toBeInTheDocument();
+  });
+
+  it("removes an item that no longer matches the active priority filter", async () => {
+    const user = userEvent.setup();
+    const urgentItem = { ...item, priority: "urgent" as const };
+    apiMocks.listWorkItems.mockImplementation(
+      async (_workspaceId: string, filters: { priority?: string }) => ({
+        items: filters.priority === "urgent" ? [urgentItem] : [item],
+        page: { limit: 200, offset: 0 },
+      }),
+    );
+    apiMocks.updateWorkItem.mockResolvedValue({ ...urgentItem, priority: "low", version: 4 });
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Filter by priority" }),
+      "urgent",
+    );
+    const heading = await screen.findByRole("heading", { name: urgentItem.title });
+    const card = heading.closest("article");
+    if (card === null) throw new Error("Work card was not rendered.");
+    await user.selectOptions(
+      within(card).getByRole("combobox", { name: `Priority for ${urgentItem.title}` }),
+      "low",
+    );
+
+    await waitFor(() =>
+      expect(apiMocks.updateWorkItem).toHaveBeenCalledWith(workspace.id, urgentItem.id, {
+        expectedVersion: urgentItem.version,
+        priority: "low",
+      }),
+    );
+    expect(screen.queryByRole("heading", { name: urgentItem.title })).not.toBeInTheDocument();
+    expect(screen.getByText("No matching work items")).toBeInTheDocument();
   });
 });

@@ -8,6 +8,7 @@ import {
   claimNextOutboxEvent,
   completeOutboxEvent,
   createDatabase,
+  failOutboxEvent,
   releaseOutboxEvent,
   renewOutboxEventLease,
   type ClaimedOutboxEvent,
@@ -71,6 +72,41 @@ async function claimExpected(
     throw new Error(`Expected disposable outbox event ${expectedId} to be claimed`);
   }
   return result.event;
+}
+
+async function insertProcessingEvent(
+  connection: DatabaseConnection,
+  id: string,
+  topic: string,
+  attempts: number,
+): Promise<ClaimedOutboxEvent> {
+  const [row] = await connection.sql<
+    { workspace_id: string | null; payload: Record<string, unknown>; locked_at: string }[]
+  >`
+    insert into outbox_events (
+      id, topic, payload, status, attempts, available_at, locked_at, created_at
+    )
+    values (
+      ${id},
+      ${topic},
+      ${JSON.stringify({ verification: true })}::jsonb,
+      'processing',
+      ${attempts},
+      '-infinity'::timestamptz,
+      clock_timestamp(),
+      '-infinity'::timestamptz
+    )
+    returning workspace_id, payload, locked_at::text as locked_at
+  `;
+  if (!row) throw new Error("The processing verification row was not inserted");
+  return {
+    id,
+    workspaceId: row.workspace_id,
+    topic,
+    payload: row.payload,
+    attempts,
+    lockedAt: row.locked_at,
+  };
 }
 
 async function closeIfOpen(connection: DatabaseConnection | null): Promise<void> {
@@ -155,6 +191,101 @@ try {
   assert.notEqual(renewal.event.lockedAt, originalClaim.lockedAt);
   assert.equal(await completeOutboxEvent(secondWorker, originalClaim), "stale");
   assert.equal(await completeOutboxEvent(firstWorker, renewal.event), "applied");
+
+  // Handler failures use fenced retry scheduling, then reach dead letter at
+  // the exact configured attempt ceiling. The retry cap is 60 seconds.
+  const retryId = randomUUID();
+  await insertPendingEvent(firstWorker, retryId, "verification.outbox.retry");
+  const retryClaim = await claimExpected(firstWorker, retryId);
+  const retryFailureStartedAt = Date.now();
+  assert.equal(
+    await failOutboxEvent(firstWorker, retryClaim, "temporary verification failure", 3),
+    "retry_scheduled",
+  );
+  const retryFailureFinishedAt = Date.now();
+  const [retryState] = await firstWorker.sql<
+    {
+      status: string;
+      attempts: number;
+      locked_at: string | null;
+      last_error: string | null;
+      available_at_ms: number;
+    }[]
+  >`
+    select
+      status::text as status,
+      attempts,
+      locked_at::text as locked_at,
+      last_error,
+      extract(epoch from available_at) * 1000 as available_at_ms
+    from outbox_events
+    where id = ${retryId}
+  `;
+  assert.equal(retryState?.status, "pending");
+  assert.equal(retryState?.attempts, 1);
+  assert.equal(retryState?.locked_at, null);
+  assert.equal(retryState?.last_error, "temporary verification failure");
+  const retryAvailableAt = Number(retryState?.available_at_ms);
+  assert.ok(
+    retryAvailableAt >= retryFailureStartedAt + 1_900 &&
+      retryAvailableAt <= retryFailureFinishedAt + 2_100,
+    "attempt one must persist a two-second retry delay from the failure transition",
+  );
+
+  const cappedRetryId = randomUUID();
+  const cappedRetryClaim = await insertProcessingEvent(
+    firstWorker,
+    cappedRetryId,
+    "verification.outbox.retry-cap",
+    6,
+  );
+  const cappedFailureStartedAt = Date.now();
+  assert.equal(
+    await failOutboxEvent(firstWorker, cappedRetryClaim, "capped retry", 8),
+    "retry_scheduled",
+  );
+  const cappedFailureFinishedAt = Date.now();
+  const [cappedRetryState] = await firstWorker.sql<{ available_at_ms: number }[]>`
+    select extract(epoch from available_at) * 1000 as available_at_ms
+    from outbox_events
+    where id = ${cappedRetryId}
+  `;
+  const cappedAvailableAt = Number(cappedRetryState?.available_at_ms);
+  assert.ok(
+    cappedAvailableAt >= cappedFailureStartedAt + 59_900 &&
+      cappedAvailableAt <= cappedFailureFinishedAt + 60_100,
+    "retry delay must persist the sixty-second cap from the failure transition",
+  );
+
+  const terminalFailureId = randomUUID();
+  const terminalFailureClaim = await insertProcessingEvent(
+    firstWorker,
+    terminalFailureId,
+    "verification.outbox.terminal-failure",
+    claimOptions.maxAttempts,
+  );
+  assert.equal(
+    await failOutboxEvent(
+      firstWorker,
+      terminalFailureClaim,
+      "terminal verification failure",
+      claimOptions.maxAttempts,
+    ),
+    "dead_lettered",
+  );
+  const [terminalFailureState] = await firstWorker.sql<
+    { status: string; attempts: number; locked_at: string | null; last_error: string | null }[]
+  >`
+    select status::text as status, attempts, locked_at::text as locked_at, last_error
+    from outbox_events
+    where id = ${terminalFailureId}
+  `;
+  assert.deepEqual(terminalFailureState, {
+    status: "dead_letter",
+    attempts: claimOptions.maxAttempts,
+    locked_at: null,
+    last_error: "terminal verification failure",
+  });
 
   // A crashed worker's expired lease is reclaimable below the attempt ceiling.
   const expiredId = randomUUID();

@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -6,6 +6,13 @@ import { browserTimeZone, todayKey } from "../date";
 import { ApiError } from "../api";
 import type { ScheduleBlock, Workspace } from "../types";
 import { CalendarView } from "./CalendarView";
+
+const dateMocks = vi.hoisted(() => ({ localDateTimeToIso: vi.fn() }));
+
+vi.mock("../date", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../date")>();
+  return { ...original, localDateTimeToIso: dateMocks.localDateTimeToIso };
+});
 
 const apiMocks = vi.hoisted(() => ({
   createScheduleBlock: vi.fn(),
@@ -76,6 +83,9 @@ function installNarrowCalendarLayout(): () => void {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  dateMocks.localDateTimeToIso.mockImplementation((date: string, time: string) =>
+    new Date(`${date}T${time}:00`).toISOString(),
+  );
   apiMocks.listScheduleBlocks.mockResolvedValue({
     items: [],
     page: { limit: 200, offset: 0 },
@@ -269,6 +279,31 @@ describe("calendar", () => {
       ),
     );
     expect(await screen.findByText("Deep work 深度 🧭")).toBeInTheDocument();
+  });
+
+  it("reports accessible invalid-time and end-before-start errors without saving", async () => {
+    const user = userEvent.setup();
+    render(<CalendarView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await user.click(await screen.findByRole("button", { name: "New block" }));
+    await user.type(screen.getByRole("textbox", { name: /^Title/ }), "Guarded block");
+    apiMocks.createScheduleBlock.mockClear();
+    apiMocks.updateScheduleBlock.mockClear();
+
+    dateMocks.localDateTimeToIso.mockImplementationOnce(() => {
+      throw new Error("Invalid local time");
+    });
+    await user.click(screen.getByRole("button", { name: "Create block" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("does not exist");
+    expect(apiMocks.createScheduleBlock).not.toHaveBeenCalled();
+    expect(apiMocks.updateScheduleBlock).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("Start"), { target: { value: "10:00" } });
+    fireEvent.change(screen.getByLabelText("End"), { target: { value: "09:00" } });
+    await user.click(screen.getByRole("button", { name: "Create block" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("End time must be later");
+    expect(apiMocks.createScheduleBlock).not.toHaveBeenCalled();
+    expect(apiMocks.updateScheduleBlock).not.toHaveBeenCalled();
   });
 
   it("performs the explicit audited delete flow with the current version", async () => {

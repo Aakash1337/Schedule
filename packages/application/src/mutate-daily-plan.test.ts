@@ -9,6 +9,7 @@ import {
   createWorkspace,
   dailyPlanId,
   generateDailyPlan,
+  planItemId,
   routineId,
   workspaceId,
   type DailyPlan,
@@ -112,6 +113,11 @@ describe("MutateDailyPlan", () => {
         now: () => new Date("2026-07-15T07:30:00.000Z"),
       }),
       source: current,
+      current: () => current,
+      setHeadVersion: (value: number) => {
+        headVersion = value;
+      },
+      mutations: () => mutations,
     };
   }
 
@@ -134,5 +140,76 @@ describe("MutateDailyPlan", () => {
     expect(first.headVersion).toBe(3);
     expect(first.plan.items.some((item) => item.locked)).toBe(true);
     expect(retry).toEqual(first);
+  });
+
+  it("replaces one unlocked item, preserves its sibling, and replays the allocated revision", async () => {
+    const test = harness();
+    const target = test.source.items.find((item) => !item.locked)!;
+    const retained = test.source.items.find((item) => item.locked)!;
+    const command = {
+      workspaceId: workspace,
+      expectedPlanId: test.source.id,
+      expectedHeadVersion: 2,
+      targetItemId: target.id,
+      request: { ...request, seed: "replace-target" },
+      idempotencyKey: "replace-once",
+    };
+
+    const first = await test.useCase.replace(command);
+    const replay = await test.useCase.replace({
+      ...command,
+      request: { ...command.request, requestRevision: 999 },
+    });
+
+    expect(first.headVersion).toBe(3);
+    expect(first.plan.items.some((item) => item.routineId === target.routineId)).toBe(false);
+    expect(first.plan.items.find((item) => item.routineId === retained.routineId)).toMatchObject({
+      locked: true,
+      position: retained.position,
+      scheduledMinutes: retained.scheduledMinutes,
+    });
+    expect(replay).toEqual(first);
+    expect(test.mutations()).toHaveLength(1);
+  });
+
+  it("rejects stale heads, conflicting mutation keys, and invalid replacement targets", async () => {
+    const test = harness();
+    const target = test.source.items.find((item) => !item.locked)!;
+    const base = {
+      workspaceId: workspace,
+      expectedPlanId: test.source.id,
+      expectedHeadVersion: 2,
+      targetItemId: target.id,
+      request: { ...request, seed: "mutation-guards" },
+      idempotencyKey: "shared-key",
+    };
+
+    test.setHeadVersion(3);
+    await expect(test.useCase.replace(base)).rejects.toMatchObject({
+      code: "planning.head_conflict",
+    });
+    test.setHeadVersion(2);
+    await test.useCase.replace(base);
+    await expect(
+      test.useCase.replace({ ...base, request: { ...base.request, seed: "other-payload" } }),
+    ).rejects.toMatchObject({ code: "planning.idempotency_conflict" });
+    await expect(
+      test.useCase.replace({
+        ...base,
+        idempotencyKey: "unknown-target",
+        expectedPlanId: test.current().id,
+        expectedHeadVersion: 3,
+        targetItemId: planItemId("not-an-item"),
+      }),
+    ).rejects.toMatchObject({ code: "planning.item_not_found" });
+    await expect(
+      test.useCase.replace({
+        ...base,
+        idempotencyKey: "locked-target",
+        expectedPlanId: test.current().id,
+        expectedHeadVersion: 3,
+        targetItemId: test.current().items.find((item) => item.locked)!.id,
+      }),
+    ).rejects.toMatchObject({ code: "planning.item_locked" });
   });
 });
