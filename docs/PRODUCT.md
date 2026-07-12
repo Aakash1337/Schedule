@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-12
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 backend work now includes stable plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, status-based backlog/Kanban work items, and bounded non-recurring calendar-block management. The local product API exposes these workflows; see [API.md](./API.md). The user interface remains the principal MVP gap.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface for the complete core loop. See [API.md](./API.md) and [WEB.md](./WEB.md). Alternative-plan comparison, undo, recurrence authoring, and public hosting remain deferred.
 
 ## 1. Product summary
 
