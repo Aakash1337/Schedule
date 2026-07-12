@@ -1,0 +1,1053 @@
+import { createHash } from "node:crypto";
+
+import { invariant } from "./errors.js";
+import {
+  addLocalDays,
+  daysBetweenLocalDates,
+  isIanaTimeZone,
+  localDate,
+  weekdayOf,
+  type LocalDate,
+} from "./calendar.js";
+import { dailyPlanId, type DailyPlanId, type RoutineId, type WorkspaceId } from "./ids.js";
+import { energyLevels, type EnergyLevel } from "./structured-tags.js";
+import type { ActivityEvent } from "./activity-event.js";
+import type { CadencePolicy } from "./cadence-policy.js";
+import type { Routine } from "./routine.js";
+
+export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v1";
+export const PLANNER_CONFIG_VERSION = "default-weights-v1";
+export const PLANNER_PRNG_VERSION = "mulberry32-v1";
+
+export const planningFitPreferences = ["time", "task_count", "balanced"] as const;
+export type PlanningFitPreference = (typeof planningFitPreferences)[number];
+
+export interface TimeWindow {
+  readonly startsAt: Date;
+  readonly endsAt: Date;
+}
+
+export interface DailyPlanningRequest {
+  readonly workspaceId: WorkspaceId;
+  readonly date: LocalDate;
+  readonly timeZone: string;
+  readonly availableWindows: readonly TimeWindow[];
+  readonly targetMinutes: number;
+  readonly minimumMinutes: number;
+  readonly maximumMinutes: number;
+  readonly targetTaskCount: number;
+  readonly minimumTaskCount: number;
+  readonly maximumTaskCount: number;
+  readonly fitPreference: PlanningFitPreference;
+  readonly energy: EnergyLevel | null;
+  readonly availableContexts: readonly string[];
+  readonly seed: string;
+  readonly requestRevision: number;
+}
+
+export interface CreateDailyPlanningRequestInput {
+  readonly workspaceId: WorkspaceId;
+  readonly date: string;
+  readonly timeZone: string;
+  readonly availableWindows: readonly TimeWindow[];
+  readonly targetMinutes: number;
+  readonly minimumMinutes?: number;
+  readonly maximumMinutes?: number;
+  readonly targetTaskCount: number;
+  readonly minimumTaskCount?: number;
+  readonly maximumTaskCount?: number;
+  readonly fitPreference?: PlanningFitPreference;
+  readonly energy?: EnergyLevel | null;
+  readonly availableContexts?: readonly string[];
+  readonly seed: string;
+  readonly requestRevision?: number;
+}
+
+export interface PlannerScoreWeights {
+  readonly priority: Readonly<Record<"low" | "medium" | "high" | "critical", number>>;
+  readonly cadenceDeficit: number;
+  readonly targetMetPenalty: number;
+  readonly minimumDeficit: number;
+  readonly minimumNearBoundary: number;
+  readonly neglectPerDay: number;
+  readonly neglectMaximum: number;
+  readonly neverCompleted: number;
+  readonly preferredWeekday: number;
+  readonly energyMatch: number;
+  readonly energyMismatch: number;
+  readonly contextMatch: number;
+  readonly enjoyable: number;
+  readonly unpleasant: number;
+  readonly recentCompletion: number;
+  readonly consecutiveDay: number;
+  readonly skipFatigue: number;
+}
+
+export interface PlannerConfig {
+  readonly algorithmVersion: string;
+  readonly configVersion: string;
+  readonly prngVersion: string;
+  readonly maxCandidates: number;
+  readonly searchIterations: number;
+  readonly selectionWeightFloor: number;
+  readonly selectionWeightOffset: number;
+  readonly score: PlannerScoreWeights;
+}
+
+export const DEFAULT_PLANNER_CONFIG: PlannerConfig = {
+  algorithmVersion: PLANNER_ALGORITHM_VERSION,
+  configVersion: PLANNER_CONFIG_VERSION,
+  prngVersion: PLANNER_PRNG_VERSION,
+  maxCandidates: 128,
+  searchIterations: 32,
+  selectionWeightFloor: 100,
+  selectionWeightOffset: 250,
+  score: {
+    priority: { low: 1_000, medium: 2_000, high: 3_500, critical: 5_000 },
+    cadenceDeficit: 1_200,
+    targetMetPenalty: -3_500,
+    minimumDeficit: 1_500,
+    minimumNearBoundary: 750,
+    neglectPerDay: 80,
+    neglectMaximum: 2_400,
+    neverCompleted: 1_200,
+    preferredWeekday: 600,
+    energyMatch: 300,
+    energyMismatch: -400,
+    contextMatch: 250,
+    enjoyable: 100,
+    unpleasant: -100,
+    recentCompletion: -250,
+    consecutiveDay: -1_200,
+    skipFatigue: -200,
+  },
+};
+
+export type EligibilityCode =
+  | "workspace_mismatch"
+  | "routine_inactive"
+  | "not_started"
+  | "ended"
+  | "temporarily_paused"
+  | "excluded_weekday"
+  | "context_unavailable"
+  | "maximum_reached"
+  | "minimum_spacing"
+  | "consecutive_day_prohibited"
+  | "duration_does_not_fit";
+
+export interface RoutineEvaluation {
+  readonly routineId: RoutineId;
+  readonly eligible: boolean;
+  readonly exclusionCodes: readonly EligibilityCode[];
+  readonly periodCompletions: number;
+  readonly targetReached: boolean;
+  readonly lastCompletedOn: LocalDate | null;
+  readonly minimumScheduledMinutes: number;
+  readonly desiredScheduledMinutes: number;
+  readonly score: number;
+  readonly scoreComponents: Readonly<Record<string, number>>;
+  readonly reasons: readonly string[];
+}
+
+export interface PlanItem {
+  readonly routineId: RoutineId;
+  readonly title: string;
+  readonly position: number;
+  readonly windowIndex: number;
+  readonly scheduledMinutes: number;
+  readonly partialSession: boolean;
+  readonly score: number;
+  readonly scoreComponents: Readonly<Record<string, number>>;
+  readonly reasons: readonly string[];
+}
+
+export interface PlanExclusion {
+  readonly routineId: RoutineId;
+  readonly title: string;
+  readonly codes: readonly EligibilityCode[];
+}
+
+export type PlanWarning =
+  | "candidate_limit_applied"
+  | "no_eligible_routines"
+  | "no_feasible_combination"
+  | "minimum_minutes_unmet"
+  | "minimum_task_count_unmet"
+  | "target_minutes_unmet"
+  | "target_task_count_unmet";
+
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue =
+  JsonPrimitive | readonly JsonValue[] | { readonly [key: string]: JsonValue };
+
+export interface DailyPlan {
+  readonly id: DailyPlanId;
+  readonly workspaceId: WorkspaceId;
+  readonly date: LocalDate;
+  readonly timeZone: string;
+  readonly items: readonly PlanItem[];
+  readonly totalMinutes: number;
+  readonly fitness: number;
+  readonly algorithmVersion: string;
+  readonly configVersion: string;
+  readonly prngVersion: string;
+  readonly seed: string;
+  readonly requestRevision: number;
+  readonly inputHash: string;
+  readonly inputSnapshot: JsonValue;
+  readonly exclusions: readonly PlanExclusion[];
+  readonly warnings: readonly PlanWarning[];
+  readonly generatedAt: Date;
+}
+
+export interface GenerateDailyPlanInput {
+  readonly id?: DailyPlanId;
+  readonly request: DailyPlanningRequest;
+  readonly routines: readonly Routine[];
+  readonly events: readonly ActivityEvent[];
+  readonly config?: PlannerConfig;
+  readonly generatedAt?: Date;
+}
+
+interface Candidate {
+  readonly routine: Routine;
+  readonly evaluation: RoutineEvaluation;
+  readonly selectionWeight: number;
+}
+
+interface MutablePlacement {
+  readonly candidate: Candidate;
+  readonly windowIndex: number;
+  readonly scheduledMinutes: number;
+  readonly partialSession: boolean;
+}
+
+interface CandidatePlan {
+  readonly placements: readonly MutablePlacement[];
+  readonly totalMinutes: number;
+  readonly fitness: number;
+  readonly key: string;
+}
+
+function wholeNumber(value: number, code: string, message: string, minimum: number): void {
+  invariant(Number.isInteger(value) && value >= minimum, code, message);
+}
+
+function normalizeContexts(values: readonly string[] | undefined): readonly string[] {
+  const contexts = (values ?? [])
+    .map((value) => value.trim().toLocaleLowerCase("en-US"))
+    .filter((value) => value.length > 0);
+  invariant(
+    contexts.every((value) => value.length <= 64),
+    "planning.context_invalid",
+    "Planning contexts cannot exceed 64 characters.",
+  );
+  return [...new Set(contexts)].sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function windowMinutes(window: TimeWindow): number {
+  return Math.floor((window.endsAt.getTime() - window.startsAt.getTime()) / 60_000);
+}
+
+export function createDailyPlanningRequest(
+  input: CreateDailyPlanningRequestInput,
+): DailyPlanningRequest {
+  invariant(
+    isIanaTimeZone(input.timeZone),
+    "planning.time_zone_invalid",
+    "A valid IANA planning time zone is required.",
+  );
+  const date = localDate(input.date);
+  const windows = input.availableWindows
+    .map((window) => ({ startsAt: new Date(window.startsAt), endsAt: new Date(window.endsAt) }))
+    .sort((left, right) => left.startsAt.getTime() - right.startsAt.getTime());
+  for (const [index, window] of windows.entries()) {
+    invariant(
+      Number.isFinite(window.startsAt.getTime()) && Number.isFinite(window.endsAt.getTime()),
+      "planning.window_invalid",
+      "Planning windows require valid start and end instants.",
+    );
+    invariant(
+      windowMinutes(window) > 0,
+      "planning.window_empty",
+      "A planning window must contain at least one full minute.",
+    );
+    const previous = windows[index - 1];
+    invariant(
+      previous === undefined || previous.endsAt <= window.startsAt,
+      "planning.windows_overlap",
+      "Planning windows cannot overlap.",
+    );
+  }
+
+  wholeNumber(
+    input.targetMinutes,
+    "planning.target_minutes_invalid",
+    "Target minutes must be a positive whole number.",
+    1,
+  );
+  wholeNumber(
+    input.targetTaskCount,
+    "planning.target_count_invalid",
+    "Target task count must be a positive whole number.",
+    1,
+  );
+  const availableMinutes = windows.reduce((total, window) => total + windowMinutes(window), 0);
+  const minimumMinutes = input.minimumMinutes ?? 0;
+  const maximumMinutes = input.maximumMinutes ?? Math.max(input.targetMinutes, availableMinutes);
+  const minimumTaskCount = input.minimumTaskCount ?? 0;
+  const maximumTaskCount = input.maximumTaskCount ?? input.targetTaskCount;
+  wholeNumber(
+    minimumMinutes,
+    "planning.minimum_minutes_invalid",
+    "Minimum minutes must be a non-negative whole number.",
+    0,
+  );
+  wholeNumber(
+    maximumMinutes,
+    "planning.maximum_minutes_invalid",
+    "Maximum minutes must be a positive whole number.",
+    1,
+  );
+  wholeNumber(
+    minimumTaskCount,
+    "planning.minimum_count_invalid",
+    "Minimum task count must be a non-negative whole number.",
+    0,
+  );
+  wholeNumber(
+    maximumTaskCount,
+    "planning.maximum_count_invalid",
+    "Maximum task count must be a positive whole number.",
+    1,
+  );
+  invariant(
+    minimumMinutes <= input.targetMinutes && input.targetMinutes <= maximumMinutes,
+    "planning.minute_bounds_invalid",
+    "Minute bounds must satisfy minimum <= target <= maximum.",
+  );
+  invariant(
+    minimumTaskCount <= input.targetTaskCount && input.targetTaskCount <= maximumTaskCount,
+    "planning.count_bounds_invalid",
+    "Task-count bounds must satisfy minimum <= target <= maximum.",
+  );
+  const fitPreference = input.fitPreference ?? "balanced";
+  invariant(
+    planningFitPreferences.some((preference) => preference === fitPreference),
+    "planning.fit_preference_invalid",
+    "A supported planning fit preference is required.",
+  );
+  const energy = input.energy ?? null;
+  invariant(
+    energy === null || energyLevels.some((level) => level === energy),
+    "planning.energy_invalid",
+    "A supported planning energy level is required.",
+  );
+  const seed = input.seed.trim();
+  invariant(
+    seed.length > 0 && seed.length <= 240,
+    "planning.seed_invalid",
+    "A planning seed must contain between 1 and 240 characters.",
+  );
+  const requestRevision = input.requestRevision ?? 1;
+  wholeNumber(
+    requestRevision,
+    "planning.revision_invalid",
+    "Planning revision must be a positive whole number.",
+    1,
+  );
+
+  return {
+    workspaceId: input.workspaceId,
+    date,
+    timeZone: input.timeZone,
+    availableWindows: windows,
+    targetMinutes: input.targetMinutes,
+    minimumMinutes,
+    maximumMinutes,
+    targetTaskCount: input.targetTaskCount,
+    minimumTaskCount,
+    maximumTaskCount,
+    fitPreference,
+    energy,
+    availableContexts: normalizeContexts(input.availableContexts),
+    seed,
+    requestRevision,
+  };
+}
+
+function canonicalEvents(
+  events: readonly ActivityEvent[],
+  request: DailyPlanningRequest,
+): ActivityEvent[] {
+  return events
+    .filter((event) => event.workspaceId === request.workspaceId && event.localDate <= request.date)
+    .slice()
+    .sort(
+      (left, right) =>
+        left.occurredAt.getTime() - right.occurredAt.getTime() ||
+        left.recordedAt.getTime() - right.recordedAt.getTime() ||
+        left.id.localeCompare(right.id, "en"),
+    );
+}
+
+function activeCompletions(events: readonly ActivityEvent[], routine: Routine): ActivityEvent[] {
+  const routineEvents = events.filter((event) => event.routineId === routine.id);
+  const reversedIds = new Set(
+    routineEvents
+      .filter((event) => event.type === "completion_reversed" && event.referenceEventId !== null)
+      .map((event) => event.referenceEventId),
+  );
+  return routineEvents.filter((event) => event.type === "completed" && !reversedIds.has(event.id));
+}
+
+function weekStart(date: LocalDate, policy: CadencePolicy): LocalDate {
+  const distance = (weekdayOf(date) - policy.weekStartsOn + 7) % 7;
+  return addLocalDays(date, -distance);
+}
+
+function isInCurrentPeriod(
+  date: LocalDate,
+  requestDate: LocalDate,
+  policy: CadencePolicy,
+): boolean {
+  if (date > requestDate) return false;
+  switch (policy.period) {
+    case "day":
+      return date === requestDate;
+    case "week": {
+      const start = weekStart(requestDate, policy);
+      return date >= start && date <= addLocalDays(start, 6);
+    }
+    case "month":
+      return date.slice(0, 7) === requestDate.slice(0, 7);
+    case "rolling_days": {
+      const interval = policy.rollingIntervalDays ?? 1;
+      const difference = daysBetweenLocalDates(date, requestDate);
+      return difference >= 0 && difference < interval;
+    }
+  }
+}
+
+function daysRemainingInPeriod(date: LocalDate, policy: CadencePolicy): number | null {
+  switch (policy.period) {
+    case "day":
+      return 0;
+    case "week":
+      return daysBetweenLocalDates(date, addLocalDays(weekStart(date, policy), 6));
+    case "month": {
+      const [yearText, monthText] = date.split("-");
+      const year = Number(yearText);
+      const month = Number(monthText);
+      const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+      return lastDay - Number(date.slice(8, 10));
+    }
+    case "rolling_days":
+      return null;
+  }
+}
+
+function completionStreak(completions: readonly ActivityEvent[], requestDate: LocalDate): number {
+  const dates = [...new Set(completions.map((event) => event.localDate))].sort((a, b) =>
+    b.localeCompare(a, "en"),
+  );
+  const latest = dates[0];
+  if (latest === undefined) return 0;
+  const latestDistance = daysBetweenLocalDates(latest, requestDate);
+  if (latestDistance < 0 || latestDistance > 1) return 0;
+  let streak = 1;
+  for (let index = 1; index < dates.length; index += 1) {
+    const previous = dates[index - 1];
+    const current = dates[index];
+    if (
+      previous === undefined ||
+      current === undefined ||
+      daysBetweenLocalDates(current, previous) !== 1
+    ) {
+      break;
+    }
+    streak += 1;
+  }
+  return streak;
+}
+
+function formatPeriod(period: CadencePolicy["period"]): string {
+  return period === "rolling_days" ? "rolling period" : period;
+}
+
+export function evaluateRoutineForPlan(
+  routine: Routine,
+  allEvents: readonly ActivityEvent[],
+  request: DailyPlanningRequest,
+  config: PlannerConfig = DEFAULT_PLANNER_CONFIG,
+): RoutineEvaluation {
+  const events = canonicalEvents(allEvents, request);
+  const completions = activeCompletions(events, routine);
+  const periodCompletions = completions.filter((event) =>
+    isInCurrentPeriod(event.localDate, request.date, routine.cadence),
+  ).length;
+  const lastCompletedOn = completions.reduce<LocalDate | null>(
+    (latest, event) => (latest === null || event.localDate > latest ? event.localDate : latest),
+    null,
+  );
+  const targetReached = periodCompletions >= routine.cadence.targetCompletions;
+  const minimumScheduledMinutes =
+    (routine.duration.splittable
+      ? (routine.duration.minimumSessionMinutes ?? routine.duration.minimumMinutes)
+      : routine.duration.expectedMinutes) + routine.duration.overheadMinutes;
+  const desiredScheduledMinutes =
+    routine.duration.expectedMinutes + routine.duration.overheadMinutes;
+  const weekday = weekdayOf(request.date);
+  const maximumWindowMinutes = request.availableWindows.reduce(
+    (maximum, window) => Math.max(maximum, windowMinutes(window)),
+    0,
+  );
+  const exclusions: EligibilityCode[] = [];
+
+  if (routine.workspaceId !== request.workspaceId) exclusions.push("workspace_mismatch");
+  if (routine.status !== "active") exclusions.push("routine_inactive");
+  if (routine.cadence.startsOn !== null && request.date < routine.cadence.startsOn) {
+    exclusions.push("not_started");
+  }
+  if (routine.cadence.endsOn !== null && request.date > routine.cadence.endsOn) {
+    exclusions.push("ended");
+  }
+  if (routine.cadence.pausedUntil !== null && request.date <= routine.cadence.pausedUntil) {
+    exclusions.push("temporarily_paused");
+  }
+  if (routine.cadence.excludedWeekdays.includes(weekday)) exclusions.push("excluded_weekday");
+  if (
+    routine.tags.contexts.length > 0 &&
+    !routine.tags.contexts.some((context) => request.availableContexts.includes(context))
+  ) {
+    exclusions.push("context_unavailable");
+  }
+  if (
+    routine.cadence.maximumCompletions !== null &&
+    periodCompletions >= routine.cadence.maximumCompletions
+  ) {
+    exclusions.push("maximum_reached");
+  }
+  if (lastCompletedOn !== null) {
+    const distance = daysBetweenLocalDates(lastCompletedOn, request.date);
+    if (
+      routine.cadence.minimumSpacingDays > 0 &&
+      distance >= 0 &&
+      distance <= routine.cadence.minimumSpacingDays
+    ) {
+      exclusions.push("minimum_spacing");
+    }
+    if (routine.cadence.prohibitConsecutiveDays && distance === 1) {
+      exclusions.push("consecutive_day_prohibited");
+    }
+  }
+  if (
+    minimumScheduledMinutes > maximumWindowMinutes ||
+    minimumScheduledMinutes > request.maximumMinutes
+  ) {
+    exclusions.push("duration_does_not_fit");
+  }
+
+  const scoreComponents: Record<string, number> = {};
+  scoreComponents.priority = config.score.priority[routine.tags.priority];
+  const cadenceDeficit = Math.max(0, routine.cadence.targetCompletions - periodCompletions);
+  scoreComponents.cadenceDeficit = cadenceDeficit * config.score.cadenceDeficit;
+  scoreComponents.targetReached = targetReached ? config.score.targetMetPenalty : 0;
+  const minimumDeficit = Math.max(0, (routine.cadence.minimumCompletions ?? 0) - periodCompletions);
+  scoreComponents.minimumDeficit = minimumDeficit * config.score.minimumDeficit;
+  const remainingDays = daysRemainingInPeriod(request.date, routine.cadence);
+  scoreComponents.minimumNearBoundary =
+    minimumDeficit > 0 && remainingDays !== null && remainingDays <= 2
+      ? config.score.minimumNearBoundary * (3 - remainingDays)
+      : 0;
+  if (lastCompletedOn === null) {
+    scoreComponents.neglect = config.score.neverCompleted;
+  } else {
+    const daysSince = Math.max(0, daysBetweenLocalDates(lastCompletedOn, request.date));
+    scoreComponents.neglect = Math.min(
+      config.score.neglectMaximum,
+      daysSince * config.score.neglectPerDay,
+    );
+  }
+  scoreComponents.preferredWeekday = routine.cadence.preferredWeekdays.includes(weekday)
+    ? config.score.preferredWeekday
+    : 0;
+  scoreComponents.energy =
+    request.energy === null
+      ? 0
+      : request.energy === routine.tags.energy
+        ? config.score.energyMatch
+        : config.score.energyMismatch;
+  scoreComponents.context =
+    routine.tags.contexts.length > 0 &&
+    routine.tags.contexts.some((context) => request.availableContexts.includes(context))
+      ? config.score.contextMatch
+      : 0;
+  scoreComponents.preference =
+    routine.tags.preference === "enjoyable"
+      ? config.score.enjoyable
+      : routine.tags.preference === "unpleasant"
+        ? config.score.unpleasant
+        : 0;
+  const recentCompletions = completions.filter((event) => {
+    const distance = daysBetweenLocalDates(event.localDate, request.date);
+    return distance >= 0 && distance < 7;
+  }).length;
+  scoreComponents.recentFrequency = Math.min(recentCompletions, 4) * config.score.recentCompletion;
+  const streak = completionStreak(completions, request.date);
+  scoreComponents.consecutiveDays =
+    routine.cadence.discourageConsecutiveDays && streak > 0
+      ? streak * config.score.consecutiveDay
+      : 0;
+  const recentSkips = events.filter((event) => {
+    if (event.routineId !== routine.id || !["skipped", "dismissed"].includes(event.type)) {
+      return false;
+    }
+    const distance = daysBetweenLocalDates(event.localDate, request.date);
+    return distance >= 0 && distance < 7;
+  }).length;
+  scoreComponents.skipFatigue = Math.min(recentSkips, 4) * config.score.skipFatigue;
+  const score = Object.values(scoreComponents).reduce((total, component) => total + component, 0);
+
+  const reasons = [
+    `${routine.tags.priority[0]?.toUpperCase() ?? ""}${routine.tags.priority.slice(1)} priority.`,
+    `${periodCompletions} of ${routine.cadence.targetCompletions} target completions in the current ${formatPeriod(routine.cadence.period)}.`,
+  ];
+  if (lastCompletedOn === null) {
+    reasons.push("No completion has been recorded yet.");
+  } else {
+    reasons.push(
+      `Last completed ${daysBetweenLocalDates(lastCompletedOn, request.date)} local day(s) ago.`,
+    );
+  }
+  if (scoreComponents.preferredWeekday > 0) reasons.push("Today is a preferred weekday.");
+  if (targetReached)
+    reasons.push("The cadence target is already satisfied, so its weight is reduced.");
+  if (minimumDeficit > 0)
+    reasons.push(`The cadence minimum still needs ${minimumDeficit} completion(s).`);
+
+  return {
+    routineId: routine.id,
+    eligible: exclusions.length === 0,
+    exclusionCodes: [...new Set(exclusions)],
+    periodCompletions,
+    targetReached,
+    lastCompletedOn,
+    minimumScheduledMinutes,
+    desiredScheduledMinutes,
+    score,
+    scoreComponents,
+    reasons,
+  };
+}
+
+class Mulberry32 {
+  private state: number;
+
+  constructor(seed: string) {
+    let hash = 2_166_136_261;
+    for (let index = 0; index < seed.length; index += 1) {
+      hash ^= seed.charCodeAt(index);
+      hash = Math.imul(hash, 16_777_619);
+    }
+    this.state = hash >>> 0;
+  }
+
+  nextUint32(): number {
+    this.state = (this.state + 0x6d2b79f5) >>> 0;
+    let value = this.state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return (value ^ (value >>> 14)) >>> 0;
+  }
+
+  nextInt(maximumExclusive: number): number {
+    invariant(
+      Number.isInteger(maximumExclusive) &&
+        maximumExclusive > 0 &&
+        maximumExclusive <= 0x1_0000_0000,
+      "planning.random_range_invalid",
+      "Random integer range is invalid.",
+    );
+    const range = 0x1_0000_0000;
+    const limit = Math.floor(range / maximumExclusive) * maximumExclusive;
+    let value = this.nextUint32();
+    while (value >= limit) value = this.nextUint32();
+    return value % maximumExclusive;
+  }
+}
+
+function weightedOrder(candidates: readonly Candidate[], random: Mulberry32): Candidate[] {
+  const remaining = [...candidates];
+  const result: Candidate[] = [];
+  while (remaining.length > 0) {
+    const totalWeight = remaining.reduce(
+      (total, candidate) => total + candidate.selectionWeight,
+      0,
+    );
+    let ticket = random.nextInt(totalWeight);
+    let chosenIndex = 0;
+    for (const [index, candidate] of remaining.entries()) {
+      if (ticket < candidate.selectionWeight) {
+        chosenIndex = index;
+        break;
+      }
+      ticket -= candidate.selectionWeight;
+    }
+    const [chosen] = remaining.splice(chosenIndex, 1);
+    if (chosen !== undefined) result.push(chosen);
+  }
+  return result;
+}
+
+function placeCandidate(
+  candidate: Candidate,
+  remainingWindows: number[],
+  remainingBudget: number,
+): { windowIndex: number; scheduledMinutes: number; partialSession: boolean } | null {
+  const { evaluation, routine } = candidate;
+  if (remainingBudget < evaluation.minimumScheduledMinutes) return null;
+
+  if (!routine.duration.splittable) {
+    const viable = remainingWindows
+      .map((minutes, index) => ({ index, minutes }))
+      .filter(({ minutes }) => minutes >= evaluation.desiredScheduledMinutes)
+      .sort((left, right) => left.minutes - right.minutes || left.index - right.index)[0];
+    if (viable === undefined || evaluation.desiredScheduledMinutes > remainingBudget) return null;
+    return {
+      windowIndex: viable.index,
+      scheduledMinutes: evaluation.desiredScheduledMinutes,
+      partialSession: false,
+    };
+  }
+
+  const viable = remainingWindows
+    .map((minutes, index) => ({
+      index,
+      scheduledMinutes: Math.min(minutes, remainingBudget, evaluation.desiredScheduledMinutes),
+    }))
+    .filter(({ scheduledMinutes }) => scheduledMinutes >= evaluation.minimumScheduledMinutes)
+    .sort(
+      (left, right) => right.scheduledMinutes - left.scheduledMinutes || left.index - right.index,
+    )[0];
+  if (viable === undefined) return null;
+  return {
+    windowIndex: viable.index,
+    scheduledMinutes: viable.scheduledMinutes,
+    partialSession: viable.scheduledMinutes < evaluation.desiredScheduledMinutes,
+  };
+}
+
+function fitWeights(preference: PlanningFitPreference): { time: number; count: number } {
+  switch (preference) {
+    case "time":
+      return { time: 30, count: 300 };
+    case "task_count":
+      return { time: 8, count: 1_000 };
+    case "balanced":
+      return { time: 20, count: 600 };
+  }
+}
+
+function planFitness(
+  placements: readonly MutablePlacement[],
+  totalMinutes: number,
+  request: DailyPlanningRequest,
+): number {
+  const weights = fitWeights(request.fitPreference);
+  const candidateScore = placements.reduce(
+    (total, placement) => total + placement.candidate.evaluation.score,
+    0,
+  );
+  const categoryCount = new Set(
+    placements.flatMap((placement) => placement.candidate.routine.tags.categories),
+  ).size;
+  const minimumMinuteShortfall = Math.max(0, request.minimumMinutes - totalMinutes);
+  const minimumCountShortfall = Math.max(0, request.minimumTaskCount - placements.length);
+  return (
+    candidateScore +
+    categoryCount * 150 -
+    Math.abs(totalMinutes - request.targetMinutes) * weights.time -
+    Math.abs(placements.length - request.targetTaskCount) * weights.count -
+    minimumMinuteShortfall * 50 -
+    minimumCountShortfall * 1_500
+  );
+}
+
+function buildCandidatePlan(
+  order: readonly Candidate[],
+  request: DailyPlanningRequest,
+): CandidatePlan {
+  const remainingWindows = request.availableWindows.map(windowMinutes);
+  const placements: MutablePlacement[] = [];
+  let totalMinutes = 0;
+
+  for (const candidate of order) {
+    if (placements.length >= request.maximumTaskCount) break;
+    if (placements.length >= request.targetTaskCount && totalMinutes >= request.targetMinutes) {
+      break;
+    }
+    const placement = placeCandidate(
+      candidate,
+      remainingWindows,
+      request.maximumMinutes - totalMinutes,
+    );
+    if (placement === null) continue;
+    remainingWindows[placement.windowIndex] =
+      (remainingWindows[placement.windowIndex] ?? 0) - placement.scheduledMinutes;
+    totalMinutes += placement.scheduledMinutes;
+    placements.push({ candidate, ...placement });
+  }
+
+  const key = placements.map((placement) => placement.candidate.routine.id).join("|");
+  return {
+    placements,
+    totalMinutes,
+    fitness: planFitness(placements, totalMinutes, request),
+    key,
+  };
+}
+
+function chooseCandidatePlan(plans: readonly CandidatePlan[], random: Mulberry32): CandidatePlan {
+  const sorted = [...plans].sort(
+    (left, right) => right.fitness - left.fitness || left.key.localeCompare(right.key, "en"),
+  );
+  const finalists = sorted.slice(0, 8);
+  const minimumFitness = Math.min(...finalists.map((plan) => plan.fitness));
+  const weights = finalists.map((plan) => Math.min(10_000, plan.fitness - minimumFitness + 100));
+  const totalWeight = weights.reduce((total, weight) => total + weight, 0);
+  let ticket = random.nextInt(totalWeight);
+  for (const [index, plan] of finalists.entries()) {
+    const weight = weights[index] ?? 0;
+    if (ticket < weight) return plan;
+    ticket -= weight;
+  }
+  return finalists[0] as CandidatePlan;
+}
+
+function toJsonValue(value: unknown): JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    invariant(
+      Number.isFinite(value),
+      "planning.snapshot_number_invalid",
+      "Snapshots require finite numbers.",
+    );
+    return value;
+  }
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(toJsonValue);
+  invariant(
+    typeof value === "object" && value !== null,
+    "planning.snapshot_value_invalid",
+    "Planner input contains a value that cannot be snapshotted.",
+  );
+  const result: Record<string, JsonValue> = {};
+  for (const key of Object.keys(value).sort((left, right) => left.localeCompare(right, "en"))) {
+    const child = (value as Record<string, unknown>)[key];
+    if (child !== undefined) result[key] = toJsonValue(child);
+  }
+  return result;
+}
+
+function createInputSnapshot(
+  request: DailyPlanningRequest,
+  routines: readonly Routine[],
+  events: readonly ActivityEvent[],
+  config: PlannerConfig,
+): JsonValue {
+  const canonicalRoutines = [...routines].sort((left, right) =>
+    left.id.localeCompare(right.id, "en"),
+  );
+  const canonicalActivity = canonicalEvents(events, request);
+  return toJsonValue({
+    config,
+    events: canonicalActivity,
+    request,
+    routines: canonicalRoutines,
+  });
+}
+
+export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
+  const config = input.config ?? DEFAULT_PLANNER_CONFIG;
+  invariant(
+    config.algorithmVersion === PLANNER_ALGORITHM_VERSION,
+    "planning.algorithm_version_unsupported",
+    `Only ${PLANNER_ALGORITHM_VERSION} is supported by this implementation.`,
+  );
+  invariant(
+    config.prngVersion === PLANNER_PRNG_VERSION,
+    "planning.prng_version_unsupported",
+    `Only ${PLANNER_PRNG_VERSION} is supported by this implementation.`,
+  );
+  wholeNumber(
+    config.maxCandidates,
+    "planning.candidate_limit_invalid",
+    "Planner candidate limit must be positive.",
+    1,
+  );
+  wholeNumber(
+    config.searchIterations,
+    "planning.search_iterations_invalid",
+    "Planner search iterations must be positive.",
+    1,
+  );
+  invariant(
+    config.configVersion.trim().length > 0 && config.configVersion.length <= 120,
+    "planning.config_version_invalid",
+    "Planner configuration version must contain between 1 and 120 characters.",
+  );
+  wholeNumber(
+    config.selectionWeightFloor,
+    "planning.selection_floor_invalid",
+    "Planner selection-weight floor must be a positive whole number.",
+    1,
+  );
+  wholeNumber(
+    config.selectionWeightOffset,
+    "planning.selection_offset_invalid",
+    "Planner selection-weight offset must be a non-negative whole number.",
+    0,
+  );
+  const scoreValues = [
+    ...Object.values(config.score.priority),
+    ...Object.entries(config.score)
+      .filter(([key]) => key !== "priority")
+      .map(([, value]) => value as number),
+  ];
+  invariant(
+    scoreValues.every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 1_000_000),
+    "planning.score_weight_invalid",
+    "Planner score weights must be safe whole numbers between -1,000,000 and 1,000,000.",
+  );
+  const routineIds = new Set<RoutineId>();
+  for (const routine of input.routines) {
+    invariant(
+      !routineIds.has(routine.id),
+      "planning.duplicate_routine",
+      `Routine ${routine.id} appears more than once in the planner input.`,
+    );
+    routineIds.add(routine.id);
+  }
+  const eventIds = new Set<string>();
+  for (const event of input.events) {
+    invariant(
+      !eventIds.has(event.id),
+      "planning.duplicate_activity_event",
+      `Activity event ${event.id} appears more than once in the planner input.`,
+    );
+    eventIds.add(event.id);
+  }
+  const generatedAt = input.generatedAt ?? new Date();
+  invariant(
+    Number.isFinite(generatedAt.getTime()),
+    "planning.generated_at_invalid",
+    "A valid plan generation timestamp is required.",
+  );
+
+  const evaluations = input.routines
+    .slice()
+    .sort((left, right) => left.id.localeCompare(right.id, "en"))
+    .map((routine) => ({
+      routine,
+      evaluation: evaluateRoutineForPlan(routine, input.events, input.request, config),
+    }));
+  const exclusions = evaluations
+    .filter(({ evaluation }) => !evaluation.eligible)
+    .map(({ routine, evaluation }) => ({
+      routineId: routine.id,
+      title: routine.title,
+      codes: evaluation.exclusionCodes,
+    }));
+  let eligible = evaluations.filter(({ evaluation }) => evaluation.eligible);
+  const warnings: PlanWarning[] = [];
+  if (eligible.length > config.maxCandidates) {
+    warnings.push("candidate_limit_applied");
+    eligible = eligible
+      .sort(
+        (left, right) =>
+          right.evaluation.score - left.evaluation.score ||
+          left.routine.id.localeCompare(right.routine.id, "en"),
+      )
+      .slice(0, config.maxCandidates);
+  }
+  if (eligible.length === 0) warnings.push("no_eligible_routines");
+
+  const minimumScore = Math.min(0, ...eligible.map(({ evaluation }) => evaluation.score));
+  const candidates: Candidate[] = eligible.map(({ routine, evaluation }) => ({
+    routine,
+    evaluation,
+    selectionWeight: Math.min(
+      1_000_000,
+      Math.max(
+        config.selectionWeightFloor,
+        evaluation.score - minimumScore + config.selectionWeightOffset,
+      ),
+    ),
+  }));
+  const random = new Mulberry32(
+    `${config.algorithmVersion}|${config.configVersion}|${input.request.seed}|${input.request.requestRevision}`,
+  );
+  const candidatePlans = new Map<string, CandidatePlan>();
+  const scoreOrder = [...candidates].sort(
+    (left, right) =>
+      right.evaluation.score - left.evaluation.score ||
+      left.routine.id.localeCompare(right.routine.id, "en"),
+  );
+  const deterministicPlan = buildCandidatePlan(scoreOrder, input.request);
+  candidatePlans.set(deterministicPlan.key, deterministicPlan);
+  for (let iteration = 0; iteration < config.searchIterations; iteration += 1) {
+    const candidatePlan = buildCandidatePlan(weightedOrder(candidates, random), input.request);
+    const current = candidatePlans.get(candidatePlan.key);
+    if (current === undefined || candidatePlan.fitness > current.fitness) {
+      candidatePlans.set(candidatePlan.key, candidatePlan);
+    }
+  }
+  const chosen = chooseCandidatePlan([...candidatePlans.values()], random);
+  if (eligible.length > 0 && chosen.placements.length === 0) {
+    warnings.push("no_feasible_combination");
+  }
+  if (chosen.totalMinutes < input.request.minimumMinutes) warnings.push("minimum_minutes_unmet");
+  if (chosen.placements.length < input.request.minimumTaskCount) {
+    warnings.push("minimum_task_count_unmet");
+  }
+  if (chosen.totalMinutes < input.request.targetMinutes) warnings.push("target_minutes_unmet");
+  if (chosen.placements.length < input.request.targetTaskCount) {
+    warnings.push("target_task_count_unmet");
+  }
+
+  const inputSnapshot = createInputSnapshot(input.request, input.routines, input.events, config);
+  const inputHash = createHash("sha256").update(JSON.stringify(inputSnapshot)).digest("hex");
+  const items = chosen.placements.map((placement, position): PlanItem => ({
+    routineId: placement.candidate.routine.id,
+    title: placement.candidate.routine.title,
+    position,
+    windowIndex: placement.windowIndex,
+    scheduledMinutes: placement.scheduledMinutes,
+    partialSession: placement.partialSession,
+    score: placement.candidate.evaluation.score,
+    scoreComponents: placement.candidate.evaluation.scoreComponents,
+    reasons: placement.candidate.evaluation.reasons,
+  }));
+
+  return {
+    id: input.id ?? dailyPlanId(),
+    workspaceId: input.request.workspaceId,
+    date: input.request.date,
+    timeZone: input.request.timeZone,
+    items,
+    totalMinutes: chosen.totalMinutes,
+    fitness: chosen.fitness,
+    algorithmVersion: config.algorithmVersion,
+    configVersion: config.configVersion,
+    prngVersion: config.prngVersion,
+    seed: input.request.seed,
+    requestRevision: input.request.requestRevision,
+    inputHash,
+    inputSnapshot,
+    exclusions,
+    warnings: [...new Set(warnings)],
+    generatedAt: new Date(generatedAt),
+  };
+}
