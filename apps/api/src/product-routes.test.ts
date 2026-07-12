@@ -6,13 +6,19 @@ import {
   createCadencePolicy,
   createDurationRange,
   createRoutine,
+  createScheduleBlock,
   createStructuredTags,
+  createWorkItem,
   createWorkspace,
   dailyPlanId,
   generateDailyPlan,
   recordActivityEvent,
   routineId,
+  scheduleBlockId,
   updateRoutine as applyRoutineUpdate,
+  updateScheduleBlock as applyScheduleBlockUpdate,
+  updateWorkItem as applyWorkItemUpdate,
+  workItemId,
   workspaceId,
   type DailyPlan,
 } from "@schedule/domain";
@@ -25,6 +31,8 @@ const workspaceUuid = "11111111-1111-4111-8111-111111111111";
 const routineUuid = "22222222-2222-4222-8222-222222222222";
 const eventUuid = "33333333-3333-4333-8333-333333333333";
 const planUuid = "44444444-4444-4444-8444-444444444444";
+const workItemUuid = "55555555-5555-4555-8555-555555555555";
+const scheduleBlockUuid = "66666666-6666-4666-8666-666666666666";
 const workspace = createWorkspace({
   id: workspaceId(workspaceUuid),
   name: "Local workspace",
@@ -54,6 +62,8 @@ afterEach(async () => {
 
 function createHarness(overrides: Partial<ProductServices> = {}) {
   let storedPlan: DailyPlan | null = null;
+  let storedWorkItem: ReturnType<typeof createWorkItem> | null = null;
+  let storedScheduleBlock: ReturnType<typeof createScheduleBlock> | null = null;
   const activity = recordActivityEvent({
     id: activityEventId(eventUuid),
     workspaceId: workspace.id,
@@ -67,7 +77,90 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
   });
   const services: ProductServices = {
     createWorkspace: async (command) => createWorkspace({ ...command, id: workspace.id }),
+    getWorkspace: async () => workspace,
+    listWorkspaces: async (query) => ({
+      items: [workspace],
+      limit: query.limit ?? 20,
+      offset: query.offset ?? 0,
+    }),
     createRoutine: async (command) => createRoutine({ ...command, id: routine.id }),
+    createWorkItem: async (command) => {
+      storedWorkItem = createWorkItem({
+        ...command,
+        id: workItemId(workItemUuid),
+        now: new Date("2026-07-15T12:00:00.000Z"),
+      });
+      return storedWorkItem;
+    },
+    getWorkItem: async () => {
+      if (storedWorkItem === null) throw new DomainError("work_item.not_found", "Missing.");
+      return storedWorkItem;
+    },
+    listWorkItems: async (query) => ({
+      items:
+        storedWorkItem !== null &&
+        (query.status === undefined || query.status === storedWorkItem.status) &&
+        (query.priority === undefined || query.priority === storedWorkItem.priority)
+          ? [storedWorkItem]
+          : [],
+      limit: query.limit ?? 100,
+      offset: query.offset ?? 0,
+    }),
+    updateWorkItem: async (command) => {
+      if (storedWorkItem === null) throw new DomainError("work_item.not_found", "Missing.");
+      storedWorkItem = applyWorkItemUpdate(storedWorkItem, {
+        ...(command.title === undefined ? {} : { title: command.title }),
+        ...(command.description === undefined ? {} : { description: command.description }),
+        ...(command.status === undefined ? {} : { status: command.status }),
+        ...(command.priority === undefined ? {} : { priority: command.priority }),
+        now: new Date("2026-07-15T12:01:00.000Z"),
+      });
+      return storedWorkItem;
+    },
+    createScheduleBlock: async (command) => {
+      storedScheduleBlock = createScheduleBlock({
+        ...command,
+        id: scheduleBlockId(scheduleBlockUuid),
+        now: new Date("2026-07-15T12:00:00.000Z"),
+      });
+      return storedScheduleBlock;
+    },
+    getScheduleBlock: async () => {
+      if (storedScheduleBlock === null) {
+        throw new DomainError("schedule_block.not_found", "Missing.");
+      }
+      return storedScheduleBlock;
+    },
+    listScheduleBlocks: async (query) => ({
+      items:
+        storedScheduleBlock !== null &&
+        storedScheduleBlock.startsAt < query.to &&
+        storedScheduleBlock.endsAt > query.from
+          ? [storedScheduleBlock]
+          : [],
+      limit: query.limit ?? 100,
+      offset: query.offset ?? 0,
+    }),
+    updateScheduleBlock: async (command) => {
+      if (storedScheduleBlock === null) {
+        throw new DomainError("schedule_block.not_found", "Missing.");
+      }
+      storedScheduleBlock = applyScheduleBlockUpdate(storedScheduleBlock, {
+        ...(command.workItemId === undefined ? {} : { workItemId: command.workItemId }),
+        ...(command.title === undefined ? {} : { title: command.title }),
+        ...(command.startsAt === undefined ? {} : { startsAt: command.startsAt }),
+        ...(command.endsAt === undefined ? {} : { endsAt: command.endsAt }),
+        ...(command.timeZone === undefined ? {} : { timeZone: command.timeZone }),
+        now: new Date("2026-07-15T12:01:00.000Z"),
+      });
+      return storedScheduleBlock;
+    },
+    deleteScheduleBlock: async () => {
+      if (storedScheduleBlock === null) {
+        throw new DomainError("schedule_block.not_found", "Missing.");
+      }
+      storedScheduleBlock = null;
+    },
     getRoutine: async () => routine,
     updateRoutine: async (command) =>
       applyRoutineUpdate(routine, {
@@ -152,8 +245,121 @@ describe("local product API", () => {
 
     expect(response.statusCode).toBe(201);
     expect(response.json()).toMatchObject({ id: workspaceUuid, name: "Local workspace" });
+    const listed = await app.inject({ method: "GET", url: "/v1/workspaces?limit=10" });
+    const retrieved = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}`,
+    });
+    expect(listed.json()).toMatchObject({
+      items: [{ id: workspaceUuid }],
+      page: { limit: 10, offset: 0 },
+    });
+    expect(retrieved.json()).toMatchObject({ id: workspaceUuid });
     const info = await app.inject({ method: "GET", url: "/v1/system/info" });
     expect(info.json()).toMatchObject({ productEndpointsEnabled: true });
+  });
+
+  it("supports backlog and status-based Kanban work-item flows", async () => {
+    const app = await appWith(createHarness().services);
+    const created = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/work-items`,
+      payload: {
+        title: "Ship the MVP",
+        description: "Finish the local product loop",
+        status: "planned",
+        priority: "urgent",
+      },
+    });
+    const listed = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/work-items?status=planned&priority=urgent&limit=20`,
+    });
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+      payload: { expectedVersion: 1, status: "in_progress", priority: "high" },
+    });
+    const retrieved = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      id: workItemUuid,
+      title: "Ship the MVP",
+      status: "planned",
+      priority: "urgent",
+      version: 1,
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toMatchObject({
+      items: [{ id: workItemUuid }],
+      page: { limit: 20, offset: 0 },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({ status: "in_progress", priority: "high", version: 2 });
+    expect(retrieved.json()).toEqual(updated.json());
+  });
+
+  it("supports linked calendar-block range, update, and delete flows", async () => {
+    const app = await appWith(createHarness().services);
+    await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/work-items`,
+      payload: { title: "Calendar work" },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/schedule-blocks`,
+      payload: {
+        workItemId: workItemUuid,
+        title: "Focus block",
+        startsAt: "2026-07-15T10:00:00.000Z",
+        endsAt: "2026-07-15T11:00:00.000Z",
+        timeZone: "UTC",
+      },
+    });
+    const listed = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/schedule-blocks?from=2026-07-15T10%3A30%3A00.000Z&to=2026-07-15T11%3A30%3A00.000Z`,
+    });
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/schedule-blocks/${scheduleBlockUuid}`,
+      payload: { expectedVersion: 1, title: "Deep focus", timeZone: "America/La_Paz" },
+    });
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/v1/workspaces/${workspaceUuid}/schedule-blocks/${scheduleBlockUuid}`,
+      payload: { expectedVersion: 2 },
+    });
+    const absent = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/schedule-blocks/${scheduleBlockUuid}`,
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      id: scheduleBlockUuid,
+      workItemId: workItemUuid,
+      version: 1,
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toMatchObject({
+      items: [{ id: scheduleBlockUuid }],
+      page: { limit: 100, offset: 0 },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({
+      title: "Deep focus",
+      timeZone: "America/La_Paz",
+      version: 2,
+    });
+    expect(updated.json().startsAt).toBe(created.json().startsAt);
+    expect(deleted.statusCode).toBe(204);
+    expect(absent.statusCode).toBe(404);
   });
 
   it("creates and lists a structured routine", async () => {

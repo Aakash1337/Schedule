@@ -25,6 +25,7 @@ describe("routine planning commands", () => {
     const context = {
       workspaces: {
         findById: async () => createWorkspace({ id: workspace, name: "Test", now }),
+        list: async () => [],
         insert: async () => undefined,
       },
       routines: {
@@ -52,6 +53,7 @@ describe("routine planning commands", () => {
       },
       workItems: {} as TransactionContext["workItems"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
+      auditEvents: {} as TransactionContext["auditEvents"],
       dailyPlans: {
         findById: async () => null,
       } as TransactionContext["dailyPlans"],

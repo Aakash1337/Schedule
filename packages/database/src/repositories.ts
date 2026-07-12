@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 
-import { and, asc, count, desc, eq, lt, lte, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, lt, lte, sql } from "drizzle-orm";
 
 import type {
   ActivityHistoryCursor,
   ActivityHistoryPage,
   ActivityEventRepository,
+  AuditEventRecord,
+  AuditEventRepository,
   CurrentDailyPlan,
   DailyPlanRepository,
   PlanItemLockResult,
@@ -51,6 +53,8 @@ import {
   type ScheduleBlockId,
   type WorkItem,
   type WorkItemId,
+  type WorkItemPriority,
+  type WorkItemStatus,
   type WorkspaceId,
   type Workspace,
 } from "@schedule/domain";
@@ -58,6 +62,7 @@ import {
 import type { DatabaseConnection } from "./database.js";
 import {
   activityEvents,
+  auditEvents,
   dailyPlanHeads,
   dailyPlanItemStates,
   dailyPlanItems,
@@ -318,6 +323,29 @@ class PostgresWorkItemRepository implements WorkItemRepository {
     });
   }
 
+  async list(
+    workspace: WorkspaceId,
+    status: WorkItemStatus | undefined,
+    priority: WorkItemPriority | undefined,
+    limit: number,
+    offset: number,
+  ): Promise<readonly WorkItem[]> {
+    const rows = await this.database
+      .select()
+      .from(workItems)
+      .where(
+        and(
+          eq(workItems.workspaceId, workspace),
+          status === undefined ? undefined : eq(workItems.status, status),
+          priority === undefined ? undefined : eq(workItems.priority, priority),
+        ),
+      )
+      .orderBy(asc(workItems.createdAt), asc(workItems.id))
+      .limit(limit)
+      .offset(offset);
+    return rows.map(mapWorkItem);
+  }
+
   async save(item: WorkItem, expectedVersion: number): Promise<void> {
     const updated = await this.database
       .update(workItems)
@@ -372,6 +400,91 @@ class PostgresScheduleBlockRepository implements ScheduleBlockRepository {
       updatedAt: block.updatedAt,
     });
   }
+
+  async listOverlapping(
+    workspace: WorkspaceId,
+    from: Date,
+    to: Date,
+    limit: number,
+    offset: number,
+  ): Promise<readonly ScheduleBlock[]> {
+    const rows = await this.database
+      .select()
+      .from(scheduleBlocks)
+      .where(
+        and(
+          eq(scheduleBlocks.workspaceId, workspace),
+          lt(scheduleBlocks.startsAt, to),
+          gt(scheduleBlocks.endsAt, from),
+        ),
+      )
+      .orderBy(asc(scheduleBlocks.startsAt), asc(scheduleBlocks.endsAt), asc(scheduleBlocks.id))
+      .limit(limit)
+      .offset(offset);
+    return rows.map(mapScheduleBlock);
+  }
+
+  async save(block: ScheduleBlock, expectedVersion: number): Promise<void> {
+    const updated = await this.database
+      .update(scheduleBlocks)
+      .set({
+        workItemId: block.workItemId,
+        title: block.title,
+        startsAt: block.startsAt,
+        endsAt: block.endsAt,
+        timeZone: block.timeZone,
+        version: block.version,
+        updatedAt: block.updatedAt,
+      })
+      .where(
+        and(
+          eq(scheduleBlocks.workspaceId, block.workspaceId),
+          eq(scheduleBlocks.id, block.id),
+          eq(scheduleBlocks.version, expectedVersion),
+        ),
+      )
+      .returning({ id: scheduleBlocks.id });
+    if (updated.length === 0) {
+      throw new DomainError(
+        "schedule_block.version_conflict",
+        "The schedule block changed before this update could be saved.",
+      );
+    }
+  }
+
+  async delete(block: ScheduleBlock, expectedVersion: number): Promise<void> {
+    const deleted = await this.database
+      .delete(scheduleBlocks)
+      .where(
+        and(
+          eq(scheduleBlocks.workspaceId, block.workspaceId),
+          eq(scheduleBlocks.id, block.id),
+          eq(scheduleBlocks.version, expectedVersion),
+        ),
+      )
+      .returning({ id: scheduleBlocks.id });
+    if (deleted.length === 0) {
+      throw new DomainError(
+        "schedule_block.version_conflict",
+        "The schedule block changed before this deletion could be saved.",
+      );
+    }
+  }
+}
+
+class PostgresAuditEventRepository implements AuditEventRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async append(event: AuditEventRecord): Promise<void> {
+    await this.database.insert(auditEvents).values({
+      workspaceId: event.workspaceId,
+      action: event.action,
+      entityType: event.entityType,
+      entityId: event.entityId,
+      data: { ...event.data },
+      occurredAt: event.occurredAt,
+    });
+  }
 }
 
 class PostgresWorkspaceRepository implements WorkspaceRepository {
@@ -400,6 +513,16 @@ class PostgresWorkspaceRepository implements WorkspaceRepository {
       createdAt: workspace.createdAt,
       updatedAt: workspace.updatedAt,
     });
+  }
+
+  async list(limit: number, offset: number): Promise<readonly Workspace[]> {
+    const rows = await this.database
+      .select()
+      .from(workspaces)
+      .orderBy(asc(workspaces.createdAt), asc(workspaces.id))
+      .limit(limit)
+      .offset(offset);
+    return rows.map(mapWorkspace);
   }
 }
 
@@ -1363,6 +1486,7 @@ function createTransactionContext(database: DatabaseExecutor): TransactionContex
     workspaces: new PostgresWorkspaceRepository(database),
     workItems: new PostgresWorkItemRepository(database),
     scheduleBlocks: new PostgresScheduleBlockRepository(database),
+    auditEvents: new PostgresAuditEventRepository(database),
     routines: new PostgresRoutineRepository(database),
     activityEvents: new PostgresActivityEventRepository(database),
     dailyPlans: new PostgresDailyPlanRepository(database),

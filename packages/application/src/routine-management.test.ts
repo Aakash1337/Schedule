@@ -52,6 +52,7 @@ describe("routine management", () => {
     const context = {
       workspaces: {
         findById: async () => (options.workspaceExists === false ? null : workspace),
+        list: async () => (options.workspaceExists === false ? [] : [workspace]),
         insert: async () => undefined,
       },
       routines: {
@@ -82,6 +83,7 @@ describe("routine management", () => {
       },
       workItems: {} as TransactionContext["workItems"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
+      auditEvents: {} as TransactionContext["auditEvents"],
       dailyPlans: {} as TransactionContext["dailyPlans"],
     } satisfies TransactionContext;
     const unitOfWork: UnitOfWork = { run: async (operation) => operation(context) };

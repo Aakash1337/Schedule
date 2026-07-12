@@ -63,6 +63,7 @@ describe("MutateDailyPlan", () => {
     const context = {
       workspaces: {
         findById: async () => createWorkspace({ id: workspace, name: "Test" }),
+        list: async () => [],
         insert: async () => undefined,
       },
       routines: {
@@ -103,6 +104,7 @@ describe("MutateDailyPlan", () => {
       },
       workItems: {} as TransactionContext["workItems"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
+      auditEvents: {} as TransactionContext["auditEvents"],
     } satisfies TransactionContext;
     const unitOfWork: UnitOfWork = { run: async (operation) => operation(context) };
     return {

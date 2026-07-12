@@ -13,6 +13,7 @@ export type WorkItemStatus = (typeof workItemStatuses)[number];
 
 export const workItemPriorities = ["none", "low", "medium", "high", "urgent"] as const;
 export type WorkItemPriority = (typeof workItemPriorities)[number];
+export const maximumWorkItemVersion = 2_147_483_647;
 
 export interface WorkItem {
   readonly id: WorkItemId;
@@ -36,23 +37,96 @@ export interface CreateWorkItemInput {
   readonly now?: Date;
 }
 
-export function createWorkItem(input: CreateWorkItemInput): WorkItem {
-  const title = input.title.trim();
+export interface UpdateWorkItemInput {
+  readonly title?: string;
+  readonly description?: string | null;
+  readonly status?: WorkItemStatus;
+  readonly priority?: WorkItemPriority;
+  readonly now: Date;
+}
+
+function normalizeTitle(value: unknown): string {
+  invariant(
+    typeof value === "string",
+    "work_item.title_invalid",
+    "A work item title must be text.",
+  );
+  const title = value.trim();
   invariant(title.length > 0, "work_item.title_required", "A work item title is required.");
   invariant(
     title.length <= 240,
     "work_item.title_too_long",
     "A work item title cannot exceed 240 characters.",
   );
+  return title;
+}
+
+function normalizeDescription(value: unknown): string | null {
+  invariant(
+    value === null || typeof value === "string",
+    "work_item.description_invalid",
+    "A work item description must be text or null.",
+  );
+  const description = value?.trim() || null;
+  invariant(
+    description === null || description.length <= 4_000,
+    "work_item.description_too_long",
+    "A work item description cannot exceed 4,000 characters.",
+  );
+  return description;
+}
+
+function validateStatus(value: unknown): asserts value is WorkItemStatus {
+  invariant(
+    workItemStatuses.some((candidate) => candidate === value),
+    "work_item.status_invalid",
+    "A valid work item status is required.",
+  );
+}
+
+function validatePriority(value: unknown): asserts value is WorkItemPriority {
+  invariant(
+    workItemPriorities.some((candidate) => candidate === value),
+    "work_item.priority_invalid",
+    "A valid work item priority is required.",
+  );
+}
+
+function validateTimestamp(value: unknown): asserts value is Date {
+  invariant(
+    value instanceof Date && Number.isFinite(value.getTime()),
+    "work_item.timestamp_invalid",
+    "A valid timestamp is required.",
+  );
+}
+
+function validateExistingWorkItem(item: WorkItem): void {
+  validateStatus(item.status);
+  validatePriority(item.priority);
+  invariant(
+    Number.isInteger(item.version) && item.version >= 1 && item.version <= maximumWorkItemVersion,
+    "work_item.version_invalid",
+    "The work item has an invalid version.",
+  );
+}
+
+export function createWorkItem(input: CreateWorkItemInput): WorkItem {
+  const title = normalizeTitle(input.title);
+  const description = normalizeDescription(input.description ?? null);
+  const status = input.status === undefined ? "backlog" : input.status;
+  validateStatus(status);
+  const priority = input.priority === undefined ? "none" : input.priority;
+  validatePriority(priority);
   const now = input.now ?? new Date();
+  validateTimestamp(now);
 
   return {
     id: input.id ?? workItemId(),
     workspaceId: input.workspaceId,
     title,
-    description: input.description?.trim() || null,
-    status: input.status ?? "backlog",
-    priority: input.priority ?? "none",
+    description,
+    status,
+    priority,
     version: 1,
     createdAt: new Date(now),
     updatedAt: new Date(now),
@@ -64,6 +138,43 @@ export function changeWorkItemStatus(
   status: WorkItemStatus,
   now: Date = new Date(),
 ): WorkItem {
-  if (item.status === status) return item;
-  return { ...item, status, version: item.version + 1, updatedAt: new Date(now) };
+  return updateWorkItem(item, { status, now });
+}
+
+export function updateWorkItem(item: WorkItem, input: UpdateWorkItemInput): WorkItem {
+  validateExistingWorkItem(item);
+  validateTimestamp(input.now);
+
+  const title = input.title === undefined ? item.title : normalizeTitle(input.title);
+  const description =
+    input.description === undefined ? item.description : normalizeDescription(input.description);
+  const status = input.status === undefined ? item.status : input.status;
+  validateStatus(status);
+  const priority = input.priority === undefined ? item.priority : input.priority;
+  validatePriority(priority);
+
+  if (
+    title === item.title &&
+    description === item.description &&
+    status === item.status &&
+    priority === item.priority
+  ) {
+    return item;
+  }
+
+  invariant(
+    item.version < maximumWorkItemVersion,
+    "work_item.version_exhausted",
+    "The work item has reached its maximum supported version.",
+  );
+
+  return {
+    ...item,
+    title,
+    description,
+    status,
+    priority,
+    version: item.version + 1,
+    updatedAt: new Date(input.now),
+  };
 }
