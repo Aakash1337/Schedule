@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { DomainError } from "./errors.js";
+import { localDate } from "./calendar.js";
 import { workItemId, workspaceId } from "./ids.js";
 import {
   changeWorkItemStatus,
@@ -41,6 +42,7 @@ describe("work item domain model", () => {
       description: null,
       status: "backlog",
       priority: "none",
+      dueOn: null,
       version: 1,
     });
     expect(item.createdAt).toEqual(now);
@@ -124,6 +126,25 @@ describe("work item domain model", () => {
       priority: "high",
       version: 2,
     });
+  });
+
+  it("creates, preserves, and clears a Gregorian due date with normal version semantics", () => {
+    const original = create({ dueOn: localDate("2028-02-29") });
+    const preserved = updateWorkItem(original, {
+      title: "A renamed item",
+      now: new Date("2026-07-03T00:00:00.000Z"),
+    });
+    const cleared = updateWorkItem(preserved, {
+      dueOn: null,
+      now: new Date("2026-07-04T00:00:00.000Z"),
+    });
+
+    expect(original.dueOn).toBe("2028-02-29");
+    expect(preserved).toMatchObject({ dueOn: "2028-02-29", version: 2 });
+    expect(cleared).toMatchObject({ dueOn: null, version: 3 });
+    expect(
+      updateWorkItem(cleared, { dueOn: null, now: new Date("2026-07-05T00:00:00.000Z") }),
+    ).toBe(cleared);
   });
 
   it("returns the original object for a semantic no-op", () => {
@@ -229,4 +250,19 @@ describe("work item domain model", () => {
       } as unknown as CreateWorkItemInput),
     ).toThrowError(expect.objectContaining({ code: "work_item.description_invalid" }));
   });
+
+  it.each(["2026-02-29", "2026-13-01", "2026-01-32", "01-01-2026", "2026-1-01"])(
+    "rejects an invalid Gregorian due date %s",
+    (dueOn) => {
+      expect(() => create({ dueOn: dueOn as never })).toThrowError(
+        expect.objectContaining({ code: "work_item.due_on_invalid" }),
+      );
+      expect(() =>
+        updateWorkItem(create(), {
+          dueOn: dueOn as never,
+          now: new Date("2026-07-02T00:00:00.000Z"),
+        }),
+      ).toThrowError(expect.objectContaining({ code: "work_item.due_on_invalid" }));
+    },
+  );
 });

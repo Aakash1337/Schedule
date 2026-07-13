@@ -129,7 +129,8 @@ by the local product API.
     "description": null,
     "priority": "high",
     "status": "backlog",
-    "planningDurationMinutes": 45
+    "planningDurationMinutes": 45,
+    "dueOn": "2026-08-01"
   }
 }
 ```
@@ -146,17 +147,18 @@ The `201` response's `data` is:
 {
   "confirmationId": "44444444-4444-4444-8444-444444444444",
   "requestId": "33333333-3333-4333-8333-333333333333",
-  "commandHash": "f78e20b38835a1c76345fa6e3999f320b17406fd3ce7979c9037f2cbcb3e3e81",
+  "commandHash": "20f1fbbca4eff6961d4dc656230b5b792131046fe2583d4771676a19fae1f4cb",
   "command": {
     "type": "work_item.create",
     "title": "Renew passport",
     "description": null,
     "priority": "high",
     "status": "backlog",
-    "planningDurationMinutes": 45
+    "planningDurationMinutes": 45,
+    "dueOn": "2026-08-01"
   },
-  "commandDisplay": "{\"description\":null,\"planningDurationMinutes\":45,\"priority\":\"high\",\"status\":\"backlog\",\"title\":\"Renew passport\",\"type\":\"work_item.create\"}",
-  "summary": "Create work item “Renew passport” (status backlog, priority high, 45 planned minutes).",
+  "commandDisplay": "{\"description\":null,\"dueOn\":\"2026-08-01\",\"planningDurationMinutes\":45,\"priority\":\"high\",\"status\":\"backlog\",\"title\":\"Renew passport\",\"type\":\"work_item.create\"}",
+  "summary": "Create work item “Renew passport” (status backlog, priority high, 45 planned minutes, due 2026-08-01).",
   "expiresAt": "2026-07-13T12:10:00.000Z"
 }
 ```
@@ -206,25 +208,32 @@ response; changing the key after an ambiguous successful response loses that rep
 rejected because the confirmation has already been consumed. A confirmation can be used only by the
 credential that prepared it and only before expiry.
 
-The successful response's `data` identifies the confirmation, normalized operation, command hash,
-and typed `outcome`. Work-item outcomes contain `workItem`, schedule-block outcomes contain
-`scheduleBlock`, and plan-item activity outcomes contain `planItemActivity`. A replay returns the
-same stored result rather than re-running the command.
+The successful response's `data` includes `receiptVersion: 1` and identifies the confirmation,
+normalized operation, command hash, and typed `outcome`. Work-item outcomes contain `workItem`,
+schedule-block outcomes contain `scheduleBlock`, and plan-item activity outcomes contain
+`planItemActivity`. A replay returns the same stored result rather than re-running the command.
+Unversioned durable receipts created before deadline support are replayed unchanged, so those legacy
+work-item results may omit both `receiptVersion` and `dueOn`; adapters must treat a missing legacy
+`dueOn` as `null`. Newly written receipts always include both fields, and versioned receipts retain
+strict exact-key validation.
 
 ### Commands
 
 Commands are strict JSON objects discriminated by `type`:
 
-| Type                    | Required fields                                                                                         | Optional fields                                                         |
-| ----------------------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `work_item.create`      | `title`                                                                                                 | `description`, `status`, `priority`, `planningDurationMinutes`          |
-| `work_item.update`      | `workItemId`, `expectedVersion`, and at least one change                                                | `title`, `description`, `status`, `priority`, `planningDurationMinutes` |
-| `schedule_block.create` | `startsAt`, `endsAt`, `timeZone`                                                                        | `workItemId`, `title`                                                   |
-| `schedule_block.update` | `scheduleBlockId`, `expectedVersion`, and at least one change                                           | `workItemId`, `title`, `startsAt`, `endsAt`, `timeZone`                 |
-| `plan_item.activity`    | `date`, `itemId`, `expectedPlanId`, `expectedHeadVersion`, `activityType`, `occurredAt`, and `timeZone` | `durationMinutes`, `reason`, `metadata`                                 |
+| Type                    | Required fields                                                                                         | Optional fields                                                                  |
+| ----------------------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `work_item.create`      | `title`                                                                                                 | `description`, `status`, `priority`, `planningDurationMinutes`, `dueOn`          |
+| `work_item.update`      | `workItemId`, `expectedVersion`, and at least one change                                                | `title`, `description`, `status`, `priority`, `planningDurationMinutes`, `dueOn` |
+| `schedule_block.create` | `startsAt`, `endsAt`, `timeZone`                                                                        | `workItemId`, `title`                                                            |
+| `schedule_block.update` | `scheduleBlockId`, `expectedVersion`, and at least one change                                           | `workItemId`, `title`, `startsAt`, `endsAt`, `timeZone`                          |
+| `plan_item.activity`    | `date`, `itemId`, `expectedPlanId`, `expectedHeadVersion`, `activityType`, `occurredAt`, and `timeZone` | `durationMinutes`, `reason`, `metadata`                                          |
 
 The allowed work status, priority, timestamp, duration, metadata, and version values are the same as
-their corresponding routes in [API.md](./API.md). `activityType` is one of `started`, `completed`,
+their corresponding routes in [API.md](./API.md). `dueOn` is optional, but if non-null it must be a
+strict real Gregorian `YYYY-MM-DD` local date. Omit it on update to preserve the date, or send JSON
+`null` to clear it. The confirmation preview includes the resulting due-date change so a human can
+approve it explicitly. `activityType` is one of `started`, `completed`,
 `skipped`, `deferred`, `dismissed`, or `completion_reversed`. Nullable fields must be sent as JSON
 `null` when clearing a value; a non-null `durationMinutes` is accepted only for `completed`. Omitting a
 field means to leave it unchanged where updates allow that. Unknown fields and unknown command types

@@ -367,6 +367,7 @@ export const workItems = pgTable(
     status: workItemStatus("status").notNull().default("backlog"),
     priority: workItemPriority("priority").notNull().default("none"),
     planningDurationMinutes: integer("planning_duration_minutes"),
+    dueOn: date("due_on"),
     version: integer("version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

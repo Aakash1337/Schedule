@@ -200,6 +200,7 @@ export const api = {
       description: string | null;
       status: WorkItemStatus;
       priority: WorkItemPriority;
+      dueOn: string | null;
       planningDurationMinutes: number | null;
     },
   ) =>
@@ -217,6 +218,7 @@ export const api = {
       description?: string | null;
       status?: WorkItemStatus;
       priority?: WorkItemPriority;
+      dueOn?: string | null;
       planningDurationMinutes?: number | null;
     },
   ) =>

@@ -1,4 +1,4 @@
-# Deterministic Planner v3
+# Deterministic Planner v4
 
 This document describes the first implemented planner contract. The broader product intent remains in [PRODUCT.md](./PRODUCT.md).
 
@@ -7,7 +7,7 @@ This document describes the first implemented planner contract. The broader prod
 The following Phase 1 capabilities exist in code:
 
 - Reusable routines with structured priority, effort, energy, preference, context, category, and free-form tags
-- Explicitly opted-in one-time work items with a positive planning duration and priority
+- Explicitly opted-in one-time work items with a positive planning duration, priority, and optional local due date
 - Validated duration ranges, optional split sessions, minimum useful session length, and overhead
 - Daily, weekly, monthly, and rolling-day cadence policies
 - Minimum, target, and maximum completions; spacing; preferred and excluded weekdays; and lifecycle dates
@@ -44,8 +44,8 @@ The planner is implemented as a pure domain operation in `packages/domain/src/da
 ## Planning process
 
 1. Canonically sort routines, opted-in work items, activity events, and the latest applicable routine-feedback event per routine.
-2. Apply routine exclusions for temporary feedback, lifecycle, dates, weekdays, context, cadence maximum, spacing, consecutive-day prohibition, and minimum duration fit. Apply work-item exclusions when its planning duration is absent, its status is not `backlog`, `planned`, or `in_progress`, or its full duration cannot fit a window.
-3. Score eligible routines with integer components for priority, cadence deficit, minimum urgency, neglect, preferred weekday, energy/context fit, preference, recent frequency, consecutive-day repetition, and skip fatigue. Score eligible one-time work solely from its explicit priority; it has no cadence or activity-history score.
+2. Apply routine exclusions for temporary feedback, lifecycle, dates, weekdays, context, cadence maximum, spacing, consecutive-day prohibition, and minimum duration fit. Apply work-item exclusions when its planning duration is absent, its status is not `backlog`, `planned`, or `in_progress`, or its full duration cannot fit a window. A due date never bypasses these exclusions.
+3. Score eligible routines with integer components for priority, cadence deficit, minimum urgency, neglect, preferred weekday, energy/context fit, preference, recent frequency, consecutive-day repetition, and skip fatigue. Score eligible one-time work from explicit priority plus deadline pressure. The default 14-day horizon gives future work a linearly increasing increment as its local due date approaches, gives work due today the `workItemDeadlineDueToday` increment, and gives overdue work a capped increment. A due date outside the horizon adds an explicit zero-pressure explanation. One-time work has no cadence or activity-history score.
 4. Convert the scores to integer selection weights with a nonzero exploration floor.
 5. Generate deterministic weighted permutations using the versioned Mulberry32 implementation.
 6. Fit each permutation into the available windows without exceeding maximum minutes or task count. Splittable routines may use a shorter session, but never less than their configured minimum; work items use their full planning duration.
@@ -54,10 +54,11 @@ The planner is implemented as a pure domain operation in `packages/domain/src/da
 9. Return the selected items, score components, explanations, exclusions, warnings, full canonical input snapshot, and replay metadata.
 
 The default search is bounded at 128 eligible candidates and 32 randomized iterations. Applying the candidate limit emits a warning rather than silently presenting the result as exhaustive.
+Custom deadline configuration must use a non-negative safe-integer horizon, and its horizon multiplied by the future-per-day weight cannot exceed the planner's 1,000,000-point component bound. This keeps every derived deadline score finite and safely comparable.
 
 ## Determinism contract
 
-For the same canonical input snapshot, request revision, seed, algorithm version, configuration version, and PRNG version, the planner returns the same item selection and explanations regardless of input array order. Planner v3 includes the latest applicable routine-feedback event per routine in that canonical snapshot and input hash; an expired suppression or latest reset remains visible for replay but produces no active exclusion.
+For the same canonical input snapshot, request revision, seed, algorithm version, configuration version, and PRNG version, the planner returns the same item selection and explanations regardless of input array order. Planner v4 and `default-weights-v3` include each work item's nullable `dueOn` value and deadline configuration in the canonical snapshot and input hash. Planner v4 also includes the latest applicable routine-feedback event per routine; an expired suppression or latest reset remains visible for replay but produces no active exclusion.
 
 The generated plan ID and generation timestamp are supplied by the caller when strict byte-for-byte replay is required. The persisted input hash intentionally changes when any input fact changes, even if the final selected items remain the same.
 
@@ -168,7 +169,7 @@ pnpm verify:planner-db
 - Authentication, authorization, and public network exposure
 - Exact start-time placement within a selected window
 - Alternative-plan branching and multi-step undo workflows
-- Work-item deadlines and dependency integration
+- Work-item dependency integration
 - Learned cadence, preference, energy, and overload adjustments
 - Automatic application, rejection memory, and reset controls for duration insights
 - User-editable scoring profiles

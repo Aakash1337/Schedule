@@ -18,6 +18,8 @@ export interface WorkItem {
   readonly description: string | null;
   readonly status: WorkItemStatus;
   readonly priority: WorkItemPriority;
+  /** Local calendar date in YYYY-MM-DD form, when the work has a deadline. */
+  readonly dueOn: string | null;
   /** A null duration keeps this one-time item out of automatic daily plans. */
   readonly planningDurationMinutes: number | null;
   readonly version: number;

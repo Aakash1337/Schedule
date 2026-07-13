@@ -43,15 +43,15 @@ project.
 
 ## Current scorecard
 
-The current audited unit/component suite contains 58 test files and 658 runtime test cases, plus one
-live Chromium integration scenario. Parameterized state matrices expand into many cases, so this
+The current audited unit/component suite contains 58 test files and 684 runtime test cases, plus two
+live Chromium integration scenarios. Parameterized state matrices expand into many cases, so this
 number must not be compared as though every case were an independent product feature.
 
 ### Feature evidence
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      22 / 22 |
+| Implemented features with CI-registered evidence                       |      23 / 23 |
 | Critical implemented features with CI-registered integration or drills |      13 / 13 |
 | Partial features with an explicit limitation                           |        1 / 1 |
 | Deferred features incorrectly counted as passing                       |            0 |
@@ -107,6 +107,29 @@ including source-matched activity references.
 These are contract metrics, not claims that the heuristic is globally optimal. Historical replay and
 fitness-regret evaluation will become meaningful once real usage fixtures and a second planner version
 exist.
+
+### Work-item deadline evidence
+
+The deadline feature has independent domain, application, database, API, web, and executable
+PostgreSQL evidence. Domain tests require nullable real Gregorian local dates, normal version
+semantics for preserving and clearing a date, deterministic v4 deadline pressure for future, today,
+overdue, capped-overdue, and outside-horizon work, and continued exclusion of non-plannable work.
+The configured 14-day horizon and all deadline weights are validated before planning. The test also
+proves that reversed candidate order produces the same v4 snapshot hash and selected items.
+
+Application and repository tests cover create, update, explicit clear, database row mapping, and
+the nullable `due_on` column. Product API tests round-trip a leap-day date through create, get, list,
+update, and clear requests while rejecting impossible and noncanonical input. Inbound-integration
+tests require the canonical confirmation payload and result to retain the due date, including an
+explicit clear. The Work component tests cover creating, displaying, editing, clearing, and retaining
+a due-date draft after a failed save.
+
+The `planner-db`, product-API, and integration-gateway PostgreSQL verifiers exercise the persisted
+round trip, due-today explanation and ranking against otherwise equivalent work, HTTP validation,
+and confirmed integration clear. The Chromium flow creates and clears a due date through the real
+Work UI, generates Today through the live API and database, and observes the due-today deadline
+pressure. The browser scenario is registered because it exists; it is not treated as the sole
+correctness oracle.
 
 ### Temporary routine-feedback evidence
 

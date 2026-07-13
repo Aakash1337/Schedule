@@ -189,8 +189,8 @@ describe("database schema", () => {
     expect(activityConfig.columns.map((column) => column.name)).toEqual(
       expect.arrayContaining(["source_type", "routine_id", "work_item_id"]),
     );
-    expect(workItemConfig.columns.map((column) => column.name)).toContain(
-      "planning_duration_minutes",
+    expect(workItemConfig.columns.map((column) => column.name)).toEqual(
+      expect.arrayContaining(["planning_duration_minutes", "due_on"]),
     );
     expect(itemConfig.checks.map((constraint) => constraint.name)).toContain(
       "daily_plan_items_source_valid",

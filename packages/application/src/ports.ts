@@ -287,6 +287,8 @@ export type IntegrationCommand =
       readonly status?: WorkItemStatus;
       readonly priority?: WorkItemPriority;
       readonly planningDurationMinutes?: number | null;
+      /** Undefined uses no due date; null explicitly clears it. */
+      readonly dueOn?: string | null;
     }
   | {
       readonly type: "work_item.update";
@@ -297,6 +299,8 @@ export type IntegrationCommand =
       readonly status?: WorkItemStatus;
       readonly priority?: WorkItemPriority;
       readonly planningDurationMinutes?: number | null;
+      /** Undefined preserves the due date; null explicitly clears it. */
+      readonly dueOn?: string | null;
     }
   | {
       readonly type: "schedule_block.create";
@@ -394,6 +398,8 @@ export interface IntegrationWorkItemDto {
   readonly status: WorkItemStatus;
   readonly priority: WorkItemPriority;
   readonly planningDurationMinutes: number | null;
+  /** Omitted only when replaying an unversioned receipt created before work-item deadlines. */
+  readonly dueOn?: string | null;
   readonly version: number;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -440,6 +446,8 @@ export interface IntegrationPlanItemActivityDto {
 }
 
 export interface ConfirmedIntegrationCommandResult {
+  /** Present on all newly written receipts; omitted only by legacy durable replays. */
+  readonly receiptVersion?: 1;
   readonly confirmationId: string;
   readonly operation: IntegrationCommand["type"];
   readonly commandHash: string;

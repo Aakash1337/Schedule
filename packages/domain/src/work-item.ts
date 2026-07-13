@@ -1,4 +1,5 @@
 import { invariant } from "./errors.js";
+import { isValidLocalDate, type LocalDate } from "./calendar.js";
 import { workItemId, type WorkItemId, type WorkspaceId } from "./ids.js";
 
 export const workItemStatuses = [
@@ -22,6 +23,7 @@ export interface WorkItem {
   readonly description: string | null;
   readonly status: WorkItemStatus;
   readonly priority: WorkItemPriority;
+  readonly dueOn: LocalDate | null;
   /** Null keeps conventional work out of the daily planner. */
   readonly planningDurationMinutes: number | null;
   readonly version: number;
@@ -36,6 +38,7 @@ export interface CreateWorkItemInput {
   readonly description?: string | null;
   readonly status?: WorkItemStatus;
   readonly priority?: WorkItemPriority;
+  readonly dueOn?: LocalDate | null;
   readonly planningDurationMinutes?: number | null;
   readonly now?: Date;
 }
@@ -45,6 +48,7 @@ export interface UpdateWorkItemInput {
   readonly description?: string | null;
   readonly status?: WorkItemStatus;
   readonly priority?: WorkItemPriority;
+  readonly dueOn?: LocalDate | null;
   readonly planningDurationMinutes?: number | null;
   readonly now: Date;
 }
@@ -104,6 +108,14 @@ function validatePlanningDuration(value: unknown): asserts value is number | nul
   );
 }
 
+function validateDueOn(value: unknown): asserts value is LocalDate | null {
+  invariant(
+    value === null || (typeof value === "string" && isValidLocalDate(value)),
+    "work_item.due_on_invalid",
+    "A due date must be a valid Gregorian local date in YYYY-MM-DD format or null.",
+  );
+}
+
 function validateTimestamp(value: unknown): asserts value is Date {
   invariant(
     value instanceof Date && Number.isFinite(value.getTime()),
@@ -115,6 +127,7 @@ function validateTimestamp(value: unknown): asserts value is Date {
 function validateExistingWorkItem(item: WorkItem): void {
   validateStatus(item.status);
   validatePriority(item.priority);
+  validateDueOn(item.dueOn);
   validatePlanningDuration(item.planningDurationMinutes);
   invariant(
     Number.isInteger(item.version) && item.version >= 1 && item.version <= maximumWorkItemVersion,
@@ -130,6 +143,8 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
   validateStatus(status);
   const priority = input.priority === undefined ? "none" : input.priority;
   validatePriority(priority);
+  const dueOn = input.dueOn ?? null;
+  validateDueOn(dueOn);
   const planningDurationMinutes = input.planningDurationMinutes ?? null;
   validatePlanningDuration(planningDurationMinutes);
   const now = input.now ?? new Date();
@@ -142,6 +157,7 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
     description,
     status,
     priority,
+    dueOn,
     planningDurationMinutes,
     version: 1,
     createdAt: new Date(now),
@@ -168,6 +184,8 @@ export function updateWorkItem(item: WorkItem, input: UpdateWorkItemInput): Work
   validateStatus(status);
   const priority = input.priority === undefined ? item.priority : input.priority;
   validatePriority(priority);
+  const dueOn = input.dueOn === undefined ? item.dueOn : input.dueOn;
+  validateDueOn(dueOn);
   const planningDurationMinutes =
     input.planningDurationMinutes === undefined
       ? item.planningDurationMinutes
@@ -179,6 +197,7 @@ export function updateWorkItem(item: WorkItem, input: UpdateWorkItemInput): Work
     description === item.description &&
     status === item.status &&
     priority === item.priority &&
+    dueOn === item.dueOn &&
     planningDurationMinutes === item.planningDurationMinutes
   ) {
     return item;
@@ -196,6 +215,7 @@ export function updateWorkItem(item: WorkItem, input: UpdateWorkItemInput): Work
     description,
     status,
     priority,
+    dueOn,
     planningDurationMinutes,
     version: item.version + 1,
     updatedAt: new Date(input.now),

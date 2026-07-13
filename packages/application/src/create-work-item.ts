@@ -2,6 +2,7 @@ import {
   DomainError,
   createWorkItem,
   type WorkItem,
+  type LocalDate,
   type WorkItemPriority,
   type WorkItemStatus,
   type WorkspaceId,
@@ -16,6 +17,7 @@ export interface CreateWorkItemCommand {
   readonly priority?: WorkItemPriority;
   readonly status?: WorkItemStatus;
   readonly planningDurationMinutes?: number | null;
+  readonly dueOn?: LocalDate | null;
 }
 
 export class CreateWorkItem {

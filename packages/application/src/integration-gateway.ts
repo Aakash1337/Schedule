@@ -486,6 +486,17 @@ function requireOptionalText(
   if (hasOwn(command, field)) requireText(command[field], field, allowNull);
 }
 
+function requireOptionalLocalDate(command: Readonly<Record<string, unknown>>, field: string): void {
+  if (!hasOwn(command, field)) return;
+  const value = command[field];
+  if (value === null) return;
+  if (typeof value === "string" && isValidLocalDate(value)) return;
+  throw new DomainError(
+    "integration.command_invalid",
+    `${field} must be a Gregorian YYYY-MM-DD date or null.`,
+  );
+}
+
 function requireTextBounds(
   value: unknown,
   field: string,
@@ -563,7 +574,7 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
     case "work_item.create": {
       assertCommandObject(
         command,
-        ["type", "title", "description", "status", "priority", "planningDurationMinutes"],
+        ["type", "title", "description", "status", "priority", "planningDurationMinutes", "dueOn"],
         ["type", "title"],
       );
       requireTextBounds(command.title, "title", 1, 240, true);
@@ -583,6 +594,7 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
       if (hasOwn(command, "planningDurationMinutes") && command.planningDurationMinutes !== null) {
         requireInteger(command.planningDurationMinutes, "planningDurationMinutes", 1, 43_200);
       }
+      requireOptionalLocalDate(command, "dueOn");
       break;
     }
     case "work_item.update": {
@@ -597,14 +609,15 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
           "status",
           "priority",
           "planningDurationMinutes",
+          "dueOn",
         ],
         ["type", "workItemId", "expectedVersion"],
       );
       normalizeUuid(command.workItemId, "work_item_id");
       requireInteger(command.expectedVersion, "expectedVersion");
       if (
-        !["title", "description", "status", "priority", "planningDurationMinutes"].some((field) =>
-          hasOwn(command, field),
+        !["title", "description", "status", "priority", "planningDurationMinutes", "dueOn"].some(
+          (field) => hasOwn(command, field),
         )
       ) {
         throw new DomainError(
@@ -632,6 +645,7 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
       if (hasOwn(command, "planningDurationMinutes") && command.planningDurationMinutes !== null) {
         requireInteger(command.planningDurationMinutes, "planningDurationMinutes", 1, 43_200);
       }
+      requireOptionalLocalDate(command, "dueOn");
       break;
     }
     case "schedule_block.create": {
@@ -893,6 +907,9 @@ function rawCommandSummary(command: IntegrationCommand): string {
         command.planningDurationMinutes === undefined || command.planningDurationMinutes === null
           ? "not included in daily planning"
           : `${command.planningDurationMinutes} planned minutes`,
+        command.dueOn === undefined || command.dueOn === null
+          ? "no due date"
+          : `due ${command.dueOn}`,
       ];
       if (typeof command.description === "string" && command.description.trim().length > 0) {
         details.push(`description ${quoted(command.description)}`);
@@ -912,6 +929,11 @@ function rawCommandSummary(command: IntegrationCommand): string {
           command.planningDurationMinutes === null
             ? "remove from daily planning"
             : `set planned duration to ${command.planningDurationMinutes} minutes`,
+        );
+      }
+      if (command.dueOn !== undefined) {
+        changes.push(
+          command.dueOn === null ? "clear due date" : `set due date to ${command.dueOn}`,
         );
       }
       return `Update work item ${command.workItemId}: ${changes.join("; ")}.`;
@@ -1100,6 +1122,7 @@ function toWorkItemDto(item: WorkItem): IntegrationWorkItemDto {
     id: item.id,
     createdAt: item.createdAt.toISOString(),
     updatedAt: item.updatedAt.toISOString(),
+    dueOn: item.dueOn,
   };
 }
 
@@ -1176,6 +1199,9 @@ async function dispatchCommand(
         ...(command.planningDurationMinutes === undefined
           ? {}
           : { planningDurationMinutes: command.planningDurationMinutes }),
+        ...(command.dueOn === undefined
+          ? {}
+          : { dueOn: command.dueOn === null ? null : localDate(command.dueOn) }),
         now,
       });
       await context.workItems.insert(item);
@@ -1197,6 +1223,9 @@ async function dispatchCommand(
         ...(command.planningDurationMinutes === undefined
           ? {}
           : { planningDurationMinutes: command.planningDurationMinutes }),
+        ...(command.dueOn === undefined
+          ? {}
+          : { dueOn: command.dueOn === null ? null : localDate(command.dueOn) }),
         now,
       });
       if (updated !== current) await context.workItems.save(updated, current.version);
@@ -1314,6 +1343,7 @@ function receiptResult(
   },
 ): ConfirmedIntegrationCommandResult {
   const result = request.result;
+  const legacyReceipt = result?.receiptVersion === undefined;
   if (
     request.state !== "succeeded" ||
     result === null ||
@@ -1325,13 +1355,27 @@ function receiptResult(
     result.confirmationId !== confirmation.id ||
     result.commandHash !== confirmation.commandHash ||
     result.operation !== confirmation.command.type ||
-    !exactKeys(result as unknown as Record<string, unknown>, [
-      "confirmationId",
-      "operation",
-      "commandHash",
-      "outcome",
-    ]) ||
-    !validReceiptOutcome(result.outcome, confirmation.command, confirmation.workspaceId)
+    (legacyReceipt
+      ? !exactKeys(result as unknown as Record<string, unknown>, [
+          "confirmationId",
+          "operation",
+          "commandHash",
+          "outcome",
+        ])
+      : result.receiptVersion !== 1 ||
+        !exactKeys(result as unknown as Record<string, unknown>, [
+          "receiptVersion",
+          "confirmationId",
+          "operation",
+          "commandHash",
+          "outcome",
+        ])) ||
+    !validReceiptOutcome(
+      result.outcome,
+      confirmation.command,
+      confirmation.workspaceId,
+      legacyReceipt,
+    )
   ) {
     throw new DomainError(
       "integration.receipt_corrupt",
@@ -1404,6 +1448,7 @@ function validReceiptOutcome(
   value: unknown,
   command: IntegrationCommand,
   workspaceIdValue: WorkspaceId,
+  legacyReceipt: boolean,
 ): boolean {
   const outcome = objectValue(value);
   if (outcome === null || typeof outcome.type !== "string") return false;
@@ -1415,18 +1460,35 @@ function validReceiptOutcome(
       outcome.type === expectedType &&
       exactKeys(outcome, ["type", "workItem"]) &&
       item !== null &&
-      exactKeys(item, [
-        "id",
-        "workspaceId",
-        "title",
-        "description",
-        "status",
-        "priority",
-        "planningDurationMinutes",
-        "version",
-        "createdAt",
-        "updatedAt",
-      ]) &&
+      exactKeys(
+        item,
+        legacyReceipt
+          ? [
+              "id",
+              "workspaceId",
+              "title",
+              "description",
+              "status",
+              "priority",
+              "planningDurationMinutes",
+              "version",
+              "createdAt",
+              "updatedAt",
+            ]
+          : [
+              "id",
+              "workspaceId",
+              "title",
+              "description",
+              "status",
+              "priority",
+              "planningDurationMinutes",
+              "dueOn",
+              "version",
+              "createdAt",
+              "updatedAt",
+            ],
+      ) &&
       item.workspaceId === workspaceIdValue &&
       isUuidText(item.id) &&
       typeof item.title === "string" &&
@@ -1438,6 +1500,13 @@ function validReceiptOutcome(
       typeof item.priority === "string" &&
       workItemPriorities.includes(item.priority as never) &&
       isPositiveDuration(item.planningDurationMinutes) &&
+      (legacyReceipt
+        ? command.dueOn === undefined && !hasOwn(item, "dueOn")
+        : (item.dueOn === null ||
+            (typeof item.dueOn === "string" && isValidLocalDate(item.dueOn))) &&
+          (command.type === "work_item.create"
+            ? item.dueOn === (command.dueOn ?? null)
+            : command.dueOn === undefined || item.dueOn === command.dueOn)) &&
       isPositiveInteger(item.version) &&
       isInstantText(item.createdAt) &&
       isInstantText(item.updatedAt) &&
@@ -1609,6 +1678,7 @@ export class ConfirmIntegrationCommand {
       }
       const outcome = await dispatchCommand(context, credential, verifiedConfirmation, now);
       const result: ConfirmedIntegrationCommandResult = {
+        receiptVersion: 1,
         confirmationId: confirmation.id,
         operation: storedCommand.type,
         commandHash: confirmation.commandHash,

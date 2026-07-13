@@ -109,6 +109,72 @@ try {
   });
   assert.equal(workItemResponse.statusCode, 201, workItemResponse.body);
   const createdWorkItem = workItemResponse.json<{ id: string; version: number }>();
+  // EVIDENCE: work-item-deadline-product-api
+  // The HTTP boundary accepts only calendar dates, returns them on every read shape, and supports an explicit clear.
+  const deadlineWorkItemResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items`,
+    payload: {
+      title: "Deadline API verification",
+      status: "backlog",
+      priority: "low",
+      dueOn: "2028-02-29",
+    },
+  });
+  assert.equal(deadlineWorkItemResponse.statusCode, 201, deadlineWorkItemResponse.body);
+  const deadlineWorkItem = deadlineWorkItemResponse.json<{
+    id: string;
+    version: number;
+    dueOn: string | null;
+  }>();
+  assert.equal(deadlineWorkItem.dueOn, "2028-02-29");
+  const deadlineWorkItemRead = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items/${deadlineWorkItem.id}`,
+  });
+  assert.equal(deadlineWorkItemRead.statusCode, 200, deadlineWorkItemRead.body);
+  assert.equal(deadlineWorkItemRead.json<{ dueOn: string | null }>().dueOn, "2028-02-29");
+  const deadlineWorkItemList = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items?limit=20`,
+  });
+  assert.equal(deadlineWorkItemList.statusCode, 200, deadlineWorkItemList.body);
+  assert.equal(
+    deadlineWorkItemList
+      .json<{ items: { id: string; dueOn: string | null }[] }>()
+      .items.find((item) => item.id === deadlineWorkItem.id)?.dueOn,
+    "2028-02-29",
+  );
+  const deadlineUpdateResponse = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items/${deadlineWorkItem.id}`,
+    payload: { expectedVersion: deadlineWorkItem.version, dueOn: "2028-03-01" },
+  });
+  assert.equal(deadlineUpdateResponse.statusCode, 200, deadlineUpdateResponse.body);
+  assert.equal(deadlineUpdateResponse.json<{ dueOn: string | null }>().dueOn, "2028-03-01");
+  assert.equal(deadlineUpdateResponse.json<{ version: number }>().version, 2);
+  const deadlineClearResponse = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items/${deadlineWorkItem.id}`,
+    payload: { expectedVersion: 2, dueOn: null },
+  });
+  assert.equal(deadlineClearResponse.statusCode, 200, deadlineClearResponse.body);
+  assert.equal(deadlineClearResponse.json<{ dueOn: string | null; version: number }>().dueOn, null);
+  assert.equal(deadlineClearResponse.json<{ version: number }>().version, 3);
+  for (const dueOn of ["2027-02-29", "2028-2-29", "2028-02-30"]) {
+    const invalidDateResponse: { statusCode: number; body: string } = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${createdWorkspaceId}/work-items`,
+      payload: { title: "Invalid date", dueOn },
+    });
+    assert.equal(invalidDateResponse.statusCode, 400, invalidDateResponse.body);
+  }
+  const invalidDateUpdate = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items/${deadlineWorkItem.id}`,
+    payload: { expectedVersion: 3, dueOn: "2028-02-30" },
+  });
+  assert.equal(invalidDateUpdate.statusCode, 400, invalidDateUpdate.body);
   const secondWorkItemResponse = await app.inject({
     method: "POST",
     url: `/v1/workspaces/${createdWorkspaceId}/work-items`,

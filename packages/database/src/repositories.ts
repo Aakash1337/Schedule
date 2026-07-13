@@ -223,6 +223,7 @@ function mapWorkItem(row: WorkItemRow): WorkItem {
     status: row.status,
     priority: row.priority,
     planningDurationMinutes: row.planningDurationMinutes,
+    dueOn: row.dueOn === null ? null : localDate(row.dueOn),
     version: row.version,
     createdAt: new Date(row.createdAt),
     updatedAt: new Date(row.updatedAt),
@@ -460,6 +461,7 @@ class PostgresWorkItemRepository implements WorkItemRepository {
       status: item.status,
       priority: item.priority,
       planningDurationMinutes: item.planningDurationMinutes,
+      dueOn: item.dueOn,
       version: item.version,
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
@@ -514,6 +516,7 @@ class PostgresWorkItemRepository implements WorkItemRepository {
         status: item.status,
         priority: item.priority,
         planningDurationMinutes: item.planningDurationMinutes,
+        dueOn: item.dueOn,
         version: item.version,
         updatedAt: item.updatedAt,
       })
