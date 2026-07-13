@@ -13,6 +13,10 @@
     "recovery-state": {
       "command": "pnpm verify:recovery-state-machine",
       "ci": true
+    },
+    "browser-e2e": {
+      "command": "pnpm verify:web-e2e",
+      "ci": true
     }
   },
   "features": [
@@ -254,6 +258,12 @@
             "renders successful regenerate and replace responses with versioned idempotent commands",
             "reuses the same idempotency key and timestamp after an ambiguous failure"
           ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/planning-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": ["persists completion through the live routine-to-Today planning flow"]
         }
       ]
     },

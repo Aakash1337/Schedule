@@ -2,7 +2,12 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -75,3 +80,38 @@ jobs:
       - name: Remove disposable PostgreSQL Compose service
         if: always()
         run: docker compose down -v --remove-orphans
+
+  browser-e2e:
+    name: Browser E2E (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CI: true
+      E2E_COMPOSE_PROJECT: schedule-web-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install Chromium and system dependencies
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Verify live planning flow in Chromium
+        run: pnpm verify:web-e2e
+      - name: Upload browser failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Remove disposable browser-test services
+        if: always()
+        run: E2E_OWNER_TOKEN=ci-cleanup docker compose --project-name "$E2E_COMPOSE_PROJECT" --file compose.e2e.yaml down --volumes --remove-orphans

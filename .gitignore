@@ -4,7 +4,6 @@ dist/
 .env
 .env.*
 !.env.example
-coverage/
 .DS_Store
 *.log
 *.dump
@@ -14,3 +13,5 @@ coverage/
 backups/
 .pnpm-debug.log
 packages/database/drizzle/meta/_journal.json.bak
+playwright-report/
+test-results/
