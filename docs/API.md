@@ -96,10 +96,11 @@ The `GET` route never mutates a routine or plan. A client accepts a suggestion w
 ```
 
 In one read-committed unit of work, the server acquires the same per-routine advisory lock used by
-activity appends, reloads the workspace-scoped routine, verifies its version, reads current evidence
-for the same inclusive 90-day window, recomputes the insight, and saves the routine. Read committed is
-intentional here: each statement after a lock wait sees commits made by the earlier lock holder. Every submitted
-duration field except `expectedMinutes` must equal the current
+activity appends, reloads the workspace-scoped routine, verifies its version, captures the evaluation
+time, reads current evidence for the resulting inclusive 90-day window, recomputes the insight, and
+saves the routine. Capturing the cutoff after the lock wait includes evidence committed by the earlier
+lock holder. Read committed is intentional here: each statement after that wait sees those commits.
+Every submitted duration field except `expectedMinutes` must equal the current
 user-owned value. A changed range, splitting, session, or overhead setting is rejected with
 `routine_duration_insight.approval_scope_invalid`; callers use the generic routine `PATCH` for those
 manual edits.

@@ -43,7 +43,7 @@ project.
 
 ## Current scorecard
 
-The current audited unit/component suite contains 57 test files and 631 runtime test cases, plus one
+The current audited unit/component suite contains 57 test files and 632 runtime test cases, plus one
 live Chromium integration scenario. Parameterized state matrices expand into many cases, so this
 number must not be compared as though every case were an independent product feature.
 
@@ -65,7 +65,7 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     58.12% |   67.12% |    65.24% | 58.41% |
+| Whole repository, measured |     58.09% |   67.12% |    65.24% | 58.38% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     94.79% |   89.14% |    96.23% | 95.92% |
 | Domain, required           |        91% |      82% |       92% |    93% |
@@ -78,8 +78,8 @@ quality levels.
 | Web, measured              |     83.68% |   70.71% |    71.76% | 84.25% |
 | Web, required              |        75% |      63% |       70% |    79% |
 
-The whole-repository totals are 4,742 of 8,158 statements, 3,451 of 5,141 branches,
-1,072 of 1,643 functions, and 4,434 of 7,591 lines.
+The whole-repository totals are 4,742 of 8,162 statements, 3,451 of 5,141 branches,
+1,072 of 1,643 functions, and 4,434 of 7,595 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -127,10 +127,10 @@ a one-millisecond-outside sample, correction and reversal amendments, an evidenc
 and approval, atomic refreshed approval, stale-version rejection, and proof that approval does not
 change any current plan head. Normal PostgreSQL units of work run at serializable isolation. Insight
 approval deliberately uses read committed and acquires the same per-routine advisory lock as activity
-appends before reading evidence, so statements after a lock wait see the earlier holder's commit. The
-verifier exercises that production boundary and proves queued routine and plan-item evidence changes
-win over stale approval.
-This establishes contract correctness for
+appends before capturing its evaluation cutoff and reading evidence, so statements after a lock wait
+see the earlier holder's commit and the time window includes it. The verifier exercises that production
+boundary and proves queued routine and plan-item evidence changes win over stale approval, including
+an occurrence after the pre-wait clock time. This establishes contract correctness for
 the implemented statistical rule; it does not establish that the 90-day window, three-sample minimum,
 median, or material threshold improves real user outcomes.
 

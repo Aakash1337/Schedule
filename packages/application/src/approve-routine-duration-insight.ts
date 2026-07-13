@@ -47,11 +47,6 @@ export class ApproveRoutineDurationInsight {
         "Expected routine version must be a positive integer.",
       );
     }
-    const now = this.clock.now();
-    const fromInclusive = new Date(
-      now.getTime() - routineDurationInsightLookbackDays * millisecondsPerDay,
-    );
-
     return this.unitOfWork.run(
       async ({ workspaces, routines, activityEvents }) => {
         if ((await workspaces.findById(command.workspaceId)) === null) {
@@ -75,6 +70,10 @@ export class ApproveRoutineDurationInsight {
           );
         }
 
+        const now = this.clock.now();
+        const fromInclusive = new Date(
+          now.getTime() - routineDurationInsightLookbackDays * millisecondsPerDay,
+        );
         const evidence = await activityEvents.listDurationEvidence(
           command.workspaceId,
           command.routineId,
