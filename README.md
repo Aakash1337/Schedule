@@ -71,6 +71,10 @@ and line coverage are diagnostics; critical features must also point to passing 
 recovery-drill evidence. See the [evaluation guide](./docs/EVALUATION.md) for the scorecard and known
 gaps.
 
+After installing Chromium once with `pnpm exec playwright install chromium`, run
+`pnpm verify:web-e2e` to exercise the built web application, live API, fresh migrations, and an
+isolated PostgreSQL database through the routine-to-Today completion flow.
+
 With PostgreSQL running, verify backlog/Kanban and calendar management, routine creation and optimistic updates, stable activity-history pagination, idempotent routine and Today-item activity recording, deterministic plan generation, and atomic plan-revision persistence:
 
 ```powershell
@@ -79,8 +83,9 @@ pnpm verify:database
 
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh
-PostgreSQL 17 Compose project. It also verifies a complete archive round trip and the real disposable
-restore/promote/rollback/cleanup state machine.
+PostgreSQL 17 Compose project. It also verifies a complete archive round trip, the real disposable
+restore/promote/rollback/cleanup state machine, and the live Chromium planning flow in a separate
+disposable database.
 
 ## Local data protection
 

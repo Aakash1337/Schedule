@@ -13,5 +13,5 @@
       "@schedule/domain": ["packages/domain/src/index.ts"]
     }
   },
-  "include": ["scripts/**/*.ts"]
+  "include": ["scripts/**/*.ts", "playwright.config.ts", "apps/web/e2e/**/*.ts"]
 }

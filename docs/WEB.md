@@ -9,6 +9,8 @@ security boundary to a public network.
 - React renders a dependency-light single-page application.
 - Vite serves the development UI on `127.0.0.1:5173`.
 - Relative `/v1` and `/health` requests are proxied to the loopback API on `127.0.0.1:4000`.
+- The proxy target may be changed with `SCHEDULE_API_URL`; the built-app preview uses the same
+  same-origin proxy contract as development.
 - CORS remains disabled. Product routes also require an exact loopback `Host` authority, while the
   Vite proxy's `localhost` or `127/8` authority remains accepted.
 - PostgreSQL remains the system of record; browser storage retains only the selected workspace.
@@ -64,6 +66,29 @@ The interface uses warm paper-toned surfaces, ink-like neutrals, and a restraine
 selection and primary actions. Native controls, visible focus states, semantic landmarks, reduced
 motion support, and breakpoint-driven navigation keep the application understandable on keyboard,
 desktop, and narrow screens.
+
+## Live browser verification
+
+The Chromium smoke test exercises the central product path through real built processes and a fresh
+PostgreSQL database: create a workspace, add a routine to the pool, generate today's plan, complete
+the planned routine, reload, and confirm that completion persists. It does not intercept network
+requests or replace the API with mocks.
+
+Install the local browser binary once, then run the bounded verifier:
+
+```powershell
+pnpm exec playwright install chromium
+pnpm verify:web-e2e
+```
+
+The verifier builds the API and web application, allocates unused loopback ports, starts an isolated
+Compose project backed by PostgreSQL `tmpfs`, applies every migration, and starts the production API
+entry point plus Vite's built-app preview. PostgreSQL receives a Docker-assigned loopback port, and
+the browser clock is fixed in UTC. The runner refuses pre-existing project resources, labels its
+container with a per-run ownership token, and refuses cleanup when that token does not match. Success
+and failure both stop the web process tree and remove the disposable container, network, and
+database; a leaked port or failed cleanup makes the command fail. GitHub CI runs the same command in
+a dedicated Chromium job and retains traces, screenshots, and video when it fails.
 
 ## Deliberately deferred
 

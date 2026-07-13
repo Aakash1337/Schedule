@@ -33,7 +33,8 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:database`               | Exercise planner, product API, outbox, and migration behavior on PostgreSQL | Yes                             |
 | `pnpm verify:backup-restore`         | Verify archive/schema/content/sequence fidelity                             | Yes                             |
 | `pnpm verify:recovery-state-machine` | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
-| `pnpm eval:full`                     | Run every evaluation layer above                                            | Yes, with the recovery sentinel |
+| `pnpm verify:web-e2e`                | Exercise the built browser, API, migrations, and PostgreSQL planning loop   | Own disposable Compose database |
+| `pnpm eval:full`                     | Run every evaluation layer above, including Chromium                        | Yes, with the recovery sentinel |
 
 The destructive recovery command requires the explicit environment guards documented in
 [`OPERATIONS.md`](./OPERATIONS.md). CI supplies those guards only inside its disposable Compose
@@ -41,9 +42,9 @@ project.
 
 ## Current scorecard
 
-The current audited suite contains 37 test files and 291 runtime test cases. Parameterized state
-matrices expand into many cases, so this number must not be compared as though every case were an
-independent product feature.
+The current audited unit/component suite contains 38 test files and 296 runtime test cases, plus one
+live Chromium integration scenario. Parameterized state matrices expand into many cases, so this
+number must not be compared as though every case were an independent product feature.
 
 ### Feature evidence
 
@@ -63,7 +64,7 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |      57.2% |   60.13% |    61.42% | 57.95% |
+| Whole repository, measured |     56.63% |   59.15% |    61.45% | 57.34% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     92.66% |   84.43% |    93.33% | 94.13% |
 | Domain, required           |        91% |      82% |       92% |    93% |
@@ -113,7 +114,8 @@ The audit deliberately leaves these visible instead of turning them into false g
 - worker process-kill recovery covers crashes before a side effect and after an idempotent side
   effect but before acknowledgement; future external consumers must still enforce event-ID
   idempotency at their own durability boundary;
-- web behavior is component-tested rather than exercised through a real browser and API process; and
+- live browser evidence covers the central desktop Chromium routine-to-plan loop, not every browser,
+  responsive layout, validation branch, or Work and Calendar interaction; and
 - production outcome measures such as acceptance rate, completion rate, cadence attainment, and
   duration error need actual local usage data and are not CI release gates.
 
