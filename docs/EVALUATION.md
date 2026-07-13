@@ -100,8 +100,11 @@ exist.
 
 The audit deliberately leaves these visible instead of turning them into false green checks:
 
-- historical migration verification covers fresh-to-head plus the recent weekday-array upgrade, not
-  a representative matrix of every prior release;
+- historical migration verification covers fresh-to-head, populated `0003` plan-state backfills,
+  and the populated `0011` weekday-array upgrade, not every prior release boundary;
+- the populated-upgrade repair preserves migration `0004`'s canonical timestamp but changes its SQL
+  hash; databases migrated before the repair retain the legacy hash, while recovery compatibility
+  deliberately uses the ordered timestamp ledger;
 - PostgreSQL recovery verifies the successful swap/rollback path, while compensation fault injection
   is currently operation-level rather than process-kill testing;
 - backup rejection covers empty, plain-SQL, truncated, schema-only, and migration-ledger-filtered

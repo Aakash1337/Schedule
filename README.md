@@ -72,8 +72,8 @@ pnpm verify:database
 ```
 
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
-legacy weekday-migration verification after applying every migration to a fresh PostgreSQL 17
-Compose project. It also verifies a complete archive round trip and the real disposable
+populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh
+PostgreSQL 17 Compose project. It also verifies a complete archive round trip and the real disposable
 restore/promote/rollback/cleanup state machine.
 
 ## Local data protection
