@@ -14,6 +14,7 @@ export * from "./list-workspaces.js";
 export * from "./generate-daily-plan.js";
 export * from "./get-daily-plan.js";
 export * from "./get-current-daily-plan.js";
+export * from "./integration-gateway.js";
 export * from "./get-routine.js";
 export * from "./list-routine-activity.js";
 export * from "./list-routines.js";

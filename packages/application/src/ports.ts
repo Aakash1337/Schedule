@@ -202,3 +202,268 @@ export interface UnitOfWork {
 export interface Clock {
   now(): Date;
 }
+
+export const integrationCredentialScopes = ["schedule:read", "schedule:write"] as const;
+export type IntegrationCredentialScope = (typeof integrationCredentialScopes)[number];
+
+export interface IntegrationCredential {
+  readonly id: string;
+  readonly workspaceId: WorkspaceId;
+  readonly name: string;
+  /** A one-way adapter-owned digest. Plaintext bearer secrets must never be persisted. */
+  readonly secretHash: string;
+  readonly scopes: readonly IntegrationCredentialScope[];
+  readonly active: boolean;
+  readonly expiresAt: Date | null;
+  readonly revokedAt: Date | null;
+  readonly version: number;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+}
+
+export interface IntegrationPrincipal {
+  readonly credentialId: string;
+  readonly workspaceId: WorkspaceId;
+  readonly scopes: readonly IntegrationCredentialScope[];
+}
+
+export interface SecretVerifier {
+  /** Implementations must compare candidate-derived and stored digests in constant time. */
+  verify(secret: string, secretHash: string): Promise<boolean>;
+}
+
+export interface IntegrationCredentialRepository {
+  findById(id: string): Promise<IntegrationCredential | null>;
+  list(workspaceId: WorkspaceId): Promise<readonly IntegrationCredential[]>;
+  insert(credential: IntegrationCredential): Promise<void>;
+  save(credential: IntegrationCredential, expectedVersion: number): Promise<void>;
+}
+
+export type IntegrationCommand =
+  | {
+      readonly type: "work_item.create";
+      readonly title: string;
+      readonly description?: string | null;
+      readonly status?: WorkItemStatus;
+      readonly priority?: WorkItemPriority;
+      readonly planningDurationMinutes?: number | null;
+    }
+  | {
+      readonly type: "work_item.update";
+      readonly workItemId: string;
+      readonly expectedVersion: number;
+      readonly title?: string;
+      readonly description?: string | null;
+      readonly status?: WorkItemStatus;
+      readonly priority?: WorkItemPriority;
+      readonly planningDurationMinutes?: number | null;
+    }
+  | {
+      readonly type: "schedule_block.create";
+      readonly workItemId?: string | null;
+      readonly title?: string | null;
+      readonly startsAt: string;
+      readonly endsAt: string;
+      readonly timeZone: string;
+    }
+  | {
+      readonly type: "schedule_block.update";
+      readonly scheduleBlockId: string;
+      readonly expectedVersion: number;
+      readonly workItemId?: string | null;
+      readonly title?: string | null;
+      readonly startsAt?: string;
+      readonly endsAt?: string;
+      readonly timeZone?: string;
+    }
+  | {
+      readonly type: "plan_item.activity";
+      readonly date: string;
+      readonly expectedPlanId: string;
+      readonly itemId: string;
+      readonly expectedHeadVersion: number;
+      readonly activityType: PlanItemActivityActionType;
+      readonly occurredAt: string;
+      readonly timeZone: string;
+      readonly durationMinutes?: number | null;
+      readonly reason?: string | null;
+      readonly metadata?: Readonly<Record<string, ActivityMetadataValue>>;
+    };
+
+export interface PreparedIntegrationCommand {
+  readonly confirmationId: string;
+  readonly requestId: string;
+  readonly commandHash: string;
+  /** The exact validated command persisted for this confirmation. */
+  readonly command: IntegrationCommand;
+  /** Canonical sorted-key JSON; unsafe controls are visibly escaped and these exact bytes are hashed. */
+  readonly commandDisplay: string;
+  readonly summary: string;
+  readonly expiresAt: string;
+}
+
+export interface IntegrationConfirmationRecord {
+  readonly id: string;
+  readonly credentialId: string;
+  readonly workspaceId: WorkspaceId;
+  readonly requestId: string;
+  readonly commandHash: string;
+  readonly command: IntegrationCommand;
+  readonly summary: string;
+  readonly expiresAt: Date;
+  readonly consumedAt: Date | null;
+  readonly createdAt: Date;
+}
+
+export interface IntegrationConfirmationRepository {
+  findByRequestId(
+    credentialId: string,
+    requestId: string,
+  ): Promise<IntegrationConfirmationRecord | null>;
+  findByIdForUpdate(
+    credentialId: string,
+    confirmationId: string,
+  ): Promise<IntegrationConfirmationRecord | null>;
+  insertOrFind(record: IntegrationConfirmationRecord): Promise<{
+    readonly kind: "inserted" | "existing";
+    readonly confirmation: IntegrationConfirmationRecord;
+  }>;
+  /** Atomically succeeds only while the confirmation is unconsumed and unexpired. */
+  consume(credentialId: string, confirmationId: string, consumedAt: Date): Promise<boolean>;
+}
+
+export type IntegrationCommandOutcome =
+  | {
+      readonly type: "work_item.created" | "work_item.updated";
+      readonly workItem: IntegrationWorkItemDto;
+    }
+  | {
+      readonly type: "schedule_block.created" | "schedule_block.updated";
+      readonly scheduleBlock: IntegrationScheduleBlockDto;
+    }
+  | {
+      readonly type: "plan_item.activity_recorded";
+      readonly planItemActivity: IntegrationPlanItemActivityDto;
+    };
+
+export interface IntegrationWorkItemDto {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly title: string;
+  readonly description: string | null;
+  readonly status: WorkItemStatus;
+  readonly priority: WorkItemPriority;
+  readonly planningDurationMinutes: number | null;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface IntegrationScheduleBlockDto {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly workItemId: string | null;
+  readonly title: string | null;
+  readonly startsAt: string;
+  readonly endsAt: string;
+  readonly timeZone: string;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface IntegrationActivityEventDto {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly sourceType: "routine" | "work_item";
+  readonly routineId: string | null;
+  readonly workItemId: string | null;
+  readonly planId: string | null;
+  readonly planItemId: string | null;
+  readonly type: string;
+  readonly occurredAt: string;
+  readonly localDate: string;
+  readonly timeZone: string;
+  readonly durationMinutes: number | null;
+  readonly reason: string | null;
+  readonly referenceEventId: string | null;
+  readonly metadata: Readonly<Record<string, ActivityMetadataValue>>;
+  readonly recordedAt: string;
+}
+
+export interface IntegrationPlanItemActivityDto {
+  readonly planId: string;
+  readonly itemId: string;
+  readonly activityState: PlanItemActivityState;
+  readonly activityEvent: IntegrationActivityEventDto;
+  readonly headVersion: number;
+}
+
+export interface ConfirmedIntegrationCommandResult {
+  readonly confirmationId: string;
+  readonly operation: IntegrationCommand["type"];
+  readonly commandHash: string;
+  readonly outcome: IntegrationCommandOutcome;
+}
+
+export interface IntegrationRequestRecord {
+  readonly id: string;
+  readonly credentialId: string;
+  readonly workspaceId: WorkspaceId;
+  readonly idempotencyKey: string;
+  readonly confirmationId: string;
+  readonly operation: IntegrationCommand["type"];
+  readonly commandHash: string;
+  readonly state: "processing" | "succeeded";
+  readonly result: ConfirmedIntegrationCommandResult | null;
+  readonly createdAt: Date;
+  readonly completedAt: Date | null;
+}
+
+export interface IntegrationRequestReservationInput {
+  readonly id: string;
+  readonly credentialId: string;
+  readonly workspaceId: WorkspaceId;
+  readonly idempotencyKey: string;
+  readonly confirmationId: string;
+  readonly operation: IntegrationCommand["type"];
+  readonly commandHash: string;
+  readonly createdAt: Date;
+}
+
+export interface IntegrationRequestRepository {
+  /**
+   * Reserves an idempotency key, or returns the completed matching request. A different
+   * confirmation/hash for the same key must raise `integration.receipt_conflict`.
+   */
+  reserve(input: IntegrationRequestReservationInput): Promise<{
+    readonly kind: "reserved" | "replay";
+    readonly request: IntegrationRequestRecord;
+  }>;
+  succeed(
+    id: string,
+    result: ConfirmedIntegrationCommandResult,
+    completedAt: Date,
+  ): Promise<IntegrationRequestRecord>;
+}
+
+/**
+ * The integration transaction is intentionally separate so adding gateway persistence never
+ * widens every existing application test mock. All fields share one atomic transaction.
+ */
+export interface IntegrationTransactionContext {
+  readonly credentials: IntegrationCredentialRepository;
+  readonly confirmations: IntegrationConfirmationRepository;
+  readonly requests: IntegrationRequestRepository;
+  readonly workspaces: WorkspaceRepository;
+  readonly workItems: WorkItemRepository;
+  readonly scheduleBlocks: ScheduleBlockRepository;
+  readonly auditEvents: AuditEventRepository;
+  readonly dailyPlans: DailyPlanRepository;
+}
+
+export interface IntegrationUnitOfWork {
+  run<Result>(
+    operation: (context: IntegrationTransactionContext) => Promise<Result>,
+  ): Promise<Result>;
+}

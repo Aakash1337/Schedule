@@ -6,6 +6,7 @@
     "coverage": { "command": "pnpm test:coverage", "ci": true },
     "planner-db": { "command": "pnpm verify:database", "ci": true },
     "product-api": { "command": "pnpm verify:database", "ci": true },
+    "integration-gateway": { "command": "pnpm verify:database", "ci": true },
     "outbox-db": { "command": "pnpm verify:database", "ci": true },
     "plan-state-migrations": { "command": "pnpm verify:database", "ci": true },
     "weekday-migrations": { "command": "pnpm verify:database", "ci": true },
@@ -437,6 +438,125 @@
       ]
     },
     {
+      "id": "authenticated-inbound-integration-gateway",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/INTEGRATIONS.md",
+        "anchor": "## Safety model"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "scripts/integration-credentials.test.ts",
+          "command": "unit",
+          "anchors": [
+            "generates exactly 32 random bytes as base64url without padding",
+            "creates a deterministic keyed digest without embedding the secret",
+            "formats the one-time bearer token as id dot secret"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/integration-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns the same generic challenge for malformed and unknown credentials",
+            "rate limits failed guesses by presented credential ID across remote addresses",
+            "uses forwarded client addresses only from an explicitly trusted proxy",
+            "returns the authenticated workspace Today view in a no-store envelope",
+            "prepares the strict $type command for explicit confirmation",
+            "returns the exact validated command so truncated or bidi text cannot hide approval data",
+            "confirms idempotently and correlates responses with the stable confirmation id",
+            "redacts integration persistence corruption as an internal failure"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/integration-gateway.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns the public Today projection without planner snapshots or history",
+            "replays an identical preparation and conflicts on request ID reuse",
+            "produces exact confirmation summaries that disclose every material change",
+            "returns the exact stored command while bounding and sanitizing its advisory summary",
+            "strictly rejects unknown fields, empty updates, and non-completion durations",
+            "expires and consumes confirmations once while replaying the same receipt exactly",
+            "dispatches every supported command with tenant-bound repositories and JSON-ready results",
+            "isolates foreign work, blocks, confirmations, and receipt keys by credential workspace",
+            "fails closed when a stored receipt outcome is structurally malformed",
+            "rolls back the mutation and audit when receipt completion fails"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/repositories.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns a fresh processing reservation",
+            "replays only a completed request with the same identity",
+            "rejects an idempotency key reused for a different command hash",
+            "fails closed instead of re-executing a pre-existing processing reservation"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-integration-gateway.ts",
+          "command": "integration-gateway",
+          "anchors": [
+            "integration-gateway-digest-only-credentials",
+            "integration-gateway-atomic-confirmation-rollback",
+            "integration-gateway-credential-workspace-isolation",
+            "integration-gateway-concurrent-prepare-exclusion",
+            "integration-gateway-concurrent-confirm-exclusion",
+            "integration-gateway-five-command-postgres-e2e",
+            "integration gateway verification passed"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integration-history-retention",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/INTEGRATIONS.md",
+        "anchor": "## Retention and cleanup"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "scripts/cleanup-integration-history.test.ts",
+          "command": "unit",
+          "anchors": [
+            "uses conservative operational defaults",
+            "purges bounded batches to empty, aggregates counts, and closes the database",
+            "stops at max-batches without an unbounded probe",
+            "formats a success as an aggregate status without retained data"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/integration-maintenance.test.ts",
+          "command": "unit",
+          "anchors": [
+            "deletes succeeded receipts before expired unreferenced confirmations in bounded batches",
+            "honors the configured safe retention and batch limits",
+            "does not attempt confirmation deletion when receipt deletion fails"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-integration-gateway.ts",
+          "command": "integration-gateway",
+          "anchors": [
+            "integration-gateway-retention-purge",
+            "integration gateway verification passed"
+          ]
+        }
+      ]
+    },
+    {
       "id": "transparent-adaptation",
       "status": "deferred",
       "risk": "normal",
@@ -461,7 +581,7 @@
         "anchor": "### Phase 5 — Hosting and synchronization"
       },
       "limitations": [
-        "Public authentication, workspace isolation across users, and synchronization are not implemented."
+        "Public end-user authentication, workspace isolation across users, and synchronization are not implemented; integration machine credentials do not authenticate browser users."
       ],
       "evidence": []
     }

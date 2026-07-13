@@ -344,6 +344,7 @@ describe("calendar", () => {
       const title = await screen.findByText(block.title ?? "");
       const agenda = document.querySelector<HTMLElement>(".calendar-agenda");
       if (agenda === null) throw new Error("Calendar agenda was not rendered.");
+      await waitFor(() => expect(agenda.scrollLeft).toBe(515));
       agenda.scrollLeft = 240;
       const blockButton = title.closest("button");
       if (blockButton === null) throw new Error("Calendar block button was not rendered.");

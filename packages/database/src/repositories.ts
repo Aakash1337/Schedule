@@ -1,6 +1,20 @@
 import { createHash } from "node:crypto";
 
-import { and, asc, count, desc, eq, gt, inArray, isNotNull, lt, lte, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  getTableColumns,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  sql,
+} from "drizzle-orm";
 
 import type {
   ActivityHistoryCursor,
@@ -10,6 +24,18 @@ import type {
   AuditEventRepository,
   CurrentDailyPlan,
   DailyPlanRepository,
+  ConfirmedIntegrationCommandResult,
+  IntegrationCommand,
+  IntegrationConfirmationRecord,
+  IntegrationConfirmationRepository,
+  IntegrationCredential,
+  IntegrationCredentialRepository,
+  IntegrationCredentialScope,
+  IntegrationRequestRecord,
+  IntegrationRequestRepository,
+  IntegrationRequestReservationInput,
+  IntegrationTransactionContext,
+  IntegrationUnitOfWork,
   PlanItemLockResult,
   PlanItemActivityResult,
   PlanMutationRecord,
@@ -68,6 +94,9 @@ import {
   dailyPlanItemStates,
   dailyPlanItems,
   dailyPlans,
+  integrationConfirmations,
+  integrationCredentials,
+  integrationRequests,
   planInteractionEvents,
   planMutations,
   routines,
@@ -88,6 +117,9 @@ type ActivityEventRow = typeof activityEvents.$inferSelect;
 type DailyPlanRow = typeof dailyPlans.$inferSelect;
 type DailyPlanItemRow = typeof dailyPlanItems.$inferSelect;
 type DailyPlanItemStateRow = typeof dailyPlanItemStates.$inferSelect;
+type IntegrationCredentialRow = typeof integrationCredentials.$inferSelect;
+type IntegrationConfirmationRow = typeof integrationConfirmations.$inferSelect;
+type IntegrationRequestRow = typeof integrationRequests.$inferSelect;
 
 function mapWorkspace(row: WorkspaceRow): Workspace {
   return {
@@ -95,6 +127,83 @@ function mapWorkspace(row: WorkspaceRow): Workspace {
     name: row.name,
     createdAt: new Date(row.createdAt),
     updatedAt: new Date(row.updatedAt),
+  };
+}
+
+function mapIntegrationCredential(row: IntegrationCredentialRow): IntegrationCredential {
+  return {
+    id: row.id,
+    workspaceId: workspaceId(row.workspaceId),
+    name: row.name,
+    secretHash: row.secretDigest,
+    scopes: row.scopes as IntegrationCredentialScope[],
+    active: row.active,
+    expiresAt: row.expiresAt === null ? null : new Date(row.expiresAt),
+    revokedAt: row.revokedAt === null ? null : new Date(row.revokedAt),
+    version: row.version,
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+  };
+}
+
+function mapIntegrationConfirmation(
+  row: IntegrationConfirmationRow,
+): IntegrationConfirmationRecord {
+  const command = row.command;
+  if (
+    command === null ||
+    typeof command !== "object" ||
+    Array.isArray(command) ||
+    typeof command.type !== "string" ||
+    command.type !== row.commandKind
+  ) {
+    throw new DomainError(
+      "integration.confirmation_corrupt",
+      "The stored integration confirmation command is inconsistent.",
+    );
+  }
+  return {
+    id: row.id,
+    credentialId: row.credentialId,
+    workspaceId: workspaceId(row.workspaceId),
+    requestId: row.requestId,
+    commandHash: row.commandHash,
+    command: command as unknown as IntegrationCommand,
+    summary: row.summary,
+    expiresAt: new Date(row.expiresAt),
+    consumedAt: row.consumedAt === null ? null : new Date(row.consumedAt),
+    createdAt: new Date(row.createdAt),
+  };
+}
+
+function mapIntegrationRequest(row: IntegrationRequestRow): IntegrationRequestRecord {
+  const result = row.result;
+  if (
+    result !== null &&
+    (typeof result.confirmationId !== "string" ||
+      result.confirmationId !== row.confirmationId ||
+      typeof result.operation !== "string" ||
+      result.operation !== row.operation ||
+      typeof result.commandHash !== "string" ||
+      result.commandHash !== row.commandHash)
+  ) {
+    throw new DomainError(
+      "integration.receipt_corrupt",
+      "The stored integration result is inconsistent with its request receipt.",
+    );
+  }
+  return {
+    id: row.id,
+    credentialId: row.credentialId,
+    workspaceId: workspaceId(row.workspaceId),
+    idempotencyKey: row.idempotencyKey,
+    confirmationId: row.confirmationId,
+    operation: row.operation as IntegrationCommand["type"],
+    commandHash: row.commandHash,
+    state: row.status,
+    result: result as unknown as ConfirmedIntegrationCommandResult | null,
+    createdAt: new Date(row.createdAt),
+    completedAt: row.completedAt === null ? null : new Date(row.completedAt),
   };
 }
 
@@ -1633,6 +1742,285 @@ class PostgresDailyPlanRepository implements DailyPlanRepository {
   }
 }
 
+export class PostgresIntegrationCredentialRepository implements IntegrationCredentialRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async findById(id: string): Promise<IntegrationCredential | null> {
+    const [row] = await this.database
+      .select()
+      .from(integrationCredentials)
+      .where(eq(integrationCredentials.id, id))
+      .limit(1);
+    return row === undefined ? null : mapIntegrationCredential(row);
+  }
+
+  async list(workspace: WorkspaceId): Promise<readonly IntegrationCredential[]> {
+    const rows = await this.database
+      .select()
+      .from(integrationCredentials)
+      .where(eq(integrationCredentials.workspaceId, workspace))
+      .orderBy(asc(integrationCredentials.createdAt), asc(integrationCredentials.id));
+    return rows.map(mapIntegrationCredential);
+  }
+
+  async insert(credential: IntegrationCredential): Promise<void> {
+    await this.database.insert(integrationCredentials).values({
+      id: credential.id,
+      workspaceId: credential.workspaceId,
+      name: credential.name,
+      secretDigest: credential.secretHash,
+      scopes: [...credential.scopes],
+      active: credential.active,
+      expiresAt: credential.expiresAt,
+      revokedAt: credential.revokedAt,
+      version: credential.version,
+      createdAt: credential.createdAt,
+      updatedAt: credential.updatedAt,
+    });
+  }
+
+  async save(credential: IntegrationCredential, expectedVersion: number): Promise<void> {
+    const updated = await this.database
+      .update(integrationCredentials)
+      .set({
+        name: credential.name,
+        secretDigest: credential.secretHash,
+        scopes: [...credential.scopes],
+        active: credential.active,
+        expiresAt: credential.expiresAt,
+        revokedAt: credential.revokedAt,
+        version: credential.version,
+        updatedAt: credential.updatedAt,
+      })
+      .where(
+        and(
+          eq(integrationCredentials.id, credential.id),
+          eq(integrationCredentials.workspaceId, credential.workspaceId),
+          eq(integrationCredentials.version, expectedVersion),
+        ),
+      )
+      .returning({ id: integrationCredentials.id });
+    if (updated.length === 0) {
+      throw new DomainError(
+        "integration.credential_version_conflict",
+        "The integration credential changed before this update could be saved.",
+      );
+    }
+  }
+}
+
+export class PostgresIntegrationConfirmationRepository implements IntegrationConfirmationRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async findByRequestId(
+    credentialId: string,
+    requestId: string,
+  ): Promise<IntegrationConfirmationRecord | null> {
+    const [row] = await this.database
+      .select()
+      .from(integrationConfirmations)
+      .where(
+        and(
+          eq(integrationConfirmations.credentialId, credentialId),
+          eq(integrationConfirmations.requestId, requestId),
+        ),
+      )
+      .limit(1);
+    return row === undefined ? null : mapIntegrationConfirmation(row);
+  }
+
+  async findByIdForUpdate(
+    credentialId: string,
+    confirmationId: string,
+  ): Promise<IntegrationConfirmationRecord | null> {
+    const [row] = await this.database
+      .select()
+      .from(integrationConfirmations)
+      .where(
+        and(
+          eq(integrationConfirmations.credentialId, credentialId),
+          eq(integrationConfirmations.id, confirmationId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    return row === undefined ? null : mapIntegrationConfirmation(row);
+  }
+
+  async insertOrFind(record: IntegrationConfirmationRecord): Promise<{
+    readonly kind: "inserted" | "existing";
+    readonly confirmation: IntegrationConfirmationRecord;
+  }> {
+    const [row] = await this.database
+      .insert(integrationConfirmations)
+      .values({
+        id: record.id,
+        workspaceId: record.workspaceId,
+        credentialId: record.credentialId,
+        requestId: record.requestId,
+        commandHash: record.commandHash,
+        commandKind: record.command.type,
+        command: record.command as unknown as Record<string, unknown>,
+        summary: record.summary,
+        expiresAt: record.expiresAt,
+        consumedAt: record.consumedAt,
+        createdAt: record.createdAt,
+        updatedAt: record.createdAt,
+      })
+      .onConflictDoUpdate({
+        target: [integrationConfirmations.credentialId, integrationConfirmations.requestId],
+        // A no-op update both locks and returns a concurrently inserted receipt.
+        set: { requestId: sql`${integrationConfirmations.requestId}` },
+      })
+      .returning({
+        ...getTableColumns(integrationConfirmations),
+        inserted: sql<boolean>`xmax = 0`.as("inserted"),
+      });
+    if (row === undefined) {
+      throw new DomainError(
+        "integration.confirmation_write_conflict",
+        "The confirmation could not be persisted.",
+      );
+    }
+    return {
+      kind: row.inserted ? "inserted" : "existing",
+      confirmation: mapIntegrationConfirmation(row),
+    };
+  }
+
+  async consume(credentialId: string, confirmationId: string, consumedAt: Date): Promise<boolean> {
+    const consumed = await this.database
+      .update(integrationConfirmations)
+      .set({ consumedAt, updatedAt: consumedAt })
+      .where(
+        and(
+          eq(integrationConfirmations.credentialId, credentialId),
+          eq(integrationConfirmations.id, confirmationId),
+          isNull(integrationConfirmations.consumedAt),
+          gt(integrationConfirmations.expiresAt, consumedAt),
+        ),
+      )
+      .returning({ id: integrationConfirmations.id });
+    return consumed.length === 1;
+  }
+}
+
+export class PostgresIntegrationRequestRepository implements IntegrationRequestRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async reserve(input: IntegrationRequestReservationInput): Promise<{
+    readonly kind: "reserved" | "replay";
+    readonly request: IntegrationRequestRecord;
+  }> {
+    const [row] = await this.database
+      .insert(integrationRequests)
+      .values({
+        id: input.id,
+        workspaceId: input.workspaceId,
+        credentialId: input.credentialId,
+        idempotencyKey: input.idempotencyKey,
+        confirmationId: input.confirmationId,
+        commandHash: input.commandHash,
+        operation: input.operation,
+        status: "processing",
+        result: null,
+        createdAt: input.createdAt,
+        completedAt: null,
+        updatedAt: input.createdAt,
+      })
+      .onConflictDoUpdate({
+        target: [integrationRequests.credentialId, integrationRequests.idempotencyKey],
+        // A no-op update serializes contenders while preserving the original receipt.
+        set: { idempotencyKey: sql`${integrationRequests.idempotencyKey}` },
+      })
+      .returning({
+        ...getTableColumns(integrationRequests),
+        inserted: sql<boolean>`xmax = 0`.as("inserted"),
+      });
+    if (row === undefined) {
+      throw new DomainError(
+        "integration.receipt_write_conflict",
+        "The integration request could not be reserved.",
+      );
+    }
+
+    if (
+      row.workspaceId !== input.workspaceId ||
+      row.confirmationId !== input.confirmationId ||
+      row.operation !== input.operation ||
+      row.commandHash !== input.commandHash
+    ) {
+      throw new DomainError(
+        "integration.receipt_conflict",
+        "This idempotency key already belongs to a different integration command.",
+      );
+    }
+
+    const request = mapIntegrationRequest(row);
+    if (row.inserted) return { kind: "reserved", request };
+    if (request.state === "processing") {
+      throw new DomainError(
+        "integration.receipt_in_progress",
+        "This integration request is already being processed and cannot be executed again.",
+      );
+    }
+    if (request.result === null || request.completedAt === null) {
+      throw new DomainError(
+        "integration.receipt_corrupt",
+        "The completed integration request has no replayable result.",
+      );
+    }
+    return { kind: "replay", request };
+  }
+
+  async succeed(
+    id: string,
+    result: ConfirmedIntegrationCommandResult,
+    completedAt: Date,
+  ): Promise<IntegrationRequestRecord> {
+    const [current] = await this.database
+      .select()
+      .from(integrationRequests)
+      .where(eq(integrationRequests.id, id))
+      .limit(1)
+      .for("update");
+    if (current === undefined) {
+      throw new DomainError(
+        "integration.receipt_not_found",
+        "The integration request reservation does not exist.",
+      );
+    }
+    if (
+      current.status !== "processing" ||
+      result.confirmationId !== current.confirmationId ||
+      result.operation !== current.operation ||
+      result.commandHash !== current.commandHash
+    ) {
+      throw new DomainError(
+        "integration.receipt_conflict",
+        "The integration result does not match its request reservation.",
+      );
+    }
+    const [updated] = await this.database
+      .update(integrationRequests)
+      .set({
+        status: "succeeded",
+        result: result as unknown as Record<string, unknown>,
+        completedAt,
+        updatedAt: completedAt,
+      })
+      .where(and(eq(integrationRequests.id, id), eq(integrationRequests.status, "processing")))
+      .returning();
+    if (updated === undefined) {
+      throw new DomainError(
+        "integration.receipt_write_conflict",
+        "The integration request could not be completed.",
+      );
+    }
+    return mapIntegrationRequest(updated);
+  }
+}
+
 function createTransactionContext(database: DatabaseExecutor): TransactionContext {
   return {
     workspaces: new PostgresWorkspaceRepository(database),
@@ -1643,6 +2031,31 @@ function createTransactionContext(database: DatabaseExecutor): TransactionContex
     activityEvents: new PostgresActivityEventRepository(database),
     dailyPlans: new PostgresDailyPlanRepository(database),
   };
+}
+
+function createIntegrationTransactionContext(
+  database: DatabaseExecutor,
+): IntegrationTransactionContext {
+  return {
+    credentials: new PostgresIntegrationCredentialRepository(database),
+    confirmations: new PostgresIntegrationConfirmationRepository(database),
+    requests: new PostgresIntegrationRequestRepository(database),
+    workspaces: new PostgresWorkspaceRepository(database),
+    workItems: new PostgresWorkItemRepository(database),
+    scheduleBlocks: new PostgresScheduleBlockRepository(database),
+    auditEvents: new PostgresAuditEventRepository(database),
+    dailyPlans: new PostgresDailyPlanRepository(database),
+  };
+}
+
+const serializationRetryLimit = 7;
+
+async function waitForSerializationRetry(retry: number): Promise<void> {
+  const backoffMilliseconds = Math.min(100, 5 * 2 ** retry);
+  const jitterMilliseconds = Math.floor(Math.random() * backoffMilliseconds);
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, backoffMilliseconds + jitterMilliseconds);
+  });
 }
 
 export class PostgresUnitOfWork implements UnitOfWork {
@@ -1657,7 +2070,30 @@ export class PostgresUnitOfWork implements UnitOfWork {
           { isolationLevel: "serializable" },
         );
       } catch (error) {
-        if (databaseErrorCode(error) !== "40001" || retry >= 2) throw error;
+        if (databaseErrorCode(error) !== "40001" || retry >= serializationRetryLimit) throw error;
+        await waitForSerializationRetry(retry);
+        retry += 1;
+      }
+    }
+  }
+}
+
+export class PostgresIntegrationUnitOfWork implements IntegrationUnitOfWork {
+  constructor(private readonly connection: DatabaseConnection) {}
+
+  async run<Result>(
+    operation: (context: IntegrationTransactionContext) => Promise<Result>,
+  ): Promise<Result> {
+    let retry = 0;
+    while (true) {
+      try {
+        return await this.connection.db.transaction(
+          async (transaction) => operation(createIntegrationTransactionContext(transaction)),
+          { isolationLevel: "serializable" },
+        );
+      } catch (error) {
+        if (databaseErrorCode(error) !== "40001" || retry >= serializationRetryLimit) throw error;
+        await waitForSerializationRetry(retry);
         retry += 1;
       }
     }

@@ -4,7 +4,12 @@ import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { parseArchiveCatalog, withPreparedRestoreArchive } from "./backup-database.js";
+import {
+  expectedScheduleTables,
+  parseArchiveCatalog,
+  repositoryRoot,
+  withPreparedRestoreArchive,
+} from "./backup-database.js";
 
 const baselineTables = [
   "audit_events",
@@ -102,6 +107,41 @@ describe("restore archive snapshots", () => {
 });
 
 describe("Schedule archive catalogs", () => {
+  it("keeps the current database allowlist aligned with the latest migration snapshot", async () => {
+    const journal = JSON.parse(
+      await readFile(
+        path.join(repositoryRoot, "packages", "database", "drizzle", "meta", "_journal.json"),
+        "utf8",
+      ),
+    ) as { entries?: { idx?: unknown; tag?: unknown }[] };
+    const latest = journal.entries?.at(-1);
+    expect(latest).toBeDefined();
+    expect(latest?.idx).toEqual(expect.any(Number));
+    expect(latest?.tag).toEqual(expect.any(String));
+
+    const migrationNumber = String(latest?.idx).padStart(4, "0");
+    const snapshot = JSON.parse(
+      await readFile(
+        path.join(
+          repositoryRoot,
+          "packages",
+          "database",
+          "drizzle",
+          "meta",
+          `${migrationNumber}_snapshot.json`,
+        ),
+        "utf8",
+      ),
+    ) as { tables?: Record<string, { name?: unknown; schema?: unknown }> };
+    const snapshotTables = Object.values(snapshot.tables ?? {})
+      .filter((table) => table.schema === "" || table.schema === "public")
+      .map((table) => table.name)
+      .filter((name): name is string => typeof name === "string")
+      .sort();
+
+    expect([...expectedScheduleTables].sort()).toEqual(snapshotTables);
+  });
+
   it("accepts a structurally complete supported catalog", () => {
     expect(parseArchiveCatalog(supportedCatalogLines().join("\n"))).toEqual({
       tables: [...baselineTables].sort(),

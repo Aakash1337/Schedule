@@ -1,9 +1,9 @@
 # Adaptive Scheduling System — Product Specification
 
 Status: Working product definition
-Last updated: 2026-07-12
+Last updated: 2026-07-13
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v2 selects both reusable routines and explicitly opted-in one-time Work items. See [API.md](./API.md) and [WEB.md](./WEB.md). Alternative-plan comparison, generalized undo, recurrence authoring, Hermes integration, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v2 selects both reusable routines and explicitly opted-in one-time Work items. A provider-neutral authenticated inbound gateway now provides Today reads and confirmed structured mutations for future agents. See [API.md](./API.md), [WEB.md](./WEB.md), and [INTEGRATIONS.md](./INTEGRATIONS.md). Alternative-plan comparison, generalized undo, recurrence authoring, a Hermes/WhatsApp adapter, outbound notifications, and public hosting remain deferred.
 
 ## 1. Product summary
 
@@ -397,6 +397,8 @@ disposable recovery drill exercises archive creation, staged restore, promotion,
 cleanup without touching the real local database. Phase 5 still covers provider-managed retention,
 point-in-time recovery, hosted restore drills, and the operational controls required for hosting.
 
+- Implemented foundation: workspace-bound machine credentials and a confirmed, idempotent inbound
+  automation API; this is not hosted end-user authentication
 - Authentication and secure workspace isolation
 - Cloud deployment selected from measured operational needs
 - Offline-capable synchronization and conflict handling, if required
