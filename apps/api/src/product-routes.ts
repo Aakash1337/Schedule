@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 import type {
+  ApproveRoutineDurationInsightCommand,
   ActivityHistoryCursor,
   ActivityHistoryPage,
   CreateRoutineCommand,
@@ -12,6 +13,7 @@ import type {
   GetCurrentDailyPlanQuery,
   GetDailyPlanQuery,
   GetRoutineQuery,
+  GetRoutineDurationInsightQuery,
   GetScheduleBlockQuery,
   GetWorkItemQuery,
   GetWorkspaceQuery,
@@ -53,6 +55,7 @@ import {
   type DailyPlan,
   type JsonValue,
   type Routine,
+  type RoutineDurationInsight,
   type ScheduleBlock,
   type WorkItem,
   type Workspace,
@@ -69,6 +72,7 @@ import {
 } from "./http-errors.js";
 
 export interface ProductServices {
+  approveRoutineDurationInsight(command: ApproveRoutineDurationInsightCommand): Promise<Routine>;
   createWorkspace(command: CreateWorkspaceCommand): Promise<Workspace>;
   getWorkspace(query: GetWorkspaceQuery): Promise<Workspace>;
   listWorkspaces(query: ListWorkspacesQuery): Promise<WorkspacePage>;
@@ -83,6 +87,7 @@ export interface ProductServices {
   updateScheduleBlock(command: UpdateScheduleBlockCommand): Promise<ScheduleBlock>;
   deleteScheduleBlock(command: DeleteScheduleBlockCommand): Promise<void>;
   getRoutine(query: GetRoutineQuery): Promise<Routine>;
+  getRoutineDurationInsight(query: GetRoutineDurationInsightQuery): Promise<RoutineDurationInsight>;
   updateRoutine(command: UpdateRoutineCommand): Promise<Routine>;
   listRoutines(query: ListRoutinesQuery): Promise<readonly Routine[]>;
   listRoutineActivity(query: ListRoutineActivityQuery): Promise<ActivityHistoryPage>;
@@ -334,6 +339,10 @@ const updateRoutineBody = z
       body.cadence !== undefined,
     { message: "At least one routine change is required." },
   );
+const approveRoutineDurationInsightBody = z.strictObject({
+  expectedVersion: z.number().int().positive().max(2_147_483_647),
+  duration: replacementDurationBody,
+});
 const activityHistoryQuery = z.strictObject({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z
@@ -722,6 +731,28 @@ export async function registerProductRoutes(
       routineId: routineId(params.routineId),
     });
   });
+
+  app.get("/v1/workspaces/:workspaceId/routines/:routineId/duration-insight", async (request) => {
+    const params = parseRequest(routineParams, request.params);
+    return services.getRoutineDurationInsight({
+      workspaceId: workspaceId(params.workspaceId),
+      routineId: routineId(params.routineId),
+    });
+  });
+
+  app.post(
+    "/v1/workspaces/:workspaceId/routines/:routineId/duration-insight/approve",
+    async (request) => {
+      const params = parseRequest(routineParams, request.params);
+      const body = parseRequest(approveRoutineDurationInsightBody, request.body);
+      return services.approveRoutineDurationInsight({
+        workspaceId: workspaceId(params.workspaceId),
+        routineId: routineId(params.routineId),
+        expectedVersion: body.expectedVersion,
+        duration: createDurationRange(body.duration),
+      });
+    },
+  );
 
   app.patch("/v1/workspaces/:workspaceId/routines/:routineId", async (request) => {
     const params = parseRequest(routineParams, request.params);

@@ -1622,6 +1622,94 @@ textarea:focus {
   line-height: 1.45;
 }
 
+.routines-duration-insight {
+  margin: -7px 0 24px;
+  padding: 0 0 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+.routines-duration-insight-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.routines-duration-insight-heading h3 {
+  margin: 0;
+}
+
+.routines-duration-insight-heading h3:focus-visible {
+  border-radius: 2px;
+  outline: 3px solid oklch(0.7 0.11 286 / 0.4);
+  outline-offset: 3px;
+}
+
+.routines-duration-insight-heading > span {
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.routines-duration-insight-copy {
+  max-width: 62ch;
+  margin-bottom: 7px;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+.routines-duration-insight-note {
+  margin: 7px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.routines-duration-insight-facts {
+  display: flex;
+  gap: 28px;
+  margin: 14px 0 0;
+}
+
+.routines-duration-insight-facts div {
+  display: grid;
+  gap: 3px;
+}
+
+.routines-duration-insight-facts dt {
+  color: var(--ink-soft);
+  font-size: 0.67rem;
+  font-weight: 680;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.routines-duration-insight-facts dd {
+  margin: 0;
+  font-weight: 700;
+}
+
+.routines-duration-insight-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 15px;
+}
+
+.routines-duration-insight .notice {
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
+.routines-duration-insight-review {
+  border-bottom-color: oklch(0.82 0.055 82);
+}
+
+.routines-duration-insight-review .routines-duration-insight-heading h3 {
+  color: oklch(0.45 0.1 72);
+}
+
 .routines-tag-groups {
   display: grid;
   gap: 16px;
@@ -2206,6 +2294,21 @@ textarea:focus {
 
   .routines-detail {
     padding-top: 28px;
+  }
+
+  .routines-duration-insight-heading {
+    display: grid;
+    gap: 4px;
+  }
+
+  .routines-duration-insight-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .routines-duration-insight-actions .button {
+    width: 100%;
+    min-height: 44px;
   }
 
   .routines-item-actions {

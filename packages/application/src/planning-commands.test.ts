@@ -42,8 +42,10 @@ describe("routine planning commands", () => {
         },
       },
       activityEvents: {
+        lockRoutineActivity: async () => undefined,
         findById: async () => appendedEvent,
         listForPlanning: async () => (appendedEvent === null ? [] : [appendedEvent]),
+        listDurationEvidence: async () => [],
         append: async (event: ActivityEvent) => {
           appendedEvent = event;
           return event;

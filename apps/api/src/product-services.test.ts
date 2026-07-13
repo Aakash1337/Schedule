@@ -25,6 +25,7 @@ describe("createProductServices", () => {
     });
 
     expect(Object.keys(services).sort()).toEqual([
+      "approveRoutineDurationInsight",
       "createRoutine",
       "createScheduleBlock",
       "createWorkItem",
@@ -34,6 +35,7 @@ describe("createProductServices", () => {
       "getCurrentDailyPlan",
       "getDailyPlan",
       "getRoutine",
+      "getRoutineDurationInsight",
       "getScheduleBlock",
       "getWorkItem",
       "getWorkspace",
@@ -63,6 +65,21 @@ describe("createProductServices", () => {
       items: [],
     });
     await Promise.all([
+      expect(
+        services.approveRoutineDurationInsight({
+          workspaceId: missingWorkspace,
+          routineId: routineId("missing-routine-duration-approval"),
+          expectedVersion: 1,
+          duration: {
+            expectedMinutes: 30,
+            minimumMinutes: 30,
+            maximumMinutes: 30,
+            splittable: false,
+            minimumSessionMinutes: null,
+            overheadMinutes: 0,
+          },
+        }),
+      ).rejects.toMatchObject({ code: "workspace.not_found" }),
       expect(services.getWorkspace({ workspaceId: missingWorkspace })).rejects.toMatchObject({
         code: "workspace.not_found",
       }),
@@ -70,6 +87,12 @@ describe("createProductServices", () => {
         services.getRoutine({
           workspaceId: missingWorkspace,
           routineId: routineId("missing-routine"),
+        }),
+      ).rejects.toMatchObject({ code: "workspace.not_found" }),
+      expect(
+        services.getRoutineDurationInsight({
+          workspaceId: missingWorkspace,
+          routineId: routineId("missing-routine-duration-insight"),
         }),
       ).rejects.toMatchObject({ code: "workspace.not_found" }),
       expect(

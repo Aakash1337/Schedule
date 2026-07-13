@@ -1,4 +1,5 @@
 export * from "./create-schedule-block.js";
+export * from "./approve-routine-duration-insight.js";
 export * from "./get-schedule-block.js";
 export * from "./list-schedule-blocks.js";
 export * from "./update-schedule-block.js";
@@ -17,6 +18,7 @@ export * from "./get-daily-plan.js";
 export * from "./get-current-daily-plan.js";
 export * from "./integration-gateway.js";
 export * from "./get-routine.js";
+export * from "./get-routine-duration-insight.js";
 export * from "./list-routine-activity.js";
 export * from "./list-routines.js";
 export * from "./mutate-daily-plan.js";

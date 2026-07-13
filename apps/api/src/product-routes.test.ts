@@ -21,6 +21,7 @@ import {
   workItemId,
   workspaceId,
   type DailyPlan,
+  type RoutineDurationInsight,
 } from "@schedule/domain";
 
 import { buildApp } from "./app.js";
@@ -55,6 +56,22 @@ const routine = createRoutine({
   }),
   now: new Date("2026-07-15T07:00:00.000Z"),
 });
+const durationInsight = {
+  routineId: routine.id,
+  routineVersion: routine.version,
+  status: "aligned",
+  sampleCount: 3,
+  minimumSamples: 3,
+  lookbackDays: 90,
+  evaluatedAt: new Date("2026-07-15T12:00:00.000Z"),
+  windowStartedAt: new Date("2026-04-16T12:00:00.000Z"),
+  currentExpectedMinutes: 30,
+  minimumMinutes: 30,
+  maximumMinutes: 30,
+  observedMedianMinutes: 30,
+  materialThresholdMinutes: 5,
+  suggestedExpectedMinutes: null,
+} satisfies RoutineDurationInsight;
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -76,6 +93,11 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
     recordedAt: new Date("2026-07-15T12:01:00.000Z"),
   });
   const services: ProductServices = {
+    approveRoutineDurationInsight: async (command) =>
+      applyRoutineUpdate(routine, {
+        duration: command.duration,
+        now: new Date("2026-07-15T12:00:00.000Z"),
+      }),
     createWorkspace: async (command) => createWorkspace({ ...command, id: workspace.id }),
     getWorkspace: async () => workspace,
     listWorkspaces: async (query) => ({
@@ -165,6 +187,7 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       storedScheduleBlock = null;
     },
     getRoutine: async () => routine,
+    getRoutineDurationInsight: async () => durationInsight,
     updateRoutine: async (command) =>
       applyRoutineUpdate(routine, {
         ...(command.title === undefined ? {} : { title: command.title }),
@@ -596,6 +619,171 @@ describe("local product API", () => {
     expect(empty.statusCode).toBe(400);
     expect(stale.statusCode).toBe(409);
     expect(stale.json()).toMatchObject({ error: { code: "routine.version_conflict" } });
+  });
+
+  it("returns a scoped routine duration insight and validates both path identifiers", async () => {
+    const calls: unknown[] = [];
+    const app = await appWith(
+      createHarness({
+        getRoutineDurationInsight: async (query) => {
+          calls.push(query);
+          return durationInsight;
+        },
+      }).services,
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/duration-insight`,
+    });
+    const invalid = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/routines/not-a-uuid/duration-insight`,
+    });
+    const invalidWorkspace = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/not-a-uuid/routines/${routineUuid}/duration-insight`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      routineId: routineUuid,
+      routineVersion: 1,
+      status: "aligned",
+      sampleCount: 3,
+      minimumSamples: 3,
+      lookbackDays: 90,
+      evaluatedAt: "2026-07-15T12:00:00.000Z",
+      windowStartedAt: "2026-04-16T12:00:00.000Z",
+      currentExpectedMinutes: 30,
+      minimumMinutes: 30,
+      maximumMinutes: 30,
+      observedMedianMinutes: 30,
+      materialThresholdMinutes: 5,
+      suggestedExpectedMinutes: null,
+    });
+    expect(calls).toEqual([{ workspaceId: workspace.id, routineId: routine.id }]);
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json()).toMatchObject({ error: { code: "request.validation_failed" } });
+    expect(invalidWorkspace.statusCode).toBe(400);
+    expect(invalidWorkspace.json()).toMatchObject({
+      error: { code: "request.validation_failed" },
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("maps a missing routine duration insight to 404", async () => {
+    const app = await appWith(
+      createHarness({
+        getRoutineDurationInsight: async () => {
+          throw new DomainError("routine.not_found", "The routine does not exist.");
+        },
+      }).services,
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/duration-insight`,
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ error: { code: "routine.not_found" } });
+  });
+
+  it("approves a complete duration insight replacement through its atomic service", async () => {
+    const commands: unknown[] = [];
+    const app = await appWith(
+      createHarness({
+        approveRoutineDurationInsight: async (command) => {
+          commands.push(command);
+          return routine;
+        },
+      }).services,
+    );
+    const payload = {
+      expectedVersion: 1,
+      duration: {
+        expectedMinutes: 30,
+        minimumMinutes: 30,
+        maximumMinutes: 30,
+        splittable: false,
+        minimumSessionMinutes: null,
+        overheadMinutes: 0,
+      },
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/duration-insight/approve`,
+      payload,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ id: routineUuid, version: 1 });
+    expect(commands).toEqual([
+      {
+        workspaceId: workspace.id,
+        routineId: routine.id,
+        expectedVersion: 1,
+        duration: payload.duration,
+      },
+    ]);
+  });
+
+  it("rejects incomplete duration approvals before invoking the service", async () => {
+    let calls = 0;
+    const app = await appWith(
+      createHarness({
+        approveRoutineDurationInsight: async () => {
+          calls += 1;
+          return routine;
+        },
+      }).services,
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/duration-insight/approve`,
+      payload: { expectedVersion: 1, duration: { expectedMinutes: 30 } },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: "request.validation_failed" } });
+    expect(calls).toBe(0);
+  });
+
+  it("maps changed duration evidence during approval to 409", async () => {
+    const app = await appWith(
+      createHarness({
+        approveRoutineDurationInsight: async () => {
+          throw new DomainError(
+            "routine_duration_insight.evidence_conflict",
+            "The duration evidence changed.",
+          );
+        },
+      }).services,
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/duration-insight/approve`,
+      payload: {
+        expectedVersion: 1,
+        duration: {
+          expectedMinutes: 30,
+          minimumMinutes: 30,
+          maximumMinutes: 30,
+          splittable: false,
+          minimumSessionMinutes: null,
+          overheadMinutes: 0,
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: { code: "routine_duration_insight.evidence_conflict" },
+    });
   });
 
   it("returns stable cursor-paginated activity history without idempotency keys", async () => {

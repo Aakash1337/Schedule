@@ -30,6 +30,7 @@ import type {
   EnergyLevel,
   PreferenceLevel,
   Routine,
+  RoutineDurationInsight,
   RoutinePriority,
   RoutineStatus,
   WorkspaceViewProps,
@@ -355,6 +356,12 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState<string | null>(null);
   const activityRequest = useRef(0);
+  const [durationInsight, setDurationInsight] = useState<RoutineDurationInsight | null>(null);
+  const [durationInsightLoading, setDurationInsightLoading] = useState(false);
+  const [durationInsightError, setDurationInsightError] = useState<string | null>(null);
+  const [durationInsightReload, setDurationInsightReload] = useState(0);
+  const durationInsightRequest = useRef(0);
+  const durationInsightHeadingRef = useRef<HTMLHeadingElement>(null);
   const activeQueryKey = routinesQueryKey(workspace.id, activeStatus);
   const activeQueryKeyRef = useRef(activeQueryKey);
   activeQueryKeyRef.current = activeQueryKey;
@@ -363,6 +370,78 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     () => routines.find((routine) => routine.id === selectedRoutineId) ?? null,
     [routines, selectedRoutineId],
   );
+  const selectedRoutineInsightId = selectedRoutine?.id ?? null;
+  const selectedRoutineInsightVersion = selectedRoutine?.version ?? null;
+  const durationInsightQueryKey =
+    selectedRoutineInsightId === null
+      ? null
+      : JSON.stringify([
+          workspace.id,
+          selectedRoutineInsightId,
+          selectedRoutineInsightVersion,
+          durationInsightReload,
+        ]);
+  const durationInsightQueryKeyRef = useRef(durationInsightQueryKey);
+  durationInsightQueryKeyRef.current = durationInsightQueryKey;
+
+  useEffect(() => {
+    const requestId = durationInsightRequest.current + 1;
+    durationInsightRequest.current = requestId;
+    if (
+      selectedRoutineInsightId === null ||
+      selectedRoutineInsightVersion === null ||
+      durationInsightQueryKey === null
+    ) {
+      setDurationInsight(null);
+      setDurationInsightLoading(false);
+      setDurationInsightError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const requestKey = durationInsightQueryKey;
+    const requestActiveQueryKey = activeQueryKeyRef.current;
+    const requestIsActive = () =>
+      !controller.signal.aborted &&
+      durationInsightRequest.current === requestId &&
+      durationInsightQueryKeyRef.current === requestKey &&
+      activeQueryKeyRef.current === requestActiveQueryKey;
+    setDurationInsight(null);
+    setDurationInsightLoading(true);
+    setDurationInsightError(null);
+    void (async () => {
+      try {
+        const result = await api.getRoutineDurationInsight(
+          workspace.id,
+          selectedRoutineInsightId,
+          controller.signal,
+        );
+        if (!requestIsActive()) return;
+        if (
+          result.routineId !== selectedRoutineInsightId ||
+          result.routineVersion !== selectedRoutineInsightVersion
+        ) {
+          throw new Error("The duration estimate was out of date. Retry to load current evidence.");
+        }
+        setDurationInsight(result);
+      } catch (error) {
+        if (requestIsActive() && !isAbortError(error)) {
+          setDurationInsightError(
+            requestError(error, "The duration estimate could not be loaded."),
+          );
+        }
+      } finally {
+        if (requestIsActive()) setDurationInsightLoading(false);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [
+    durationInsightQueryKey,
+    selectedRoutineInsightId,
+    selectedRoutineInsightVersion,
+    workspace.id,
+  ]);
 
   const loadRoutines = useCallback(
     async (signal?: AbortSignal) => {
@@ -393,6 +472,10 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     const controller = new AbortController();
     setRoutines([]);
     setSelectedRoutineId(null);
+    durationInsightRequest.current += 1;
+    setDurationInsight(null);
+    setDurationInsightLoading(false);
+    setDurationInsightError(null);
     activityRequest.current += 1;
     setActivityItems([]);
     setActivityCursor(null);
@@ -424,8 +507,18 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     setActivityError(null);
   }
 
+  function resetDurationInsight() {
+    durationInsightRequest.current += 1;
+    setDurationInsight(null);
+    setDurationInsightLoading(false);
+    setDurationInsightError(null);
+  }
+
   function selectRoutine(routineId: string) {
-    if (routineId !== selectedRoutineId) resetActivity();
+    if (routineId !== selectedRoutineId) {
+      resetActivity();
+      resetDurationInsight();
+    }
     setSelectedRoutineId(routineId);
   }
 
@@ -491,13 +584,16 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
         api.getRoutine(workspace.id, routineId),
       ]);
       if (activeQueryKeyRef.current !== requestKey) return;
-      setRoutines(currentPage.items);
+      const authoritativeItems = currentPage.items.map((routine) =>
+        routine.id === latest.id ? latest : routine,
+      );
+      setRoutines(authoritativeItems);
       if (editingRoutine?.id === routineId) {
         setEditingRoutine(latest);
         setDraft(draftFromRoutine(latest));
       }
       setSelectedRoutineId((current) =>
-        currentPage.items.some((routine) => routine.id === current) ? current : null,
+        authoritativeItems.some((routine) => routine.id === current) ? current : null,
       );
     } catch (error) {
       if (activeQueryKeyRef.current !== requestKey) return;
@@ -596,6 +692,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
       if (selectedRoutineId === routine.id) {
         setSelectedRoutineId(null);
         resetActivity();
+        resetDurationInsight();
       }
       if (editingRoutine?.id === routine.id) {
         setEditingRoutine(updated);
@@ -609,6 +706,56 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
         await refreshAfterConflict(routine.id, requestKey);
       } else {
         setMutationError(requestError(error, "The routine status could not be changed."));
+      }
+    } finally {
+      if (activeQueryKeyRef.current === requestKey) setBusyRoutineId(null);
+    }
+  }
+
+  async function applyDurationInsight(): Promise<void> {
+    if (
+      selectedRoutine === null ||
+      durationInsight?.status !== "suggested" ||
+      durationInsight.suggestedExpectedMinutes === null ||
+      durationInsight.routineId !== selectedRoutine.id ||
+      durationInsight.routineVersion !== selectedRoutine.version
+    ) {
+      return;
+    }
+
+    const routine = selectedRoutine;
+    const suggestedExpectedMinutes = durationInsight.suggestedExpectedMinutes;
+    const requestKey = activeQueryKey;
+    setBusyRoutineId(routine.id);
+    setMutationError(null);
+    setConflictMessage(null);
+    try {
+      const updated = await api.approveRoutineDurationInsight(workspace.id, routine.id, {
+        expectedVersion: routine.version,
+        duration: { ...routine.duration, expectedMinutes: suggestedExpectedMinutes },
+      });
+      if (activeQueryKeyRef.current !== requestKey) return;
+      setRoutines((current) =>
+        current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
+      );
+      if (editingRoutine?.id === updated.id) {
+        setEditingRoutine(updated);
+        setDraft(draftFromRoutine(updated));
+      }
+      setDurationInsightReload((current) => current + 1);
+      durationInsightHeadingRef.current?.focus();
+    } catch (error) {
+      if (activeQueryKeyRef.current !== requestKey) return;
+      if (error instanceof ApiError && error.status === 409) {
+        setConflictMessage(
+          "This routine or its duration evidence changed, so the estimate was not applied. Review the refreshed evidence and approve it again.",
+        );
+        await refreshAfterConflict(routine.id, requestKey);
+        if (activeQueryKeyRef.current === requestKey) {
+          setDurationInsightReload((current) => current + 1);
+        }
+      } else {
+        setMutationError(requestError(error, "The duration estimate could not be applied."));
       }
     } finally {
       if (activeQueryKeyRef.current === requestKey) setBusyRoutineId(null);
@@ -690,6 +837,168 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
           </Button>
         ) : null}
       </div>
+    );
+  }
+
+  function durationInsightSection(routine: Routine) {
+    const currentInsight =
+      durationInsight?.routineId === routine.id &&
+      durationInsight.routineVersion === routine.version
+        ? durationInsight
+        : null;
+    const loading =
+      durationInsightLoading || (currentInsight === null && durationInsightError === null);
+
+    return (
+      <section
+        className={`routines-duration-insight${currentInsight?.status === "review_range" ? " routines-duration-insight-review" : ""}`}
+        aria-labelledby="routine-duration-insight-heading"
+        aria-busy={loading}
+      >
+        <div className="routines-duration-insight-heading">
+          <h3 id="routine-duration-insight-heading" ref={durationInsightHeadingRef} tabIndex={-1}>
+            Duration estimate
+          </h3>
+          {currentInsight === null ? null : (
+            <span>
+              {currentInsight.sampleCount} session{currentInsight.sampleCount === 1 ? "" : "s"} ·{" "}
+              {currentInsight.lookbackDays} days
+            </span>
+          )}
+        </div>
+
+        {loading ? (
+          <p className="routines-duration-insight-copy" role="status" aria-live="polite">
+            Checking recent completed sessions…
+          </p>
+        ) : null}
+
+        {durationInsightError === null ? null : (
+          <ErrorNotice
+            message={durationInsightError}
+            action={
+              <Button
+                type="button"
+                variant="quiet"
+                onClick={() => setDurationInsightReload((current) => current + 1)}
+              >
+                Retry
+              </Button>
+            }
+          />
+        )}
+
+        {currentInsight === null ? null : (
+          <div className="routines-duration-insight-body">
+            {currentInsight.status === "insufficient_history" ? (
+              <p
+                className="routines-duration-insight-copy"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                Duration learning needs {currentInsight.minimumSamples} completed sessions in the
+                last {currentInsight.lookbackDays} days. {currentInsight.sampleCount} of{" "}
+                {currentInsight.minimumSamples} recorded.
+              </p>
+            ) : null}
+
+            {currentInsight.status === "aligned" ? (
+              <>
+                <p
+                  className="routines-duration-insight-copy"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >
+                  Recent sessions support your current{" "}
+                  {formatMinutes(currentInsight.currentExpectedMinutes)} estimate.
+                </p>
+                {currentInsight.observedMedianMinutes === null ? null : (
+                  <p className="routines-duration-insight-note">
+                    A typical session was {formatMinutes(currentInsight.observedMedianMinutes)}.
+                  </p>
+                )}
+              </>
+            ) : null}
+
+            {currentInsight.status === "suggested" &&
+            currentInsight.suggestedExpectedMinutes !== null ? (
+              <>
+                <p
+                  className="routines-duration-insight-copy"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >
+                  Recent sessions suggest {formatMinutes(currentInsight.suggestedExpectedMinutes)}{" "}
+                  is a more typical estimate.
+                </p>
+                <dl className="routines-duration-insight-facts">
+                  <div>
+                    <dt>Current</dt>
+                    <dd>{formatMinutes(currentInsight.currentExpectedMinutes)}</dd>
+                  </div>
+                  <div>
+                    <dt>Typical</dt>
+                    <dd>{formatMinutes(currentInsight.suggestedExpectedMinutes)}</dd>
+                  </div>
+                </dl>
+                <div className="routines-duration-insight-actions">
+                  <Button
+                    type="button"
+                    variant="primary"
+                    busy={busyRoutineId === routine.id}
+                    disabled={busyRoutineId !== null}
+                    onClick={() => void applyDurationInsight()}
+                  >
+                    Apply {formatMinutes(currentInsight.suggestedExpectedMinutes)} estimate
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="quiet"
+                    disabled={busyRoutineId !== null}
+                    onClick={() => openEdit(routine)}
+                  >
+                    Edit duration
+                  </Button>
+                </div>
+                <p className="routines-duration-insight-note">
+                  This changes the routine only. Your current daily plan will not be regenerated.
+                </p>
+              </>
+            ) : null}
+
+            {currentInsight.status === "review_range" &&
+            currentInsight.observedMedianMinutes !== null ? (
+              <>
+                <p
+                  className="routines-duration-insight-copy"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >
+                  Recent sessions typically take{" "}
+                  {formatMinutes(currentInsight.observedMedianMinutes)}, outside your{" "}
+                  {formatMinutes(currentInsight.minimumMinutes)} to{" "}
+                  {formatMinutes(currentInsight.maximumMinutes)} range. Review the range before
+                  changing the estimate.
+                </p>
+                <div className="routines-duration-insight-actions">
+                  <Button
+                    type="button"
+                    variant="quiet"
+                    disabled={busyRoutineId !== null}
+                    onClick={() => openEdit(routine)}
+                  >
+                    Review duration range
+                  </Button>
+                </div>
+              </>
+            ) : null}
+          </div>
+        )}
+      </section>
     );
   }
 
@@ -1264,6 +1573,8 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
                   </dd>
                 </div>
               </dl>
+
+              {durationInsightSection(selectedRoutine)}
 
               <div className="routines-tag-groups">
                 <div>

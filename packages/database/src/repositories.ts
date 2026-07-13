@@ -6,6 +6,7 @@ import {
   count,
   desc,
   eq,
+  gte,
   getTableColumns,
   gt,
   inArray,
@@ -13,6 +14,7 @@ import {
   isNull,
   lt,
   lte,
+  or,
   sql,
 } from "drizzle-orm";
 
@@ -45,6 +47,7 @@ import type {
   SetPlanItemLockInput,
   TransactionContext,
   UnitOfWork,
+  UnitOfWorkOptions,
   WorkItemRepository,
   WorkspaceRepository,
 } from "@schedule/application";
@@ -808,7 +811,7 @@ class PostgresRoutineRepository implements RoutineRepository {
   }
 }
 
-class PostgresActivityEventRepository implements ActivityEventRepository {
+export class PostgresActivityEventRepository implements ActivityEventRepository {
   constructor(private readonly database: DatabaseExecutor) {}
 
   async findById(workspace: WorkspaceId, id: ActivityEvent["id"]): Promise<ActivityEvent | null> {
@@ -818,6 +821,12 @@ class PostgresActivityEventRepository implements ActivityEventRepository {
       .where(and(eq(activityEvents.workspaceId, workspace), eq(activityEvents.id, id)))
       .limit(1);
     return row === undefined ? null : mapActivityEvent(row);
+  }
+
+  async lockRoutineActivity(workspace: WorkspaceId, routine: Routine["id"]): Promise<void> {
+    await this.database.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`${workspace}:routine:${routine}`}, 0))`,
+    );
   }
 
   async listForPlanning(
@@ -844,6 +853,74 @@ class PostgresActivityEventRepository implements ActivityEventRepository {
       );
     }
     return rows.reverse().map(mapActivityEvent);
+  }
+
+  async listDurationEvidence(
+    workspace: WorkspaceId,
+    routine: Routine["id"],
+    fromInclusive: Date,
+    throughInclusive: Date,
+  ): Promise<readonly ActivityEvent[]> {
+    if (
+      !(fromInclusive instanceof Date) ||
+      !Number.isFinite(fromInclusive.getTime()) ||
+      !(throughInclusive instanceof Date) ||
+      !Number.isFinite(throughInclusive.getTime()) ||
+      fromInclusive.getTime() > throughInclusive.getTime()
+    ) {
+      throw new DomainError(
+        "activity.duration_evidence_window_invalid",
+        "Duration evidence requires a valid inclusive time window.",
+      );
+    }
+
+    const candidates = this.database.$with("duration_evidence_candidates").as(
+      this.database
+        .select({ id: activityEvents.id })
+        .from(activityEvents)
+        .where(
+          and(
+            eq(activityEvents.workspaceId, workspace),
+            eq(activityEvents.sourceType, "routine"),
+            eq(activityEvents.routineId, routine),
+            eq(activityEvents.type, "completed"),
+            isNotNull(activityEvents.durationMinutes),
+            gte(activityEvents.occurredAt, fromInclusive),
+            lte(activityEvents.occurredAt, throughInclusive),
+            lte(activityEvents.recordedAt, throughInclusive),
+          ),
+        ),
+    );
+    const candidateIds = this.database.select({ id: candidates.id }).from(candidates);
+    const rows = await this.database
+      .with(candidates)
+      .select()
+      .from(activityEvents)
+      .where(
+        and(
+          eq(activityEvents.workspaceId, workspace),
+          eq(activityEvents.sourceType, "routine"),
+          eq(activityEvents.routineId, routine),
+          or(
+            inArray(activityEvents.id, candidateIds),
+            and(
+              inArray(activityEvents.type, ["duration_corrected", "completion_reversed"]),
+              inArray(activityEvents.referenceEventId, candidateIds),
+              lte(activityEvents.recordedAt, throughInclusive),
+              lte(activityEvents.occurredAt, throughInclusive),
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(activityEvents.ingestedSequence))
+      .limit(5_001);
+    if (rows.length > 5_000) {
+      throw new DomainError(
+        "activity.duration_evidence_limit_exceeded",
+        "Duration evidence exceeds the local-mode limit of 5,000 events.",
+      );
+    }
+    return rows.map(mapActivityEvent);
   }
 
   async listHistory(
@@ -2061,13 +2138,19 @@ async function waitForSerializationRetry(retry: number): Promise<void> {
 export class PostgresUnitOfWork implements UnitOfWork {
   constructor(private readonly connection: DatabaseConnection) {}
 
-  async run<Result>(operation: (context: TransactionContext) => Promise<Result>): Promise<Result> {
+  async run<Result>(
+    operation: (context: TransactionContext) => Promise<Result>,
+    options?: UnitOfWorkOptions,
+  ): Promise<Result> {
     let retry = 0;
     while (true) {
       try {
         return await this.connection.db.transaction(
           async (transaction) => operation(createTransactionContext(transaction)),
-          { isolationLevel: "serializable" },
+          {
+            isolationLevel:
+              options?.isolationLevel === "read_committed" ? "read committed" : "serializable",
+          },
         );
       } catch (error) {
         if (databaseErrorCode(error) !== "40001" || retry >= serializationRetryLimit) throw error;

@@ -89,6 +89,33 @@ Regeneration and replacement take the per-day transaction lock, resolve command 
 
 Today item actions use the same per-day lock, current plan identity, head version, and workspace-scoped idempotency ledger. Each accepted action appends an activity event attributed to the exact typed plan source, advances the head, and transactionally updates a fast item-state projection. Pending items may be started or made terminal; started items may be completed, skipped, deferred, or dismissed; terminal items reject further transitions. A completion reversal is the narrow audited exception and reopens the item as pending; for routines it removes the completion from later cadence calculations. Completing a work-derived item marks only `backlog`, `planned`, or `in_progress` source work `done` and records the prior status plus completion ownership version in immutable event metadata. Reversal restores that prior status only when the work item still has the completion's expected version and `done` status; a later accepted completion or edit is never clobbered. This does not auto-regenerate the plan. The append-only activity record is the planner input, while the projection exists only for fast Today reads.
 
+## Duration-calibration boundary
+
+Routine-duration calibration is a read-only interpretation of activity history, not another planner
+mutation. It derives a median from corrected, non-reversed routine completions in the inclusive
+trailing 90 days and requires three samples before exposing an observed value. A material median
+inside the routine's configured range may be offered as a suggestion; an out-of-range median requires
+manual range review.
+
+Only the dedicated approval command treats a suggested median as approved. Inside one read-committed
+unit of work, it acquires the same per-routine advisory lock used by activity appends before reloading
+the current routine and bounded 90-day evidence, verifies the expected routine version, recomputes the
+suggestion, and saves only if the requested expected duration is still supported. The request carries
+the complete duration policy, but its minimum, maximum, splitting,
+minimum-session, and overhead values must equal the current user-owned settings. Concurrent routine
+changes fail with `routine.version_conflict`; a completion, correction, or reversal that changes the
+supported suggestion fails with `routine_duration_insight.evidence_conflict`.
+
+Read committed is intentional for this command: every routine and evidence statement after an
+advisory-lock wait sees commits made by the earlier lock holder. Other product units of work retain
+serializable isolation by default.
+
+The generic routine `PATCH` remains a manual edit and is not an insight-approval path. Approval does
+not rewrite an existing plan or advance its Today head. The current plan therefore retains the
+duration selected when its immutable revision was generated; a later explicit generation or
+regeneration may consume the newly approved routine estimate. Neither insight path calls Gemma,
+Hermes, or any other advisor or integration.
+
 Run the database-backed vertical-slice verification while PostgreSQL is available:
 
 ```powershell
@@ -101,7 +128,8 @@ pnpm verify:planner-db
 - Exact start-time placement within a selected window
 - Alternative-plan branching and multi-step undo workflows
 - Work-item deadlines and dependency integration
-- Learned duration and preference adjustments
+- Learned cadence, preference, energy, and overload adjustments
+- Automatic application, rejection memory, and reset controls for duration insights
 - User-editable scoring profiles
 - Local Gemma/Ollama or hosted model advisors
 - Cross-device synchronization
