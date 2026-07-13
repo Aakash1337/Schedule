@@ -15,6 +15,7 @@ import {
   type DailyPlanId,
   type PlanItemId,
   type RoutineId,
+  type WorkItemId,
   type WorkspaceId,
 } from "./ids.js";
 import { energyLevels, type EnergyLevel } from "./structured-tags.js";
@@ -22,9 +23,10 @@ import type { ActivityEvent } from "./activity-event.js";
 import type { PlanItemActivityState } from "./plan-item-activity.js";
 import type { CadencePolicy } from "./cadence-policy.js";
 import type { Routine } from "./routine.js";
+import type { WorkItem } from "./work-item.js";
 
-export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v1";
-export const PLANNER_CONFIG_VERSION = "default-weights-v1";
+export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v2";
+export const PLANNER_CONFIG_VERSION = "default-weights-v2";
 export const PLANNER_PRNG_VERSION = "mulberry32-v1";
 
 export const planningFitPreferences = ["time", "task_count", "balanced"] as const;
@@ -142,7 +144,18 @@ export type EligibilityCode =
   | "maximum_reached"
   | "minimum_spacing"
   | "consecutive_day_prohibited"
-  | "duration_does_not_fit";
+  | "duration_does_not_fit"
+  | "work_item_not_plannable"
+  | "work_item_status_ineligible";
+
+export const planSourceTypes = ["routine", "work_item"] as const;
+export type PlanSourceType = (typeof planSourceTypes)[number];
+
+export interface PlanSource {
+  readonly sourceType: PlanSourceType;
+  readonly routineId: RoutineId | null;
+  readonly workItemId: WorkItemId | null;
+}
 
 export interface RoutineEvaluation {
   readonly routineId: RoutineId;
@@ -158,9 +171,19 @@ export interface RoutineEvaluation {
   readonly reasons: readonly string[];
 }
 
-export interface PlanItem {
+export interface WorkItemEvaluation {
+  readonly workItemId: WorkItemId;
+  readonly eligible: boolean;
+  readonly exclusionCodes: readonly EligibilityCode[];
+  readonly minimumScheduledMinutes: number;
+  readonly desiredScheduledMinutes: number;
+  readonly score: number;
+  readonly scoreComponents: Readonly<Record<string, number>>;
+  readonly reasons: readonly string[];
+}
+
+export interface PlanItem extends PlanSource {
   readonly id: PlanItemId;
-  readonly routineId: RoutineId;
   readonly title: string;
   readonly position: number;
   readonly windowIndex: number;
@@ -175,8 +198,7 @@ export interface PlanItem {
   readonly activityUpdatedAt: Date | null;
 }
 
-export interface PlanExclusion {
-  readonly routineId: RoutineId;
+export interface PlanExclusion extends PlanSource {
   readonly title: string;
   readonly codes: readonly EligibilityCode[];
 }
@@ -218,15 +240,30 @@ export interface GenerateDailyPlanInput {
   readonly id?: DailyPlanId;
   readonly request: DailyPlanningRequest;
   readonly routines: readonly Routine[];
+  readonly workItems?: readonly WorkItem[];
   readonly events: readonly ActivityEvent[];
   readonly config?: PlannerConfig;
   readonly generatedAt?: Date;
 }
 
 interface Candidate {
-  readonly routine: Routine;
-  readonly evaluation: RoutineEvaluation;
+  readonly source: PlanSource;
+  readonly routine: Routine | null;
+  readonly workItem: WorkItem | null;
+  readonly evaluation: RoutineEvaluation | WorkItemEvaluation;
   readonly selectionWeight: number;
+}
+
+export function planSourceKey(source: PlanSource): string {
+  invariant(
+    (source.sourceType === "routine" && source.routineId !== null && source.workItemId === null) ||
+      (source.sourceType === "work_item" &&
+        source.workItemId !== null &&
+        source.routineId === null),
+    "planning.source_invalid",
+    "A plan source must identify exactly one routine or work item.",
+  );
+  return `${source.sourceType}:${source.sourceType === "routine" ? source.routineId : source.workItemId}`;
 }
 
 interface MutablePlacement {
@@ -655,6 +692,49 @@ export function evaluateRoutineForPlan(
   };
 }
 
+const workItemPriorityScore: Readonly<Record<WorkItem["priority"], number>> = {
+  none: 0,
+  low: 1_000,
+  medium: 2_000,
+  high: 3_500,
+  urgent: 5_000,
+};
+
+/** Work is deliberately history-free: it is a one-time candidate, not a cadence. */
+export function evaluateWorkItemForPlan(
+  workItem: WorkItem,
+  request: DailyPlanningRequest,
+): WorkItemEvaluation {
+  const exclusions: EligibilityCode[] = [];
+  const duration = workItem.planningDurationMinutes;
+  if (workItem.workspaceId !== request.workspaceId) exclusions.push("workspace_mismatch");
+  if (duration === null) exclusions.push("work_item_not_plannable");
+  if (!["backlog", "planned", "in_progress"].includes(workItem.status)) {
+    exclusions.push("work_item_status_ineligible");
+  }
+  if (
+    duration !== null &&
+    (duration > request.maximumMinutes ||
+      duration > Math.max(...request.availableWindows.map(windowMinutes)))
+  ) {
+    exclusions.push("duration_does_not_fit");
+  }
+  const score = workItemPriorityScore[workItem.priority];
+  return {
+    workItemId: workItem.id,
+    eligible: exclusions.length === 0,
+    exclusionCodes: [...new Set(exclusions)],
+    minimumScheduledMinutes: duration ?? 0,
+    desiredScheduledMinutes: duration ?? 0,
+    score,
+    scoreComponents: { priority: score },
+    reasons: [
+      `${workItem.priority[0]?.toUpperCase() ?? ""}${workItem.priority.slice(1)} priority work item.`,
+      "One-time work items do not use cadence or activity-history scoring.",
+    ],
+  };
+}
+
 class Mulberry32 {
   private state: number;
 
@@ -722,7 +802,7 @@ function placeCandidate(
   const { evaluation, routine } = candidate;
   if (remainingBudget < evaluation.minimumScheduledMinutes) return null;
 
-  if (!routine.duration.splittable) {
+  if (routine === null || !routine.duration.splittable) {
     const viable = remainingWindows
       .map((minutes, index) => ({ index, minutes }))
       .filter(({ minutes }) => minutes >= evaluation.desiredScheduledMinutes)
@@ -774,7 +854,7 @@ function planFitness(
     0,
   );
   const categoryCount = new Set(
-    placements.flatMap((placement) => placement.candidate.routine.tags.categories),
+    placements.flatMap((placement) => placement.candidate.routine?.tags.categories ?? []),
   ).size;
   const minimumMinuteShortfall = Math.max(0, request.minimumMinutes - totalMinutes);
   const minimumCountShortfall = Math.max(0, request.minimumTaskCount - placements.length);
@@ -813,7 +893,7 @@ function buildCandidatePlan(
     placements.push({ candidate, ...placement });
   }
 
-  const key = placements.map((placement) => placement.candidate.routine.id).join("|");
+  const key = placements.map((placement) => planSourceKey(placement.candidate.source)).join("|");
   return {
     placements,
     totalMinutes,
@@ -867,10 +947,14 @@ function toJsonValue(value: unknown): JsonValue {
 function createInputSnapshot(
   request: DailyPlanningRequest,
   routines: readonly Routine[],
+  workItems: readonly WorkItem[],
   events: readonly ActivityEvent[],
   config: PlannerConfig,
 ): JsonValue {
   const canonicalRoutines = [...routines].sort((left, right) =>
+    left.id.localeCompare(right.id, "en"),
+  );
+  const canonicalWorkItems = [...workItems].sort((left, right) =>
     left.id.localeCompare(right.id, "en"),
   );
   const canonicalActivity = canonicalEvents(events, request);
@@ -879,15 +963,17 @@ function createInputSnapshot(
     events: canonicalActivity,
     request,
     routines: canonicalRoutines,
+    workItems: canonicalWorkItems,
   });
 }
 
 export function derivePlanItemId(
   plan: DailyPlanId,
-  routine: RoutineId,
+  source: PlanSource | RoutineId,
   position: number,
 ): PlanItemId {
-  const hex = createHash("sha256").update(`${plan}:${routine}:${position}`).digest("hex");
+  const sourceKey = typeof source === "string" ? `routine:${source}` : planSourceKey(source);
+  const hex = createHash("sha256").update(`${plan}:${sourceKey}:${position}`).digest("hex");
   return planItemId(
     `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`,
   );
@@ -955,6 +1041,15 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
     );
     routineIds.add(routine.id);
   }
+  const workItemIds = new Set<WorkItemId>();
+  for (const workItem of input.workItems ?? []) {
+    invariant(
+      !workItemIds.has(workItem.id),
+      "planning.duplicate_work_item",
+      `Work item ${workItem.id} appears more than once in the planner input.`,
+    );
+    workItemIds.add(workItem.id);
+  }
   const eventIds = new Set<string>();
   for (const event of input.events) {
     invariant(
@@ -971,18 +1066,30 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
     "A valid plan generation timestamp is required.",
   );
 
-  const evaluations = input.routines
+  const routineEvaluations = input.routines
     .slice()
     .sort((left, right) => left.id.localeCompare(right.id, "en"))
     .map((routine) => ({
       routine,
+      workItem: null,
+      source: { sourceType: "routine" as const, routineId: routine.id, workItemId: null },
       evaluation: evaluateRoutineForPlan(routine, input.events, input.request, config),
     }));
+  const workItemEvaluations = (input.workItems ?? [])
+    .slice()
+    .sort((left, right) => left.id.localeCompare(right.id, "en"))
+    .map((workItem) => ({
+      routine: null,
+      workItem,
+      source: { sourceType: "work_item" as const, routineId: null, workItemId: workItem.id },
+      evaluation: evaluateWorkItemForPlan(workItem, input.request),
+    }));
+  const evaluations = [...routineEvaluations, ...workItemEvaluations];
   const exclusions = evaluations
     .filter(({ evaluation }) => !evaluation.eligible)
-    .map(({ routine, evaluation }) => ({
-      routineId: routine.id,
-      title: routine.title,
+    .map(({ routine, workItem, source, evaluation }) => ({
+      ...source,
+      title: routine?.title ?? workItem!.title,
       codes: evaluation.exclusionCodes,
     }));
   let eligible = evaluations.filter(({ evaluation }) => evaluation.eligible);
@@ -993,15 +1100,17 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
       .sort(
         (left, right) =>
           right.evaluation.score - left.evaluation.score ||
-          left.routine.id.localeCompare(right.routine.id, "en"),
+          planSourceKey(left.source).localeCompare(planSourceKey(right.source), "en"),
       )
       .slice(0, config.maxCandidates);
   }
   if (eligible.length === 0) warnings.push("no_eligible_routines");
 
   const minimumScore = Math.min(0, ...eligible.map(({ evaluation }) => evaluation.score));
-  const candidates: Candidate[] = eligible.map(({ routine, evaluation }) => ({
+  const candidates: Candidate[] = eligible.map(({ routine, workItem, source, evaluation }) => ({
     routine,
+    workItem,
+    source,
     evaluation,
     selectionWeight: Math.min(
       1_000_000,
@@ -1018,7 +1127,7 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
   const scoreOrder = [...candidates].sort(
     (left, right) =>
       right.evaluation.score - left.evaluation.score ||
-      left.routine.id.localeCompare(right.routine.id, "en"),
+      planSourceKey(left.source).localeCompare(planSourceKey(right.source), "en"),
   );
   const deterministicPlan = buildCandidatePlan(scoreOrder, input.request);
   candidatePlans.set(deterministicPlan.key, deterministicPlan);
@@ -1042,12 +1151,18 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
     warnings.push("target_task_count_unmet");
   }
 
-  const inputSnapshot = createInputSnapshot(input.request, input.routines, input.events, config);
+  const inputSnapshot = createInputSnapshot(
+    input.request,
+    input.routines,
+    input.workItems ?? [],
+    input.events,
+    config,
+  );
   const inputHash = createHash("sha256").update(JSON.stringify(inputSnapshot)).digest("hex");
   const items = chosen.placements.map((placement, position): PlanItem => ({
-    id: derivePlanItemId(id, placement.candidate.routine.id, position),
-    routineId: placement.candidate.routine.id,
-    title: placement.candidate.routine.title,
+    id: derivePlanItemId(id, placement.candidate.source, position),
+    ...placement.candidate.source,
+    title: placement.candidate.routine?.title ?? placement.candidate.workItem!.title,
     position,
     windowIndex: placement.windowIndex,
     scheduledMinutes: placement.scheduledMinutes,

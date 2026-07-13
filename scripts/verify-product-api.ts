@@ -102,6 +102,478 @@ try {
   });
   assert.equal(secondWorkItemResponse.statusCode, 201, secondWorkItemResponse.body);
   const secondWorkItem = secondWorkItemResponse.json<{ id: string; version: number }>();
+  // EVIDENCE: unified-planner-work-item-opt-in-api
+  // Conventional work stays out of Today unless it explicitly supplies a planning duration.
+  const plannableWorkItemResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items`,
+    payload: {
+      title: "Unified planner primary work",
+      status: "in_progress",
+      priority: "high",
+      planningDurationMinutes: 30,
+    },
+  });
+  assert.equal(plannableWorkItemResponse.statusCode, 201, plannableWorkItemResponse.body);
+  const plannableWorkItem = plannableWorkItemResponse.json<{ id: string; version: number }>();
+  const secondaryPlannableWorkItemResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items`,
+    payload: {
+      title: "Unified planner secondary work",
+      status: "in_progress",
+      priority: "medium",
+      planningDurationMinutes: 15,
+    },
+  });
+  assert.equal(
+    secondaryPlannableWorkItemResponse.statusCode,
+    201,
+    secondaryPlannableWorkItemResponse.body,
+  );
+  const secondaryPlannableWorkItem = secondaryPlannableWorkItemResponse.json<{ id: string }>();
+  const terminalWorkItemResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items`,
+    payload: {
+      title: "Completed work is not a planner candidate",
+      status: "done",
+      priority: "urgent",
+      planningDurationMinutes: 15,
+    },
+  });
+  assert.equal(terminalWorkItemResponse.statusCode, 201, terminalWorkItemResponse.body);
+  const terminalWorkItem = terminalWorkItemResponse.json<{ id: string }>();
+  const unifiedWorkPlanRequest = {
+    method: "POST" as const,
+    url: `/v1/workspaces/${createdWorkspaceId}/plans`,
+    payload: {
+      date: "2026-07-16",
+      timeZone: "UTC",
+      availableWindows: [
+        {
+          startsAt: "2026-07-16T08:00:00.000Z",
+          endsAt: "2026-07-16T09:00:00.000Z",
+        },
+      ],
+      targetMinutes: 45,
+      targetTaskCount: 2,
+      availableContexts: [],
+      seed: "unified-work-item-api-verification",
+      requestRevision: 1,
+    },
+  };
+  const unifiedWorkPlanResponse = await app.inject(unifiedWorkPlanRequest);
+  assert.equal(unifiedWorkPlanResponse.statusCode, 200, unifiedWorkPlanResponse.body);
+  const unifiedWorkPlan = unifiedWorkPlanResponse.json<{
+    id: string;
+    items: {
+      id: string;
+      sourceType: string;
+      routineId: string | null;
+      workItemId: string | null;
+      scheduledMinutes: number;
+    }[];
+  }>();
+  assert.equal(unifiedWorkPlan.items.length, 2, "combined task-count budget must be honored");
+  assert.equal(
+    unifiedWorkPlan.items.reduce((total, item) => total + item.scheduledMinutes, 0),
+    45,
+    "combined time budget must be honored",
+  );
+  assert.deepEqual(
+    new Set(unifiedWorkPlan.items.map((item) => item.workItemId)),
+    new Set([plannableWorkItem.id, secondaryPlannableWorkItem.id]),
+  );
+  for (const item of unifiedWorkPlan.items) {
+    assert.equal(item.sourceType, "work_item");
+    assert.equal(item.routineId, null);
+    assert.notEqual(item.workItemId, null);
+  }
+  assert.equal(
+    unifiedWorkPlan.items.some((item) => item.workItemId === terminalWorkItem.id),
+    false,
+    "terminal work must be excluded even when it has a planning duration",
+  );
+  const [persistedUnifiedPlanItem] = await connection.sql<
+    {
+      source_type: string;
+      routine_id: string | null;
+      work_item_id: string | null;
+      scheduled_minutes: number;
+    }[]
+  >`
+    select source_type, routine_id::text, work_item_id::text, scheduled_minutes
+    from daily_plan_items
+    where workspace_id = ${createdWorkspaceId}
+      and plan_id = ${unifiedWorkPlan.id}
+    order by position asc
+    limit 1
+  `;
+  assert.equal(persistedUnifiedPlanItem?.source_type, "work_item");
+  assert.equal(persistedUnifiedPlanItem?.routine_id, null);
+  assert.equal(
+    [plannableWorkItem.id, secondaryPlannableWorkItem.id].includes(
+      persistedUnifiedPlanItem?.work_item_id ?? "",
+    ),
+    true,
+  );
+  assert.equal(
+    [15, 30].includes(persistedUnifiedPlanItem?.scheduled_minutes ?? 0),
+    true,
+    "persisted work source must retain its planned duration",
+  );
+  const unifiedActivityItem = unifiedWorkPlan.items.find(
+    (item) => item.workItemId === plannableWorkItem.id,
+  );
+  assert.notEqual(unifiedActivityItem, undefined);
+  const unifiedWorkCompletionRequest = {
+    method: "POST" as const,
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-16/items/${unifiedActivityItem!.id}/activity-events`,
+    headers: { "idempotency-key": "unified-work-item-completion" },
+    payload: {
+      expectedPlanId: unifiedWorkPlan.id,
+      expectedHeadVersion: 1,
+      type: "completed",
+      occurredAt: "2026-07-16T09:00:00.000Z",
+      timeZone: "UTC",
+      durationMinutes: 30,
+    },
+  };
+  const unifiedWorkCompletionResponse = await app.inject(unifiedWorkCompletionRequest);
+  const retriedUnifiedWorkCompletion = await app.inject(unifiedWorkCompletionRequest);
+  assert.equal(unifiedWorkCompletionResponse.statusCode, 200, unifiedWorkCompletionResponse.body);
+  assert.deepEqual(retriedUnifiedWorkCompletion.json(), unifiedWorkCompletionResponse.json());
+  const unifiedWorkCompletion = unifiedWorkCompletionResponse.json<{
+    activityState: string;
+    headVersion: number;
+    activityEvent: {
+      id: string;
+      sourceType: string;
+      routineId: string | null;
+      workItemId: string | null;
+    };
+  }>();
+  assert.equal(unifiedWorkCompletion.activityState, "completed");
+  assert.equal(unifiedWorkCompletion.headVersion, 2);
+  assert.equal(unifiedWorkCompletion.activityEvent.sourceType, "work_item");
+  assert.equal(unifiedWorkCompletion.activityEvent.routineId, null);
+  assert.equal(unifiedWorkCompletion.activityEvent.workItemId, plannableWorkItem.id);
+  const completedWorkItemResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items/${plannableWorkItem.id}`,
+  });
+  assert.equal(completedWorkItemResponse.statusCode, 200, completedWorkItemResponse.body);
+  assert.equal(completedWorkItemResponse.json<{ status: string }>().status, "done");
+  const [persistedUnifiedActivity] = await connection.sql<
+    { source_type: string; routine_id: string | null; work_item_id: string | null }[]
+  >`
+    select source_type, routine_id::text, work_item_id::text
+    from activity_events
+    where workspace_id = ${createdWorkspaceId}
+      and id = ${unifiedWorkCompletion.activityEvent.id}
+  `;
+  assert.deepEqual(persistedUnifiedActivity, {
+    source_type: "work_item",
+    routine_id: null,
+    work_item_id: plannableWorkItem.id,
+  });
+  const unifiedWorkReversalResponse = await app.inject({
+    ...unifiedWorkCompletionRequest,
+    headers: { "idempotency-key": "unified-work-item-completion-reversal" },
+    payload: {
+      ...unifiedWorkCompletionRequest.payload,
+      expectedHeadVersion: 2,
+      type: "completion_reversed",
+      occurredAt: "2026-07-16T09:05:00.000Z",
+      durationMinutes: null,
+    },
+  });
+  const retriedUnifiedWorkReversal = await app.inject({
+    ...unifiedWorkCompletionRequest,
+    headers: { "idempotency-key": "unified-work-item-completion-reversal" },
+    payload: {
+      ...unifiedWorkCompletionRequest.payload,
+      expectedHeadVersion: 2,
+      type: "completion_reversed",
+      occurredAt: "2026-07-16T09:05:00.000Z",
+      durationMinutes: null,
+    },
+  });
+  assert.equal(unifiedWorkReversalResponse.statusCode, 200, unifiedWorkReversalResponse.body);
+  assert.deepEqual(retriedUnifiedWorkReversal.json(), unifiedWorkReversalResponse.json());
+  assert.equal(
+    unifiedWorkReversalResponse.json<{ activityState: string; headVersion: number }>()
+      .activityState,
+    "pending",
+  );
+  assert.equal(
+    unifiedWorkReversalResponse.json<{ activityState: string; headVersion: number }>().headVersion,
+    3,
+  );
+  const reversedWorkItemResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items/${plannableWorkItem.id}`,
+  });
+  assert.equal(reversedWorkItemResponse.statusCode, 200, reversedWorkItemResponse.body);
+  const reversedWorkItem = reversedWorkItemResponse.json<{ status: string; version: number }>();
+  assert.equal(
+    reversedWorkItem.status,
+    "in_progress",
+    "reversing an owned completion restores the pre-completion work status",
+  );
+  const isolateBaseWorkFromFollowUpPlan = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items/${plannableWorkItem.id}`,
+    payload: { expectedVersion: reversedWorkItem.version, status: "cancelled" },
+  });
+  assert.equal(
+    isolateBaseWorkFromFollowUpPlan.statusCode,
+    200,
+    isolateBaseWorkFromFollowUpPlan.body,
+  );
+  const isolateSecondaryWorkFromFollowUpPlan = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items/${secondaryPlannableWorkItem.id}`,
+    payload: { expectedVersion: 1, status: "cancelled" },
+  });
+  assert.equal(
+    isolateSecondaryWorkFromFollowUpPlan.statusCode,
+    200,
+    isolateSecondaryWorkFromFollowUpPlan.body,
+  );
+
+  // EVIDENCE: unified-planner-work-item-reversal-edit-guard-api
+  // A user edit after completion owns the work item; a later reversal only reopens Today.
+  const editedAfterCompletionWorkResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items`,
+    payload: {
+      title: "Edited after completion",
+      status: "in_progress",
+      priority: "high",
+      planningDurationMinutes: 20,
+    },
+  });
+  assert.equal(
+    editedAfterCompletionWorkResponse.statusCode,
+    201,
+    editedAfterCompletionWorkResponse.body,
+  );
+  const editedAfterCompletionWork = editedAfterCompletionWorkResponse.json<{ id: string }>();
+  const editGuardPlanResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans`,
+    payload: {
+      date: "2026-07-17",
+      timeZone: "UTC",
+      availableWindows: [
+        {
+          startsAt: "2026-07-17T08:00:00.000Z",
+          endsAt: "2026-07-17T09:00:00.000Z",
+        },
+      ],
+      targetMinutes: 20,
+      targetTaskCount: 1,
+      availableContexts: [],
+      seed: "unified-work-item-reversal-edit-guard",
+      requestRevision: 1,
+    },
+  });
+  assert.equal(editGuardPlanResponse.statusCode, 200, editGuardPlanResponse.body);
+  const editGuardPlan = editGuardPlanResponse.json<{
+    id: string;
+    items: { id: string; workItemId: string | null }[];
+  }>();
+  const editGuardPlanItem = editGuardPlan.items.find(
+    (item) => item.workItemId === editedAfterCompletionWork.id,
+  );
+  assert.notEqual(editGuardPlanItem, undefined);
+  const editGuardCompletionResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-17/items/${editGuardPlanItem!.id}/activity-events`,
+    headers: { "idempotency-key": "unified-work-item-edit-guard-completion" },
+    payload: {
+      expectedPlanId: editGuardPlan.id,
+      expectedHeadVersion: 1,
+      type: "completed",
+      occurredAt: "2026-07-17T09:00:00.000Z",
+      timeZone: "UTC",
+      durationMinutes: 20,
+    },
+  });
+  assert.equal(editGuardCompletionResponse.statusCode, 200, editGuardCompletionResponse.body);
+  const completedBeforeEdit = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items/${editedAfterCompletionWork.id}`,
+  });
+  assert.equal(completedBeforeEdit.statusCode, 200, completedBeforeEdit.body);
+  assert.equal(completedBeforeEdit.json<{ status: string; version: number }>().status, "done");
+  const laterUserEditResponse = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items/${editedAfterCompletionWork.id}`,
+    payload: {
+      expectedVersion: completedBeforeEdit.json<{ version: number }>().version,
+      title: "User owns this later edit",
+      status: "planned",
+      planningDurationMinutes: 25,
+    },
+  });
+  assert.equal(laterUserEditResponse.statusCode, 200, laterUserEditResponse.body);
+  const laterUserEdit = laterUserEditResponse.json<{
+    title: string;
+    status: string;
+    planningDurationMinutes: number | null;
+    version: number;
+  }>();
+  assert.equal(laterUserEdit.status, "planned");
+  const editGuardReversalResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-17/items/${editGuardPlanItem!.id}/activity-events`,
+    headers: { "idempotency-key": "unified-work-item-edit-guard-reversal" },
+    payload: {
+      expectedPlanId: editGuardPlan.id,
+      expectedHeadVersion: 2,
+      type: "completion_reversed",
+      occurredAt: "2026-07-17T09:05:00.000Z",
+      timeZone: "UTC",
+      durationMinutes: null,
+    },
+  });
+  assert.equal(editGuardReversalResponse.statusCode, 200, editGuardReversalResponse.body);
+  assert.equal(
+    editGuardReversalResponse.json<{ activityState: string }>().activityState,
+    "pending",
+    "the plan item reopens even when the source was edited later",
+  );
+  const workItemAfterGuardedReversal = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items/${editedAfterCompletionWork.id}`,
+  });
+  assert.equal(workItemAfterGuardedReversal.statusCode, 200, workItemAfterGuardedReversal.body);
+  const guardedReversalWorkItem = workItemAfterGuardedReversal.json<{
+    title: string;
+    status: string;
+    planningDurationMinutes: number | null;
+    version: number;
+  }>();
+  assert.equal(guardedReversalWorkItem.title, laterUserEdit.title);
+  assert.equal(guardedReversalWorkItem.status, laterUserEdit.status);
+  assert.equal(
+    guardedReversalWorkItem.planningDurationMinutes,
+    laterUserEdit.planningDurationMinutes,
+  );
+  assert.equal(guardedReversalWorkItem.version, laterUserEdit.version);
+
+  // EVIDENCE: unified-planner-terminal-work-regeneration-api
+  const terminalRegenerationWorkResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items`,
+    payload: {
+      title: "Terminal work must not regenerate",
+      status: "in_progress",
+      priority: "high",
+      planningDurationMinutes: 20,
+    },
+  });
+  assert.equal(
+    terminalRegenerationWorkResponse.statusCode,
+    201,
+    terminalRegenerationWorkResponse.body,
+  );
+  const terminalRegenerationWork = terminalRegenerationWorkResponse.json<{ id: string }>();
+  const terminalRegenerationPlanResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans`,
+    payload: {
+      date: "2026-07-18",
+      timeZone: "UTC",
+      availableWindows: [
+        {
+          startsAt: "2026-07-18T08:00:00.000Z",
+          endsAt: "2026-07-18T09:00:00.000Z",
+        },
+      ],
+      targetMinutes: 20,
+      targetTaskCount: 1,
+      availableContexts: [],
+      seed: "unified-terminal-work-regeneration",
+      requestRevision: 1,
+    },
+  });
+  assert.equal(
+    terminalRegenerationPlanResponse.statusCode,
+    200,
+    terminalRegenerationPlanResponse.body,
+  );
+  const terminalRegenerationPlan = terminalRegenerationPlanResponse.json<{
+    id: string;
+    items: { id: string; workItemId: string | null }[];
+  }>();
+  const terminalRegenerationPlanItem = terminalRegenerationPlan.items.find(
+    (item) => item.workItemId === terminalRegenerationWork.id,
+  );
+  assert.notEqual(terminalRegenerationPlanItem, undefined);
+  const terminalCompletionResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-18/items/${terminalRegenerationPlanItem!.id}/activity-events`,
+    headers: { "idempotency-key": "unified-terminal-work-completion" },
+    payload: {
+      expectedPlanId: terminalRegenerationPlan.id,
+      expectedHeadVersion: 1,
+      type: "completed",
+      occurredAt: "2026-07-18T09:00:00.000Z",
+      timeZone: "UTC",
+      durationMinutes: 20,
+    },
+  });
+  assert.equal(terminalCompletionResponse.statusCode, 200, terminalCompletionResponse.body);
+  const terminalRegenerationResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-18/regenerations`,
+    headers: { "idempotency-key": "unified-terminal-work-regeneration" },
+    payload: {
+      expectedPlanId: terminalRegenerationPlan.id,
+      expectedHeadVersion: 2,
+      request: {
+        timeZone: "UTC",
+        availableWindows: [
+          {
+            startsAt: "2026-07-18T08:00:00.000Z",
+            endsAt: "2026-07-18T09:00:00.000Z",
+          },
+        ],
+        targetMinutes: 20,
+        targetTaskCount: 1,
+        availableContexts: [],
+        seed: "unified-terminal-work-regeneration-next",
+      },
+    },
+  });
+  assert.equal(terminalRegenerationResponse.statusCode, 200, terminalRegenerationResponse.body);
+  assert.equal(
+    terminalRegenerationResponse
+      .json<{ items: { workItemId: string | null }[] }>()
+      .items.some((item) => item.workItemId === terminalRegenerationWork.id),
+    false,
+    "completed work must not return during regeneration",
+  );
+  const originalTerminalRevision = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-18?revision=1`,
+  });
+  assert.equal(originalTerminalRevision.statusCode, 200, originalTerminalRevision.body);
+  assert.equal(
+    originalTerminalRevision.json<{ id: string }>().id,
+    terminalRegenerationPlan.id,
+    "regeneration must leave the prior immutable revision addressable",
+  );
+  assert.equal(
+    originalTerminalRevision
+      .json<{ items: { workItemId: string | null }[] }>()
+      .items.some((item) => item.workItemId === terminalRegenerationWork.id),
+    true,
+  );
   const crossWorkspaceWorkItemRead = await app.inject({
     method: "GET",
     url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${createdWorkItem.id}`,
@@ -147,18 +619,25 @@ try {
   });
   const emptyWorkItemPage = await app.inject({
     method: "GET",
-    url: `/v1/workspaces/${createdWorkspaceId}/work-items?limit=1&offset=2`,
+    url: `/v1/workspaces/${createdWorkspaceId}/work-items?limit=1&offset=100`,
   });
   assert.equal(allWorkItemsResponse.statusCode, 200, allWorkItemsResponse.body);
   assert.equal(firstWorkItemPage.statusCode, 200, firstWorkItemPage.body);
   assert.equal(secondWorkItemPage.statusCode, 200, secondWorkItemPage.body);
   assert.equal(emptyWorkItemPage.statusCode, 200, emptyWorkItemPage.body);
   assert.deepEqual(
-    [
-      ...firstWorkItemPage.json<{ items: { id: string }[] }>().items,
-      ...secondWorkItemPage.json<{ items: { id: string }[] }>().items,
-    ].map((item) => item.id),
-    allWorkItemsResponse.json<{ items: { id: string }[] }>().items.map((item) => item.id),
+    firstWorkItemPage.json<{ items: { id: string }[] }>().items.map((item) => item.id),
+    allWorkItemsResponse
+      .json<{ items: { id: string }[] }>()
+      .items.slice(0, 1)
+      .map((item) => item.id),
+  );
+  assert.deepEqual(
+    secondWorkItemPage.json<{ items: { id: string }[] }>().items.map((item) => item.id),
+    allWorkItemsResponse
+      .json<{ items: { id: string }[] }>()
+      .items.slice(1, 2)
+      .map((item) => item.id),
   );
   assert.equal(emptyWorkItemPage.json<{ items: unknown[] }>().items.length, 0);
   const workItemUpdateResponse = await app.inject({
@@ -817,7 +1296,8 @@ try {
     connection.sql`
       insert into activity_events (
         workspace_id,
-        routine_id,
+        source_type,
+        work_item_id,
         type,
         occurred_at,
         local_date,
@@ -827,7 +1307,8 @@ try {
         recorded_at
       ) values (
         ${createdWorkspaceId},
-        ${alternativeRoutineId},
+        'work_item',
+        ${plannableWorkItem.id},
         'completion_reversed',
         '2026-07-15T09:46:00.000Z',
         '2026-07-15',
@@ -837,7 +1318,7 @@ try {
         '2026-07-15T09:46:00.000Z'
       )
     `,
-    (error) => hasDatabaseCode(error, "23514"),
+    (error) => hasDatabaseCode(error, "23503"),
   );
   const invalidTerminalTransition = await app.inject({
     ...planItemActivityRequest,
@@ -1000,7 +1481,7 @@ try {
   const releaseLock = new Promise<void>((resolve) => {
     releaseConcurrencyLock = resolve;
   });
-  const lockKey = `${createdWorkspaceId}:${createdRoutineId}`;
+  const lockKey = `${createdWorkspaceId}:routine:${createdRoutineId}`;
   heldLock = lockConnection.sql.begin(async (sql) => {
     await sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
     markLockAcquired();

@@ -43,6 +43,8 @@ export async function verifyPlanStateMigrations(): Promise<void> {
   const lowEventId = "00000000-0000-0000-0000-000000000102";
   const highEventId = "00000000-0000-0000-0000-000000000103";
   const newEventId = "00000000-0000-0000-0000-000000000104";
+  const workItemId = "00000000-0000-0000-0000-000000000105";
+  const workCompletionEventId = "00000000-0000-0000-0000-000000000106";
   const firstPlanId = "00000000-0000-0000-0000-000000000201";
   const secondPlanId = "00000000-0000-0000-0000-000000000202";
   const firstItemId = "00000000-0000-0000-0000-000000000301";
@@ -159,19 +161,21 @@ export async function verifyPlanStateMigrations(): Promise<void> {
 
       INSERT INTO daily_plans (
         id, workspace_id, local_date, time_zone, request_revision, algorithm_version,
-        config_version, prng_version, seed, input_hash, input_snapshot, total_minutes,
+        config_version, prng_version, seed, input_hash, input_snapshot, exclusions, total_minutes,
         fitness, generated_at, created_at, updated_at
       ) VALUES
         (
           '${firstPlanId}', '${workspaceId}', '2026-01-04', 'UTC', 1,
           'historical-v1', 'historical-v1', 'historical-v1', 'first-seed',
-          '${"a".repeat(64)}', '{}'::jsonb, 30, 10, '2026-01-04T09:00:00Z',
+          '${"a".repeat(64)}', '{}'::jsonb,
+          '[{"routineId":"${routineId}","title":"legacy exclusion","codes":["paused"]}]'::jsonb,
+          30, 10, '2026-01-04T09:00:00Z',
           '2026-01-04T09:01:00Z', '2026-01-04T09:02:00Z'
         ),
         (
           '${secondPlanId}', '${workspaceId}', '2026-01-04', 'UTC', 2,
           'historical-v1', 'historical-v1', 'historical-v1', 'second-seed',
-          '${"b".repeat(64)}', '{}'::jsonb, 30, 20, '2026-01-04T08:00:00Z',
+          '${"b".repeat(64)}', '{}'::jsonb, '[]'::jsonb, 30, 20, '2026-01-04T08:00:00Z',
           '2026-01-04T08:01:00Z', '2026-01-04T08:02:00Z'
         );
 
@@ -257,6 +261,27 @@ export async function verifyPlanStateMigrations(): Promise<void> {
         { id: highEventId, sequence: "2" },
       ],
     );
+    const [legacySources] = await verification.sql<
+      { routine_sources: number; work_sources: number }[]
+    >`
+      SELECT
+        count(*) FILTER (WHERE source_type = 'routine')::int AS routine_sources,
+        count(*) FILTER (WHERE source_type = 'work_item')::int AS work_sources
+      FROM activity_events
+    `;
+    assert.deepEqual(legacySources, { routine_sources: 2, work_sources: 0 });
+    const [backfilledExclusion] = await verification.sql<{ exclusions: unknown }[]>`
+      SELECT exclusions FROM daily_plans WHERE id = ${firstPlanId}
+    `;
+    assert.deepEqual(backfilledExclusion?.exclusions, [
+      {
+        sourceType: "routine",
+        routineId,
+        workItemId: null,
+        title: "legacy exclusion",
+        codes: ["paused"],
+      },
+    ]);
     const [backfillSequence] = await verification.sql<{ value: string; is_called: boolean }[]>`
       SELECT last_value::text AS value, is_called
       FROM activity_events_ingested_sequence_seq
@@ -299,16 +324,110 @@ export async function verifyPlanStateMigrations(): Promise<void> {
 
     const [newEvent] = await verification.sql<{ sequence: string }[]>`
       INSERT INTO activity_events (
-        id, workspace_id, routine_id, type, occurred_at, local_date, time_zone,
+        id, workspace_id, source_type, routine_id, type, occurred_at, local_date, time_zone,
         duration_minutes, idempotency_key, recorded_at
       ) VALUES (
-        ${newEventId}, ${workspaceId}, ${routineId}, 'completed',
+        ${newEventId}, ${workspaceId}, 'routine', ${routineId}, 'completed',
         '2026-01-05T12:00:00Z', '2026-01-05', 'UTC', 30,
         'historical-new-event', '2026-01-05T12:00:00Z'
       )
       RETURNING ingested_sequence::text AS sequence
     `;
     assert.deepEqual(newEvent, { sequence: "3" });
+
+    // The migration's polymorphic source constraints prevent malformed records.
+    await expectDatabaseError(
+      () =>
+        verification!.sql`
+          INSERT INTO activity_events (
+            workspace_id, source_type, routine_id, work_item_id, type, occurred_at,
+            local_date, time_zone, idempotency_key, recorded_at
+          ) VALUES (
+            ${workspaceId}, 'routine', ${routineId}, ${workItemId}, 'started',
+            '2026-01-05T12:01:00Z', '2026-01-05', 'UTC', 'invalid-multiple-source',
+            '2026-01-05T12:01:00Z'
+          )
+        `,
+      "23514",
+      "activity exact-one source constraint",
+    );
+    await verification.sql`
+      INSERT INTO work_items (
+        id, workspace_id, title, status, priority, planning_duration_minutes,
+        version, created_at, updated_at
+      ) VALUES (
+        ${workItemId}, ${workspaceId}, 'Historical work source', 'done', 'high', 30,
+        2, '2026-01-05T12:00:00Z', '2026-01-05T12:00:00Z'
+      )
+    `;
+    await verification.sql`
+      INSERT INTO activity_events (
+        id, workspace_id, source_type, work_item_id, type, occurred_at, local_date,
+        time_zone, idempotency_key, metadata, recorded_at
+      ) VALUES (
+        ${workCompletionEventId}, ${workspaceId}, 'work_item', ${workItemId}, 'completed',
+        '2026-01-05T12:02:00Z', '2026-01-05', 'UTC', 'work-completion',
+        '{"system.work_item.completion_changed":true,"system.work_item.completion_version":2,"system.work_item.previous_status":"planned"}'::jsonb,
+        '2026-01-05T12:02:00Z'
+      )
+    `;
+    await expectDatabaseError(
+      () =>
+        verification!.sql`
+          INSERT INTO activity_events (
+            workspace_id, source_type, work_item_id, plan_id, plan_item_id, type,
+            occurred_at, local_date, time_zone, idempotency_key, recorded_at
+          ) VALUES (
+            ${workspaceId}, 'work_item', ${workItemId}, ${firstPlanId}, ${firstItemId}, 'started',
+            '2026-01-05T12:01:30Z', '2026-01-05', 'UTC', 'invalid-plan-source',
+            '2026-01-05T12:01:30Z'
+          )
+        `,
+      "23514",
+      "plan-linked activity source mismatch",
+    );
+    // A later effective completion takes ownership by advancing the version even though
+    // the status remains done. An older completion's reversal therefore affects no row.
+    await verification.sql`
+      UPDATE work_items
+      SET status = 'done', version = 3, updated_at = '2026-01-05T12:03:00Z'
+      WHERE workspace_id = ${workspaceId} AND id = ${workItemId} AND version = 2
+    `;
+    const supersededCompletionRestore = await verification.sql<{ id: string }[]>`
+      UPDATE work_items
+      SET status = 'planned', version = 3, updated_at = '2026-01-05T12:04:00Z'
+      WHERE workspace_id = ${workspaceId}
+        AND id = ${workItemId}
+        AND status = 'done'
+        AND version = 2
+      RETURNING id
+    `;
+    assert.equal(
+      supersededCompletionRestore.length,
+      0,
+      "reversal must not overwrite a later effective completion",
+    );
+    // A distinct later user edit is protected by the same ownership guard.
+    await verification.sql`
+      UPDATE work_items
+      SET status = 'blocked', version = 4, updated_at = '2026-01-05T12:05:00Z'
+      WHERE workspace_id = ${workspaceId} AND id = ${workItemId} AND version = 3
+    `;
+    const guardedRestore = await verification.sql<{ id: string }[]>`
+      UPDATE work_items
+      SET status = 'planned', version = 4, updated_at = '2026-01-05T12:06:00Z'
+      WHERE workspace_id = ${workspaceId}
+        AND id = ${workItemId}
+        AND status = 'done'
+        AND version = 3
+      RETURNING id
+    `;
+    assert.equal(guardedRestore.length, 0, "reversal must not overwrite a later work edit");
+    const [preservedWorkItem] = await verification.sql<{ status: string; version: number }[]>`
+      SELECT status, version FROM work_items
+      WHERE workspace_id = ${workspaceId} AND id = ${workItemId}
+    `;
+    assert.deepEqual(preservedWorkItem, { status: "blocked", version: 4 });
     await expectDatabaseError(
       () =>
         verification!.sql`

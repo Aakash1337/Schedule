@@ -35,6 +35,9 @@ export const workItemPriority = pgEnum("work_item_priority", [
   "urgent",
 ]);
 
+/** The immutable source behind a planned item or activity event. */
+export const planningSourceType = pgEnum("planning_source_type", ["routine", "work_item"]);
+
 export const outboxStatus = pgEnum("outbox_status", [
   "pending",
   "processing",
@@ -107,6 +110,7 @@ export const workItems = pgTable(
     description: text("description"),
     status: workItemStatus("status").notNull().default("backlog"),
     priority: workItemPriority("priority").notNull().default("none"),
+    planningDurationMinutes: integer("planning_duration_minutes"),
     version: integer("version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -123,6 +127,10 @@ export const workItems = pgTable(
       table.id,
     ),
     check("work_items_version_positive", sql`${table.version} > 0`),
+    check(
+      "work_items_planning_duration_positive",
+      sql`${table.planningDurationMinutes} IS NULL OR ${table.planningDurationMinutes} > 0`,
+    ),
   ],
 );
 
@@ -335,7 +343,15 @@ export const dailyPlans = pgTable(
       .notNull()
       .default(sql`ARRAY[]::text[]`),
     exclusions: jsonb("exclusions")
-      .$type<readonly { routineId: string; title: string; codes: readonly string[] }[]>()
+      .$type<
+        readonly {
+          sourceType: "routine" | "work_item";
+          routineId: string | null;
+          workItemId: string | null;
+          title: string;
+          codes: readonly string[];
+        }[]
+      >()
       .notNull()
       .default([]),
     generatedAt: timestamp("generated_at", { withTimezone: true }).notNull(),
@@ -388,7 +404,9 @@ export const activityEvents = pgTable(
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
-    routineId: uuid("routine_id").notNull(),
+    sourceType: planningSourceType("source_type").notNull(),
+    routineId: uuid("routine_id"),
+    workItemId: uuid("work_item_id"),
     planId: uuid("plan_id"),
     planItemId: uuid("plan_item_id"),
     type: activityEventType("type").notNull(),
@@ -413,11 +431,6 @@ export const activityEvents = pgTable(
       table.planItemId,
       table.id,
     ),
-    unique("activity_events_workspace_routine_id_id_uq").on(
-      table.workspaceId,
-      table.routineId,
-      table.id,
-    ),
     unique("activity_events_workspace_idempotency_uq").on(table.workspaceId, table.idempotencyKey),
     index("activity_events_routine_occurred_idx").on(
       table.workspaceId,
@@ -429,11 +442,26 @@ export const activityEvents = pgTable(
       table.routineId,
       table.ingestedSequence,
     ),
+    index("activity_events_work_item_occurred_idx").on(
+      table.workspaceId,
+      table.workItemId,
+      table.occurredAt,
+    ),
+    index("activity_events_work_item_sequence_idx").on(
+      table.workspaceId,
+      table.workItemId,
+      table.ingestedSequence,
+    ),
     index("activity_events_workspace_local_date_idx").on(table.workspaceId, table.localDate),
     foreignKey({
       name: "activity_events_routine_tenant_fk",
       columns: [table.workspaceId, table.routineId],
       foreignColumns: [routines.workspaceId, routines.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "activity_events_work_item_tenant_fk",
+      columns: [table.workspaceId, table.workItemId],
+      foreignColumns: [workItems.workspaceId, workItems.id],
     }).onDelete("restrict"),
     foreignKey({
       name: "activity_events_plan_tenant_fk",
@@ -447,8 +475,8 @@ export const activityEvents = pgTable(
     }).onDelete("restrict"),
     foreignKey({
       name: "activity_events_reference_tenant_fk",
-      columns: [table.workspaceId, table.routineId, table.referenceEventId],
-      foreignColumns: [table.workspaceId, table.routineId, table.id],
+      columns: [table.workspaceId, table.referenceEventId],
+      foreignColumns: [table.workspaceId, table.id],
     }).onDelete("restrict"),
     check(
       "activity_events_duration_positive",
@@ -462,6 +490,10 @@ export const activityEvents = pgTable(
       "activity_events_plan_item_requires_plan",
       sql`${table.planItemId} IS NULL OR ${table.planId} IS NOT NULL`,
     ),
+    check(
+      "activity_events_source_valid",
+      sql`(${table.sourceType} = 'routine' AND ${table.routineId} IS NOT NULL AND ${table.workItemId} IS NULL) OR (${table.sourceType} = 'work_item' AND ${table.workItemId} IS NOT NULL AND ${table.routineId} IS NULL)`,
+    ),
   ],
 );
 
@@ -473,7 +505,9 @@ export const dailyPlanItems = pgTable(
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
     planId: uuid("plan_id").notNull(),
-    routineId: uuid("routine_id").notNull(),
+    sourceType: planningSourceType("source_type").notNull(),
+    routineId: uuid("routine_id"),
+    workItemId: uuid("work_item_id"),
     titleSnapshot: varchar("title_snapshot", { length: 240 }).notNull(),
     position: integer("position").notNull(),
     windowIndex: integer("window_index").notNull(),
@@ -492,6 +526,11 @@ export const dailyPlanItems = pgTable(
     unique("daily_plan_items_workspace_plan_id_uq").on(table.workspaceId, table.planId, table.id),
     unique("daily_plan_items_plan_position_uq").on(table.workspaceId, table.planId, table.position),
     unique("daily_plan_items_plan_routine_uq").on(table.workspaceId, table.planId, table.routineId),
+    unique("daily_plan_items_plan_work_item_uq").on(
+      table.workspaceId,
+      table.planId,
+      table.workItemId,
+    ),
     foreignKey({
       name: "daily_plan_items_plan_tenant_fk",
       columns: [table.workspaceId, table.planId],
@@ -502,9 +541,18 @@ export const dailyPlanItems = pgTable(
       columns: [table.workspaceId, table.routineId],
       foreignColumns: [routines.workspaceId, routines.id],
     }).onDelete("restrict"),
+    foreignKey({
+      name: "daily_plan_items_work_item_tenant_fk",
+      columns: [table.workspaceId, table.workItemId],
+      foreignColumns: [workItems.workspaceId, workItems.id],
+    }).onDelete("restrict"),
     check("daily_plan_items_position_nonnegative", sql`${table.position} >= 0`),
     check("daily_plan_items_window_nonnegative", sql`${table.windowIndex} >= 0`),
     check("daily_plan_items_duration_positive", sql`${table.scheduledMinutes} > 0`),
+    check(
+      "daily_plan_items_source_valid",
+      sql`(${table.sourceType} = 'routine' AND ${table.routineId} IS NOT NULL AND ${table.workItemId} IS NULL) OR (${table.sourceType} = 'work_item' AND ${table.workItemId} IS NOT NULL AND ${table.routineId} IS NULL)`,
+    ),
   ],
 );
 

@@ -6,6 +6,7 @@ import {
   createDurationRange,
   createRoutine,
   createStructuredTags,
+  createWorkItem,
   createWorkspace,
   dailyPlanId,
   generateDailyPlan,
@@ -14,6 +15,7 @@ import {
   workspaceId,
   type DailyPlan,
   type Routine,
+  type WorkItem,
 } from "@schedule/domain";
 
 import { MutateDailyPlan } from "./mutate-daily-plan.js";
@@ -47,7 +49,12 @@ describe("MutateDailyPlan", () => {
     seed: "source",
   });
 
-  function harness() {
+  function harness(
+    options: {
+      readonly routineCandidates?: readonly Routine[];
+      readonly workItemCandidates?: readonly WorkItem[];
+    } = {},
+  ) {
     const generated = generateDailyPlan({
       id: dailyPlanId("mutation-source"),
       request,
@@ -55,7 +62,7 @@ describe("MutateDailyPlan", () => {
       events: [],
       generatedAt: new Date("2026-07-15T07:00:00.000Z"),
     });
-    let current: DailyPlan = {
+    let current: DailyPlan | null = {
       ...generated,
       items: generated.items.map((item, index) => ({ ...item, locked: index === 0 })),
     };
@@ -70,7 +77,7 @@ describe("MutateDailyPlan", () => {
       routines: {
         findById: async () => null,
         list: async () => routines,
-        listPlanningCandidates: async () => routines,
+        listPlanningCandidates: async () => options.routineCandidates ?? routines,
         insert: async (_routine: Routine) => undefined,
         save: async () => undefined,
       },
@@ -81,14 +88,14 @@ describe("MutateDailyPlan", () => {
         listHistory: async () => ({ items: [], nextCursor: null }),
       },
       dailyPlans: {
-        findById: async (_workspace, id) => (id === current.id ? current : null),
+        findById: async (_workspace, id) => (current?.id === id ? current : null),
         findByRevision: async () => null,
         insertForRevision: async (plan: DailyPlan) => {
           current = plan;
           headVersion += 1;
           return plan;
         },
-        findCurrent: async () => ({ plan: current, headVersion }),
+        findCurrent: async () => (current === null ? null : { plan: current, headVersion }),
         setItemLock: async () => {
           throw new Error("not used");
         },
@@ -103,7 +110,9 @@ describe("MutateDailyPlan", () => {
           mutations.push(mutation);
         },
       },
-      workItems: {} as TransactionContext["workItems"],
+      workItems: {
+        listPlanningCandidates: async () => options.workItemCandidates ?? [],
+      } as TransactionContext["workItems"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
       auditEvents: {} as TransactionContext["auditEvents"],
     } satisfies TransactionContext;
@@ -113,7 +122,16 @@ describe("MutateDailyPlan", () => {
         now: () => new Date("2026-07-15T07:30:00.000Z"),
       }),
       source: current,
-      current: () => current,
+      current: () => {
+        if (current === null) throw new Error("No current plan.");
+        return current;
+      },
+      setCurrent: (plan: DailyPlan) => {
+        current = plan;
+      },
+      clearCurrent: () => {
+        current = null;
+      },
       setHeadVersion: (value: number) => {
         headVersion = value;
       },
@@ -171,6 +189,186 @@ describe("MutateDailyPlan", () => {
     expect(replay).toEqual(first);
     expect(test.mutations()).toHaveLength(1);
   });
+
+  it("does not carry a terminal locked item into a regenerated revision", async () => {
+    const test = harness();
+    const terminal = test.source.items.find((item) => item.locked)!;
+    test.setCurrent({
+      ...test.source,
+      items: test.source.items.map((item) =>
+        item.id === terminal.id ? { ...item, activityState: "completed", locked: true } : item,
+      ),
+    });
+
+    const result = await test.useCase.regenerate({
+      workspaceId: workspace,
+      expectedPlanId: test.source.id,
+      expectedHeadVersion: 2,
+      request: { ...request, seed: "terminal-regeneration" },
+      idempotencyKey: "terminal-regeneration",
+    });
+
+    expect(result.plan.items.some((item) => item.routineId === terminal.routineId)).toBe(false);
+    expect(result.plan.items.every((item) => item.activityState === "pending")).toBe(true);
+  });
+
+  it("replaces an item when its sibling is terminal without retaining that sibling", async () => {
+    const test = harness();
+    const terminalSibling = test.source.items.find((item) => item.locked)!;
+    const target = test.source.items.find((item) => !item.locked)!;
+    test.setCurrent({
+      ...test.source,
+      items: test.source.items.map((item) =>
+        item.id === terminalSibling.id ? { ...item, activityState: "skipped", locked: true } : item,
+      ),
+    });
+
+    const result = await test.useCase.replace({
+      workspaceId: workspace,
+      expectedPlanId: test.source.id,
+      expectedHeadVersion: 2,
+      targetItemId: target.id,
+      request: { ...request, seed: "terminal-sibling-replacement" },
+      idempotencyKey: "terminal-sibling-replacement",
+    });
+
+    expect(result.plan.items.some((item) => item.routineId === terminalSibling.routineId)).toBe(
+      false,
+    );
+    expect(result.plan.items.some((item) => item.routineId === target.routineId)).toBe(false);
+  });
+
+  it("defensively rejects malformed persisted routine and work-item source identities", async () => {
+    const routineSource = harness();
+    const routineTarget = routineSource.source.items.find((item) => !item.locked)!;
+    routineSource.setCurrent({
+      ...routineSource.source,
+      items: routineSource.source.items.map((item) =>
+        item.id === routineTarget.id ? { ...item, routineId: null } : item,
+      ),
+    } as DailyPlan);
+    await expect(
+      routineSource.useCase.replace({
+        workspaceId: workspace,
+        expectedPlanId: routineSource.source.id,
+        expectedHeadVersion: 2,
+        targetItemId: routineTarget.id,
+        request: { ...request, seed: "malformed-routine-source" },
+        idempotencyKey: "malformed-routine-source",
+      }),
+    ).rejects.toMatchObject({ code: "planning.source_invalid" });
+
+    const workItemSource = harness();
+    const workItemTarget = workItemSource.source.items.find((item) => !item.locked)!;
+    workItemSource.setCurrent({
+      ...workItemSource.source,
+      items: workItemSource.source.items.map((item) =>
+        item.id === workItemTarget.id
+          ? { ...item, sourceType: "work_item", routineId: null, workItemId: null }
+          : item,
+      ),
+    } as DailyPlan);
+    await expect(
+      workItemSource.useCase.replace({
+        workspaceId: workspace,
+        expectedPlanId: workItemSource.source.id,
+        expectedHeadVersion: 2,
+        targetItemId: workItemTarget.id,
+        request: { ...request, seed: "malformed-work-item-source" },
+        idempotencyKey: "malformed-work-item-source",
+      }),
+    ).rejects.toMatchObject({ code: "planning.source_invalid" });
+  });
+
+  it("excludes a valid work-item source when replacing it", async () => {
+    const test = harness();
+    const target = test.source.items.find((item) => !item.locked)!;
+    test.setCurrent({
+      ...test.source,
+      items: test.source.items.map((item) =>
+        item.id === target.id
+          ? {
+              ...item,
+              sourceType: "work_item",
+              routineId: null,
+              workItemId: "replacement-work-item" as never,
+            }
+          : item,
+      ),
+    } as DailyPlan);
+
+    await expect(
+      test.useCase.replace({
+        workspaceId: workspace,
+        expectedPlanId: test.source.id,
+        expectedHeadVersion: 2,
+        targetItemId: target.id,
+        request: { ...request, seed: "valid-work-item-source" },
+        idempotencyKey: "valid-work-item-source",
+      }),
+    ).resolves.toMatchObject({ headVersion: 3 });
+  });
+
+  it("rejects mutations without a current plan or with a mismatched request scope", async () => {
+    const missing = harness();
+    missing.clearCurrent();
+    await expect(
+      missing.useCase.regenerate({
+        workspaceId: workspace,
+        expectedPlanId: missing.source.id,
+        expectedHeadVersion: 2,
+        request: { ...request, seed: "missing-current" },
+        idempotencyKey: "missing-current",
+      }),
+    ).rejects.toMatchObject({ code: "planning.current_not_found" });
+
+    const mismatched = harness();
+    await expect(
+      mismatched.useCase.regenerate({
+        workspaceId: workspace,
+        expectedPlanId: mismatched.source.id,
+        expectedHeadVersion: 2,
+        request: {
+          ...request,
+          workspaceId: workspaceId("different-workspace"),
+          seed: "wrong-scope",
+        },
+        idempotencyKey: "wrong-scope",
+      }),
+    ).rejects.toMatchObject({ code: "planning.source_mismatch" });
+  });
+
+  it.each(["regenerate", "replace"] as const)(
+    "rejects a combined candidate pool above 500 during %s",
+    async (operation) => {
+      const test = harness({
+        routineCandidates: Array.from({ length: 251 }, () => routines[0]!),
+        workItemCandidates: Array.from({ length: 250 }, (_, index) =>
+          createWorkItem({
+            workspaceId: workspace,
+            title: `Candidate work ${index + 1}`,
+            planningDurationMinutes: 15,
+          }),
+        ),
+      });
+      const command = {
+        workspaceId: workspace,
+        expectedPlanId: test.source.id,
+        expectedHeadVersion: 2,
+        request: { ...request, seed: `too-many-${operation}` },
+        idempotencyKey: `too-many-${operation}`,
+      };
+
+      const result =
+        operation === "regenerate"
+          ? test.useCase.regenerate(command)
+          : test.useCase.replace({
+              ...command,
+              targetItemId: test.source.items.find((item) => !item.locked)!.id,
+            });
+      await expect(result).rejects.toMatchObject({ code: "planning.candidate_pool_too_large" });
+    },
+  );
 
   it("rejects stale heads, conflicting mutation keys, and invalid replacement targets", async () => {
     const test = harness();

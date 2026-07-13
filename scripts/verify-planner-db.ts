@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import {
   CreateRoutine,
+  CreateWorkItem,
   CreateWorkspace,
   GenerateDailyPlan,
   GetDailyPlan,
@@ -114,6 +115,70 @@ try {
     "activity retry must return the original event",
   );
 
+  // EVIDENCE: unified-planner-work-item-opt-in-db
+  // A duration opts normal work into the same bounded planner pool as routines.
+  const plannableWorkItem = await new CreateWorkItem(unitOfWork, clock).execute({
+    workspaceId: workspace,
+    title: "Database-backed plannable work",
+    status: "planned",
+    priority: "urgent",
+    planningDurationMinutes: 15,
+  });
+  const terminalWorkItem = await new CreateWorkItem(unitOfWork, clock).execute({
+    workspaceId: workspace,
+    title: "Database-backed completed work",
+    status: "done",
+    priority: "urgent",
+    planningDurationMinutes: 15,
+  });
+  const unifiedRequest = createDailyPlanningRequest({
+    workspaceId: workspace,
+    date: "2026-07-16",
+    timeZone: "UTC",
+    availableWindows: [
+      {
+        startsAt: new Date("2026-07-16T08:00:00.000Z"),
+        endsAt: new Date("2026-07-16T09:00:00.000Z"),
+      },
+    ],
+    targetMinutes: 45,
+    targetTaskCount: 2,
+    availableContexts: ["computer"],
+    seed: "unified-planner-database-verification",
+    requestRevision: 1,
+  });
+  const unifiedPlan = await generator.execute({ request: unifiedRequest });
+  assert.equal(unifiedPlan.items.length, 2, "combined task-count budget must be honored");
+  assert.equal(
+    unifiedPlan.items.reduce((total, item) => total + item.scheduledMinutes, 0),
+    45,
+    "combined time budget must be honored",
+  );
+  const plannedWork = unifiedPlan.items.find((item) => item.workItemId === plannableWorkItem.id);
+  assert.notEqual(plannedWork, undefined, "an opted-in work item must be selectable for Today");
+  assert.equal(plannedWork!.sourceType, "work_item");
+  assert.equal(plannedWork!.routineId, null);
+  assert.equal(plannedWork!.workItemId, plannableWorkItem.id);
+  assert.equal(
+    unifiedPlan.items.some((item) => item.workItemId === terminalWorkItem.id),
+    false,
+    "terminal work must never become a daily-plan candidate",
+  );
+  const [persistedUnifiedPlanItem] = await connection.sql<
+    { source_type: string; routine_id: string | null; work_item_id: string | null }[]
+  >`
+    select source_type, routine_id::text, work_item_id::text
+    from daily_plan_items
+    where workspace_id = ${workspace}
+      and plan_id = ${unifiedPlan.id}
+      and work_item_id = ${plannableWorkItem.id}
+  `;
+  assert.deepEqual(persistedUnifiedPlanItem, {
+    source_type: "work_item",
+    routine_id: null,
+    work_item_id: plannableWorkItem.id,
+  });
+
   const [counts] = await connection.sql<
     { routine_count: number; plan_count: number; item_count: number; event_count: number }[]
   >`
@@ -125,8 +190,8 @@ try {
   `;
   assert.deepEqual(counts, {
     routine_count: 1,
-    plan_count: 1,
-    item_count: 1,
+    plan_count: 2,
+    item_count: 3,
     event_count: 1,
   });
 

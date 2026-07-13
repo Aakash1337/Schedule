@@ -87,6 +87,8 @@ export interface WorkItemRepository {
     limit: number,
     offset: number,
   ): Promise<readonly WorkItem[]>;
+  /** Returns only work items that may be considered by the daily planner. */
+  listPlanningCandidates(workspaceId: WorkspaceId): Promise<readonly WorkItem[]>;
   insert(item: WorkItem): Promise<void>;
   save(item: WorkItem, expectedVersion: number): Promise<void>;
 }

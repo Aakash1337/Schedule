@@ -18,6 +18,8 @@ export interface WorkItem {
   readonly description: string | null;
   readonly status: WorkItemStatus;
   readonly priority: WorkItemPriority;
+  /** A null duration keeps this one-time item out of automatic daily plans. */
+  readonly planningDurationMinutes: number | null;
   readonly version: number;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -98,7 +100,9 @@ export type PlanItemActivityState =
 
 export interface PlanItem {
   readonly id: string;
-  readonly routineId: string;
+  readonly sourceType: "routine" | "work_item";
+  readonly routineId: string | null;
+  readonly workItemId: string | null;
   readonly title: string;
   readonly position: number;
   readonly windowIndex: number;
@@ -114,7 +118,9 @@ export interface PlanItem {
 }
 
 export interface PlanExclusion {
-  readonly routineId: string;
+  readonly sourceType: "routine" | "work_item";
+  readonly routineId: string | null;
+  readonly workItemId: string | null;
   readonly title: string;
   readonly codes: readonly string[];
 }

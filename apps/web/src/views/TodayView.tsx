@@ -48,6 +48,15 @@ function stateLabel(state: PlanItemActivityState): string {
   return `${state.charAt(0).toUpperCase()}${state.slice(1)}`;
 }
 
+function sourceLabel(item: Pick<PlanItem, "sourceType">): string {
+  return item.sourceType === "work_item" ? "Work item" : "Routine";
+}
+
+function sourceKey(source: Pick<PlanItem, "sourceType" | "routineId" | "workItemId">): string {
+  const id = source.sourceType === "work_item" ? source.workItemId : source.routineId;
+  return `${source.sourceType}:${id ?? "missing"}`;
+}
+
 function retainedSettings(plan: CurrentDailyPlan): PlanSettings | null {
   if (plan.request === null) return null;
   return {
@@ -549,7 +558,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
       <PageHeader
         eyebrow={dayLabel}
         title="Today"
-        description="Build a realistic plan from your active routines, then adjust it without losing control."
+        description="Build a realistic plan from routines and selected work, then adjust it without losing control."
         actions={
           plan === null ? undefined : (
             <Button
@@ -750,18 +759,18 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
 
           {sortedItems.length === 0 ? (
             <EmptyState
-              title="No eligible routines fit this plan"
+              title="No eligible items fit this plan"
               action={
                 <Button type="button" variant="primary" onClick={() => onNavigate("routines")}>
                   Go to routines
                 </Button>
               }
             >
-              Add or activate a routine, or adjust its timing and context rules, then regenerate
-              this plan.
+              Add or activate a routine, opt a work item into Today, or adjust its planning rules,
+              then regenerate this plan.
             </EmptyState>
           ) : (
-            <ol className="today-plan-items" aria-label="Today's planned routines">
+            <ol className="today-plan-items" aria-label="Today's planned items">
               {sortedItems.map((item) => {
                 const window = plan.request?.availableWindows[item.windowIndex];
                 const lockKey = `lock:${item.id}`;
@@ -780,6 +789,11 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
                           <div>
                             <h3 id={`today-item-${item.id}`}>{item.title}</h3>
                             <p className="today-item-meta">
+                              <span
+                                className={`today-item-source today-item-source-${item.sourceType}`}
+                              >
+                                {sourceLabel(item)}
+                              </span>
                               <Clock3 size={14} aria-hidden="true" />
                               {formatMinutes(item.scheduledMinutes)}
                               {window === undefined
@@ -862,11 +876,11 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
             <details className="today-exclusions">
               <summary>
                 Why {plan.exclusions.length} other{" "}
-                {plan.exclusions.length === 1 ? "routine was" : "routines were"} excluded
+                {plan.exclusions.length === 1 ? "item was" : "items were"} excluded
               </summary>
               <ul>
                 {plan.exclusions.map((exclusion) => (
-                  <li key={exclusion.routineId}>
+                  <li key={sourceKey(exclusion)}>
                     <strong>{exclusion.title}</strong>
                     <span>{exclusion.codes.map(displayCode).join(", ")}</span>
                   </li>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createWorkspace, workspaceId, type WorkItem } from "@schedule/domain";
+import { createWorkspace, workItemId, workspaceId, type WorkItem } from "@schedule/domain";
 
 import { CreateWorkItem } from "./create-work-item.js";
 import { GetWorkItem } from "./get-work-item.js";
@@ -35,6 +35,13 @@ describe("work item management", () => {
                 (priority === undefined || item.priority === priority),
             )
             .slice(offset, offset + limit),
+        listPlanningCandidates: async (_workspace) =>
+          items.filter(
+            (item) =>
+              item.workspaceId === _workspace &&
+              item.planningDurationMinutes !== null &&
+              !["done", "cancelled"].includes(item.status),
+          ),
         insert: async (item: WorkItem) => {
           items.push(item);
         },
@@ -110,12 +117,42 @@ describe("work item management", () => {
     expect(test.saves()).toBe(1);
   });
 
+  it("persists a planning duration and permits explicitly removing it", async () => {
+    const test = harness();
+    const item = await test.create.execute({
+      workspaceId: workspace.id,
+      title: "Prepare release notes",
+      planningDurationMinutes: 45,
+    });
+    const removed = await test.update.execute({
+      workspaceId: workspace.id,
+      workItemId: item.id,
+      expectedVersion: 1,
+      planningDurationMinutes: null,
+    });
+
+    expect(item.planningDurationMinutes).toBe(45);
+    expect(removed).toMatchObject({ planningDurationMinutes: null, version: 2 });
+  });
+
   it("rejects a missing workspace before persistence", async () => {
     const test = harness({ workspaceExists: false });
     await expect(
       test.create.execute({ workspaceId: workspace.id, title: "Orphan" }),
     ).rejects.toMatchObject({ code: "workspace.not_found" });
     expect(test.items).toHaveLength(0);
+  });
+
+  it("rejects a work-item update outside an existing workspace", async () => {
+    const test = harness({ workspaceExists: false });
+    await expect(
+      test.update.execute({
+        workspaceId: workspace.id,
+        workItemId: workItemId("missing-work-item"),
+        expectedVersion: 1,
+        title: "Not persisted",
+      }),
+    ).rejects.toMatchObject({ code: "workspace.not_found" });
   });
 
   it("rejects invalid page bounds without opening a transaction", () => {

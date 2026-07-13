@@ -32,8 +32,9 @@ The application uses a persistent desktop rail and a compact mobile navigation b
    locks, activity actions, replacement, regeneration, warnings, and exclusions.
 2. **Work** groups one-time work items into the six supported status columns. Status changes use
    explicit controls because manual card ranking is not part of the API contract. Titles,
-   descriptions, priority, and status remain editable from the board. Work items are not yet
-   candidates in the routine-backed Today planner.
+   descriptions, priority, status, and an explicit **Include in Today** planning duration remain
+   editable from the board. Only opted-in `backlog`, `planned`, and `in_progress` work may become
+   a Today candidate; the card shows its selected duration.
 3. **Routines** manages the reusable activity pool, including structured tags, duration policy,
    cadence, status, and activity history.
 4. **Calendar** presents one-time schedule blocks in a week-first agenda. Blocks may link to a work
@@ -72,7 +73,8 @@ desktop, and narrow screens.
 The Chromium smoke test exercises the central product path through real built processes and a fresh
 PostgreSQL database: create a workspace, add a routine to the pool, generate today's plan, complete
 the planned routine, reload, and confirm that completion persists. It does not intercept network
-requests or replace the API with mocks.
+requests or replace the API with mocks. Work opt-in has component and API evidence; its browser flow
+is not yet part of this single smoke scenario.
 
 Install the local browser binary once, then run the bounded verifier:
 
@@ -95,7 +97,7 @@ a dedicated Chromium job and retains traces, screenshots, and video when it fail
 - Public hosting and production static serving until authentication and authorization exist
 - Drag ranking, bulk editing, projects, subtasks, attachments, and saved searches
 - Recurrence authoring, calendar conflict detection, and automatic placement
-- Work-item eligibility in Today, alternative-plan comparison, and generalized plan undo
+- Alternative-plan comparison and generalized plan undo
 - Learned-duration and adaptation settings
 - Local-model advisor controls
 - Collaboration, sync, notifications, and cloud deployment

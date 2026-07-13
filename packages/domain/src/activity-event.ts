@@ -5,6 +5,7 @@ import {
   type DailyPlanId,
   type PlanItemId,
   type RoutineId,
+  type WorkItemId,
   type WorkspaceId,
 } from "./ids.js";
 import { instantToLocalDate, isIanaTimeZone, type LocalDate } from "./calendar.js";
@@ -22,11 +23,16 @@ export const activityEventTypes = [
 ] as const;
 export type ActivityEventType = (typeof activityEventTypes)[number];
 export type ActivityMetadataValue = string | number | boolean | null;
+export const activitySourceTypes = ["routine", "work_item"] as const;
+export type ActivitySourceType = (typeof activitySourceTypes)[number];
 
 export interface ActivityEvent {
   readonly id: ActivityEventId;
   readonly workspaceId: WorkspaceId;
-  readonly routineId: RoutineId;
+  readonly sourceType: ActivitySourceType;
+  /** Present for routine activity; retained for backwards compatibility. */
+  readonly routineId: RoutineId | null;
+  readonly workItemId: WorkItemId | null;
   readonly planId: DailyPlanId | null;
   readonly planItemId: PlanItemId | null;
   readonly type: ActivityEventType;
@@ -44,7 +50,9 @@ export interface ActivityEvent {
 export interface RecordActivityEventInput {
   readonly id?: ActivityEventId;
   readonly workspaceId: WorkspaceId;
-  readonly routineId: RoutineId;
+  readonly sourceType?: ActivitySourceType;
+  readonly routineId?: RoutineId | null;
+  readonly workItemId?: WorkItemId | null;
   readonly planId?: DailyPlanId | null;
   readonly planItemId?: PlanItemId | null;
   readonly type: ActivityEventType;
@@ -59,6 +67,16 @@ export interface RecordActivityEventInput {
 }
 
 export function recordActivityEvent(input: RecordActivityEventInput): ActivityEvent {
+  const routineId = input.routineId ?? null;
+  const workItemId = input.workItemId ?? null;
+  const sourceType = input.sourceType ?? (routineId === null ? "work_item" : "routine");
+  invariant(
+    activitySourceTypes.some((type) => type === sourceType) &&
+      ((sourceType === "routine" && routineId !== null && workItemId === null) ||
+        (sourceType === "work_item" && workItemId !== null && routineId === null)),
+    "activity.source_invalid",
+    "Activity must identify exactly one routine or work item source.",
+  );
   invariant(
     activityEventTypes.some((type) => type === input.type),
     "activity.type_invalid",
@@ -137,9 +155,9 @@ export function recordActivityEvent(input: RecordActivityEventInput): ActivityEv
   const metadata = { ...(input.metadata ?? {}) };
   const metadataEntries = Object.entries(metadata);
   invariant(
-    metadataEntries.length <= 8,
+    metadataEntries.length <= 12,
     "activity.metadata_limit_exceeded",
-    "Activity metadata cannot contain more than 8 fields.",
+    "Activity metadata cannot contain more than 12 fields.",
   );
   invariant(
     metadataEntries.every(
@@ -156,7 +174,9 @@ export function recordActivityEvent(input: RecordActivityEventInput): ActivityEv
   return {
     id,
     workspaceId: input.workspaceId,
-    routineId: input.routineId,
+    sourceType,
+    routineId,
+    workItemId,
     planId,
     planItemId,
     type: input.type,

@@ -198,6 +198,7 @@ export const api = {
       description: string | null;
       status: WorkItemStatus;
       priority: WorkItemPriority;
+      planningDurationMinutes: number | null;
     },
   ) =>
     request<WorkItem>(workspacePath(workspaceId, "/work-items"), {
@@ -214,6 +215,7 @@ export const api = {
       description?: string | null;
       status?: WorkItemStatus;
       priority?: WorkItemPriority;
+      planningDurationMinutes?: number | null;
     },
   ) =>
     request<WorkItem>(workspacePath(workspaceId, `/work-items/${encodeURIComponent(itemId)}`), {

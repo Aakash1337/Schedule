@@ -48,4 +48,32 @@ describe("database schema", () => {
       ]),
     );
   });
+
+  it("models unified planner sources with tenant-scoped foreign keys", () => {
+    const itemConfig = getTableConfig(dailyPlanItems);
+    const activityConfig = getTableConfig(activityEvents);
+    const workItemConfig = getTableConfig(workItems);
+
+    expect(itemConfig.columns.map((column) => column.name)).toEqual(
+      expect.arrayContaining(["source_type", "routine_id", "work_item_id"]),
+    );
+    expect(activityConfig.columns.map((column) => column.name)).toEqual(
+      expect.arrayContaining(["source_type", "routine_id", "work_item_id"]),
+    );
+    expect(workItemConfig.columns.map((column) => column.name)).toContain(
+      "planning_duration_minutes",
+    );
+    expect(itemConfig.checks.map((constraint) => constraint.name)).toContain(
+      "daily_plan_items_source_valid",
+    );
+    expect(activityConfig.checks.map((constraint) => constraint.name)).toContain(
+      "activity_events_source_valid",
+    );
+    expect(itemConfig.foreignKeys.map((constraint) => constraint.getName())).toContain(
+      "daily_plan_items_work_item_tenant_fk",
+    );
+    expect(activityConfig.foreignKeys.map((constraint) => constraint.getName())).toContain(
+      "activity_events_work_item_tenant_fk",
+    );
+  });
 });

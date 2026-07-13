@@ -3,12 +3,20 @@ import { describe, expect, it } from "vitest";
 import { DomainError } from "./errors.js";
 import {
   isTerminalPlanItemActivityState,
+  isPlanItemActivityActionType,
+  isPlanItemActivityType,
   planItemActivityTypes,
   reversePlanItemCompletion,
   transitionPlanItemActivity,
 } from "./plan-item-activity.js";
 
 describe("plan item activity lifecycle", () => {
+  it("recognizes supported activity values without accepting arbitrary strings", () => {
+    expect(isPlanItemActivityType("completed")).toBe(true);
+    expect(isPlanItemActivityType("accepted")).toBe(false);
+    expect(isPlanItemActivityActionType("completion_reversed")).toBe(true);
+    expect(isPlanItemActivityActionType("accepted")).toBe(false);
+  });
   const transitionOracle = {
     pending: {
       started: "started",

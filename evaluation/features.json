@@ -263,7 +263,9 @@
           "level": "integration",
           "file": "apps/web/e2e/planning-flow.spec.ts",
           "command": "browser-e2e",
-          "anchors": ["persists completion through the live routine-to-Today planning flow"]
+          "anchors": [
+            "persists routine and work-item activity through the live Today planning flow"
+          ]
         }
       ]
     },
@@ -381,19 +383,56 @@
     },
     {
       "id": "ordinary-work-planner-eligibility",
-      "status": "partial",
+      "status": "implemented",
       "risk": "high",
       "contract": {
         "file": "docs/PRODUCT.md",
-        "anchor": "candidate plan items from routines only"
+        "anchor": "### 7.1 Inputs"
       },
-      "limitations": ["Work items are managed but are not candidates in planner v1."],
       "evidence": [
         {
           "level": "unit",
-          "file": "packages/application/src/work-item-management.test.ts",
+          "file": "packages/domain/src/unified-planning.test.ts",
           "command": "unit",
-          "anchors": ["creates, retrieves, and filters backlog items"]
+          "anchors": [
+            "uses opted-in eligible work items with typed sources and hard budgets",
+            "keeps null-duration and terminal work items out of the planner",
+            "does not resurrect a terminal work-item sibling during replanning",
+            "records work-item activity with a typed identity"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/WorkView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "opts a one-time item into Today with an explicit duration",
+            "can remove an item from Today's candidate pool while editing details"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-product-api.ts",
+          "command": "product-api",
+          "anchors": [
+            "unified-planner-work-item-opt-in-api",
+            "unified-planner-work-item-reversal-edit-guard-api",
+            "unified-planner-terminal-work-regeneration-api"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-planner-db.ts",
+          "command": "planner-db",
+          "anchors": ["unified-planner-work-item-opt-in-db"]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/planning-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": [
+            "persists routine and work-item activity through the live Today planning flow"
+          ]
         }
       ]
     },

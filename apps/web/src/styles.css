@@ -621,7 +621,9 @@ textarea:focus {
 
 .work-composer-form {
   display: grid;
-  grid-template-columns: minmax(190px, 1.3fr) minmax(220px, 1.7fr) 150px 130px auto;
+  grid-template-columns:
+    minmax(190px, 1.3fr) minmax(220px, 1.7fr) 150px 130px minmax(170px, 0.9fr)
+    auto;
   align-items: end;
   gap: 10px;
 }
@@ -634,6 +636,48 @@ textarea:focus {
 
 .work-composer-submit {
   min-width: 104px;
+}
+
+.work-planning-fieldset,
+.work-card-planning-fieldset {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.work-planning-fieldset legend,
+.work-card-planning-fieldset legend {
+  margin-bottom: 5px;
+  color: var(--ink-faint);
+  font-size: 0.68rem;
+  font-weight: 680;
+  text-transform: uppercase;
+}
+
+.work-planning-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-soft);
+  font-size: 0.77rem;
+  font-weight: 620;
+}
+
+.work-planning-toggle input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.work-planning-hint {
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 0.7rem;
+  line-height: 1.35;
 }
 
 .work-refresh-status {
@@ -792,6 +836,17 @@ textarea:focus {
   text-transform: uppercase;
 }
 
+.work-plan-badge {
+  flex: none;
+  padding: 3px 6px;
+  color: oklch(0.38 0.11 250);
+  background: oklch(0.94 0.035 250);
+  border-radius: 999px;
+  font-size: 0.64rem;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
 .work-priority-high,
 .work-priority-urgent {
   color: oklch(0.44 0.15 24);
@@ -824,6 +879,10 @@ textarea:focus {
 
 .work-card-editor textarea {
   min-height: 78px;
+}
+
+.work-card-planning-fieldset {
+  padding-top: 2px;
 }
 
 .work-card-editor-actions {
@@ -1056,6 +1115,24 @@ textarea:focus {
   color: var(--ink-soft);
   font-size: 0.76rem;
   line-height: 1.4;
+}
+
+.today-item-source {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 6px;
+  color: var(--ink-soft);
+  background: var(--paper-muted);
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.today-item-source-work_item {
+  color: oklch(0.38 0.11 250);
+  background: oklch(0.94 0.035 250);
 }
 
 .today-state,
