@@ -7,6 +7,7 @@
     "planner-db": { "command": "pnpm verify:database", "ci": true },
     "product-api": { "command": "pnpm verify:database", "ci": true },
     "outbox-db": { "command": "pnpm verify:database", "ci": true },
+    "plan-state-migrations": { "command": "pnpm verify:database", "ci": true },
     "weekday-migrations": { "command": "pnpm verify:database", "ci": true },
     "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
     "recovery-state": {
@@ -287,6 +288,12 @@
           "file": "packages/database/src/schema.test.ts",
           "command": "unit",
           "anchors": ["constrains routine weekday arrays at the database boundary"]
+        },
+        {
+          "level": "integration",
+          "file": "packages/database/test-fixtures/plan-state-migration-harness.ts",
+          "command": "plan-state-migrations",
+          "anchors": ["Plan-state migration upgrade verification passed"]
         },
         {
           "level": "integration",
