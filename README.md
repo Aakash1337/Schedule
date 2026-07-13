@@ -58,7 +58,8 @@ the unauthenticated surface beyond local development.
 
 ## Local development
 
-Prerequisites: Node.js 24+, pnpm 11.7+, and Docker Compose.
+Prerequisites: Node.js 24+, pnpm 11.7+, and Docker Compose. The repository's `.nvmrc` pins the
+local and CI Node.js major; run `nvm use` before installing dependencies when using nvm.
 
 The development PostgreSQL and API ports are published on host loopback only.
 
