@@ -4,7 +4,21 @@ import { isIP } from "node:net";
 import type { DatabaseConnection } from "./database.js";
 
 export const WEBHOOK_DELIVERY_TOPIC = "webhook.delivery.v1";
+export const SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE = "schedule.changed.v1";
 export const MAX_WEBHOOK_RAW_BODY_BYTES = 1_048_576;
+
+export type WebhookEventType = typeof SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE;
+
+export interface WebhookEventSubscriptionState {
+  readonly workspaceId: string;
+  readonly endpointId: string;
+  readonly eventTypes: readonly WebhookEventType[];
+}
+
+export interface WebhookEventSubscriptionReplacement extends WebhookEventSubscriptionState {
+  readonly previousEventTypes: readonly WebhookEventType[];
+  readonly changed: boolean;
+}
 
 export interface WebhookSecretEnvelope {
   readonly version: "v1";
@@ -128,12 +142,52 @@ interface IdRow {
   id: string;
 }
 
+interface ActiveWebhookTargetRow {
+  endpoint_id: string;
+  secret_id: string;
+}
+
+interface SubscriptionStateRow {
+  workspace_id: string;
+  endpoint_id: string;
+  event_types: string[];
+}
+
+interface SubscriptionRow {
+  event_type: string;
+}
+
 function assertNonEmptyBounded(name: string, value: string, maximum: number): string {
   const normalized = value.trim();
   if (normalized.length === 0 || normalized.length > maximum) {
     throw new RangeError(`${name} must contain between 1 and ${maximum} characters`);
   }
   return normalized;
+}
+
+function assertWebhookEventTypes(eventTypes: readonly string[]): readonly WebhookEventType[] {
+  if (!Array.isArray(eventTypes)) {
+    throw new TypeError("eventTypes must be an array");
+  }
+  if (eventTypes.length > 1) {
+    throw new RangeError("eventTypes must not contain duplicates or unsupported event types");
+  }
+  if (eventTypes.some((eventType) => eventType !== SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE)) {
+    throw new RangeError(
+      `unsupported webhook event type; allowed: ${SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE}`,
+    );
+  }
+  return eventTypes.length === 0 ? [] : [SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE];
+}
+
+function mapWebhookEventTypes(eventTypes: readonly string[]): readonly WebhookEventType[] {
+  if (
+    eventTypes.length > 1 ||
+    eventTypes.some((eventType) => eventType !== SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE)
+  ) {
+    throw new Error("Database returned invalid webhook event subscriptions");
+  }
+  return eventTypes.length === 0 ? [] : [SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE];
 }
 
 function assertWebhookUrl(url: string): string {
@@ -358,6 +412,150 @@ export async function listWebhookEndpoints(
   return rows.map(mapEndpoint);
 }
 
+/**
+ * Returns one active endpoint's complete event subscription set. Missing,
+ * foreign-tenant, and revoked endpoints are deliberately indistinguishable.
+ */
+export async function getWebhookEventSubscriptions(
+  connection: DatabaseConnection,
+  input: { readonly workspaceId: string; readonly endpointId: string },
+): Promise<readonly WebhookEventType[] | null> {
+  const rows = await connection.sql<SubscriptionStateRow[]>`
+    select
+      endpoint.workspace_id,
+      endpoint.id as endpoint_id,
+      coalesce(
+        array_agg(subscription.event_type order by subscription.event_type)
+          filter (where subscription.event_type is not null),
+        array[]::varchar[]
+      ) as event_types
+    from webhook_endpoints as endpoint
+    left join webhook_event_subscriptions as subscription
+      on subscription.workspace_id = endpoint.workspace_id
+      and subscription.endpoint_id = endpoint.id
+    where endpoint.workspace_id = ${input.workspaceId}::uuid
+      and endpoint.id = ${input.endpointId}::uuid
+      and endpoint.status = 'active'
+    group by endpoint.workspace_id, endpoint.id
+  `;
+  const row = rows[0];
+  return row ? mapWebhookEventTypes(row.event_types) : null;
+}
+
+/** Lists complete subscription state for all active endpoints without destinations or secrets. */
+export async function listWebhookEventSubscriptions(
+  connection: DatabaseConnection,
+  workspaceId: string,
+): Promise<readonly WebhookEventSubscriptionState[]> {
+  const rows = await connection.sql<SubscriptionStateRow[]>`
+    select
+      endpoint.workspace_id,
+      endpoint.id as endpoint_id,
+      coalesce(
+        array_agg(subscription.event_type order by subscription.event_type)
+          filter (where subscription.event_type is not null),
+        array[]::varchar[]
+      ) as event_types
+    from webhook_endpoints as endpoint
+    left join webhook_event_subscriptions as subscription
+      on subscription.workspace_id = endpoint.workspace_id
+      and subscription.endpoint_id = endpoint.id
+    where endpoint.workspace_id = ${workspaceId}::uuid
+      and endpoint.status = 'active'
+    group by endpoint.workspace_id, endpoint.id
+    order by endpoint.id
+  `;
+  return rows.map((row) => ({
+    workspaceId: row.workspace_id,
+    endpointId: row.endpoint_id,
+    eventTypes: mapWebhookEventTypes(row.event_types),
+  }));
+}
+
+/**
+ * Replaces an active endpoint's entire opt-in set under an endpoint lock.
+ * The replacement and audit are one transaction, and a no-op emits no audit.
+ */
+export async function replaceWebhookEventSubscriptions(
+  connection: DatabaseConnection,
+  input: {
+    readonly workspaceId: string;
+    readonly endpointId: string;
+    readonly eventTypes: readonly string[];
+    readonly actorId?: string | null;
+  },
+): Promise<WebhookEventSubscriptionReplacement | null> {
+  const eventTypes = assertWebhookEventTypes(input.eventTypes);
+  const auditEventId = randomUUID();
+
+  return connection.sql.begin(async (transaction) => {
+    const endpoints = await transaction<IdRow[]>`
+      select id
+      from webhook_endpoints
+      where workspace_id = ${input.workspaceId}::uuid
+        and id = ${input.endpointId}::uuid
+        and status = 'active'
+      for update
+    `;
+    if (!endpoints[0]) return null;
+
+    const currentRows = await transaction<SubscriptionRow[]>`
+      select event_type
+      from webhook_event_subscriptions
+      where workspace_id = ${input.workspaceId}::uuid
+        and endpoint_id = ${input.endpointId}::uuid
+      order by event_type
+      for update
+    `;
+    const previousEventTypes = mapWebhookEventTypes(currentRows.map((row) => row.event_type));
+    const changed =
+      previousEventTypes.length !== eventTypes.length ||
+      previousEventTypes.some((eventType, index) => eventType !== eventTypes[index]);
+
+    if (changed) {
+      await transaction`
+        delete from webhook_event_subscriptions
+        where workspace_id = ${input.workspaceId}::uuid
+          and endpoint_id = ${input.endpointId}::uuid
+      `;
+      const eventType = eventTypes[0];
+      if (eventType !== undefined) {
+        await transaction`
+          insert into webhook_event_subscriptions (workspace_id, endpoint_id, event_type)
+          values (
+            ${input.workspaceId}::uuid,
+            ${input.endpointId}::uuid,
+            ${eventType}
+          )
+        `;
+      }
+      await transaction`
+        insert into audit_events (id, workspace_id, actor_id, action, entity_type, entity_id, data)
+        values (
+          ${auditEventId}::uuid,
+          ${input.workspaceId}::uuid,
+          ${input.actorId ?? null}::uuid,
+          'webhook.subscriptions.replaced',
+          'webhook_endpoint',
+          ${input.endpointId}::uuid,
+          jsonb_build_object(
+            'previousEventTypes', ${previousEventTypes}::text[],
+            'eventTypes', ${eventTypes}::text[]
+          )
+        )
+      `;
+    }
+
+    return {
+      workspaceId: input.workspaceId,
+      endpointId: input.endpointId,
+      previousEventTypes,
+      eventTypes,
+      changed,
+    };
+  });
+}
+
 /** Creates the next strictly increasing pending secret version, if the endpoint has no pending rotation. */
 export async function prepareWebhookSecretRotation(
   connection: DatabaseConnection,
@@ -571,34 +769,44 @@ export async function enqueueWebhookTestDelivery(
   const auditEventId = randomUUID();
   const bodySha256 = createHash("sha256").update(rawBody, "utf8").digest("hex");
 
-  const rows = await connection.sql.begin(async (transaction) => {
+  const rows = await connection.sql.begin(async (transaction): Promise<DeliveryRow[]> => {
+    const endpoints = await transaction<IdRow[]>`
+      select id
+      from webhook_endpoints
+      where workspace_id = ${input.workspaceId}::uuid
+        and id = ${input.endpointId}::uuid
+        and status = 'active'
+      for share
+    `;
+    if (!endpoints[0]) return [];
+
+    const targets = await transaction<ActiveWebhookTargetRow[]>`
+      select endpoint_id, id as secret_id
+      from webhook_endpoint_secrets
+      where workspace_id = ${input.workspaceId}::uuid
+        and endpoint_id = ${input.endpointId}::uuid
+        and status = 'active'
+      for share
+    `;
+    const target = targets[0];
+    if (!target) return [];
+
     return transaction<DeliveryRow[]>`
-      with active_target as (
-        select endpoint.id as endpoint_id, secret.id as secret_id
-        from webhook_endpoints as endpoint
-        join webhook_endpoint_secrets as secret
-          on secret.workspace_id = endpoint.workspace_id
-          and secret.endpoint_id = endpoint.id
-          and secret.status = 'active'
-        where endpoint.workspace_id = ${input.workspaceId}::uuid
-          and endpoint.id = ${input.endpointId}::uuid
-          and endpoint.status = 'active'
-        for update of endpoint, secret
-      ), delivery as (
+      with delivery as (
         insert into webhook_deliveries as delivery (
           id, workspace_id, endpoint_id, secret_id, event_id, event_type, event_occurred_at, raw_body, body_sha256
         )
-        select
+        values (
           ${deliveryId}::uuid,
           ${input.workspaceId}::uuid,
-          target.endpoint_id,
-          target.secret_id,
+          ${target.endpoint_id}::uuid,
+          ${target.secret_id}::uuid,
           ${eventId},
           ${eventType},
           ${eventOccurredAt}::timestamptz,
           ${rawBody},
           ${bodySha256}
-        from active_target as target
+        )
         on conflict (workspace_id, endpoint_id, event_id) do nothing
         returning
           delivery.id,

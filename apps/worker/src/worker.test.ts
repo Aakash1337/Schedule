@@ -94,6 +94,25 @@ describe("outbox worker", () => {
     expect(databaseMocks.completeOutboxEvent).toHaveBeenCalledWith(database, firstEvent);
   });
 
+  it("forwards excluded topics to every claim without changing other claim options", async () => {
+    const controller = new AbortController();
+    databaseMocks.claimNextOutboxEvent.mockImplementationOnce(async () => {
+      controller.abort("test complete");
+      return emptyClaim;
+    });
+
+    await runOutboxWorker(config, database, dispatcherWith(vi.fn()), controller.signal, {
+      excludedTopics: ["webhook.delivery.v1"],
+    });
+
+    expect(databaseMocks.claimNextOutboxEvent).toHaveBeenCalledWith(database, {
+      leaseDurationMs: 300_000,
+      maxAttempts: 3,
+      deadLetterRecoveryLimit: 25,
+      excludedTopics: ["webhook.delivery.v1"],
+    });
+  });
+
   it("does not pre-lease a later event while the current handler is running", async () => {
     const controller = new AbortController();
     databaseMocks.claimNextOutboxEvent

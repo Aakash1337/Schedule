@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-13
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v2 selects both reusable routines and explicitly opted-in one-time Work items. A provider-neutral authenticated inbound gateway now provides Today reads and confirmed structured mutations for future agents, and a secure outbound substrate can send operator-queued test webhooks without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Alternative-plan comparison, generalized undo, recurrence authoring, a Hermes/WhatsApp adapter, automatic outbound notifications, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v2 selects both reusable routines and explicitly opted-in one-time Work items. A provider-neutral authenticated inbound gateway now provides Today reads and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
 
 ## 1. Product summary
 
@@ -399,6 +399,8 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
 
 - Implemented foundation: workspace-bound machine credentials and a confirmed, idempotent inbound
   automation API; this is not hosted end-user authentication
+- Implemented foundation: encrypted, signed outbound endpoints and explicit opt-in
+  `schedule.changed.v1` invalidations; these are refresh hints, not reminders or a messaging adapter
 - Authentication and secure workspace isolation
 - Cloud deployment selected from measured operational needs
 - Offline-capable synchronization and conflict handling, if required

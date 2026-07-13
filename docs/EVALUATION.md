@@ -31,7 +31,7 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm test:coverage`                 | Run every unit/component test and enforce coverage floors                 | No                              |
 | `pnpm eval`                          | Validate traceability and run the covered test suite                      | No                              |
 | `pnpm verify:database`               | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL    | Yes                             |
-| `pnpm verify:webhook-delivery`       | Verify webhook persistence, isolation, rotation, redrive, and rollback    | Yes, disposable only            |
+| `pnpm verify:webhook-delivery`       | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback   | Yes, disposable only            |
 | `pnpm verify:backup-restore`         | Verify archive/schema/content/sequence fidelity                           | Yes                             |
 | `pnpm verify:recovery-state-machine` | Exercise restore, promotion, rollback, and cleanup                        | Yes, disposable only            |
 | `pnpm verify:web-e2e`                | Exercise the built browser, API, migrations, and PostgreSQL planning loop | Own disposable Compose database |
@@ -43,7 +43,7 @@ project.
 
 ## Current scorecard
 
-The current audited unit/component suite contains 54 test files and 569 runtime test cases, plus one
+The current audited unit/component suite contains 54 test files and 590 runtime test cases, plus one
 live Chromium integration scenario. Parameterized state matrices expand into many cases, so this
 number must not be compared as though every case were an independent product feature.
 
@@ -51,8 +51,8 @@ number must not be compared as though every case were an independent product fea
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      20 / 20 |
-| Critical implemented features with CI-registered integration or drills |      12 / 12 |
+| Implemented features with CI-registered evidence                       |      21 / 21 |
+| Critical implemented features with CI-registered integration or drills |      13 / 13 |
 | Partial features with an explicit limitation                           |        0 / 0 |
 | Deferred features incorrectly counted as passing                       |            0 |
 | Missing or stale evidence anchors                                      |            0 |
@@ -65,7 +65,7 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.15% |   65.92% |    65.64% | 59.51% |
+| Whole repository, measured |      58.1% |   66.26% |    64.79% | 58.39% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     94.44% |   88.47% |    96.02% | 95.67% |
 | Domain, required           |        91% |      82% |       92% |    93% |
@@ -73,10 +73,13 @@ quality levels.
 | Application, required      |        83% |      76% |       98% |    83% |
 | API, measured              |     83.87% |    75.9% |     71.9% | 84.83% |
 | API, required              |        73% |      69% |       57% |    74% |
-| Worker, measured           |     92.26% |   89.04% |    91.11% | 95.14% |
+| Worker, measured           |     92.26% |   89.18% |    91.11% | 95.14% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     83.54% |   70.28% |    71.08% | 84.11% |
+| Web, measured              |     76.93% |   65.49% |       71% | 80.63% |
 | Web, required              |        75% |      63% |       70% |    79% |
+
+The whole-repository totals are 4,540 of 7,814 statements, 3,282 of 4,953 branches,
+1,029 of 1,588 functions, and 4,247 of 7,273 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -129,10 +132,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   rows, but does not exercise a Hermes runtime, WhatsApp transport, or natural-language
   interpretation;
 - the outbound webhook verifier covers real PostgreSQL endpoint/secret lifecycles, workspace
-  isolation, immutable delivery/outbox linkage, dead-letter metadata, redrive identity, revocation,
-  audits, and rollback. DNS, pinned-address HTTPS, TLS, and the external receiver are unit-faked, so
-  there is no live-network delivery claim; only operator-queued test events exist, with automatic
-  product notifications and Hermes/WhatsApp events still deferred;
+  isolation, default-empty and replacement subscription state, privacy-thin automatic Today-change
+  fan-out, deterministic event identity, immutable delivery/outbox linkage, dead-letter metadata,
+  redrive identity, revocation, audits, and rollback. DNS, pinned-address HTTPS, TLS, and the external
+  receiver are unit-faked, so there is no live-network delivery claim. The automatic event is only an
+  invalidation; reminder policy, phone notifications, Hermes/WhatsApp transport, and downstream
+  delivery receipts remain deferred;
 - live browser evidence covers the central desktop Chromium mixed routine/work-item planning loop,
   including work completion and reversal, but not every browser, responsive layout, validation
   branch, or Calendar interaction; and

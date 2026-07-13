@@ -198,6 +198,9 @@ The supported endpoint workflow is CLI-only:
 pnpm webhooks -- generate-master-key --id primary
 pnpm webhooks -- create --workspace <workspace-uuid> --name "Hermes bridge" --url https://hooks.example.com/schedule
 pnpm webhooks -- send-test --workspace <workspace-uuid> --endpoint <endpoint-uuid>
+pnpm webhooks -- list-subscriptions --workspace <workspace-uuid> --endpoint <endpoint-uuid>
+pnpm webhooks -- replace-subscriptions --workspace <workspace-uuid> --endpoint <endpoint-uuid> --events schedule.changed.v1 --confirm replace-automatic-subscriptions
+pnpm webhooks -- replace-subscriptions --workspace <workspace-uuid> --endpoint <endpoint-uuid> --events none --confirm replace-automatic-subscriptions
 pnpm webhooks -- dead-letters --workspace <workspace-uuid>
 pnpm webhooks -- redrive --workspace <workspace-uuid> --delivery <delivery-uuid>
 ```
@@ -207,6 +210,22 @@ outside PostgreSQL and outside the repository, and keep every still-referenced o
 missing master key cannot decrypt an endpoint's stored envelope, so the worker fails that delivery
 closed. The one-time endpoint signing secret printed after creation or rotation belongs at the
 receiver and cannot be recovered from the database alone.
+
+Every endpoint begins with no automatic subscriptions. After a signed test succeeds, configure the
+receiver with a workspace-scoped integration credential and verify it can read
+`GET /v1/integrations/today?date=<YYYY-MM-DD>`. Then inspect and deliberately replace the complete
+subscription set. `replace-subscriptions` is intentionally destructive and accepts only the literal
+`--confirm replace-automatic-subscriptions`; use `--events schedule.changed.v1` to enable the
+privacy-thin invalidation or `--events none` to stop future automatic event creation. Re-list after
+every change and record the opaque endpoint ID in the change ticket.
+
+`WEBHOOK_DELIVERY_MODE=disabled` is the global transport kill switch. After the worker restarts in
+that mode, it excludes webhook deliveries from both claiming and recovery, so it makes no network
+attempts and does not spend their retry or dead-letter budget. It does not remove subscriptions or
+queued deliveries. Committed Today-head changes still enqueue durable invalidations for subscribed
+endpoints. Before re-enabling, inspect pending age and receiver readiness; deliveries older than the
+configured maximum age fail closed once processing resumes. If an outage will be long and new
+events are not wanted, replace each endpoint's subscription set with `none` as well.
 
 For a delivery incident:
 
@@ -227,10 +246,12 @@ After webhook persistence or migration changes, run the disposable PostgreSQL ve
 pnpm verify:webhook-delivery
 ```
 
-The verifier covers workspace isolation, encrypted-envelope constraints, rotation, immutable body
-and outbox linkage, audit records, dead-letter redrive, revocation, and transactional rollback. It is
-also part of `pnpm verify:database` and the PostgreSQL CI job. Automatic schedule/reminder events and
-the Hermes/WhatsApp adapter remain deferred; a successful test delivery does not imply they exist.
+The verifier covers workspace isolation, encrypted-envelope constraints, rotation, subscription
+replacement, privacy-thin automatic event fan-out, immutable body and outbox linkage, audit records,
+dead-letter redrive, revocation, and transactional rollback. It is also part of
+`pnpm verify:database` and the PostgreSQL CI job. `schedule.changed.v1` is only an invalidation; the
+Hermes/WhatsApp adapter, reminder decisions, phone transport, and end-to-end receipts remain
+deferred. A successful test or invalidation delivery does not imply those systems exist.
 
 ## Routine verification
 

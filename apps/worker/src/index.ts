@@ -35,6 +35,9 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 
 await runWorkerRuntime({
-  run: () => runOutboxWorker(config, database, dispatcher, controller.signal),
+  run: () =>
+    runOutboxWorker(config, database, dispatcher, controller.signal, {
+      excludedTopics: config.WEBHOOK_DELIVERY_MODE === "disabled" ? [WEBHOOK_DELIVERY_TOPIC] : [],
+    }),
   close: () => database.close(),
 });

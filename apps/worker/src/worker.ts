@@ -17,6 +17,7 @@ export interface OutboxWorkerOptions {
   readonly leaseDurationMs?: number;
   readonly heartbeatIntervalMs?: number;
   readonly shutdownGracePeriodMs?: number;
+  readonly excludedTopics?: readonly string[];
 }
 
 export const DEFAULT_OUTBOX_HEARTBEAT_INTERVAL_MS = Math.floor(
@@ -303,6 +304,7 @@ export async function runOutboxWorker(
         leaseDurationMs,
         maxAttempts: config.OUTBOX_MAX_ATTEMPTS,
         deadLetterRecoveryLimit: config.OUTBOX_BATCH_SIZE,
+        ...(options.excludedTopics === undefined ? {} : { excludedTopics: options.excludedTopics }),
       });
 
       for (const deadLettered of result.deadLettered) {

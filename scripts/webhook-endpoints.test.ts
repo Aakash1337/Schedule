@@ -49,6 +49,12 @@ function dependencies(
       outboxEventId: secretId,
       eventId: input.eventId,
     })) as never,
+    getEventSubscriptions: vi.fn(async () => []) as never,
+    replaceEventSubscriptions: vi.fn(async (_connection, input) => ({
+      previousEventTypes: [],
+      eventTypes: input.eventTypes,
+      changed: input.eventTypes.length > 0,
+    })) as never,
     listDeadLetters: vi.fn(async () => []) as never,
     redriveDelivery: vi.fn(async () => true) as never,
     validateUrl: vi.fn((url) => new URL(url)) as never,
@@ -112,8 +118,104 @@ describe("webhook endpoint CLI parsing", () => {
       ["dead-letters", "--workspace", workspaceId, "--limit", "0"],
       ["list", "--workspace="],
       ["list", "--workspace", workspaceId, "--unknown", "x"],
+      [
+        "replace-subscriptions",
+        "--workspace",
+        workspaceId,
+        "--endpoint",
+        endpointId,
+        "--events",
+        "schedule.changed.v1",
+      ],
+      [
+        "replace-subscriptions",
+        "--workspace",
+        workspaceId,
+        "--endpoint",
+        endpointId,
+        "--events",
+        "none",
+      ],
+      [
+        "replace-subscriptions",
+        "--workspace",
+        workspaceId,
+        "--endpoint",
+        endpointId,
+        "--events",
+        "none",
+        "--confirm",
+        "yes",
+      ],
     ])
       expect(() => parseWebhookEndpointArguments(args)).toThrow(/Usage:/);
+  });
+
+  it("strictly parses automatic subscription reads, enables, and disables", () => {
+    expect(
+      parseWebhookEndpointArguments([
+        "list-subscriptions",
+        "--workspace",
+        workspaceId.toUpperCase(),
+        "--endpoint",
+        endpointId.toUpperCase(),
+      ]),
+    ).toEqual({ kind: "list-subscriptions", workspaceId, endpointId });
+
+    const base = ["replace-subscriptions", "--workspace", workspaceId, "--endpoint", endpointId];
+    expect(
+      parseWebhookEndpointArguments([
+        ...base,
+        "--events",
+        "schedule.changed.v1",
+        "--confirm",
+        "replace-automatic-subscriptions",
+      ]),
+    ).toEqual({
+      kind: "replace-subscriptions",
+      workspaceId,
+      endpointId,
+      eventTypes: ["schedule.changed.v1"],
+      confirmation: "replace-automatic-subscriptions",
+    });
+    expect(
+      parseWebhookEndpointArguments([
+        ...base,
+        "--events=none",
+        "--confirm=replace-automatic-subscriptions",
+      ]),
+    ).toEqual({
+      kind: "replace-subscriptions",
+      workspaceId,
+      endpointId,
+      eventTypes: [],
+      confirmation: "replace-automatic-subscriptions",
+    });
+  });
+
+  it("rejects ambiguous, duplicated, malformed, and control-tainted subscription arguments", () => {
+    const prefix = ["replace-subscriptions", "--workspace", workspaceId, "--endpoint", endpointId];
+    for (const tail of [
+      ["--events", ""],
+      ["--events", "schedule.changed.v1,none", "--confirm", "replace-automatic-subscriptions"],
+      ["--events", "schedule.changed.v1 ", "--confirm", "replace-automatic-subscriptions"],
+      ["--events", "SCHEDULE.CHANGED.V1", "--confirm", "replace-automatic-subscriptions"],
+      ["--events", "schedule.changed.v1\n", "--confirm", "replace-automatic-subscriptions"],
+      ["--events", "none", "--confirm", "replace-automatic-subscriptions\u202e"],
+      ["--events", "none", "--events", "none", "--confirm", "replace-automatic-subscriptions"],
+      ["--events", "other.event.v1", "--confirm", "replace-automatic-subscriptions"],
+    ]) {
+      expect(() => parseWebhookEndpointArguments([...prefix, ...tail])).toThrow(/Usage:/);
+    }
+    expect(() =>
+      parseWebhookEndpointArguments([
+        "list-subscriptions",
+        "--workspace",
+        workspaceId,
+        "--endpoint",
+        `${endpointId} `,
+      ]),
+    ).toThrow(/--endpoint must be a valid UUID/);
   });
 });
 
@@ -125,6 +227,27 @@ describe("webhook endpoint CLI execution", () => {
     expect(deps.createConnection).not.toHaveBeenCalled();
     expect(deps.write).toHaveBeenCalledTimes(2);
     expect(deps.write).toHaveBeenNthCalledWith(1, `WEBHOOK_MASTER_KEYS=primary:${key}`);
+  });
+
+  it("requires the exact replacement confirmation even for direct runner calls", async () => {
+    const deps = dependencies();
+    await expect(
+      runWebhookEndpointCommand(
+        {
+          kind: "replace-subscriptions",
+          workspaceId,
+          endpointId,
+          eventTypes: [],
+          confirmation: "yes",
+        } as never,
+        {},
+        deps,
+      ),
+    ).rejects.toThrow("Exact webhook subscription replacement confirmation is required.");
+    expect(deps.loadConfig).not.toHaveBeenCalled();
+    expect(deps.createConnection).not.toHaveBeenCalled();
+    expect(deps.replaceEventSubscriptions).not.toHaveBeenCalled();
+    expect(deps.write).not.toHaveBeenCalled();
   });
 
   it("prints a signing secret only after endpoint creation succeeds and closes the connection", async () => {
@@ -191,6 +314,158 @@ describe("webhook endpoint CLI execution", () => {
     expect(String((deps.write as ReturnType<typeof vi.fn>).mock.calls[0]?.[0])).not.toContain(
       "rawBody",
     );
+  });
+
+  it("lists subscriptions with only the endpoint identifier and event types", async () => {
+    const close = vi.fn(async () => undefined);
+    const deps = dependencies({
+      loadConfig: vi.fn(() => ({
+        DATABASE_URL: "postgres://test",
+        WEBHOOK_DELIVERY_MODE: "disabled",
+        WEBHOOK_ACTIVE_MASTER_KEY_ID: "",
+        WEBHOOK_MASTER_KEYS_BY_ID: new Map(),
+      })) as never,
+      createConnection: vi.fn(() => ({ close })) as never,
+      getEventSubscriptions: vi.fn(async () => ["schedule.changed.v1"]) as never,
+    });
+    await runWebhookEndpointCommand(
+      { kind: "list-subscriptions", workspaceId, endpointId },
+      {},
+      deps,
+    );
+    expect(deps.getEventSubscriptions).toHaveBeenCalledWith(expect.anything(), {
+      workspaceId,
+      endpointId,
+    });
+    expect(deps.write).toHaveBeenCalledWith(
+      JSON.stringify({ endpointId, eventTypes: ["schedule.changed.v1"] }),
+    );
+    const output = String((deps.write as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
+    expect(output).not.toMatch(/url|secret|body|credential|workspace/i);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      label: "enables",
+      eventTypes: ["schedule.changed.v1"] as const,
+      previousEventTypes: [] as readonly string[],
+      changed: true,
+      status: "replaced",
+    },
+    {
+      label: "disables",
+      eventTypes: [] as const,
+      previousEventTypes: ["schedule.changed.v1"] as const,
+      changed: true,
+      status: "replaced",
+    },
+    {
+      label: "leaves an idempotent replacement unchanged",
+      eventTypes: ["schedule.changed.v1"] as const,
+      previousEventTypes: ["schedule.changed.v1"] as const,
+      changed: false,
+      status: "unchanged",
+    },
+  ])("$label automatic subscriptions with an exact minimal result", async (scenario) => {
+    const close = vi.fn(async () => undefined);
+    const deps = dependencies({
+      loadConfig: vi.fn(() => ({
+        DATABASE_URL: "postgres://test",
+        WEBHOOK_DELIVERY_MODE: "disabled",
+        WEBHOOK_ACTIVE_MASTER_KEY_ID: "",
+        WEBHOOK_MASTER_KEYS_BY_ID: new Map(),
+      })) as never,
+      createConnection: vi.fn(() => ({ close })) as never,
+      replaceEventSubscriptions: vi.fn(async () => ({
+        previousEventTypes: scenario.previousEventTypes,
+        eventTypes: scenario.eventTypes,
+        changed: scenario.changed,
+      })) as never,
+    });
+    await runWebhookEndpointCommand(
+      {
+        kind: "replace-subscriptions",
+        workspaceId,
+        endpointId,
+        eventTypes: scenario.eventTypes,
+        confirmation: "replace-automatic-subscriptions",
+      },
+      {},
+      deps,
+    );
+    expect(deps.replaceEventSubscriptions).toHaveBeenCalledWith(expect.anything(), {
+      workspaceId,
+      endpointId,
+      eventTypes: scenario.eventTypes,
+    });
+    expect(deps.write).toHaveBeenCalledWith(
+      JSON.stringify({
+        endpointId,
+        previousEventTypes: scenario.previousEventTypes,
+        eventTypes: scenario.eventTypes,
+        status: scenario.status,
+      }),
+    );
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      label: "missing subscription endpoint",
+      overrides: { getEventSubscriptions: vi.fn(async () => null) as never },
+      command: { kind: "list-subscriptions", workspaceId, endpointId } as const,
+      message: "Webhook endpoint subscriptions could not be read.",
+    },
+    {
+      label: "missing replacement endpoint",
+      overrides: { replaceEventSubscriptions: vi.fn(async () => null) as never },
+      command: {
+        kind: "replace-subscriptions",
+        workspaceId,
+        endpointId,
+        eventTypes: [] as const,
+        confirmation: "replace-automatic-subscriptions",
+      } as const,
+      message: "Webhook endpoint subscriptions could not be replaced.",
+    },
+    {
+      label: "subscription read database failure",
+      overrides: {
+        getEventSubscriptions: vi.fn(async () => {
+          throw new Error("postgres://admin:password@private-host/internal-url-and-secret");
+        }) as never,
+      },
+      command: { kind: "list-subscriptions", workspaceId, endpointId } as const,
+      message: "Webhook endpoint subscriptions could not be read.",
+    },
+    {
+      label: "subscription replacement database failure",
+      overrides: {
+        replaceEventSubscriptions: vi.fn(async () => {
+          throw new Error("postgres://admin:password@private-host/internal-url-and-secret");
+        }) as never,
+      },
+      command: {
+        kind: "replace-subscriptions",
+        workspaceId,
+        endpointId,
+        eventTypes: ["schedule.changed.v1"] as const,
+        confirmation: "replace-automatic-subscriptions",
+      } as const,
+      message: "Webhook endpoint subscriptions could not be replaced.",
+    },
+  ])("closes and emits nothing for $label", async ({ overrides, command, message }) => {
+    const close = vi.fn(async () => undefined);
+    const deps = dependencies({
+      createConnection: vi.fn(() => ({ close })) as never,
+      ...overrides,
+    });
+    await expect(runWebhookEndpointCommand(command, {}, deps)).rejects.toThrowError(
+      new Error(message),
+    );
+    expect(deps.write).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("fails closed for null/conflict/revoked outcomes and still closes", async () => {

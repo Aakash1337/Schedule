@@ -320,6 +320,26 @@ packages do not depend on a specific platform. Before public exposure, add the p
 secret rotation, monitoring, backup, and incident-response controls described in
 [OPERATIONS.md](./OPERATIONS.md).
 
+## Schedule-change refresh flow
+
+The outbound webhook subsystem can opt one endpoint into the privacy-thin
+`schedule.changed.v1` contract. This event is an invalidation hint, not a second source of schedule
+state. It contains only a workspace ID, local date, resulting Today `headVersion`, event identity,
+type, and timestamp. The exact body and subscription commands are specified in
+[WEBHOOKS.md](./WEBHOOKS.md#automatic-schedule-change-events).
+
+A Hermes-style adapter should authenticate and durably deduplicate the event, then call its
+credential-scoped `GET /v1/integrations/today?date=<YYYY-MM-DD>` route for the supplied date. The
+read response is authoritative: its `headVersion` may already be greater than the notification
+because delivery is at least once and unordered. The adapter should update its projection from that
+response, not infer a task change from the event or attach reminder semantics to it.
+
+Polling remains mandatory as a fallback. An endpoint has no subscription by default; delivery may
+also be globally disabled, delayed, dead-lettered, or interrupted during key rotation. Polling and
+webhook refreshes should enter the same idempotent reconciliation path. Neither path authorizes a
+phone notification: reminder policy, human/account binding, WhatsApp transport, and downstream
+delivery receipts belong to the external adapter.
+
 ## Verification
 
 Unit and contract coverage is part of the normal repository check:
@@ -404,8 +424,9 @@ security-sensitive recovery.
 - There is no Hermes runtime or WhatsApp transport in this repository. No endpoint accepts a chat
   message, audio, image, or natural-language instruction.
 - A disabled-by-default [outbound webhook substrate](./WEBHOOKS.md) can send operator-queued signed
-  test events, but there are no automatic schedule events, push notifications, reminders, or
-  end-to-end phone delivery receipts. An adapter must still poll Today for current schedule data.
+  test events and explicitly subscribed `schedule.changed.v1` invalidations. It cannot send schedule
+  contents, push-notification requests, reminders, or end-to-end phone delivery receipts. An adapter
+  must still read and poll Today for authoritative schedule data.
 - Version 1 does not create workspaces, routines, plans, or credentials over HTTP; delete commands
   are intentionally absent.
 - The integration API is machine-to-machine authentication for one workspace, not hosted end-user
