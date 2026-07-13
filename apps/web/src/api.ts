@@ -8,6 +8,7 @@ import type {
   PlanSettings,
   Routine,
   RoutineDurationInsight,
+  RoutinePlanningFeedbackSuppressionKind,
   RoutineStatus,
   ScheduleBlock,
   WorkItem,
@@ -418,6 +419,41 @@ export const api = {
   ) =>
     request<CurrentDailyPlan>(
       workspacePath(workspaceId, `/plans/${date}/items/${encodeURIComponent(itemId)}/replacement`),
+      { method: "POST", json: input, idempotencyKey },
+    ),
+
+  applyRoutineFeedback: (
+    workspaceId: string,
+    date: string,
+    itemId: string,
+    input: {
+      expectedPlanId: string;
+      expectedHeadVersion: number;
+      kind: RoutinePlanningFeedbackSuppressionKind;
+      request: PlanSettings;
+    },
+    idempotencyKey: string,
+  ) =>
+    request<CurrentDailyPlan>(
+      workspacePath(
+        workspaceId,
+        `/plans/${date}/items/${encodeURIComponent(itemId)}/routine-feedback`,
+      ),
+      { method: "POST", json: input, idempotencyKey },
+    ),
+
+  resetRoutineFeedback: (
+    workspaceId: string,
+    date: string,
+    routineId: string,
+    input: { expectedPlanId: string; expectedHeadVersion: number; request: PlanSettings },
+    idempotencyKey: string,
+  ) =>
+    request<CurrentDailyPlan>(
+      workspacePath(
+        workspaceId,
+        `/plans/${date}/routines/${encodeURIComponent(routineId)}/routine-feedback-resets`,
+      ),
       { method: "POST", json: input, idempotencyKey },
     ),
 };

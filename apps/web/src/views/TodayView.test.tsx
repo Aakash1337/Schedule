@@ -8,11 +8,13 @@ import type { CurrentDailyPlan, Workspace } from "../types";
 import { TodayView } from "./TodayView";
 
 const apiMocks = vi.hoisted(() => ({
+  applyRoutineFeedback: vi.fn(),
   generatePlan: vi.fn(),
   getCurrentPlan: vi.fn(),
   recordPlanItemActivity: vi.fn(),
   regeneratePlan: vi.fn(),
   replacePlanItem: vi.fn(),
+  resetRoutineFeedback: vi.fn(),
   setPlanItemLock: vi.fn(),
 }));
 
@@ -95,6 +97,36 @@ function deferred<Value>() {
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+function planWithTemporaryFeedback(kind: "not_today" | "not_this_week"): CurrentDailyPlan {
+  return {
+    ...plan,
+    id: `plan-${kind}`,
+    headVersion: 3,
+    requestRevision: 2,
+    request:
+      plan.request === null ? null : { ...plan.request, seed: `${kind}-seed`, requestRevision: 2 },
+    items: [
+      {
+        ...plan.items[0]!,
+        id: "plan-item-work-1",
+        sourceType: "work_item",
+        routineId: null,
+        workItemId: "work-item-1",
+        title: "Check the inbox",
+      },
+    ],
+    exclusions: [
+      {
+        sourceType: "routine",
+        routineId: "routine-1",
+        workItemId: null,
+        title: "Practice Spanish",
+        codes: [kind === "not_today" ? "feedback_not_today" : "feedback_not_this_week"],
+      },
+    ],
+  };
 }
 
 beforeEach(() => {
@@ -372,5 +404,263 @@ describe("Today commands", () => {
     expect(first?.[4]).toBe(second?.[4]);
     expect(first?.[3].occurredAt).toBe(second?.[3].occurredAt);
     expect(await screen.findByLabelText("Status: Started")).toBeInTheDocument();
+  });
+
+  it("offers temporary feedback only for pending, unlocked routine items", async () => {
+    const routine = plan.items[0]!;
+    apiMocks.getCurrentPlan.mockResolvedValue({
+      ...plan,
+      items: [
+        routine,
+        {
+          ...routine,
+          id: "plan-item-work",
+          sourceType: "work_item",
+          routineId: null,
+          workItemId: "work-item-1",
+          title: "File the receipt",
+          position: 1,
+        },
+        {
+          ...routine,
+          id: "plan-item-locked",
+          routineId: "routine-locked",
+          title: "Locked routine",
+          position: 2,
+          locked: true,
+        },
+        {
+          ...routine,
+          id: "plan-item-started",
+          routineId: "routine-started",
+          title: "Started routine",
+          position: 3,
+          activityState: "started",
+        },
+        {
+          ...routine,
+          id: "plan-item-completed",
+          routineId: "routine-completed",
+          title: "Completed routine",
+          position: 4,
+          activityState: "completed",
+        },
+      ],
+    });
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const controls = await screen.findByRole("group", {
+      name: "Planning feedback for Practice Spanish",
+    });
+    expect(controls).toHaveTextContent("Not today");
+    expect(controls).toHaveTextContent("Not this week");
+    expect(
+      screen.queryByRole("group", { name: "Planning feedback for File the receipt" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("group", { name: "Planning feedback for Locked routine" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("group", { name: "Planning feedback for Started routine" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("group", { name: "Planning feedback for Completed routine" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps temporary feedback visible but unavailable when plan settings are missing", async () => {
+    apiMocks.getCurrentPlan.mockResolvedValue({ ...plan, request: null });
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const controls = await screen.findByRole("group", {
+      name: "Planning feedback for Practice Spanish",
+    });
+    expect(controls).toBeVisible();
+    expect(screen.getByRole("button", { name: "Not today" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Not this week" })).toBeDisabled();
+  });
+
+  it.each([
+    ["Not today", "not_today", "Hidden today"],
+    ["Not this week", "not_this_week", "Hidden through the end of this week"],
+  ] as const)(
+    "applies %s as a versioned feedback mutation and renders the returned plan",
+    async (buttonName, kind, timeframe) => {
+      const user = userEvent.setup();
+      const updated = planWithTemporaryFeedback(kind);
+      apiMocks.applyRoutineFeedback.mockResolvedValue(updated);
+
+      render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+      await user.click(await screen.findByRole("button", { name: buttonName }));
+
+      await waitFor(() => expect(apiMocks.applyRoutineFeedback).toHaveBeenCalledOnce());
+      const call = apiMocks.applyRoutineFeedback.mock.calls[0];
+      expect(call?.[0]).toBe(workspace.id);
+      expect(call?.[1]).toBe(plan.date);
+      expect(call?.[2]).toBe(plan.items[0]?.id);
+      expect(call?.[3]).toEqual(
+        expect.objectContaining({
+          expectedPlanId: plan.id,
+          expectedHeadVersion: plan.headVersion,
+          kind,
+          request: expect.objectContaining({
+            seed: expect.stringMatching(
+              new RegExp(`^today:${plan.date}:revision:${plan.requestRevision + 1}:`),
+            ),
+          }),
+        }),
+      );
+      expect(call?.[4]).toEqual(expect.any(String));
+      expect(await screen.findByRole("heading", { name: "Check the inbox" })).toBeVisible();
+      expect(screen.queryByRole("heading", { name: "Practice Spanish" })).not.toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Temporarily hidden" })).toBeVisible();
+      expect(screen.getByText(timeframe)).toBeVisible();
+      expect(screen.getByRole("status")).toHaveTextContent("plan was recalculated");
+      const recentUndo = screen.getByRole("button", {
+        name: "Undo recent feedback for Practice Spanish",
+      });
+      expect(recentUndo).toBeVisible();
+      await waitFor(() => expect(recentUndo).toHaveFocus());
+      expect(apiMocks.recordPlanItemActivity).not.toHaveBeenCalled();
+    },
+  );
+
+  it("explains when newer cross-date feedback prevents changing an older plan", async () => {
+    const user = userEvent.setup();
+    apiMocks.getCurrentPlan.mockResolvedValueOnce(plan).mockResolvedValueOnce(plan);
+    apiMocks.applyRoutineFeedback.mockRejectedValue(
+      new ApiError(
+        409,
+        "planning.feedback_head_conflict",
+        "Routine planning feedback changed.",
+        null,
+      ),
+    );
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await user.click(await screen.findByRole("button", { name: "Not today" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Newer planning feedback exists for this routine on another plan date",
+    );
+    expect(apiMocks.getCurrentPlan).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("heading", { name: "Practice Spanish" })).toBeVisible();
+  });
+
+  it("retries ambiguous routine feedback with the same idempotency key and seed", async () => {
+    const user = userEvent.setup();
+    apiMocks.applyRoutineFeedback
+      .mockRejectedValueOnce(new Error("Connection dropped before the response arrived."))
+      .mockResolvedValueOnce(planWithTemporaryFeedback("not_today"));
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const notToday = await screen.findByRole("button", { name: "Not today" });
+    await user.click(notToday);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Connection dropped");
+    expect(notToday).toHaveFocus();
+    await user.click(notToday);
+
+    await waitFor(() => expect(apiMocks.applyRoutineFeedback).toHaveBeenCalledTimes(2));
+    const first = apiMocks.applyRoutineFeedback.mock.calls[0];
+    const second = apiMocks.applyRoutineFeedback.mock.calls[1];
+    expect(first?.[4]).toBe(second?.[4]);
+    expect(first?.[3].request.seed).toBe(second?.[3].request.seed);
+    expect(await screen.findByRole("heading", { name: "Check the inbox" })).toBeVisible();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Undo recent feedback for Practice Spanish" }),
+      ).toHaveFocus(),
+    );
+    expect(apiMocks.recordPlanItemActivity).not.toHaveBeenCalled();
+  });
+
+  it("undoes just-applied feedback through a reset mutation and uses its returned plan", async () => {
+    const user = userEvent.setup();
+    const hidden = planWithTemporaryFeedback("not_today");
+    const recalculated: CurrentDailyPlan = {
+      ...plan,
+      id: "plan-reset",
+      headVersion: 4,
+      requestRevision: 3,
+      request:
+        plan.request === null ? null : { ...plan.request, seed: "reset-seed", requestRevision: 3 },
+      items: plan.items.map((item) => ({ ...item, id: "plan-item-reset", title: "Read Spanish" })),
+    };
+    apiMocks.applyRoutineFeedback.mockResolvedValue(hidden);
+    apiMocks.resetRoutineFeedback.mockResolvedValue(recalculated);
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await user.click(await screen.findByRole("button", { name: "Not today" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Undo recent feedback for Practice Spanish" }),
+    );
+
+    await waitFor(() => expect(apiMocks.resetRoutineFeedback).toHaveBeenCalledOnce());
+    const call = apiMocks.resetRoutineFeedback.mock.calls[0];
+    expect(call?.[0]).toBe(workspace.id);
+    expect(call?.[1]).toBe(plan.date);
+    expect(call?.[2]).toBe("routine-1");
+    expect(call?.[3]).toEqual(
+      expect.objectContaining({
+        expectedPlanId: hidden.id,
+        expectedHeadVersion: hidden.headVersion,
+        request: expect.objectContaining({
+          seed: expect.stringMatching(
+            new RegExp(`^today:${plan.date}:revision:${hidden.requestRevision + 1}:`),
+          ),
+        }),
+      }),
+    );
+    expect(call?.[4]).toEqual(expect.any(String));
+    expect(await screen.findByRole("heading", { name: "Read Spanish" })).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "was cleared. Today's plan was recalculated.",
+    );
+    expect(screen.getByRole("button", { name: "Not today" })).not.toHaveFocus();
+    expect(apiMocks.recordPlanItemActivity).not.toHaveBeenCalled();
+  });
+
+  it("keeps reloaded temporary feedback visible, reversible, and out of generic exclusions", async () => {
+    const user = userEvent.setup();
+    const hidden: CurrentDailyPlan = {
+      ...planWithTemporaryFeedback("not_this_week"),
+      exclusions: [
+        ...planWithTemporaryFeedback("not_this_week").exclusions,
+        {
+          sourceType: "work_item",
+          routineId: null,
+          workItemId: "work-item-2",
+          title: "Pay the invoice",
+          codes: ["work_item_not_plannable"],
+        },
+      ],
+    };
+    const cleared = { ...hidden, id: "plan-cleared", headVersion: 4, exclusions: [] };
+    apiMocks.getCurrentPlan.mockResolvedValue(hidden);
+    apiMocks.resetRoutineFeedback.mockResolvedValue(cleared);
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByRole("heading", { name: "Temporarily hidden" })).toBeVisible();
+    expect(screen.getByText("Hidden through the end of this week")).toBeVisible();
+    expect(screen.getByText("Why 1 other item was excluded")).toBeVisible();
+    expect(screen.queryByText("Feedback not this week")).not.toBeInTheDocument();
+
+    const persistedUndo = screen.getByRole("button", {
+      name: "Undo temporary feedback for Practice Spanish",
+    });
+    expect(persistedUndo).not.toHaveFocus();
+    await user.click(persistedUndo);
+
+    await waitFor(() => expect(apiMocks.resetRoutineFeedback).toHaveBeenCalledOnce());
+    expect(await screen.findByRole("status")).toHaveTextContent("plan was recalculated");
+    expect(screen.queryByRole("heading", { name: "Temporarily hidden" })).not.toBeInTheDocument();
+    expect(apiMocks.recordPlanItemActivity).not.toHaveBeenCalled();
   });
 });

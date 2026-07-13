@@ -86,6 +86,8 @@ export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): Pro
     setPlanItemLock: (command) => setPlanItemLock.execute(command),
     regenerateDailyPlan: (command) => mutateDailyPlan.regenerate(command),
     replacePlanItem: (command) => mutateDailyPlan.replace(command),
+    applyRoutineFeedback: (command) => mutateDailyPlan.applyRoutineFeedback(command),
+    resetRoutineFeedback: (command) => mutateDailyPlan.resetRoutineFeedback(command),
     getDailyPlan: (query) => getDailyPlan.execute(query),
   };
 }

@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { activityEventId, routineId, workspaceId } from "@schedule/domain";
+import {
+  activityEventId,
+  dailyPlanId,
+  localDate,
+  planItemId,
+  routineId,
+  routinePlanningFeedbackId,
+  workspaceId,
+  type RoutinePlanningFeedback,
+} from "@schedule/domain";
 
 import type { DatabaseConnection } from "./database.js";
 import {
@@ -8,7 +17,9 @@ import {
   PostgresIntegrationUnitOfWork,
   PostgresUnitOfWork,
   PostgresActivityEventRepository,
+  PostgresDailyPlanRepository,
 } from "./repositories.js";
+import { routinePlanningFeedbackEvents } from "./schema.js";
 
 const requestIdentity = {
   id: "10000000-0000-4000-8000-000000000001",
@@ -346,5 +357,239 @@ describe("PostgresActivityEventRepository duration evidence", () => {
         durationEvidenceThrough,
       ),
     ).rejects.toMatchObject({ code: "activity.duration_evidence_limit_exceeded" });
+  });
+});
+
+const feedbackWorkspace = workspaceId("81000000-0000-4000-8000-000000000001");
+const feedbackRoutine = routineId("82000000-0000-4000-8000-000000000002");
+const feedbackPlan = dailyPlanId("83000000-0000-4000-8000-000000000003");
+const feedbackItem = planItemId("84000000-0000-4000-8000-000000000004");
+const feedbackEventId = routinePlanningFeedbackId("85000000-0000-4000-8000-000000000005");
+const feedbackDate = localDate("2026-07-13");
+
+function feedbackRow(sequence = 17): Readonly<Record<string, unknown>> {
+  return {
+    id: feedbackEventId,
+    ingestedSequence: sequence,
+    workspaceId: feedbackWorkspace,
+    routineId: feedbackRoutine,
+    kind: "not_today",
+    effectiveOn: feedbackDate,
+    effectiveThrough: feedbackDate,
+    timeZone: "America/La_Paz",
+    sourcePlanId: feedbackPlan,
+    sourcePlanItemId: feedbackItem,
+    idempotencyKey: "feedback-db-test",
+    recordedAt: new Date("2026-07-13T14:00:00.000Z"),
+  };
+}
+
+function feedbackQueryDatabase(rows: readonly Readonly<Record<string, unknown>>[]) {
+  const limit = vi.fn().mockResolvedValue(rows);
+  const orderBy = vi.fn().mockReturnValue({ limit });
+  const where = vi.fn().mockReturnValue({ orderBy });
+  const from = vi.fn().mockReturnValue({ where });
+  const selectDistinctOn = vi.fn().mockReturnValue({ from });
+  return { database: { selectDistinctOn }, limit, selectDistinctOn };
+}
+
+function latestFeedbackQueryDatabase(rows: readonly Readonly<Record<string, unknown>>[]) {
+  const limit = vi.fn().mockResolvedValue(rows);
+  const orderBy = vi.fn().mockReturnValue({ limit });
+  const where = vi.fn().mockReturnValue({ orderBy });
+  const from = vi.fn().mockReturnValue({ where });
+  const select = vi.fn().mockReturnValue({ from });
+  return { database: { select }, limit, orderBy, select };
+}
+
+describe("PostgresDailyPlanRepository routine feedback", () => {
+  it("locks feedback mutations with a dedicated routine-scoped transaction key", async () => {
+    const execute = vi.fn().mockResolvedValue(undefined);
+    const repository = new PostgresDailyPlanRepository({
+      execute,
+    } as unknown as DatabaseConnection["db"]);
+
+    await repository.lockRoutineFeedback(feedbackWorkspace, feedbackRoutine);
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    const statement = execute.mock.calls[0]?.[0] as {
+      readonly queryChunks: readonly unknown[];
+    };
+    expect(statement.queryChunks[0]).toMatchObject({
+      value: ["select pg_advisory_xact_lock(hashtextextended("],
+    });
+    expect(statement.queryChunks[1]).toBe(
+      `${feedbackWorkspace}:planning-feedback:${feedbackRoutine}`,
+    );
+    expect(statement.queryChunks[2]).toMatchObject({ value: [", 0))"] });
+  });
+
+  it("loads the latest routine feedback without applying an effective-date bound", async () => {
+    const database = latestFeedbackQueryDatabase([feedbackRow(42)]);
+    const repository = new PostgresDailyPlanRepository(
+      database.database as unknown as DatabaseConnection["db"],
+    );
+
+    await expect(
+      repository.findLatestRoutineFeedback(feedbackWorkspace, feedbackRoutine),
+    ).resolves.toMatchObject({
+      id: feedbackEventId,
+      ingestedSequence: 42,
+      routineId: feedbackRoutine,
+    });
+    expect(database.select).toHaveBeenCalledTimes(1);
+    expect(database.orderBy).toHaveBeenCalledTimes(1);
+    expect(database.limit).toHaveBeenCalledWith(1);
+  });
+
+  it("returns null when a routine has no feedback history", async () => {
+    const database = latestFeedbackQueryDatabase([]);
+    const repository = new PostgresDailyPlanRepository(
+      database.database as unknown as DatabaseConnection["db"],
+    );
+
+    await expect(
+      repository.findLatestRoutineFeedback(feedbackWorkspace, feedbackRoutine),
+    ).resolves.toBeNull();
+  });
+
+  it("loads one bounded latest event per routine and maps its allocated sequence", async () => {
+    const database = feedbackQueryDatabase([feedbackRow()]);
+    const repository = new PostgresDailyPlanRepository(
+      database.database as unknown as DatabaseConnection["db"],
+    );
+
+    await expect(
+      repository.listRoutineFeedbackForPlanning(feedbackWorkspace, feedbackDate),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: feedbackEventId,
+        ingestedSequence: 17,
+        routineId: feedbackRoutine,
+        effectiveOn: feedbackDate,
+      }),
+    ]);
+    expect(database.selectDistinctOn).toHaveBeenCalledTimes(1);
+    expect(database.limit).toHaveBeenCalledWith(501);
+  });
+
+  it("fails closed if persisted feedback exceeds the planner candidate bound", async () => {
+    const database = feedbackQueryDatabase(
+      Array.from({ length: 501 }, (_, index) => feedbackRow(index + 1)),
+    );
+    const repository = new PostgresDailyPlanRepository(
+      database.database as unknown as DatabaseConnection["db"],
+    );
+
+    await expect(
+      repository.listRoutineFeedbackForPlanning(feedbackWorkspace, feedbackDate),
+    ).rejects.toMatchObject({ code: "planning.feedback_candidate_limit_exceeded" });
+  });
+
+  it("lets PostgreSQL allocate ingestion sequence when appending immutable feedback", async () => {
+    const returning = vi.fn().mockResolvedValue([feedbackRow(42)]);
+    const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
+    const values = vi.fn().mockReturnValue({ onConflictDoNothing });
+    const database = { insert: vi.fn().mockReturnValue({ values }) };
+    const repository = new PostgresDailyPlanRepository(
+      database as unknown as DatabaseConnection["db"],
+    );
+    const feedback: RoutinePlanningFeedback = {
+      id: feedbackEventId,
+      ingestedSequence: 0,
+      workspaceId: feedbackWorkspace,
+      routineId: feedbackRoutine,
+      kind: "not_today",
+      effectiveOn: feedbackDate,
+      effectiveThrough: feedbackDate,
+      timeZone: "America/La_Paz",
+      sourcePlanId: feedbackPlan,
+      sourcePlanItemId: feedbackItem,
+      idempotencyKey: "feedback-db-test",
+      recordedAt: new Date("2026-07-13T14:00:00.000Z"),
+    };
+
+    await expect(repository.appendRoutineFeedback(feedback)).resolves.toMatchObject({
+      id: feedbackEventId,
+      ingestedSequence: 42,
+    });
+    const persisted = values.mock.calls[0]?.[0] as Readonly<Record<string, unknown>>;
+    expect(persisted).not.toHaveProperty("ingestedSequence");
+    expect(onConflictDoNothing).toHaveBeenCalledWith({
+      target: [
+        routinePlanningFeedbackEvents.workspaceId,
+        routinePlanningFeedbackEvents.effectiveOn,
+        routinePlanningFeedbackEvents.idempotencyKey,
+      ],
+    });
+  });
+
+  it("resolves a concurrent duplicate idempotency key to the equivalent stored event", async () => {
+    const returning = vi.fn().mockResolvedValue([]);
+    const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
+    const values = vi.fn().mockReturnValue({ onConflictDoNothing });
+    const limit = vi.fn().mockResolvedValue([feedbackRow(42)]);
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockReturnValue({ where });
+    const database = {
+      insert: vi.fn().mockReturnValue({ values }),
+      select: vi.fn().mockReturnValue({ from }),
+    };
+    const repository = new PostgresDailyPlanRepository(
+      database as unknown as DatabaseConnection["db"],
+    );
+    const feedback: RoutinePlanningFeedback = {
+      id: routinePlanningFeedbackId("85000000-0000-4000-8000-000000000099"),
+      ingestedSequence: 0,
+      workspaceId: feedbackWorkspace,
+      routineId: feedbackRoutine,
+      kind: "not_today",
+      effectiveOn: feedbackDate,
+      effectiveThrough: feedbackDate,
+      timeZone: "America/La_Paz",
+      sourcePlanId: feedbackPlan,
+      sourcePlanItemId: feedbackItem,
+      idempotencyKey: "feedback-db-test",
+      recordedAt: new Date("2026-07-13T14:05:00.000Z"),
+    };
+
+    await expect(repository.appendRoutineFeedback(feedback)).resolves.toMatchObject({
+      id: feedbackEventId,
+      ingestedSequence: 42,
+    });
+  });
+
+  it("rejects reuse of a feedback idempotency key for different semantics", async () => {
+    const returning = vi.fn().mockResolvedValue([]);
+    const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
+    const values = vi.fn().mockReturnValue({ onConflictDoNothing });
+    const limit = vi.fn().mockResolvedValue([feedbackRow(42)]);
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockReturnValue({ where });
+    const database = {
+      insert: vi.fn().mockReturnValue({ values }),
+      select: vi.fn().mockReturnValue({ from }),
+    };
+    const repository = new PostgresDailyPlanRepository(
+      database as unknown as DatabaseConnection["db"],
+    );
+    const conflicting: RoutinePlanningFeedback = {
+      id: routinePlanningFeedbackId("85000000-0000-4000-8000-000000000099"),
+      ingestedSequence: 0,
+      workspaceId: feedbackWorkspace,
+      routineId: feedbackRoutine,
+      kind: "not_this_week",
+      effectiveOn: feedbackDate,
+      effectiveThrough: localDate("2026-07-19"),
+      timeZone: "America/La_Paz",
+      sourcePlanId: feedbackPlan,
+      sourcePlanItemId: feedbackItem,
+      idempotencyKey: "feedback-db-test",
+      recordedAt: new Date("2026-07-13T14:05:00.000Z"),
+    };
+
+    await expect(repository.appendRoutineFeedback(conflicting)).rejects.toMatchObject({
+      code: "planning.idempotency_conflict",
+    });
   });
 });

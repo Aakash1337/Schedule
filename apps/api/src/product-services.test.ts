@@ -25,6 +25,7 @@ describe("createProductServices", () => {
     });
 
     expect(Object.keys(services).sort()).toEqual([
+      "applyRoutineFeedback",
       "approveRoutineDurationInsight",
       "createRoutine",
       "createScheduleBlock",
@@ -48,6 +49,7 @@ describe("createProductServices", () => {
       "recordPlanItemActivity",
       "regenerateDailyPlan",
       "replacePlanItem",
+      "resetRoutineFeedback",
       "setPlanItemLock",
       "updateRoutine",
       "updateScheduleBlock",

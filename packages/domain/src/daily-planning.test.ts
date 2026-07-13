@@ -8,13 +8,16 @@ import {
   createDailyPlanningRequest,
   createDurationRange,
   createRoutine,
+  createRoutinePlanningFeedback,
   createStructuredTags,
   dailyPlanId,
   evaluateRoutineForPlan,
   generateDailyPlan,
+  planItemId,
   recordActivityEvent,
   replanDailyPlan,
   routineId,
+  routinePlanningFeedbackId,
   workspaceId,
   type ActivityEvent,
   type Routine,
@@ -222,6 +225,85 @@ describe("deterministic daily planning", () => {
     expect(second).toEqual(first);
   });
 
+  it("hard-excludes explicit routine feedback without changing its score or cadence evidence", () => {
+    const candidate = routine("feedback-candidate", { priority: "high" });
+    const baseline = evaluateRoutineForPlan(candidate, [], request());
+    const feedback = createRoutinePlanningFeedback({
+      id: routinePlanningFeedbackId("feedback-exclusion"),
+      ingestedSequence: 1,
+      workspaceId: workspace,
+      routineId: candidate.id,
+      kind: "not_this_week",
+      effectiveOn: "2026-07-15",
+      weekStartsOn: candidate.cadence.weekStartsOn,
+      timeZone: "UTC",
+      sourcePlanId: dailyPlanId("feedback-source"),
+      sourcePlanItemId: planItemId("feedback-source-item"),
+      idempotencyKey: "feedback-exclusion",
+      recordedAt: generatedAt,
+    });
+    const suppressed = evaluateRoutineForPlan(candidate, [], request(), DEFAULT_PLANNER_CONFIG, [
+      feedback,
+    ]);
+
+    expect(suppressed).toMatchObject({
+      eligible: false,
+      exclusionCodes: ["feedback_not_this_week"],
+      score: baseline.score,
+      scoreComponents: baseline.scoreComponents,
+      periodCompletions: baseline.periodCompletions,
+    });
+    expect(suppressed.reasons).toContain("You asked not to see this routine again this week.");
+  });
+
+  it("snapshots only canonical latest feedback and remains deterministic across feedback order", () => {
+    const candidate = routine("feedback-order");
+    const sourcePlanId = dailyPlanId("feedback-order-source");
+    const makeFeedback = (
+      id: string,
+      kind: "not_today" | "not_this_week" | "reset",
+      sequence: number,
+    ) =>
+      createRoutinePlanningFeedback({
+        id: routinePlanningFeedbackId(id),
+        ingestedSequence: sequence,
+        workspaceId: workspace,
+        routineId: candidate.id,
+        kind,
+        effectiveOn: "2026-07-15",
+        weekStartsOn: candidate.cadence.weekStartsOn,
+        timeZone: "UTC",
+        sourcePlanId,
+        sourcePlanItemId: kind === "reset" ? null : planItemId(`feedback-order-item-${id}`),
+        idempotencyKey: `feedback-order-${id}`,
+        recordedAt: generatedAt,
+      });
+    const oldSuppression = makeFeedback("old", "not_this_week", 1);
+    const reset = makeFeedback("reset", "reset", 2);
+    const first = generateDailyPlan({
+      id: dailyPlanId("feedback-order-plan"),
+      request: request("feedback-order-seed"),
+      routines: [candidate],
+      events: [],
+      routineFeedback: [oldSuppression, reset],
+      generatedAt,
+    });
+    const second = generateDailyPlan({
+      id: dailyPlanId("feedback-order-plan"),
+      request: request("feedback-order-seed"),
+      routines: [candidate],
+      events: [],
+      routineFeedback: [reset, oldSuppression],
+      generatedAt,
+    });
+
+    expect(second).toEqual(first);
+    expect(first.items).toHaveLength(1);
+    expect(first.inputSnapshot).toMatchObject({
+      routineFeedback: [{ id: reset.id, kind: "reset" }],
+    });
+  });
+
   it("rejects duplicate routine snapshots instead of producing duplicate plan items", () => {
     const duplicated = routine("duplicate");
     expect(() =>
@@ -318,6 +400,61 @@ describe("deterministic daily planning", () => {
       scheduledMinutes: sibling.scheduledMinutes,
     });
     expect(replaced.items).toHaveLength(2);
+  });
+
+  it("passes feedback through residual replanning and records the canonical event in its snapshot", () => {
+    const candidates = [routine("feedback-target"), routine("feedback-sibling")];
+    const source = generateDailyPlan({
+      id: dailyPlanId("feedback-replan-source"),
+      request: request("feedback-replan-source", { targetMinutes: 60, targetTaskCount: 2 }),
+      routines: candidates,
+      events: [],
+      generatedAt,
+    });
+    const target = source.items[0]!;
+    const sibling = source.items[1]!;
+    const feedback = createRoutinePlanningFeedback({
+      id: routinePlanningFeedbackId("feedback-replan-event"),
+      ingestedSequence: 1,
+      workspaceId: workspace,
+      routineId: target.routineId!,
+      kind: "not_today",
+      effectiveOn: "2026-07-15",
+      weekStartsOn: candidates.find((candidate) => candidate.id === target.routineId)!.cadence
+        .weekStartsOn,
+      timeZone: "UTC",
+      sourcePlanId: source.id,
+      sourcePlanItemId: target.id,
+      idempotencyKey: "feedback-replan-event",
+      recordedAt: generatedAt,
+    });
+    const replanned = replanDailyPlan({
+      id: dailyPlanId("feedback-replan-result"),
+      sourcePlan: source,
+      request: request("feedback-replan-result", {
+        targetMinutes: 60,
+        targetTaskCount: 2,
+        requestRevision: 2,
+      }),
+      routines: candidates,
+      events: [],
+      routineFeedback: [feedback],
+      anchoredItems: [sibling],
+      kind: "feedback",
+      generatedAt,
+    });
+
+    expect(replanned.items.some((item) => item.routineId === target.routineId)).toBe(false);
+    expect(replanned.exclusions).toContainEqual(
+      expect.objectContaining({
+        routineId: target.routineId,
+        codes: ["feedback_not_today"],
+      }),
+    );
+    expect(replanned.inputSnapshot).toMatchObject({
+      kind: "feedback",
+      plannerInput: { routineFeedback: [{ id: feedback.id }] },
+    });
   });
 
   it("rejects retained items that no longer fit the requested windows", () => {

@@ -132,8 +132,12 @@ function harness(
         throw new Error("not used");
       },
       lockDay: async () => undefined,
+      lockRoutineFeedback: async () => undefined,
+      findLatestRoutineFeedback: async () => null,
       findMutation: async () => null,
       insertMutation: async () => undefined,
+      listRoutineFeedbackForPlanning: async () => [],
+      appendRoutineFeedback: async (feedback) => feedback,
     },
     activityEvents: {
       lockRoutineActivity: async () => undefined,

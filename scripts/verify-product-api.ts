@@ -21,6 +21,7 @@ const app = await buildApp({
 });
 let createdWorkspaceId: string | null = null;
 let isolatedWorkspaceId: string | null = null;
+let feedbackWorkspaceId: string | null = null;
 let releaseConcurrencyLock: (() => void) | null = null;
 let heldLock: Promise<unknown> | null = null;
 
@@ -39,8 +40,18 @@ function hasDatabaseCode(error: unknown, code: string): boolean {
   );
 }
 
+function hasDatabaseConstraint(error: unknown, code: string, constraintName: string): boolean {
+  return (
+    hasDatabaseCode(error, code) &&
+    typeof error === "object" &&
+    error !== null &&
+    "constraint_name" in error &&
+    (error as { constraint_name?: unknown }).constraint_name === constraintName
+  );
+}
+
 async function removeWorkspace(): Promise<void> {
-  const workspaceIds = [createdWorkspaceId, isolatedWorkspaceId].filter(
+  const workspaceIds = [createdWorkspaceId, isolatedWorkspaceId, feedbackWorkspaceId].filter(
     (workspaceId): workspaceId is string => workspaceId !== null,
   );
   if (workspaceIds.length === 0) return;
@@ -49,6 +60,7 @@ async function removeWorkspace(): Promise<void> {
     await sql`select set_config('schedule.allow_audit_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_plan_interaction_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_plan_mutation_change', 'on', true)`;
+    await sql`select set_config('schedule.allow_routine_planning_feedback_event_change', 'on', true)`;
     await sql`delete from workspaces where id = any(${workspaceIds})`;
   });
 }
@@ -470,7 +482,7 @@ try {
   // EVIDENCE: unified-planner-terminal-work-regeneration-api
   const terminalRegenerationWorkResponse = await app.inject({
     method: "POST",
-    url: `/v1/workspaces/${createdWorkspaceId}/work-items`,
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items`,
     payload: {
       title: "Terminal work must not regenerate",
       status: "in_progress",
@@ -486,7 +498,7 @@ try {
   const terminalRegenerationWork = terminalRegenerationWorkResponse.json<{ id: string }>();
   const terminalRegenerationPlanResponse = await app.inject({
     method: "POST",
-    url: `/v1/workspaces/${createdWorkspaceId}/plans`,
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans`,
     payload: {
       date: "2026-07-18",
       timeZone: "UTC",
@@ -499,7 +511,7 @@ try {
       targetMinutes: 20,
       targetTaskCount: 1,
       availableContexts: [],
-      seed: "unified-terminal-work-regeneration",
+      seed: "isolated-terminal-work-regeneration-v3",
       requestRevision: 1,
     },
   });
@@ -518,7 +530,7 @@ try {
   assert.notEqual(terminalRegenerationPlanItem, undefined);
   const terminalCompletionResponse = await app.inject({
     method: "POST",
-    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-18/items/${terminalRegenerationPlanItem!.id}/activity-events`,
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans/2026-07-18/items/${terminalRegenerationPlanItem!.id}/activity-events`,
     headers: { "idempotency-key": "unified-terminal-work-completion" },
     payload: {
       expectedPlanId: terminalRegenerationPlan.id,
@@ -532,7 +544,7 @@ try {
   assert.equal(terminalCompletionResponse.statusCode, 200, terminalCompletionResponse.body);
   const terminalRegenerationResponse = await app.inject({
     method: "POST",
-    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-18/regenerations`,
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans/2026-07-18/regenerations`,
     headers: { "idempotency-key": "unified-terminal-work-regeneration" },
     payload: {
       expectedPlanId: terminalRegenerationPlan.id,
@@ -548,7 +560,7 @@ try {
         targetMinutes: 20,
         targetTaskCount: 1,
         availableContexts: [],
-        seed: "unified-terminal-work-regeneration-next",
+        seed: "isolated-terminal-work-regeneration-next-v3",
       },
     },
   });
@@ -562,7 +574,7 @@ try {
   );
   const originalTerminalRevision = await app.inject({
     method: "GET",
-    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-18?revision=1`,
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans/2026-07-18?revision=1`,
   });
   assert.equal(originalTerminalRevision.statusCode, 200, originalTerminalRevision.body);
   assert.equal(
@@ -2075,6 +2087,851 @@ try {
     url: `/v1/workspaces/${createdWorkspaceId}/routines/77777777-7777-4777-8777-777777777777`,
   });
   assert.equal(missingRoutineResponse.statusCode, 404, missingRoutineResponse.body);
+
+  // EVIDENCE: temporary-routine-feedback-postgres-api
+  // Feedback is an immutable, tenant-bound planning input. It creates a fresh
+  // plan revision without disguising the user's preference as routine activity
+  // or silently changing the routine's cadence.
+  {
+    type FeedbackPlan = {
+      id: string;
+      headVersion: number;
+      requestRevision: number;
+      items: {
+        id: string;
+        sourceType: "routine" | "work_item";
+        routineId: string | null;
+        workItemId: string | null;
+      }[];
+      exclusions: { routineId: string | null; codes: string[] }[];
+    };
+    type FeedbackRow = {
+      id: string;
+      ingestedSequence: number;
+      kind: "not_today" | "not_this_week" | "reset";
+      effectiveOn: string;
+      effectiveThrough: string | null;
+      timeZone: string;
+      sourcePlanId: string;
+      sourcePlanItemId: string | null;
+      idempotencyKey: string;
+    };
+    type RoutinePersistenceSnapshot = {
+      version: number;
+      cadencePeriod: string;
+      rollingIntervalDays: number | null;
+      targetCompletions: number;
+      minimumCompletions: number | null;
+      maximumCompletions: number | null;
+      minimumSpacingDays: number;
+      preferredWeekdays: number[];
+      excludedWeekdays: number[];
+      discourageConsecutiveDays: boolean;
+      prohibitConsecutiveDays: boolean;
+      weekStartsOn: number;
+      startsOn: string | null;
+      pausedUntil: string | null;
+      endsOn: string | null;
+      updatedAt: string;
+    };
+
+    const feedbackWorkspaceResponse = await app.inject({
+      method: "POST",
+      url: "/v1/workspaces",
+      payload: { name: "Temporary feedback PostgreSQL verification" },
+    });
+    assert.equal(feedbackWorkspaceResponse.statusCode, 201, feedbackWorkspaceResponse.body);
+    feedbackWorkspaceId = feedbackWorkspaceResponse.json<{ id: string }>().id;
+    const temporaryFeedbackWorkspaceId = feedbackWorkspaceId;
+    if (isolatedWorkspaceId === null) throw new Error("Isolation workspace was not created.");
+    const tenantIsolationWorkspaceId = isolatedWorkspaceId;
+
+    const feedbackRoutineResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/routines`,
+      payload: {
+        title: "Temporary-feedback routine",
+        tags: {
+          priority: "high",
+          contexts: ["feedback-verification"],
+          categories: ["verification"],
+        },
+        duration: { minimumMinutes: 20, expectedMinutes: 30, maximumMinutes: 45 },
+        cadence: {
+          period: "week",
+          targetCompletions: 1,
+          maximumCompletions: 2,
+          weekStartsOn: 1,
+        },
+      },
+    });
+    assert.equal(feedbackRoutineResponse.statusCode, 201, feedbackRoutineResponse.body);
+    const temporaryFeedbackRoutineId = feedbackRoutineResponse.json<{ id: string }>().id;
+    const provenanceRoutineResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/routines`,
+      payload: {
+        title: "Different provenance routine",
+        tags: {
+          priority: "low",
+          contexts: ["different-provenance"],
+          categories: ["verification"],
+        },
+        duration: { minimumMinutes: 15, expectedMinutes: 20, maximumMinutes: 30 },
+        cadence: { period: "day", targetCompletions: 1 },
+      },
+    });
+    assert.equal(provenanceRoutineResponse.statusCode, 201, provenanceRoutineResponse.body);
+    const provenanceRoutineId = provenanceRoutineResponse.json<{ id: string }>().id;
+
+    const loadRoutineSnapshot = async (): Promise<RoutinePersistenceSnapshot> => {
+      const [snapshot] = await connection.sql<RoutinePersistenceSnapshot[]>`
+        select
+          version,
+          cadence_period as "cadencePeriod",
+          rolling_interval_days as "rollingIntervalDays",
+          target_completions as "targetCompletions",
+          minimum_completions as "minimumCompletions",
+          maximum_completions as "maximumCompletions",
+          minimum_spacing_days as "minimumSpacingDays",
+          preferred_weekdays as "preferredWeekdays",
+          excluded_weekdays as "excludedWeekdays",
+          discourage_consecutive_days as "discourageConsecutiveDays",
+          prohibit_consecutive_days as "prohibitConsecutiveDays",
+          week_starts_on as "weekStartsOn",
+          starts_on::text as "startsOn",
+          paused_until::text as "pausedUntil",
+          ends_on::text as "endsOn",
+          updated_at::text as "updatedAt"
+        from routines
+        where workspace_id = ${temporaryFeedbackWorkspaceId}
+          and id = ${temporaryFeedbackRoutineId}
+      `;
+      assert.notEqual(snapshot, undefined);
+      return snapshot!;
+    };
+    const loadActivityCount = async (): Promise<number> => {
+      const [row] = await connection.sql<{ count: number }[]>`
+        select count(*)::int as count
+        from activity_events
+        where workspace_id = ${temporaryFeedbackWorkspaceId}
+      `;
+      return row?.count ?? -1;
+    };
+    const loadFeedbackRows = (): Promise<FeedbackRow[]> =>
+      connection.sql<FeedbackRow[]>`
+        select
+          id::text,
+          ingested_sequence::int as "ingestedSequence",
+          kind,
+          effective_on::text as "effectiveOn",
+          effective_through::text as "effectiveThrough",
+          time_zone as "timeZone",
+          source_plan_id::text as "sourcePlanId",
+          source_plan_item_id::text as "sourcePlanItemId",
+          idempotency_key as "idempotencyKey"
+        from routine_planning_feedback_events
+        where workspace_id = ${temporaryFeedbackWorkspaceId}
+        order by ingested_sequence
+      `;
+    const loadPlanCount = async (): Promise<number> => {
+      const [row] = await connection.sql<{ count: number }[]>`
+        select count(*)::int as count
+        from daily_plans
+        where workspace_id = ${temporaryFeedbackWorkspaceId}
+          and local_date = '2026-07-15'
+      `;
+      return row?.count ?? -1;
+    };
+    const loadMutationKinds = async (): Promise<string[]> => {
+      const rows = await connection.sql<{ kind: string }[]>`
+        select kind
+        from plan_mutations
+        where workspace_id = ${temporaryFeedbackWorkspaceId}
+          and local_date = '2026-07-15'
+        order by result_head_version
+      `;
+      return rows.map((row) => row.kind);
+    };
+
+    const routineSnapshotBeforeFeedback = await loadRoutineSnapshot();
+    const activityCountBeforeFeedback = await loadActivityCount();
+    assert.equal(activityCountBeforeFeedback, 0);
+    const feedbackPlanRequest = {
+      timeZone: "UTC",
+      availableWindows: [
+        {
+          startsAt: "2026-07-15T12:00:00.000Z",
+          endsAt: "2026-07-15T13:00:00.000Z",
+        },
+      ],
+      targetMinutes: 30,
+      targetTaskCount: 1,
+      availableContexts: ["feedback-verification"],
+      seed: "temporary-feedback-initial",
+    };
+    const initialFeedbackPlanResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/plans`,
+      payload: {
+        ...feedbackPlanRequest,
+        date: "2026-07-15",
+        requestRevision: 1,
+      },
+    });
+    assert.equal(initialFeedbackPlanResponse.statusCode, 200, initialFeedbackPlanResponse.body);
+    const initialFeedbackPlan =
+      initialFeedbackPlanResponse.json<Omit<FeedbackPlan, "headVersion">>();
+    assert.equal(initialFeedbackPlan.requestRevision, 1);
+    assert.equal(initialFeedbackPlan.items.length, 1);
+    assert.equal(initialFeedbackPlan.items[0]?.routineId, temporaryFeedbackRoutineId);
+    assert.equal(await loadPlanCount(), 1);
+
+    const initialFeedbackCurrentResponse = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/plans/2026-07-15/current`,
+    });
+    assert.equal(
+      initialFeedbackCurrentResponse.statusCode,
+      200,
+      initialFeedbackCurrentResponse.body,
+    );
+    assert.equal(initialFeedbackCurrentResponse.json<{ headVersion: number }>().headVersion, 1);
+
+    await assert.rejects(
+      connection.sql`
+        insert into routine_planning_feedback_events (
+          workspace_id,
+          routine_id,
+          kind,
+          effective_on,
+          effective_through,
+          time_zone,
+          source_plan_id,
+          source_plan_item_id,
+          idempotency_key,
+          recorded_at
+        ) values (
+          ${temporaryFeedbackWorkspaceId},
+          ${provenanceRoutineId},
+          'not_today',
+          '2026-07-15',
+          '2026-07-15',
+          'UTC',
+          ${initialFeedbackPlan.id},
+          ${initialFeedbackPlan.items[0]!.id},
+          'temporary-feedback-mismatched-routine-provenance',
+          '2026-07-15T07:00:00.000Z'
+        )
+      `,
+      (error) =>
+        hasDatabaseConstraint(
+          error,
+          "23503",
+          "routine_planning_feedback_events_source_routine_item_fk",
+        ),
+    );
+    assert.equal((await loadFeedbackRows()).length, 0);
+
+    const provenanceWorkResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/work-items`,
+      payload: {
+        title: "Work-item provenance fixture",
+        status: "in_progress",
+        priority: "low",
+        planningDurationMinutes: 20,
+      },
+    });
+    assert.equal(provenanceWorkResponse.statusCode, 201, provenanceWorkResponse.body);
+    const provenanceWork = provenanceWorkResponse.json<{ id: string; version: number }>();
+    const provenanceWorkPlanResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/plans`,
+      payload: {
+        date: "2026-07-14",
+        timeZone: "UTC",
+        availableWindows: [
+          {
+            startsAt: "2026-07-14T12:00:00.000Z",
+            endsAt: "2026-07-14T13:00:00.000Z",
+          },
+        ],
+        targetMinutes: 20,
+        targetTaskCount: 1,
+        availableContexts: [],
+        seed: "temporary-feedback-work-provenance",
+        requestRevision: 1,
+      },
+    });
+    assert.equal(provenanceWorkPlanResponse.statusCode, 200, provenanceWorkPlanResponse.body);
+    const provenanceWorkPlan = provenanceWorkPlanResponse.json<FeedbackPlan>();
+    assert.equal(provenanceWorkPlan.items.length, 1);
+    assert.equal(provenanceWorkPlan.items[0]?.sourceType, "work_item");
+    assert.equal(provenanceWorkPlan.items[0]?.workItemId, provenanceWork.id);
+    await assert.rejects(
+      connection.sql`
+        insert into routine_planning_feedback_events (
+          workspace_id,
+          routine_id,
+          kind,
+          effective_on,
+          effective_through,
+          time_zone,
+          source_plan_id,
+          source_plan_item_id,
+          idempotency_key,
+          recorded_at
+        ) values (
+          ${temporaryFeedbackWorkspaceId},
+          ${temporaryFeedbackRoutineId},
+          'not_today',
+          '2026-07-14',
+          '2026-07-14',
+          'UTC',
+          ${provenanceWorkPlan.id},
+          ${provenanceWorkPlan.items[0]!.id},
+          'temporary-feedback-work-item-provenance',
+          '2026-07-15T07:00:00.000Z'
+        )
+      `,
+      (error) =>
+        hasDatabaseConstraint(
+          error,
+          "23503",
+          "routine_planning_feedback_events_source_routine_item_fk",
+        ),
+    );
+    assert.equal((await loadFeedbackRows()).length, 0);
+    const retireProvenanceWorkResponse = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/work-items/${provenanceWork.id}`,
+      payload: { expectedVersion: provenanceWork.version, status: "cancelled" },
+    });
+    assert.equal(retireProvenanceWorkResponse.statusCode, 200, retireProvenanceWorkResponse.body);
+
+    const crossTenantFeedbackResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${tenantIsolationWorkspaceId}/plans/2026-07-15/items/${initialFeedbackPlan.items[0]!.id}/routine-feedback`,
+      headers: { "idempotency-key": "temporary-feedback-cross-tenant" },
+      payload: {
+        expectedPlanId: initialFeedbackPlan.id,
+        expectedHeadVersion: 1,
+        kind: "not_today",
+        request: { ...feedbackPlanRequest, seed: "temporary-feedback-cross-tenant" },
+      },
+    });
+    assert.equal(crossTenantFeedbackResponse.statusCode, 404, crossTenantFeedbackResponse.body);
+    assert.equal((await loadFeedbackRows()).length, 0);
+    assert.equal(await loadPlanCount(), 1);
+    await assert.rejects(
+      connection.sql`
+        insert into routine_planning_feedback_events (
+          workspace_id,
+          routine_id,
+          kind,
+          effective_on,
+          effective_through,
+          time_zone,
+          source_plan_id,
+          source_plan_item_id,
+          idempotency_key,
+          recorded_at
+        ) values (
+          ${tenantIsolationWorkspaceId},
+          ${temporaryFeedbackRoutineId},
+          'not_today',
+          '2026-07-15',
+          '2026-07-15',
+          'UTC',
+          ${initialFeedbackPlan.id},
+          ${initialFeedbackPlan.items[0]!.id},
+          'temporary-feedback-invalid-cross-tenant-provenance',
+          '2026-07-15T07:00:00.000Z'
+        )
+      `,
+      (error) => hasDatabaseCode(error, "23503"),
+    );
+    assert.equal((await loadFeedbackRows()).length, 0);
+
+    const notTodayRequest = {
+      method: "POST" as const,
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/plans/2026-07-15/items/${initialFeedbackPlan.items[0]!.id}/routine-feedback`,
+      headers: { "idempotency-key": "temporary-feedback-not-today" },
+      payload: {
+        expectedPlanId: initialFeedbackPlan.id,
+        expectedHeadVersion: 1,
+        kind: "not_today" as const,
+        request: { ...feedbackPlanRequest, seed: "temporary-feedback-not-today" },
+      },
+    };
+    const notTodayResponse = await app.inject(notTodayRequest);
+    assert.equal(notTodayResponse.statusCode, 200, notTodayResponse.body);
+    const notTodayPlan = notTodayResponse.json<FeedbackPlan>();
+    assert.equal(notTodayPlan.headVersion, 2);
+    assert.equal(notTodayPlan.requestRevision, 2);
+    assert.notEqual(notTodayPlan.id, initialFeedbackPlan.id);
+    assert.equal(
+      notTodayPlan.items.some((item) => item.routineId === temporaryFeedbackRoutineId),
+      false,
+    );
+    assert.equal(
+      notTodayPlan.exclusions
+        .find((exclusion) => exclusion.routineId === temporaryFeedbackRoutineId)
+        ?.codes.includes("feedback_not_today"),
+      true,
+    );
+    let feedbackRows = await loadFeedbackRows();
+    assert.equal(feedbackRows.length, 1);
+    assert.deepEqual(feedbackRows[0], {
+      id: feedbackRows[0]!.id,
+      ingestedSequence: feedbackRows[0]!.ingestedSequence,
+      kind: "not_today",
+      effectiveOn: "2026-07-15",
+      effectiveThrough: "2026-07-15",
+      timeZone: "UTC",
+      sourcePlanId: initialFeedbackPlan.id,
+      sourcePlanItemId: initialFeedbackPlan.items[0]!.id,
+      idempotencyKey: "temporary-feedback-not-today",
+    });
+    assert.equal(feedbackRows[0]!.ingestedSequence > 0, true);
+    assert.equal(await loadPlanCount(), 2);
+    assert.deepEqual(await loadMutationKinds(), ["feedback"]);
+
+    const replayedNotTodayResponse = await app.inject(notTodayRequest);
+    assert.equal(replayedNotTodayResponse.statusCode, 200, replayedNotTodayResponse.body);
+    assert.deepEqual(replayedNotTodayResponse.json(), notTodayResponse.json());
+    assert.deepEqual(await loadFeedbackRows(), feedbackRows);
+    assert.equal(await loadPlanCount(), 2);
+    assert.deepEqual(await loadMutationKinds(), ["feedback"]);
+
+    const conflictingNotTodayResponse = await app.inject({
+      ...notTodayRequest,
+      payload: { ...notTodayRequest.payload, kind: "not_this_week" },
+    });
+    assert.equal(conflictingNotTodayResponse.statusCode, 409, conflictingNotTodayResponse.body);
+    assert.equal(
+      conflictingNotTodayResponse.json<{ error: { code: string } }>().error.code,
+      "planning.idempotency_conflict",
+    );
+    assert.deepEqual(await loadFeedbackRows(), feedbackRows);
+    assert.equal(await loadPlanCount(), 2);
+
+    const resetNotTodayResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/plans/2026-07-15/routines/${temporaryFeedbackRoutineId}/routine-feedback-resets`,
+      headers: { "idempotency-key": "temporary-feedback-reset-today" },
+      payload: {
+        expectedPlanId: notTodayPlan.id,
+        expectedHeadVersion: 2,
+        request: { ...feedbackPlanRequest, seed: "temporary-feedback-reset-today" },
+      },
+    });
+    assert.equal(resetNotTodayResponse.statusCode, 200, resetNotTodayResponse.body);
+    const resetNotTodayPlan = resetNotTodayResponse.json<FeedbackPlan>();
+    assert.equal(resetNotTodayPlan.headVersion, 3);
+    assert.equal(resetNotTodayPlan.requestRevision, 3);
+    assert.equal(resetNotTodayPlan.items[0]?.routineId, temporaryFeedbackRoutineId);
+    assert.equal(
+      resetNotTodayPlan.exclusions.some((exclusion) =>
+        exclusion.codes.some((code) => code.startsWith("feedback_")),
+      ),
+      false,
+    );
+    feedbackRows = await loadFeedbackRows();
+    assert.equal(feedbackRows.length, 2);
+    assert.deepEqual(feedbackRows[1], {
+      id: feedbackRows[1]!.id,
+      ingestedSequence: feedbackRows[1]!.ingestedSequence,
+      kind: "reset",
+      effectiveOn: "2026-07-15",
+      effectiveThrough: null,
+      timeZone: "UTC",
+      sourcePlanId: notTodayPlan.id,
+      sourcePlanItemId: null,
+      idempotencyKey: "temporary-feedback-reset-today",
+    });
+    assert.equal(feedbackRows[1]!.ingestedSequence > feedbackRows[0]!.ingestedSequence, true);
+    assert.equal(await loadPlanCount(), 3);
+
+    const notThisWeekResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/plans/2026-07-15/items/${resetNotTodayPlan.items[0]!.id}/routine-feedback`,
+      headers: { "idempotency-key": "temporary-feedback-not-this-week" },
+      payload: {
+        expectedPlanId: resetNotTodayPlan.id,
+        expectedHeadVersion: 3,
+        kind: "not_this_week",
+        request: { ...feedbackPlanRequest, seed: "temporary-feedback-not-this-week" },
+      },
+    });
+    assert.equal(notThisWeekResponse.statusCode, 200, notThisWeekResponse.body);
+    const notThisWeekPlan = notThisWeekResponse.json<FeedbackPlan>();
+    assert.equal(notThisWeekPlan.headVersion, 4);
+    assert.equal(notThisWeekPlan.requestRevision, 4);
+    assert.equal(
+      notThisWeekPlan.exclusions
+        .find((exclusion) => exclusion.routineId === temporaryFeedbackRoutineId)
+        ?.codes.includes("feedback_not_this_week"),
+      true,
+    );
+    feedbackRows = await loadFeedbackRows();
+    assert.equal(feedbackRows.length, 3);
+    assert.deepEqual(feedbackRows[2], {
+      id: feedbackRows[2]!.id,
+      ingestedSequence: feedbackRows[2]!.ingestedSequence,
+      kind: "not_this_week",
+      effectiveOn: "2026-07-15",
+      effectiveThrough: "2026-07-19",
+      timeZone: "UTC",
+      sourcePlanId: resetNotTodayPlan.id,
+      sourcePlanItemId: resetNotTodayPlan.items[0]!.id,
+      idempotencyKey: "temporary-feedback-not-this-week",
+    });
+    assert.equal(feedbackRows[2]!.ingestedSequence > feedbackRows[1]!.ingestedSequence, true);
+    assert.equal(await loadPlanCount(), 4);
+
+    const resetNotThisWeekResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/plans/2026-07-15/routines/${temporaryFeedbackRoutineId}/routine-feedback-resets`,
+      headers: { "idempotency-key": "temporary-feedback-reset-week" },
+      payload: {
+        expectedPlanId: notThisWeekPlan.id,
+        expectedHeadVersion: 4,
+        request: { ...feedbackPlanRequest, seed: "temporary-feedback-reset-week" },
+      },
+    });
+    assert.equal(resetNotThisWeekResponse.statusCode, 200, resetNotThisWeekResponse.body);
+    const resetNotThisWeekPlan = resetNotThisWeekResponse.json<FeedbackPlan>();
+    assert.equal(resetNotThisWeekPlan.headVersion, 5);
+    assert.equal(resetNotThisWeekPlan.requestRevision, 5);
+    assert.equal(resetNotThisWeekPlan.items[0]?.routineId, temporaryFeedbackRoutineId);
+    assert.equal(
+      resetNotThisWeekPlan.exclusions.some((exclusion) =>
+        exclusion.codes.some((code) => code.startsWith("feedback_")),
+      ),
+      false,
+    );
+    feedbackRows = await loadFeedbackRows();
+    assert.equal(feedbackRows.length, 4);
+    assert.deepEqual(
+      feedbackRows.map((row) => row.kind),
+      ["not_today", "reset", "not_this_week", "reset"],
+    );
+    assert.deepEqual(feedbackRows[3], {
+      id: feedbackRows[3]!.id,
+      ingestedSequence: feedbackRows[3]!.ingestedSequence,
+      kind: "reset",
+      effectiveOn: "2026-07-15",
+      effectiveThrough: null,
+      timeZone: "UTC",
+      sourcePlanId: notThisWeekPlan.id,
+      sourcePlanItemId: null,
+      idempotencyKey: "temporary-feedback-reset-week",
+    });
+    assert.equal(feedbackRows[3]!.ingestedSequence > feedbackRows[2]!.ingestedSequence, true);
+    assert.equal(await loadPlanCount(), 5);
+    assert.deepEqual(await loadMutationKinds(), [
+      "feedback",
+      "feedback_reset",
+      "feedback",
+      "feedback_reset",
+    ]);
+
+    const finalFeedbackHeadRows = await connection.sql<
+      { currentPlanId: string; version: number }[]
+    >`
+      select current_plan_id::text as "currentPlanId", version
+      from daily_plan_heads
+      where workspace_id = ${temporaryFeedbackWorkspaceId}
+        and local_date = '2026-07-15'
+    `;
+    assert.equal(finalFeedbackHeadRows.length, 1);
+    assert.deepEqual(finalFeedbackHeadRows[0], {
+      currentPlanId: resetNotThisWeekPlan.id,
+      version: 5,
+    });
+    assert.deepEqual(await loadRoutineSnapshot(), routineSnapshotBeforeFeedback);
+    assert.equal(await loadActivityCount(), activityCountBeforeFeedback);
+
+    await assert.rejects(
+      connection.sql`
+        update routine_planning_feedback_events
+        set effective_through = '2026-07-16'
+        where workspace_id = ${temporaryFeedbackWorkspaceId}
+          and id = ${feedbackRows[0]!.id}
+      `,
+      (error) => hasDatabaseCode(error, "55000"),
+    );
+    await assert.rejects(
+      connection.sql`
+        delete from routine_planning_feedback_events
+        where workspace_id = ${temporaryFeedbackWorkspaceId}
+          and id = ${feedbackRows[0]!.id}
+      `,
+      (error) => hasDatabaseCode(error, "55000"),
+    );
+    assert.deepEqual(await loadFeedbackRows(), feedbackRows);
+
+    const crossDatePlanRequest = {
+      timeZone: "UTC",
+      availableWindows: [
+        {
+          startsAt: "2026-07-16T12:00:00.000Z",
+          endsAt: "2026-07-16T13:00:00.000Z",
+        },
+      ],
+      targetMinutes: 30,
+      targetTaskCount: 1,
+      availableContexts: ["feedback-verification"],
+      seed: "temporary-feedback-cross-date-plan",
+    };
+    const crossDatePlanResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/plans`,
+      payload: {
+        ...crossDatePlanRequest,
+        date: "2026-07-16",
+        requestRevision: 1,
+      },
+    });
+    assert.equal(crossDatePlanResponse.statusCode, 200, crossDatePlanResponse.body);
+    const crossDatePlan = crossDatePlanResponse.json<FeedbackPlan>();
+    assert.equal(crossDatePlan.items.length, 1);
+    assert.equal(crossDatePlan.items[0]?.routineId, temporaryFeedbackRoutineId);
+
+    const reusedCrossDateKeyResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/plans/2026-07-16/items/${crossDatePlan.items[0]!.id}/routine-feedback`,
+      headers: { "idempotency-key": "temporary-feedback-not-today" },
+      payload: {
+        expectedPlanId: crossDatePlan.id,
+        expectedHeadVersion: 1,
+        kind: "not_today",
+        request: {
+          ...crossDatePlanRequest,
+          seed: "temporary-feedback-cross-date-apply",
+        },
+      },
+    });
+    assert.equal(reusedCrossDateKeyResponse.statusCode, 200, reusedCrossDateKeyResponse.body);
+    const reusedCrossDateKeyPlan = reusedCrossDateKeyResponse.json<FeedbackPlan>();
+    assert.equal(reusedCrossDateKeyPlan.headVersion, 2);
+    feedbackRows = await loadFeedbackRows();
+    assert.equal(feedbackRows.length, 5);
+    assert.deepEqual(
+      feedbackRows
+        .filter((row) => row.idempotencyKey === "temporary-feedback-not-today")
+        .map((row) => row.effectiveOn),
+      ["2026-07-15", "2026-07-16"],
+    );
+
+    const resetCrossDateFeedbackResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/plans/2026-07-16/routines/${temporaryFeedbackRoutineId}/routine-feedback-resets`,
+      headers: { "idempotency-key": "temporary-feedback-cross-date-reset" },
+      payload: {
+        expectedPlanId: reusedCrossDateKeyPlan.id,
+        expectedHeadVersion: 2,
+        request: {
+          ...crossDatePlanRequest,
+          seed: "temporary-feedback-cross-date-reset",
+        },
+      },
+    });
+    assert.equal(
+      resetCrossDateFeedbackResponse.statusCode,
+      200,
+      resetCrossDateFeedbackResponse.body,
+    );
+    const resetCrossDateFeedbackPlan = resetCrossDateFeedbackResponse.json<FeedbackPlan>();
+    assert.equal(resetCrossDateFeedbackPlan.headVersion, 3);
+    assert.equal(resetCrossDateFeedbackPlan.items[0]?.routineId, temporaryFeedbackRoutineId);
+    feedbackRows = await loadFeedbackRows();
+    assert.equal(feedbackRows.length, 6);
+
+    const raceFixturePlanRequest = {
+      timeZone: "UTC",
+      availableWindows: [
+        {
+          startsAt: "2026-07-18T12:00:00.000Z",
+          endsAt: "2026-07-18T13:00:00.000Z",
+        },
+      ],
+      targetMinutes: 30,
+      targetTaskCount: 1,
+      availableContexts: ["feedback-verification"],
+      seed: "temporary-feedback-race-fixture-plan",
+    };
+    const raceFixturePlanResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/plans`,
+      payload: {
+        ...raceFixturePlanRequest,
+        date: "2026-07-18",
+        requestRevision: 1,
+      },
+    });
+    assert.equal(raceFixturePlanResponse.statusCode, 200, raceFixturePlanResponse.body);
+    const raceFixturePlan = raceFixturePlanResponse.json<FeedbackPlan>();
+    assert.equal(raceFixturePlan.items.length, 1);
+    assert.equal(raceFixturePlan.items[0]?.routineId, temporaryFeedbackRoutineId);
+
+    const staleFeedbackPlanRequest = {
+      timeZone: "UTC",
+      availableWindows: [
+        {
+          startsAt: "2026-07-17T12:00:00.000Z",
+          endsAt: "2026-07-17T13:00:00.000Z",
+        },
+      ],
+      targetMinutes: 30,
+      targetTaskCount: 1,
+      availableContexts: ["feedback-verification"],
+      seed: "temporary-feedback-stale-head-plan",
+    };
+    const staleFeedbackPlanResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/plans`,
+      payload: {
+        ...staleFeedbackPlanRequest,
+        date: "2026-07-17",
+        requestRevision: 1,
+      },
+    });
+    assert.equal(staleFeedbackPlanResponse.statusCode, 200, staleFeedbackPlanResponse.body);
+    const staleFeedbackPlan = staleFeedbackPlanResponse.json<FeedbackPlan>();
+    assert.equal(staleFeedbackPlan.items.length, 1);
+    assert.equal(staleFeedbackPlan.items[0]?.routineId, temporaryFeedbackRoutineId);
+
+    let markFeedbackFixturePrepared: () => void = () => undefined;
+    const feedbackFixturePrepared = new Promise<void>((resolve) => {
+      markFeedbackFixturePrepared = resolve;
+    });
+    const releaseFeedbackFixture = new Promise<void>((resolve) => {
+      releaseConcurrencyLock = resolve;
+    });
+    const feedbackLockKey = `${temporaryFeedbackWorkspaceId}:planning-feedback:${temporaryFeedbackRoutineId}`;
+    let feedbackLockHolderPid: number | null = null;
+    heldLock = lockConnection.sql.begin(async (sql) => {
+      const [backend] = await sql<{ pid: number }[]>`
+        select pg_backend_pid()::int as pid
+      `;
+      feedbackLockHolderPid = backend?.pid ?? null;
+      await sql`select pg_advisory_xact_lock(hashtextextended(${feedbackLockKey}, 0))`;
+      await sql`
+        insert into routine_planning_feedback_events (
+          workspace_id,
+          routine_id,
+          kind,
+          effective_on,
+          effective_through,
+          time_zone,
+          source_plan_id,
+          source_plan_item_id,
+          idempotency_key,
+          recorded_at
+        ) values (
+          ${temporaryFeedbackWorkspaceId},
+          ${temporaryFeedbackRoutineId},
+          'not_today',
+          '2026-07-18',
+          '2026-07-18',
+          'UTC',
+          ${raceFixturePlan.id},
+          ${raceFixturePlan.items[0]!.id},
+          'temporary-feedback-race-newer',
+          '2026-07-15T07:00:00.000Z'
+        )
+      `;
+      markFeedbackFixturePrepared();
+      await releaseFeedbackFixture;
+    });
+    await feedbackFixturePrepared;
+    assert.notEqual(feedbackLockHolderPid, null, "the feedback lock holder PID was not captured");
+    assert.equal(
+      (await loadFeedbackRows()).length,
+      6,
+      "the newer cross-date feedback must remain invisible before its transaction commits",
+    );
+
+    const staleFeedbackPlanRevisionCount = await connection.sql<{ count: number }[]>`
+      select count(*)::int as count
+      from daily_plans
+      where workspace_id = ${temporaryFeedbackWorkspaceId}
+        and local_date = '2026-07-17'
+    `;
+    assert.equal(staleFeedbackPlanRevisionCount[0]?.count, 1);
+    const staleFeedbackMutation = app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${temporaryFeedbackWorkspaceId}/plans/2026-07-17/items/${staleFeedbackPlan.items[0]!.id}/routine-feedback`,
+      headers: { "idempotency-key": "temporary-feedback-stale-head" },
+      payload: {
+        expectedPlanId: staleFeedbackPlan.id,
+        expectedHeadVersion: 1,
+        kind: "not_today",
+        request: staleFeedbackPlanRequest,
+      },
+    });
+    let feedbackWaiterObserved = false;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const [waiters] = await observerConnection.sql<{ value: number }[]>`
+        select count(*)::int as value
+        from pg_locks waiter
+        join pg_locks holder
+          on holder.pid = ${feedbackLockHolderPid}
+         and holder.locktype = 'advisory'
+         and holder.granted
+         and holder.database is not distinct from waiter.database
+         and holder.classid = waiter.classid
+         and holder.objid = waiter.objid
+         and holder.objsubid = waiter.objsubid
+        where waiter.locktype = 'advisory'
+          and not waiter.granted
+      `;
+      if ((waiters?.value ?? 0) >= 1) {
+        feedbackWaiterObserved = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(
+      feedbackWaiterObserved,
+      true,
+      "the stale feedback mutation did not wait on its routine feedback head lock",
+    );
+    assert.equal((await loadFeedbackRows()).length, 6);
+    releaseHeldConcurrencyLock();
+    await heldLock;
+    heldLock = null;
+
+    const staleFeedbackMutationResponse = await staleFeedbackMutation;
+    assert.equal(staleFeedbackMutationResponse.statusCode, 409, staleFeedbackMutationResponse.body);
+    assert.equal(
+      staleFeedbackMutationResponse.json<{ error: { code: string } }>().error.code,
+      "planning.feedback_head_conflict",
+    );
+    feedbackRows = await loadFeedbackRows();
+    assert.equal(feedbackRows.length, 7);
+    assert.deepEqual(
+      feedbackRows
+        .filter((row) => row.idempotencyKey === "temporary-feedback-not-today")
+        .map((row) => row.effectiveOn),
+      ["2026-07-15", "2026-07-16"],
+    );
+    assert.equal(
+      feedbackRows.some((row) => row.idempotencyKey === "temporary-feedback-stale-head"),
+      false,
+    );
+    const staleFeedbackPlanRevisionCountAfter = await connection.sql<{ count: number }[]>`
+      select count(*)::int as count
+      from daily_plans
+      where workspace_id = ${temporaryFeedbackWorkspaceId}
+        and local_date = '2026-07-17'
+    `;
+    assert.equal(staleFeedbackPlanRevisionCountAfter[0]?.count, 1);
+    process.stdout.write("temporary-routine-feedback-postgres-api verification passed\n");
+  }
 
   const stalePlanRevision = await app.inject(planRequest);
   assert.equal(stalePlanRevision.statusCode, 409, stalePlanRevision.body);

@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-13
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v2 selects both reusable routines and explicitly opted-in one-time Work items. Phase 3 has begun with a transparent, read-only routine-duration insight and an explicit approval flow; broader learned preferences and automatic adaptation remain deferred. A provider-neutral authenticated inbound gateway now provides Today reads and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v3 selects both reusable routines and explicitly opted-in one-time Work items while applying temporary routine feedback as a versioned hard constraint. Phase 3 has begun with a transparent, read-only routine-duration insight and an explicit approval flow; broader learned preferences and automatic adaptation remain deferred. A provider-neutral authenticated inbound gateway now provides Today reads and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
 
 ## 1. Product summary
 
@@ -46,6 +46,16 @@ An item selected for a particular daily plan. It records a typed source identity
 ### 3.5 Activity event
 
 An immutable observation such as suggested, accepted, started, completed, skipped, deferred, dismissed, or duration corrected. Every event has the same typed source identity as its plan item. Routine events feed cadence history; work-item events preserve the one-time item lifecycle without inventing cadence.
+
+### 3.6 Routine planning feedback
+
+An explicit, temporary instruction to suppress one routine for the current local day or through the
+end of its routine-defined week. **Not today** and **Not this week** are hard planner exclusions, not
+activity outcomes and not edits to the routine's cadence. Feedback is append-only and records its
+source plan; clearing it appends a reset rather than rewriting history. The latest applicable event
+is authoritative, so a reset reverses the suppression immediately without allowing an older
+instruction to resurface. The routine also has one global feedback order across plan dates: a plan
+that observed an older feedback head cannot overwrite a newer-date instruction.
 
 ## 4. Organization and tags
 
@@ -162,6 +172,7 @@ The engine first removes impossible choices, including:
 - Duration that cannot fit any available window and cannot be split
 - Minimum spacing not satisfied
 - Explicit exclusions or snoozes
+- Active **Not today** or **Not this week** routine feedback
 
 Deadlines and user-locked commitments may override ordinary eligibility rules, but the override must be shown.
 
@@ -240,12 +251,21 @@ This is based on completions, not merely suggestions. Dismissals and skips influ
 ## 9. Daily-plan interaction
 
 The current interface supports stable generation, lock/unlock, lock-preserving regeneration,
-single-item replacement, activity transitions, completion reversal, and selection/exclusion
-explanations. These actions operate on the typed source of the selected plan item. Completing a
-work-derived item marks its source work item `done`. Reversing that completion restores the prior
-work status only when the completion's saved version is still current; a later accepted completion
-or edit wins and is never overwritten. Neither action automatically regenerates Today. The remaining
-bullets describe the broader interaction target; alternatives, frequency-feedback shortcuts, and
+single-item replacement, activity transitions, completion reversal, temporary routine feedback,
+and selection/exclusion explanations. **Not today** and **Not this week** apply only to pending,
+unlocked routine items, append a planning-feedback event, and immediately create a new plan revision
+without the suppressed routine. **Not this week** ends at that routine's configured week boundary,
+not the server's week or time zone. Reset is also append-only and immediately replans; it removes the
+hard suppression without changing cadence or recording a completion, skip, deferral, or dismissal.
+All feedback mutations use the current plan identity, optimistic head version, and an idempotency
+key, so a stale client cannot silently replace a newer plan. A routine-scoped feedback-head check also
+prevents a still-current older-date plan from overwriting an instruction recorded on a newer date.
+
+Activity actions operate on the typed source of the selected plan item. Completing a work-derived
+item marks its source work item `done`. Reversing that completion restores the prior work status only
+when the completion's saved version is still current; a later accepted completion or edit wins and is
+never overwritten. Activity actions do not automatically regenerate Today. The remaining bullets
+describe the broader interaction target; alternatives, **less often**/**more often** adaptation, and
 generalized plan undo are not implemented yet.
 
 The user can:
@@ -257,7 +277,8 @@ The user can:
 - Ask for more or less demanding alternatives
 - Mark an item started, completed, skipped, deferred, or dismissed
 - Supply an actual duration or correct an estimate
-- Choose "less often," "more often," "not today," or "not this week"
+- Choose "not today" or "not this week" for a routine and reset that instruction
+- Choose "less often" or "more often"
 - View why an item was selected or excluded
 - Compare the recommended plan with alternative plans
 - Undo plan modifications
@@ -290,9 +311,9 @@ Adaptation safeguards:
 - Never lower the importance of a deadline solely because prior suggestions were skipped
 
 The current slice implements evidence thresholds, material-change gating, range review, visible
-evidence, and explicit approval. Rejection memory, dismissal and reset controls, learned cadence or
-energy preferences, adaptive probabilistic selection beyond the existing versioned deterministic
-planner, and automatic application of learned values remain deferred.
+evidence, and explicit approval. Duration-insight rejection memory, dismissal, and reset controls;
+learned cadence or energy preferences; adaptive probabilistic selection beyond the existing
+versioned deterministic planner; and automatic application of learned values remain deferred.
 
 ## 11. Optional local-model advisor
 
@@ -412,6 +433,8 @@ Success is not simply "more tasks completed." Useful measures include realistic 
 
 - Implemented: Today view and planning controls
 - Implemented: lock, replace, regenerate, defer, dismiss, and completion flows
+- Implemented: append-only, resettable **Not today** and **Not this week** routine feedback with
+  immediate optimistic, idempotent replanning
 - Implemented: Kanban/backlog work can opt into Today with a planning duration; calendar blocks remain independent
 - Partial: "why selected" details are implemented; alternative-plan comparison is deferred
 
@@ -421,8 +444,8 @@ Success is not simply "more tasks completed." Useful measures include realistic 
 - Implemented: visible insufficient/aligned/suggested/range-review states and explicit atomic
   approval with evidence revalidation and without automatic Today regeneration
 - Deferred: learned cadence, day/time, energy, preference, overload, and category-balance signals
-- Deferred: automatic application, rejection memory, reset controls, adaptive probabilistic
-  selection, historical replay, and algorithm comparison tools
+- Deferred: automatic application, duration-insight rejection memory and reset controls, adaptive
+  probabilistic selection, historical replay, and algorithm comparison tools
 
 ### Phase 4 — Local-model advisor
 

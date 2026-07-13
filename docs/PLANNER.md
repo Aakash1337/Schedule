@@ -1,4 +1,4 @@
-# Deterministic Planner v2
+# Deterministic Planner v3
 
 This document describes the first implemented planner contract. The broader product intent remains in [PRODUCT.md](./PRODUCT.md).
 
@@ -23,6 +23,7 @@ The following Phase 1 capabilities exist in code:
 - Stable plan-item identities, an authoritative per-day plan head, and optimistic idempotent item locking
 - Immutable regeneration and replacement revisions with exact anchored-item carry-forward
 - Plan-item-scoped start, completion, skip, defer, and dismiss actions with projected Today state
+- Append-only **Not today** and **Not this week** routine feedback with reset and immediate replanning
 
 The planner is implemented as a pure domain operation in `packages/domain/src/daily-planning.ts`. It does not require PostgreSQL, a network connection, or a language model.
 
@@ -37,11 +38,13 @@ The planner is implemented as a pure domain operation in `packages/domain/src/da
 - Reaching a target reduces selection weight. Reaching a maximum is a hard exclusion.
 - Suggestions, skips, and dismissals do not count as cadence completions.
 - A completion reversal removes its referenced completion from derived cadence history without deleting either event.
+- **Not today** ends on its request local date. **Not this week** ends on the routine cadence's
+  `weekStartsOn` boundary. Neither uses the server's local date or modifies cadence history.
 
 ## Planning process
 
-1. Canonically sort routines, opted-in work items, and activity events.
-2. Apply routine exclusions for lifecycle, dates, weekdays, context, cadence maximum, spacing, consecutive-day prohibition, and minimum duration fit. Apply work-item exclusions when its planning duration is absent, its status is not `backlog`, `planned`, or `in_progress`, or its full duration cannot fit a window.
+1. Canonically sort routines, opted-in work items, activity events, and the latest applicable routine-feedback event per routine.
+2. Apply routine exclusions for temporary feedback, lifecycle, dates, weekdays, context, cadence maximum, spacing, consecutive-day prohibition, and minimum duration fit. Apply work-item exclusions when its planning duration is absent, its status is not `backlog`, `planned`, or `in_progress`, or its full duration cannot fit a window.
 3. Score eligible routines with integer components for priority, cadence deficit, minimum urgency, neglect, preferred weekday, energy/context fit, preference, recent frequency, consecutive-day repetition, and skip fatigue. Score eligible one-time work solely from its explicit priority; it has no cadence or activity-history score.
 4. Convert the scores to integer selection weights with a nonzero exploration floor.
 5. Generate deterministic weighted permutations using the versioned Mulberry32 implementation.
@@ -54,7 +57,7 @@ The default search is bounded at 128 eligible candidates and 32 randomized itera
 
 ## Determinism contract
 
-For the same canonical input snapshot, request revision, seed, algorithm version, configuration version, and PRNG version, the planner returns the same item selection and explanations regardless of input array order.
+For the same canonical input snapshot, request revision, seed, algorithm version, configuration version, and PRNG version, the planner returns the same item selection and explanations regardless of input array order. Planner v3 includes the latest applicable routine-feedback event per routine in that canonical snapshot and input hash; an expired suppression or latest reset remains visible for replay but produces no active exclusion.
 
 The generated plan ID and generation timestamp are supplied by the caller when strict byte-for-byte replay is required. The persisted input hash intentionally changes when any input fact changes, even if the final selected items remain the same.
 
@@ -70,6 +73,7 @@ The database migration adds:
 - `daily_plan_item_states`
 - `plan_interaction_events`
 - `plan_mutations`
+- `routine_planning_feedback_events`
 
 All planner relationships carry `workspace_id` in their foreign keys. Activity idempotency is unique within a workspace. Daily plan revisions are unique by workspace and local date. A plan item carries exactly one typed source (`routine` or `work_item`), and a plan cannot repeat the same source or position within one revision. A work item has no global one-plan claim: while eligible, it can appear in later revisions, dates, or sessions until completed, cancelled, or opted out. The unified-candidate migration backfills every legacy plan item and activity as a routine source and rewrites legacy exclusion entries to the same explicit type before typed-source constraints are enforced.
 
@@ -77,15 +81,52 @@ The application port `DailyPlanRepository.insertForRevision` must atomically ins
 
 The PostgreSQL adapter implements this contract with a unique workspace/date/revision constraint and `INSERT ... ON CONFLICT DO NOTHING` inside the unit-of-work transaction. Activity append uses the same pattern with the workspace-scoped idempotency key and rejects reuse of a key for different event content.
 
-PostgreSQL units of work run at serializable isolation and retry serialization failures up to twice. Routine saves include the expected version in the atomic update predicate. Local-mode planning reads are bounded to 500 routines and 5,000 activity events so plan generation cannot hold a database connection over an unbounded in-memory snapshot. Inactive routines remain in the planner input long enough to produce explicit paused or archived exclusions.
+PostgreSQL units of work default to serializable isolation and retry serialization failures with
+bounded exponential backoff. Operations that first wait on an advisory lock and must observe the
+prior lock holder's commit explicitly use read committed; this includes duration-insight approval and
+routine-feedback mutation. Routine saves include the expected version in the atomic update predicate.
+Local-mode planning reads are bounded to 500 routines, the latest feedback event for at most 500
+routines, and 5,000 activity events so plan generation cannot hold a database connection over an
+unbounded in-memory snapshot. Inactive routines remain in the planner input long enough to produce
+explicit paused or archived exclusions.
 
 Each activity append receives a monotonic ingestion sequence after taking a per-source transaction lock, so the application write path cannot commit a lower sequence after a higher one. Existing rows are backfilled deterministically by recording time and ID when this column is introduced. Routine-history pages use the sequence as a newest-first keyset and preserve the first page's high-water mark in an integrity-protected, route-bound cursor, preventing later appends from shifting the remaining traversal. Public activity representations omit idempotency keys.
 
-Database triggers make `activity_events` and `audit_events` append-only and require corrections and reversals to reference a completion from the same workspace and typed source. Plan-linked activity takes its source from the referenced plan item rather than trusting a client-supplied source. A completion may be reversed only once. Explicit local maintenance can set `schedule.allow_activity_event_mutation` or `schedule.allow_audit_event_mutation` to `on` within its transaction; routine application operations do not set these escape hatches. Because an audit row otherwise blocks its workspace's cascading deletion, tenant erasure must be an explicit maintenance operation. These local owner-role escape hatches provide operational protection, not an authorization boundary. Hosted deployment requires separate non-owner runtime and maintenance roles before product routes are enabled.
+Database triggers make `activity_events`, `audit_events`, and
+`routine_planning_feedback_events` append-only and require corrections and reversals to reference a
+completion from the same workspace and typed source. Plan-linked activity takes its source from the
+referenced plan item rather than trusting a client-supplied source. A completion may be reversed only
+once. Explicit local maintenance can set `schedule.allow_activity_event_mutation`,
+`schedule.allow_audit_event_mutation`, or
+`schedule.allow_routine_planning_feedback_event_change` to `on` within its transaction; routine
+application operations do not set these escape hatches. Because an audit row otherwise blocks its
+workspace's cascading deletion, tenant erasure must be an explicit maintenance operation. These
+local owner-role escape hatches provide operational protection, not an authorization boundary.
+Hosted deployment requires separate non-owner runtime and maintenance roles before product routes
+are enabled.
 
 The highest generated revision becomes the authoritative per-day head. Plan items expose stable UUIDs, while mutable interaction state is stored separately from immutable plan snapshots. Lock and unlock commands use the current plan ID, an optimistic head version, and a workspace-scoped idempotency key. Each command appends an immutable interaction event; the item-state projection and head version support fast Today reads and stale-client rejection.
 
 Regeneration and replacement take the per-day transaction lock, resolve command idempotency before checking the head, and allocate `current revision + 1` on the server. Retained non-terminal items preserve position, window, duration, lock state, and typed source identity. Their occupied time and source identities are removed from the residual planner input. Replacement anchors every sibling and excludes the target source. Terminal plan items are excluded from replanning. The resulting snapshot hashes the source plan, anchors, exclusions, and residual planner input; the source revision is never mutated.
+
+Temporary routine feedback uses the same per-day transaction lock, optimistic plan/head identity,
+workspace-and-date-scoped idempotency ledger, and immutable revision path. Applying feedback is limited to an
+unlocked, pending routine plan item; work items and terminal or started routine items are rejected.
+The command appends `not_today` or `not_this_week`, removes the source item from the anchors, and
+replans immediately with explicit `feedback_not_today` or `feedback_not_this_week` exclusion
+evidence. The weekly end date is derived from the routine's `weekStartsOn` value. Reset appends its
+own event and immediately replans; because the latest applicable event wins, reset does not delete
+history and an older suppression cannot reappear. Feedback never appends an activity event, changes
+cadence, or counts as completion history.
+
+Because feedback is routine-global while plan heads are per date, each plan snapshot also acts as the
+routine feedback head it observed. Feedback mutations take a routine-scoped advisory lock and use
+read-committed statement snapshots so a commit made while waiting is visible. The newest persisted
+`(ingestedSequence, id)` tuple must equal the source snapshot's tuple before append; otherwise the
+command returns `planning.feedback_head_conflict` with no write. The persisted head lookup is
+intentionally not date-bounded: once a newer-date instruction exists, an older-date plan cannot
+retroactively overwrite it, even after that older plan is refreshed. Idempotent receipt resolution
+runs before this comparison, so an already accepted older command still replays its original result.
 
 Today item actions use the same per-day lock, current plan identity, head version, and workspace-scoped idempotency ledger. Each accepted action appends an activity event attributed to the exact typed plan source, advances the head, and transactionally updates a fast item-state projection. Pending items may be started or made terminal; started items may be completed, skipped, deferred, or dismissed; terminal items reject further transitions. A completion reversal is the narrow audited exception and reopens the item as pending; for routines it removes the completion from later cadence calculations. Completing a work-derived item marks only `backlog`, `planned`, or `in_progress` source work `done` and records the prior status plus completion ownership version in immutable event metadata. Reversal restores that prior status only when the work item still has the completion's expected version and `done` status; a later accepted completion or edit is never clobbered. This does not auto-regenerate the plan. The append-only activity record is the planner input, while the projection exists only for fast Today reads.
 

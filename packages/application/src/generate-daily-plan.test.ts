@@ -100,8 +100,12 @@ describe("GenerateDailyPlan", () => {
           throw new Error("not used");
         },
         lockDay: async () => undefined,
+        lockRoutineFeedback: async () => undefined,
+        findLatestRoutineFeedback: async () => null,
         findMutation: async () => null,
         insertMutation: async () => undefined,
+        listRoutineFeedbackForPlanning: async () => [],
+        appendRoutineFeedback: async (feedback) => feedback,
       },
       workItems: {
         listPlanningCandidates: async () => workItemCandidates,

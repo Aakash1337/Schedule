@@ -91,7 +91,17 @@ export const planItemActivityState = pgEnum("plan_item_activity_state", [
   "deferred",
   "dismissed",
 ]);
-export const planMutationKind = pgEnum("plan_mutation_kind", ["regenerate", "replace"]);
+export const routinePlanningFeedbackKind = pgEnum("routine_planning_feedback_kind", [
+  "not_today",
+  "not_this_week",
+  "reset",
+]);
+export const planMutationKind = pgEnum("plan_mutation_kind", [
+  "regenerate",
+  "replace",
+  "feedback",
+  "feedback_reset",
+]);
 export const integrationRequestStatus = pgEnum("integration_request_status", [
   "processing",
   "succeeded",
@@ -777,6 +787,12 @@ export const dailyPlanItems = pgTable(
       table.planId,
       table.workItemId,
     ),
+    unique("daily_plan_items_feedback_provenance_uq").on(
+      table.workspaceId,
+      table.planId,
+      table.id,
+      table.routineId,
+    ),
     foreignKey({
       name: "daily_plan_items_plan_tenant_fk",
       columns: [table.workspaceId, table.planId],
@@ -799,6 +815,84 @@ export const dailyPlanItems = pgTable(
       "daily_plan_items_source_valid",
       sql`(${table.sourceType} = 'routine' AND ${table.routineId} IS NOT NULL AND ${table.workItemId} IS NULL) OR (${table.sourceType} = 'work_item' AND ${table.workItemId} IS NOT NULL AND ${table.routineId} IS NULL)`,
     ),
+  ],
+);
+
+/**
+ * Immutable user-authored planning feedback for a routine.
+ *
+ * The latest event by ingestion sequence is the complete projection for a
+ * routine. A reset deliberately has no effective-through date so expired or
+ * older suppressions cannot become active again.
+ */
+export const routinePlanningFeedbackEvents = pgTable(
+  "routine_planning_feedback_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ingestedSequence: bigserial("ingested_sequence", { mode: "number" }).notNull(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    routineId: uuid("routine_id").notNull(),
+    kind: routinePlanningFeedbackKind("kind").notNull(),
+    effectiveOn: date("effective_on").notNull(),
+    effectiveThrough: date("effective_through"),
+    timeZone: varchar("time_zone", { length: 80 }).notNull(),
+    sourcePlanId: uuid("source_plan_id").notNull(),
+    sourcePlanItemId: uuid("source_plan_item_id"),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("routine_planning_feedback_events_workspace_id_id_uq").on(table.workspaceId, table.id),
+    unique("routine_planning_feedback_events_workspace_date_idempotency_uq").on(
+      table.workspaceId,
+      table.effectiveOn,
+      table.idempotencyKey,
+    ),
+    index("routine_planning_feedback_events_routine_sequence_idx").on(
+      table.workspaceId,
+      table.routineId,
+      table.ingestedSequence.desc(),
+      table.id.desc(),
+    ),
+    index("routine_planning_feedback_events_effective_date_idx").on(
+      table.workspaceId,
+      table.effectiveOn,
+    ),
+    foreignKey({
+      name: "routine_planning_feedback_events_routine_tenant_fk",
+      columns: [table.workspaceId, table.routineId],
+      foreignColumns: [routines.workspaceId, routines.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "routine_planning_feedback_events_plan_tenant_fk",
+      columns: [table.workspaceId, table.sourcePlanId],
+      foreignColumns: [dailyPlans.workspaceId, dailyPlans.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "routine_planning_feedback_events_source_routine_item_fk",
+      columns: [table.workspaceId, table.sourcePlanId, table.sourcePlanItemId, table.routineId],
+      foreignColumns: [
+        dailyPlanItems.workspaceId,
+        dailyPlanItems.planId,
+        dailyPlanItems.id,
+        dailyPlanItems.routineId,
+      ],
+    }).onDelete("restrict"),
+    check(
+      "routine_planning_feedback_events_kind_policy",
+      sql`(${table.kind} = 'reset' AND ${table.effectiveThrough} IS NULL AND ${table.sourcePlanItemId} IS NULL) OR (${table.kind} = 'not_today' AND ${table.effectiveThrough} = ${table.effectiveOn} AND ${table.sourcePlanItemId} IS NOT NULL) OR (${table.kind} = 'not_this_week' AND ${table.effectiveThrough} >= ${table.effectiveOn} AND ${table.effectiveThrough} <= (${table.effectiveOn} + 6) AND ${table.sourcePlanItemId} IS NOT NULL)`,
+    ),
+    check(
+      "routine_planning_feedback_events_timezone_nonempty",
+      sql`char_length(btrim(${table.timeZone})) > 0`,
+    ),
+    check(
+      "routine_planning_feedback_events_idempotency_nonempty",
+      sql`char_length(btrim(${table.idempotencyKey})) > 0`,
+    ),
+    check("routine_planning_feedback_events_sequence_positive", sql`${table.ingestedSequence} > 0`),
   ],
 );
 

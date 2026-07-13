@@ -19,35 +19,37 @@ not authorize these product routes.
 
 ## Routes
 
-| Method   | Route                                                                            | Result                                           |
-| -------- | -------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `POST`   | `/v1/workspaces`                                                                 | Create a workspace (`201`)                       |
-| `GET`    | `/v1/workspaces`                                                                 | List local workspaces                            |
-| `GET`    | `/v1/workspaces/{workspaceId}`                                                   | Retrieve one workspace                           |
-| `POST`   | `/v1/workspaces/{workspaceId}/work-items`                                        | Create a backlog/Kanban item (`201`)             |
-| `GET`    | `/v1/workspaces/{workspaceId}/work-items`                                        | List a bounded work-item page                    |
-| `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                           | Retrieve one work item                           |
-| `PATCH`  | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                           | Version-checked work-item update                 |
-| `POST`   | `/v1/workspaces/{workspaceId}/schedule-blocks`                                   | Create a calendar block (`201`)                  |
-| `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks?from={instant}&to={instant}`       | List blocks overlapping a bounded range          |
-| `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                 | Retrieve one calendar block                      |
-| `PATCH`  | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                 | Version-checked calendar-block update            |
-| `DELETE` | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                 | Version-checked audited deletion (`204`)         |
-| `POST`   | `/v1/workspaces/{workspaceId}/routines`                                          | Create a routine (`201`)                         |
-| `GET`    | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`         | List a bounded routine page (`200`)              |
-| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}`                              | Retrieve one routine (`200` or `404`)            |
-| `PATCH`  | `/v1/workspaces/{workspaceId}/routines/{routineId}`                              | Version-checked partial update (`200` or `409`)  |
-| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight`             | Derive a read-only insight (`200` or `404`)      |
-| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/approve`     | Atomically approve an insight (`200` or `409`)   |
-| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`              | List stable, cursor-paginated history (`200`)    |
-| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`              | Idempotently record activity (`200`)             |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans`                                             | Create revision 1 or retry an exact revision     |
-| `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}?revision=1`                     | Retrieve an exact revision (`200` or `404`)      |
-| `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/current`                        | Retrieve the current Today plan and head version |
-| `PATCH`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/lock`            | Idempotently lock or unlock a current plan item  |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/activity-events` | Record a current item action                     |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/regenerations`                  | Regenerate around locked items                   |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/replacement`     | Replace one unlocked item                        |
+| Method   | Route                                                                                          | Result                                           |
+| -------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `POST`   | `/v1/workspaces`                                                                               | Create a workspace (`201`)                       |
+| `GET`    | `/v1/workspaces`                                                                               | List local workspaces                            |
+| `GET`    | `/v1/workspaces/{workspaceId}`                                                                 | Retrieve one workspace                           |
+| `POST`   | `/v1/workspaces/{workspaceId}/work-items`                                                      | Create a backlog/Kanban item (`201`)             |
+| `GET`    | `/v1/workspaces/{workspaceId}/work-items`                                                      | List a bounded work-item page                    |
+| `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Retrieve one work item                           |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Version-checked work-item update                 |
+| `POST`   | `/v1/workspaces/{workspaceId}/schedule-blocks`                                                 | Create a calendar block (`201`)                  |
+| `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks?from={instant}&to={instant}`                     | List blocks overlapping a bounded range          |
+| `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Retrieve one calendar block                      |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Version-checked calendar-block update            |
+| `DELETE` | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Version-checked audited deletion (`204`)         |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines`                                                        | Create a routine (`201`)                         |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`                       | List a bounded routine page (`200`)              |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Retrieve one routine (`200` or `404`)            |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Version-checked partial update (`200` or `409`)  |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight`                           | Derive a read-only insight (`200` or `404`)      |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/approve`                   | Atomically approve an insight (`200` or `409`)   |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | List stable, cursor-paginated history (`200`)    |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | Idempotently record activity (`200`)             |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans`                                                           | Create revision 1 or retry an exact revision     |
+| `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}?revision=1`                                   | Retrieve an exact revision (`200` or `404`)      |
+| `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/current`                                      | Retrieve the current Today plan and head version |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/lock`                          | Idempotently lock or unlock a current plan item  |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/activity-events`               | Record a current item action                     |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/regenerations`                                | Regenerate around locked items                   |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/replacement`                   | Replace one unlocked item                        |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/routine-feedback`              | Suppress one pending routine and replan          |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/routines/{routineId}/routine-feedback-resets` | Reset routine feedback and replan                |
 
 Activity requests require an `Idempotency-Key` header containing 1–160 characters. Reusing a key with identical event content returns the original event. Reusing it for different content returns `409 activity.idempotency_conflict`. Public event responses omit the key because the caller already owns it and it is retry metadata, not activity history.
 
@@ -114,7 +116,7 @@ use the new expected duration.
 
 Routine activity history is ordered by newest ingestion first and accepts `limit` from 1–200 (default 50) plus an opaque, integrity-protected `cursor`. The cursor is bound to its workspace and routine. The first page captures a high-water mark, so later appends do not shift subsequent pages. A non-null `page.nextCursor` retrieves the next page. Local cursor signing keys are process-bound, so clients should restart pagination after an API restart.
 
-A plan is identified by workspace, real Gregorian local date, and positive request revision. Generic `POST /plans` creates only the initial revision 1. It may also retry an already persisted exact generic revision: the server recomputes the deterministic input and returns the persisted plan when the input hash is unchanged. Planner input includes routines, opted-in eligible work items, and activity history. If any input has changed, retrying that revision returns `409 planning.revision_conflict`.
+A plan is identified by workspace, real Gregorian local date, and positive request revision. Generic `POST /plans` creates only the initial revision 1. It may also retry an already persisted exact generic revision: the server recomputes the deterministic input and returns the persisted plan when the input hash is unchanged. Planner input includes routines, opted-in eligible work items, activity history, and canonical routine planning feedback. If any input has changed, retrying that revision returns `409 planning.revision_conflict`.
 
 Generic generation never allocates a later revision. A missing revision greater than 1, or any new generic revision after a current head exists, returns `409 planning.revision_creation_conflict`. Clients must use regeneration or replacement with the current plan identity, head version, and an idempotency key; those mutation endpoints allocate the next revision atomically and preserve the Today interaction contract. Mutation retries must return to the original mutation endpoint with the same idempotency key.
 
@@ -125,6 +127,25 @@ Current plan items also expose `activityState`, `lastActivityEventId`, and `acti
 Generic routine activity may still be recorded outside a plan. Item completion reversal uses the item endpoint so its append-only event, Today projection, conditional work-status restoration, and head version change atomically; generic reversal remains appropriate for routine activity recorded outside a plan.
 
 Regeneration and replacement require the same optimistic identity and idempotency header plus a complete planning request with a new seed. The server allocates the next revision. Regeneration carries locked non-terminal items exactly and plans only residual capacity. Replacement anchors every sibling, rejects a locked target, excludes the removed typed source, and fills the released capacity. Terminal sources are not replanned. Prior revisions remain immutable and mutation provenance is retained for replay. A retry resolves to the same immutable plan revision and recorded head version; its projected lock and activity fields reflect the latest state for that revision.
+
+Routine feedback is a separate plan mutation, not an item activity. Applying feedback posts the same
+strict mutation body plus `kind: "not_today" | "not_this_week"` to the item route. The item must be a
+pending, unlocked routine; one-time work, locked items, and started or terminal items are rejected.
+The server appends an immutable feedback event and immediately allocates and returns the next plan
+revision. **Not today** is effective only for the request local date. **Not this week** remains a hard
+exclusion through the end of that routine's configured week. The new plan exposes
+`feedback_not_today` or `feedback_not_this_week` in its exclusion evidence.
+
+Reset posts the ordinary strict mutation body to the routine reset route. It appends a reset event
+and immediately replans; it does not delete the original instruction. Both routes require
+`Idempotency-Key`, `expectedPlanId`, `expectedHeadVersion`, and the complete planning request, and use
+the same `409 planning.head_conflict` and `planning.idempotency_conflict` behavior as regeneration.
+Feedback also has a routine-global optimistic head. If another plan date recorded a newer instruction
+for that routine after the source plan was generated, the server returns
+`409 planning.feedback_head_conflict` without appending an event or plan revision. This deliberately
+prevents an older-date plan from overwriting newer feedback; the caller must use the newer plan date.
+An accepted command still replays its original result after the global head advances. Neither route
+changes routine cadence or records a completion, skip, deferral, or dismissal.
 
 ## Error shape
 

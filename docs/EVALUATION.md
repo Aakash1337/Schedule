@@ -43,7 +43,7 @@ project.
 
 ## Current scorecard
 
-The current audited unit/component suite contains 57 test files and 632 runtime test cases, plus one
+The current audited unit/component suite contains 58 test files and 658 runtime test cases, plus one
 live Chromium integration scenario. Parameterized state matrices expand into many cases, so this
 number must not be compared as though every case were an independent product feature.
 
@@ -51,7 +51,7 @@ number must not be compared as though every case were an independent product fea
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      21 / 21 |
+| Implemented features with CI-registered evidence                       |      22 / 22 |
 | Critical implemented features with CI-registered integration or drills |      13 / 13 |
 | Partial features with an explicit limitation                           |        1 / 1 |
 | Deferred features incorrectly counted as passing                       |            0 |
@@ -65,21 +65,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     58.09% |   67.12% |    65.24% | 58.38% |
+| Whole repository, measured |      57.9% |    67.9% |    65.31% | 58.15% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |     94.79% |   89.14% |    96.23% | 95.92% |
+| Domain, measured           |     94.96% |   89.75% |    95.89% | 96.14% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |      88.6% |   82.61% |      100% | 89.33% |
+| Application, measured      |      88.6% |    82.7% |      100% | 89.28% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |      84.2% |    75.9% |     72.8% | 85.15% |
+| API, measured              |     84.66% |    77.1% |    74.04% | 85.61% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.26% |   89.18% |    91.11% | 95.14% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     83.68% |   70.71% |    71.76% | 84.25% |
+| Web, measured              |     82.98% |   70.71% |    70.11% | 83.48% |
 | Web, required              |        75% |      63% |       70% |    79% |
 
-The whole-repository totals are 4,742 of 8,162 statements, 3,451 of 5,141 branches,
-1,072 of 1,643 functions, and 4,434 of 7,595 lines.
+The whole-repository totals are 4,902 of 8,465 statements, 3,601 of 5,303 branches,
+1,113 of 1,704 functions, and 4,582 of 7,879 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -107,6 +107,41 @@ including source-matched activity references.
 These are contract metrics, not claims that the heuristic is globally optimal. Historical replay and
 fitness-regret evaluation will become meaningful once real usage fixtures and a second planner version
 exist.
+
+### Temporary routine-feedback evidence
+
+Temporary routine feedback has independent oracles for policy, planning, persistence, command, and
+interface behavior. Domain tests cover inclusive day and routine-defined week boundaries, tenant and
+future-event filtering, deterministic latest-event resolution, reset and expiry, and immutable
+recording-time input. Planner tests require **Not today** and **Not this week** to be hard routine
+exclusions without changing score or cadence evidence, include the canonical latest event in the v3
+input snapshot and hash, and preserve that input through residual replanning.
+
+Application tests require an unlocked, pending routine source, prove immediate server-allocated
+replanning and identical idempotent replay, and show that an appended reset clears the active
+exclusion without resurrecting an older instruction. They also require read-committed feedback
+transactions, compare the canonical sequence-and-ID head across plan dates, reject stale heads, fail
+closed on malformed snapshot metadata, and preserve accepted-command replay after the head advances.
+Schema and repository tests cover tenant-bound
+routine/plan/item provenance, strict suppression horizons, database-enforced append-only history,
+bounded latest-per-routine reads, database-allocated ingestion order, equivalent concurrent replay,
+and conflicting idempotency-key reuse. API tests reject unsupported feedback kinds before dispatch.
+Today component tests cover control eligibility, missing-plan-settings safety, both time horizons,
+returned-plan rendering, same-key/seed ambiguous retry, active-feedback visibility, and reset through
+both the immediate success notice and a reloaded plan. None of these checks treats feedback as an
+activity event or cadence edit.
+
+The PostgreSQL product-API verifier adds a complete real route and storage flow: cross-workspace
+requests and foreign provenance fail without writes; **Not today**, **Not this week**, and both resets
+advance immutable revisions and the optimistic head exactly once; identical retry replays while
+semantic key reuse conflicts; the weekly horizon follows the routine's Monday boundary; ingestion
+sequences increase; and plan-mutation kinds retain exact provenance. A queued two-connection race
+holds the routine feedback lock, commits a newer cross-date head, and requires the waiting stale API
+mutation to return `409 planning.feedback_head_conflict` without row or revision growth. It also
+proves the routine row
+and activity count do not change and PostgreSQL rejects direct feedback updates or deletes. The live
+Chromium flow applies **Not today**, verifies the hidden state survives reload, resets it, observes
+the routine return pending, and then continues through persisted activity and reversal behavior.
 
 ### Duration-calibration evidence
 
@@ -165,8 +200,9 @@ The audit deliberately leaves these visible instead of turning them into false g
   invalidation; reminder policy, phone notifications, Hermes/WhatsApp transport, and downstream
   delivery receipts remain deferred;
 - live browser evidence covers the central desktop Chromium mixed routine/work-item planning loop,
-  including work completion and reversal, but not every browser, responsive layout, validation
-  branch, Calendar interaction, or the duration-calibration approval flow;
+  including temporary routine feedback, reload, reset, work completion/reversal, and routine
+  completion, but not every browser, responsive layout, validation branch, Calendar interaction, or
+  the duration-calibration approval flow;
 - duration calibration has domain, component, API, repository, and real PostgreSQL evidence, but no
   production outcome data, rejection-memory study, learned cadence/energy/preference model,
   automatic application, historical replay comparison, or local-model participation; and

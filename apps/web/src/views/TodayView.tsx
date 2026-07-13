@@ -15,10 +15,12 @@ import {
 import type {
   CurrentDailyPlan,
   EnergyLevel,
+  PlanExclusion,
   PlanItem,
   PlanItemActivityState,
   PlanSettings,
   PlanningFitPreference,
+  RoutinePlanningFeedbackSuppressionKind,
   WorkspaceViewProps,
 } from "../types";
 
@@ -27,6 +29,17 @@ type ActivityCommand = Exclude<PlanItemActivityState, "pending"> | "completion_r
 interface PendingIdempotentCommand {
   readonly key: string;
   readonly occurredAt: string;
+}
+
+interface ActiveRoutineFeedback {
+  readonly routineId: string;
+  readonly title: string;
+  readonly kind: RoutinePlanningFeedbackSuppressionKind;
+}
+
+interface CommandSuccess {
+  readonly message: string;
+  readonly undo?: ActiveRoutineFeedback;
 }
 
 function planQueryKey(workspaceId: string, date: string): string {
@@ -55,6 +68,26 @@ function sourceLabel(item: Pick<PlanItem, "sourceType">): string {
 function sourceKey(source: Pick<PlanItem, "sourceType" | "routineId" | "workItemId">): string {
   const id = source.sourceType === "work_item" ? source.workItemId : source.routineId;
   return `${source.sourceType}:${id ?? "missing"}`;
+}
+
+function feedbackKindForExclusion(
+  exclusion: PlanExclusion,
+): RoutinePlanningFeedbackSuppressionKind | null {
+  if (exclusion.codes.includes("feedback_not_this_week")) return "not_this_week";
+  if (exclusion.codes.includes("feedback_not_today")) return "not_today";
+  return null;
+}
+
+function activeFeedbackFromExclusion(exclusion: PlanExclusion): ActiveRoutineFeedback | null {
+  const kind = feedbackKindForExclusion(exclusion);
+  if (kind === null || exclusion.sourceType !== "routine" || exclusion.routineId === null) {
+    return null;
+  }
+  return { routineId: exclusion.routineId, title: exclusion.title, kind };
+}
+
+function feedbackTimeframe(kind: RoutinePlanningFeedbackSuppressionKind): string {
+  return kind === "not_today" ? "Hidden today" : "Hidden through the end of this week";
 }
 
 function retainedSettings(plan: CurrentDailyPlan): PlanSettings | null {
@@ -196,7 +229,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<CommandSuccess | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("17:00");
@@ -207,6 +240,8 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const [contexts, setContexts] = useState("");
   const [durationByItem, setDurationByItem] = useState<Readonly<Record<string, string>>>({});
   const pendingCommandsRef = useRef(new Map<string, PendingIdempotentCommand>());
+  const recentFeedbackRef = useRef<HTMLDivElement>(null);
+  const shouldFocusRecentFeedbackUndoRef = useRef(false);
   const activeQueryKey = planQueryKey(workspace.id, date);
   const activeQueryKeyRef = useRef(activeQueryKey);
   activeQueryKeyRef.current = activeQueryKey;
@@ -251,6 +286,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     setCommandError(null);
     setFeedback(null);
     setBusyAction(null);
+    shouldFocusRecentFeedbackUndoRef.current = false;
     pendingCommandsRef.current.clear();
     void loadCurrentPlan(controller.signal);
     return () => controller.abort();
@@ -277,10 +313,14 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   async function handleCommandFailure(error: unknown, requestKey: string): Promise<void> {
     if (activeQueryKeyRef.current !== requestKey) return;
     if (error instanceof ApiError && error.status === 409) {
+      const conflictMessage =
+        error.code === "planning.feedback_head_conflict"
+          ? "Newer planning feedback exists for this routine on another plan date. Use that newer plan to change it."
+          : "This plan changed in another action. The latest version is now shown.";
       try {
         const refreshed = await refreshPlan(requestKey);
         if (!refreshed) return;
-        setCommandError("This plan changed in another action. The latest version is now shown.");
+        setCommandError(conflictMessage);
       } catch (refreshError) {
         if (activeQueryKeyRef.current !== requestKey) return;
         if (refreshError instanceof ApiError && refreshError.status === 404) setPlan(null);
@@ -296,7 +336,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   async function runCommand(
     key: string,
     operation: (requestKey: string) => Promise<void>,
-    successMessage: string,
+    success: string | CommandSuccess,
     retryIdentity?: string,
   ): Promise<void> {
     const requestKey = activeQueryKey;
@@ -307,7 +347,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
       await operation(requestKey);
       if (retryIdentity !== undefined) pendingCommandsRef.current.delete(retryIdentity);
       if (activeQueryKeyRef.current !== requestKey) return;
-      setFeedback(successMessage);
+      setFeedback(typeof success === "string" ? { message: success } : success);
     } catch (error) {
       if (retryIdentity !== undefined && error instanceof ApiError && error.status === 409) {
         pendingCommandsRef.current.delete(retryIdentity);
@@ -547,11 +587,116 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     );
   }
 
+  async function applyRoutineFeedback(
+    item: PlanItem,
+    kind: RoutinePlanningFeedbackSuppressionKind,
+  ): Promise<void> {
+    if (plan === null || item.routineId === null) return;
+    const settings = retainedSettings(plan);
+    if (settings === null) {
+      setCommandError("This plan does not include the settings needed to apply feedback.");
+      return;
+    }
+    const key = `routine-feedback:${item.id}:${kind}`;
+    const retryIdentity = `${plan.id}:${plan.headVersion}:${key}`;
+    const command = pendingCommand(retryIdentity);
+    await runCommand(
+      key,
+      async (requestKey) => {
+        const current = await api.applyRoutineFeedback(
+          workspace.id,
+          date,
+          item.id,
+          {
+            expectedPlanId: plan.id,
+            expectedHeadVersion: plan.headVersion,
+            kind,
+            request: settingsWithFreshSeed(plan, settings, command.key),
+          },
+          command.key,
+        );
+        if (activeQueryKeyRef.current === requestKey) {
+          shouldFocusRecentFeedbackUndoRef.current = true;
+          setPlan(current);
+        }
+      },
+      {
+        message:
+          kind === "not_today"
+            ? `${item.title} is hidden for today. Today's plan was recalculated.`
+            : `${item.title} is hidden through this week. Today's plan was recalculated.`,
+        undo: { routineId: item.routineId, title: item.title, kind },
+      },
+      retryIdentity,
+    );
+  }
+
+  async function resetRoutineFeedback(entry: ActiveRoutineFeedback): Promise<void> {
+    if (plan === null) return;
+    const settings = retainedSettings(plan);
+    if (settings === null) {
+      setCommandError("This plan does not include the settings needed to clear feedback.");
+      return;
+    }
+    const key = `routine-feedback-reset:${entry.routineId}`;
+    const retryIdentity = `${plan.id}:${plan.headVersion}:${key}`;
+    const command = pendingCommand(retryIdentity);
+    await runCommand(
+      key,
+      async (requestKey) => {
+        const current = await api.resetRoutineFeedback(
+          workspace.id,
+          date,
+          entry.routineId,
+          {
+            expectedPlanId: plan.id,
+            expectedHeadVersion: plan.headVersion,
+            request: settingsWithFreshSeed(plan, settings, command.key),
+          },
+          command.key,
+        );
+        if (activeQueryKeyRef.current === requestKey) setPlan(current);
+      },
+      `Temporary feedback for ${entry.title} was cleared. Today's plan was recalculated.`,
+      retryIdentity,
+    );
+  }
+
   const sortedItems = useMemo(
     () => plan?.items.slice().sort((left, right) => left.position - right.position) ?? [],
     [plan],
   );
+  const activeRoutineFeedback = useMemo(
+    () =>
+      plan?.exclusions
+        .map(activeFeedbackFromExclusion)
+        .filter((entry): entry is ActiveRoutineFeedback => entry !== null) ?? [],
+    [plan],
+  );
+  const ordinaryExclusions = useMemo(
+    () =>
+      plan?.exclusions.filter((exclusion) => feedbackKindForExclusion(exclusion) === null) ?? [],
+    [plan],
+  );
   const commandInProgress = busyAction !== null;
+
+  useEffect(() => {
+    if (
+      !shouldFocusRecentFeedbackUndoRef.current ||
+      feedback?.undo === undefined ||
+      commandInProgress
+    ) {
+      return;
+    }
+
+    const undo = recentFeedbackRef.current?.querySelector<HTMLButtonElement>(
+      "[data-recent-feedback-undo]",
+    );
+    if (undo === undefined || undo === null || undo.disabled) return;
+
+    shouldFocusRecentFeedbackUndoRef.current = false;
+    undo.focus();
+  }, [commandInProgress, feedback]);
 
   return (
     <section className="today-view" aria-label="Today">
@@ -578,9 +723,22 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
         <ErrorNotice message={commandError} onDismiss={() => setCommandError(null)} />
       )}
       {feedback === null ? null : (
-        <p className="today-feedback" role="status" aria-live="polite">
-          {feedback}
-        </p>
+        <div ref={recentFeedbackRef} className="today-feedback" role="status" aria-live="polite">
+          <span>{feedback.message}</span>
+          {feedback.undo === undefined ? null : (
+            <Button
+              type="button"
+              variant="quiet"
+              disabled={commandInProgress || plan?.request === null}
+              data-recent-feedback-undo
+              aria-label={`Undo recent feedback for ${feedback.undo.title}`}
+              onClick={() => void resetRoutineFeedback(feedback.undo!)}
+            >
+              <RotateCcw size={15} aria-hidden="true" />
+              Undo
+            </Button>
+          )}
+        </div>
       )}
 
       {loading ? <PageSkeleton rows={5} /> : null}
@@ -757,6 +915,42 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
             </section>
           )}
 
+          {activeRoutineFeedback.length === 0 ? null : (
+            <section
+              className="today-temporary-feedback"
+              aria-labelledby="today-temporary-feedback-heading"
+            >
+              <div>
+                <h2 id="today-temporary-feedback-heading">Temporarily hidden</h2>
+                <p>These instructions expire automatically and do not change routine cadence.</p>
+              </div>
+              <ul>
+                {activeRoutineFeedback.map((entry) => {
+                  const resetKey = `routine-feedback-reset:${entry.routineId}`;
+                  return (
+                    <li key={entry.routineId}>
+                      <div>
+                        <strong>{entry.title}</strong>
+                        <span>{feedbackTimeframe(entry.kind)}</span>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        busy={busyAction === resetKey}
+                        disabled={commandInProgress || plan.request === null}
+                        aria-label={`Undo temporary feedback for ${entry.title}`}
+                        onClick={() => void resetRoutineFeedback(entry)}
+                      >
+                        <RotateCcw size={15} aria-hidden="true" />
+                        Undo
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          )}
+
           {sortedItems.length === 0 ? (
             <EmptyState
               title="No eligible items fit this plan"
@@ -775,6 +969,11 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
                 const window = plan.request?.availableWindows[item.windowIndex];
                 const lockKey = `lock:${item.id}`;
                 const replaceKey = `replace:${item.id}`;
+                const canGiveRoutineFeedback =
+                  item.sourceType === "routine" &&
+                  item.routineId !== null &&
+                  item.activityState === "pending" &&
+                  !item.locked;
                 return (
                   <li className="today-plan-item" key={item.id}>
                     <article aria-labelledby={`today-item-${item.id}`}>
@@ -851,6 +1050,30 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
                               Replace
                             </Button>
                           ) : null}
+                          {canGiveRoutineFeedback ? (
+                            <div
+                              className="today-routine-feedback-controls"
+                              role="group"
+                              aria-label={`Planning feedback for ${item.title}`}
+                            >
+                              <span aria-hidden="true">Hide from planner</span>
+                              {(["not_today", "not_this_week"] as const).map((kind) => {
+                                const feedbackKey = `routine-feedback:${item.id}:${kind}`;
+                                return (
+                                  <Button
+                                    key={kind}
+                                    type="button"
+                                    variant="quiet"
+                                    busy={busyAction === feedbackKey}
+                                    disabled={commandInProgress || plan.request === null}
+                                    onClick={() => void applyRoutineFeedback(item, kind)}
+                                  >
+                                    {kind === "not_today" ? "Not today" : "Not this week"}
+                                  </Button>
+                                );
+                              })}
+                            </div>
+                          ) : null}
                         </div>
 
                         <PlanItemActions
@@ -872,14 +1095,14 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
             </ol>
           )}
 
-          {plan.exclusions.length === 0 ? null : (
+          {ordinaryExclusions.length === 0 ? null : (
             <details className="today-exclusions">
               <summary>
-                Why {plan.exclusions.length} other{" "}
-                {plan.exclusions.length === 1 ? "item was" : "items were"} excluded
+                Why {ordinaryExclusions.length} other{" "}
+                {ordinaryExclusions.length === 1 ? "item was" : "items were"} excluded
               </summary>
               <ul>
-                {plan.exclusions.map((exclusion) => (
+                {ordinaryExclusions.map((exclusion) => (
                   <li key={sourceKey(exclusion)}>
                     <strong>{exclusion.title}</strong>
                     <span>{exclusion.codes.map(displayCode).join(", ")}</span>

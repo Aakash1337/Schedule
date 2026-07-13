@@ -65,6 +65,7 @@ import {
   recordActivityEvent,
   reversePlanItemCompletion,
   routineId,
+  routinePlanningFeedbackId,
   scheduleBlockId,
   transitionPlanItemActivity,
   workItemId,
@@ -77,6 +78,7 @@ import {
   type PlanItem,
   type PlanWarning,
   type Routine,
+  type RoutinePlanningFeedback,
   type RoutineStatus,
   type ScheduleBlock,
   type ScheduleBlockId,
@@ -102,6 +104,7 @@ import {
   integrationRequests,
   planInteractionEvents,
   planMutations,
+  routinePlanningFeedbackEvents,
   routines,
   scheduleBlocks,
   workItems,
@@ -117,6 +120,7 @@ type WorkspaceRow = typeof workspaces.$inferSelect;
 type ScheduleBlockRow = typeof scheduleBlocks.$inferSelect;
 type RoutineRow = typeof routines.$inferSelect;
 type ActivityEventRow = typeof activityEvents.$inferSelect;
+type RoutinePlanningFeedbackEventRow = typeof routinePlanningFeedbackEvents.$inferSelect;
 type DailyPlanRow = typeof dailyPlans.$inferSelect;
 type DailyPlanItemRow = typeof dailyPlanItems.$inferSelect;
 type DailyPlanItemStateRow = typeof dailyPlanItemStates.$inferSelect;
@@ -308,6 +312,23 @@ function mapActivityEvent(row: ActivityEventRow): ActivityEvent {
     referenceEventId: row.referenceEventId === null ? null : activityEventId(row.referenceEventId),
     idempotencyKey: row.idempotencyKey,
     metadata: row.metadata,
+    recordedAt: new Date(row.recordedAt),
+  };
+}
+
+function mapRoutinePlanningFeedback(row: RoutinePlanningFeedbackEventRow): RoutinePlanningFeedback {
+  return {
+    id: routinePlanningFeedbackId(row.id),
+    ingestedSequence: row.ingestedSequence,
+    workspaceId: workspaceId(row.workspaceId),
+    routineId: routineId(row.routineId),
+    kind: row.kind,
+    effectiveOn: localDate(row.effectiveOn),
+    effectiveThrough: row.effectiveThrough === null ? null : localDate(row.effectiveThrough),
+    timeZone: row.timeZone,
+    sourcePlanId: dailyPlanId(row.sourcePlanId),
+    sourcePlanItemId: row.sourcePlanItemId === null ? null : planItemId(row.sourcePlanItemId),
+    idempotencyKey: row.idempotencyKey,
     recordedAt: new Date(row.recordedAt),
   };
 }
@@ -1064,7 +1085,7 @@ export class PostgresActivityEventRepository implements ActivityEventRepository 
   }
 }
 
-class PostgresDailyPlanRepository implements DailyPlanRepository {
+export class PostgresDailyPlanRepository implements DailyPlanRepository {
   constructor(private readonly database: DatabaseExecutor) {}
 
   async findById(workspace: WorkspaceId, id: DailyPlan["id"]): Promise<DailyPlan | null> {
@@ -1816,6 +1837,127 @@ class PostgresDailyPlanRepository implements DailyPlanRepository {
       resultHeadVersion: record.resultHeadVersion,
       createdAt: record.createdAt,
     });
+  }
+
+  async listRoutineFeedbackForPlanning(
+    workspace: WorkspaceId,
+    throughDate: LocalDate,
+  ): Promise<readonly RoutinePlanningFeedback[]> {
+    const rows = await this.database
+      .selectDistinctOn([
+        routinePlanningFeedbackEvents.workspaceId,
+        routinePlanningFeedbackEvents.routineId,
+      ])
+      .from(routinePlanningFeedbackEvents)
+      .where(
+        and(
+          eq(routinePlanningFeedbackEvents.workspaceId, workspace),
+          lte(routinePlanningFeedbackEvents.effectiveOn, throughDate),
+        ),
+      )
+      .orderBy(
+        routinePlanningFeedbackEvents.workspaceId,
+        routinePlanningFeedbackEvents.routineId,
+        desc(routinePlanningFeedbackEvents.ingestedSequence),
+        desc(routinePlanningFeedbackEvents.id),
+      )
+      .limit(501);
+    if (rows.length > 500) {
+      throw new DomainError(
+        "planning.feedback_candidate_limit_exceeded",
+        "A workspace cannot contain feedback for more than 500 planning routines.",
+      );
+    }
+    return rows.map(mapRoutinePlanningFeedback);
+  }
+
+  async lockRoutineFeedback(workspace: WorkspaceId, routine: Routine["id"]): Promise<void> {
+    await this.database.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`${workspace}:planning-feedback:${routine}`}, 0))`,
+    );
+  }
+
+  async findLatestRoutineFeedback(
+    workspace: WorkspaceId,
+    routine: Routine["id"],
+  ): Promise<RoutinePlanningFeedback | null> {
+    const [row] = await this.database
+      .select()
+      .from(routinePlanningFeedbackEvents)
+      .where(
+        and(
+          eq(routinePlanningFeedbackEvents.workspaceId, workspace),
+          eq(routinePlanningFeedbackEvents.routineId, routine),
+        ),
+      )
+      .orderBy(
+        desc(routinePlanningFeedbackEvents.ingestedSequence),
+        desc(routinePlanningFeedbackEvents.id),
+      )
+      .limit(1);
+    return row === undefined ? null : mapRoutinePlanningFeedback(row);
+  }
+
+  async appendRoutineFeedback(feedback: RoutinePlanningFeedback): Promise<RoutinePlanningFeedback> {
+    const [inserted] = await this.database
+      .insert(routinePlanningFeedbackEvents)
+      .values({
+        id: feedback.id,
+        workspaceId: feedback.workspaceId,
+        routineId: feedback.routineId,
+        kind: feedback.kind,
+        effectiveOn: feedback.effectiveOn,
+        effectiveThrough: feedback.effectiveThrough,
+        timeZone: feedback.timeZone,
+        sourcePlanId: feedback.sourcePlanId,
+        sourcePlanItemId: feedback.sourcePlanItemId,
+        idempotencyKey: feedback.idempotencyKey,
+        recordedAt: feedback.recordedAt,
+      })
+      .onConflictDoNothing({
+        target: [
+          routinePlanningFeedbackEvents.workspaceId,
+          routinePlanningFeedbackEvents.effectiveOn,
+          routinePlanningFeedbackEvents.idempotencyKey,
+        ],
+      })
+      .returning();
+    if (inserted !== undefined) return mapRoutinePlanningFeedback(inserted);
+
+    const [existingRow] = await this.database
+      .select()
+      .from(routinePlanningFeedbackEvents)
+      .where(
+        and(
+          eq(routinePlanningFeedbackEvents.workspaceId, feedback.workspaceId),
+          eq(routinePlanningFeedbackEvents.effectiveOn, feedback.effectiveOn),
+          eq(routinePlanningFeedbackEvents.idempotencyKey, feedback.idempotencyKey),
+        ),
+      )
+      .limit(1);
+    if (existingRow === undefined) {
+      throw new DomainError(
+        "planning.feedback_write_conflict",
+        "The routine planning feedback could not be appended or loaded.",
+      );
+    }
+    const existing = mapRoutinePlanningFeedback(existingRow);
+    const sameFeedback =
+      existing.workspaceId === feedback.workspaceId &&
+      existing.routineId === feedback.routineId &&
+      existing.kind === feedback.kind &&
+      existing.effectiveOn === feedback.effectiveOn &&
+      existing.effectiveThrough === feedback.effectiveThrough &&
+      existing.timeZone === feedback.timeZone &&
+      existing.sourcePlanId === feedback.sourcePlanId &&
+      existing.sourcePlanItemId === feedback.sourcePlanItemId;
+    if (!sameFeedback) {
+      throw new DomainError(
+        "planning.idempotency_conflict",
+        "This feedback idempotency key already belongs to a different planning instruction.",
+      );
+    }
+    return existing;
   }
 }
 

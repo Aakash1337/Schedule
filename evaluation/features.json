@@ -112,6 +112,111 @@
       ]
     },
     {
+      "id": "temporary-routine-planning-feedback",
+      "status": "implemented",
+      "risk": "high",
+      "contract": {
+        "file": "docs/PRODUCT.md",
+        "anchor": "### 3.6 Routine planning feedback"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/routine-planning-feedback.test.ts",
+          "command": "unit",
+          "anchors": [
+            "derives inclusive day and routine-week boundaries without server-time arithmetic",
+            "requires suppression provenance while keeping resets explicitly item-free",
+            "chooses the latest sequence then id, independent of input order and tenant noise",
+            "ignores future-effective events and treats the latest reset or expiry as inactive",
+            "copies the recording instant and validates the persistence placeholder sequence"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/domain/src/daily-planning.test.ts",
+          "command": "unit",
+          "anchors": [
+            "hard-excludes explicit routine feedback without changing its score or cadence evidence",
+            "snapshots only canonical latest feedback and remains deterministic across feedback order",
+            "passes feedback through residual replanning and records the canonical event in its snapshot"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/mutate-daily-plan.test.ts",
+          "command": "unit",
+          "anchors": [
+            "records routine-only weekly feedback, replans immediately, and replays idempotently",
+            "appends a reset and replans without resurrecting the prior suppression",
+            "rejects routine feedback from a plan that observed an older cross-date feedback head",
+            "compares the complete canonical feedback head when ingestion sequences tie",
+            "replays an accepted feedback command after the routine feedback head advances",
+            "accepts a legacy source snapshot with no feedback collection when no global head exists",
+            "fails closed when a source plan contains malformed feedback-head metadata",
+            "rejects feedback for locked, started, or non-routine items"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": [
+            "stores tenant-bound immutable routine planning feedback with strict horizon policy",
+            "migrates routine feedback as append-only database history"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/repositories.test.ts",
+          "command": "unit",
+          "anchors": [
+            "loads one bounded latest event per routine and maps its allocated sequence",
+            "fails closed if persisted feedback exceeds the planner candidate bound",
+            "lets PostgreSQL allocate ingestion sequence when appending immutable feedback",
+            "resolves a concurrent duplicate idempotency key to the equivalent stored event",
+            "rejects reuse of a feedback idempotency key for different semantics"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "applies and resets routine feedback through dedicated idempotent plan mutations"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/TodayView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "offers temporary feedback only for pending, unlocked routine items",
+            "keeps temporary feedback visible but unavailable when plan settings are missing",
+            "applies %s as a versioned feedback mutation and renders the returned plan",
+            "explains when newer cross-date feedback prevents changing an older plan",
+            "retries ambiguous routine feedback with the same idempotency key and seed",
+            "undoes just-applied feedback through a reset mutation and uses its returned plan",
+            "keeps reloaded temporary feedback visible, reversible, and out of generic exclusions"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-product-api.ts",
+          "command": "product-api",
+          "anchors": ["temporary-routine-feedback-postgres-api verification passed"]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/planning-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": [
+            "persists temporary routine feedback and activity through the live Today planning flow"
+          ]
+        }
+      ]
+    },
+    {
       "id": "plan-item-activity-lifecycle",
       "status": "implemented",
       "risk": "high",
@@ -266,7 +371,7 @@
           "file": "apps/web/e2e/planning-flow.spec.ts",
           "command": "browser-e2e",
           "anchors": [
-            "persists routine and work-item activity through the live Today planning flow"
+            "persists temporary routine feedback and activity through the live Today planning flow"
           ]
         }
       ]
@@ -433,7 +538,7 @@
           "file": "apps/web/e2e/planning-flow.spec.ts",
           "command": "browser-e2e",
           "anchors": [
-            "persists routine and work-item activity through the live Today planning flow"
+            "persists temporary routine feedback and activity through the live Today planning flow"
           ]
         }
       ]
@@ -705,7 +810,7 @@
       "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 3 — Transparent adaptation" },
       "limitations": [
         "Only explicit routine-duration calibration is implemented; learned cadence, day/time, energy, preference, overload, and category-balance signals remain deferred.",
-        "Suggestions are never applied automatically, and rejection memory, dismissal/reset controls, adaptive probabilistic selection beyond the deterministic planner, and historical comparison remain deferred.",
+        "Suggestions are never applied automatically, and duration-insight rejection memory and dismissal/reset controls, adaptive probabilistic selection beyond the deterministic planner, and historical comparison remain deferred.",
         "The statistical thresholds have contract evidence but no production outcome data, and no local or hosted model participates."
       ],
       "evidence": [

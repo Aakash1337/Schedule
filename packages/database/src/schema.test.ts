@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { getTableName } from "drizzle-orm";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
@@ -13,7 +15,10 @@ import {
   integrationRequests,
   outboxEvents,
   planInteractionEvents,
+  planMutationKind,
   planMutations,
+  routinePlanningFeedbackEvents,
+  routinePlanningFeedbackKind,
   routines,
   scheduleBlocks,
   workItems,
@@ -38,6 +43,7 @@ describe("database schema", () => {
     expect(getTableName(dailyPlanItemStates)).toBe("daily_plan_item_states");
     expect(getTableName(planInteractionEvents)).toBe("plan_interaction_events");
     expect(getTableName(planMutations)).toBe("plan_mutations");
+    expect(getTableName(routinePlanningFeedbackEvents)).toBe("routine_planning_feedback_events");
     expect(getTableName(integrationCredentials)).toBe("integration_credentials");
     expect(getTableName(integrationConfirmations)).toBe("integration_confirmations");
     expect(getTableName(integrationRequests)).toBe("integration_requests");
@@ -197,6 +203,87 @@ describe("database schema", () => {
     );
     expect(activityConfig.foreignKeys.map((constraint) => constraint.getName())).toContain(
       "activity_events_work_item_tenant_fk",
+    );
+  });
+
+  it("stores tenant-bound immutable routine planning feedback with strict horizon policy", () => {
+    const config = getTableConfig(routinePlanningFeedbackEvents);
+
+    expect(routinePlanningFeedbackKind.enumValues).toEqual(["not_today", "not_this_week", "reset"]);
+    expect(planMutationKind.enumValues).toEqual([
+      "regenerate",
+      "replace",
+      "feedback",
+      "feedback_reset",
+    ]);
+    expect(config.foreignKeys.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "routine_planning_feedback_events_routine_tenant_fk",
+        "routine_planning_feedback_events_plan_tenant_fk",
+        "routine_planning_feedback_events_source_routine_item_fk",
+      ]),
+    );
+    expect(
+      config.uniqueConstraints
+        .find(
+          (constraint) =>
+            constraint.getName() ===
+            "routine_planning_feedback_events_workspace_date_idempotency_uq",
+        )
+        ?.columns.map((column) => column.name),
+    ).toEqual(["workspace_id", "effective_on", "idempotency_key"]);
+    expect(
+      getTableConfig(dailyPlanItems)
+        .uniqueConstraints.find(
+          (constraint) => constraint.getName() === "daily_plan_items_feedback_provenance_uq",
+        )
+        ?.columns.map((column) => column.name),
+    ).toEqual(["workspace_id", "plan_id", "id", "routine_id"]);
+    expect(config.indexes.map((constraint) => constraint.config.name)).toEqual(
+      expect.arrayContaining([
+        "routine_planning_feedback_events_routine_sequence_idx",
+        "routine_planning_feedback_events_effective_date_idx",
+      ]),
+    );
+    expect(
+      config.indexes
+        .find(
+          (constraint) =>
+            constraint.config.name === "routine_planning_feedback_events_routine_sequence_idx",
+        )
+        ?.config.columns.map((column) => ({
+          name: "name" in column ? column.name : null,
+          order: "indexConfig" in column ? column.indexConfig.order : null,
+        })),
+    ).toEqual([
+      { name: "workspace_id", order: "asc" },
+      { name: "routine_id", order: "asc" },
+      { name: "ingested_sequence", order: "desc" },
+      { name: "id", order: "desc" },
+    ]);
+    expect(config.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "routine_planning_feedback_events_kind_policy",
+        "routine_planning_feedback_events_timezone_nonempty",
+        "routine_planning_feedback_events_idempotency_nonempty",
+        "routine_planning_feedback_events_sequence_positive",
+      ]),
+    );
+  });
+
+  it("migrates routine feedback as append-only database history", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0020_chief_old_lace.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain('CREATE TRIGGER "routine_planning_feedback_events_prevent_change"');
+    expect(migration).toContain('BEFORE UPDATE OR DELETE ON "routine_planning_feedback_events"');
+    expect(migration).toContain(
+      '"routine_planning_feedback_events_routine_sequence_idx" ON "routine_planning_feedback_events" USING btree ("workspace_id","routine_id","ingested_sequence" DESC NULLS LAST,"id" DESC NULLS LAST)',
+    );
+    expect(migration).toContain(
+      'FOREIGN KEY ("workspace_id","source_plan_id","source_plan_item_id","routine_id") REFERENCES "public"."daily_plan_items"("workspace_id","plan_id","id","routine_id")',
     );
   });
 });

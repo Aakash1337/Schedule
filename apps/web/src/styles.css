@@ -938,6 +938,14 @@ textarea:focus {
   border-radius: 9px;
 }
 
+.today-feedback > span {
+  flex: 1;
+}
+
+.today-feedback .button {
+  flex: none;
+}
+
 .today-plan-setup {
   display: grid;
   grid-template-columns: minmax(220px, 0.7fr) minmax(420px, 1.3fr);
@@ -1057,6 +1065,68 @@ textarea:focus {
   margin: 0;
   padding-left: 18px;
   color: var(--ink-soft);
+}
+
+.today-temporary-feedback {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.65fr) minmax(280px, 1.35fr);
+  gap: 24px;
+  margin: 18px 0;
+  padding: 15px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.today-temporary-feedback h2 {
+  margin-bottom: 4px;
+  font-size: 0.92rem;
+}
+
+.today-temporary-feedback p {
+  max-width: 48ch;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.today-temporary-feedback ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.today-temporary-feedback li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  padding: 3px 0;
+}
+
+.today-temporary-feedback li + li {
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.today-temporary-feedback li > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.today-temporary-feedback li strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.today-temporary-feedback li span {
+  color: var(--ink-faint);
+  font-size: 0.72rem;
 }
 
 .today-plan-items {
@@ -1208,6 +1278,29 @@ textarea:focus {
   align-items: flex-end;
   flex-wrap: wrap;
   gap: 5px;
+}
+
+.today-routine-feedback-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: 3px;
+}
+
+.today-routine-feedback-controls > span {
+  margin-right: 1px;
+  color: var(--ink-faint);
+  font-size: 0.64rem;
+  font-weight: 680;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.today-routine-feedback-controls .button {
+  min-height: 30px;
+  padding: 5px 7px;
+  font-size: 0.72rem;
 }
 
 .today-completion-duration {
@@ -2261,6 +2354,15 @@ textarea:focus {
 
   .today-item-actions {
     align-items: flex-end;
+  }
+
+  .today-temporary-feedback {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .today-routine-feedback-controls {
+    margin-left: 0;
   }
 
   .today-completion-duration {
