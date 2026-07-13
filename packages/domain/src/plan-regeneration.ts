@@ -17,11 +17,11 @@ import type { RoutineId } from "./ids.js";
 import type { WorkItemId } from "./ids.js";
 import { isTerminalPlanItemActivityState } from "./plan-item-activity.js";
 
-export type PlanMutationKind = "regenerate" | "replace";
+export type PlanMutationKind = "regenerate" | "replace" | "feedback" | "feedback_reset";
 
 export interface ReplanDailyPlanInput extends Pick<
   GenerateDailyPlanInput,
-  "id" | "routines" | "events" | "config" | "generatedAt"
+  "id" | "routines" | "events" | "routineFeedback" | "config" | "generatedAt"
 > {
   readonly workItems?: GenerateDailyPlanInput["workItems"];
   readonly sourcePlan: DailyPlan;
@@ -199,6 +199,7 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
         ? []
         : (input.workItems ?? []).filter((workItem) => !excluded.has(`work_item:${workItem.id}`)),
     events: input.events,
+    ...(input.routineFeedback === undefined ? {} : { routineFeedback: input.routineFeedback }),
     ...(input.config === undefined ? {} : { config: input.config }),
     ...(input.generatedAt === undefined ? {} : { generatedAt: input.generatedAt }),
   });

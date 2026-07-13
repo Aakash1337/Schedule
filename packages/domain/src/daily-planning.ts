@@ -23,9 +23,14 @@ import type { ActivityEvent } from "./activity-event.js";
 import type { PlanItemActivityState } from "./plan-item-activity.js";
 import type { CadencePolicy } from "./cadence-policy.js";
 import type { Routine } from "./routine.js";
+import {
+  activeRoutinePlanningFeedback,
+  canonicalRoutinePlanningFeedback,
+  type RoutinePlanningFeedback,
+} from "./routine-planning-feedback.js";
 import type { WorkItem } from "./work-item.js";
 
-export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v2";
+export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v3";
 export const PLANNER_CONFIG_VERSION = "default-weights-v2";
 export const PLANNER_PRNG_VERSION = "mulberry32-v1";
 
@@ -139,6 +144,8 @@ export type EligibilityCode =
   | "not_started"
   | "ended"
   | "temporarily_paused"
+  | "feedback_not_today"
+  | "feedback_not_this_week"
   | "excluded_weekday"
   | "context_unavailable"
   | "maximum_reached"
@@ -242,6 +249,7 @@ export interface GenerateDailyPlanInput {
   readonly routines: readonly Routine[];
   readonly workItems?: readonly WorkItem[];
   readonly events: readonly ActivityEvent[];
+  readonly routineFeedback?: readonly RoutinePlanningFeedback[];
   readonly config?: PlannerConfig;
   readonly generatedAt?: Date;
 }
@@ -531,6 +539,7 @@ export function evaluateRoutineForPlan(
   allEvents: readonly ActivityEvent[],
   request: DailyPlanningRequest,
   config: PlannerConfig = DEFAULT_PLANNER_CONFIG,
+  routineFeedback: readonly RoutinePlanningFeedback[] = [],
 ): RoutineEvaluation {
   const events = canonicalEvents(allEvents, request);
   const completions = activeCompletions(events, routine);
@@ -554,9 +563,17 @@ export function evaluateRoutineForPlan(
     0,
   );
   const exclusions: EligibilityCode[] = [];
+  const activeFeedback = activeRoutinePlanningFeedback(
+    routineFeedback,
+    request.workspaceId,
+    routine.id,
+    request.date,
+  );
 
   if (routine.workspaceId !== request.workspaceId) exclusions.push("workspace_mismatch");
   if (routine.status !== "active") exclusions.push("routine_inactive");
+  if (activeFeedback?.kind === "not_today") exclusions.push("feedback_not_today");
+  if (activeFeedback?.kind === "not_this_week") exclusions.push("feedback_not_this_week");
   if (routine.cadence.startsOn !== null && request.date < routine.cadence.startsOn) {
     exclusions.push("not_started");
   }
@@ -676,6 +693,12 @@ export function evaluateRoutineForPlan(
     reasons.push("The cadence target is already satisfied, so its weight is reduced.");
   if (minimumDeficit > 0)
     reasons.push(`The cadence minimum still needs ${minimumDeficit} completion(s).`);
+  if (activeFeedback?.kind === "not_today") {
+    reasons.push("You asked not to see this routine again today.");
+  }
+  if (activeFeedback?.kind === "not_this_week") {
+    reasons.push("You asked not to see this routine again this week.");
+  }
 
   return {
     routineId: routine.id,
@@ -949,6 +972,7 @@ function createInputSnapshot(
   routines: readonly Routine[],
   workItems: readonly WorkItem[],
   events: readonly ActivityEvent[],
+  routineFeedback: readonly RoutinePlanningFeedback[],
   config: PlannerConfig,
 ): JsonValue {
   const canonicalRoutines = [...routines].sort((left, right) =>
@@ -962,6 +986,7 @@ function createInputSnapshot(
     config,
     events: canonicalActivity,
     request,
+    routineFeedback,
     routines: canonicalRoutines,
     workItems: canonicalWorkItems,
   });
@@ -1059,6 +1084,15 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
     );
     eventIds.add(event.id);
   }
+  const feedbackIds = new Set<string>();
+  for (const feedback of input.routineFeedback ?? []) {
+    invariant(
+      !feedbackIds.has(feedback.id),
+      "planning.duplicate_routine_feedback",
+      `Routine planning feedback ${feedback.id} appears more than once in the planner input.`,
+    );
+    feedbackIds.add(feedback.id);
+  }
   const generatedAt = input.generatedAt ?? new Date();
   invariant(
     Number.isFinite(generatedAt.getTime()),
@@ -1066,6 +1100,11 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
     "A valid plan generation timestamp is required.",
   );
 
+  const canonicalFeedback = canonicalRoutinePlanningFeedback(
+    input.routineFeedback ?? [],
+    input.request.workspaceId,
+    input.request.date,
+  );
   const routineEvaluations = input.routines
     .slice()
     .sort((left, right) => left.id.localeCompare(right.id, "en"))
@@ -1073,7 +1112,13 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
       routine,
       workItem: null,
       source: { sourceType: "routine" as const, routineId: routine.id, workItemId: null },
-      evaluation: evaluateRoutineForPlan(routine, input.events, input.request, config),
+      evaluation: evaluateRoutineForPlan(
+        routine,
+        input.events,
+        input.request,
+        config,
+        canonicalFeedback,
+      ),
     }));
   const workItemEvaluations = (input.workItems ?? [])
     .slice()
@@ -1156,6 +1201,7 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
     input.routines,
     input.workItems ?? [],
     input.events,
+    canonicalFeedback,
     config,
   );
   const inputHash = createHash("sha256").update(JSON.stringify(inputSnapshot)).digest("hex");

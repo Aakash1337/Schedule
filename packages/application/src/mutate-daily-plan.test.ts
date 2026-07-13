@@ -5,6 +5,7 @@ import {
   createDailyPlanningRequest,
   createDurationRange,
   createRoutine,
+  createRoutinePlanningFeedback,
   createStructuredTags,
   createWorkItem,
   createWorkspace,
@@ -12,14 +13,21 @@ import {
   generateDailyPlan,
   planItemId,
   routineId,
+  routinePlanningFeedbackId,
   workspaceId,
   type DailyPlan,
   type Routine,
+  type RoutinePlanningFeedback,
   type WorkItem,
 } from "@schedule/domain";
 
 import { MutateDailyPlan } from "./mutate-daily-plan.js";
-import type { PlanMutationRecord, TransactionContext, UnitOfWork } from "./ports.js";
+import type {
+  PlanMutationRecord,
+  TransactionContext,
+  UnitOfWork,
+  UnitOfWorkOptions,
+} from "./ports.js";
 
 describe("MutateDailyPlan", () => {
   const workspace = workspaceId("mutation-workspace");
@@ -67,7 +75,10 @@ describe("MutateDailyPlan", () => {
       items: generated.items.map((item, index) => ({ ...item, locked: index === 0 })),
     };
     let headVersion = 2;
+    let feedbackLockCount = 0;
     const mutations: PlanMutationRecord[] = [];
+    const routineFeedback: RoutinePlanningFeedback[] = [];
+    let unitOfWorkOptions: UnitOfWorkOptions | undefined;
     const context = {
       workspaces: {
         findById: async () => createWorkspace({ id: workspace, name: "Test" }),
@@ -105,11 +116,27 @@ describe("MutateDailyPlan", () => {
           throw new Error("not used");
         },
         lockDay: async () => undefined,
+        lockRoutineFeedback: async () => {
+          feedbackLockCount += 1;
+        },
+        findLatestRoutineFeedback: async (_workspace, routine) =>
+          routineFeedback
+            .filter((entry) => entry.routineId === routine)
+            .sort(
+              (left, right) =>
+                right.ingestedSequence - left.ingestedSequence || right.id.localeCompare(left.id),
+            )[0] ?? null,
         findMutation: async (_workspace, date, key) =>
           mutations.find((mutation) => mutation.date === date && mutation.idempotencyKey === key) ??
           null,
         insertMutation: async (mutation: PlanMutationRecord) => {
           mutations.push(mutation);
+        },
+        listRoutineFeedbackForPlanning: async () => routineFeedback,
+        appendRoutineFeedback: async (feedback: RoutinePlanningFeedback) => {
+          const persisted = { ...feedback, ingestedSequence: routineFeedback.length + 1 };
+          routineFeedback.push(persisted);
+          return persisted;
         },
       },
       workItems: {
@@ -118,7 +145,12 @@ describe("MutateDailyPlan", () => {
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
       auditEvents: {} as TransactionContext["auditEvents"],
     } satisfies TransactionContext;
-    const unitOfWork: UnitOfWork = { run: async (operation) => operation(context) };
+    const unitOfWork: UnitOfWork = {
+      run: async (operation, options) => {
+        unitOfWorkOptions = options;
+        return operation(context);
+      },
+    };
     return {
       useCase: new MutateDailyPlan(unitOfWork, {
         now: () => new Date("2026-07-15T07:30:00.000Z"),
@@ -138,6 +170,9 @@ describe("MutateDailyPlan", () => {
         headVersion = value;
       },
       mutations: () => mutations,
+      routineFeedback: () => routineFeedback,
+      feedbackLockCount: () => feedbackLockCount,
+      unitOfWorkOptions: () => unitOfWorkOptions,
     };
   }
 
@@ -160,6 +195,7 @@ describe("MutateDailyPlan", () => {
     expect(first.headVersion).toBe(3);
     expect(first.plan.items.some((item) => item.locked)).toBe(true);
     expect(retry).toEqual(first);
+    expect(test.unitOfWorkOptions()).toBeUndefined();
   });
 
   it("replaces one unlocked item, preserves its sibling, and replays the allocated revision", async () => {
@@ -190,6 +226,310 @@ describe("MutateDailyPlan", () => {
     });
     expect(replay).toEqual(first);
     expect(test.mutations()).toHaveLength(1);
+  });
+
+  it("records routine-only weekly feedback, replans immediately, and replays idempotently", async () => {
+    const test = harness();
+    const target = test.source.items.find((item) => !item.locked)!;
+    const retained = test.source.items.find((item) => item.locked)!;
+    const command = {
+      workspaceId: workspace,
+      expectedPlanId: test.source.id,
+      expectedHeadVersion: 2,
+      targetItemId: target.id,
+      kind: "not_this_week" as const,
+      request: { ...request, seed: "feedback-week" },
+      idempotencyKey: "feedback-week-once",
+    };
+
+    const first = await test.useCase.applyRoutineFeedback(command);
+    const retry = await test.useCase.applyRoutineFeedback({
+      ...command,
+      request: { ...command.request, requestRevision: 999 },
+    });
+
+    expect(first.headVersion).toBe(3);
+    expect(first.plan.items.some((item) => item.routineId === target.routineId)).toBe(false);
+    expect(first.plan.items.some((item) => item.routineId === retained.routineId)).toBe(true);
+    expect(first.plan.exclusions).toContainEqual(
+      expect.objectContaining({
+        routineId: target.routineId,
+        codes: expect.arrayContaining(["feedback_not_this_week"]),
+      }),
+    );
+    expect(test.routineFeedback()).toHaveLength(1);
+    expect(test.routineFeedback()[0]).toMatchObject({
+      routineId: target.routineId,
+      kind: "not_this_week",
+      effectiveOn: request.date,
+      timeZone: request.timeZone,
+      sourcePlanId: test.source.id,
+      sourcePlanItemId: target.id,
+    });
+    expect(retry).toEqual(first);
+    expect(test.unitOfWorkOptions()).toEqual({ isolationLevel: "read_committed" });
+  });
+
+  it("appends a reset and replans without resurrecting the prior suppression", async () => {
+    const test = harness();
+    const target = test.source.items.find((item) => !item.locked)!;
+    const suppressed = await test.useCase.applyRoutineFeedback({
+      workspaceId: workspace,
+      expectedPlanId: test.source.id,
+      expectedHeadVersion: 2,
+      targetItemId: target.id,
+      kind: "not_today",
+      request: { ...request, seed: "feedback-today" },
+      idempotencyKey: "feedback-today",
+    });
+
+    const reset = await test.useCase.resetRoutineFeedback({
+      workspaceId: workspace,
+      expectedPlanId: suppressed.plan.id,
+      expectedHeadVersion: suppressed.headVersion,
+      routineId: target.routineId!,
+      request: { ...request, seed: "feedback-reset" },
+      idempotencyKey: "feedback-reset",
+    });
+
+    expect(reset.headVersion).toBe(4);
+    expect(
+      reset.plan.exclusions.some(
+        (exclusion) =>
+          exclusion.routineId === target.routineId &&
+          exclusion.codes.some((code) => code.startsWith("feedback_")),
+      ),
+    ).toBe(false);
+    expect(test.routineFeedback().map((entry) => entry.kind)).toEqual(["not_today", "reset"]);
+    expect(test.routineFeedback()[1]).toMatchObject({ sourcePlanItemId: null });
+  });
+
+  it("rejects routine feedback from a plan that observed an older cross-date feedback head", async () => {
+    const test = harness();
+    const target = test.source.items.find((item) => !item.locked)!;
+    test.routineFeedback().push(
+      createRoutinePlanningFeedback({
+        ingestedSequence: 1,
+        workspaceId: workspace,
+        routineId: target.routineId!,
+        kind: "reset",
+        effectiveOn: "2026-07-16",
+        weekStartsOn: 1,
+        timeZone: "UTC",
+        sourcePlanId: test.source.id,
+        sourcePlanItemId: null,
+        idempotencyKey: "newer-date-reset",
+        recordedAt: new Date("2026-07-16T07:00:00.000Z"),
+      }),
+    );
+
+    await expect(
+      test.useCase.applyRoutineFeedback({
+        workspaceId: workspace,
+        expectedPlanId: test.source.id,
+        expectedHeadVersion: 2,
+        targetItemId: target.id,
+        kind: "not_this_week",
+        request: { ...request, seed: "stale-cross-date-feedback" },
+        idempotencyKey: "stale-cross-date-feedback",
+      }),
+    ).rejects.toMatchObject({ code: "planning.feedback_head_conflict" });
+    expect(test.routineFeedback()).toHaveLength(1);
+  });
+
+  it("compares the complete canonical feedback head when ingestion sequences tie", async () => {
+    const test = harness();
+    const target = test.source.items.find((item) => !item.locked)!;
+    const older = createRoutinePlanningFeedback({
+      id: routinePlanningFeedbackId("85000000-0000-4000-8000-000000000001"),
+      ingestedSequence: 1,
+      workspaceId: workspace,
+      routineId: target.routineId!,
+      kind: "reset",
+      effectiveOn: request.date,
+      weekStartsOn: 1,
+      timeZone: "UTC",
+      sourcePlanId: test.source.id,
+      sourcePlanItemId: null,
+      idempotencyKey: "same-sequence-older",
+      recordedAt: new Date("2026-07-15T07:05:00.000Z"),
+    });
+    const newer = {
+      ...older,
+      id: routinePlanningFeedbackId("95000000-0000-4000-8000-000000000001"),
+      idempotencyKey: "same-sequence-newer",
+      recordedAt: new Date("2026-07-15T07:10:00.000Z"),
+    };
+    const snapshot = test.source.inputSnapshot as Readonly<Record<string, unknown>>;
+    test.setCurrent({
+      ...test.source,
+      inputSnapshot: {
+        ...snapshot,
+        routineFeedback: JSON.parse(JSON.stringify([older])) as never,
+      },
+    });
+    test.routineFeedback().push(older, newer);
+
+    await expect(
+      test.useCase.resetRoutineFeedback({
+        workspaceId: workspace,
+        expectedPlanId: test.source.id,
+        expectedHeadVersion: 2,
+        routineId: target.routineId!,
+        request: { ...request, seed: "same-sequence-conflict" },
+        idempotencyKey: "same-sequence-conflict",
+      }),
+    ).rejects.toMatchObject({ code: "planning.feedback_head_conflict" });
+  });
+
+  it("replays an accepted feedback command after the routine feedback head advances", async () => {
+    const test = harness();
+    const target = test.source.items.find((item) => !item.locked)!;
+    const command = {
+      workspaceId: workspace,
+      expectedPlanId: test.source.id,
+      expectedHeadVersion: 2,
+      targetItemId: target.id,
+      kind: "not_today" as const,
+      request: { ...request, seed: "replay-after-advance" },
+      idempotencyKey: "replay-after-advance",
+    };
+    const accepted = await test.useCase.applyRoutineFeedback(command);
+    const locksAfterAcceptance = test.feedbackLockCount();
+    test.routineFeedback().push(
+      createRoutinePlanningFeedback({
+        ingestedSequence: 2,
+        workspaceId: workspace,
+        routineId: target.routineId!,
+        kind: "reset",
+        effectiveOn: "2026-07-16",
+        weekStartsOn: 1,
+        timeZone: "UTC",
+        sourcePlanId: accepted.plan.id,
+        sourcePlanItemId: null,
+        idempotencyKey: "newer-feedback-head",
+        recordedAt: new Date("2026-07-16T07:00:00.000Z"),
+      }),
+    );
+
+    await expect(
+      test.useCase.applyRoutineFeedback({
+        ...command,
+        request: { ...command.request, requestRevision: 999 },
+      }),
+    ).resolves.toEqual(accepted);
+    expect(test.feedbackLockCount()).toBe(locksAfterAcceptance);
+    expect(test.routineFeedback()).toHaveLength(2);
+  });
+
+  it("accepts a legacy source snapshot with no feedback collection when no global head exists", async () => {
+    const test = harness();
+    const target = test.source.items.find((item) => !item.locked)!;
+    const snapshot = test.source.inputSnapshot as Readonly<Record<string, unknown>>;
+    const { routineFeedback: _legacyMissingField, ...legacySnapshot } = snapshot;
+    void _legacyMissingField;
+    test.setCurrent({
+      ...test.source,
+      algorithmVersion: "deterministic-planner-v2",
+      inputSnapshot: legacySnapshot as never,
+    });
+
+    await expect(
+      test.useCase.applyRoutineFeedback({
+        workspaceId: workspace,
+        expectedPlanId: test.source.id,
+        expectedHeadVersion: 2,
+        targetItemId: target.id,
+        kind: "not_today",
+        request: { ...request, seed: "legacy-feedback-snapshot" },
+        idempotencyKey: "legacy-feedback-snapshot",
+      }),
+    ).resolves.toMatchObject({ headVersion: 3 });
+  });
+
+  it("fails closed when a source plan contains malformed feedback-head metadata", async () => {
+    const test = harness();
+    const target = test.source.items.find((item) => !item.locked)!;
+    const snapshot = test.source.inputSnapshot as Readonly<Record<string, unknown>>;
+    test.setCurrent({
+      ...test.source,
+      inputSnapshot: {
+        ...snapshot,
+        routineFeedback: [
+          {
+            id: "malformed-feedback",
+            routineId: target.routineId,
+            ingestedSequence: 0,
+          },
+        ],
+      } as never,
+    });
+
+    await expect(
+      test.useCase.resetRoutineFeedback({
+        workspaceId: workspace,
+        expectedPlanId: test.source.id,
+        expectedHeadVersion: 2,
+        routineId: target.routineId!,
+        request: { ...request, seed: "malformed-feedback-head" },
+        idempotencyKey: "malformed-feedback-head",
+      }),
+    ).rejects.toMatchObject({ code: "planning.feedback_snapshot_invalid" });
+  });
+
+  it("rejects feedback for locked, started, or non-routine items", async () => {
+    const locked = harness();
+    const lockedTarget = locked.source.items.find((item) => item.locked)!;
+    const base = {
+      workspaceId: workspace,
+      expectedPlanId: locked.source.id,
+      expectedHeadVersion: 2,
+      kind: "not_today" as const,
+      request: { ...request, seed: "feedback-guard" },
+      idempotencyKey: "feedback-guard",
+    };
+    await expect(
+      locked.useCase.applyRoutineFeedback({ ...base, targetItemId: lockedTarget.id }),
+    ).rejects.toMatchObject({ code: "planning.item_locked" });
+
+    const started = harness();
+    const startedTarget = started.source.items.find((item) => !item.locked)!;
+    started.setCurrent({
+      ...started.source,
+      items: started.source.items.map((item) =>
+        item.id === startedTarget.id ? { ...item, activityState: "started" } : item,
+      ),
+    });
+    await expect(
+      started.useCase.applyRoutineFeedback({
+        ...base,
+        targetItemId: startedTarget.id,
+        idempotencyKey: "feedback-started",
+      }),
+    ).rejects.toMatchObject({ code: "planning.feedback_item_not_pending" });
+
+    const workItem = harness();
+    const workItemTarget = workItem.source.items.find((item) => !item.locked)!;
+    workItem.setCurrent({
+      ...workItem.source,
+      items: workItem.source.items.map((item) =>
+        item.id === workItemTarget.id
+          ? {
+              ...item,
+              sourceType: "work_item",
+              routineId: null,
+              workItemId: "feedback-work-item" as never,
+            }
+          : item,
+      ),
+    } as DailyPlan);
+    await expect(
+      workItem.useCase.applyRoutineFeedback({
+        ...base,
+        targetItemId: workItemTarget.id,
+        idempotencyKey: "feedback-work-item",
+      }),
+    ).rejects.toMatchObject({ code: "planning.feedback_routine_required" });
   });
 
   it("does not carry a terminal locked item into a regenerated revision", async () => {

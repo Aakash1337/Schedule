@@ -44,10 +44,14 @@ export class GenerateDailyPlan {
             );
           }
         }
-        const [routineCandidates, workItemCandidates, events] = await Promise.all([
+        const [routineCandidates, workItemCandidates, events, routineFeedback] = await Promise.all([
           routines.listPlanningCandidates(command.request.workspaceId, command.request.date),
           workItems.listPlanningCandidates(command.request.workspaceId),
           activityEvents.listForPlanning(command.request.workspaceId, command.request.date),
+          dailyPlans.listRoutineFeedbackForPlanning(
+            command.request.workspaceId,
+            command.request.date,
+          ),
         ]);
         assertPlanningCandidatePoolSize(routineCandidates.length, workItemCandidates.length);
         const generated = generateDailyPlan({
@@ -55,6 +59,7 @@ export class GenerateDailyPlan {
           routines: routineCandidates,
           workItems: workItemCandidates,
           events,
+          routineFeedback,
           generatedAt: this.clock.now(),
           ...(command.config === undefined ? {} : { config: command.config }),
         });

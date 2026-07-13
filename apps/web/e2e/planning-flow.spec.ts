@@ -14,7 +14,7 @@ function isMutationResponse(
   );
 }
 
-test("persists routine and work-item activity through the live Today planning flow", async ({
+test("persists temporary routine feedback and activity through the live Today planning flow", async ({
   page,
 }) => {
   const pageErrors: string[] = [];
@@ -114,6 +114,54 @@ test("persists routine and work-item activity through the live Today planning fl
   await expect(workItem.getByText("Work item", { exact: true })).toBeVisible();
   await expect(routine.getByLabel("Status: Pending")).toBeVisible();
   await expect(workItem.getByLabel("Status: Pending")).toBeVisible();
+
+  const routineFeedbackResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) =>
+        /^\/v1\/workspaces\/[^/]+\/plans\/[^/]+\/items\/[^/]+\/routine-feedback$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await routine
+    .getByRole("group", { name: `Planning feedback for ${routineTitle}` })
+    .getByRole("button", { name: "Not today", exact: true })
+    .click();
+  expect((await routineFeedbackResponsePromise).status()).toBe(200);
+
+  const temporarilyHidden = page.getByRole("region", { name: "Temporarily hidden" });
+  await expect(routine).toBeHidden();
+  await expect(temporarilyHidden).toBeVisible();
+  await expect(temporarilyHidden.getByText(routineTitle, { exact: true })).toBeVisible();
+  await expect(temporarilyHidden.getByText("Hidden today", { exact: true })).toBeVisible();
+
+  await page.reload();
+  const persistedTemporaryFeedback = page.getByRole("region", { name: "Temporarily hidden" });
+  await expect(page.getByRole("main", { name: "Today view" })).toBeVisible();
+  await expect(routine).toBeHidden();
+  await expect(persistedTemporaryFeedback).toBeVisible();
+  await expect(persistedTemporaryFeedback.getByText(routineTitle, { exact: true })).toBeVisible();
+  await expect(persistedTemporaryFeedback.getByText("Hidden today", { exact: true })).toBeVisible();
+
+  const routineFeedbackResetResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) =>
+        /^\/v1\/workspaces\/[^/]+\/plans\/[^/]+\/routines\/[^/]+\/routine-feedback-resets$/.test(
+          pathname,
+        ),
+      expectedOrigin,
+    ),
+  );
+  await persistedTemporaryFeedback
+    .getByRole("button", { name: `Undo temporary feedback for ${routineTitle}` })
+    .click();
+  expect((await routineFeedbackResetResponsePromise).status()).toBe(200);
+  await expect(persistedTemporaryFeedback).toBeHidden();
+  await expect(routine).toBeVisible();
+  await expect(routine.getByLabel("Status: Pending")).toBeVisible();
 
   const workCompletionResponsePromise = page.waitForResponse((response) =>
     isMutationResponse(

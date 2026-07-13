@@ -2,6 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 import type {
   ApproveRoutineDurationInsightCommand,
+  ApplyRoutinePlanningFeedbackCommand,
   ActivityHistoryCursor,
   ActivityHistoryPage,
   CreateRoutineCommand,
@@ -28,6 +29,7 @@ import type {
   RecordPlanItemActivityCommand,
   RegenerateDailyPlanCommand,
   ReplacePlanItemCommand,
+  ResetRoutinePlanningFeedbackCommand,
   SetPlanItemLockCommand,
   UpdateRoutineCommand,
   UpdateScheduleBlockCommand,
@@ -98,6 +100,8 @@ export interface ProductServices {
   setPlanItemLock(command: SetPlanItemLockCommand): Promise<PlanItemLockResult>;
   regenerateDailyPlan(command: RegenerateDailyPlanCommand): Promise<CurrentDailyPlan>;
   replacePlanItem(command: ReplacePlanItemCommand): Promise<CurrentDailyPlan>;
+  applyRoutineFeedback(command: ApplyRoutinePlanningFeedbackCommand): Promise<CurrentDailyPlan>;
+  resetRoutineFeedback(command: ResetRoutinePlanningFeedbackCommand): Promise<CurrentDailyPlan>;
   getDailyPlan(query: GetDailyPlanQuery): Promise<DailyPlan | null>;
 }
 
@@ -149,6 +153,11 @@ const workItemParams = z.strictObject({ workspaceId: uuid, workItemId: uuid });
 const scheduleBlockParams = z.strictObject({ workspaceId: uuid, scheduleBlockId: uuid });
 const planParams = z.strictObject({ workspaceId: uuid, date: localDateText });
 const planItemParams = z.strictObject({ workspaceId: uuid, date: localDateText, itemId: uuid });
+const planRoutineParams = z.strictObject({
+  workspaceId: uuid,
+  date: localDateText,
+  routineId: uuid,
+});
 
 const workspaceBody = z.strictObject({ name: z.string().trim().min(1).max(160) });
 const workspaceQuery = z.strictObject({
@@ -431,6 +440,9 @@ const planMutationBody = z.strictObject({
   expectedPlanId: uuid,
   expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
   request: planMutationRequestBody,
+});
+const routineFeedbackBody = planMutationBody.extend({
+  kind: z.enum(["not_today", "not_this_week"]),
 });
 const idempotencyKey = z.string().trim().min(1).max(160);
 
@@ -944,4 +956,45 @@ export async function registerProductRoutes(
       return { ...publicPlan(result.plan), headVersion: result.headVersion };
     });
   });
+
+  app.post(
+    "/v1/workspaces/:workspaceId/plans/:date/items/:itemId/routine-feedback",
+    async (request) => {
+      const params = parseRequest(planItemParams, request.params);
+      const body = parseRequest(routineFeedbackBody, request.body);
+      const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+      return runPlanningOperation(async () => {
+        const result = await services.applyRoutineFeedback({
+          workspaceId: workspaceId(params.workspaceId),
+          expectedPlanId: dailyPlanId(body.expectedPlanId),
+          expectedHeadVersion: body.expectedHeadVersion,
+          targetItemId: planItemId(params.itemId),
+          kind: body.kind,
+          request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
+          idempotencyKey: key,
+        });
+        return { ...publicPlan(result.plan), headVersion: result.headVersion };
+      });
+    },
+  );
+
+  app.post(
+    "/v1/workspaces/:workspaceId/plans/:date/routines/:routineId/routine-feedback-resets",
+    async (request) => {
+      const params = parseRequest(planRoutineParams, request.params);
+      const body = parseRequest(planMutationBody, request.body);
+      const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+      return runPlanningOperation(async () => {
+        const result = await services.resetRoutineFeedback({
+          workspaceId: workspaceId(params.workspaceId),
+          expectedPlanId: dailyPlanId(body.expectedPlanId),
+          expectedHeadVersion: body.expectedHeadVersion,
+          routineId: routineId(params.routineId),
+          request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
+          idempotencyKey: key,
+        });
+        return { ...publicPlan(result.plan), headVersion: result.headVersion };
+      });
+    },
+  );
 }

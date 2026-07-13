@@ -264,6 +264,14 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
       return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
     },
+    applyRoutineFeedback: async (command) => {
+      if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
+      return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
+    },
+    resetRoutineFeedback: async (command) => {
+      if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
+      return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
+    },
     getDailyPlan: async (query) =>
       storedPlan?.requestRevision === query.requestRevision ? storedPlan : null,
     ...overrides,
@@ -1119,6 +1127,61 @@ describe("local product API", () => {
     expect(completed.json().activityEvent).not.toHaveProperty("idempotencyKey");
   });
 
+  it("applies and resets routine feedback through dedicated idempotent plan mutations", async () => {
+    const app = await appWith(createHarness().services);
+    const planningRequest = {
+      timeZone: "UTC",
+      availableWindows: [
+        { startsAt: "2026-07-15T08:00:00.000Z", endsAt: "2026-07-15T09:00:00.000Z" },
+      ],
+      targetMinutes: 30,
+      targetTaskCount: 1,
+      availableContexts: ["computer"],
+      seed: "feedback-api",
+    };
+    const generated = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans`,
+      payload: { ...planningRequest, date: "2026-07-15" },
+    });
+    const itemId = generated.json().items[0].id as string;
+    const mutationBody = {
+      expectedPlanId: planUuid,
+      expectedHeadVersion: 1,
+      kind: "not_this_week",
+      request: planningRequest,
+    };
+
+    const applied = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/items/${itemId}/routine-feedback`,
+      headers: { "idempotency-key": "feedback-api-week" },
+      payload: mutationBody,
+    });
+    const invalidKind = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/items/${itemId}/routine-feedback`,
+      headers: { "idempotency-key": "feedback-api-invalid" },
+      payload: { ...mutationBody, kind: "forever" },
+    });
+    const reset = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/routines/${routineUuid}/routine-feedback-resets`,
+      headers: { "idempotency-key": "feedback-api-reset" },
+      payload: {
+        expectedPlanId: planUuid,
+        expectedHeadVersion: 2,
+        request: { ...planningRequest, seed: "feedback-api-reset" },
+      },
+    });
+
+    expect(applied.statusCode).toBe(200);
+    expect(applied.json()).toMatchObject({ id: planUuid, headVersion: 2 });
+    expect(invalidKind.statusCode).toBe(400);
+    expect(reset.statusCode).toBe(200);
+    expect(reset.json()).toMatchObject({ id: planUuid, headVersion: 3 });
+  });
+
   it("returns 404 for an absent exact plan and 409 for idempotency conflicts", async () => {
     const app = await appWith(
       createHarness({
@@ -1186,7 +1249,7 @@ describe("local product API", () => {
     expect(oversized.json()).toMatchObject({ error: { code: "request.body_too_large" } });
   });
 
-  it("shares the concurrency limit across generation, regeneration, and replacement", async () => {
+  it("shares the concurrency limit across every plan-generation mutation", async () => {
     let releasePlan: () => void = () => undefined;
     let markStarted: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
@@ -1256,9 +1319,26 @@ describe("local product API", () => {
       headers: { "idempotency-key": "concurrency-replacement" },
       payload: mutationPayload,
     });
+    const throttledFeedback = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/items/${routineUuid}/routine-feedback`,
+      headers: { "idempotency-key": "concurrency-feedback" },
+      payload: { ...mutationPayload, kind: "not_today" },
+    });
+    const throttledFeedbackReset = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/routines/${routineUuid}/routine-feedback-resets`,
+      headers: { "idempotency-key": "concurrency-feedback-reset" },
+      payload: mutationPayload,
+    });
     releasePlan();
 
-    for (const throttled of [throttledRegeneration, throttledReplacement]) {
+    for (const throttled of [
+      throttledRegeneration,
+      throttledReplacement,
+      throttledFeedback,
+      throttledFeedbackReset,
+    ]) {
       expect(throttled.statusCode).toBe(429);
       expect(throttled.json()).toMatchObject({
         error: { code: "planning.concurrency_limit_reached" },

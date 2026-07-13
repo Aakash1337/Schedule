@@ -287,8 +287,12 @@ function createHarness() {
         };
       },
       lockDay: async () => undefined,
+      lockRoutineFeedback: async () => undefined,
+      findLatestRoutineFeedback: async () => null,
       findMutation: async () => null,
       insertMutation: async () => undefined,
+      listRoutineFeedbackForPlanning: async () => [],
+      appendRoutineFeedback: async (feedback) => feedback,
     },
   };
 

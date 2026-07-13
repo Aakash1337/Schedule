@@ -4,6 +4,8 @@ import type {
   DailyPlan,
   LocalDate,
   Routine,
+  RoutineId,
+  RoutinePlanningFeedback,
   RoutineStatus,
   PlanItemId,
   PlanItemActivityState,
@@ -196,6 +198,20 @@ export interface DailyPlanRepository {
     idempotencyKey: string,
   ): Promise<PlanMutationRecord | null>;
   insertMutation(record: PlanMutationRecord): Promise<void>;
+  /** Returns the latest feedback event for each routine as of the requested local date. */
+  listRoutineFeedbackForPlanning(
+    workspaceId: WorkspaceId,
+    throughDate: LocalDate,
+  ): Promise<readonly RoutinePlanningFeedback[]>;
+  /** Serializes routine-global feedback changes across plans for different dates. */
+  lockRoutineFeedback(workspaceId: WorkspaceId, routineId: RoutineId): Promise<void>;
+  /** Returns the newest persisted feedback event regardless of its effective date. */
+  findLatestRoutineFeedback(
+    workspaceId: WorkspaceId,
+    routineId: RoutineId,
+  ): Promise<RoutinePlanningFeedback | null>;
+  /** Appends immutable routine feedback and returns its allocated ingestion sequence. */
+  appendRoutineFeedback(feedback: RoutinePlanningFeedback): Promise<RoutinePlanningFeedback>;
 }
 
 export interface TransactionContext {

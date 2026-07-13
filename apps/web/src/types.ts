@@ -148,6 +148,8 @@ export interface PlanExclusion {
 
 export type PlanningFitPreference = "time" | "task_count" | "balanced";
 
+export type RoutinePlanningFeedbackSuppressionKind = "not_today" | "not_this_week";
+
 export interface PlanSettings {
   readonly timeZone: string;
   readonly availableWindows: readonly { readonly startsAt: string; readonly endsAt: string }[];

@@ -22,6 +22,7 @@ export const expectedScheduleTables = [
   "plan_interaction_events",
   "plan_mutations",
   "recurrence_series",
+  "routine_planning_feedback_events",
   "routines",
   "schedule_blocks",
   "webhook_deliveries",
@@ -35,6 +36,10 @@ export const expectedScheduleSequences = [
   { schema: "drizzle", name: "__drizzle_migrations_id_seq" },
   { schema: "public", name: "activity_events_ingested_sequence_seq" },
   { schema: "public", name: "plan_interaction_events_ingested_sequence_seq" },
+  {
+    schema: "public",
+    name: "routine_planning_feedback_events_ingested_sequence_seq",
+  },
 ] as const;
 
 export const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
