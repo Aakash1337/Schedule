@@ -3,9 +3,10 @@
 Project documentation is indexed in [docs/README.md](./docs/README.md). The main specifications are
 the [product definition](./docs/PRODUCT.md),
 [deterministic planner contract](./docs/PLANNER.md), [local HTTP API](./docs/API.md), and
-[local web application](./docs/WEB.md). Local data protection and recovery procedures are in the
-[operations guide](./docs/OPERATIONS.md). Behavioral confidence and known test limitations are tracked
-in the [evaluation guide](./docs/EVALUATION.md).
+[local web application](./docs/WEB.md). The provider-neutral authenticated automation boundary is in
+the [integration gateway guide](./docs/INTEGRATIONS.md). Local data protection and recovery
+procedures are in the [operations guide](./docs/OPERATIONS.md). Behavioral confidence and known test
+limitations are tracked in the [evaluation guide](./docs/EVALUATION.md).
 
 Provider-neutral infrastructure for a customizable work-management and scheduling system.
 
@@ -30,6 +31,11 @@ fencing, exactly-once effect persistence, and second-attempt completion.
 The domain now includes a pure, seeded daily planner that balances cadence, time budget, task count, context, and recent completion history.
 
 The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface.
+
+An optional integration gateway gives a workspace-scoped machine credential read-only access to
+Today and a two-step, idempotent structured-command flow. It is disabled by default. Schedule stays
+authoritative; Hermes or another messaging agent belongs in an external adapter that calls this
+boundary instead of writing the database.
 
 `WorkItem` represents intent and workflow state. `ScheduleBlock` represents reserved time and may
 optionally reference a work item. Their lifecycles remain independent.
@@ -57,6 +63,11 @@ The web app listens on `http://127.0.0.1:5173` and the API listens on
 database readiness.
 
 Local unauthenticated product routes are enabled only for non-production loopback development. Configuration rejects attempts to enable them in production or on a non-loopback bind, and the API rejects non-loopback product-route `Host` headers. Authentication will be required before hosted product routes are introduced. Health and system-information endpoints intentionally remain available independently of the product Host guard for local diagnostics.
+
+The separately authenticated integration gateway is disabled by default. Provision a per-workspace
+credential and configure `INTEGRATION_API_PEPPER` before enabling `INTEGRATION_API_MODE`; see the
+[integration gateway guide](./docs/INTEGRATIONS.md). Its machine credentials do not authenticate the
+browser product routes.
 
 ## Verification
 

@@ -9,12 +9,21 @@ import {
   type ProductApiLimits,
   type ProductServices,
 } from "./product-routes.js";
+import {
+  registerIntegrationRoutes,
+  type IntegrationApiLimits,
+  type IntegrationServices,
+} from "./integration-routes.js";
 
 export interface BuildAppOptions {
   readonly logger?: FastifyServerOptions["logger"];
+  /** Exact proxy addresses/CIDRs that may supply forwarded client addresses. */
+  readonly trustProxy?: FastifyServerOptions["trustProxy"];
   readonly readinessCheck?: () => Promise<void>;
   readonly productServices?: ProductServices;
   readonly productApiLimits?: ProductApiLimits;
+  readonly integrationServices?: IntegrationServices;
+  readonly integrationApiLimits?: IntegrationApiLimits;
 }
 
 function validOptionalPort(value: string): boolean {
@@ -66,6 +75,7 @@ export function isAllowedLocalProductHost(host: string | undefined): boolean {
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({
     logger: options.logger ?? false,
+    trustProxy: options.trustProxy ?? false,
     bodyLimit: 256 * 1024,
     connectionTimeout: 10_000,
     requestTimeout: 15_000,
@@ -93,7 +103,19 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     version: "0.1.0",
     architecture: "modular-monolith",
     productEndpointsEnabled: options.productServices !== undefined,
+    integrationEndpointsEnabled: options.integrationServices !== undefined,
   }));
+
+  const integrationServices = options.integrationServices;
+  if (integrationServices !== undefined) {
+    await app.register(async (integrationApp) => {
+      await registerIntegrationRoutes(
+        integrationApp,
+        integrationServices,
+        options.integrationApiLimits,
+      );
+    });
+  }
 
   if (options.productServices !== undefined) {
     await app.register(async (productApp) => {

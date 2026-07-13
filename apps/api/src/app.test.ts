@@ -66,7 +66,15 @@ describe("API infrastructure", () => {
     const app = await buildApp();
     apps.push(app);
     const response = await app.inject({ method: "GET", url: "/v1/system/info" });
-    expect(response.json()).toMatchObject({ productEndpointsEnabled: false });
+    expect(response.json()).toMatchObject({
+      productEndpointsEnabled: false,
+      integrationEndpointsEnabled: false,
+    });
+    const integrationResponse = await app.inject({
+      method: "GET",
+      url: "/v1/integrations/today?date=2026-07-13",
+    });
+    expect(integrationResponse.statusCode).toBe(404);
   });
 
   it("keeps health endpoints independent from the product Host guard", async () => {

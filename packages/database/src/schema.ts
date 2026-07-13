@@ -91,6 +91,10 @@ export const planItemActivityState = pgEnum("plan_item_activity_state", [
   "dismissed",
 ]);
 export const planMutationKind = pgEnum("plan_mutation_kind", ["regenerate", "replace"]);
+export const integrationRequestStatus = pgEnum("integration_request_status", [
+  "processing",
+  "succeeded",
+]);
 
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -98,6 +102,241 @@ export const workspaces = pgTable("workspaces", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Provider-neutral credentials for trusted automation clients.
+ *
+ * `secretDigest` is deliberately the only persisted secret material. The
+ * plaintext bearer secret exists only at provisioning/authentication
+ * boundaries outside this package.
+ */
+export const integrationCredentials = pgTable(
+  "integration_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 160 }).notNull(),
+    secretDigest: varchar("secret_digest", { length: 64 }).notNull(),
+    scopes: text("scopes").array().notNull(),
+    active: boolean("active").notNull().default(true),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("integration_credentials_workspace_id_id_uq").on(table.workspaceId, table.id),
+    index("integration_credentials_workspace_active_idx").on(
+      table.workspaceId,
+      table.active,
+      table.expiresAt,
+    ),
+    check("integration_credentials_name_nonempty", sql`char_length(trim(${table.name})) > 0`),
+    check(
+      "integration_credentials_secret_digest_length",
+      sql`char_length(${table.secretDigest}) = 64`,
+    ),
+    check(
+      "integration_credentials_secret_digest_format",
+      sql`${table.secretDigest} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check("integration_credentials_scopes_nonempty", sql`cardinality(${table.scopes}) > 0`),
+    check(
+      "integration_credentials_scopes_allowed",
+      sql`${table.scopes} <@ ARRAY['schedule:read', 'schedule:write']::text[]`,
+    ),
+    check(
+      "integration_credentials_scopes_unique",
+      sql`cardinality(${table.scopes}) = (CASE WHEN 'schedule:read' = ANY(${table.scopes}) THEN 1 ELSE 0 END + CASE WHEN 'schedule:write' = ANY(${table.scopes}) THEN 1 ELSE 0 END)`,
+    ),
+    check(
+      "integration_credentials_scopes_one_dimensional",
+      sql`array_ndims(${table.scopes}) = 1 AND array_lower(${table.scopes}, 1) = 1`,
+    ),
+    check(
+      "integration_credentials_scopes_no_empty",
+      sql`array_position(${table.scopes}, '') IS NULL`,
+    ),
+    check(
+      "integration_credentials_revocation_consistent",
+      sql`(${table.active} AND ${table.revokedAt} IS NULL) OR (NOT ${table.active} AND ${table.revokedAt} IS NOT NULL)`,
+    ),
+    check(
+      "integration_credentials_expiry_after_creation",
+      sql`${table.expiresAt} IS NULL OR ${table.expiresAt} > ${table.createdAt}`,
+    ),
+    check(
+      "integration_credentials_revocation_after_creation",
+      sql`${table.revokedAt} IS NULL OR ${table.revokedAt} >= ${table.createdAt}`,
+    ),
+    check(
+      "integration_credentials_updated_after_creation",
+      sql`${table.updatedAt} >= ${table.createdAt}`,
+    ),
+    check("integration_credentials_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
+/** One-time confirmation challenges for operations requiring explicit consent. */
+export const integrationConfirmations = pgTable(
+  "integration_confirmations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    credentialId: uuid("credential_id").notNull(),
+    requestId: varchar("request_id", { length: 160 }).notNull(),
+    commandHash: varchar("command_hash", { length: 64 }).notNull(),
+    commandKind: varchar("command_kind", { length: 160 }).notNull(),
+    command: jsonb("command").$type<Record<string, unknown>>().notNull(),
+    summary: varchar("summary", { length: 500 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("integration_confirmations_tenant_credential_id_uq").on(
+      table.workspaceId,
+      table.credentialId,
+      table.id,
+    ),
+    unique("integration_confirmations_command_binding_uq").on(
+      table.workspaceId,
+      table.credentialId,
+      table.id,
+      table.commandKind,
+      table.commandHash,
+    ),
+    unique("integration_confirmations_credential_request_uq").on(
+      table.credentialId,
+      table.requestId,
+    ),
+    index("integration_confirmations_workspace_expiry_idx").on(table.workspaceId, table.expiresAt),
+    index("integration_confirmations_credential_expiry_idx").on(
+      table.credentialId,
+      table.expiresAt,
+      table.consumedAt,
+    ),
+    foreignKey({
+      name: "integration_confirmations_credential_tenant_fk",
+      columns: [table.workspaceId, table.credentialId],
+      foreignColumns: [integrationCredentials.workspaceId, integrationCredentials.id],
+    }).onDelete("cascade"),
+    check(
+      "integration_confirmations_request_id_nonempty",
+      sql`char_length(trim(${table.requestId})) > 0`,
+    ),
+    check(
+      "integration_confirmations_command_hash_length",
+      sql`char_length(${table.commandHash}) = 64`,
+    ),
+    check(
+      "integration_confirmations_command_kind_nonempty",
+      sql`char_length(trim(${table.commandKind})) > 0`,
+    ),
+    check(
+      "integration_confirmations_command_binding_valid",
+      sql`jsonb_typeof(${table.command}) = 'object' AND ${table.command}->>'type' = ${table.commandKind}`,
+    ),
+    check(
+      "integration_confirmations_summary_nonempty",
+      sql`char_length(trim(${table.summary})) > 0`,
+    ),
+    check(
+      "integration_confirmations_expiry_after_creation",
+      sql`${table.expiresAt} > ${table.createdAt}`,
+    ),
+    check(
+      "integration_confirmations_consumption_after_creation",
+      sql`${table.consumedAt} IS NULL OR ${table.consumedAt} >= ${table.createdAt}`,
+    ),
+    check(
+      "integration_confirmations_updated_after_creation",
+      sql`${table.updatedAt} >= ${table.createdAt}`,
+    ),
+  ],
+);
+
+/** Durable idempotency receipts for state-changing integration requests. */
+export const integrationRequests = pgTable(
+  "integration_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    credentialId: uuid("credential_id").notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    confirmationId: uuid("confirmation_id").notNull(),
+    commandHash: varchar("command_hash", { length: 64 }).notNull(),
+    operation: varchar("operation", { length: 160 }).notNull(),
+    status: integrationRequestStatus("status").notNull().default("processing"),
+    result: jsonb("result").$type<Record<string, unknown>>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("integration_requests_credential_idempotency_uq").on(
+      table.credentialId,
+      table.idempotencyKey,
+    ),
+    index("integration_requests_workspace_created_idx").on(
+      table.workspaceId,
+      table.createdAt,
+      table.id,
+    ),
+    index("integration_requests_credential_status_idx").on(table.credentialId, table.status),
+    foreignKey({
+      name: "integration_requests_credential_tenant_fk",
+      columns: [table.workspaceId, table.credentialId],
+      foreignColumns: [integrationCredentials.workspaceId, integrationCredentials.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "integration_requests_confirmation_tenant_fk",
+      columns: [
+        table.workspaceId,
+        table.credentialId,
+        table.confirmationId,
+        table.operation,
+        table.commandHash,
+      ],
+      foreignColumns: [
+        integrationConfirmations.workspaceId,
+        integrationConfirmations.credentialId,
+        integrationConfirmations.id,
+        integrationConfirmations.commandKind,
+        integrationConfirmations.commandHash,
+      ],
+    }).onDelete("restrict"),
+    check(
+      "integration_requests_idempotency_key_nonempty",
+      sql`char_length(trim(${table.idempotencyKey})) > 0`,
+    ),
+    check("integration_requests_command_hash_length", sql`char_length(${table.commandHash}) = 64`),
+    check(
+      "integration_requests_operation_nonempty",
+      sql`char_length(trim(${table.operation})) > 0`,
+    ),
+    check(
+      "integration_requests_status_result_consistent",
+      sql`(${table.status} = 'processing' AND ${table.result} IS NULL AND ${table.completedAt} IS NULL) OR (${table.status} = 'succeeded' AND jsonb_typeof(${table.result}) = 'object' AND ${table.result}->>'confirmationId' = ${table.confirmationId}::text AND ${table.result}->>'operation' = ${table.operation} AND ${table.result}->>'commandHash' = ${table.commandHash} AND ${table.completedAt} IS NOT NULL)`,
+    ),
+    check(
+      "integration_requests_completion_after_creation",
+      sql`${table.completedAt} IS NULL OR ${table.completedAt} >= ${table.createdAt}`,
+    ),
+    check(
+      "integration_requests_updated_after_creation",
+      sql`${table.updatedAt} >= ${table.createdAt}`,
+    ),
+  ],
+);
 
 export const workItems = pgTable(
   "work_items",

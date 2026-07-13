@@ -2,6 +2,10 @@
 
 The local product API exposes the deterministic planner without committing the project to a frontend or cloud authentication design. It is available under `/v1` when `PRODUCT_API_MODE=local_unauthenticated`.
 
+This document describes the loopback product surface. Trusted machine callers use the separately
+authenticated [inbound integration gateway](./INTEGRATIONS.md); its workspace-scoped credentials do
+not authorize these product routes.
+
 ## Safety boundary
 
 - Development defaults to `local_unauthenticated` and binds to `127.0.0.1`.

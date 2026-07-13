@@ -82,15 +82,16 @@ makes source-to-restore comparison ambiguous.
 
 ## Verify the recovery state machine
 
-The complete restore, promotion, rollback, and cleanup path has a separate destructive verifier. It
-requires two explicit test-only guards and operates only on five exact, nonce-bound
+The complete restore, promotion, rollback, and cleanup path has a separate destructive verifier. Its
+launcher establishes two test-only guards and operates only on five exact, nonce-bound
 `schedule_recovery_*` database names:
 
 ```powershell
-$env:NODE_ENV = "test"
-$env:SCHEDULE_RECOVERY_STATE_MACHINE_SENTINEL = "schedule-disposable-recovery-state-machine-v1"
 pnpm verify:recovery-state-machine
 ```
+
+The launcher refuses a conflicting pre-existing `NODE_ENV` or recovery sentinel. The underlying
+verifier still checks both guards before it can create a database.
 
 The verifier creates and migrates a disposable active database, adds a private marker, backs up that
 database, and first proves that a malformed restore input leaves its OID, content, and all recovery
@@ -202,9 +203,9 @@ when testing against a disposable PostgreSQL instance.
 
 GitHub CI keeps static checks and PostgreSQL integration checks in separate jobs. The integration job
 starts a fresh PostgreSQL 17 Compose project, applies every migration, and runs the planner, local
-product API, outbox lease/fencing, weekday-migration upgrade, complete archive round-trip, and
-recovery state-machine verifiers. Diagnostics are captured on failure, and the job always removes
-the disposable database volume.
+product API, integration gateway, outbox lease/fencing, plan-state and weekday-migration upgrades,
+complete archive round-trip, and recovery state-machine verifiers. Diagnostics are captured on
+failure, and the job always removes the disposable database volume.
 
 Migration `0012` adds weekday range, uniqueness, and exclusion/preference overlap constraints. It
 removes out-of-range legacy values, deduplicates in first-occurrence order, and resolves overlaps in

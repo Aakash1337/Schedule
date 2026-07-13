@@ -8,6 +8,9 @@ import {
   dailyPlanItemStates,
   dailyPlanItems,
   dailyPlans,
+  integrationConfirmations,
+  integrationCredentials,
+  integrationRequests,
   outboxEvents,
   planInteractionEvents,
   planMutations,
@@ -31,6 +34,54 @@ describe("database schema", () => {
     expect(getTableName(dailyPlanItemStates)).toBe("daily_plan_item_states");
     expect(getTableName(planInteractionEvents)).toBe("plan_interaction_events");
     expect(getTableName(planMutations)).toBe("plan_mutations");
+    expect(getTableName(integrationCredentials)).toBe("integration_credentials");
+    expect(getTableName(integrationConfirmations)).toBe("integration_confirmations");
+    expect(getTableName(integrationRequests)).toBe("integration_requests");
+  });
+
+  it("stores only credential digests and constrains the settled gateway scopes", () => {
+    const config = getTableConfig(integrationCredentials);
+    const columnNames = config.columns.map((column) => column.name);
+    const checkNames = config.checks.map((constraint) => constraint.name);
+
+    expect(columnNames).toContain("secret_digest");
+    expect(columnNames).not.toContain("secret");
+    expect(checkNames).toEqual(
+      expect.arrayContaining([
+        "integration_credentials_secret_digest_length",
+        "integration_credentials_secret_digest_format",
+        "integration_credentials_scopes_nonempty",
+        "integration_credentials_scopes_allowed",
+        "integration_credentials_scopes_unique",
+        "integration_credentials_revocation_consistent",
+        "integration_credentials_version_positive",
+      ]),
+    );
+  });
+
+  it("tenant-binds one-time confirmations and durable request receipts", () => {
+    const confirmationConfig = getTableConfig(integrationConfirmations);
+    const requestConfig = getTableConfig(integrationRequests);
+
+    expect(confirmationConfig.foreignKeys.map((constraint) => constraint.getName())).toContain(
+      "integration_confirmations_credential_tenant_fk",
+    );
+    expect(confirmationConfig.checks.map((constraint) => constraint.name)).toContain(
+      "integration_confirmations_command_binding_valid",
+    );
+    expect(requestConfig.foreignKeys.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "integration_requests_credential_tenant_fk",
+        "integration_requests_confirmation_tenant_fk",
+      ]),
+    );
+    expect(requestConfig.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "integration_requests_command_hash_length",
+        "integration_requests_status_result_consistent",
+        "integration_requests_completion_after_creation",
+      ]),
+    );
   });
 
   it("constrains routine weekday arrays at the database boundary", () => {

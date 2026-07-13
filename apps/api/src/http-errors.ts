@@ -31,6 +31,24 @@ export class RequestThrottledError extends Error {
   }
 }
 
+export class IntegrationAuthenticationError extends Error {
+  readonly code = "integration.authentication_failed";
+
+  constructor() {
+    super("Authentication failed.");
+    this.name = "IntegrationAuthenticationError";
+  }
+}
+
+export class UnsupportedMediaTypeError extends Error {
+  readonly code = "request.media_type_unsupported";
+
+  constructor() {
+    super("The request media type is not supported.");
+    this.name = "UnsupportedMediaTypeError";
+  }
+}
+
 export function parseRequest<Output>(schema: ZodType<Output>, value: unknown): Output {
   try {
     return schema.parse(value);
@@ -48,6 +66,21 @@ export function parseRequest<Output>(schema: ZodType<Output>, value: unknown): O
 }
 
 function domainStatus(error: DomainError): number {
+  if (error.code === "integration.authentication_failed") return 401;
+  if (error.code === "integration.scope_denied") return 403;
+  if (
+    error.code === "integration.confirmation_expired" ||
+    error.code === "integration.confirmation_consumed"
+  ) {
+    return 410;
+  }
+  if (
+    error.code === "integration.request_conflict" ||
+    error.code === "integration.receipt_conflict" ||
+    error.code === "integration.receipt_in_progress"
+  ) {
+    return 409;
+  }
   if (error.code.endsWith(".not_found") || error.code.endsWith("_not_found")) return 404;
   if (
     error.code.endsWith(".conflict") ||
@@ -58,6 +91,42 @@ function domainStatus(error: DomainError): number {
     return 409;
   }
   return 422;
+}
+
+function publicDomainMessage(error: DomainError): string {
+  switch (error.code) {
+    case "integration.authentication_failed":
+      return "Authentication failed.";
+    case "integration.scope_denied":
+      return "The credential is not authorized for this operation.";
+    case "integration.request_conflict":
+    case "integration.receipt_conflict":
+    case "integration.receipt_in_progress":
+      return "The request conflicts with an existing integration request.";
+    case "integration.confirmation_not_found":
+      return "The requested confirmation does not exist.";
+    case "integration.confirmation_expired":
+    case "integration.confirmation_consumed":
+      return "The requested confirmation is no longer available.";
+    default:
+      return error.message;
+  }
+}
+
+const INTERNAL_INTEGRATION_FAILURES = new Set([
+  "integration.confirmation_corrupt",
+  "integration.confirmation_ttl_invalid",
+  "integration.confirmation_write_conflict",
+  "integration.receipt_corrupt",
+  "integration.receipt_invalid",
+  "integration.receipt_not_found",
+  "integration.receipt_write_conflict",
+  "integration.result_invalid",
+  "integration.timestamp_invalid",
+]);
+
+function isInternalIntegrationFailure(error: DomainError): boolean {
+  return INTERNAL_INTEGRATION_FAILURES.has(error.code);
 }
 
 function errorStatusCode(error: unknown): number | undefined {
@@ -86,10 +155,20 @@ export function installErrorHandler(app: FastifyInstance): void {
       status = 429;
       code = error.code;
       message = error.message;
+    } else if (error instanceof IntegrationAuthenticationError) {
+      status = 401;
+      code = error.code;
+      message = error.message;
+    } else if (error instanceof UnsupportedMediaTypeError) {
+      status = 415;
+      code = error.code;
+      message = error.message;
+    } else if (error instanceof DomainError && isInternalIntegrationFailure(error)) {
+      request.log.error({ code: error.code }, "integration invariant failed");
     } else if (error instanceof DomainError) {
       status = domainStatus(error);
       code = error.code;
-      message = error.message;
+      message = publicDomainMessage(error);
     } else if (errorStatusCode(error) === 413) {
       status = 413;
       code = "request.body_too_large";
@@ -118,6 +197,7 @@ export function installErrorHandler(app: FastifyInstance): void {
       },
       requestId: request.id,
     };
+    if (status === 401) reply.header("www-authenticate", "Bearer");
     void reply.code(status).send(body);
   });
 }
