@@ -21,6 +21,12 @@ This repository starts as a TypeScript modular monolith:
 - `apps/web`: local React interface for Today, routines, work, and calendar blocks.
 - `apps/worker`: database-backed outbox processing.
 
+Outbox delivery is at least once. Every handler that produces an external or otherwise durable side
+effect must make that effect idempotent for the outbox event ID before acknowledging the claim. The
+PostgreSQL verifier runs the production worker loop in child processes, kills it both before a side
+effect and after an idempotent side effect but before acknowledgement, then proves lease recovery,
+fencing, exactly-once effect persistence, and second-attempt completion.
+
 The domain now includes a pure, seeded daily planner that balances cadence, time budget, task count, context, and recent completion history.
 
 The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface.

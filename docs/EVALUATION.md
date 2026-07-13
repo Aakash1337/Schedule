@@ -110,8 +110,9 @@ The audit deliberately leaves these visible instead of turning them into false g
 - backup rejection covers empty, plain-SQL, truncated, schema-only, and migration-ledger-filtered
   archives plus caller-path replacement; it does not authenticate a structurally complete foreign
   Schedule archive, so backup custody remains part of the recovery trust boundary;
-- worker fencing and retries are covered, but the downstream side-effect-before-acknowledgement crash
-  window still requires idempotent consumers and a process-level fault harness;
+- worker process-kill recovery covers crashes before a side effect and after an idempotent side
+  effect but before acknowledgement; future external consumers must still enforce event-ID
+  idempotency at their own durability boundary;
 - web behavior is component-tested rather than exercised through a real browser and API process; and
 - production outcome measures such as acceptance rate, completion rate, cadence attainment, and
   duration error need actual local usage data and are not CI release gates.
