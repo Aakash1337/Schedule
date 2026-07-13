@@ -24,7 +24,11 @@ describe("workspace domain model", () => {
   it.each([
     ["blank", { name: "   " }, "workspace.name_required"],
     ["too long", { name: "x".repeat(161) }, "workspace.name_too_long"],
-    ["invalid timestamp", { name: "Valid", now: new Date("invalid") }, "workspace.timestamp_invalid"],
+    [
+      "invalid timestamp",
+      { name: "Valid", now: new Date("invalid") },
+      "workspace.timestamp_invalid",
+    ],
   ] as const)("rejects a %s workspace input", (_label, invalid, code) => {
     expect(() =>
       createWorkspace({
