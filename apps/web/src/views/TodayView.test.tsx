@@ -36,7 +36,9 @@ const plan: CurrentDailyPlan = {
   items: [
     {
       id: "plan-item-1",
+      sourceType: "routine",
       routineId: "routine-1",
+      workItemId: null,
       title: "Practice Spanish",
       position: 0,
       windowIndex: 0,
@@ -103,6 +105,63 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Today commands", () => {
+  it("identifies routine and one-time work sources in a mixed plan", async () => {
+    const mixedPlan: CurrentDailyPlan = {
+      ...plan,
+      items: [
+        ...plan.items,
+        {
+          ...plan.items[0]!,
+          id: "plan-item-work-1",
+          sourceType: "work_item",
+          routineId: null,
+          workItemId: "work-item-1",
+          title: "Send the proposal",
+          position: 1,
+        },
+      ],
+    };
+    apiMocks.getCurrentPlan.mockResolvedValue(mixedPlan);
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText("Routine")).toBeInTheDocument();
+    expect(screen.getByText("Work item")).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Today's planned items" })).toBeInTheDocument();
+  });
+
+  it("uses distinct source keys for multiple excluded work items", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    apiMocks.getCurrentPlan.mockResolvedValue({
+      ...plan,
+      exclusions: [
+        {
+          sourceType: "work_item" as const,
+          routineId: null,
+          workItemId: "work-item-1",
+          title: "Send the proposal",
+          codes: ["work_item_not_plannable"],
+        },
+        {
+          sourceType: "work_item" as const,
+          routineId: null,
+          workItemId: "work-item-2",
+          title: "Review the contract",
+          codes: ["work_item_not_plannable"],
+        },
+      ],
+    });
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await screen.findByText("Send the proposal");
+    expect(screen.getByText("Review the contract")).toBeInTheDocument();
+    expect(consoleError).not.toHaveBeenCalledWith(
+      expect.stringContaining('unique "key"'),
+      expect.anything(),
+    );
+    consoleError.mockRestore();
+  });
   it("ignores a late plan response from the previously selected workspace", async () => {
     const firstRequest = deferred<CurrentDailyPlan>();
     const secondRequest = deferred<CurrentDailyPlan>();

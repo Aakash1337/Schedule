@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import {
   DomainError,
+  isTerminalPlanItemActivityState,
   replanDailyPlan,
   type DailyPlan,
   type DailyPlanId,
@@ -12,6 +13,7 @@ import {
 } from "@schedule/domain";
 
 import type { Clock, CurrentDailyPlan, UnitOfWork } from "./ports.js";
+import { assertPlanningCandidatePoolSize } from "./planning-candidates.js";
 
 interface BaseMutationCommand {
   readonly workspaceId: WorkspaceId;
@@ -73,7 +75,7 @@ export class MutateDailyPlan {
     }
     const hash = payloadHash(kind, command, targetItemId);
     const now = this.clock.now();
-    return this.unitOfWork.run(async ({ routines, activityEvents, dailyPlans }) => {
+    return this.unitOfWork.run(async ({ routines, workItems, activityEvents, dailyPlans }) => {
       await dailyPlans.lockDay(command.workspaceId, command.request.date);
       const prior = await dailyPlans.findMutation(
         command.workspaceId,
@@ -110,8 +112,11 @@ export class MutateDailyPlan {
       ) {
         throw new DomainError("planning.source_mismatch", "Mutation request scope is invalid.");
       }
-      let anchors = current.plan.items.filter((item) => item.locked);
-      let excludedRoutineIds: DailyPlan["items"][number]["routineId"][] = [];
+      let anchors = current.plan.items.filter(
+        (item) => item.locked && !isTerminalPlanItemActivityState(item.activityState),
+      );
+      let excludedRoutineIds: NonNullable<DailyPlan["items"][number]["routineId"]>[] = [];
+      let excludedWorkItemIds: NonNullable<DailyPlan["items"][number]["workItemId"]>[] = [];
       if (kind === "replace") {
         const target = current.plan.items.find((item) => item.id === targetItemId);
         if (target === undefined) {
@@ -120,22 +125,46 @@ export class MutateDailyPlan {
         if (target.locked) {
           throw new DomainError("planning.item_locked", "A locked item cannot be replaced.");
         }
-        anchors = current.plan.items.filter((item) => item.id !== target.id);
-        excludedRoutineIds = [target.routineId];
+        anchors = current.plan.items.filter(
+          (item) => item.id !== target.id && !isTerminalPlanItemActivityState(item.activityState),
+        );
+        if (target.sourceType === "routine") {
+          if (target.routineId === null) {
+            throw new DomainError(
+              "planning.source_invalid",
+              "The plan item has no routine source.",
+            );
+          }
+          excludedRoutineIds = [target.routineId];
+        } else {
+          if (target.workItemId === null) {
+            throw new DomainError(
+              "planning.source_invalid",
+              "The plan item has no work item source.",
+            );
+          }
+          excludedWorkItemIds = [target.workItemId];
+        }
       }
       const request = {
         ...command.request,
         requestRevision: current.plan.requestRevision + 1,
       };
-      const candidates = await routines.listPlanningCandidates(command.workspaceId, request.date);
-      const events = await activityEvents.listForPlanning(command.workspaceId, request.date);
+      const [routineCandidates, workItemCandidates, events] = await Promise.all([
+        routines.listPlanningCandidates(command.workspaceId, request.date),
+        workItems.listPlanningCandidates(command.workspaceId),
+        activityEvents.listForPlanning(command.workspaceId, request.date),
+      ]);
+      assertPlanningCandidatePoolSize(routineCandidates.length, workItemCandidates.length);
       const generated = replanDailyPlan({
         sourcePlan: current.plan,
         request,
-        routines: candidates,
+        routines: routineCandidates,
+        workItems: workItemCandidates,
         events,
         anchoredItems: anchors,
         excludedRoutineIds,
+        excludedWorkItemIds,
         kind,
         generatedAt: now,
       });

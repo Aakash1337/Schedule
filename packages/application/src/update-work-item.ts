@@ -18,6 +18,7 @@ export interface UpdateWorkItemCommand {
   readonly description?: string | null;
   readonly status?: WorkItemStatus;
   readonly priority?: WorkItemPriority;
+  readonly planningDurationMinutes?: number | null;
 }
 
 export class UpdateWorkItem {
@@ -52,6 +53,9 @@ export class UpdateWorkItem {
         ...(command.description === undefined ? {} : { description: command.description }),
         ...(command.status === undefined ? {} : { status: command.status }),
         ...(command.priority === undefined ? {} : { priority: command.priority }),
+        ...(command.planningDurationMinutes === undefined
+          ? {}
+          : { planningDurationMinutes: command.planningDurationMinutes }),
         now: this.clock.now(),
       });
       if (updated !== current) await workItems.save(updated, command.expectedVersion);

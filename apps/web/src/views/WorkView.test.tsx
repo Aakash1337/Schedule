@@ -31,6 +31,7 @@ const item: WorkItem = {
   description: "Summarize the MVP.",
   status: "planned",
   priority: "high",
+  planningDurationMinutes: null,
   version: 3,
   createdAt: "2026-07-12T09:00:00.000Z",
   updatedAt: "2026-07-12T09:00:00.000Z",
@@ -120,6 +121,88 @@ describe("work board", () => {
     );
   });
 
+  it("opts a one-time item into Today with an explicit duration", async () => {
+    const user = userEvent.setup();
+    const created: WorkItem = {
+      ...item,
+      id: "item-plannable",
+      title: "Prepare the demo",
+      planningDurationMinutes: 75,
+      version: 1,
+    };
+    apiMocks.createWorkItem.mockResolvedValue(created);
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await screen.findByRole("heading", { name: item.title });
+    await user.type(screen.getByRole("textbox", { name: "Title" }), created.title);
+    await user.click(screen.getByRole("checkbox", { name: "Include in Today" }));
+    const duration = screen.getByRole("spinbutton", { name: "Plan duration (minutes)" });
+    expect(duration).toHaveAttribute("aria-describedby", "work-planning-duration-hint");
+    expect(document.getElementById("work-planning-duration-hint")).toHaveTextContent(
+      "The planner reserves this many minutes",
+    );
+    await user.clear(duration);
+    await user.type(duration, "75");
+    await user.click(screen.getByRole("button", { name: "Add item" }));
+
+    await waitFor(() =>
+      expect(apiMocks.createWorkItem).toHaveBeenCalledWith(workspace.id, {
+        title: created.title,
+        description: null,
+        status: "backlog",
+        priority: "none",
+        planningDurationMinutes: 75,
+      }),
+    );
+    expect(await screen.findByLabelText("Included in daily plan")).toHaveTextContent(
+      "Today · 75 min",
+    );
+  });
+
+  it("can remove an item from Today's candidate pool while editing details", async () => {
+    const user = userEvent.setup();
+    const plannable = { ...item, planningDurationMinutes: 45 };
+    apiMocks.listWorkItems.mockResolvedValue({
+      items: [plannable],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.updateWorkItem.mockResolvedValue({
+      ...plannable,
+      planningDurationMinutes: null,
+      version: 4,
+    });
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const heading = await screen.findByRole("heading", { name: plannable.title });
+    const card = heading.closest("article");
+    if (card === null) throw new Error("Work card was not rendered.");
+    await user.click(
+      within(card).getByRole("button", { name: `Edit details for ${plannable.title}` }),
+    );
+    const duration = within(card).getByRole("spinbutton", { name: "Plan duration (minutes)" });
+    expect(duration).toHaveAttribute(
+      "aria-describedby",
+      `work-card-planning-duration-${plannable.id}-hint`,
+    );
+    expect(
+      document.getElementById(`work-card-planning-duration-${plannable.id}-hint`),
+    ).toHaveTextContent("The planner reserves this many minutes");
+    await user.click(within(card).getByRole("checkbox", { name: "Include in Today" }));
+    await user.click(within(card).getByRole("button", { name: "Save details" }));
+
+    await waitFor(() =>
+      expect(apiMocks.updateWorkItem).toHaveBeenCalledWith(workspace.id, plannable.id, {
+        expectedVersion: plannable.version,
+        title: plannable.title,
+        description: plannable.description,
+        planningDurationMinutes: null,
+      }),
+    );
+    expect(screen.queryByLabelText("Included in daily plan")).not.toBeInTheDocument();
+  });
+
   it("edits work-item title and description with the current version", async () => {
     const user = userEvent.setup();
     const updated = {
@@ -150,6 +233,7 @@ describe("work board", () => {
         expectedVersion: item.version,
         title: updated.title,
         description: updated.description,
+        planningDurationMinutes: null,
       }),
     );
     expect(await screen.findByRole("heading", { name: updated.title })).toBeInTheDocument();

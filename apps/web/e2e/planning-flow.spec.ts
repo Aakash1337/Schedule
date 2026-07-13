@@ -14,7 +14,9 @@ function isMutationResponse(
   );
 }
 
-test("persists completion through the live routine-to-Today planning flow", async ({ page }) => {
+test("persists routine and work-item activity through the live Today planning flow", async ({
+  page,
+}) => {
   const pageErrors: string[] = [];
   const requestFailures: string[] = [];
   const unexpectedHttpResponses: string[] = [];
@@ -53,6 +55,26 @@ test("persists completion through the live routine-to-Today planning flow", asyn
   expect((await workspaceResponsePromise).status()).toBe(201);
   await expect(page.getByRole("main", { name: "Today view" })).toBeVisible();
 
+  await page.getByRole("button", { name: "Work", exact: true }).click();
+  await expect(page.getByRole("main", { name: "Work view" })).toBeVisible();
+
+  const workItemTitle = "Prepare the release notes";
+  await page.getByRole("textbox", { name: "Title" }).fill(workItemTitle);
+  await page.getByRole("combobox", { name: "Priority", exact: true }).selectOption("urgent");
+  await page.getByRole("checkbox", { name: "Include in Today" }).click();
+  await page.getByRole("spinbutton", { name: "Plan duration (minutes)" }).fill("45");
+  const workItemResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) => /^\/v1\/workspaces\/[^/]+\/work-items$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Add item" }).click();
+  expect((await workItemResponsePromise).status()).toBe(201);
+  await expect(page.getByRole("heading", { name: workItemTitle, exact: true })).toBeVisible();
+
   await page.getByRole("button", { name: "Routines", exact: true }).click();
   await expect(page.getByRole("main", { name: "Routines view" })).toBeVisible();
   await page.getByRole("button", { name: "New routine" }).click();
@@ -84,10 +106,59 @@ test("persists completion through the live routine-to-Today planning flow", asyn
   await page.getByRole("button", { name: "Generate today's plan" }).click();
   expect((await planResponsePromise).status()).toBe(200);
 
-  const plannedRoutines = page.getByRole("list", { name: "Today's planned routines" });
+  const plannedRoutines = page.getByRole("list", { name: "Today's planned items" });
   const routine = plannedRoutines.getByRole("article", { name: routineTitle });
+  const workItem = plannedRoutines.getByRole("article", { name: workItemTitle });
   await expect(routine).toBeVisible();
+  await expect(workItem).toBeVisible();
+  await expect(workItem.getByText("Work item", { exact: true })).toBeVisible();
   await expect(routine.getByLabel("Status: Pending")).toBeVisible();
+  await expect(workItem.getByLabel("Status: Pending")).toBeVisible();
+
+  const workCompletionResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) =>
+        /^\/v1\/workspaces\/[^/]+\/plans\/[^/]+\/items\/[^/]+\/activity-events$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await workItem.getByRole("button", { name: "Complete" }).click();
+  expect((await workCompletionResponsePromise).status()).toBe(200);
+  await expect(workItem.getByLabel("Status: Completed")).toBeVisible();
+
+  await page.getByRole("button", { name: "Work", exact: true }).click();
+  await expect(page.getByRole("main", { name: "Work view" })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: `Status for ${workItemTitle}` })).toHaveValue(
+    "done",
+  );
+
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+  const plannedWorkItem = page
+    .getByRole("list", { name: "Today's planned items" })
+    .getByRole("article", { name: workItemTitle });
+  const workReversalResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) =>
+        /^\/v1\/workspaces\/[^/]+\/plans\/[^/]+\/items\/[^/]+\/activity-events$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await plannedWorkItem.getByRole("button", { name: "Undo completion" }).click();
+  expect((await workReversalResponsePromise).status()).toBe(200);
+  await expect(plannedWorkItem.getByLabel("Status: Pending")).toBeVisible();
+
+  await page.getByRole("button", { name: "Work", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: `Status for ${workItemTitle}` })).toHaveValue(
+    "backlog",
+  );
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+  const plannedRoutine = page
+    .getByRole("list", { name: "Today's planned items" })
+    .getByRole("article", { name: routineTitle });
 
   const activityResponsePromise = page.waitForResponse((response) =>
     isMutationResponse(
@@ -98,13 +169,13 @@ test("persists completion through the live routine-to-Today planning flow", asyn
       expectedOrigin,
     ),
   );
-  await routine.getByRole("button", { name: "Complete" }).click();
+  await plannedRoutine.getByRole("button", { name: "Complete" }).click();
   expect((await activityResponsePromise).status()).toBe(200);
-  await expect(routine.getByLabel("Status: Completed")).toBeVisible();
+  await expect(plannedRoutine.getByLabel("Status: Completed")).toBeVisible();
 
   await page.reload();
   const persistedRoutine = page
-    .getByRole("list", { name: "Today's planned routines" })
+    .getByRole("list", { name: "Today's planned items" })
     .getByRole("article", { name: routineTitle });
   await expect(persistedRoutine.getByLabel("Status: Completed")).toBeVisible();
   await expect(persistedRoutine.getByRole("button", { name: "Undo completion" })).toBeVisible();

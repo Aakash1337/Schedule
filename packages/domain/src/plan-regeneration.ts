@@ -4,14 +4,18 @@ import { invariant } from "./errors.js";
 import {
   derivePlanItemId,
   generateDailyPlan,
+  planSourceKey,
   type DailyPlan,
   type DailyPlanningRequest,
   type GenerateDailyPlanInput,
   type JsonValue,
   type PlanItem,
+  type PlanSource,
   type PlanWarning,
 } from "./daily-planning.js";
 import type { RoutineId } from "./ids.js";
+import type { WorkItemId } from "./ids.js";
+import { isTerminalPlanItemActivityState } from "./plan-item-activity.js";
 
 export type PlanMutationKind = "regenerate" | "replace";
 
@@ -19,10 +23,14 @@ export interface ReplanDailyPlanInput extends Pick<
   GenerateDailyPlanInput,
   "id" | "routines" | "events" | "config" | "generatedAt"
 > {
+  readonly workItems?: GenerateDailyPlanInput["workItems"];
   readonly sourcePlan: DailyPlan;
   readonly request: DailyPlanningRequest;
   readonly anchoredItems: readonly PlanItem[];
   readonly excludedRoutineIds?: readonly RoutineId[];
+  readonly excludedWorkItemIds?: readonly WorkItemId[];
+  /** Preferred typed exclusion API; legacy id arrays remain supported. */
+  readonly excludedSources?: readonly PlanSource[];
   readonly kind: PlanMutationKind;
 }
 
@@ -58,6 +66,23 @@ function finalWarnings(
   return [...new Set(warnings)];
 }
 
+/** Fields describing the planned candidate must never be caller-controlled during a replan. */
+function immutableAnchorSnapshot(item: PlanItem): JsonValue {
+  return {
+    sourceType: item.sourceType,
+    routineId: item.routineId,
+    workItemId: item.workItemId,
+    title: item.title,
+    position: item.position,
+    windowIndex: item.windowIndex,
+    scheduledMinutes: item.scheduledMinutes,
+    partialSession: item.partialSession,
+    score: item.score,
+    scoreComponents: item.scoreComponents as JsonValue,
+    reasons: item.reasons as JsonValue,
+  };
+}
+
 export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
   invariant(
     input.sourcePlan.workspaceId === input.request.workspaceId &&
@@ -72,21 +97,33 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
   );
   const sourceItems = new Map(input.sourcePlan.items.map((item) => [item.id, item]));
   const anchorIds = new Set<string>();
-  const anchorRoutines = new Set<string>();
+  const anchorSources = new Set<string>();
   const occupiedByWindow = new Map<number, number>();
   for (const anchor of input.anchoredItems) {
+    const sourceItem = sourceItems.get(anchor.id);
     invariant(
-      sourceItems.has(anchor.id),
+      sourceItem !== undefined,
       "planning.anchor_not_found",
       "Every retained item must belong to the source plan.",
     );
     invariant(
-      !anchorIds.has(anchor.id) && !anchorRoutines.has(anchor.routineId),
+      JSON.stringify(immutableAnchorSnapshot(anchor)) ===
+        JSON.stringify(immutableAnchorSnapshot(sourceItem)),
+      "planning.anchor_tampered",
+      "A retained item cannot alter the source, placement, or candidate payload from its source plan.",
+    );
+    invariant(
+      !isTerminalPlanItemActivityState(anchor.activityState),
+      "planning.terminal_item_cannot_be_retained",
+      "Completed, skipped, deferred, or dismissed items cannot be retained during replanning.",
+    );
+    invariant(
+      !anchorIds.has(anchor.id) && !anchorSources.has(planSourceKey(anchor)),
       "planning.anchor_duplicate",
       "Retained plan items cannot be duplicated.",
     );
     anchorIds.add(anchor.id);
-    anchorRoutines.add(anchor.routineId);
+    anchorSources.add(planSourceKey(anchor));
     occupiedByWindow.set(
       anchor.windowIndex,
       (occupiedByWindow.get(anchor.windowIndex) ?? 0) + anchor.scheduledMinutes,
@@ -97,7 +134,10 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
       "Retained items exceed the capacity of an available window.",
     );
     invariant(
-      input.routines.some((candidate) => candidate.id === anchor.routineId),
+      (anchor.sourceType === "routine" &&
+        input.routines.some((candidate) => candidate.id === anchor.routineId)) ||
+        (anchor.sourceType === "work_item" &&
+          (input.workItems ?? []).some((candidate) => candidate.id === anchor.workItemId)),
       "planning.locked_constraints_infeasible",
       "A retained item's routine no longer exists in the planning snapshot.",
     );
@@ -136,7 +176,16 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
     targetTaskCount: Math.max(1, input.request.targetTaskCount - input.anchoredItems.length),
     maximumTaskCount: Math.max(1, remainingMaximumTasks),
   };
-  const excluded = new Set<string>([...anchorRoutines, ...(input.excludedRoutineIds ?? [])]);
+  const terminalSources = input.sourcePlan.items
+    .filter((item) => isTerminalPlanItemActivityState(item.activityState))
+    .map(planSourceKey);
+  const excluded = new Set<string>([
+    ...anchorSources,
+    ...terminalSources,
+    ...(input.excludedSources ?? []).map(planSourceKey),
+    ...(input.excludedRoutineIds ?? []).map((id) => `routine:${id}`),
+    ...(input.excludedWorkItemIds ?? []).map((id) => `work_item:${id}`),
+  ]);
   const resultId = input.id;
   const residual = generateDailyPlan({
     ...(resultId === undefined ? {} : { id: resultId }),
@@ -144,7 +193,11 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
     routines:
       remainingMaximumMinutes < 1 || remainingMaximumTasks < 1
         ? []
-        : input.routines.filter((routine) => !excluded.has(routine.id)),
+        : input.routines.filter((routine) => !excluded.has(`routine:${routine.id}`)),
+    workItems:
+      remainingMaximumMinutes < 1 || remainingMaximumTasks < 1
+        ? []
+        : (input.workItems ?? []).filter((workItem) => !excluded.has(`work_item:${workItem.id}`)),
     events: input.events,
     ...(input.config === undefined ? {} : { config: input.config }),
     ...(input.generatedAt === undefined ? {} : { generatedAt: input.generatedAt }),
@@ -154,7 +207,7 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
   const items = [
     ...input.anchoredItems.map((item) => ({
       ...item,
-      id: derivePlanItemId(residual.id, item.routineId, item.position),
+      id: derivePlanItemId(residual.id, item, item.position),
       activityState: "pending" as const,
       lastActivityEventId: null,
       activityUpdatedAt: null,
@@ -166,7 +219,7 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
       nextPosition += 1;
       return {
         ...item,
-        id: derivePlanItemId(residual.id, item.routineId, position),
+        id: derivePlanItemId(residual.id, item, position),
         position,
         windowIndex: residualWindows[item.windowIndex]!.originalIndex,
       };
@@ -183,13 +236,17 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
     request: JSON.parse(JSON.stringify(input.request)) as JsonValue,
     anchoredItems: canonicalAnchors.map((item) => ({
       id: item.id,
+      sourceType: item.sourceType,
       routineId: item.routineId,
+      workItemId: item.workItemId,
       position: item.position,
       windowIndex: item.windowIndex,
       scheduledMinutes: item.scheduledMinutes,
       locked: item.locked,
     })),
     excludedRoutineIds: [...new Set(input.excludedRoutineIds ?? [])].sort(),
+    excludedWorkItemIds: [...new Set(input.excludedWorkItemIds ?? [])].sort(),
+    excludedSources: [...new Set((input.excludedSources ?? []).map(planSourceKey))].sort(),
     plannerInput: residual.inputSnapshot,
   } satisfies JsonValue;
   const inputHash = createHash("sha256").update(JSON.stringify(mutationSnapshot)).digest("hex");

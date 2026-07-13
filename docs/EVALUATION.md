@@ -50,9 +50,9 @@ number must not be compared as though every case were an independent product fea
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      16 / 16 |
+| Implemented features with CI-registered evidence                       |      17 / 17 |
 | Critical implemented features with CI-registered integration or drills |        9 / 9 |
-| Partial features with an explicit limitation                           |        1 / 1 |
+| Partial features with an explicit limitation                           |        0 / 0 |
 | Deferred features incorrectly counted as passing                       |            0 |
 | Missing or stale evidence anchors                                      |            0 |
 
@@ -93,6 +93,13 @@ The deterministic evaluation suite currently requires:
   violations; and
 - zero replay mismatches across 24 seeds when candidate input order is reversed.
 
+Unified-candidate coverage additionally requires that only opted-in eligible work enters the same
+hard budgets as routines; persisted plan and activity records retain an exclusive typed source
+identity; terminal work is not resurrected by regeneration; and a work-derived completion/reversal
+is idempotent without clobbering a later accepted completion or work-item edit. The PostgreSQL and
+API verifiers exercise those properties against the real candidate query and persisted schema,
+including source-matched activity references.
+
 These are contract metrics, not claims that the heuristic is globally optimal. Historical replay and
 fitness-regret evaluation will become meaningful once real usage fixtures and a second planner version
 exist.
@@ -114,8 +121,9 @@ The audit deliberately leaves these visible instead of turning them into false g
 - worker process-kill recovery covers crashes before a side effect and after an idempotent side
   effect but before acknowledgement; future external consumers must still enforce event-ID
   idempotency at their own durability boundary;
-- live browser evidence covers the central desktop Chromium routine-to-plan loop, not every browser,
-  responsive layout, validation branch, or Work and Calendar interaction; and
+- live browser evidence covers the central desktop Chromium mixed routine/work-item planning loop,
+  including work completion and reversal, but not every browser, responsive layout, validation
+  branch, or Calendar interaction; and
 - production outcome measures such as acceptance rate, completion rate, cadence attainment, and
   duration error need actual local usage data and are not CI release gates.
 

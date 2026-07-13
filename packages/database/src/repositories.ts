@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { and, asc, count, desc, eq, gt, lt, lte, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, isNotNull, lt, lte, sql } from "drizzle-orm";
 
 import type {
   ActivityHistoryCursor,
@@ -106,6 +106,7 @@ function mapWorkItem(row: WorkItemRow): WorkItem {
     description: row.description,
     status: row.status,
     priority: row.priority,
+    planningDurationMinutes: row.planningDurationMinutes,
     version: row.version,
     createdAt: new Date(row.createdAt),
     updatedAt: new Date(row.updatedAt),
@@ -181,7 +182,9 @@ function mapActivityEvent(row: ActivityEventRow): ActivityEvent {
   return {
     id: activityEventId(row.id),
     workspaceId: workspaceId(row.workspaceId),
-    routineId: routineId(row.routineId),
+    sourceType: row.sourceType,
+    routineId: row.routineId === null ? null : routineId(row.routineId),
+    workItemId: row.workItemId === null ? null : workItemId(row.workItemId),
     planId: row.planId === null ? null : dailyPlanId(row.planId),
     planItemId: row.planItemId === null ? null : planItemId(row.planItemId),
     type: row.type,
@@ -210,7 +213,9 @@ function resolveIdempotentActivity(
   requested: ActivityEvent,
 ): ActivityEvent {
   const sameEvent =
+    existing.sourceType === requested.sourceType &&
     existing.routineId === requested.routineId &&
+    existing.workItemId === requested.workItemId &&
     existing.planId === requested.planId &&
     existing.planItemId === requested.planItemId &&
     existing.type === requested.type &&
@@ -233,7 +238,9 @@ function resolveIdempotentActivity(
 function mapPlanItem(row: DailyPlanItemRow, state?: DailyPlanItemStateRow): PlanItem {
   return {
     id: planItemId(row.id),
-    routineId: routineId(row.routineId),
+    sourceType: row.sourceType,
+    routineId: row.routineId === null ? null : routineId(row.routineId),
+    workItemId: row.workItemId === null ? null : workItemId(row.workItemId),
     title: row.titleSnapshot,
     position: row.position,
     windowIndex: row.windowIndex,
@@ -276,11 +283,24 @@ function mapDailyPlan(
     requestRevision: row.requestRevision,
     inputHash: row.inputHash,
     inputSnapshot: row.inputSnapshot as JsonValue,
-    exclusions: row.exclusions.map((exclusion): PlanExclusion => ({
-      routineId: routineId(exclusion.routineId),
-      title: exclusion.title,
-      codes: exclusion.codes as PlanExclusion["codes"],
-    })),
+    exclusions: row.exclusions.map((exclusion): PlanExclusion => {
+      // Rollout compatibility for plans persisted before sourceType was introduced.
+      const legacy = exclusion as typeof exclusion & {
+        sourceType?: "routine" | "work_item";
+        workItemId?: string | null;
+      };
+      const sourceType = legacy.sourceType ?? "routine";
+      return {
+        sourceType,
+        routineId: exclusion.routineId === null ? null : routineId(exclusion.routineId),
+        workItemId:
+          legacy.workItemId === null || legacy.workItemId === undefined
+            ? null
+            : workItemId(legacy.workItemId),
+        title: exclusion.title,
+        codes: exclusion.codes as PlanExclusion["codes"],
+      };
+    }),
     warnings: row.warnings as PlanWarning[],
     generatedAt: new Date(row.generatedAt),
   };
@@ -306,6 +326,7 @@ class PostgresWorkItemRepository implements WorkItemRepository {
       description: item.description,
       status: item.status,
       priority: item.priority,
+      planningDurationMinutes: item.planningDurationMinutes,
       version: item.version,
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
@@ -335,6 +356,22 @@ class PostgresWorkItemRepository implements WorkItemRepository {
     return rows.map(mapWorkItem);
   }
 
+  async listPlanningCandidates(workspace: WorkspaceId): Promise<readonly WorkItem[]> {
+    const rows = await this.database
+      .select()
+      .from(workItems)
+      .where(
+        and(
+          eq(workItems.workspaceId, workspace),
+          isNotNull(workItems.planningDurationMinutes),
+          inArray(workItems.status, ["backlog", "planned", "in_progress"]),
+        ),
+      )
+      .orderBy(asc(workItems.id))
+      .limit(501);
+    return rows.map(mapWorkItem);
+  }
+
   async save(item: WorkItem, expectedVersion: number): Promise<void> {
     const updated = await this.database
       .update(workItems)
@@ -343,6 +380,7 @@ class PostgresWorkItemRepository implements WorkItemRepository {
         description: item.description,
         status: item.status,
         priority: item.priority,
+        planningDurationMinutes: item.planningDurationMinutes,
         version: item.version,
         updatedAt: item.updatedAt,
       })
@@ -768,7 +806,7 @@ class PostgresActivityEventRepository implements ActivityEventRepository {
       );
     }
     await this.database.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${`${event.workspaceId}:${event.routineId}`}, 0))`,
+      sql`select pg_advisory_xact_lock(hashtextextended(${`${event.workspaceId}:${event.sourceType}:${event.routineId ?? event.workItemId}`}, 0))`,
     );
     let inserted: ActivityEventRow | undefined;
     try {
@@ -777,7 +815,9 @@ class PostgresActivityEventRepository implements ActivityEventRepository {
         .values({
           id: event.id,
           workspaceId: event.workspaceId,
+          sourceType: event.sourceType,
           routineId: event.routineId,
+          workItemId: event.workItemId,
           planId: event.planId,
           planItemId: event.planItemId,
           type: event.type,
@@ -811,7 +851,7 @@ class PostgresActivityEventRepository implements ActivityEventRepository {
       if (event.referenceEventId !== null && databaseErrorCode(error) === "23514") {
         throw new DomainError(
           "activity.reference_invalid",
-          "The referenced event is not a completion for this routine.",
+          "The referenced event is not a completion for this source.",
         );
       }
       throw error;
@@ -994,7 +1034,9 @@ class PostgresDailyPlanRepository implements DailyPlanRepository {
         fitness: plan.fitness,
         warnings: [...plan.warnings],
         exclusions: plan.exclusions.map((exclusion) => ({
+          sourceType: exclusion.sourceType,
           routineId: exclusion.routineId,
+          workItemId: exclusion.workItemId,
           title: exclusion.title,
           codes: [...exclusion.codes],
         })),
@@ -1012,7 +1054,9 @@ class PostgresDailyPlanRepository implements DailyPlanRepository {
             id: item.id,
             workspaceId: plan.workspaceId,
             planId: plan.id,
+            sourceType: item.sourceType,
             routineId: item.routineId,
+            workItemId: item.workItemId,
             titleSnapshot: item.title,
             position: item.position,
             windowIndex: item.windowIndex,
@@ -1342,10 +1386,79 @@ class PostgresDailyPlanRepository implements DailyPlanRepository {
         : transitionPlanItemActivity(currentActivityState, input.type);
     const referenceEventId =
       input.type === "completion_reversed" ? (state?.lastActivityEventId ?? null) : null;
+    let sourceWorkItem: WorkItemRow | undefined;
+    if (item.sourceType === "work_item") {
+      if (item.workItemId === null) {
+        throw new DomainError(
+          "planning.item_source_invalid",
+          "The plan item has no work item source.",
+        );
+      }
+      [sourceWorkItem] = await this.database
+        .select()
+        .from(workItems)
+        .where(and(eq(workItems.workspaceId, input.workspaceId), eq(workItems.id, item.workItemId)))
+        .limit(1);
+      if (sourceWorkItem === undefined) {
+        throw new DomainError(
+          "planning.item_source_not_found",
+          "The source work item does not exist.",
+        );
+      }
+    }
+
+    let reversalSourceEvent: ActivityEventRow | undefined;
+    if (input.type === "completion_reversed" && item.sourceType === "work_item") {
+      if (referenceEventId === null || referenceEventId === undefined) {
+        throw new DomainError(
+          "activity.reference_not_found",
+          "The completion being reversed is unavailable.",
+        );
+      }
+      [reversalSourceEvent] = await this.database
+        .select()
+        .from(activityEvents)
+        .where(
+          and(
+            eq(activityEvents.workspaceId, input.workspaceId),
+            eq(activityEvents.id, referenceEventId),
+          ),
+        )
+        .limit(1);
+    }
+    const sourceWorkStatus = sourceWorkItem?.status;
+    const sourceWorkVersion = sourceWorkItem?.version;
+    const isCompletion = input.type === "completed" && sourceWorkItem !== undefined;
+    const canAutoCompleteWorkItem =
+      sourceWorkStatus === "backlog" ||
+      sourceWorkStatus === "planned" ||
+      sourceWorkStatus === "in_progress";
+    const completionCanOwnWorkItem =
+      isCompletion && (canAutoCompleteWorkItem || sourceWorkStatus === "done");
+    const completionChangedWorkItem = completionCanOwnWorkItem && canAutoCompleteWorkItem;
+    const completionOwnershipVersion =
+      sourceWorkVersion === undefined
+        ? null
+        : completionCanOwnWorkItem
+          ? sourceWorkVersion + 1
+          : sourceWorkVersion;
+    const eventMetadata =
+      sourceWorkItem === undefined
+        ? input.metadata
+        : {
+            ...input.metadata,
+            "system.work_item.completion_changed": completionChangedWorkItem,
+            "system.work_item.completion_ownership_version": completionOwnershipVersion,
+            // Retained so events written by the first unified-planning release remain reversible.
+            "system.work_item.completion_version": completionOwnershipVersion,
+            "system.work_item.previous_status": sourceWorkItem.status,
+          };
     const activityEvent = await new PostgresActivityEventRepository(this.database).append(
       recordActivityEvent({
         workspaceId: input.workspaceId,
-        routineId: routineId(item.routineId),
+        sourceType: item.sourceType,
+        routineId: item.routineId === null ? null : routineId(item.routineId),
+        workItemId: item.workItemId === null ? null : workItemId(item.workItemId),
         planId: input.expectedPlanId,
         planItemId: input.itemId,
         type: input.type,
@@ -1358,10 +1471,60 @@ class PostgresDailyPlanRepository implements DailyPlanRepository {
             ? null
             : activityEventId(referenceEventId),
         idempotencyKey: input.idempotencyKey,
-        metadata: input.metadata,
+        metadata: eventMetadata,
         recordedAt: input.now,
       }),
     );
+    if (completionCanOwnWorkItem && sourceWorkItem !== undefined) {
+      const updatedWorkItem = await this.database
+        .update(workItems)
+        .set({ status: "done", version: sourceWorkItem.version + 1, updatedAt: input.now })
+        .where(
+          and(
+            eq(workItems.workspaceId, input.workspaceId),
+            eq(workItems.id, sourceWorkItem.id),
+            eq(workItems.status, sourceWorkItem.status),
+            eq(workItems.version, sourceWorkItem.version),
+          ),
+        )
+        .returning({ id: workItems.id });
+      if (updatedWorkItem.length === 0) {
+        throw new DomainError(
+          "work_item.version_conflict",
+          "The source work item changed before completion could be recorded.",
+        );
+      }
+    }
+    if (input.type === "completion_reversed" && sourceWorkItem !== undefined) {
+      const metadata = reversalSourceEvent?.metadata ?? {};
+      const previousStatus = metadata["system.work_item.previous_status"];
+      const completionVersion =
+        metadata["system.work_item.completion_ownership_version"] ??
+        metadata["system.work_item.completion_version"];
+      if (
+        metadata["system.work_item.completion_changed"] === true &&
+        typeof previousStatus === "string" &&
+        typeof completionVersion === "number" &&
+        Number.isInteger(completionVersion)
+      ) {
+        // A version/status guard means a later edit always wins over the reversal.
+        await this.database
+          .update(workItems)
+          .set({
+            status: previousStatus as WorkItemStatus,
+            version: completionVersion + 1,
+            updatedAt: input.now,
+          })
+          .where(
+            and(
+              eq(workItems.workspaceId, input.workspaceId),
+              eq(workItems.id, sourceWorkItem.id),
+              eq(workItems.status, "done"),
+              eq(workItems.version, completionVersion),
+            ),
+          );
+      }
+    }
     if (state === undefined) {
       await this.database.insert(dailyPlanItemStates).values({
         workspaceId: input.workspaceId,

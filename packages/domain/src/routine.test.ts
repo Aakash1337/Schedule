@@ -152,7 +152,7 @@ describe("routine domain model", () => {
         occurredAt: new Date("2026-07-13T12:00:00.000Z"),
         timeZone: "UTC",
         metadata: Object.fromEntries(
-          Array.from({ length: 9 }, (_, index) => [`field-${index}`, index]),
+          Array.from({ length: 13 }, (_, index) => [`field-${index}`, index]),
         ),
       }),
     ).toThrowError(DomainError);

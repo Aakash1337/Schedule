@@ -7,12 +7,15 @@ import {
   createDurationRange,
   createRoutine,
   createStructuredTags,
+  createWorkItem,
   createWorkspace,
   dailyPlanId,
   generateDailyPlan,
   routineId,
   workspaceId,
   type DailyPlan,
+  type Routine,
+  type WorkItem,
 } from "@schedule/domain";
 
 import { GenerateDailyPlan } from "./generate-daily-plan.js";
@@ -46,11 +49,19 @@ describe("GenerateDailyPlan", () => {
     seed: "application-plan",
   });
 
-  function harness(existing?: DailyPlan) {
+  function harness(
+    existing?: DailyPlan,
+    routineCandidates: readonly Routine[] = [routine],
+    workItemCandidates: readonly WorkItem[] = [],
+    workspaceExists = true,
+  ) {
     let stored = existing;
     const context = {
       workspaces: {
-        findById: async () => createWorkspace({ id: workspace, name: "Test", now: new Date(0) }),
+        findById: async () =>
+          workspaceExists
+            ? createWorkspace({ id: workspace, name: "Test", now: new Date(0) })
+            : null,
         list: async () => [],
         insert: async () => undefined,
         save: async () => undefined,
@@ -58,7 +69,7 @@ describe("GenerateDailyPlan", () => {
       routines: {
         findById: async () => routine,
         list: async () => [routine],
-        listPlanningCandidates: async () => [routine],
+        listPlanningCandidates: async () => routineCandidates,
         insert: async () => undefined,
         save: async () => undefined,
       },
@@ -90,7 +101,9 @@ describe("GenerateDailyPlan", () => {
         findMutation: async () => null,
         insertMutation: async () => undefined,
       },
-      workItems: {} as TransactionContext["workItems"],
+      workItems: {
+        listPlanningCandidates: async () => workItemCandidates,
+      } as TransactionContext["workItems"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
       auditEvents: {} as TransactionContext["auditEvents"],
     } satisfies TransactionContext;
@@ -128,11 +141,39 @@ describe("GenerateDailyPlan", () => {
     });
   });
 
+  it("rejects a missing workspace and generic creation after a plan already exists", async () => {
+    await expect(
+      harness(undefined, [routine], [], false).useCase.execute({ request }),
+    ).rejects.toMatchObject<Partial<DomainError>>({ code: "workspace.not_found" });
+
+    const existing = await harness().useCase.execute({ request });
+    await expect(
+      harness(existing).useCase.execute({ request: { ...request, requestRevision: 2 } }),
+    ).rejects.toMatchObject<Partial<DomainError>>({
+      code: "planning.revision_creation_conflict",
+    });
+  });
+
   it("returns the same persisted plan for an exact deterministic retry", async () => {
     const first = await harness().useCase.execute({ request });
     const { useCase } = harness(first);
 
     await expect(useCase.execute({ request })).resolves.toBe(first);
+  });
+
+  it("rejects a combined routine and work-item candidate pool above 500", async () => {
+    const routineCandidates = Array.from({ length: 251 }, () => routine);
+    const workItemCandidates = Array.from({ length: 250 }, (_, index) =>
+      createWorkItem({
+        workspaceId: workspace,
+        title: `Plannable work ${index + 1}`,
+        planningDurationMinutes: 15,
+      }),
+    );
+
+    await expect(
+      harness(undefined, routineCandidates, workItemCandidates).useCase.execute({ request }),
+    ).rejects.toMatchObject<Partial<DomainError>>({ code: "planning.candidate_pool_too_large" });
   });
 
   it("can exactly retry a later generic revision that was already persisted", async () => {

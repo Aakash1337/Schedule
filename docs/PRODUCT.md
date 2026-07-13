@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-12
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface for the complete routine-planning loop. Planner v1 selects routines; ordinary Work-board items are not yet daily-plan candidates. See [API.md](./API.md) and [WEB.md](./WEB.md). Alternative-plan comparison, generalized undo, recurrence authoring, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v2 selects both reusable routines and explicitly opted-in one-time Work items. See [API.md](./API.md) and [WEB.md](./WEB.md). Alternative-plan comparison, generalized undo, recurrence authoring, Hermes integration, and public hosting remain deferred.
 
 ## 1. Product summary
 
@@ -29,7 +29,7 @@ The planner considers both the user's available time and desired number of tasks
 
 ### 3.1 Work item
 
-A normal, actionable unit of work. It may belong to a project, appear on a Kanban board, have a deadline, or remain in a backlog. A work item can be scheduled zero, one, or multiple times.
+A normal, actionable unit of work. It may belong to a project, appear on a Kanban board, have a deadline, or remain in a backlog. A work item remains off the automatic planner unless it has an explicit positive **planning duration**. An opted-in item is one-time work: it may appear at most once in a plan and may be selected again in later plan revisions, dates, or sessions until it is completed, cancelled, or opted out. It is not a recurring routine.
 
 ### 3.2 Routine
 
@@ -41,11 +41,11 @@ A reserved period on the calendar. It may reference a work item or routine occur
 
 ### 3.4 Plan item
 
-An item selected for a particular daily plan. It records why it was selected, its estimated duration, its position in the plan, and whether the user accepted or changed it.
+An item selected for a particular daily plan. It records a typed source identity—exactly one routine or work item—why it was selected, its estimated duration, its position in the plan, and whether the user accepted or changed it.
 
 ### 3.5 Activity event
 
-An immutable observation such as suggested, accepted, started, completed, skipped, deferred, dismissed, or duration corrected. Planning uses this history rather than overwriting it.
+An immutable observation such as suggested, accepted, started, completed, skipped, deferred, dismissed, or duration corrected. Every event has the same typed source identity as its plan item. Routine events feed cadence history; work-item events preserve the one-time item lifecycle without inventing cadence.
 
 ## 4. Organization and tags
 
@@ -123,9 +123,10 @@ Observed duration is stored separately from the user's estimate. Once enough his
 - Deadlines, priorities, cadence policies, and locked items
 - Temporary instructions such as "not this week"
 
-The list above describes the target product contract. The implemented planner v1 currently draws
-candidate plan items from routines only. Work items and calendar blocks are managed in the same
-application, but their planner eligibility and automatic placement remain future integrations.
+The implemented planner draws candidates from reusable routines and from opted-in one-time work
+items. A work item is eligible only when it has a positive planning duration and is in `backlog`,
+`planned`, or `in_progress`; `blocked`, `done`, and `cancelled` work stays out of Today. Calendar
+blocks remain independent reservations rather than planner candidates or automatic placements.
 
 ### 7.2 Hard constraints
 
@@ -142,7 +143,9 @@ Deadlines and user-locked commitments may override ordinary eligibility rules, b
 
 ### 7.3 Scoring
 
-Each eligible candidate receives an explainable score assembled from normalized components:
+Each eligible candidate receives an explainable score assembled from normalized components. Routine
+scores use cadence and activity history. One-time work scores use its explicit priority only, so a
+work item cannot acquire accidental recurrence pressure from routine history:
 
 ```text
 score =
@@ -214,8 +217,12 @@ This is based on completions, not merely suggestions. Dismissals and skips influ
 
 The current interface supports stable generation, lock/unlock, lock-preserving regeneration,
 single-item replacement, activity transitions, completion reversal, and selection/exclusion
-explanations. The remaining bullets describe the broader interaction target; alternatives,
-frequency-feedback shortcuts, and generalized plan undo are not implemented yet.
+explanations. These actions operate on the typed source of the selected plan item. Completing a
+work-derived item marks its source work item `done`. Reversing that completion restores the prior
+work status only when the completion's saved version is still current; a later accepted completion
+or edit wins and is never overwritten. Neither action automatically regenerates Today. The remaining
+bullets describe the broader interaction target; alternatives, frequency-feedback shortcuts, and
+generalized plan undo are not implemented yet.
 
 The user can:
 
@@ -366,7 +373,7 @@ Success is not simply "more tasks completed." Useful measures include realistic 
 
 - Implemented: Today view and planning controls
 - Implemented: lock, replace, regenerate, defer, dismiss, and completion flows
-- Partial: Kanban, backlog, and calendar management; Work items are not planner candidates yet
+- Implemented: Kanban/backlog work can opt into Today with a planning duration; calendar blocks remain independent
 - Partial: "why selected" details are implemented; alternative-plan comparison is deferred
 
 ### Phase 3 — Transparent adaptation

@@ -22,6 +22,8 @@ export interface WorkItem {
   readonly description: string | null;
   readonly status: WorkItemStatus;
   readonly priority: WorkItemPriority;
+  /** Null keeps conventional work out of the daily planner. */
+  readonly planningDurationMinutes: number | null;
   readonly version: number;
   readonly createdAt: Date;
   readonly updatedAt: Date;
@@ -34,6 +36,7 @@ export interface CreateWorkItemInput {
   readonly description?: string | null;
   readonly status?: WorkItemStatus;
   readonly priority?: WorkItemPriority;
+  readonly planningDurationMinutes?: number | null;
   readonly now?: Date;
 }
 
@@ -42,6 +45,7 @@ export interface UpdateWorkItemInput {
   readonly description?: string | null;
   readonly status?: WorkItemStatus;
   readonly priority?: WorkItemPriority;
+  readonly planningDurationMinutes?: number | null;
   readonly now: Date;
 }
 
@@ -92,6 +96,14 @@ function validatePriority(value: unknown): asserts value is WorkItemPriority {
   );
 }
 
+function validatePlanningDuration(value: unknown): asserts value is number | null {
+  invariant(
+    value === null || (typeof value === "number" && Number.isInteger(value) && value > 0),
+    "work_item.planning_duration_invalid",
+    "A planning duration must be a positive whole number of minutes or null.",
+  );
+}
+
 function validateTimestamp(value: unknown): asserts value is Date {
   invariant(
     value instanceof Date && Number.isFinite(value.getTime()),
@@ -103,6 +115,7 @@ function validateTimestamp(value: unknown): asserts value is Date {
 function validateExistingWorkItem(item: WorkItem): void {
   validateStatus(item.status);
   validatePriority(item.priority);
+  validatePlanningDuration(item.planningDurationMinutes);
   invariant(
     Number.isInteger(item.version) && item.version >= 1 && item.version <= maximumWorkItemVersion,
     "work_item.version_invalid",
@@ -117,6 +130,8 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
   validateStatus(status);
   const priority = input.priority === undefined ? "none" : input.priority;
   validatePriority(priority);
+  const planningDurationMinutes = input.planningDurationMinutes ?? null;
+  validatePlanningDuration(planningDurationMinutes);
   const now = input.now ?? new Date();
   validateTimestamp(now);
 
@@ -127,6 +142,7 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
     description,
     status,
     priority,
+    planningDurationMinutes,
     version: 1,
     createdAt: new Date(now),
     updatedAt: new Date(now),
@@ -152,12 +168,18 @@ export function updateWorkItem(item: WorkItem, input: UpdateWorkItemInput): Work
   validateStatus(status);
   const priority = input.priority === undefined ? item.priority : input.priority;
   validatePriority(priority);
+  const planningDurationMinutes =
+    input.planningDurationMinutes === undefined
+      ? item.planningDurationMinutes
+      : input.planningDurationMinutes;
+  validatePlanningDuration(planningDurationMinutes);
 
   if (
     title === item.title &&
     description === item.description &&
     status === item.status &&
-    priority === item.priority
+    priority === item.priority &&
+    planningDurationMinutes === item.planningDurationMinutes
   ) {
     return item;
   }
@@ -174,6 +196,7 @@ export function updateWorkItem(item: WorkItem, input: UpdateWorkItemInput): Work
     description,
     status,
     priority,
+    planningDurationMinutes,
     version: item.version + 1,
     updatedAt: new Date(input.now),
   };

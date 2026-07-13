@@ -164,6 +164,7 @@ const workItemBody = z.strictObject({
   description: z.string().max(4_000).nullable().default(null),
   status: workItemStatus.default("backlog"),
   priority: workItemPriority.default("none"),
+  planningDurationMinutes: z.number().int().positive().max(43_200).nullable().default(null),
 });
 const workItemQuery = z.strictObject({
   status: workItemStatus.optional(),
@@ -178,13 +179,15 @@ const updateWorkItemBody = z
     description: z.string().max(4_000).nullable().optional(),
     status: workItemStatus.optional(),
     priority: workItemPriority.optional(),
+    planningDurationMinutes: z.number().int().positive().max(43_200).nullable().optional(),
   })
   .refine(
     (body) =>
       body.title !== undefined ||
       body.description !== undefined ||
       body.status !== undefined ||
-      body.priority !== undefined,
+      body.priority !== undefined ||
+      body.planningDurationMinutes !== undefined,
     { message: "At least one work item change is required." },
   );
 const scheduleBlockBody = z.strictObject({
@@ -564,6 +567,7 @@ export async function registerProductRoutes(
       description: body.description,
       status: body.status,
       priority: body.priority,
+      planningDurationMinutes: body.planningDurationMinutes,
     });
     return reply.code(201).send(created);
   });
@@ -600,6 +604,9 @@ export async function registerProductRoutes(
       ...(body.description === undefined ? {} : { description: body.description }),
       ...(body.status === undefined ? {} : { status: body.status }),
       ...(body.priority === undefined ? {} : { priority: body.priority }),
+      ...(body.planningDurationMinutes === undefined
+        ? {}
+        : { planningDurationMinutes: body.planningDurationMinutes }),
     });
   });
 

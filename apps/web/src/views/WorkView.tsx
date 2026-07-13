@@ -33,6 +33,8 @@ interface WorkEditDraft {
   readonly id: string;
   readonly title: string;
   readonly description: string;
+  readonly includeInDailyPlan: boolean;
+  readonly planningDurationMinutes: string;
 }
 
 function queryKey(workspaceId: string, priority: PriorityFilter): string {
@@ -49,6 +51,12 @@ function priorityLabel(priority: WorkItemPriority): string {
   return priorities.find((option) => option.value === priority)?.label ?? priority;
 }
 
+function isPlanningDurationValid(value: string, included: boolean): boolean {
+  if (!included) return true;
+  const duration = Number(value);
+  return Number.isInteger(duration) && duration > 0 && duration <= 43_200;
+}
+
 export function WorkView({ workspace }: WorkspaceViewProps) {
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("");
   const [board, setBoard] = useState<BoardData | null>(null);
@@ -62,6 +70,8 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const [description, setDescription] = useState("");
   const [newStatus, setNewStatus] = useState<WorkItemStatus>("backlog");
   const [newPriority, setNewPriority] = useState<WorkItemPriority>("none");
+  const [includeInDailyPlan, setIncludeInDailyPlan] = useState(false);
+  const [planningDurationMinutes, setPlanningDurationMinutes] = useState("30");
   const titleInputRef = useRef<HTMLInputElement>(null);
   const editOpenerRef = useRef<HTMLElement | null>(null);
   const [editDraft, setEditDraft] = useState<WorkEditDraft | null>(null);
@@ -115,11 +125,20 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     }
     return grouped;
   }, [items]);
+  const newPlanningDurationIsValid = isPlanningDurationValid(
+    planningDurationMinutes,
+    includeInDailyPlan,
+  );
 
   async function createItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const normalizedTitle = title.trim();
-    if (normalizedTitle.length === 0 || creating) return;
+    const parsedPlanningDuration = includeInDailyPlan ? Number(planningDurationMinutes) : null;
+    const planningDurationIsValid = isPlanningDurationValid(
+      planningDurationMinutes,
+      includeInDailyPlan,
+    );
+    if (normalizedTitle.length === 0 || creating || !planningDurationIsValid) return;
 
     const requestWorkspaceId = workspace.id;
     const requestKey = activeQueryKey;
@@ -131,6 +150,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         description: description.trim().length === 0 ? null : description.trim(),
         status: newStatus,
         priority: newPriority,
+        planningDurationMinutes: parsedPlanningDuration,
       });
       if (activeQueryKeyRef.current === requestKey) {
         setBoard((current) => {
@@ -143,6 +163,8 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       setDescription("");
       setNewStatus("backlog");
       setNewPriority("none");
+      setIncludeInDailyPlan(false);
+      setPlanningDurationMinutes("30");
       titleInputRef.current?.focus();
     } catch (error) {
       if (activeQueryKeyRef.current === requestKey) setCreateError(messageFor(error));
@@ -154,7 +176,14 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   function openEdit(item: WorkItem) {
     editOpenerRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setEditDraft({ id: item.id, title: item.title, description: item.description ?? "" });
+    setEditDraft({
+      id: item.id,
+      title: item.title,
+      description: item.description ?? "",
+      includeInDailyPlan: item.planningDurationMinutes !== null,
+      planningDurationMinutes:
+        item.planningDurationMinutes === null ? "30" : String(item.planningDurationMinutes),
+    });
   }
 
   function closeEdit() {
@@ -199,6 +228,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       readonly description?: string | null;
       readonly status?: WorkItemStatus;
       readonly priority?: WorkItemPriority;
+      readonly planningDurationMinutes?: number | null;
     },
   ): Promise<boolean> {
     if (pendingItemIds.has(item.id)) return false;
@@ -249,10 +279,18 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     event.preventDefault();
     if (editDraft?.id !== item.id) return;
     const normalizedTitle = editDraft.title.trim();
-    if (normalizedTitle.length === 0) return;
+    const parsedPlanningDuration = editDraft.includeInDailyPlan
+      ? Number(editDraft.planningDurationMinutes)
+      : null;
+    const planningDurationIsValid = isPlanningDurationValid(
+      editDraft.planningDurationMinutes,
+      editDraft.includeInDailyPlan,
+    );
+    if (normalizedTitle.length === 0 || !planningDurationIsValid) return;
     const saved = await updateItem(item, {
       title: normalizedTitle,
       description: editDraft.description.trim() || null,
+      planningDurationMinutes: parsedPlanningDuration,
     });
     if (saved) closeEdit();
   }
@@ -262,7 +300,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       <PageHeader
         eyebrow={workspace.name}
         title="Work board"
-        description="Capture work, set its priority, and move it through a clear six-step flow."
+        description="Capture work, choose what can enter Today, and move it through a clear six-step flow."
         actions={
           <Field label="Filter by priority" className="work-priority-filter">
             <select
@@ -287,7 +325,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
             <p className="eyebrow">Quick capture</p>
             <h2 id="work-composer-title">Add a work item</h2>
           </div>
-          <p>Start it in any status. You can adjust status and priority from its card.</p>
+          <p>Start it in any status. Opt in only the one-time work that belongs in Today.</p>
         </div>
 
         {createError === null ? null : (
@@ -340,12 +378,45 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
               ))}
             </select>
           </Field>
+          <fieldset className="work-planning-fieldset">
+            <legend>Daily plan</legend>
+            <label className="work-planning-toggle">
+              <input
+                type="checkbox"
+                checked={includeInDailyPlan}
+                disabled={creating}
+                onChange={(event) => setIncludeInDailyPlan(event.currentTarget.checked)}
+              />
+              <span>Include in Today</span>
+            </label>
+            {includeInDailyPlan ? (
+              <Field label="Plan duration (minutes)">
+                <input
+                  type="number"
+                  min={1}
+                  max={43_200}
+                  step={1}
+                  inputMode="numeric"
+                  value={planningDurationMinutes}
+                  disabled={creating}
+                  aria-invalid={!newPlanningDurationIsValid}
+                  aria-describedby="work-planning-duration-hint"
+                  onChange={(event) => setPlanningDurationMinutes(event.currentTarget.value)}
+                />
+              </Field>
+            ) : null}
+            <p id="work-planning-duration-hint" className="work-planning-hint">
+              {includeInDailyPlan
+                ? "The planner reserves this many minutes. Work items remain one-time candidates."
+                : "Keep this off for work that should stay off the automatic plan."}
+            </p>
+          </fieldset>
           <Button
             className="work-composer-submit"
             type="submit"
             variant="primary"
             busy={creating}
-            disabled={title.trim().length === 0}
+            disabled={title.trim().length === 0 || !newPlanningDurationIsValid}
           >
             <Plus size={16} aria-hidden="true" />
             Add item
@@ -434,6 +505,14 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                           <header className="work-card-header">
                             <h3>{item.title}</h3>
                             <span className="work-card-header-actions">
+                              {item.planningDurationMinutes === null ? null : (
+                                <span
+                                  className="work-plan-badge"
+                                  aria-label="Included in daily plan"
+                                >
+                                  Today · {item.planningDurationMinutes} min
+                                </span>
+                              )}
                               <span
                                 className={`work-priority-badge work-priority-${item.priority}`}
                               >
@@ -483,6 +562,61 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                   disabled={pending}
                                 />
                               </Field>
+                              <fieldset className="work-card-planning-fieldset">
+                                <legend>Daily plan</legend>
+                                <label className="work-planning-toggle">
+                                  <input
+                                    type="checkbox"
+                                    checked={editDraft.includeInDailyPlan}
+                                    disabled={pending}
+                                    onChange={(event) => {
+                                      const checked = event.currentTarget.checked;
+                                      setEditDraft((current) =>
+                                        current === null
+                                          ? null
+                                          : { ...current, includeInDailyPlan: checked },
+                                      );
+                                    }}
+                                  />
+                                  <span>Include in Today</span>
+                                </label>
+                                {editDraft.includeInDailyPlan ? (
+                                  <Field label="Plan duration (minutes)">
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      max={43_200}
+                                      step={1}
+                                      inputMode="numeric"
+                                      value={editDraft.planningDurationMinutes}
+                                      disabled={pending}
+                                      aria-invalid={
+                                        !isPlanningDurationValid(
+                                          editDraft.planningDurationMinutes,
+                                          editDraft.includeInDailyPlan,
+                                        )
+                                      }
+                                      aria-describedby={`work-card-planning-duration-${item.id}-hint`}
+                                      onChange={(event) => {
+                                        const value = event.currentTarget.value;
+                                        setEditDraft((current) =>
+                                          current === null
+                                            ? null
+                                            : { ...current, planningDurationMinutes: value },
+                                        );
+                                      }}
+                                    />
+                                  </Field>
+                                ) : null}
+                                <p
+                                  id={`work-card-planning-duration-${item.id}-hint`}
+                                  className="work-planning-hint"
+                                >
+                                  {editDraft.includeInDailyPlan
+                                    ? "The planner reserves this many minutes. Work items remain one-time candidates."
+                                    : "This item will not be selected for Today."}
+                                </p>
+                              </fieldset>
                               <div className="work-card-editor-actions">
                                 <Button type="button" variant="quiet" onClick={closeEdit}>
                                   Cancel
@@ -491,7 +625,13 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                   type="submit"
                                   variant="primary"
                                   busy={pending}
-                                  disabled={editDraft.title.trim().length === 0}
+                                  disabled={
+                                    editDraft.title.trim().length === 0 ||
+                                    !isPlanningDurationValid(
+                                      editDraft.planningDurationMinutes,
+                                      editDraft.includeInDailyPlan,
+                                    )
+                                  }
                                 >
                                   Save details
                                 </Button>

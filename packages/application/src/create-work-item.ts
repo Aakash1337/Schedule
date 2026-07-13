@@ -15,6 +15,7 @@ export interface CreateWorkItemCommand {
   readonly description?: string | null;
   readonly priority?: WorkItemPriority;
   readonly status?: WorkItemStatus;
+  readonly planningDurationMinutes?: number | null;
 }
 
 export class CreateWorkItem {

@@ -113,6 +113,9 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
         ...(command.description === undefined ? {} : { description: command.description }),
         ...(command.status === undefined ? {} : { status: command.status }),
         ...(command.priority === undefined ? {} : { priority: command.priority }),
+        ...(command.planningDurationMinutes === undefined
+          ? {}
+          : { planningDurationMinutes: command.planningDurationMinutes }),
         now: new Date("2026-07-15T12:01:00.000Z"),
       });
       return storedWorkItem;
@@ -335,6 +338,7 @@ describe("local product API", () => {
         description: "Finish the local product loop",
         status: "planned",
         priority: "urgent",
+        planningDurationMinutes: 45,
       },
     });
     const listed = await app.inject({
@@ -344,7 +348,12 @@ describe("local product API", () => {
     const updated = await app.inject({
       method: "PATCH",
       url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
-      payload: { expectedVersion: 1, status: "in_progress", priority: "high" },
+      payload: {
+        expectedVersion: 1,
+        status: "in_progress",
+        priority: "high",
+        planningDurationMinutes: 30,
+      },
     });
     const retrieved = await app.inject({
       method: "GET",
@@ -357,6 +366,7 @@ describe("local product API", () => {
       title: "Ship the MVP",
       status: "planned",
       priority: "urgent",
+      planningDurationMinutes: 45,
       version: 1,
     });
     expect(listed.statusCode).toBe(200);
@@ -365,8 +375,67 @@ describe("local product API", () => {
       page: { limit: 20, offset: 0 },
     });
     expect(updated.statusCode).toBe(200);
-    expect(updated.json()).toMatchObject({ status: "in_progress", priority: "high", version: 2 });
+    expect(updated.json()).toMatchObject({
+      status: "in_progress",
+      priority: "high",
+      planningDurationMinutes: 30,
+      version: 2,
+    });
     expect(retrieved.json()).toEqual(updated.json());
+  });
+
+  it("enforces planning-duration bounds for work-item create and update", async () => {
+    const app = await appWith(createHarness().services);
+    const created = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/work-items`,
+      payload: { title: "Long focus", planningDurationMinutes: 43_200 },
+    });
+    const invalidCreateLow = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/work-items`,
+      payload: { title: "Invalid low", planningDurationMinutes: 0 },
+    });
+    const invalidCreateHigh = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/work-items`,
+      payload: { title: "Invalid high", planningDurationMinutes: 43_201 },
+    });
+    const removed = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+      payload: { expectedVersion: 1, planningDurationMinutes: null },
+    });
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+      payload: { expectedVersion: 2, planningDurationMinutes: 43_200 },
+    });
+    const invalidUpdateLow = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+      payload: { expectedVersion: 3, planningDurationMinutes: 0 },
+    });
+    const invalidUpdateHigh = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+      payload: { expectedVersion: 3, planningDurationMinutes: 43_201 },
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ planningDurationMinutes: 43_200 });
+    expect(removed.json()).toMatchObject({ planningDurationMinutes: null, version: 2 });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({ planningDurationMinutes: 43_200, version: 3 });
+    for (const response of [
+      invalidCreateLow,
+      invalidCreateHigh,
+      invalidUpdateLow,
+      invalidUpdateHigh,
+    ]) {
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: { code: "request.validation_failed" } });
+    }
   });
 
   it("supports linked calendar-block range, update, and delete flows", async () => {
