@@ -70,12 +70,15 @@ function harness(
     workspaceExists?: boolean;
     routineExists?: boolean;
     evidence?: readonly ActivityEvent[];
+    clockNow?: Date;
+    clockAfterLock?: Date;
   } = {},
 ) {
   let stored: Routine | null = options.routineExists === false ? null : routine;
   let routineFindCount = 0;
   let evidenceReadCount = 0;
   let clockCount = 0;
+  let currentClockNow = options.clockNow ?? now;
   let unitOfWorkOptions: UnitOfWorkOptions | undefined;
   const operationOrder: string[] = [];
   const lockCalls: Array<{
@@ -120,6 +123,9 @@ function harness(
           workspaceId: receivedWorkspaceId,
           routineId: receivedRoutineId,
         });
+        if (options.clockAfterLock !== undefined) {
+          currentClockNow = options.clockAfterLock;
+        }
       },
       findById: async () => null,
       listForPlanning: async () => [],
@@ -155,8 +161,9 @@ function harness(
   };
   const useCase = new ApproveRoutineDurationInsight(unitOfWork, {
     now: () => {
+      operationOrder.push("clock");
       clockCount += 1;
-      return now;
+      return new Date(currentClockNow.getTime());
     },
   });
 
@@ -203,9 +210,43 @@ describe("ApproveRoutineDurationInsight", () => {
       },
     ]);
     expect(test.lockCalls).toEqual([{ workspaceId: workspace.id, routineId: routine.id }]);
-    expect(test.operationOrder).toEqual(["workspace", "lock", "routine", "evidence", "save"]);
+    expect(test.operationOrder).toEqual([
+      "workspace",
+      "lock",
+      "routine",
+      "clock",
+      "evidence",
+      "save",
+    ]);
     expect(test.clockCount()).toBe(1);
     expect(test.unitOfWorkOptions()).toEqual({ isolationLevel: "read_committed" });
+  });
+
+  it("captures the evidence cutoff after waiting for the activity lock", async () => {
+    const beforeLock = new Date("2026-07-13T18:30:00.000Z");
+    const afterLock = new Date("2026-07-13T18:31:00.000Z");
+    const test = harness({ clockNow: beforeLock, clockAfterLock: afterLock });
+
+    const updated = await test.useCase.execute(command);
+
+    expect(updated.updatedAt).toEqual(afterLock);
+    expect(test.evidenceCalls).toEqual([
+      {
+        workspaceId: workspace.id,
+        routineId: routine.id,
+        fromInclusive: new Date("2026-04-14T18:31:00.000Z"),
+        throughInclusive: afterLock,
+      },
+    ]);
+    expect(test.operationOrder).toEqual([
+      "workspace",
+      "lock",
+      "routine",
+      "clock",
+      "evidence",
+      "save",
+    ]);
+    expect(test.clockCount()).toBe(1);
   });
 
   it("rejects a stale routine version before reading evidence", async () => {
@@ -259,6 +300,7 @@ describe("ApproveRoutineDurationInsight", () => {
     expect(missingWorkspace.evidenceReadCount()).toBe(0);
     expect(missingWorkspace.lockCalls).toEqual([]);
     expect(missingWorkspace.operationOrder).toEqual(["workspace"]);
+    expect(missingWorkspace.clockCount()).toBe(0);
 
     const missingRoutine = harness({ routineExists: false });
     await expect(missingRoutine.useCase.execute(command)).rejects.toMatchObject({
@@ -270,6 +312,7 @@ describe("ApproveRoutineDurationInsight", () => {
       { workspaceId: workspace.id, routineId: routine.id },
     ]);
     expect(missingRoutine.operationOrder).toEqual(["workspace", "lock", "routine"]);
+    expect(missingRoutine.clockCount()).toBe(0);
   });
 
   it("rejects an invalid expected version before opening the unit of work", async () => {

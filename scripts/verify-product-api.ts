@@ -9,12 +9,14 @@ const databaseUrl =
 const connection = createDatabase(databaseUrl, 2);
 const lockConnection = createDatabase(databaseUrl, 1);
 const observerConnection = createDatabase(databaseUrl, 1);
+const productClockBaseline = new Date("2026-07-15T07:00:00.000Z");
+let productClockNow = new Date(productClockBaseline.getTime());
 const app = await buildApp({
   readinessCheck: async () => {
     await connection.sql`select 1`;
   },
   productServices: createProductServices(new PostgresUnitOfWork(connection), {
-    now: () => new Date("2026-07-15T07:00:00.000Z"),
+    now: () => new Date(productClockNow.getTime()),
   }),
 });
 let createdWorkspaceId: string | null = null;
@@ -1689,7 +1691,7 @@ try {
   );
 
   // A Today completion does not read or update its routine row. This interleaving proves that the
-  // approval's post-lock evidence reads still observe that completion after waiting for its commit.
+  // approval captures its evidence cutoff after the lock wait and observes the preceding commit.
   for (const [index, minutes] of [40, 50, 60, 70].entries()) {
     const alternativeSampleResponse: { statusCode: number; body: string } = await app.inject({
       method: "POST",
@@ -1761,7 +1763,7 @@ try {
       expectedPlanId: replacement.id,
       expectedHeadVersion: 7,
       type: "completed",
-      occurredAt: "2026-07-15T06:55:00.000Z",
+      occurredAt: "2026-07-15T07:00:30.000Z",
       timeZone: "UTC",
       durationMinutes: 20,
     },
@@ -1817,6 +1819,7 @@ try {
     true,
     "duration approval did not wait behind the queued plan-item completion",
   );
+  productClockNow = new Date("2026-07-15T07:01:00.000Z");
   releaseHeldConcurrencyLock();
   await heldLock;
   heldLock = null;
@@ -1850,6 +1853,7 @@ try {
   assert.equal(alternativeInsightAfterRace.sampleCount, 5);
   assert.equal(alternativeInsightAfterRace.observedMedianMinutes, 50);
   assert.equal(alternativeInsightAfterRace.suggestedExpectedMinutes, 50);
+  productClockNow = new Date(productClockBaseline.getTime());
 
   let markDurationApprovalLockAcquired: () => void = () => undefined;
   const durationApprovalLockAcquired = new Promise<void>((resolve) => {
