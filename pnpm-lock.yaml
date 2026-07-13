@@ -104,6 +104,9 @@ importers:
 
   apps/worker:
     dependencies:
+      "@schedule/application":
+        specifier: workspace:*
+        version: link:../../packages/application
       "@schedule/config":
         specifier: workspace:*
         version: link:../../packages/config

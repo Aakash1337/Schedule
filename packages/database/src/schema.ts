@@ -95,6 +95,12 @@ export const integrationRequestStatus = pgEnum("integration_request_status", [
   "processing",
   "succeeded",
 ]);
+export const webhookEndpointStatus = pgEnum("webhook_endpoint_status", ["active", "revoked"]);
+export const webhookSecretStatus = pgEnum("webhook_secret_status", [
+  "pending",
+  "active",
+  "retired",
+]);
 
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -930,6 +936,185 @@ export const planMutations = pgTable(
   ],
 );
 
+/** A workspace-controlled HTTPS destination for signed outbound events. */
+export const webhookEndpoints = pgTable(
+  "webhook_endpoints",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 160 }).notNull(),
+    url: varchar("url", { length: 2_048 }).notNull(),
+    status: webhookEndpointStatus("status").notNull().default("active"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("webhook_endpoints_workspace_id_id_uq").on(table.workspaceId, table.id),
+    index("webhook_endpoints_workspace_status_idx").on(table.workspaceId, table.status),
+    check("webhook_endpoints_name_nonempty", sql`char_length(trim(${table.name})) > 0`),
+    check("webhook_endpoints_name_printable", sql`${table.name} !~ '[[:cntrl:]]'`),
+    check("webhook_endpoints_url_https", sql`${table.url} ~ '^https://[^[:space:]]+$'`),
+    check(
+      "webhook_endpoints_revocation_consistent",
+      sql`(${table.status} = 'active' and ${table.revokedAt} is null) or (${table.status} = 'revoked' and ${table.revokedAt} is not null)`,
+    ),
+    check(
+      "webhook_endpoints_revocation_after_creation",
+      sql`${table.revokedAt} is null or ${table.revokedAt} >= ${table.createdAt}`,
+    ),
+    check(
+      "webhook_endpoints_updated_after_creation",
+      sql`${table.updatedAt} >= ${table.createdAt}`,
+    ),
+  ],
+);
+
+/**
+ * Webhook signing material is always an authenticated encrypted envelope.
+ * No plaintext signing secret column exists in the database schema.
+ */
+export const webhookEndpointSecrets = pgTable(
+  "webhook_endpoint_secrets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    endpointId: uuid("endpoint_id").notNull(),
+    version: integer("version").notNull(),
+    status: webhookSecretStatus("status").notNull().default("pending"),
+    secretEnvelope: jsonb("secret_envelope").$type<Record<string, string>>().notNull(),
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+    retiredAt: timestamp("retired_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("webhook_endpoint_secrets_workspace_endpoint_id_uq").on(
+      table.workspaceId,
+      table.endpointId,
+      table.id,
+    ),
+    unique("webhook_endpoint_secrets_workspace_endpoint_version_uq").on(
+      table.workspaceId,
+      table.endpointId,
+      table.version,
+    ),
+    uniqueIndex("webhook_endpoint_secrets_one_active_uq")
+      .on(table.workspaceId, table.endpointId)
+      .where(sql`${table.status} = 'active'`),
+    uniqueIndex("webhook_endpoint_secrets_one_pending_uq")
+      .on(table.workspaceId, table.endpointId)
+      .where(sql`${table.status} = 'pending'`),
+    index("webhook_endpoint_secrets_workspace_status_idx").on(table.workspaceId, table.status),
+    foreignKey({
+      name: "webhook_endpoint_secrets_endpoint_tenant_fk",
+      columns: [table.workspaceId, table.endpointId],
+      foreignColumns: [webhookEndpoints.workspaceId, webhookEndpoints.id],
+    }).onDelete("cascade"),
+    check("webhook_endpoint_secrets_version_positive", sql`${table.version} > 0`),
+    check(
+      "webhook_endpoint_secrets_envelope_shape",
+      sql`
+        jsonb_typeof(${table.secretEnvelope}) = 'object'
+        and ${table.secretEnvelope} ?& array['version', 'masterKeyId', 'nonce', 'ciphertext', 'tag']
+        and (${table.secretEnvelope} - 'version' - 'masterKeyId' - 'nonce' - 'ciphertext' - 'tag') = '{}'::jsonb
+        and ${table.secretEnvelope}->>'version' = 'v1'
+        and jsonb_typeof(${table.secretEnvelope}->'masterKeyId') = 'string'
+        and jsonb_typeof(${table.secretEnvelope}->'nonce') = 'string'
+        and jsonb_typeof(${table.secretEnvelope}->'ciphertext') = 'string'
+        and jsonb_typeof(${table.secretEnvelope}->'tag') = 'string'
+        and ${table.secretEnvelope}->>'masterKeyId' ~ '^[a-z][a-z0-9_-]{0,31}$'
+        and ${table.secretEnvelope}->>'nonce' ~ '^[A-Za-z0-9_-]{16}$'
+        and ${table.secretEnvelope}->>'ciphertext' ~ '^[A-Za-z0-9_-]{43}$'
+        and ${table.secretEnvelope}->>'tag' ~ '^[A-Za-z0-9_-]{22}$'
+      `,
+    ),
+    check(
+      "webhook_endpoint_secrets_lifecycle_consistent",
+      sql`
+        (${table.status} = 'pending' and ${table.activatedAt} is null and ${table.retiredAt} is null)
+        or (${table.status} = 'active' and ${table.activatedAt} is not null and ${table.retiredAt} is null)
+        or (${table.status} = 'retired' and ${table.retiredAt} is not null)
+      `,
+    ),
+    check(
+      "webhook_endpoint_secrets_activation_after_creation",
+      sql`${table.activatedAt} is null or ${table.activatedAt} >= ${table.createdAt}`,
+    ),
+    check(
+      "webhook_endpoint_secrets_retirement_after_creation",
+      sql`${table.retiredAt} is null or ${table.retiredAt} >= ${table.createdAt}`,
+    ),
+    check(
+      "webhook_endpoint_secrets_retirement_after_activation",
+      sql`${table.activatedAt} is null or ${table.retiredAt} is null or ${table.retiredAt} >= ${table.activatedAt}`,
+    ),
+  ],
+);
+
+/** Immutable exact-byte payloads for webhook attempts. */
+export const webhookDeliveries = pgTable(
+  "webhook_deliveries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    endpointId: uuid("endpoint_id").notNull(),
+    secretId: uuid("secret_id").notNull(),
+    eventId: varchar("event_id", { length: 160 }).notNull(),
+    eventType: varchar("event_type", { length: 160 }).notNull(),
+    eventOccurredAt: timestamp("event_occurred_at", { withTimezone: true }).notNull(),
+    rawBody: text("raw_body").notNull(),
+    bodySha256: varchar("body_sha256", { length: 64 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("webhook_deliveries_workspace_id_id_uq").on(table.workspaceId, table.id),
+    unique("webhook_deliveries_workspace_endpoint_event_uq").on(
+      table.workspaceId,
+      table.endpointId,
+      table.eventId,
+    ),
+    index("webhook_deliveries_workspace_created_idx").on(
+      table.workspaceId,
+      table.createdAt,
+      table.id,
+    ),
+    foreignKey({
+      name: "webhook_deliveries_endpoint_tenant_fk",
+      columns: [table.workspaceId, table.endpointId],
+      foreignColumns: [webhookEndpoints.workspaceId, webhookEndpoints.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "webhook_deliveries_secret_tenant_fk",
+      columns: [table.workspaceId, table.endpointId, table.secretId],
+      foreignColumns: [
+        webhookEndpointSecrets.workspaceId,
+        webhookEndpointSecrets.endpointId,
+        webhookEndpointSecrets.id,
+      ],
+    }).onDelete("restrict"),
+    check("webhook_deliveries_event_id_nonempty", sql`char_length(trim(${table.eventId})) > 0`),
+    check("webhook_deliveries_event_type_nonempty", sql`char_length(trim(${table.eventType})) > 0`),
+    check(
+      "webhook_deliveries_raw_body_json_bounded",
+      sql`octet_length(${table.rawBody}) between 2 and 1048576 and jsonb_typeof(${table.rawBody}::jsonb) in ('object', 'array')`,
+    ),
+    check(
+      "webhook_deliveries_body_sha256_matches",
+      sql`${table.bodySha256} = encode(digest(${table.rawBody}, 'sha256'), 'hex')`,
+    ),
+    check(
+      "webhook_deliveries_event_time_not_future",
+      sql`${table.eventOccurredAt} <= ${table.createdAt} + interval '5 minutes'`,
+    ),
+  ],
+);
+
 export const outboxEvents = pgTable(
   "outbox_events",
   {
@@ -937,6 +1122,7 @@ export const outboxEvents = pgTable(
     workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "cascade" }),
     topic: varchar("topic", { length: 160 }).notNull(),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    webhookDeliveryId: uuid("webhook_delivery_id"),
     status: outboxStatus("status").notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),
     availableAt: timestamp("available_at", { withTimezone: true }).notNull().defaultNow(),
@@ -947,7 +1133,25 @@ export const outboxEvents = pgTable(
   },
   (table) => [
     index("outbox_claim_idx").on(table.status, table.availableAt),
+    uniqueIndex("outbox_events_webhook_delivery_uq")
+      .on(table.webhookDeliveryId)
+      .where(sql`${table.webhookDeliveryId} is not null`),
+    foreignKey({
+      name: "outbox_events_webhook_delivery_tenant_fk",
+      columns: [table.workspaceId, table.webhookDeliveryId],
+      foreignColumns: [webhookDeliveries.workspaceId, webhookDeliveries.id],
+    }).onDelete("cascade"),
     check("outbox_attempts_nonnegative", sql`${table.attempts} >= 0`),
+    check(
+      "outbox_events_webhook_delivery_payload",
+      sql`
+        (${table.topic} = 'webhook.delivery.v1'
+          and ${table.workspaceId} is not null
+          and ${table.webhookDeliveryId} is not null
+          and ${table.payload} = jsonb_build_object('deliveryId', ${table.webhookDeliveryId}::text))
+        or (${table.topic} <> 'webhook.delivery.v1' and ${table.webhookDeliveryId} is null)
+      `,
+    ),
   ],
 );
 

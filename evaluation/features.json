@@ -7,6 +7,7 @@
     "planner-db": { "command": "pnpm verify:database", "ci": true },
     "product-api": { "command": "pnpm verify:database", "ci": true },
     "integration-gateway": { "command": "pnpm verify:database", "ci": true },
+    "webhook-delivery": { "command": "pnpm verify:database", "ci": true },
     "outbox-db": { "command": "pnpm verify:database", "ci": true },
     "plan-state-migrations": { "command": "pnpm verify:database", "ci": true },
     "weekday-migrations": { "command": "pnpm verify:database", "ci": true },
@@ -553,6 +554,75 @@
             "integration-gateway-retention-purge",
             "integration gateway verification passed"
           ]
+        }
+      ]
+    },
+    {
+      "id": "secure-outbound-webhook-delivery-substrate",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/WEBHOOKS.md",
+        "anchor": "## Security boundary"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/webhook-security.test.ts",
+          "command": "unit",
+          "anchors": [
+            "matches the AES-256-GCM fixed vector and round trips",
+            "uses the exact UTF-8 body in its hash and fixed HMAC vector",
+            "verifies only the original delivery, timestamp, body, and canonical signature"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/config/src/config.test.ts",
+          "command": "unit",
+          "anchors": [
+            "keeps outbound webhook delivery disabled with an immutable empty keyring by default",
+            "parses a canonical keyring and requires an active configured key before enabling delivery",
+            "coerces and bounds webhook delivery timing and response controls"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/webhooks.test.ts",
+          "command": "unit",
+          "anchors": [
+            "atomically provisions HTTPS endpoints with an active encrypted version-one secret",
+            "enqueues exact JSON bytes with a matching SHA-256, thin outbox payload, and audit record",
+            "returns dead-letter metadata only and redrives without copying a delivery"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/webhook-delivery.test.ts",
+          "command": "unit",
+          "anchors": [
+            "rejects a DNS response set if any answer is private",
+            "pins a validated address, signs exact bytes, and keeps the stable delivery ID",
+            "rejects expired and future-corrupt deliveries while accepting the exact age boundary",
+            "honors a bounded Retry-After and never leaks raw request errors"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/webhook-endpoints.test.ts",
+          "command": "unit",
+          "anchors": [
+            "prints a signing secret only after endpoint creation succeeds and closes the connection",
+            "does not connect or mutate when URL preflight fails, and redacts the resolver detail",
+            "uses a canonical thin test body and reports only opaque identifiers",
+            "redacts database errors at the executable boundary"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-webhook-delivery.ts",
+          "command": "webhook-delivery",
+          "anchors": ["webhook delivery verification passed"]
         }
       ]
     },

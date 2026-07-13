@@ -37,6 +37,10 @@ Today and a two-step, idempotent structured-command flow. It is disabled by defa
 authoritative; Hermes or another messaging agent belongs in an external adapter that calls this
 boundary instead of writing the database.
 
+A separate outbound webhook substrate can deliver signed, workspace-bound test events through the
+existing durable outbox. It is also disabled by default and deliberately publishes no schedule
+content yet; see the [webhook delivery guide](./docs/WEBHOOKS.md).
+
 `WorkItem` represents intent and workflow state. `ScheduleBlock` represents reserved time and may
 optionally reference a work item. Their lifecycles remain independent.
 
@@ -68,6 +72,10 @@ The separately authenticated integration gateway is disabled by default. Provisi
 credential and configure `INTEGRATION_API_PEPPER` before enabling `INTEGRATION_API_MODE`; see the
 [integration gateway guide](./docs/INTEGRATIONS.md). Its machine credentials do not authenticate the
 browser product routes.
+
+Outbound delivery remains disabled unless `WEBHOOK_DELIVERY_MODE=enabled` and a valid external
+master-key keyring is configured. Provision endpoints and verify a receiver with the CLI before
+enabling the worker; automatic schedule/reminder events are not part of this release.
 
 ## Verification
 

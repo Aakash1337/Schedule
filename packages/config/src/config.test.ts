@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { loadApiConfig, loadWorkerConfig } from "./index.js";
 
+const webhookKeyMaterial = (byte: number) => Buffer.alloc(32, byte).toString("base64url");
+
 describe("runtime configuration", () => {
   it("provides safe local defaults", () => {
     const config = loadApiConfig({});
@@ -39,6 +41,114 @@ describe("runtime configuration", () => {
   it("coerces worker numbers from environment strings", () => {
     const config = loadWorkerConfig({ OUTBOX_BATCH_SIZE: "40" });
     expect(config.OUTBOX_BATCH_SIZE).toBe(40);
+  });
+
+  it("keeps outbound webhook delivery disabled with an immutable empty keyring by default", () => {
+    const config = loadWorkerConfig({});
+    expect(config.WEBHOOK_DELIVERY_MODE).toBe("disabled");
+    expect(config.WEBHOOK_MASTER_KEYS).toEqual([]);
+    expect(config.WEBHOOK_MASTER_KEYS_BY_ID.size).toBe(0);
+    expect(config.WEBHOOK_ACTIVE_MASTER_KEY_ID).toBe("");
+    expect(config.WEBHOOK_CONNECT_TIMEOUT_MS).toBe(5_000);
+    expect(config.WEBHOOK_REQUEST_TIMEOUT_MS).toBe(15_000);
+    expect(config.WEBHOOK_MAX_RESPONSE_BYTES).toBe(65_536);
+    expect(config.WEBHOOK_MAX_RETRY_AFTER_MS).toBe(300_000);
+    expect(config.WEBHOOK_MAX_DELIVERY_AGE_MS).toBe(604_800_000);
+    expect(Object.isFrozen(config.WEBHOOK_MASTER_KEYS)).toBe(true);
+    expect(Object.isFrozen(config.WEBHOOK_MASTER_KEYS_BY_ID)).toBe(true);
+  });
+
+  it("parses a canonical keyring and requires an active configured key before enabling delivery", () => {
+    const primaryMaterial = webhookKeyMaterial(0);
+    const secondaryMaterial = webhookKeyMaterial(1);
+    const disabledConfig = loadWorkerConfig({
+      WEBHOOK_MASTER_KEYS: `primary:${primaryMaterial},secondary:${secondaryMaterial}`,
+      WEBHOOK_ACTIVE_MASTER_KEY_ID: "primary",
+    });
+    expect(disabledConfig.WEBHOOK_MASTER_KEYS).toEqual([
+      { id: "primary", material: primaryMaterial },
+      { id: "secondary", material: secondaryMaterial },
+    ]);
+    expect(disabledConfig.WEBHOOK_MASTER_KEYS_BY_ID.get("secondary")).toEqual({
+      id: "secondary",
+      material: secondaryMaterial,
+    });
+
+    expect(() => loadWorkerConfig({ WEBHOOK_DELIVERY_MODE: "enabled" })).toThrow(
+      /WEBHOOK_MASTER_KEYS/,
+    );
+    expect(() =>
+      loadWorkerConfig({
+        WEBHOOK_DELIVERY_MODE: "enabled",
+        WEBHOOK_MASTER_KEYS: `primary:${primaryMaterial}`,
+      }),
+    ).toThrow(/WEBHOOK_ACTIVE_MASTER_KEY_ID/);
+    expect(
+      loadWorkerConfig({
+        WEBHOOK_DELIVERY_MODE: "enabled",
+        WEBHOOK_MASTER_KEYS: `primary:${primaryMaterial}`,
+        WEBHOOK_ACTIVE_MASTER_KEY_ID: "primary",
+      }).WEBHOOK_DELIVERY_MODE,
+    ).toBe("enabled");
+  });
+
+  it.each([
+    "primary:short",
+    `primary:${"A".repeat(42)}`,
+    `primary:${"A".repeat(43)}=`,
+    `primary:${"A".repeat(42)}+`,
+    `Primary:${"A".repeat(43)}`,
+    `primary-:${"A".repeat(43)}`,
+    `primary:${webhookKeyMaterial(0)},primary:${webhookKeyMaterial(1)}`,
+    `primary:${"A".repeat(43)},`,
+  ])("rejects malformed webhook keyring material without echoing it", (keyring) => {
+    const secretFragment = keyring.split(":")[1] ?? "";
+    try {
+      loadWorkerConfig({ WEBHOOK_MASTER_KEYS: keyring });
+      expect.unreachable("expected invalid webhook keyring");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/WEBHOOK_MASTER_KEYS/);
+      expect((error as Error).message).not.toContain(secretFragment);
+    }
+  });
+
+  it("rejects invalid active key IDs and keyring references even before delivery is enabled", () => {
+    const material = webhookKeyMaterial(0);
+    expect(() => loadWorkerConfig({ WEBHOOK_ACTIVE_MASTER_KEY_ID: "Primary" })).toThrow(
+      /WEBHOOK_ACTIVE_MASTER_KEY_ID/,
+    );
+    expect(() =>
+      loadWorkerConfig({
+        WEBHOOK_MASTER_KEYS: `primary:${material}`,
+        WEBHOOK_ACTIVE_MASTER_KEY_ID: "secondary",
+      }),
+    ).toThrow(/WEBHOOK_ACTIVE_MASTER_KEY_ID/);
+  });
+
+  it("coerces and bounds webhook delivery timing and response controls", () => {
+    const config = loadWorkerConfig({
+      WEBHOOK_CONNECT_TIMEOUT_MS: "1000",
+      WEBHOOK_REQUEST_TIMEOUT_MS: "2000",
+      WEBHOOK_MAX_RESPONSE_BYTES: "2048",
+      WEBHOOK_MAX_RETRY_AFTER_MS: "0",
+      WEBHOOK_MAX_DELIVERY_AGE_MS: "60000",
+    });
+    expect(config.WEBHOOK_CONNECT_TIMEOUT_MS).toBe(1_000);
+    expect(config.WEBHOOK_REQUEST_TIMEOUT_MS).toBe(2_000);
+    expect(config.WEBHOOK_MAX_RESPONSE_BYTES).toBe(2_048);
+    expect(config.WEBHOOK_MAX_RETRY_AFTER_MS).toBe(0);
+    expect(config.WEBHOOK_MAX_DELIVERY_AGE_MS).toBe(60_000);
+
+    expect(() => loadWorkerConfig({ WEBHOOK_CONNECT_TIMEOUT_MS: "99" })).toThrow();
+    expect(() => loadWorkerConfig({ WEBHOOK_REQUEST_TIMEOUT_MS: "120001" })).toThrow();
+    expect(() => loadWorkerConfig({ WEBHOOK_MAX_RESPONSE_BYTES: "1023" })).toThrow();
+    expect(() => loadWorkerConfig({ WEBHOOK_MAX_RETRY_AFTER_MS: "3600001" })).toThrow();
+    expect(() => loadWorkerConfig({ WEBHOOK_MAX_DELIVERY_AGE_MS: "59999" })).toThrow();
+    expect(() => loadWorkerConfig({ WEBHOOK_MAX_DELIVERY_AGE_MS: "2592000001" })).toThrow();
+    expect(() =>
+      loadWorkerConfig({ WEBHOOK_CONNECT_TIMEOUT_MS: "5000", WEBHOOK_REQUEST_TIMEOUT_MS: "4999" }),
+    ).toThrow(/WEBHOOK_REQUEST_TIMEOUT_MS/);
   });
 
   it("rejects invalid ports", () => {

@@ -8,6 +8,7 @@ import type {
 } from "@schedule/database";
 
 import type { OutboxDispatcher } from "./dispatcher.js";
+import { OutboxHandlerFailure } from "./dispatcher.js";
 
 const databaseMocks = vi.hoisted(() => ({
   DEFAULT_OUTBOX_LEASE_DURATION_MS: 300_000,
@@ -151,6 +152,23 @@ describe("outbox worker", () => {
     );
     expect(consoleWarn.mock.calls.flat().join(" ")).not.toContain("private-password");
     expect(consoleWarn.mock.calls.flat().join(" ")).not.toContain("person@example.com");
+  });
+
+  it("persists typed terminal and retryable handler classifications without raw errors", async () => {
+    const controller = new AbortController();
+    databaseMocks.claimNextOutboxEvent.mockResolvedValue(claim(firstEvent));
+    const dispatch = vi.fn(async () => {
+      controller.abort("test complete");
+      throw new OutboxHandlerFailure({ code: "webhook_response_permanent", retryable: false });
+    });
+    await runOutboxWorker(config, database, dispatcherWith(dispatch), controller.signal);
+    expect(databaseMocks.failOutboxEvent).toHaveBeenCalledWith(
+      database,
+      firstEvent,
+      "webhook_response_permanent",
+      3,
+      { permanent: true },
+    );
   });
 
   it("logs an unhandled topic warning and routes it through retry handling", async () => {
