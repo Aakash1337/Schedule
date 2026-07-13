@@ -16,7 +16,12 @@ import {
 
 import { GetRoutine } from "./get-routine.js";
 import { ListRoutineActivity } from "./list-routine-activity.js";
-import type { ActivityHistoryCursor, TransactionContext, UnitOfWork } from "./ports.js";
+import type {
+  ActivityHistoryCursor,
+  TransactionContext,
+  UnitOfWork,
+  UnitOfWorkOptions,
+} from "./ports.js";
 import { UpdateRoutine } from "./update-routine.js";
 
 describe("routine management", () => {
@@ -48,6 +53,10 @@ describe("routine management", () => {
   function harness(options: { workspaceExists?: boolean; routineExists?: boolean } = {}) {
     let stored: Routine | null = options.routineExists === false ? null : original;
     let saveCount = 0;
+    let lockArguments: { workspaceId: typeof workspace.id; routineId: typeof original.id } | null =
+      null;
+    let routineReadAfterLock = false;
+    let unitOfWorkOptions: UnitOfWorkOptions | undefined;
     let historyArguments: { limit: number; cursor: ActivityHistoryCursor | undefined } | undefined;
     const context = {
       workspaces: {
@@ -56,7 +65,10 @@ describe("routine management", () => {
         insert: async () => undefined,
       },
       routines: {
-        findById: async () => stored,
+        findById: async () => {
+          routineReadAfterLock = lockArguments !== null;
+          return stored;
+        },
         list: async () => (stored === null ? [] : [stored]),
         listPlanningCandidates: async () => (stored === null ? [] : [stored]),
         insert: async (routine: Routine) => {
@@ -68,7 +80,9 @@ describe("routine management", () => {
         },
       },
       activityEvents: {
-        lockRoutineActivity: async () => undefined,
+        lockRoutineActivity: async (workspaceId, routineId) => {
+          lockArguments = { workspaceId, routineId };
+        },
         findById: async () => event,
         listForPlanning: async () => [event],
         listDurationEvidence: async () => [],
@@ -86,9 +100,15 @@ describe("routine management", () => {
       workItems: {} as TransactionContext["workItems"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
       auditEvents: {} as TransactionContext["auditEvents"],
+      routineDurationInsightFeedback: {} as TransactionContext["routineDurationInsightFeedback"],
       dailyPlans: {} as TransactionContext["dailyPlans"],
     } satisfies TransactionContext;
-    const unitOfWork: UnitOfWork = { run: async (operation) => operation(context) };
+    const unitOfWork: UnitOfWork = {
+      run: async (operation, runOptions) => {
+        unitOfWorkOptions = runOptions;
+        return operation(context);
+      },
+    };
     const clock = { now: () => new Date("2026-07-12T12:00:00.000Z") };
     return {
       getRoutine: new GetRoutine(unitOfWork),
@@ -96,6 +116,9 @@ describe("routine management", () => {
       listActivity: new ListRoutineActivity(unitOfWork),
       stored: () => stored,
       saveCount: () => saveCount,
+      lockArguments: () => lockArguments,
+      routineReadAfterLock: () => routineReadAfterLock,
+      unitOfWorkOptions: () => unitOfWorkOptions,
       historyArguments: () => historyArguments,
     };
   }
@@ -118,6 +141,12 @@ describe("routine management", () => {
     expect(updated.updatedAt).toEqual(new Date("2026-07-12T12:00:00.000Z"));
     expect(test.stored()).toBe(updated);
     expect(test.saveCount()).toBe(1);
+    expect(test.lockArguments()).toEqual({
+      workspaceId: workspace.id,
+      routineId: original.id,
+    });
+    expect(test.routineReadAfterLock()).toBe(true);
+    expect(test.unitOfWorkOptions()).toEqual({ isolationLevel: "read_committed" });
   });
 
   it("preserves the version and avoids a write for a semantic no-op", async () => {

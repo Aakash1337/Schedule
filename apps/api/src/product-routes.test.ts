@@ -14,6 +14,7 @@ import {
   generateDailyPlan,
   recordActivityEvent,
   routineId,
+  routineDurationInsightFeedbackId,
   scheduleBlockId,
   updateRoutine as applyRoutineUpdate,
   updateScheduleBlock as applyScheduleBlockUpdate,
@@ -22,6 +23,7 @@ import {
   workspaceId,
   type DailyPlan,
   type RoutineDurationInsight,
+  type RoutineDurationInsightFeedback,
 } from "@schedule/domain";
 
 import { buildApp } from "./app.js";
@@ -34,6 +36,8 @@ const eventUuid = "33333333-3333-4333-8333-333333333333";
 const planUuid = "44444444-4444-4444-8444-444444444444";
 const workItemUuid = "55555555-5555-4555-8555-555555555555";
 const scheduleBlockUuid = "66666666-6666-4666-8666-666666666666";
+const durationFeedbackUuid = "77777777-7777-4777-8777-777777777777";
+const durationInsightKey = "a".repeat(64);
 const workspace = createWorkspace({
   id: workspaceId(workspaceUuid),
   name: "Local workspace",
@@ -60,6 +64,9 @@ const durationInsight = {
   routineId: routine.id,
   routineVersion: routine.version,
   status: "aligned",
+  insightKey: null,
+  disposition: "available",
+  dismissedAt: null,
   sampleCount: 3,
   minimumSamples: 3,
   lookbackDays: 90,
@@ -72,6 +79,19 @@ const durationInsight = {
   materialThresholdMinutes: 5,
   suggestedExpectedMinutes: null,
 } satisfies RoutineDurationInsight;
+const durationInsightFeedback = {
+  id: routineDurationInsightFeedbackId(durationFeedbackUuid),
+  ingestedSequence: 1,
+  workspaceId: workspace.id,
+  routineId: routine.id,
+  insightKey: durationInsightKey,
+  kind: "dismissed",
+  routineVersion: routine.version,
+  observedMedianMinutes: 35,
+  suggestedExpectedMinutes: 35,
+  idempotencyKey: "dismiss-duration-insight",
+  recordedAt: new Date("2026-07-15T12:02:00.000Z"),
+} satisfies RoutineDurationInsightFeedback;
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -98,6 +118,7 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
         duration: command.duration,
         now: new Date("2026-07-15T12:00:00.000Z"),
       }),
+    dismissRoutineDurationInsight: async () => durationInsightFeedback,
     createWorkspace: async (command) => createWorkspace({ ...command, id: workspace.id }),
     getWorkspace: async () => workspace,
     listWorkspaces: async (query) => ({
@@ -220,6 +241,11 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
         recordedAt: new Date("2026-07-15T12:01:00.000Z"),
       }),
       headVersion: command.expectedHeadVersion + 1,
+    }),
+    resetRoutineDurationInsightDismissal: async () => ({
+      ...durationInsightFeedback,
+      kind: "reset",
+      idempotencyKey: "reset-duration-insight",
     }),
     generateDailyPlan: async (command) => {
       const generated = generateDailyPlan({
@@ -734,6 +760,9 @@ describe("local product API", () => {
       routineId: routineUuid,
       routineVersion: 1,
       status: "aligned",
+      insightKey: null,
+      disposition: "available",
+      dismissedAt: null,
       sampleCount: 3,
       minimumSamples: 3,
       lookbackDays: 90,
@@ -867,6 +896,175 @@ describe("local product API", () => {
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({
       error: { code: "routine_duration_insight.evidence_conflict" },
+    });
+  });
+
+  it("dismisses and resets one exact duration insight through idempotent commands", async () => {
+    const dismissedCommands: unknown[] = [];
+    const resetCommands: unknown[] = [];
+    const app = await appWith(
+      createHarness({
+        dismissRoutineDurationInsight: async (command) => {
+          dismissedCommands.push(command);
+          return durationInsightFeedback;
+        },
+        resetRoutineDurationInsightDismissal: async (command) => {
+          resetCommands.push(command);
+          return {
+            ...durationInsightFeedback,
+            kind: "reset",
+            idempotencyKey: "reset-duration-insight",
+          };
+        },
+      }).services,
+    );
+    const payload = { expectedVersion: 1, insightKey: durationInsightKey };
+
+    const dismissed = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/duration-insight/dismissals`,
+      headers: { "idempotency-key": "dismiss-duration-insight" },
+      payload,
+    });
+    const reset = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/duration-insight/dismissal-resets`,
+      headers: { "idempotency-key": "reset-duration-insight" },
+      payload,
+    });
+
+    expect(dismissed.statusCode).toBe(200);
+    expect(dismissed.json()).toEqual({
+      id: durationFeedbackUuid,
+      ingestedSequence: 1,
+      workspaceId: workspaceUuid,
+      routineId: routineUuid,
+      insightKey: durationInsightKey,
+      kind: "dismissed",
+      routineVersion: 1,
+      observedMedianMinutes: 35,
+      suggestedExpectedMinutes: 35,
+      idempotencyKey: "dismiss-duration-insight",
+      recordedAt: "2026-07-15T12:02:00.000Z",
+    });
+    expect(reset.statusCode).toBe(200);
+    expect(reset.json()).toMatchObject({
+      id: durationFeedbackUuid,
+      kind: "reset",
+      idempotencyKey: "reset-duration-insight",
+      recordedAt: "2026-07-15T12:02:00.000Z",
+    });
+    expect(dismissedCommands).toEqual([
+      {
+        workspaceId: workspace.id,
+        routineId: routine.id,
+        expectedVersion: 1,
+        insightKey: durationInsightKey,
+        idempotencyKey: "dismiss-duration-insight",
+      },
+    ]);
+    expect(resetCommands).toEqual([
+      {
+        workspaceId: workspace.id,
+        routineId: routine.id,
+        expectedVersion: 1,
+        insightKey: durationInsightKey,
+        idempotencyKey: "reset-duration-insight",
+      },
+    ]);
+  });
+
+  it("requires idempotency and a strict duration-insight feedback payload", async () => {
+    let calls = 0;
+    const app = await appWith(
+      createHarness({
+        dismissRoutineDurationInsight: async () => {
+          calls += 1;
+          return durationInsightFeedback;
+        },
+        resetRoutineDurationInsightDismissal: async () => {
+          calls += 1;
+          return { ...durationInsightFeedback, kind: "reset" };
+        },
+      }).services,
+    );
+    const path = `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/duration-insight`;
+    const missingHeader = await app.inject({
+      method: "POST",
+      url: `${path}/dismissals`,
+      payload: { expectedVersion: 1, insightKey: durationInsightKey },
+    });
+    const malformedKey = await app.inject({
+      method: "POST",
+      url: `${path}/dismissals`,
+      headers: { "idempotency-key": "invalid-key" },
+      payload: { expectedVersion: 1, insightKey: durationInsightKey.toUpperCase() },
+    });
+    const unknownField = await app.inject({
+      method: "POST",
+      url: `${path}/dismissal-resets`,
+      headers: { "idempotency-key": "unknown-field" },
+      payload: { expectedVersion: 1, insightKey: durationInsightKey, force: true },
+    });
+    const invalidVersion = await app.inject({
+      method: "POST",
+      url: `${path}/dismissal-resets`,
+      headers: { "idempotency-key": "invalid-version" },
+      payload: { expectedVersion: 0, insightKey: durationInsightKey },
+    });
+
+    for (const response of [missingHeader, malformedKey, unknownField, invalidVersion]) {
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: { code: "request.validation_failed" } });
+    }
+    expect(calls).toBe(0);
+  });
+
+  it("maps duration-insight feedback scope and conflict errors", async () => {
+    const app = await appWith(
+      createHarness({
+        dismissRoutineDurationInsight: async (command) => {
+          if (command.idempotencyKey === "conflicting-dismissal") {
+            throw new DomainError(
+              "routine_duration_insight.idempotency_conflict",
+              "The idempotency key belongs to another command.",
+            );
+          }
+          throw new DomainError("routine.version_conflict", "The routine changed.");
+        },
+        resetRoutineDurationInsightDismissal: async () => {
+          throw new DomainError("routine.not_found", "The routine does not exist.");
+        },
+      }).services,
+    );
+    const path = `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/duration-insight`;
+    const payload = { expectedVersion: 1, insightKey: durationInsightKey };
+    const conflict = await app.inject({
+      method: "POST",
+      url: `${path}/dismissals`,
+      headers: { "idempotency-key": "stale-dismissal" },
+      payload,
+    });
+    const missing = await app.inject({
+      method: "POST",
+      url: `${path}/dismissal-resets`,
+      headers: { "idempotency-key": "missing-reset" },
+      payload,
+    });
+    const idempotencyConflict = await app.inject({
+      method: "POST",
+      url: `${path}/dismissals`,
+      headers: { "idempotency-key": "conflicting-dismissal" },
+      payload,
+    });
+
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toMatchObject({ error: { code: "routine.version_conflict" } });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toMatchObject({ error: { code: "routine.not_found" } });
+    expect(idempotencyConflict.statusCode).toBe(409);
+    expect(idempotencyConflict.json()).toMatchObject({
+      error: { code: "routine_duration_insight.idempotency_conflict" },
     });
   });
 

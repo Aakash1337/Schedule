@@ -81,6 +81,9 @@ describe("routine duration insight", () => {
       routineId: routine.id,
       routineVersion: 1,
       status: "insufficient_history",
+      insightKey: null,
+      disposition: "available",
+      dismissedAt: null,
       sampleCount: 2,
       minimumSamples: 3,
       lookbackDays: 90,
@@ -254,5 +257,144 @@ describe("routine duration insight", () => {
         recordedAt: event.recordedAt.getTime(),
       })),
     ).toEqual(before);
+  });
+
+  it("content-addresses actionable insights with lowercase SHA-256 keys", () => {
+    const suggested = calculateRoutineDurationInsight(
+      routine,
+      [completion("one", 55, 1), completion("two", 55, 2), completion("three", 55, 3)],
+      evaluatedAt,
+    );
+    const reviewRange = calculateRoutineDurationInsight(
+      routine,
+      [completion("four", 80, 1), completion("five", 80, 2), completion("six", 80, 3)],
+      evaluatedAt,
+    );
+
+    expect(suggested).toMatchObject({
+      status: "suggested",
+      disposition: "available",
+      dismissedAt: null,
+    });
+    expect(reviewRange).toMatchObject({
+      status: "review_range",
+      disposition: "available",
+      dismissedAt: null,
+    });
+    expect(suggested.insightKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(reviewRange.insightKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(reviewRange.insightKey).not.toBe(suggested.insightKey);
+  });
+
+  it("does not key informational aligned or insufficient-history states", () => {
+    const aligned = calculateRoutineDurationInsight(
+      routine,
+      [completion("one", 45, 1), completion("two", 45, 2), completion("three", 45, 3)],
+      evaluatedAt,
+    );
+    const insufficient = calculateRoutineDurationInsight(
+      routine,
+      [completion("four", 55, 1), completion("five", 55, 2)],
+      evaluatedAt,
+    );
+
+    expect(aligned).toMatchObject({ status: "aligned", insightKey: null });
+    expect(insufficient).toMatchObject({ status: "insufficient_history", insightKey: null });
+  });
+
+  it("keeps the key stable across evaluation time, event order, and routine presentation changes", () => {
+    const events = [completion("one", 50, 3), completion("two", 55, 2), completion("three", 60, 1)];
+    const baseline = calculateRoutineDurationInsight(routine, events, evaluatedAt);
+    const presentationOnlyChange: typeof routine = {
+      ...routine,
+      title: "Renamed piano practice",
+      description: "Presentation-only change",
+      version: routine.version + 1,
+      updatedAt: new Date("2026-07-13T10:00:00.000Z"),
+    };
+    const laterEvaluation = new Date(evaluatedAt.getTime() + 60 * 60 * 1_000);
+    const reordered = calculateRoutineDurationInsight(
+      presentationOnlyChange,
+      [...events].reverse(),
+      laterEvaluation,
+    );
+
+    expect(baseline.status).toBe("suggested");
+    expect(reordered.status).toBe("suggested");
+    expect(reordered.insightKey).toBe(baseline.insightKey);
+    expect(reordered.routineVersion).not.toBe(baseline.routineVersion);
+    expect(reordered.evaluatedAt).not.toEqual(baseline.evaluatedAt);
+  });
+
+  it("changes the key when relevant duration policy or effective evidence changes", () => {
+    const first = completion("one", 50, 3);
+    const second = completion("two", 55, 2);
+    const third = completion("three", 60, 1);
+    const baseline = calculateRoutineDurationInsight(routine, [first, second, third], evaluatedAt);
+    const changedPolicy = calculateRoutineDurationInsight(
+      {
+        ...routine,
+        duration: { ...routine.duration, expectedMinutes: 46 },
+      },
+      [first, second, third],
+      evaluatedAt,
+    );
+    const sameMedianChangedEvidence = calculateRoutineDurationInsight(
+      routine,
+      [{ ...first, durationMinutes: 51 }, second, third],
+      evaluatedAt,
+    );
+
+    expect(baseline.status).toBe("suggested");
+    expect(changedPolicy.status).toBe("suggested");
+    expect(sameMedianChangedEvidence).toMatchObject({
+      status: "suggested",
+      observedMedianMinutes: 55,
+    });
+    expect(changedPolicy.insightKey).not.toBe(baseline.insightKey);
+    expect(sameMedianChangedEvidence.insightKey).not.toBe(baseline.insightKey);
+  });
+
+  it("keys the effective latest correction and reversal while ignoring unrelated noise", () => {
+    const first = completion("one", 50, 4);
+    const second = completion("two", 55, 3);
+    const third = completion("three", 60, 2);
+    const fourth = completion("four", 65, 1);
+    const baseline = calculateRoutineDurationInsight(
+      routine,
+      [first, second, third, fourth],
+      evaluatedAt,
+    );
+    const amended = correction("correction", first.id, 52, at(0));
+    const corrected = calculateRoutineDurationInsight(
+      routine,
+      [fourth, amended, third, first, second],
+      evaluatedAt,
+    );
+    const reversal = recordActivityEvent({
+      id: activityEventId("reversal"),
+      workspaceId: workspace,
+      routineId: routine.id,
+      type: "completion_reversed",
+      occurredAt: at(0),
+      recordedAt: at(0),
+      timeZone: "UTC",
+      referenceEventId: first.id,
+    });
+    const reversed = calculateRoutineDurationInsight(
+      routine,
+      [reversal, fourth, amended, third, first, second],
+      evaluatedAt,
+    );
+    const unrelated = completion("unrelated", 10, 1, { routineId: routineId("noise") });
+    const withNoise = calculateRoutineDurationInsight(
+      routine,
+      [unrelated, first, second, third, fourth],
+      evaluatedAt,
+    );
+
+    expect(corrected.insightKey).not.toBe(baseline.insightKey);
+    expect(reversed.insightKey).not.toBe(corrected.insightKey);
+    expect(withNoise.insightKey).toBe(baseline.insightKey);
   });
 });

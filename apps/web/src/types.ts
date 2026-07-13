@@ -99,11 +99,17 @@ export interface Routine {
 
 export type RoutineDurationInsightStatus =
   "insufficient_history" | "aligned" | "suggested" | "review_range";
+export type RoutineDurationInsightDisposition = "available" | "dismissed";
+export type RoutineDurationInsightFeedbackKind = "dismissed" | "reset";
 
 /** A read-only duration recommendation. Applying it requires explicit atomic approval. */
 export interface RoutineDurationInsight {
   readonly routineId: string;
   readonly routineVersion: number;
+  /** Stable evidence fingerprint. Present only when the insight can be acted on. */
+  readonly insightKey: string | null;
+  readonly disposition: RoutineDurationInsightDisposition;
+  readonly dismissedAt: string | null;
   readonly status: RoutineDurationInsightStatus;
   readonly sampleCount: number;
   readonly minimumSamples: number;
@@ -116,6 +122,21 @@ export interface RoutineDurationInsight {
   readonly observedMedianMinutes: number | null;
   readonly materialThresholdMinutes: number;
   readonly suggestedExpectedMinutes: number | null;
+}
+
+/** Immutable audit event created when an actionable duration insight is hidden or restored. */
+export interface RoutineDurationInsightFeedback {
+  readonly id: string;
+  readonly ingestedSequence: number;
+  readonly workspaceId: string;
+  readonly routineId: string;
+  readonly insightKey: string;
+  readonly kind: RoutineDurationInsightFeedbackKind;
+  readonly routineVersion: number;
+  readonly observedMedianMinutes: number;
+  readonly suggestedExpectedMinutes: number | null;
+  readonly idempotencyKey: string;
+  readonly recordedAt: string;
 }
 
 export type PlanItemActivityState =

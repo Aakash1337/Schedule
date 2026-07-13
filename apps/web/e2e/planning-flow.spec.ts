@@ -372,3 +372,152 @@ test("persists work-item due dates and exposes deadline pressure through the liv
   expect(requestFailures).toEqual([]);
   expect(unexpectedHttpResponses).toEqual([]);
 });
+
+test("persists exact-evidence duration insight feedback and resurfaces changed evidence", async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  const requestFailures: string[] = [];
+  const unexpectedHttpResponses: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("requestfailed", (request) => {
+    requestFailures.push(`${request.method()} ${new URL(request.url()).pathname}`);
+  });
+  page.on("response", (response) => {
+    if (response.status() < 400) return;
+    unexpectedHttpResponses.push(
+      `${response.status()} ${response.request().method()} ${new URL(response.url()).pathname}`,
+    );
+  });
+
+  await page.goto("/#routines");
+  const expectedOrigin = new URL(page.url()).origin;
+  const onboardingHeading = page.getByRole("heading", { name: "Give your days a shape." });
+  const routinesNavigation = page.getByRole("button", { name: "Routines", exact: true });
+  await expect(onboardingHeading.or(routinesNavigation)).toBeVisible();
+  if (await onboardingHeading.isVisible()) {
+    const workspaceResponsePromise = page.waitForResponse((response) =>
+      isMutationResponse(
+        response,
+        "POST",
+        (pathname) => pathname === "/v1/workspaces",
+        expectedOrigin,
+      ),
+    );
+    await page.getByRole("textbox", { name: "Workspace name" }).fill("Insight E2E workspace");
+    await page.getByRole("button", { name: "Create workspace" }).click();
+    expect((await workspaceResponsePromise).status()).toBe(201);
+  }
+
+  await routinesNavigation.click();
+  await expect(page.getByRole("main", { name: "Routines view" })).toBeVisible();
+  await page.getByRole("button", { name: "New routine" }).click();
+
+  const routineTitle = "Calibrate the weekly review";
+  await page.getByRole("textbox", { name: "Title" }).fill(routineTitle);
+  const routineResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) => /^\/v1\/workspaces\/[^/]+\/routines$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Create routine" }).click();
+  const routineResponse = await routineResponsePromise;
+  expect(routineResponse.status()).toBe(201);
+  const routine = (await routineResponse.json()) as {
+    readonly id: string;
+    readonly workspaceId: string;
+  };
+  await expect(page.getByRole("heading", { name: routineTitle, exact: true })).toBeVisible();
+
+  async function recordCompletion(sequence: number): Promise<void> {
+    const occurredAt = new Date(Date.now() - (8 - sequence) * 24 * 60 * 60 * 1_000);
+    const response = await page.request.post(
+      `${expectedOrigin}/v1/workspaces/${routine.workspaceId}/routines/${routine.id}/activity-events`,
+      {
+        headers: { "Idempotency-Key": `duration-insight-e2e-completion-${sequence}` },
+        data: {
+          type: "completed",
+          occurredAt: occurredAt.toISOString(),
+          timeZone: "UTC",
+          planId: null,
+          durationMinutes: 50,
+          reason: null,
+          referenceEventId: null,
+          metadata: {},
+        },
+      },
+    );
+    expect(response.status()).toBe(200);
+  }
+
+  await recordCompletion(1);
+  await recordCompletion(2);
+  await recordCompletion(3);
+  await page.reload();
+  await expect(page.getByRole("main", { name: "Routines view" })).toBeVisible();
+  await page.getByRole("button", { name: new RegExp(`^${routineTitle}`) }).click();
+  await expect(
+    page.getByText("Recent sessions suggest 50m is a more typical estimate."),
+  ).toBeVisible();
+
+  const firstDismissalPromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) =>
+        /^\/v1\/workspaces\/[^/]+\/routines\/[^/]+\/duration-insight\/dismissals$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Not now", exact: true }).click();
+  expect((await firstDismissalPromise).status()).toBe(200);
+  await expect(page.getByRole("button", { name: "Show again", exact: true })).toBeVisible();
+
+  await page.reload();
+  await page.getByRole("button", { name: new RegExp(`^${routineTitle}`) }).click();
+  await expect(page.getByRole("button", { name: "Show again", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Apply 50m estimate/ })).toHaveCount(0);
+
+  const resetPromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) =>
+        /^\/v1\/workspaces\/[^/]+\/routines\/[^/]+\/duration-insight\/dismissal-resets$/.test(
+          pathname,
+        ),
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Show again", exact: true }).click();
+  expect((await resetPromise).status()).toBe(200);
+  await expect(page.getByRole("button", { name: "Not now", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Apply 50m estimate/ })).toBeVisible();
+
+  const secondDismissalPromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) =>
+        /^\/v1\/workspaces\/[^/]+\/routines\/[^/]+\/duration-insight\/dismissals$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Not now", exact: true }).click();
+  expect((await secondDismissalPromise).status()).toBe(200);
+  await expect(page.getByRole("button", { name: "Show again", exact: true })).toBeVisible();
+
+  await recordCompletion(4);
+  await page.reload();
+  await page.getByRole("button", { name: new RegExp(`^${routineTitle}`) }).click();
+  await expect(page.getByRole("button", { name: "Not now", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Apply 50m estimate/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Show again", exact: true })).toHaveCount(0);
+
+  expect(pageErrors).toEqual([]);
+  expect(requestFailures).toEqual([]);
+  expect(unexpectedHttpResponses).toEqual([]);
+});

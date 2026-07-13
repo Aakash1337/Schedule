@@ -914,8 +914,8 @@
       "risk": "normal",
       "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 3 — Transparent adaptation" },
       "limitations": [
-        "Only explicit routine-duration calibration is implemented; learned cadence, day/time, energy, preference, overload, and category-balance signals remain deferred.",
-        "Suggestions are never applied automatically, and duration-insight rejection memory and dismissal/reset controls, adaptive probabilistic selection beyond the deterministic planner, and historical comparison remain deferred.",
+        "Routine-duration calibration and reversible exact-key dismissal/reset are implemented; learned cadence, day/time, energy, preference, overload, and category-balance signals remain deferred.",
+        "Suggestions are never applied automatically, and adaptive probabilistic selection beyond the deterministic planner and historical insight comparison remain deferred.",
         "The statistical thresholds have contract evidence but no production outcome data, and no local or hosted model participates."
       ],
       "evidence": [
@@ -930,7 +930,26 @@
             "applies an amendment outside the sample window and removes reversed completions",
             "rounds even-sample medians half-up and requires a material difference",
             "requires range review before considering the material threshold",
-            "is input-order invariant and does not mutate input events or dates"
+            "is input-order invariant and does not mutate input events or dates",
+            "content-addresses actionable insights with lowercase SHA-256 keys",
+            "does not key informational aligned or insufficient-history states",
+            "keeps the key stable across evaluation time, event order, and routine presentation changes",
+            "changes the key when relevant duration policy or effective evidence changes",
+            "keys the effective latest correction and reversal while ignoring unrelated noise"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/domain/src/routine-duration-insight-feedback.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates an immutable audit snapshot, trims idempotency, and copies its timestamp",
+            "uses a non-empty branded feedback identifier",
+            "rejects invalid %s",
+            "accepts a null suggested snapshot for actionable range review",
+            "chooses the latest exact-scope key by sequence then id, independent of input order",
+            "resolves dismissal and reset append-only without mutating inputs",
+            "does not carry a dismissal to a different evidence key or informational insight"
           ]
         },
         {
@@ -939,8 +958,34 @@
           "command": "unit",
           "anchors": [
             "reads the exact 90-day routine evidence window and returns the derived suggestion",
+            "resolves an exact-key dismissal into the current duration insight",
+            "does not query feedback when the current insight is not actionable",
             "validates the workspace before reading the routine or duration evidence",
             "reports a missing routine without reading cross-routine evidence"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/dismiss-routine-duration-insight.test.ts",
+          "command": "unit",
+          "anchors": [
+            "dismisses one exact actionable insight and snapshots its evidence",
+            "replays an exact dismissal before revalidating current state",
+            "rejects reuse of a dismissal idempotency key for different semantics",
+            "rejects feedback when the current actionable evidence has another key",
+            "rejects another dismissal while the exact insight is already dismissed"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/reset-routine-duration-insight-dismissal.test.ts",
+          "command": "unit",
+          "anchors": [
+            "resets one exact active dismissal and snapshots current evidence",
+            "replays an exact reset before revalidating current state",
+            "rejects reset when the exact insight is not dismissed",
+            "rejects reset after evidence changes the exact actionable key",
+            "rejects reuse of the reset key for another feedback command"
           ]
         },
         {
@@ -963,8 +1008,27 @@
           "anchors": [
             "uses one bounded CTE query and maps deterministic evidence order",
             "rejects invalid or inverted windows before querying",
-            "fails closed when evidence exceeds the local-mode bound"
+            "fails closed when evidence exceeds the local-mode bound",
+            "loads the latest exact insight disposition with a deterministic bounded query",
+            "returns null for an unknown key and bounds workspace idempotency lookup",
+            "lets PostgreSQL allocate ingestion sequence when appending feedback",
+            "fails closed when a conflicting append cannot be loaded"
           ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": [
+            "stores tenant-bound immutable routine-duration insight feedback",
+            "migrates duration-insight feedback as append-only database history"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-services.test.ts",
+          "command": "unit",
+          "anchors": ["delegates duration-insight dismissal and reset to their atomic use cases"]
         },
         {
           "level": "unit",
@@ -973,7 +1037,19 @@
           "anchors": [
             "approves a complete duration insight replacement through its atomic service",
             "rejects incomplete duration approvals before invoking the service",
-            "maps changed duration evidence during approval to 409"
+            "maps changed duration evidence during approval to 409",
+            "dismisses and resets one exact duration insight through idempotent commands",
+            "requires idempotency and a strict duration-insight feedback payload",
+            "maps duration-insight feedback scope and conflict errors"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/api.test.ts",
+          "command": "unit",
+          "anchors": [
+            "dismisses a routine duration insight with an idempotent audited command",
+            "restores a dismissed duration insight with an idempotent audited command"
           ]
         },
         {
@@ -987,14 +1063,33 @@
             "requires range review instead of offering an out-of-range estimate",
             "does not auto-retry a stale suggestion after an optimistic conflict",
             "ignores a late insight response from a previously selected routine",
-            "retries a failed insight without blocking routine details"
+            "retries a failed insight without blocking routine details",
+            "keeps dismissed range evidence visible without exposing review actions",
+            "dismisses a suggestion, keeps its evidence visible, and refetches its disposition",
+            "restores a dismissed suggestion and exposes its actions after the refetch",
+            "keeps evidence actionable after a failed dismissal and uses a new key for a retry",
+            "refreshes stale routine and evidence state without replaying conflicted feedback"
           ]
         },
         {
           "level": "integration",
           "file": "scripts/verify-product-api.ts",
           "command": "product-api",
-          "anchors": ["routine-duration-insight-api"]
+          "anchors": ["routine-duration-insight-api", "routine-duration-insight-feedback-api"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-planner-db.ts",
+          "command": "planner-db",
+          "anchors": ["routine-duration-insight-feedback-postgres"]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/planning-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": [
+            "persists exact-evidence duration insight feedback and resurfaces changed evidence"
+          ]
         }
       ]
     },

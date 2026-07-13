@@ -74,6 +74,7 @@ The database migration adds:
 - `daily_plan_item_states`
 - `plan_interaction_events`
 - `plan_mutations`
+- `routine_duration_insight_feedback_events`
 - `routine_planning_feedback_events`
 
 All planner relationships carry `workspace_id` in their foreign keys. Activity idempotency is unique within a workspace. Daily plan revisions are unique by workspace and local date. A plan item carries exactly one typed source (`routine` or `work_item`), and a plan cannot repeat the same source or position within one revision. A work item has no global one-plan claim: while eligible, it can appear in later revisions, dates, or sessions until completed, cancelled, or opted out. The unified-candidate migration backfills every legacy plan item and activity as a routine source and rewrites legacy exclusion entries to the same explicit type before typed-source constraints are enforced.
@@ -84,8 +85,9 @@ The PostgreSQL adapter implements this contract with a unique workspace/date/rev
 
 PostgreSQL units of work default to serializable isolation and retry serialization failures with
 bounded exponential backoff. Operations that first wait on an advisory lock and must observe the
-prior lock holder's commit explicitly use read committed; this includes duration-insight approval and
-routine-feedback mutation. Routine saves include the expected version in the atomic update predicate.
+prior lock holder's commit explicitly use read committed; this includes routine policy updates,
+duration-insight approval and feedback, and routine-planning-feedback mutation. Routine saves include
+the expected version in the atomic update predicate.
 Local-mode planning reads are bounded to 500 routines, the latest feedback event for at most 500
 routines, and 5,000 activity events so plan generation cannot hold a database connection over an
 unbounded in-memory snapshot. Inactive routines remain in the planner input long enough to produce
@@ -93,18 +95,19 @@ explicit paused or archived exclusions.
 
 Each activity append receives a monotonic ingestion sequence after taking a per-source transaction lock, so the application write path cannot commit a lower sequence after a higher one. Existing rows are backfilled deterministically by recording time and ID when this column is introduced. Routine-history pages use the sequence as a newest-first keyset and preserve the first page's high-water mark in an integrity-protected, route-bound cursor, preventing later appends from shifting the remaining traversal. Public activity representations omit idempotency keys.
 
-Database triggers make `activity_events`, `audit_events`, and
-`routine_planning_feedback_events` append-only and require corrections and reversals to reference a
-completion from the same workspace and typed source. Plan-linked activity takes its source from the
-referenced plan item rather than trusting a client-supplied source. A completion may be reversed only
-once. Explicit local maintenance can set `schedule.allow_activity_event_mutation`,
-`schedule.allow_audit_event_mutation`, or
+Database triggers make `activity_events`, `audit_events`,
+`routine_duration_insight_feedback_events`, and `routine_planning_feedback_events` append-only and
+require corrections and reversals to reference a completion from the same workspace and typed source.
+Plan-linked activity takes its source from the referenced plan item rather than trusting a
+client-supplied source. A completion may be reversed only once. Explicit local maintenance can set
+`schedule.allow_activity_event_mutation`, `schedule.allow_audit_event_mutation`,
+`schedule.allow_routine_duration_insight_feedback_event_change`, or
 `schedule.allow_routine_planning_feedback_event_change` to `on` within its transaction; routine
 application operations do not set these escape hatches. Because an audit row otherwise blocks its
-workspace's cascading deletion, tenant erasure must be an explicit maintenance operation. These
-local owner-role escape hatches provide operational protection, not an authorization boundary.
-Hosted deployment requires separate non-owner runtime and maintenance roles before product routes
-are enabled.
+workspace's cascading deletion, tenant erasure must be an explicit maintenance operation. These local
+owner-role escape hatches provide operational protection, not an authorization boundary. Hosted
+deployment requires separate non-owner runtime and maintenance roles before product routes are
+enabled.
 
 The highest generated revision becomes the authoritative per-day head. Plan items expose stable UUIDs, while mutable interaction state is stored separately from immutable plan snapshots. Lock and unlock commands use the current plan ID, an optimistic head version, and a workspace-scoped idempotency key. Each command appends an immutable interaction event; the item-state projection and head version support fast Today reads and stale-client rejection.
 
@@ -148,15 +151,30 @@ minimum-session, and overhead values must equal the current user-owned settings.
 changes fail with `routine.version_conflict`; a completion, correction, or reversal that changes the
 supported suggestion fails with `routine_duration_insight.evidence_conflict`.
 
-Read committed is intentional for this command: every routine and evidence statement after an
-advisory-lock wait sees commits made by the earlier lock holder. Other product units of work retain
-serializable isolation by default.
+Read committed is intentional for lock-coordinated duration commands: every routine and evidence
+statement after an advisory-lock wait sees commits made by the earlier lock holder. Generic routine
+updates take the same lock and isolation before reading and saving the versioned routine, preventing a
+manual edit from racing an approval, dismissal, reset, or activity append. Product units of work that
+do not require this lock retain serializable isolation by default.
 
 The generic routine `PATCH` remains a manual edit and is not an insight-approval path. Approval does
 not rewrite an existing plan or advance its Today head. The current plan therefore retains the
 duration selected when its immutable revision was generated; a later explicit generation or
 regeneration may consume the newly approved routine estimate. Neither insight path calls Gemma,
 Hermes, or any other advisor or integration.
+
+Duration-insight dismissal is also outside the planner. An actionable `suggested` or `review_range`
+insight has a SHA-256 key over its calculation policy, relevant duration policy, and canonical
+completion, correction, and reversal evidence. The latest append-only `dismissed` or `reset` event
+for that exact workspace, routine, and key projects the insight as `dismissed` or `available`.
+Workspace-scoped idempotency makes exact command retry return the original event and rejects semantic
+key reuse. Changed evidence or relevant policy produces a different insight key and therefore
+resurfaces a still-actionable recommendation as available.
+
+Dismiss and reset revalidate the current routine version and insight before appending feedback, but
+they do not save the routine, approve or change a duration, mutate an existing plan or Today head,
+generate a plan revision, or enter the planner snapshot. They cannot affect eligibility, scoring,
+selection, cadence, or activity history.
 
 Run the database-backed vertical-slice verification while PostgreSQL is available:
 
@@ -171,7 +189,7 @@ pnpm verify:planner-db
 - Alternative-plan branching and multi-step undo workflows
 - Work-item dependency integration
 - Learned cadence, preference, energy, and overload adjustments
-- Automatic application, rejection memory, and reset controls for duration insights
+- Automatic duration-insight application and historical insight comparison
 - User-editable scoring profiles
 - Local Gemma/Ollama or hosted model advisors
 - Cross-device synchronization

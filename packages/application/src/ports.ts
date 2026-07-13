@@ -4,6 +4,7 @@ import type {
   DailyPlan,
   LocalDate,
   Routine,
+  RoutineDurationInsightFeedback,
   RoutineId,
   RoutinePlanningFeedback,
   RoutineStatus,
@@ -153,7 +154,7 @@ export interface ActivityHistoryPage {
 
 export interface ActivityEventRepository {
   findById(workspaceId: WorkspaceId, id: ActivityEvent["id"]): Promise<ActivityEvent | null>;
-  /** Serializes routine activity writes with a duration-insight approval transaction. */
+  /** Serializes routine activity with policy updates and duration-insight approval or feedback. */
   lockRoutineActivity(workspaceId: WorkspaceId, routineId: Routine["id"]): Promise<void>;
   listForPlanning(
     workspaceId: WorkspaceId,
@@ -177,6 +178,23 @@ export interface ActivityEventRepository {
     limit: number,
     cursor?: ActivityHistoryCursor,
   ): Promise<ActivityHistoryPage>;
+}
+
+/** Immutable user dispositions for one exact, evidence-derived duration insight. */
+export interface RoutineDurationInsightFeedbackRepository {
+  /** Returns the latest disposition for this exact insight key. */
+  findLatestForKey(
+    workspaceId: WorkspaceId,
+    routineId: RoutineId,
+    insightKey: string,
+  ): Promise<RoutineDurationInsightFeedback | null>;
+  /** Looks up a workspace-scoped command receipt for exact idempotent replay. */
+  findByIdempotencyKey(
+    workspaceId: WorkspaceId,
+    idempotencyKey: string,
+  ): Promise<RoutineDurationInsightFeedback | null>;
+  /** Appends an immutable disposition and returns its allocated ingestion sequence. */
+  append(feedback: RoutineDurationInsightFeedback): Promise<RoutineDurationInsightFeedback>;
 }
 
 export interface DailyPlanRepository {
@@ -221,6 +239,7 @@ export interface TransactionContext {
   readonly auditEvents: AuditEventRepository;
   readonly routines: RoutineRepository;
   readonly activityEvents: ActivityEventRepository;
+  readonly routineDurationInsightFeedback: RoutineDurationInsightFeedbackRepository;
   readonly dailyPlans: DailyPlanRepository;
 }
 

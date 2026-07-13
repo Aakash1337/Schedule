@@ -10,6 +10,7 @@ import type {
   CreateWorkItemCommand,
   CreateWorkspaceCommand,
   CurrentDailyPlan,
+  DismissRoutineDurationInsightCommand,
   GenerateDailyPlanCommand,
   GetCurrentDailyPlanQuery,
   GetDailyPlanQuery,
@@ -29,6 +30,7 @@ import type {
   RecordPlanItemActivityCommand,
   RegenerateDailyPlanCommand,
   ReplacePlanItemCommand,
+  ResetRoutineDurationInsightDismissalCommand,
   ResetRoutinePlanningFeedbackCommand,
   SetPlanItemLockCommand,
   UpdateRoutineCommand,
@@ -50,6 +52,7 @@ import {
   localDate,
   planItemId,
   routineId,
+  routineDurationInsightKeyPattern,
   scheduleBlockId,
   workItemId,
   workspaceId,
@@ -58,6 +61,7 @@ import {
   type JsonValue,
   type Routine,
   type RoutineDurationInsight,
+  type RoutineDurationInsightFeedback,
   type ScheduleBlock,
   type WorkItem,
   type Workspace,
@@ -75,6 +79,9 @@ import {
 
 export interface ProductServices {
   approveRoutineDurationInsight(command: ApproveRoutineDurationInsightCommand): Promise<Routine>;
+  dismissRoutineDurationInsight(
+    command: DismissRoutineDurationInsightCommand,
+  ): Promise<RoutineDurationInsightFeedback>;
   createWorkspace(command: CreateWorkspaceCommand): Promise<Workspace>;
   getWorkspace(query: GetWorkspaceQuery): Promise<Workspace>;
   listWorkspaces(query: ListWorkspacesQuery): Promise<WorkspacePage>;
@@ -90,6 +97,9 @@ export interface ProductServices {
   deleteScheduleBlock(command: DeleteScheduleBlockCommand): Promise<void>;
   getRoutine(query: GetRoutineQuery): Promise<Routine>;
   getRoutineDurationInsight(query: GetRoutineDurationInsightQuery): Promise<RoutineDurationInsight>;
+  resetRoutineDurationInsightDismissal(
+    command: ResetRoutineDurationInsightDismissalCommand,
+  ): Promise<RoutineDurationInsightFeedback>;
   updateRoutine(command: UpdateRoutineCommand): Promise<Routine>;
   listRoutines(query: ListRoutinesQuery): Promise<readonly Routine[]>;
   listRoutineActivity(query: ListRoutineActivityQuery): Promise<ActivityHistoryPage>;
@@ -354,6 +364,10 @@ const updateRoutineBody = z
 const approveRoutineDurationInsightBody = z.strictObject({
   expectedVersion: z.number().int().positive().max(2_147_483_647),
   duration: replacementDurationBody,
+});
+const routineDurationInsightFeedbackBody = z.strictObject({
+  expectedVersion: z.number().int().positive().max(2_147_483_647),
+  insightKey: z.string().regex(routineDurationInsightKeyPattern),
 });
 const activityHistoryQuery = z.strictObject({
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -769,6 +783,38 @@ export async function registerProductRoutes(
         routineId: routineId(params.routineId),
         expectedVersion: body.expectedVersion,
         duration: createDurationRange(body.duration),
+      });
+    },
+  );
+
+  app.post(
+    "/v1/workspaces/:workspaceId/routines/:routineId/duration-insight/dismissals",
+    async (request) => {
+      const params = parseRequest(routineParams, request.params);
+      const body = parseRequest(routineDurationInsightFeedbackBody, request.body);
+      const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+      return services.dismissRoutineDurationInsight({
+        workspaceId: workspaceId(params.workspaceId),
+        routineId: routineId(params.routineId),
+        expectedVersion: body.expectedVersion,
+        insightKey: body.insightKey,
+        idempotencyKey: key,
+      });
+    },
+  );
+
+  app.post(
+    "/v1/workspaces/:workspaceId/routines/:routineId/duration-insight/dismissal-resets",
+    async (request) => {
+      const params = parseRequest(routineParams, request.params);
+      const body = parseRequest(routineDurationInsightFeedbackBody, request.body);
+      const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+      return services.resetRoutineDurationInsightDismissal({
+        workspaceId: workspaceId(params.workspaceId),
+        routineId: routineId(params.routineId),
+        expectedVersion: body.expectedVersion,
+        insightKey: body.insightKey,
+        idempotencyKey: key,
       });
     },
   );

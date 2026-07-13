@@ -96,6 +96,10 @@ export const routinePlanningFeedbackKind = pgEnum("routine_planning_feedback_kin
   "not_this_week",
   "reset",
 ]);
+export const routineDurationInsightFeedbackKind = pgEnum("routine_duration_insight_feedback_kind", [
+  "dismissed",
+  "reset",
+]);
 export const planMutationKind = pgEnum("plan_mutation_kind", [
   "regenerate",
   "replace",
@@ -894,6 +898,70 @@ export const routinePlanningFeedbackEvents = pgTable(
       sql`char_length(btrim(${table.idempotencyKey})) > 0`,
     ),
     check("routine_planning_feedback_events_sequence_positive", sql`${table.ingestedSequence} > 0`),
+  ],
+);
+
+/**
+ * Immutable user feedback about one exact routine-duration insight.
+ *
+ * `insightKey` identifies the evidence-backed insight that was shown to the
+ * user. The latest event for that key is its complete dismissed/reset
+ * projection, while the workspace-scoped idempotency key makes commands safe
+ * to retry across routines.
+ */
+export const routineDurationInsightFeedbackEvents = pgTable(
+  "routine_duration_insight_feedback_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ingestedSequence: bigserial("ingested_sequence", { mode: "number" }).notNull(),
+    workspaceId: uuid("workspace_id").notNull(),
+    routineId: uuid("routine_id").notNull(),
+    insightKey: varchar("insight_key", { length: 64 }).notNull(),
+    kind: routineDurationInsightFeedbackKind("kind").notNull(),
+    routineVersion: integer("routine_version").notNull(),
+    observedMedianMinutes: integer("observed_median_minutes").notNull(),
+    suggestedExpectedMinutes: integer("suggested_expected_minutes"),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("duration_insight_feedback_workspace_id_uq").on(table.workspaceId, table.id),
+    unique("duration_insight_feedback_workspace_idempotency_uq").on(
+      table.workspaceId,
+      table.idempotencyKey,
+    ),
+    index("duration_insight_feedback_key_sequence_idx").on(
+      table.workspaceId,
+      table.routineId,
+      table.insightKey,
+      table.ingestedSequence.desc(),
+      table.id.desc(),
+    ),
+    foreignKey({
+      name: "duration_insight_feedback_workspace_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaces.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "duration_insight_feedback_routine_tenant_fk",
+      columns: [table.workspaceId, table.routineId],
+      foreignColumns: [routines.workspaceId, routines.id],
+    }).onDelete("restrict"),
+    check(
+      "duration_insight_feedback_key_format",
+      sql`char_length(${table.insightKey}) = 64 AND ${table.insightKey} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check("duration_insight_feedback_version_positive", sql`${table.routineVersion} > 0`),
+    check("duration_insight_feedback_observed_positive", sql`${table.observedMedianMinutes} > 0`),
+    check(
+      "duration_insight_feedback_suggested_positive",
+      sql`${table.suggestedExpectedMinutes} IS NULL OR ${table.suggestedExpectedMinutes} > 0`,
+    ),
+    check(
+      "duration_insight_feedback_idempotency_canonical",
+      sql`char_length(${table.idempotencyKey}) > 0 AND ${table.idempotencyKey} = btrim(${table.idempotencyKey})`,
+    ),
+    check("duration_insight_feedback_sequence_positive", sql`${table.ingestedSequence} > 0`),
   ],
 );
 

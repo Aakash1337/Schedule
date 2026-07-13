@@ -8,6 +8,7 @@ import type {
   PlanSettings,
   Routine,
   RoutineDurationInsight,
+  RoutineDurationInsightFeedback,
   RoutinePlanningFeedbackSuppressionKind,
   RoutineStatus,
   ScheduleBlock,
@@ -253,6 +254,34 @@ export const api = {
         `/routines/${encodeURIComponent(routineId)}/duration-insight/approve`,
       ),
       { method: "POST", json: input },
+    ),
+
+  dismissRoutineDurationInsight: (
+    workspaceId: string,
+    routineId: string,
+    input: { readonly expectedVersion: number; readonly insightKey: string },
+    idempotencyKey: string,
+  ) =>
+    request<RoutineDurationInsightFeedback>(
+      workspacePath(
+        workspaceId,
+        `/routines/${encodeURIComponent(routineId)}/duration-insight/dismissals`,
+      ),
+      { method: "POST", json: input, idempotencyKey },
+    ),
+
+  resetRoutineDurationInsightDismissal: (
+    workspaceId: string,
+    routineId: string,
+    input: { readonly expectedVersion: number; readonly insightKey: string },
+    idempotencyKey: string,
+  ) =>
+    request<RoutineDurationInsightFeedback>(
+      workspacePath(
+        workspaceId,
+        `/routines/${encodeURIComponent(routineId)}/duration-insight/dismissal-resets`,
+      ),
+      { method: "POST", json: input, idempotencyKey },
     ),
 
   createRoutine: (

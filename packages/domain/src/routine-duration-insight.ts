@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { ActivityEvent } from "./activity-event.js";
 import { invariant } from "./errors.js";
 import type { Routine } from "./routine.js";
@@ -14,6 +16,9 @@ export const routineDurationInsightStatuses = [
 ] as const;
 export type RoutineDurationInsightStatus = (typeof routineDurationInsightStatuses)[number];
 
+export const routineDurationInsightDispositions = ["available", "dismissed"] as const;
+export type RoutineDurationInsightDisposition = (typeof routineDurationInsightDispositions)[number];
+
 /**
  * A read-only explanation of whether a routine's expected duration matches its
  * recently completed sessions. This never changes the routine by itself.
@@ -22,6 +27,10 @@ export interface RoutineDurationInsight {
   readonly routineId: Routine["id"];
   readonly routineVersion: number;
   readonly status: RoutineDurationInsightStatus;
+  /** A content fingerprint for an actionable insight; null for informational states. */
+  readonly insightKey: string | null;
+  readonly disposition: RoutineDurationInsightDisposition;
+  readonly dismissedAt: Date | null;
   readonly sampleCount: number;
   readonly minimumSamples: number;
   readonly lookbackDays: number;
@@ -67,6 +76,46 @@ function median(values: readonly number[]): number {
   return Math.floor((sorted[middle - 1]! + sorted[middle]!) / 2 + 0.5);
 }
 
+interface CanonicalDurationEvidence {
+  readonly completionId: ActivityEvent["id"];
+  readonly occurredAt: string;
+  readonly recordedAt: string;
+  readonly durationMinutes: number;
+  readonly amendment:
+    | { readonly kind: "none" }
+    | {
+        readonly kind: "corrected";
+        readonly eventId: ActivityEvent["id"];
+        readonly occurredAt: string;
+        readonly recordedAt: string;
+        readonly durationMinutes: number;
+      }
+    | { readonly kind: "reversed" };
+}
+
+/**
+ * Fingerprints only inputs that can affect an actionable duration insight. The
+ * evaluation clock and presentation-only routine fields are deliberately absent,
+ * while qualifying evidence is sorted so repository return order is immaterial.
+ */
+function actionableInsightKey(
+  routine: Routine,
+  evidence: readonly CanonicalDurationEvidence[],
+): string {
+  const canonical = {
+    calculation: "routine-duration-insight-v1",
+    policy: {
+      lookbackDays: routineDurationInsightLookbackDays,
+      minimumSamples: routineDurationInsightMinimumSamples,
+      minimumMinutes: routine.duration.minimumMinutes,
+      expectedMinutes: routine.duration.expectedMinutes,
+      maximumMinutes: routine.duration.maximumMinutes,
+    },
+    evidence,
+  } as const;
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
 /**
  * Derives an auditable duration insight from immutable routine activity.
  *
@@ -93,6 +142,8 @@ export function calculateRoutineDurationInsight(
   const base = {
     routineId: routine.id,
     routineVersion: routine.version,
+    disposition: "available",
+    dismissedAt: null,
     sampleCount: 0,
     minimumSamples: routineDurationInsightMinimumSamples,
     lookbackDays: routineDurationInsightLookbackDays,
@@ -136,24 +187,53 @@ export function calculateRoutineDurationInsight(
     }
   }
 
-  const durations = qualifyingCompletions
-    .filter((completion) => !reversedCompletionIds.has(completion.id))
-    .map(
-      (completion) =>
-        corrections.get(completion.id)?.durationMinutes ?? completion.durationMinutes!,
+  const canonicalEvidence = qualifyingCompletions
+    .map((completion): CanonicalDurationEvidence => {
+      const shared = {
+        completionId: completion.id,
+        occurredAt: completion.occurredAt.toISOString(),
+        recordedAt: completion.recordedAt.toISOString(),
+        durationMinutes: completion.durationMinutes!,
+      } as const;
+      if (reversedCompletionIds.has(completion.id)) {
+        return { ...shared, amendment: { kind: "reversed" } };
+      }
+      const correction = corrections.get(completion.id);
+      if (correction === undefined) return { ...shared, amendment: { kind: "none" } };
+      return {
+        ...shared,
+        amendment: {
+          kind: "corrected",
+          eventId: correction.id,
+          occurredAt: correction.occurredAt.toISOString(),
+          recordedAt: correction.recordedAt.toISOString(),
+          durationMinutes: correction.durationMinutes!,
+        },
+      };
+    })
+    .sort((left, right) =>
+      left.completionId < right.completionId ? -1 : left.completionId > right.completionId ? 1 : 0,
     );
-  const sampleCount = durations.length;
+  const effectiveDurations = canonicalEvidence
+    .filter((sample) => sample.amendment.kind !== "reversed")
+    .map((sample) =>
+      sample.amendment.kind === "corrected"
+        ? sample.amendment.durationMinutes
+        : sample.durationMinutes,
+    );
+  const sampleCount = effectiveDurations.length;
   if (sampleCount < routineDurationInsightMinimumSamples) {
     return {
       ...base,
       status: "insufficient_history",
+      insightKey: null,
       sampleCount,
       observedMedianMinutes: null,
       suggestedExpectedMinutes: null,
     };
   }
 
-  const observedMedianMinutes = median(durations);
+  const observedMedianMinutes = median(effectiveDurations);
   if (
     observedMedianMinutes < routine.duration.minimumMinutes ||
     observedMedianMinutes > routine.duration.maximumMinutes
@@ -161,6 +241,7 @@ export function calculateRoutineDurationInsight(
     return {
       ...base,
       status: "review_range",
+      insightKey: actionableInsightKey(routine, canonicalEvidence),
       sampleCount,
       observedMedianMinutes,
       suggestedExpectedMinutes: null,
@@ -172,6 +253,7 @@ export function calculateRoutineDurationInsight(
     return {
       ...base,
       status: "aligned",
+      insightKey: null,
       sampleCount,
       observedMedianMinutes,
       suggestedExpectedMinutes: null,
@@ -180,6 +262,7 @@ export function calculateRoutineDurationInsight(
   return {
     ...base,
     status: "suggested",
+    insightKey: actionableInsightKey(routine, canonicalEvidence),
     sampleCount,
     observedMedianMinutes,
     suggestedExpectedMinutes: observedMedianMinutes,

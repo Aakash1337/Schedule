@@ -42,6 +42,7 @@ import type {
   PlanItemActivityResult,
   PlanMutationRecord,
   RecordPlanItemActivityInput,
+  RoutineDurationInsightFeedbackRepository,
   RoutineRepository,
   ScheduleBlockRepository,
   SetPlanItemLockInput,
@@ -65,6 +66,7 @@ import {
   recordActivityEvent,
   reversePlanItemCompletion,
   routineId,
+  routineDurationInsightFeedbackId,
   routinePlanningFeedbackId,
   scheduleBlockId,
   transitionPlanItemActivity,
@@ -78,6 +80,7 @@ import {
   type PlanItem,
   type PlanWarning,
   type Routine,
+  type RoutineDurationInsightFeedback,
   type RoutinePlanningFeedback,
   type RoutineStatus,
   type ScheduleBlock,
@@ -104,6 +107,7 @@ import {
   integrationRequests,
   planInteractionEvents,
   planMutations,
+  routineDurationInsightFeedbackEvents,
   routinePlanningFeedbackEvents,
   routines,
   scheduleBlocks,
@@ -120,6 +124,8 @@ type WorkspaceRow = typeof workspaces.$inferSelect;
 type ScheduleBlockRow = typeof scheduleBlocks.$inferSelect;
 type RoutineRow = typeof routines.$inferSelect;
 type ActivityEventRow = typeof activityEvents.$inferSelect;
+type RoutineDurationInsightFeedbackEventRow =
+  typeof routineDurationInsightFeedbackEvents.$inferSelect;
 type RoutinePlanningFeedbackEventRow = typeof routinePlanningFeedbackEvents.$inferSelect;
 type DailyPlanRow = typeof dailyPlans.$inferSelect;
 type DailyPlanItemRow = typeof dailyPlanItems.$inferSelect;
@@ -329,6 +335,24 @@ function mapRoutinePlanningFeedback(row: RoutinePlanningFeedbackEventRow): Routi
     timeZone: row.timeZone,
     sourcePlanId: dailyPlanId(row.sourcePlanId),
     sourcePlanItemId: row.sourcePlanItemId === null ? null : planItemId(row.sourcePlanItemId),
+    idempotencyKey: row.idempotencyKey,
+    recordedAt: new Date(row.recordedAt),
+  };
+}
+
+function mapRoutineDurationInsightFeedback(
+  row: RoutineDurationInsightFeedbackEventRow,
+): RoutineDurationInsightFeedback {
+  return {
+    id: routineDurationInsightFeedbackId(row.id),
+    ingestedSequence: row.ingestedSequence,
+    workspaceId: workspaceId(row.workspaceId),
+    routineId: routineId(row.routineId),
+    insightKey: row.insightKey,
+    kind: row.kind,
+    routineVersion: row.routineVersion,
+    observedMedianMinutes: row.observedMedianMinutes,
+    suggestedExpectedMinutes: row.suggestedExpectedMinutes,
     idempotencyKey: row.idempotencyKey,
     recordedAt: new Date(row.recordedAt),
   };
@@ -1085,6 +1109,98 @@ export class PostgresActivityEventRepository implements ActivityEventRepository 
       );
     }
     return resolveIdempotentActivity(mapActivityEvent(existingRow), event);
+  }
+}
+
+export class PostgresRoutineDurationInsightFeedbackRepository implements RoutineDurationInsightFeedbackRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async findLatestForKey(
+    workspace: WorkspaceId,
+    routine: Routine["id"],
+    insightKey: string,
+  ): Promise<RoutineDurationInsightFeedback | null> {
+    const [row] = await this.database
+      .select()
+      .from(routineDurationInsightFeedbackEvents)
+      .where(
+        and(
+          eq(routineDurationInsightFeedbackEvents.workspaceId, workspace),
+          eq(routineDurationInsightFeedbackEvents.routineId, routine),
+          eq(routineDurationInsightFeedbackEvents.insightKey, insightKey),
+        ),
+      )
+      .orderBy(
+        desc(routineDurationInsightFeedbackEvents.ingestedSequence),
+        desc(routineDurationInsightFeedbackEvents.id),
+      )
+      .limit(1);
+    return row === undefined ? null : mapRoutineDurationInsightFeedback(row);
+  }
+
+  async findByIdempotencyKey(
+    workspace: WorkspaceId,
+    idempotencyKey: string,
+  ): Promise<RoutineDurationInsightFeedback | null> {
+    const [row] = await this.database
+      .select()
+      .from(routineDurationInsightFeedbackEvents)
+      .where(
+        and(
+          eq(routineDurationInsightFeedbackEvents.workspaceId, workspace),
+          eq(routineDurationInsightFeedbackEvents.idempotencyKey, idempotencyKey),
+        ),
+      )
+      .limit(1);
+    return row === undefined ? null : mapRoutineDurationInsightFeedback(row);
+  }
+
+  async append(feedback: RoutineDurationInsightFeedback): Promise<RoutineDurationInsightFeedback> {
+    const [inserted] = await this.database
+      .insert(routineDurationInsightFeedbackEvents)
+      .values({
+        id: feedback.id,
+        workspaceId: feedback.workspaceId,
+        routineId: feedback.routineId,
+        insightKey: feedback.insightKey,
+        kind: feedback.kind,
+        routineVersion: feedback.routineVersion,
+        observedMedianMinutes: feedback.observedMedianMinutes,
+        suggestedExpectedMinutes: feedback.suggestedExpectedMinutes,
+        idempotencyKey: feedback.idempotencyKey,
+        recordedAt: feedback.recordedAt,
+      })
+      .onConflictDoNothing({
+        target: [
+          routineDurationInsightFeedbackEvents.workspaceId,
+          routineDurationInsightFeedbackEvents.idempotencyKey,
+        ],
+      })
+      .returning();
+    if (inserted !== undefined) return mapRoutineDurationInsightFeedback(inserted);
+
+    const existing = await this.findByIdempotencyKey(feedback.workspaceId, feedback.idempotencyKey);
+    if (existing === null) {
+      throw new DomainError(
+        "routine_duration_insight.feedback_write_conflict",
+        "The duration-insight feedback could not be appended or loaded.",
+      );
+    }
+    const sameFeedback =
+      existing.workspaceId === feedback.workspaceId &&
+      existing.routineId === feedback.routineId &&
+      existing.insightKey === feedback.insightKey &&
+      existing.kind === feedback.kind &&
+      existing.routineVersion === feedback.routineVersion &&
+      existing.observedMedianMinutes === feedback.observedMedianMinutes &&
+      existing.suggestedExpectedMinutes === feedback.suggestedExpectedMinutes;
+    if (!sameFeedback) {
+      throw new DomainError(
+        "routine_duration_insight.idempotency_conflict",
+        "This duration-insight feedback idempotency key already belongs to a different disposition.",
+      );
+    }
+    return existing;
   }
 }
 
@@ -2251,6 +2367,7 @@ function createTransactionContext(database: DatabaseExecutor): TransactionContex
     auditEvents: new PostgresAuditEventRepository(database),
     routines: new PostgresRoutineRepository(database),
     activityEvents: new PostgresActivityEventRepository(database),
+    routineDurationInsightFeedback: new PostgresRoutineDurationInsightFeedbackRepository(database),
     dailyPlans: new PostgresDailyPlanRepository(database),
   };
 }

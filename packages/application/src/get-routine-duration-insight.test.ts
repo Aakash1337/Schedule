@@ -5,12 +5,14 @@ import {
   createCadencePolicy,
   createDurationRange,
   createRoutine,
+  createRoutineDurationInsightFeedback,
   createStructuredTags,
   createWorkspace,
   recordActivityEvent,
   routineId,
   workspaceId,
   type ActivityEvent,
+  type RoutineDurationInsightFeedbackKind,
 } from "@schedule/domain";
 
 import { GetRoutineDurationInsight } from "./get-routine-duration-insight.js";
@@ -50,8 +52,15 @@ function completion(sequence: number, durationMinutes: number): ActivityEvent {
   });
 }
 
-function harness(options: { workspaceExists?: boolean; routineExists?: boolean } = {}) {
-  const evidence = [completion(1, 50), completion(2, 60), completion(3, 70)];
+function harness(
+  options: {
+    workspaceExists?: boolean;
+    routineExists?: boolean;
+    evidence?: readonly ActivityEvent[];
+    feedbackKind?: RoutineDurationInsightFeedbackKind;
+  } = {},
+) {
+  const evidence = options.evidence ?? [completion(1, 50), completion(2, 60), completion(3, 70)];
   const calls: Array<{
     workspaceId: typeof workspace.id;
     routineId: typeof routine.id;
@@ -61,6 +70,7 @@ function harness(options: { workspaceExists?: boolean; routineExists?: boolean }
   let routineFindCount = 0;
   let runCount = 0;
   let clockCount = 0;
+  const feedbackKeys: string[] = [];
   const context = {
     workspaces: {
       findById: async () => (options.workspaceExists === false ? null : workspace),
@@ -98,6 +108,33 @@ function harness(options: { workspaceExists?: boolean; routineExists?: boolean }
       append: async (event: ActivityEvent) => event,
       listHistory: async () => ({ items: [], nextCursor: null }),
     },
+    routineDurationInsightFeedback: {
+      findLatestForKey: async (
+        receivedWorkspaceId: typeof workspace.id,
+        receivedRoutineId: typeof routine.id,
+        insightKey: string,
+      ) => {
+        expect(receivedWorkspaceId).toBe(workspace.id);
+        expect(receivedRoutineId).toBe(routine.id);
+        feedbackKeys.push(insightKey);
+        return options.feedbackKind === undefined
+          ? null
+          : createRoutineDurationInsightFeedback({
+              ingestedSequence: 1,
+              workspaceId: workspace.id,
+              routineId: routine.id,
+              insightKey,
+              kind: options.feedbackKind,
+              routineVersion: routine.version,
+              observedMedianMinutes: 60,
+              suggestedExpectedMinutes: 60,
+              idempotencyKey: `get-insight-${options.feedbackKind}`,
+              recordedAt: new Date("2026-07-13T18:00:00.000Z"),
+            });
+      },
+      findByIdempotencyKey: async () => null,
+      append: async (feedback) => feedback,
+    },
     workItems: {} as TransactionContext["workItems"],
     scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
     dailyPlans: {} as TransactionContext["dailyPlans"],
@@ -122,6 +159,7 @@ function harness(options: { workspaceExists?: boolean; routineExists?: boolean }
     routineFindCount: () => routineFindCount,
     runCount: () => runCount,
     clockCount: () => clockCount,
+    feedbackKeys,
   };
 }
 
@@ -142,6 +180,8 @@ describe("GetRoutineDurationInsight", () => {
       currentExpectedMinutes: 30,
       observedMedianMinutes: 60,
       suggestedExpectedMinutes: 60,
+      disposition: "available",
+      dismissedAt: null,
     });
 
     expect(test.calls).toEqual([
@@ -154,6 +194,35 @@ describe("GetRoutineDurationInsight", () => {
     ]);
     expect(test.runCount()).toBe(1);
     expect(test.clockCount()).toBe(1);
+    expect(test.feedbackKeys).toHaveLength(1);
+    expect(test.feedbackKeys[0]).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("resolves an exact-key dismissal into the current duration insight", async () => {
+    const test = harness({ feedbackKind: "dismissed" });
+
+    await expect(
+      test.useCase.execute({ workspaceId: workspace.id, routineId: routine.id }),
+    ).resolves.toMatchObject({
+      status: "suggested",
+      disposition: "dismissed",
+      dismissedAt: new Date("2026-07-13T18:00:00.000Z"),
+    });
+    expect(test.feedbackKeys).toHaveLength(1);
+  });
+
+  it("does not query feedback when the current insight is not actionable", async () => {
+    const test = harness({ evidence: [completion(1, 29), completion(2, 30), completion(3, 31)] });
+
+    await expect(
+      test.useCase.execute({ workspaceId: workspace.id, routineId: routine.id }),
+    ).resolves.toMatchObject({
+      status: "aligned",
+      insightKey: null,
+      disposition: "available",
+      dismissedAt: null,
+    });
+    expect(test.feedbackKeys).toEqual([]);
   });
 
   it("validates the workspace before reading the routine or duration evidence", async () => {

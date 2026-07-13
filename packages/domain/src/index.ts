@@ -7,6 +7,7 @@ export * from "./errors.js";
 export * from "./ids.js";
 export * from "./routine.js";
 export * from "./routine-duration-insight.js";
+export * from "./routine-duration-insight-feedback.js";
 export * from "./routine-planning-feedback.js";
 export * from "./plan-regeneration.js";
 export * from "./plan-item-activity.js";

@@ -12,6 +12,7 @@ export type ActivityEventId = BrandedId<"ActivityEventId">;
 export type DailyPlanId = BrandedId<"DailyPlanId">;
 export type PlanItemId = BrandedId<"PlanItemId">;
 export type RoutinePlanningFeedbackId = BrandedId<"RoutinePlanningFeedbackId">;
+export type RoutineDurationInsightFeedbackId = BrandedId<"RoutineDurationInsightFeedbackId">;
 
 function toId<Name extends string>(value: string, label: Name): BrandedId<Name> {
   if (value.trim().length === 0) {
@@ -41,3 +42,7 @@ export const planItemId = (value: string = randomUUID()): PlanItemId => toId(val
 export const routinePlanningFeedbackId = (
   value: string = randomUUID(),
 ): RoutinePlanningFeedbackId => toId(value, "RoutinePlanningFeedbackId");
+
+export const routineDurationInsightFeedbackId = (
+  value: string = randomUUID(),
+): RoutineDurationInsightFeedbackId => toId(value, "RoutineDurationInsightFeedbackId");

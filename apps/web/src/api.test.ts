@@ -281,6 +281,68 @@ describe("web API client", () => {
     );
   });
 
+  it("dismisses a routine duration insight with an idempotent audited command", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ id: "feedback-1", kind: "dismissed" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const input = { expectedVersion: 2, insightKey: "a".repeat(64) };
+
+    await api.dismissRoutineDurationInsight(
+      "workspace-1",
+      "routine-1",
+      input,
+      "duration-dismiss-attempt-1",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/routines/routine-1/duration-insight/dismissals",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: expect.any(Headers),
+      }),
+    );
+    const options = fetchMock.mock.calls[0]?.[1];
+    expect(options?.headers).toBeInstanceOf(Headers);
+    expect((options?.headers as Headers).get("Idempotency-Key")).toBe("duration-dismiss-attempt-1");
+  });
+
+  it("restores a dismissed duration insight with an idempotent audited command", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ id: "feedback-2", kind: "reset" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const input = { expectedVersion: 2, insightKey: "b".repeat(64) };
+
+    await api.resetRoutineDurationInsightDismissal(
+      "workspace-1",
+      "routine-1",
+      input,
+      "duration-reset-attempt-1",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/routines/routine-1/duration-insight/dismissal-resets",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: expect.any(Headers),
+      }),
+    );
+    const options = fetchMock.mock.calls[0]?.[1];
+    expect(options?.headers).toBeInstanceOf(Headers);
+    expect((options?.headers as Headers).get("Idempotency-Key")).toBe("duration-reset-attempt-1");
+  });
+
   it("handles audited 204 deletion responses", async () => {
     const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);

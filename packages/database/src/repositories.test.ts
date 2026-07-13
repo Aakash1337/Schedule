@@ -6,10 +6,12 @@ import {
   localDate,
   planItemId,
   routineId,
+  routineDurationInsightFeedbackId,
   routinePlanningFeedbackId,
   workItemId,
   workspaceId,
   type RoutinePlanningFeedback,
+  type RoutineDurationInsightFeedback,
   type WorkItem,
 } from "@schedule/domain";
 
@@ -17,11 +19,12 @@ import type { DatabaseConnection } from "./database.js";
 import {
   PostgresIntegrationRequestRepository,
   PostgresIntegrationUnitOfWork,
+  PostgresRoutineDurationInsightFeedbackRepository,
   PostgresUnitOfWork,
   PostgresActivityEventRepository,
   PostgresDailyPlanRepository,
 } from "./repositories.js";
-import { routinePlanningFeedbackEvents } from "./schema.js";
+import { routineDurationInsightFeedbackEvents, routinePlanningFeedbackEvents } from "./schema.js";
 
 const requestIdentity = {
   id: "10000000-0000-4000-8000-000000000001",
@@ -133,6 +136,17 @@ describe("PostgresUnitOfWork", () => {
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: "read committed",
     });
+  });
+
+  it("wires duration-insight feedback into every product transaction", async () => {
+    const transaction = vi.fn(async (operation: (transaction: unknown) => Promise<unknown>) =>
+      operation({}),
+    );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+
+    await expect(
+      new PostgresUnitOfWork(connection).run(async (context) => Object.keys(context).sort()),
+    ).resolves.toContain("routineDurationInsightFeedback");
   });
 
   it("persists a work item due date on insert and save", async () => {
@@ -682,6 +696,206 @@ describe("PostgresDailyPlanRepository routine feedback", () => {
 
     await expect(repository.appendRoutineFeedback(conflicting)).rejects.toMatchObject({
       code: "planning.idempotency_conflict",
+    });
+  });
+});
+
+const durationFeedbackWorkspace = workspaceId("91000000-0000-4000-8000-000000000001");
+const durationFeedbackRoutine = routineId("92000000-0000-4000-8000-000000000002");
+const durationFeedbackEventId = routineDurationInsightFeedbackId(
+  "93000000-0000-4000-8000-000000000003",
+);
+const durationFeedbackInsightKey = "a".repeat(64);
+
+function durationFeedbackRow(
+  overrides: Readonly<Record<string, unknown>> = {},
+): Readonly<Record<string, unknown>> {
+  return {
+    id: durationFeedbackEventId,
+    ingestedSequence: 27,
+    workspaceId: durationFeedbackWorkspace,
+    routineId: durationFeedbackRoutine,
+    insightKey: durationFeedbackInsightKey,
+    kind: "dismissed",
+    routineVersion: 3,
+    observedMedianMinutes: 48,
+    suggestedExpectedMinutes: 48,
+    idempotencyKey: "duration-feedback-db-test",
+    recordedAt: new Date("2026-07-13T15:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function durationFeedback(
+  overrides: Partial<RoutineDurationInsightFeedback> = {},
+): RoutineDurationInsightFeedback {
+  return {
+    id: durationFeedbackEventId,
+    ingestedSequence: 0,
+    workspaceId: durationFeedbackWorkspace,
+    routineId: durationFeedbackRoutine,
+    insightKey: durationFeedbackInsightKey,
+    kind: "dismissed",
+    routineVersion: 3,
+    observedMedianMinutes: 48,
+    suggestedExpectedMinutes: 48,
+    idempotencyKey: "duration-feedback-db-test",
+    recordedAt: new Date("2026-07-13T15:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function latestDurationFeedbackDatabase(rows: readonly Readonly<Record<string, unknown>>[]) {
+  const limit = vi.fn().mockResolvedValue(rows);
+  const orderBy = vi.fn().mockReturnValue({ limit });
+  const where = vi.fn().mockReturnValue({ orderBy });
+  const from = vi.fn().mockReturnValue({ where });
+  const select = vi.fn().mockReturnValue({ from });
+  return { database: { select }, limit, orderBy, select };
+}
+
+function durationFeedbackByIdempotencyDatabase(rows: readonly Readonly<Record<string, unknown>>[]) {
+  const limit = vi.fn().mockResolvedValue(rows);
+  const where = vi.fn().mockReturnValue({ limit });
+  const from = vi.fn().mockReturnValue({ where });
+  const select = vi.fn().mockReturnValue({ from });
+  return { database: { select }, limit, select };
+}
+
+describe("PostgresRoutineDurationInsightFeedbackRepository", () => {
+  it("loads the latest exact insight disposition with a deterministic bounded query", async () => {
+    const database = latestDurationFeedbackDatabase([durationFeedbackRow()]);
+    const repository = new PostgresRoutineDurationInsightFeedbackRepository(
+      database.database as unknown as DatabaseConnection["db"],
+    );
+
+    await expect(
+      repository.findLatestForKey(
+        durationFeedbackWorkspace,
+        durationFeedbackRoutine,
+        durationFeedbackInsightKey,
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        id: durationFeedbackEventId,
+        ingestedSequence: 27,
+        routineId: durationFeedbackRoutine,
+        insightKey: durationFeedbackInsightKey,
+        kind: "dismissed",
+      }),
+    );
+    expect(database.select).toHaveBeenCalledTimes(1);
+    expect(database.orderBy).toHaveBeenCalledTimes(1);
+    expect(database.limit).toHaveBeenCalledWith(1);
+  });
+
+  it("returns null for an unknown key and bounds workspace idempotency lookup", async () => {
+    const latestDatabase = latestDurationFeedbackDatabase([]);
+    const latestRepository = new PostgresRoutineDurationInsightFeedbackRepository(
+      latestDatabase.database as unknown as DatabaseConnection["db"],
+    );
+    await expect(
+      latestRepository.findLatestForKey(
+        durationFeedbackWorkspace,
+        durationFeedbackRoutine,
+        durationFeedbackInsightKey,
+      ),
+    ).resolves.toBeNull();
+
+    const idempotencyDatabase = durationFeedbackByIdempotencyDatabase([durationFeedbackRow()]);
+    const idempotencyRepository = new PostgresRoutineDurationInsightFeedbackRepository(
+      idempotencyDatabase.database as unknown as DatabaseConnection["db"],
+    );
+    await expect(
+      idempotencyRepository.findByIdempotencyKey(
+        durationFeedbackWorkspace,
+        "duration-feedback-db-test",
+      ),
+    ).resolves.toMatchObject({ workspaceId: durationFeedbackWorkspace });
+    expect(idempotencyDatabase.limit).toHaveBeenCalledWith(1);
+  });
+
+  it("lets PostgreSQL allocate ingestion sequence when appending feedback", async () => {
+    const returning = vi.fn().mockResolvedValue([durationFeedbackRow()]);
+    const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
+    const values = vi.fn().mockReturnValue({ onConflictDoNothing });
+    const repository = new PostgresRoutineDurationInsightFeedbackRepository({
+      insert: vi.fn().mockReturnValue({ values }),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(repository.append(durationFeedback())).resolves.toMatchObject({
+      id: durationFeedbackEventId,
+      ingestedSequence: 27,
+    });
+    expect(values.mock.calls[0]?.[0]).not.toHaveProperty("ingestedSequence");
+    expect(onConflictDoNothing).toHaveBeenCalledWith({
+      target: [
+        routineDurationInsightFeedbackEvents.workspaceId,
+        routineDurationInsightFeedbackEvents.idempotencyKey,
+      ],
+    });
+  });
+
+  it("replays an equivalent concurrent append while ignoring generated fields", async () => {
+    const returning = vi.fn().mockResolvedValue([]);
+    const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
+    const values = vi.fn().mockReturnValue({ onConflictDoNothing });
+    const limit = vi.fn().mockResolvedValue([durationFeedbackRow()]);
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockReturnValue({ where });
+    const repository = new PostgresRoutineDurationInsightFeedbackRepository({
+      insert: vi.fn().mockReturnValue({ values }),
+      select: vi.fn().mockReturnValue({ from }),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(
+      repository.append(
+        durationFeedback({
+          id: routineDurationInsightFeedbackId("93000000-0000-4000-8000-000000000099"),
+          recordedAt: new Date("2026-07-13T15:05:00.000Z"),
+        }),
+      ),
+    ).resolves.toMatchObject({ id: durationFeedbackEventId, ingestedSequence: 27 });
+  });
+
+  it.each([
+    ["routine", { routineId: routineId("92000000-0000-4000-8000-000000000099") }],
+    ["insight key", { insightKey: "b".repeat(64) }],
+    ["kind", { kind: "reset" as const }],
+    ["routine version", { routineVersion: 4 }],
+    ["observed median", { observedMedianMinutes: 49 }],
+    ["suggested expected", { suggestedExpectedMinutes: null }],
+  ])("rejects idempotency reuse with different %s semantics", async (_label, overrides) => {
+    const returning = vi.fn().mockResolvedValue([]);
+    const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
+    const values = vi.fn().mockReturnValue({ onConflictDoNothing });
+    const limit = vi.fn().mockResolvedValue([durationFeedbackRow()]);
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockReturnValue({ where });
+    const repository = new PostgresRoutineDurationInsightFeedbackRepository({
+      insert: vi.fn().mockReturnValue({ values }),
+      select: vi.fn().mockReturnValue({ from }),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(repository.append(durationFeedback(overrides))).rejects.toMatchObject({
+      code: "routine_duration_insight.idempotency_conflict",
+    });
+  });
+
+  it("fails closed when a conflicting append cannot be loaded", async () => {
+    const returning = vi.fn().mockResolvedValue([]);
+    const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
+    const values = vi.fn().mockReturnValue({ onConflictDoNothing });
+    const limit = vi.fn().mockResolvedValue([]);
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockReturnValue({ where });
+    const repository = new PostgresRoutineDurationInsightFeedbackRepository({
+      insert: vi.fn().mockReturnValue({ values }),
+      select: vi.fn().mockReturnValue({ from }),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(repository.append(durationFeedback())).rejects.toMatchObject({
+      code: "routine_duration_insight.feedback_write_conflict",
     });
   });
 });

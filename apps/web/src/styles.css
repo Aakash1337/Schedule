@@ -1763,6 +1763,16 @@ textarea:focus {
   line-height: 1.5;
 }
 
+.routines-duration-insight-feedback-status {
+  max-width: 62ch;
+  margin: 10px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid oklch(0.64 0.1 154);
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
 .routines-duration-insight-facts {
   display: flex;
   gap: 28px;

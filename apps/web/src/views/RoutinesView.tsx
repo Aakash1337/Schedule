@@ -20,7 +20,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 
-import { api, ApiError } from "../api";
+import { api, ApiError, newIdempotencyKey } from "../api";
 import { Button, EmptyState, ErrorNotice, Field, PageHeader, PageSkeleton } from "../components/ui";
 import { formatDay, formatMinutes, formatTime, splitTags } from "../date";
 import type {
@@ -360,7 +360,18 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
   const [durationInsightLoading, setDurationInsightLoading] = useState(false);
   const [durationInsightError, setDurationInsightError] = useState<string | null>(null);
   const [durationInsightReload, setDurationInsightReload] = useState(0);
+  const [durationInsightFeedbackAction, setDurationInsightFeedbackAction] = useState<
+    "dismiss" | "restore" | null
+  >(null);
+  const [durationInsightFeedbackError, setDurationInsightFeedbackError] = useState<string | null>(
+    null,
+  );
+  const [durationInsightAnnouncement, setDurationInsightAnnouncement] = useState<string | null>(
+    null,
+  );
+  const [durationInsightFocusPending, setDurationInsightFocusPending] = useState(false);
   const durationInsightRequest = useRef(0);
+  const durationInsightFeedbackRequest = useRef(0);
   const durationInsightHeadingRef = useRef<HTMLHeadingElement>(null);
   const activeQueryKey = routinesQueryKey(workspace.id, activeStatus);
   const activeQueryKeyRef = useRef(activeQueryKey);
@@ -443,6 +454,13 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     workspace.id,
   ]);
 
+  useEffect(() => {
+    if (durationInsightFocusPending && !durationInsightLoading && durationInsight !== null) {
+      durationInsightHeadingRef.current?.focus();
+      setDurationInsightFocusPending(false);
+    }
+  }, [durationInsight, durationInsightFocusPending, durationInsightLoading]);
+
   const loadRoutines = useCallback(
     async (signal?: AbortSignal) => {
       const requestKey = routinesQueryKey(workspace.id, activeStatus);
@@ -473,9 +491,14 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     setRoutines([]);
     setSelectedRoutineId(null);
     durationInsightRequest.current += 1;
+    durationInsightFeedbackRequest.current += 1;
     setDurationInsight(null);
     setDurationInsightLoading(false);
     setDurationInsightError(null);
+    setDurationInsightFeedbackAction(null);
+    setDurationInsightFeedbackError(null);
+    setDurationInsightAnnouncement(null);
+    setDurationInsightFocusPending(false);
     activityRequest.current += 1;
     setActivityItems([]);
     setActivityCursor(null);
@@ -509,9 +532,14 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
 
   function resetDurationInsight() {
     durationInsightRequest.current += 1;
+    durationInsightFeedbackRequest.current += 1;
     setDurationInsight(null);
     setDurationInsightLoading(false);
     setDurationInsightError(null);
+    setDurationInsightFeedbackAction(null);
+    setDurationInsightFeedbackError(null);
+    setDurationInsightAnnouncement(null);
+    setDurationInsightFocusPending(false);
   }
 
   function selectRoutine(routineId: string) {
@@ -645,6 +673,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
       }
       setSelectedRoutineId(saved.id);
       resetActivity();
+      resetDurationInsight();
     } catch (error) {
       if (activeQueryKeyRef.current !== requestKey) return;
       if (error instanceof ApiError && error.status === 409 && editingRoutine !== null) {
@@ -716,9 +745,11 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     if (
       selectedRoutine === null ||
       durationInsight?.status !== "suggested" ||
+      durationInsight.disposition !== "available" ||
       durationInsight.suggestedExpectedMinutes === null ||
       durationInsight.routineId !== selectedRoutine.id ||
-      durationInsight.routineVersion !== selectedRoutine.version
+      durationInsight.routineVersion !== selectedRoutine.version ||
+      durationInsightFeedbackAction !== null
     ) {
       return;
     }
@@ -729,6 +760,8 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     setBusyRoutineId(routine.id);
     setMutationError(null);
     setConflictMessage(null);
+    setDurationInsightFeedbackError(null);
+    setDurationInsightAnnouncement(null);
     try {
       const updated = await api.approveRoutineDurationInsight(workspace.id, routine.id, {
         expectedVersion: routine.version,
@@ -759,6 +792,80 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
       }
     } finally {
       if (activeQueryKeyRef.current === requestKey) setBusyRoutineId(null);
+    }
+  }
+
+  async function changeDurationInsightDisposition(action: "dismiss" | "restore"): Promise<void> {
+    const insight = durationInsight;
+    const routine = selectedRoutine;
+    if (
+      routine === null ||
+      insight === null ||
+      insight.insightKey === null ||
+      !["suggested", "review_range"].includes(insight.status) ||
+      insight.routineId !== routine.id ||
+      insight.routineVersion !== routine.version ||
+      durationInsightFeedbackAction !== null ||
+      (action === "dismiss" && insight.disposition !== "available") ||
+      (action === "restore" && insight.disposition !== "dismissed")
+    ) {
+      return;
+    }
+
+    const requestKey = activeQueryKey;
+    const requestId = durationInsightFeedbackRequest.current + 1;
+    durationInsightFeedbackRequest.current = requestId;
+    const idempotencyKey = newIdempotencyKey();
+    const input = { expectedVersion: routine.version, insightKey: insight.insightKey };
+    const requestIsActive = () =>
+      durationInsightFeedbackRequest.current === requestId &&
+      activeQueryKeyRef.current === requestKey;
+
+    setDurationInsightFeedbackAction(action);
+    setDurationInsightFeedbackError(null);
+    setDurationInsightAnnouncement(null);
+    try {
+      if (action === "dismiss") {
+        await api.dismissRoutineDurationInsight(workspace.id, routine.id, input, idempotencyKey);
+      } else {
+        await api.resetRoutineDurationInsightDismissal(
+          workspace.id,
+          routine.id,
+          input,
+          idempotencyKey,
+        );
+      }
+      if (!requestIsActive()) return;
+      setDurationInsightFeedbackAction(null);
+      setDurationInsightAnnouncement(
+        action === "dismiss"
+          ? "Duration suggestion hidden. The evidence remains available here."
+          : "Duration suggestion is available again.",
+      );
+      setDurationInsightFocusPending(true);
+      setDurationInsight(null);
+      setDurationInsightLoading(true);
+      setDurationInsightReload((current) => current + 1);
+    } catch (error) {
+      if (!requestIsActive()) return;
+      if (error instanceof ApiError && error.status === 409) {
+        setDurationInsightFeedbackError(
+          "The routine or duration evidence changed, so your choice was not applied. The latest evidence was refreshed.",
+        );
+        setDurationInsightFocusPending(true);
+        await refreshAfterConflict(routine.id, requestKey);
+        if (requestIsActive()) {
+          setDurationInsight(null);
+          setDurationInsightLoading(true);
+          setDurationInsightReload((current) => current + 1);
+        }
+      } else {
+        setDurationInsightFeedbackError(
+          requestError(error, "Your duration suggestion preference could not be saved."),
+        );
+      }
+    } finally {
+      if (requestIsActive()) setDurationInsightFeedbackAction(null);
     }
   }
 
@@ -888,6 +995,24 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
           />
         )}
 
+        {durationInsightFeedbackError === null ? null : (
+          <ErrorNotice
+            message={durationInsightFeedbackError}
+            onDismiss={() => setDurationInsightFeedbackError(null)}
+          />
+        )}
+
+        {durationInsightAnnouncement === null ? null : (
+          <p
+            className="routines-duration-insight-feedback-status"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {durationInsightAnnouncement}
+          </p>
+        )}
+
         {currentInsight === null ? null : (
           <div className="routines-duration-insight-body">
             {currentInsight.status === "insufficient_history" ? (
@@ -945,27 +1070,61 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
                   </div>
                 </dl>
                 <div className="routines-duration-insight-actions">
-                  <Button
-                    type="button"
-                    variant="primary"
-                    busy={busyRoutineId === routine.id}
-                    disabled={busyRoutineId !== null}
-                    onClick={() => void applyDurationInsight()}
-                  >
-                    Apply {formatMinutes(currentInsight.suggestedExpectedMinutes)} estimate
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="quiet"
-                    disabled={busyRoutineId !== null}
-                    onClick={() => openEdit(routine)}
-                  >
-                    Edit duration
-                  </Button>
+                  {currentInsight.disposition === "available" ? (
+                    <>
+                      <Button
+                        type="button"
+                        variant="primary"
+                        busy={busyRoutineId === routine.id}
+                        disabled={busyRoutineId !== null || durationInsightFeedbackAction !== null}
+                        onClick={() => void applyDurationInsight()}
+                      >
+                        Apply {formatMinutes(currentInsight.suggestedExpectedMinutes)} estimate
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        disabled={busyRoutineId !== null || durationInsightFeedbackAction !== null}
+                        onClick={() => openEdit(routine)}
+                      >
+                        Edit duration
+                      </Button>
+                      {currentInsight.insightKey === null ? null : (
+                        <Button
+                          type="button"
+                          variant="quiet"
+                          busy={durationInsightFeedbackAction === "dismiss"}
+                          disabled={
+                            busyRoutineId !== null || durationInsightFeedbackAction !== null
+                          }
+                          onClick={() => void changeDurationInsightDisposition("dismiss")}
+                        >
+                          Not now
+                        </Button>
+                      )}
+                    </>
+                  ) : currentInsight.insightKey === null ? null : (
+                    <Button
+                      type="button"
+                      variant="quiet"
+                      busy={durationInsightFeedbackAction === "restore"}
+                      disabled={busyRoutineId !== null || durationInsightFeedbackAction !== null}
+                      onClick={() => void changeDurationInsightDisposition("restore")}
+                    >
+                      Show again
+                    </Button>
+                  )}
                 </div>
-                <p className="routines-duration-insight-note">
-                  This changes the routine only. Your current daily plan will not be regenerated.
-                </p>
+                {currentInsight.disposition === "available" ? (
+                  <p className="routines-duration-insight-note">
+                    This changes the routine only. Your current daily plan will not be regenerated.
+                  </p>
+                ) : (
+                  <p className="routines-duration-insight-note">
+                    You chose not to act on this estimate for now. Its evidence remains visible and
+                    can be restored at any time.
+                  </p>
+                )}
               </>
             ) : null}
 
@@ -984,16 +1143,62 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
                   {formatMinutes(currentInsight.maximumMinutes)} range. Review the range before
                   changing the estimate.
                 </p>
+                <dl className="routines-duration-insight-facts">
+                  <div>
+                    <dt>Current range</dt>
+                    <dd>
+                      {formatMinutes(currentInsight.minimumMinutes)} to{" "}
+                      {formatMinutes(currentInsight.maximumMinutes)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Typical</dt>
+                    <dd>{formatMinutes(currentInsight.observedMedianMinutes)}</dd>
+                  </div>
+                </dl>
                 <div className="routines-duration-insight-actions">
-                  <Button
-                    type="button"
-                    variant="quiet"
-                    disabled={busyRoutineId !== null}
-                    onClick={() => openEdit(routine)}
-                  >
-                    Review duration range
-                  </Button>
+                  {currentInsight.disposition === "available" ? (
+                    <>
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        disabled={busyRoutineId !== null || durationInsightFeedbackAction !== null}
+                        onClick={() => openEdit(routine)}
+                      >
+                        Review duration range
+                      </Button>
+                      {currentInsight.insightKey === null ? null : (
+                        <Button
+                          type="button"
+                          variant="quiet"
+                          busy={durationInsightFeedbackAction === "dismiss"}
+                          disabled={
+                            busyRoutineId !== null || durationInsightFeedbackAction !== null
+                          }
+                          onClick={() => void changeDurationInsightDisposition("dismiss")}
+                        >
+                          Not now
+                        </Button>
+                      )}
+                    </>
+                  ) : currentInsight.insightKey === null ? null : (
+                    <Button
+                      type="button"
+                      variant="quiet"
+                      busy={durationInsightFeedbackAction === "restore"}
+                      disabled={busyRoutineId !== null || durationInsightFeedbackAction !== null}
+                      onClick={() => void changeDurationInsightDisposition("restore")}
+                    >
+                      Show again
+                    </Button>
+                  )}
                 </div>
+                {currentInsight.disposition === "dismissed" ? (
+                  <p className="routines-duration-insight-note">
+                    You chose not to review this range for now. Its evidence remains visible and can
+                    be restored at any time.
+                  </p>
+                ) : null}
               </>
             ) : null}
           </div>
