@@ -17,6 +17,8 @@ import {
   planInteractionEvents,
   planMutationKind,
   planMutations,
+  routineDurationInsightFeedbackEvents,
+  routineDurationInsightFeedbackKind,
   routinePlanningFeedbackEvents,
   routinePlanningFeedbackKind,
   routines,
@@ -43,6 +45,9 @@ describe("database schema", () => {
     expect(getTableName(dailyPlanItemStates)).toBe("daily_plan_item_states");
     expect(getTableName(planInteractionEvents)).toBe("plan_interaction_events");
     expect(getTableName(planMutations)).toBe("plan_mutations");
+    expect(getTableName(routineDurationInsightFeedbackEvents)).toBe(
+      "routine_duration_insight_feedback_events",
+    );
     expect(getTableName(routinePlanningFeedbackEvents)).toBe("routine_planning_feedback_events");
     expect(getTableName(integrationCredentials)).toBe("integration_credentials");
     expect(getTableName(integrationConfirmations)).toBe("integration_confirmations");
@@ -284,6 +289,78 @@ describe("database schema", () => {
     );
     expect(migration).toContain(
       'FOREIGN KEY ("workspace_id","source_plan_id","source_plan_item_id","routine_id") REFERENCES "public"."daily_plan_items"("workspace_id","plan_id","id","routine_id")',
+    );
+  });
+
+  it("stores tenant-bound immutable routine-duration insight feedback", () => {
+    const config = getTableConfig(routineDurationInsightFeedbackEvents);
+
+    expect(routineDurationInsightFeedbackKind.enumValues).toEqual(["dismissed", "reset"]);
+    expect(config.foreignKeys.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "duration_insight_feedback_workspace_fk",
+        "duration_insight_feedback_routine_tenant_fk",
+      ]),
+    );
+    expect(
+      config.uniqueConstraints
+        .find(
+          (constraint) =>
+            constraint.getName() === "duration_insight_feedback_workspace_idempotency_uq",
+        )
+        ?.columns.map((column) => column.name),
+    ).toEqual(["workspace_id", "idempotency_key"]);
+    expect(
+      config.indexes
+        .find(
+          (constraint) => constraint.config.name === "duration_insight_feedback_key_sequence_idx",
+        )
+        ?.config.columns.map((column) => ({
+          name: "name" in column ? column.name : null,
+          order: "indexConfig" in column ? column.indexConfig.order : null,
+        })),
+    ).toEqual([
+      { name: "workspace_id", order: "asc" },
+      { name: "routine_id", order: "asc" },
+      { name: "insight_key", order: "asc" },
+      { name: "ingested_sequence", order: "desc" },
+      { name: "id", order: "desc" },
+    ]);
+    expect(config.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "duration_insight_feedback_key_format",
+        "duration_insight_feedback_version_positive",
+        "duration_insight_feedback_observed_positive",
+        "duration_insight_feedback_suggested_positive",
+        "duration_insight_feedback_idempotency_canonical",
+        "duration_insight_feedback_sequence_positive",
+      ]),
+    );
+  });
+
+  it("migrates duration-insight feedback as append-only database history", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0022_flat_micromacro.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain(
+      "CREATE TYPE \"public\".\"routine_duration_insight_feedback_kind\" AS ENUM('dismissed', 'reset')",
+    );
+    expect(migration).toContain(
+      'FOREIGN KEY ("workspace_id","routine_id") REFERENCES "public"."routines"("workspace_id","id")',
+    );
+    expect(migration).toContain(
+      '"duration_insight_feedback_workspace_idempotency_uq" UNIQUE("workspace_id","idempotency_key")',
+    );
+    expect(migration).toContain(
+      '"duration_insight_feedback_key_sequence_idx" ON "routine_duration_insight_feedback_events" USING btree ("workspace_id","routine_id","insight_key","ingested_sequence" DESC NULLS LAST,"id" DESC NULLS LAST)',
+    );
+    expect(migration).toContain(
+      'CREATE TRIGGER "routine_duration_insight_feedback_events_prevent_change"',
+    );
+    expect(migration).toContain(
+      'BEFORE UPDATE OR DELETE ON "routine_duration_insight_feedback_events"',
     );
   });
 });

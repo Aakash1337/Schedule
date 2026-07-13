@@ -4,10 +4,14 @@ import {
   CreateRoutine,
   CreateWorkItem,
   CreateWorkspace,
+  DismissRoutineDurationInsight,
   GenerateDailyPlan,
   GetDailyPlan,
+  GetRoutineDurationInsight,
   ListRoutines,
   RecordActivityEvent,
+  ResetRoutineDurationInsightDismissal,
+  UpdateRoutine,
   UpdateWorkItem,
 } from "../packages/application/src/index.js";
 import { createDatabase, PostgresUnitOfWork } from "../packages/database/src/index.js";
@@ -22,15 +26,49 @@ import {
 
 const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule";
-const connection = createDatabase(databaseUrl, 2);
+const connection = createDatabase(databaseUrl, 5);
 const clock = { now: () => new Date("2026-07-15T07:00:00.000Z") };
 let workspace: WorkspaceId | null = null;
+
+async function waitingAdvisoryLockCount(): Promise<number> {
+  const [row] = await connection.sql<{ waiting: number }[]>`
+    select count(*)::int as waiting
+    from pg_locks
+    where locktype = 'advisory'
+      and not granted
+  `;
+  return row?.waiting ?? 0;
+}
+
+async function waitForAdvisoryLockCount(minimum: number): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if ((await waitingAdvisoryLockCount()) >= minimum) return;
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 20);
+    });
+  }
+  throw new Error(`Timed out waiting for ${minimum} blocked advisory locks.`);
+}
+
+function assertDatabaseErrorCode(expected: string): (error: unknown) => boolean {
+  return (error) => {
+    assert.equal(
+      typeof error === "object" && error !== null && "code" in error
+        ? (error as { code: unknown }).code
+        : undefined,
+      expected,
+    );
+    return true;
+  };
+}
 
 async function removeVerificationWorkspace(): Promise<void> {
   if (workspace === null) return;
   await connection.sql.begin(async (sql) => {
     await sql`select set_config('schedule.allow_activity_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_audit_event_mutation', 'on', true)`;
+    await sql`select set_config('schedule.allow_routine_duration_insight_feedback_event_change', 'on', true)`;
     await sql`delete from workspaces where id = ${workspace}`;
   });
 }
@@ -283,6 +321,320 @@ try {
     item_count: 7,
     event_count: 1,
   });
+
+  // EVIDENCE: routine-duration-insight-feedback-postgres
+  // Exact-key feedback persists across reads and is replay-safe without mutating the routine or
+  // Today. A changed evidence fingerprint becomes available even while the old key stays dismissed.
+  const durationFeedbackRoutine = await new CreateRoutine(unitOfWork, clock).execute({
+    workspaceId: workspace,
+    title: "Database-backed duration feedback",
+    tags: createStructuredTags({ priority: "medium" }),
+    duration: createDurationRange({
+      minimumMinutes: 20,
+      expectedMinutes: 30,
+      maximumMinutes: 90,
+    }),
+    cadence: createCadencePolicy({ period: "week", targetCompletions: 1 }),
+  });
+  for (const [index, durationMinutes] of [40, 45, 50, 55].entries()) {
+    await recorder.execute({
+      workspaceId: workspace,
+      routineId: durationFeedbackRoutine.id,
+      type: "completed",
+      occurredAt: new Date(`2026-07-${String(11 + index).padStart(2, "0")}T06:00:00.000Z`),
+      timeZone: "UTC",
+      durationMinutes,
+      idempotencyKey: `database-duration-feedback-sample-${index}`,
+    });
+  }
+  const getDurationInsight = new GetRoutineDurationInsight(unitOfWork, clock);
+  const dismissDurationInsight = new DismissRoutineDurationInsight(unitOfWork, clock);
+  const resetDurationInsight = new ResetRoutineDurationInsightDismissal(unitOfWork, clock);
+  const initialDurationInsight = await getDurationInsight.execute({
+    workspaceId: workspace,
+    routineId: durationFeedbackRoutine.id,
+  });
+  assert.equal(initialDurationInsight.status, "suggested");
+  assert.equal(initialDurationInsight.observedMedianMinutes, 48);
+  assert.equal(initialDurationInsight.suggestedExpectedMinutes, 48);
+  assert.match(initialDurationInsight.insightKey ?? "", /^[0-9a-f]{64}$/);
+  assert.equal(initialDurationInsight.disposition, "available");
+  const initialDurationInsightKey = initialDurationInsight.insightKey!;
+  const [routineBeforeDurationFeedback] = await connection.sql<
+    {
+      version: number;
+      minimum_duration_minutes: number;
+      expected_duration_minutes: number;
+      maximum_duration_minutes: number;
+      updated_at: string;
+    }[]
+  >`
+    select
+      version,
+      minimum_duration_minutes,
+      expected_duration_minutes,
+      maximum_duration_minutes,
+      updated_at::text
+    from routines
+    where workspace_id = ${workspace}
+      and id = ${durationFeedbackRoutine.id}
+  `;
+  const planHeadsBeforeDurationFeedback = await connection.sql<
+    { local_date: string; current_plan_id: string; version: number }[]
+  >`
+    select local_date::text, current_plan_id::text, version
+    from daily_plan_heads
+    where workspace_id = ${workspace}
+    order by local_date, id
+  `;
+  const dismissalCommand = {
+    workspaceId: workspace,
+    routineId: durationFeedbackRoutine.id,
+    expectedVersion: durationFeedbackRoutine.version,
+    insightKey: initialDurationInsightKey,
+    idempotencyKey: "database-duration-feedback-dismiss",
+  };
+  const durationDismissal = await dismissDurationInsight.execute(dismissalCommand);
+  const replayedDurationDismissal = await dismissDurationInsight.execute(dismissalCommand);
+  assert.deepEqual(replayedDurationDismissal, durationDismissal);
+  await assert.rejects(
+    dismissDurationInsight.execute({ ...dismissalCommand, expectedVersion: 2 }),
+    (error: unknown) => {
+      assert.equal(
+        typeof error === "object" && error !== null && "code" in error
+          ? (error as { code: unknown }).code
+          : undefined,
+        "routine_duration_insight.idempotency_conflict",
+      );
+      return true;
+    },
+  );
+  for (let read = 0; read < 2; read += 1) {
+    const dismissedInsight = await new GetRoutineDurationInsight(unitOfWork, clock).execute({
+      workspaceId: workspace,
+      routineId: durationFeedbackRoutine.id,
+    });
+    assert.equal(dismissedInsight.insightKey, initialDurationInsightKey);
+    assert.equal(dismissedInsight.disposition, "dismissed");
+    assert.deepEqual(dismissedInsight.dismissedAt, durationDismissal.recordedAt);
+  }
+
+  const resetCommand = {
+    ...dismissalCommand,
+    idempotencyKey: "database-duration-feedback-reset",
+  };
+  const durationReset = await resetDurationInsight.execute(resetCommand);
+  const replayedDurationReset = await resetDurationInsight.execute(resetCommand);
+  assert.deepEqual(replayedDurationReset, durationReset);
+  const resetInsight = await getDurationInsight.execute({
+    workspaceId: workspace,
+    routineId: durationFeedbackRoutine.id,
+  });
+  assert.equal(resetInsight.disposition, "available");
+  assert.equal(resetInsight.dismissedAt, null);
+
+  await dismissDurationInsight.execute({
+    ...dismissalCommand,
+    idempotencyKey: "database-duration-feedback-dismiss-before-new-evidence",
+  });
+  await recorder.execute({
+    workspaceId: workspace,
+    routineId: durationFeedbackRoutine.id,
+    type: "completed",
+    occurredAt: new Date("2026-07-15T06:30:00.000Z"),
+    timeZone: "UTC",
+    durationMinutes: 60,
+    idempotencyKey: "database-duration-feedback-meaningful-sample",
+  });
+  const resurfacedInsight = await getDurationInsight.execute({
+    workspaceId: workspace,
+    routineId: durationFeedbackRoutine.id,
+  });
+  assert.equal(resurfacedInsight.status, "suggested");
+  assert.equal(resurfacedInsight.observedMedianMinutes, 50);
+  assert.equal(resurfacedInsight.suggestedExpectedMinutes, 50);
+  assert.notEqual(resurfacedInsight.insightKey, initialDurationInsightKey);
+  assert.equal(resurfacedInsight.disposition, "available");
+  assert.equal(resurfacedInsight.dismissedAt, null);
+
+  const feedbackRows = await connection.sql<
+    {
+      insight_key: string;
+      kind: string;
+      routine_version: number;
+      observed_median_minutes: number;
+      suggested_expected_minutes: number | null;
+      idempotency_key: string;
+    }[]
+  >`
+    select
+      insight_key,
+      kind::text,
+      routine_version,
+      observed_median_minutes,
+      suggested_expected_minutes,
+      idempotency_key
+    from routine_duration_insight_feedback_events
+    where workspace_id = ${workspace}
+      and routine_id = ${durationFeedbackRoutine.id}
+    order by ingested_sequence, id
+  `;
+  assert.deepEqual(
+    feedbackRows.map((row) => ({
+      ...row,
+      insight_key: row.insight_key === initialDurationInsightKey ? "initial-key" : row.insight_key,
+    })),
+    [
+      {
+        insight_key: "initial-key",
+        kind: "dismissed",
+        routine_version: 1,
+        observed_median_minutes: 48,
+        suggested_expected_minutes: 48,
+        idempotency_key: "database-duration-feedback-dismiss",
+      },
+      {
+        insight_key: "initial-key",
+        kind: "reset",
+        routine_version: 1,
+        observed_median_minutes: 48,
+        suggested_expected_minutes: 48,
+        idempotency_key: "database-duration-feedback-reset",
+      },
+      {
+        insight_key: "initial-key",
+        kind: "dismissed",
+        routine_version: 1,
+        observed_median_minutes: 48,
+        suggested_expected_minutes: 48,
+        idempotency_key: "database-duration-feedback-dismiss-before-new-evidence",
+      },
+    ],
+  );
+  await assert.rejects(
+    connection.sql`
+      update routine_duration_insight_feedback_events
+      set kind = kind
+      where workspace_id = ${workspace}
+        and routine_id = ${durationFeedbackRoutine.id}
+    `,
+    assertDatabaseErrorCode("55000"),
+  );
+  await assert.rejects(
+    connection.sql`
+      delete from routine_duration_insight_feedback_events
+      where workspace_id = ${workspace}
+        and routine_id = ${durationFeedbackRoutine.id}
+    `,
+    assertDatabaseErrorCode("55000"),
+  );
+  const [feedbackCountAfterRejectedMutation] = await connection.sql<{ count: number }[]>`
+    select count(*)::int as count
+    from routine_duration_insight_feedback_events
+    where workspace_id = ${workspace}
+      and routine_id = ${durationFeedbackRoutine.id}
+  `;
+  assert.equal(feedbackCountAfterRejectedMutation?.count, 3);
+  const [routineAfterDurationFeedback] = await connection.sql<
+    {
+      version: number;
+      minimum_duration_minutes: number;
+      expected_duration_minutes: number;
+      maximum_duration_minutes: number;
+      updated_at: string;
+    }[]
+  >`
+    select
+      version,
+      minimum_duration_minutes,
+      expected_duration_minutes,
+      maximum_duration_minutes,
+      updated_at::text
+    from routines
+    where workspace_id = ${workspace}
+      and id = ${durationFeedbackRoutine.id}
+  `;
+  assert.deepEqual(routineAfterDurationFeedback, routineBeforeDurationFeedback);
+  const planHeadsAfterDurationFeedback = await connection.sql<
+    { local_date: string; current_plan_id: string; version: number }[]
+  >`
+    select local_date::text, current_plan_id::text, version
+    from daily_plan_heads
+    where workspace_id = ${workspace}
+    order by local_date, id
+  `;
+  assert.deepEqual(planHeadsAfterDurationFeedback, planHeadsBeforeDurationFeedback);
+
+  // A normal routine edit and duration feedback share the same advisory lock. Queue the update
+  // first behind an externally held lock, then queue feedback with the now-stale version. Once
+  // released, the update must commit first and the feedback command must reject without appending.
+  const waitingBeforeConcurrencyCheck = await waitingAdvisoryLockCount();
+  let markBlockerReady!: () => void;
+  let releaseBlocker!: () => void;
+  const blockerReady = new Promise<void>((resolve) => {
+    markBlockerReady = resolve;
+  });
+  const blockerRelease = new Promise<void>((resolve) => {
+    releaseBlocker = resolve;
+  });
+  const durationRoutineLockKey = `${workspace}:routine:${durationFeedbackRoutine.id}`;
+  const blocker = connection.sql.begin(async (sql) => {
+    await sql`select pg_advisory_xact_lock(hashtextextended(${durationRoutineLockKey}, 0))`;
+    markBlockerReady();
+    await blockerRelease;
+  });
+  await blockerReady;
+
+  let concurrentUpdate: ReturnType<UpdateRoutine["execute"]> | null = null;
+  let staleConcurrentDismissal: ReturnType<DismissRoutineDurationInsight["execute"]> | null = null;
+  let concurrencyQueueReady = false;
+  try {
+    concurrentUpdate = new UpdateRoutine(unitOfWork, clock).execute({
+      workspaceId: workspace,
+      routineId: durationFeedbackRoutine.id,
+      expectedVersion: durationFeedbackRoutine.version,
+      title: "Database-backed duration feedback, revised",
+    });
+    await waitForAdvisoryLockCount(waitingBeforeConcurrencyCheck + 1);
+    staleConcurrentDismissal = dismissDurationInsight.execute({
+      workspaceId: workspace,
+      routineId: durationFeedbackRoutine.id,
+      expectedVersion: durationFeedbackRoutine.version,
+      insightKey: resurfacedInsight.insightKey!,
+      idempotencyKey: "database-duration-feedback-stale-concurrent-dismiss",
+    });
+    void staleConcurrentDismissal.catch(() => undefined);
+    await waitForAdvisoryLockCount(waitingBeforeConcurrencyCheck + 2);
+    concurrencyQueueReady = true;
+  } finally {
+    releaseBlocker();
+    await blocker;
+    if (!concurrencyQueueReady) {
+      const pendingOperations: Promise<unknown>[] = [];
+      if (concurrentUpdate !== null) pendingOperations.push(concurrentUpdate);
+      if (staleConcurrentDismissal !== null) pendingOperations.push(staleConcurrentDismissal);
+      await Promise.allSettled(pendingOperations);
+    }
+  }
+
+  const concurrentlyUpdatedRoutine = await concurrentUpdate!;
+  assert.equal(concurrentlyUpdatedRoutine.version, durationFeedbackRoutine.version + 1);
+  await assert.rejects(staleConcurrentDismissal!, (error: unknown) => {
+    assert.equal(
+      typeof error === "object" && error !== null && "code" in error
+        ? (error as { code: unknown }).code
+        : undefined,
+      "routine.version_conflict",
+    );
+    return true;
+  });
+  const [feedbackCountAfterConcurrentConflict] = await connection.sql<{ count: number }[]>`
+    select count(*)::int as count
+    from routine_duration_insight_feedback_events
+    where workspace_id = ${workspace}
+      and routine_id = ${durationFeedbackRoutine.id}
+  `;
+  assert.equal(feedbackCountAfterConcurrentConflict?.count, 3);
 
   process.stdout.write("planner database verification passed\n");
 } finally {

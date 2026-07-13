@@ -1,6 +1,7 @@
 import {
   calculateRoutineDurationInsight,
   DomainError,
+  resolveRoutineDurationInsightFeedback,
   routineDurationInsightLookbackDays,
   type RoutineDurationInsight,
   type RoutineId,
@@ -29,21 +30,34 @@ export class GetRoutineDurationInsight {
       evaluatedAt.getTime() - routineDurationInsightLookbackDays * millisecondsPerDay,
     );
 
-    return this.unitOfWork.run(async ({ workspaces, routines, activityEvents }) => {
-      if ((await workspaces.findById(query.workspaceId)) === null) {
-        throw new DomainError("workspace.not_found", "The workspace does not exist.");
-      }
-      const routine = await routines.findById(query.workspaceId, query.routineId);
-      if (routine === null) {
-        throw new DomainError("routine.not_found", "The routine does not exist.");
-      }
-      const evidence = await activityEvents.listDurationEvidence(
-        query.workspaceId,
-        query.routineId,
-        fromInclusive,
-        evaluatedAt,
-      );
-      return calculateRoutineDurationInsight(routine, evidence, evaluatedAt);
-    });
+    return this.unitOfWork.run(
+      async ({ workspaces, routines, activityEvents, routineDurationInsightFeedback }) => {
+        if ((await workspaces.findById(query.workspaceId)) === null) {
+          throw new DomainError("workspace.not_found", "The workspace does not exist.");
+        }
+        const routine = await routines.findById(query.workspaceId, query.routineId);
+        if (routine === null) {
+          throw new DomainError("routine.not_found", "The routine does not exist.");
+        }
+        const evidence = await activityEvents.listDurationEvidence(
+          query.workspaceId,
+          query.routineId,
+          fromInclusive,
+          evaluatedAt,
+        );
+        const insight = calculateRoutineDurationInsight(routine, evidence, evaluatedAt);
+        if (insight.insightKey === null) return insight;
+        const latestFeedback = await routineDurationInsightFeedback.findLatestForKey(
+          query.workspaceId,
+          query.routineId,
+          insight.insightKey,
+        );
+        return resolveRoutineDurationInsightFeedback(
+          insight,
+          query.workspaceId,
+          latestFeedback === null ? [] : [latestFeedback],
+        );
+      },
+    );
   }
 }

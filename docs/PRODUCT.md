@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-13
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v4 selects both reusable routines and explicitly opted-in one-time work items, applies temporary routine feedback as a versioned hard constraint, and adds transparent deadline pressure for eligible work. Phase 3 has begun with a transparent, read-only routine-duration insight and an explicit approval flow; broader learned preferences and automatic adaptation remain deferred. A provider-neutral authenticated inbound gateway now provides Today reads and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v4 selects both reusable routines and explicitly opted-in one-time work items, applies temporary routine feedback as a versioned hard constraint, and adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent, read-only routine-duration insight, explicit approval, and reversible dismissal of one exact evidence-backed recommendation; broader learned preferences and automatic adaptation remain deferred. A provider-neutral authenticated inbound gateway now provides Today reads and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
 
 ## 1. Product summary
 
@@ -130,6 +130,26 @@ minutes or 10% of the current expected duration. It suggests the median only whe
 material and the value remains inside the user-owned minimum and maximum. A median outside that range
 requires range review instead of offering a one-click change.
 
+An actionable `suggested` or `review_range` result carries a lowercase SHA-256 `insightKey` and an
+`available` or `dismissed` disposition. Informational `insufficient_history` and `aligned` results
+have no key and always remain available. The key fingerprints the calculation version, lookback and
+sample policy, the routine's minimum, expected, and maximum duration, and the canonical qualifying
+completion, correction, and reversal evidence. Evaluation time, evidence return order, and
+presentation-only routine fields do not change it.
+
+Choosing **Not now** appends a `dismissed` event for that exact key. Choosing **Show again** appends a
+`reset` event for the same key. The latest event for a workspace, routine, and key determines whether
+that recommendation is available or dismissed; prior events remain immutable. Each command is
+workspace-idempotent: an identical retry returns its original event, while reuse of the same
+idempotency key for different semantics conflicts. The command revalidates the current routine
+version and actionable insight before append, so stale evidence or policy cannot be dismissed or
+reset as if it were current.
+
+Dismissal does not suppress future learning. Any qualifying evidence change, relevant duration-policy
+change, or calculation-policy change produces a different key. A still-actionable recommendation
+with that new key resurfaces as `available` automatically. Dismiss and reset do not edit the routine,
+apply a duration, mutate Today or its head, regenerate a plan, or alter planner scoring and selection.
+
 This calculation is read-only. Accepting a suggestion sends its routine version and complete duration
 policy to a dedicated approval command. In one read-committed transaction, the server acquires the same
 per-routine advisory lock used by activity appends, reloads the routine and current 90-day evidence,
@@ -137,7 +157,9 @@ recomputes the insight, and saves only when the same expected duration is still 
 minimum, maximum, splitting, minimum-session, and overhead fields
 must still match the current user-owned policy; approval may change only the expected duration.
 Read committed is deliberate: statements made after an advisory-lock wait must see evidence committed
-by the earlier lock holder. Other product transactions remain serializable by default.
+by the earlier lock holder. Generic routine updates take the same lock and isolation before their
+version check and save, preventing a manual policy edit from racing approval or insight feedback.
+Product transactions that do not coordinate on this lock remain serializable by default.
 
 Routine-version or evidence conflicts are not retried automatically. The generic routine `PATCH`
 remains the manual editing path and does not claim to approve an insight. Neither approval path
@@ -318,9 +340,9 @@ Adaptation safeguards:
 - Never lower the importance of a deadline solely because prior suggestions were skipped
 
 The current slice implements evidence thresholds, material-change gating, range review, visible
-evidence, and explicit approval. Duration-insight rejection memory, dismissal, and reset controls;
-learned cadence or energy preferences; adaptive probabilistic selection beyond the existing
-versioned deterministic planner; and automatic application of learned values remain deferred.
+evidence, explicit approval, and exact-key dismissal and reset memory. Learned cadence or energy
+preferences; adaptive probabilistic selection beyond the existing versioned deterministic planner;
+historical insight comparison; and automatic application of learned values remain deferred.
 
 ## 11. Optional local-model advisor
 
@@ -449,9 +471,11 @@ Success is not simply "more tasks completed." Useful measures include realistic 
 - Implemented: routine-duration insight from a corrected, reversal-aware 90-day median
 - Implemented: visible insufficient/aligned/suggested/range-review states and explicit atomic
   approval with evidence revalidation and without automatic Today regeneration
+- Implemented: append-only, idempotent **Not now** and **Show again** feedback for one exact
+  evidence key, with automatic resurfacing when evidence or relevant policy changes
 - Deferred: learned cadence, day/time, energy, preference, overload, and category-balance signals
-- Deferred: automatic application, duration-insight rejection memory and reset controls, adaptive
-  probabilistic selection, historical replay, and algorithm comparison tools
+- Deferred: automatic application, adaptive probabilistic selection, historical insight comparison,
+  and algorithm comparison tools
 
 ### Phase 4 — Local-model advisor
 

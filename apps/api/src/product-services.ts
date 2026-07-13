@@ -4,6 +4,7 @@ import {
   CreateScheduleBlock,
   CreateWorkItem,
   CreateWorkspace,
+  DismissRoutineDurationInsight,
   GenerateDailyPlan,
   GetCurrentDailyPlan,
   GetDailyPlan,
@@ -20,6 +21,7 @@ import {
   MutateDailyPlan,
   RecordActivityEvent,
   RecordPlanItemActivity,
+  ResetRoutineDurationInsightDismissal,
   SetPlanItemLock,
   DeleteScheduleBlock,
   UpdateScheduleBlock,
@@ -33,6 +35,7 @@ import type { ProductServices } from "./product-routes.js";
 
 export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): ProductServices {
   const approveRoutineDurationInsight = new ApproveRoutineDurationInsight(unitOfWork, clock);
+  const dismissRoutineDurationInsight = new DismissRoutineDurationInsight(unitOfWork, clock);
   const createWorkspace = new CreateWorkspace(unitOfWork, clock);
   const getWorkspace = new GetWorkspace(unitOfWork);
   const listWorkspaces = new ListWorkspaces(unitOfWork);
@@ -53,6 +56,10 @@ export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): Pro
   const listRoutineActivity = new ListRoutineActivity(unitOfWork);
   const recordActivityEvent = new RecordActivityEvent(unitOfWork, clock);
   const recordPlanItemActivity = new RecordPlanItemActivity(unitOfWork, clock);
+  const resetRoutineDurationInsightDismissal = new ResetRoutineDurationInsightDismissal(
+    unitOfWork,
+    clock,
+  );
   const generateDailyPlan = new GenerateDailyPlan(unitOfWork, clock);
   const getCurrentDailyPlan = new GetCurrentDailyPlan(unitOfWork);
   const setPlanItemLock = new SetPlanItemLock(unitOfWork, clock);
@@ -61,6 +68,7 @@ export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): Pro
 
   return {
     approveRoutineDurationInsight: (command) => approveRoutineDurationInsight.execute(command),
+    dismissRoutineDurationInsight: (command) => dismissRoutineDurationInsight.execute(command),
     createWorkspace: (command) => createWorkspace.execute(command),
     getWorkspace: (query) => getWorkspace.execute(query),
     listWorkspaces: (query) => listWorkspaces.execute(query),
@@ -81,6 +89,8 @@ export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): Pro
     listRoutineActivity: (query) => listRoutineActivity.execute(query),
     recordActivityEvent: (command) => recordActivityEvent.execute(command),
     recordPlanItemActivity: (command) => recordPlanItemActivity.execute(command),
+    resetRoutineDurationInsightDismissal: (command) =>
+      resetRoutineDurationInsightDismissal.execute(command),
     generateDailyPlan: (command) => generateDailyPlan.execute(command),
     getCurrentDailyPlan: (query) => getCurrentDailyPlan.execute(query),
     setPlanItemLock: (command) => setPlanItemLock.execute(command),

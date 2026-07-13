@@ -9,10 +9,12 @@ import { RoutinesView } from "./RoutinesView";
 const apiMocks = vi.hoisted(() => ({
   approveRoutineDurationInsight: vi.fn(),
   createRoutine: vi.fn(),
+  dismissRoutineDurationInsight: vi.fn(),
   getRoutine: vi.fn(),
   getRoutineDurationInsight: vi.fn(),
   listRoutineActivity: vi.fn(),
   listRoutines: vi.fn(),
+  resetRoutineDurationInsightDismissal: vi.fn(),
   updateRoutine: vi.fn(),
 }));
 
@@ -78,6 +80,9 @@ function routineDurationInsight(
   return {
     routineId: routine.id,
     routineVersion: routine.version,
+    insightKey: "a".repeat(64),
+    disposition: "available",
+    dismissedAt: null,
     status: "insufficient_history",
     sampleCount: 0,
     minimumSamples: 3,
@@ -455,7 +460,221 @@ describe("routine pool", () => {
       await screen.findByText(/Recent sessions typically take 1h, outside your 15m to 45m range/),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Review duration range" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Not now" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Apply / })).not.toBeInTheDocument();
+  });
+
+  it("keeps dismissed range evidence visible without exposing review actions", async () => {
+    const user = userEvent.setup();
+    apiMocks.getRoutineDurationInsight.mockResolvedValue(
+      routineDurationInsight({
+        status: "review_range",
+        disposition: "dismissed",
+        dismissedAt: "2026-07-13T10:00:00.000Z",
+        sampleCount: 4,
+        observedMedianMinutes: 60,
+      }),
+    );
+
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    const routineButton = (await screen.findByText(routine.title)).closest("button");
+    if (routineButton === null) throw new Error("Routine selection button was not rendered.");
+    await user.click(routineButton);
+
+    expect(
+      await screen.findByText(/Recent sessions typically take 1h, outside your 15m to 45m range/),
+    ).toBeVisible();
+    expect(screen.getByText("Current range")).toBeVisible();
+    expect(screen.getByText(/Its evidence remains visible/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Review duration range" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Not now" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show again" })).toBeInTheDocument();
+  });
+
+  it("dismisses a suggestion, keeps its evidence visible, and refetches its disposition", async () => {
+    const user = userEvent.setup();
+    const feedback = deferred<unknown>();
+    const available = routineDurationInsight({
+      status: "suggested",
+      sampleCount: 5,
+      observedMedianMinutes: 40,
+      suggestedExpectedMinutes: 40,
+    });
+    const dismissed = routineDurationInsight({
+      ...available,
+      disposition: "dismissed",
+      dismissedAt: "2026-07-13T10:00:00.000Z",
+    });
+    apiMocks.getRoutineDurationInsight
+      .mockResolvedValueOnce(available)
+      .mockResolvedValue(dismissed);
+    apiMocks.dismissRoutineDurationInsight.mockReturnValue(feedback.promise);
+
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    const routineButton = (await screen.findByText(routine.title)).closest("button");
+    if (routineButton === null) throw new Error("Routine selection button was not rendered.");
+    await user.click(routineButton);
+    const notNow = await screen.findByRole("button", { name: "Not now" });
+    await user.click(notNow);
+
+    expect(notNow).toBeDisabled();
+    expect(notNow).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "Apply 40m estimate" })).toBeDisabled();
+    expect(apiMocks.dismissRoutineDurationInsight).toHaveBeenCalledWith(
+      workspace.id,
+      routine.id,
+      { expectedVersion: routine.version, insightKey: available.insightKey },
+      expect.any(String),
+    );
+
+    await act(async () => {
+      feedback.resolve({ kind: "dismissed" });
+      await feedback.promise;
+    });
+
+    expect(await screen.findByRole("button", { name: "Show again" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Apply / })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit duration" })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Recent sessions suggest 40m is a more typical estimate/),
+    ).toBeVisible();
+    expect(screen.getByText(/Its evidence remains visible/)).toBeVisible();
+    expect(screen.getByText(/Duration suggestion hidden/)).toHaveAttribute("role", "status");
+    expect(screen.getByRole("heading", { name: "Duration estimate" })).toHaveFocus();
+    expect(apiMocks.getRoutineDurationInsight).toHaveBeenCalledTimes(2);
+  });
+
+  it("restores a dismissed suggestion and exposes its actions after the refetch", async () => {
+    const user = userEvent.setup();
+    const dismissed = routineDurationInsight({
+      status: "suggested",
+      disposition: "dismissed",
+      dismissedAt: "2026-07-13T10:00:00.000Z",
+      sampleCount: 5,
+      observedMedianMinutes: 40,
+      suggestedExpectedMinutes: 40,
+    });
+    const available = routineDurationInsight({
+      ...dismissed,
+      disposition: "available",
+      dismissedAt: null,
+    });
+    apiMocks.getRoutineDurationInsight
+      .mockResolvedValueOnce(dismissed)
+      .mockResolvedValue(available);
+    apiMocks.resetRoutineDurationInsightDismissal.mockResolvedValue({ kind: "reset" });
+
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    const routineButton = (await screen.findByText(routine.title)).closest("button");
+    if (routineButton === null) throw new Error("Routine selection button was not rendered.");
+    await user.click(routineButton);
+    expect(screen.queryByRole("button", { name: /^Apply / })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Show again" }));
+
+    expect(apiMocks.resetRoutineDurationInsightDismissal).toHaveBeenCalledWith(
+      workspace.id,
+      routine.id,
+      { expectedVersion: routine.version, insightKey: dismissed.insightKey },
+      expect.any(String),
+    );
+    expect(await screen.findByRole("button", { name: "Apply 40m estimate" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit duration" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Not now" })).toBeInTheDocument();
+    expect(screen.getByText(/Duration suggestion is available again/)).toHaveAttribute(
+      "role",
+      "status",
+    );
+  });
+
+  it("keeps evidence actionable after a failed dismissal and uses a new key for a retry", async () => {
+    const user = userEvent.setup();
+    const available = routineDurationInsight({
+      status: "suggested",
+      sampleCount: 5,
+      observedMedianMinutes: 40,
+      suggestedExpectedMinutes: 40,
+    });
+    const dismissed = routineDurationInsight({
+      ...available,
+      disposition: "dismissed",
+      dismissedAt: "2026-07-13T10:00:00.000Z",
+    });
+    apiMocks.getRoutineDurationInsight
+      .mockResolvedValueOnce(available)
+      .mockResolvedValue(dismissed);
+    apiMocks.dismissRoutineDurationInsight
+      .mockRejectedValueOnce(new Error("Feedback service is unavailable."))
+      .mockResolvedValue({ kind: "dismissed" });
+
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    const routineButton = (await screen.findByText(routine.title)).closest("button");
+    if (routineButton === null) throw new Error("Routine selection button was not rendered.");
+    await user.click(routineButton);
+    await user.click(await screen.findByRole("button", { name: "Not now" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Feedback service is unavailable.");
+    expect(screen.getByRole("button", { name: "Apply 40m estimate" })).toBeEnabled();
+    expect(
+      screen.getByText(/Recent sessions suggest 40m is a more typical estimate/),
+    ).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Not now" }));
+    expect(await screen.findByRole("button", { name: "Show again" })).toBeInTheDocument();
+    const firstKey = apiMocks.dismissRoutineDurationInsight.mock.calls[0]?.[3];
+    const secondKey = apiMocks.dismissRoutineDurationInsight.mock.calls[1]?.[3];
+    expect(firstKey).toEqual(expect.any(String));
+    expect(secondKey).toEqual(expect.any(String));
+    expect(secondKey).not.toBe(firstKey);
+  });
+
+  it("refreshes stale routine and evidence state without replaying conflicted feedback", async () => {
+    const user = userEvent.setup();
+    const latest: Routine = { ...routine, version: 3 };
+    const staleInsight = routineDurationInsight({
+      status: "suggested",
+      sampleCount: 4,
+      observedMedianMinutes: 40,
+      suggestedExpectedMinutes: 40,
+    });
+    const refreshedInsight = routineDurationInsight({
+      routineVersion: latest.version,
+      insightKey: "c".repeat(64),
+      status: "suggested",
+      sampleCount: 5,
+      observedMedianMinutes: 42,
+      suggestedExpectedMinutes: 42,
+    });
+    apiMocks.listRoutines
+      .mockResolvedValueOnce({ items: [routine], page: { limit: 200, offset: 0 } })
+      .mockResolvedValue({ items: [latest], page: { limit: 200, offset: 0 } });
+    apiMocks.getRoutine.mockResolvedValue(latest);
+    apiMocks.getRoutineDurationInsight
+      .mockResolvedValueOnce(staleInsight)
+      .mockResolvedValue(refreshedInsight);
+    apiMocks.dismissRoutineDurationInsight.mockRejectedValue(
+      new ApiError(
+        409,
+        "routine_duration_insight.feedback_conflict",
+        "Duration evidence changed.",
+        null,
+      ),
+    );
+
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    const routineButton = (await screen.findByText(routine.title)).closest("button");
+    if (routineButton === null) throw new Error("Routine selection button was not rendered.");
+    await user.click(routineButton);
+    await user.click(await screen.findByRole("button", { name: "Not now" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The routine or duration evidence changed",
+    );
+    expect(await screen.findByRole("button", { name: "Apply 42m estimate" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Not now" })).toBeEnabled();
+    expect(apiMocks.getRoutine).toHaveBeenCalledWith(workspace.id, routine.id);
+    expect(apiMocks.getRoutineDurationInsight.mock.calls.length).toBeGreaterThan(1);
+    expect(apiMocks.dismissRoutineDurationInsight).toHaveBeenCalledOnce();
+    expect(screen.getByRole("heading", { name: "Duration estimate" })).toHaveFocus();
   });
 
   it("does not auto-retry a stale suggestion after an optimistic conflict", async () => {

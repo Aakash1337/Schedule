@@ -42,24 +42,33 @@ export class UpdateRoutine {
       throw new DomainError("routine.update_empty", "At least one routine change is required.");
     }
     const now = this.clock.now();
-    return this.unitOfWork.run(async ({ workspaces, routines }) => {
-      if ((await workspaces.findById(workspaceId)) === null) {
-        throw new DomainError("workspace.not_found", "The workspace does not exist.");
-      }
-      const existing = await routines.findById(workspaceId, routineId);
-      if (existing === null) {
-        throw new DomainError("routine.not_found", "The routine does not exist.");
-      }
-      if (existing.version !== expectedVersion) {
-        throw new DomainError(
-          "routine.version_conflict",
-          "The routine changed before this update could be applied.",
-        );
-      }
-      const updated = updateRoutine(existing, { ...changes, now });
-      if (updated === existing) return existing;
-      await routines.save(updated, expectedVersion);
-      return updated;
-    });
+    return this.unitOfWork.run(
+      async ({ workspaces, routines, activityEvents }) => {
+        if ((await workspaces.findById(workspaceId)) === null) {
+          throw new DomainError("workspace.not_found", "The workspace does not exist.");
+        }
+        // Routine policy, activity evidence, insight approval, and insight feedback all share
+        // this lock. A feedback command can therefore never append against a version that an
+        // ordinary routine update changes concurrently.
+        await activityEvents.lockRoutineActivity(workspaceId, routineId);
+        const existing = await routines.findById(workspaceId, routineId);
+        if (existing === null) {
+          throw new DomainError("routine.not_found", "The routine does not exist.");
+        }
+        if (existing.version !== expectedVersion) {
+          throw new DomainError(
+            "routine.version_conflict",
+            "The routine changed before this update could be applied.",
+          );
+        }
+        const updated = updateRoutine(existing, { ...changes, now });
+        if (updated === existing) return existing;
+        await routines.save(updated, expectedVersion);
+        return updated;
+      },
+      // A fresh statement snapshot after waiting on the advisory lock must include the routine
+      // version committed by the earlier lock holder.
+      { isolationLevel: "read_committed" },
+    );
   }
 }

@@ -1,5 +1,9 @@
 export * from "./create-schedule-block.js";
 export * from "./approve-routine-duration-insight.js";
+export {
+  DismissRoutineDurationInsight,
+  type DismissRoutineDurationInsightCommand,
+} from "./dismiss-routine-duration-insight.js";
 export * from "./get-schedule-block.js";
 export * from "./list-schedule-blocks.js";
 export * from "./update-schedule-block.js";
@@ -25,5 +29,9 @@ export * from "./mutate-daily-plan.js";
 export * from "./ports.js";
 export * from "./record-activity-event.js";
 export * from "./record-plan-item-activity.js";
+export {
+  ResetRoutineDurationInsightDismissal,
+  type ResetRoutineDurationInsightDismissalCommand,
+} from "./reset-routine-duration-insight-dismissal.js";
 export * from "./set-plan-item-lock.js";
 export * from "./update-routine.js";

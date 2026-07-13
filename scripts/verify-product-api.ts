@@ -61,6 +61,7 @@ async function removeWorkspace(): Promise<void> {
     await sql`select set_config('schedule.allow_plan_interaction_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_plan_mutation_change', 'on', true)`;
     await sql`select set_config('schedule.allow_routine_planning_feedback_event_change', 'on', true)`;
+    await sql`select set_config('schedule.allow_routine_duration_insight_feedback_event_change', 'on', true)`;
     await sql`delete from workspaces where id = any(${workspaceIds})`;
   });
 }
@@ -1736,37 +1737,208 @@ try {
     url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/duration-insight`,
   });
   assert.equal(durationInsightResponse.statusCode, 200, durationInsightResponse.body);
+  const durationInsight = durationInsightResponse.json<{
+    routineId: string;
+    routineVersion: number;
+    status: string;
+    sampleCount: number;
+    minimumSamples: number;
+    lookbackDays: number;
+    currentExpectedMinutes: number;
+    minimumMinutes: number;
+    maximumMinutes: number;
+    observedMedianMinutes: number | null;
+    suggestedExpectedMinutes: number | null;
+    insightKey: string | null;
+    disposition: string;
+    dismissedAt: string | null;
+  }>();
+  assert.match(durationInsight.insightKey ?? "", /^[0-9a-f]{64}$/);
+  assert.deepEqual(durationInsight, {
+    routineId: createdRoutineId,
+    routineVersion: 2,
+    status: "suggested",
+    sampleCount: 4,
+    minimumSamples: 3,
+    lookbackDays: 90,
+    evaluatedAt: "2026-07-15T07:00:00.000Z",
+    windowStartedAt: "2026-04-16T07:00:00.000Z",
+    currentExpectedMinutes: 30,
+    minimumMinutes: 20,
+    maximumMinutes: 60,
+    observedMedianMinutes: 50,
+    materialThresholdMinutes: 5,
+    suggestedExpectedMinutes: 50,
+    insightKey: durationInsight.insightKey,
+    disposition: "available",
+    dismissedAt: null,
+  });
+  const initialDurationInsightKey = durationInsight.insightKey!;
+
+  // EVIDENCE: routine-duration-insight-feedback-api
+  // Dismissal and reset are persisted, replay-safe dispositions. They never edit the routine or
+  // Today, while a materially different evidence fingerprint becomes available again.
+  const routineBeforeDurationFeedbackResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}`,
+  });
+  assert.equal(
+    routineBeforeDurationFeedbackResponse.statusCode,
+    200,
+    routineBeforeDurationFeedbackResponse.body,
+  );
+  const routineBeforeDurationFeedback = routineBeforeDurationFeedbackResponse.json();
+  const planHeadsBeforeDurationFeedback = await connection.sql<
+    { local_date: string; current_plan_id: string; version: number }[]
+  >`
+    select local_date::text, current_plan_id::text, version
+    from daily_plan_heads
+    where workspace_id = ${createdWorkspaceId}
+    order by local_date, id
+  `;
+  const dismissDurationInsightRequest = {
+    method: "POST" as const,
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/duration-insight/dismissals`,
+    headers: { "idempotency-key": "duration-insight-dismiss-initial" },
+    payload: { expectedVersion: 2, insightKey: initialDurationInsightKey },
+  };
+  const dismissDurationInsightResponse = await app.inject(dismissDurationInsightRequest);
+  assert.equal(dismissDurationInsightResponse.statusCode, 200, dismissDurationInsightResponse.body);
+  const dismissedDurationInsightEvent = dismissDurationInsightResponse.json<{
+    id: string;
+    workspaceId: string;
+    routineId: string;
+    insightKey: string;
+    kind: string;
+    routineVersion: number;
+    observedMedianMinutes: number;
+    suggestedExpectedMinutes: number | null;
+    idempotencyKey: string;
+    recordedAt: string;
+  }>();
   assert.deepEqual(
-    durationInsightResponse.json<{
-      routineId: string;
-      routineVersion: number;
-      status: string;
-      sampleCount: number;
-      minimumSamples: number;
-      lookbackDays: number;
-      currentExpectedMinutes: number;
-      minimumMinutes: number;
-      maximumMinutes: number;
-      observedMedianMinutes: number | null;
-      suggestedExpectedMinutes: number | null;
-    }>(),
     {
+      workspaceId: dismissedDurationInsightEvent.workspaceId,
+      routineId: dismissedDurationInsightEvent.routineId,
+      insightKey: dismissedDurationInsightEvent.insightKey,
+      kind: dismissedDurationInsightEvent.kind,
+      routineVersion: dismissedDurationInsightEvent.routineVersion,
+      observedMedianMinutes: dismissedDurationInsightEvent.observedMedianMinutes,
+      suggestedExpectedMinutes: dismissedDurationInsightEvent.suggestedExpectedMinutes,
+      idempotencyKey: dismissedDurationInsightEvent.idempotencyKey,
+      recordedAt: dismissedDurationInsightEvent.recordedAt,
+    },
+    {
+      workspaceId: createdWorkspaceId,
       routineId: createdRoutineId,
+      insightKey: initialDurationInsightKey,
+      kind: "dismissed",
       routineVersion: 2,
-      status: "suggested",
-      sampleCount: 4,
-      minimumSamples: 3,
-      lookbackDays: 90,
-      evaluatedAt: "2026-07-15T07:00:00.000Z",
-      windowStartedAt: "2026-04-16T07:00:00.000Z",
-      currentExpectedMinutes: 30,
-      minimumMinutes: 20,
-      maximumMinutes: 60,
       observedMedianMinutes: 50,
-      materialThresholdMinutes: 5,
       suggestedExpectedMinutes: 50,
+      idempotencyKey: "duration-insight-dismiss-initial",
+      recordedAt: "2026-07-15T07:00:00.000Z",
     },
   );
+  const replayedDurationDismissal = await app.inject(dismissDurationInsightRequest);
+  assert.equal(replayedDurationDismissal.statusCode, 200, replayedDurationDismissal.body);
+  assert.deepEqual(replayedDurationDismissal.json(), dismissDurationInsightResponse.json());
+  const conflictingDurationDismissal = await app.inject({
+    ...dismissDurationInsightRequest,
+    payload: { ...dismissDurationInsightRequest.payload, expectedVersion: 3 },
+  });
+  assert.equal(conflictingDurationDismissal.statusCode, 409, conflictingDurationDismissal.body);
+  assert.equal(
+    conflictingDurationDismissal.json<{ error: { code: string } }>().error.code,
+    "routine_duration_insight.idempotency_conflict",
+  );
+
+  const dismissedDurationInsightReads = await Promise.all([
+    app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/duration-insight`,
+    }),
+    app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/duration-insight`,
+    }),
+  ]);
+  for (const dismissedDurationInsightRead of dismissedDurationInsightReads) {
+    assert.equal(dismissedDurationInsightRead.statusCode, 200, dismissedDurationInsightRead.body);
+    assert.deepEqual(
+      dismissedDurationInsightRead.json<{
+        insightKey: string | null;
+        disposition: string;
+        dismissedAt: string | null;
+      }>(),
+      {
+        ...durationInsight,
+        disposition: "dismissed",
+        dismissedAt: dismissedDurationInsightEvent.recordedAt,
+      },
+    );
+  }
+
+  const resetDurationInsightRequest = {
+    method: "POST" as const,
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/duration-insight/dismissal-resets`,
+    headers: { "idempotency-key": "duration-insight-reset-initial" },
+    payload: { expectedVersion: 2, insightKey: initialDurationInsightKey },
+  };
+  const resetDurationInsightResponse = await app.inject(resetDurationInsightRequest);
+  assert.equal(resetDurationInsightResponse.statusCode, 200, resetDurationInsightResponse.body);
+  const resetDurationInsightEvent = resetDurationInsightResponse.json<{
+    insightKey: string;
+    kind: string;
+    idempotencyKey: string;
+  }>();
+  assert.deepEqual(
+    {
+      insightKey: resetDurationInsightEvent.insightKey,
+      kind: resetDurationInsightEvent.kind,
+      idempotencyKey: resetDurationInsightEvent.idempotencyKey,
+    },
+    {
+      insightKey: initialDurationInsightKey,
+      kind: "reset",
+      idempotencyKey: "duration-insight-reset-initial",
+    },
+  );
+  const replayedDurationReset = await app.inject(resetDurationInsightRequest);
+  assert.equal(replayedDurationReset.statusCode, 200, replayedDurationReset.body);
+  assert.deepEqual(replayedDurationReset.json(), resetDurationInsightResponse.json());
+  const resetDurationInsightRead = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/duration-insight`,
+  });
+  assert.equal(resetDurationInsightRead.statusCode, 200, resetDurationInsightRead.body);
+  assert.equal(resetDurationInsightRead.json<{ disposition: string }>().disposition, "available");
+  assert.equal(resetDurationInsightRead.json<{ dismissedAt: string | null }>().dismissedAt, null);
+
+  const secondDurationDismissal = await app.inject({
+    ...dismissDurationInsightRequest,
+    headers: { "idempotency-key": "duration-insight-dismiss-before-new-evidence" },
+  });
+  assert.equal(secondDurationDismissal.statusCode, 200, secondDurationDismissal.body);
+  const routineAfterDurationFeedbackResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}`,
+  });
+  assert.equal(
+    routineAfterDurationFeedbackResponse.statusCode,
+    200,
+    routineAfterDurationFeedbackResponse.body,
+  );
+  assert.deepEqual(routineAfterDurationFeedbackResponse.json(), routineBeforeDurationFeedback);
+  const planHeadsAfterDurationFeedback = await connection.sql<
+    { local_date: string; current_plan_id: string; version: number }[]
+  >`
+    select local_date::text, current_plan_id::text, version
+    from daily_plan_heads
+    where workspace_id = ${createdWorkspaceId}
+    order by local_date, id
+  `;
+  assert.deepEqual(planHeadsAfterDurationFeedback, planHeadsBeforeDurationFeedback);
 
   // A Today completion does not read or update its routine row. This interleaving proves that the
   // approval captures its evidence cutoff after the lock wait and observes the preceding commit.
@@ -1793,31 +1965,36 @@ try {
     200,
     alternativeInsightBeforeRaceResponse.body,
   );
-  assert.deepEqual(
-    alternativeInsightBeforeRaceResponse.json<{
-      routineVersion: number;
-      status: string;
-      sampleCount: number;
-      observedMedianMinutes: number | null;
-      suggestedExpectedMinutes: number | null;
-    }>(),
-    {
-      routineId: alternativeRoutineId,
-      routineVersion: 1,
-      status: "suggested",
-      sampleCount: 4,
-      minimumSamples: 3,
-      lookbackDays: 90,
-      evaluatedAt: "2026-07-15T07:00:00.000Z",
-      windowStartedAt: "2026-04-16T07:00:00.000Z",
-      currentExpectedMinutes: 30,
-      minimumMinutes: 20,
-      maximumMinutes: 120,
-      observedMedianMinutes: 55,
-      materialThresholdMinutes: 5,
-      suggestedExpectedMinutes: 55,
-    },
-  );
+  const alternativeInsightBeforeRace = alternativeInsightBeforeRaceResponse.json<{
+    routineVersion: number;
+    status: string;
+    sampleCount: number;
+    observedMedianMinutes: number | null;
+    suggestedExpectedMinutes: number | null;
+    insightKey: string | null;
+    disposition: string;
+    dismissedAt: string | null;
+  }>();
+  assert.match(alternativeInsightBeforeRace.insightKey ?? "", /^[0-9a-f]{64}$/);
+  assert.deepEqual(alternativeInsightBeforeRace, {
+    routineId: alternativeRoutineId,
+    routineVersion: 1,
+    status: "suggested",
+    sampleCount: 4,
+    minimumSamples: 3,
+    lookbackDays: 90,
+    evaluatedAt: "2026-07-15T07:00:00.000Z",
+    windowStartedAt: "2026-04-16T07:00:00.000Z",
+    currentExpectedMinutes: 30,
+    minimumMinutes: 20,
+    maximumMinutes: 120,
+    observedMedianMinutes: 55,
+    materialThresholdMinutes: 5,
+    suggestedExpectedMinutes: 55,
+    insightKey: alternativeInsightBeforeRace.insightKey,
+    disposition: "available",
+    dismissedAt: null,
+  });
 
   let markPlanCompletionLockAcquired: () => void = () => undefined;
   const planCompletionLockAcquired = new Promise<void>((resolve) => {
@@ -2029,32 +2206,42 @@ try {
     200,
     refreshedDurationInsightResponse.body,
   );
-  assert.deepEqual(
-    refreshedDurationInsightResponse.json<{
-      routineVersion: number;
-      status: string;
-      sampleCount: number;
-      currentExpectedMinutes: number;
-      observedMedianMinutes: number | null;
-      suggestedExpectedMinutes: number | null;
-    }>(),
-    {
-      routineId: createdRoutineId,
-      routineVersion: 2,
-      status: "suggested",
-      sampleCount: 4,
-      minimumSamples: 3,
-      lookbackDays: 90,
-      evaluatedAt: "2026-07-15T07:00:00.000Z",
-      windowStartedAt: "2026-04-16T07:00:00.000Z",
-      currentExpectedMinutes: 30,
-      minimumMinutes: 20,
-      maximumMinutes: 60,
-      observedMedianMinutes: 48,
-      materialThresholdMinutes: 5,
-      suggestedExpectedMinutes: 48,
-    },
+  const refreshedDurationInsight = refreshedDurationInsightResponse.json<{
+    routineVersion: number;
+    status: string;
+    sampleCount: number;
+    currentExpectedMinutes: number;
+    observedMedianMinutes: number | null;
+    suggestedExpectedMinutes: number | null;
+    insightKey: string | null;
+    disposition: string;
+    dismissedAt: string | null;
+  }>();
+  assert.match(refreshedDurationInsight.insightKey ?? "", /^[0-9a-f]{64}$/);
+  assert.notEqual(
+    refreshedDurationInsight.insightKey,
+    initialDurationInsightKey,
+    "materially changed evidence must produce a new duration-insight key",
   );
+  assert.deepEqual(refreshedDurationInsight, {
+    routineId: createdRoutineId,
+    routineVersion: 2,
+    status: "suggested",
+    sampleCount: 4,
+    minimumSamples: 3,
+    lookbackDays: 90,
+    evaluatedAt: "2026-07-15T07:00:00.000Z",
+    windowStartedAt: "2026-04-16T07:00:00.000Z",
+    currentExpectedMinutes: 30,
+    minimumMinutes: 20,
+    maximumMinutes: 60,
+    observedMedianMinutes: 48,
+    materialThresholdMinutes: 5,
+    suggestedExpectedMinutes: 48,
+    insightKey: refreshedDurationInsight.insightKey,
+    disposition: "available",
+    dismissedAt: null,
+  });
   const planHeadsBeforeDurationApproval = await connection.sql<
     { local_date: string; current_plan_id: string; version: number }[]
   >`
@@ -2122,12 +2309,18 @@ try {
     currentExpectedMinutes: number;
     observedMedianMinutes: number | null;
     suggestedExpectedMinutes: number | null;
+    insightKey: string | null;
+    disposition: string;
+    dismissedAt: string | null;
   }>();
   assert.equal(alignedDurationInsight.routineVersion, 3);
   assert.equal(alignedDurationInsight.status, "aligned");
   assert.equal(alignedDurationInsight.currentExpectedMinutes, 48);
   assert.equal(alignedDurationInsight.observedMedianMinutes, 48);
   assert.equal(alignedDurationInsight.suggestedExpectedMinutes, null);
+  assert.equal(alignedDurationInsight.insightKey, null);
+  assert.equal(alignedDurationInsight.disposition, "available");
+  assert.equal(alignedDurationInsight.dismissedAt, null);
   const staleDurationApprovalResponse = await app.inject({
     method: "POST",
     url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/duration-insight/approve`,

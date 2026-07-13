@@ -89,6 +89,22 @@ does not auto-retry the old suggestion. An out-of-range median opens ordinary du
 of offering a direct apply action. Applying an estimate leaves the current Today plan unchanged until
 the user explicitly generates or regenerates it.
 
+An available `suggested` or `review_range` insight also offers a quiet **Not now** action. It sends
+the current routine version and exact evidence key with a fresh idempotency key, then refetches the
+insight. A dismissed insight keeps its recommendation explanation and evidence visible, hides
+**Apply estimate**, edit/review, and **Not now**, and instead offers **Show again**. That reset uses
+the same exact key and refetches the current disposition. Neither action edits the routine, changes
+its duration, mutates Today or its head, regenerates a plan, or changes planner behavior.
+
+Only the submitted feedback controls are disabled while a command is pending. A transport or policy
+failure keeps the current insight visible and can be retried with a new command attempt. A `409`
+refreshes stale routine and insight evidence rather than pretending the old recommendation changed.
+Late responses for a previously selected routine do not replace the current detail view. After a
+successful dismissal or reset, keyboard focus returns to the insight heading and a polite live
+message announces the new disposition. Changed completion evidence or relevant duration policy
+produces a new key, so a still-actionable recommendation automatically appears as available even if
+an earlier key was dismissed.
+
 ## Design system
 
 The interface uses warm paper-toned surfaces, ink-like neutrals, and a restrained violet accent for
@@ -103,8 +119,10 @@ PostgreSQL database: create a workspace, opt in one-time work, add a routine, an
 plan; apply **Not today**, verify the separate hidden state survives reload, reset it, and verify the
 routine returns pending; then complete and reverse work, complete the routine, reload, and confirm
 that activity persists. It asserts successful feedback and reset HTTP responses and does not
-intercept network requests or replace the API with mocks. Duration-calibration approval has
-component and API/PostgreSQL evidence but is not yet part of this single browser scenario.
+intercept network requests or replace the API with mocks. A separate Chromium scenario creates live
+completion evidence, dismisses and reloads an exact duration insight, resets it, dismisses it again,
+then appends changed evidence and expects the new key to resurface as available. Duration-calibration
+approval has component and API/PostgreSQL evidence but is not yet part of a browser scenario.
 
 Install the local browser binary once, then run the bounded verifier:
 
@@ -130,6 +148,6 @@ a dedicated Chromium job and retains traces, screenshots, and video when it fail
 - Alternative-plan comparison and generalized plan undo
 - Learned cadence, energy, preference, overload, and adaptive-selection settings
 - Work-item dependencies
-- Duration-insight dismissal, reset, automatic application, and history-comparison controls
+- Automatic duration-insight application and historical insight-comparison controls
 - Local-model advisor controls
 - Collaboration, sync, notifications, and cloud deployment

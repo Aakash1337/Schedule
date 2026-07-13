@@ -192,6 +192,25 @@ an occurrence after the pre-wait clock time. This establishes contract correctne
 the implemented statistical rule; it does not establish that the 90-day window, three-sample minimum,
 median, or material threshold improves real user outcomes.
 
+Duration-insight feedback extends this boundary with exact-key, reversible user disposition. The
+registered domain anchors cover deterministic SHA-256 key derivation and sensitivity to the
+calculation policy, relevant duration policy, completion evidence, corrections, and reversals. They
+also cover latest-event resolution into `available` or `dismissed`, while informational insights have
+no actionable key. Application anchors cover current-insight revalidation, evidence snapshots,
+exact-command replay before state revalidation, dismissal reset, and rejection when the requested
+exact key is no longer current or dismissed.
+
+Schema and repository anchors cover tenant-bound immutable history, database-allocated ingestion
+order, deterministic latest-key reads, append-only persistence, workspace-scoped idempotency replay,
+and conflicting key reuse. API and component anchors cover strict lowercase SHA-256 bodies, required
+idempotency headers, dismiss/refetch, control gating, **Show again**, retained retryable failures,
+stale-evidence refresh, and late-response protection. The PostgreSQL verifier anchors
+`routine-duration-insight-feedback-api` and `routine-duration-insight-feedback-postgres` are intended
+to exercise persisted dismissal, identical replay, semantic idempotency conflict, reset, automatic
+resurfacing after evidence changes, database rejection of feedback UPDATE/DELETE, unchanged routine,
+duration, Today-head, and planner state, and a queued routine edit winning before stale feedback can
+append. These are registered evidence targets, not a claim in this document that the checks have run.
+
 ## Known evidence gaps
 
 The audit deliberately leaves these visible instead of turning them into false green checks:
@@ -224,11 +243,13 @@ The audit deliberately leaves these visible instead of turning them into false g
   delivery receipts remain deferred;
 - live browser evidence covers the central desktop Chromium mixed routine/work-item planning loop,
   including temporary routine feedback, reload, reset, work completion/reversal, and routine
-  completion, but not every browser, responsive layout, validation branch, Calendar interaction, or
-  the duration-calibration approval flow;
-- duration calibration has domain, component, API, repository, and real PostgreSQL evidence, but no
-  production outcome data, rejection-memory study, learned cadence/energy/preference model,
-  automatic application, historical replay comparison, or local-model participation; and
+  completion. A second scenario covers duration-insight dismissal, persisted disposition, exact-key
+  reset, and resurfacing after changed evidence, but not every browser, responsive layout, validation
+  branch, Calendar interaction, or the duration-calibration approval flow;
+- duration calibration has domain, component, API, repository, and real PostgreSQL evidence, and
+  exact-key dismissal/reset now preserves reversible rejection memory. It still has no production
+  outcome data, learned cadence/energy/preference model, automatic application, historical insight
+  comparison, or local-model participation; and
 - production outcome measures such as acceptance rate, completion rate, cadence attainment, and
   duration error need actual local usage data and are not CI release gates.
 
