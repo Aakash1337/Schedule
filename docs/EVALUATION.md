@@ -43,7 +43,7 @@ project.
 
 ## Current scorecard
 
-The current audited unit/component suite contains 54 test files and 590 runtime test cases, plus one
+The current audited unit/component suite contains 57 test files and 631 runtime test cases, plus one
 live Chromium integration scenario. Parameterized state matrices expand into many cases, so this
 number must not be compared as though every case were an independent product feature.
 
@@ -53,7 +53,7 @@ number must not be compared as though every case were an independent product fea
 | ---------------------------------------------------------------------- | -----------: |
 | Implemented features with CI-registered evidence                       |      21 / 21 |
 | Critical implemented features with CI-registered integration or drills |      13 / 13 |
-| Partial features with an explicit limitation                           |        0 / 0 |
+| Partial features with an explicit limitation                           |        1 / 1 |
 | Deferred features incorrectly counted as passing                       |            0 |
 | Missing or stale evidence anchors                                      |            0 |
 
@@ -65,21 +65,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |      58.1% |   66.26% |    64.79% | 58.39% |
+| Whole repository, measured |     58.12% |   67.12% |    65.24% | 58.41% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |     94.44% |   88.47% |    96.02% | 95.67% |
+| Domain, measured           |     94.79% |   89.14% |    96.23% | 95.92% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     88.11% |   82.17% |      100% | 88.84% |
+| Application, measured      |      88.6% |   82.61% |      100% | 89.33% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     83.87% |    75.9% |     71.9% | 84.83% |
+| API, measured              |      84.2% |    75.9% |     72.8% | 85.15% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.26% |   89.18% |    91.11% | 95.14% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     76.93% |   65.49% |       71% | 80.63% |
+| Web, measured              |     83.68% |   70.71% |    71.76% | 84.25% |
 | Web, required              |        75% |      63% |       70% |    79% |
 
-The whole-repository totals are 4,540 of 7,814 statements, 3,282 of 4,953 branches,
-1,029 of 1,588 functions, and 4,247 of 7,273 lines.
+The whole-repository totals are 4,742 of 8,158 statements, 3,451 of 5,141 branches,
+1,072 of 1,643 functions, and 4,434 of 7,591 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -107,6 +107,32 @@ including source-matched activity references.
 These are contract metrics, not claims that the heuristic is globally optimal. Historical replay and
 fitness-regret evaluation will become meaningful once real usage fixtures and a second planner version
 exist.
+
+### Duration-calibration evidence
+
+The transparent duration slice has independent oracles at each boundary. Domain tests cover the
+inclusive 90-day edge, future and unrelated evidence, minimum sample size, correction ordering,
+reversal removal, even-sample rounding, material-change threshold, range review, input-order
+invariance, and immutability. Application and repository tests cover tenant-first lookup, the exact
+window passed to one bounded evidence query, deterministic mapping, invalid windows, and overflow
+failure. Approval-use-case tests prove that routine version, current evidence, and the saved expected
+duration are revalidated together; stale versions skip the evidence read, changed evidence cannot be
+applied, and every other user-owned duration field is protected. API and component tests cover the
+response contract, strict complete approval body, evidence-conflict mapping, all four user-visible
+states, stale-response suppression, atomic approval without generic `PATCH`, conflict reload without
+automatic retry, and non-blocking retries.
+
+The PostgreSQL product-API verifier adds persisted tenant isolation, an exactly-on-boundary sample and
+a one-millisecond-outside sample, correction and reversal amendments, an evidence change between GET
+and approval, atomic refreshed approval, stale-version rejection, and proof that approval does not
+change any current plan head. Normal PostgreSQL units of work run at serializable isolation. Insight
+approval deliberately uses read committed and acquires the same per-routine advisory lock as activity
+appends before reading evidence, so statements after a lock wait see the earlier holder's commit. The
+verifier exercises that production boundary and proves queued routine and plan-item evidence changes
+win over stale approval.
+This establishes contract correctness for
+the implemented statistical rule; it does not establish that the 90-day window, three-sample minimum,
+median, or material threshold improves real user outcomes.
 
 ## Known evidence gaps
 
@@ -140,7 +166,10 @@ The audit deliberately leaves these visible instead of turning them into false g
   delivery receipts remain deferred;
 - live browser evidence covers the central desktop Chromium mixed routine/work-item planning loop,
   including work completion and reversal, but not every browser, responsive layout, validation
-  branch, or Calendar interaction; and
+  branch, Calendar interaction, or the duration-calibration approval flow;
+- duration calibration has domain, component, API, repository, and real PostgreSQL evidence, but no
+  production outcome data, rejection-memory study, learned cadence/energy/preference model,
+  automatic application, historical replay comparison, or local-model participation; and
 - production outcome measures such as acceptance rate, completion rate, cadence attainment, and
   duration error need actual local usage data and are not CI release gates.
 

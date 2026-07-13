@@ -700,11 +700,93 @@
     },
     {
       "id": "transparent-adaptation",
-      "status": "deferred",
+      "status": "partial",
       "risk": "normal",
       "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 3 — Transparent adaptation" },
-      "limitations": ["No learned-duration or preference model is implemented."],
-      "evidence": []
+      "limitations": [
+        "Only explicit routine-duration calibration is implemented; learned cadence, day/time, energy, preference, overload, and category-balance signals remain deferred.",
+        "Suggestions are never applied automatically, and rejection memory, dismissal/reset controls, adaptive probabilistic selection beyond the deterministic planner, and historical comparison remain deferred.",
+        "The statistical thresholds have contract evidence but no production outcome data, and no local or hosted model participates."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/routine-duration-insight.test.ts",
+          "command": "unit",
+          "anchors": [
+            "reports transparent insufficient history without inventing a median",
+            "uses an inclusive 90-day window and ignores future, unrelated, and invalid samples",
+            "uses the latest non-future correction by recorded time then lexicographic id",
+            "applies an amendment outside the sample window and removes reversed completions",
+            "rounds even-sample medians half-up and requires a material difference",
+            "requires range review before considering the material threshold",
+            "is input-order invariant and does not mutate input events or dates"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/get-routine-duration-insight.test.ts",
+          "command": "unit",
+          "anchors": [
+            "reads the exact 90-day routine evidence window and returns the derived suggestion",
+            "validates the workspace before reading the routine or duration evidence",
+            "reports a missing routine without reading cross-routine evidence"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/approve-routine-duration-insight.test.ts",
+          "command": "unit",
+          "anchors": [
+            "atomically revalidates the current suggestion and saves only its expected duration",
+            "rejects a stale routine version before reading evidence",
+            "rejects approval when the evidence %s",
+            "rejects approval that changes the user-owned %s setting",
+            "validates tenant scope and routine existence before reading evidence",
+            "rejects an invalid expected version before opening the unit of work"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/repositories.test.ts",
+          "command": "unit",
+          "anchors": [
+            "uses one bounded CTE query and maps deterministic evidence order",
+            "rejects invalid or inverted windows before querying",
+            "fails closed when evidence exceeds the local-mode bound"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "approves a complete duration insight replacement through its atomic service",
+            "rejects incomplete duration approvals before invoking the service",
+            "maps changed duration evidence during approval to 409"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/RoutinesView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "explains when more completed sessions are needed for duration learning",
+            "shows when recent duration evidence supports the current estimate",
+            "atomically approves a suggested estimate with the full duration",
+            "requires range review instead of offering an out-of-range estimate",
+            "does not auto-retry a stale suggestion after an optimistic conflict",
+            "ignores a late insight response from a previously selected routine",
+            "retries a failed insight without blocking routine details"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-product-api.ts",
+          "command": "product-api",
+          "anchors": ["routine-duration-insight-api"]
+        }
+      ]
     },
     {
       "id": "local-model-advisor",

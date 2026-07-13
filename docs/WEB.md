@@ -36,7 +36,9 @@ The application uses a persistent desktop rail and a compact mobile navigation b
    editable from the board. Only opted-in `backlog`, `planned`, and `in_progress` work may become
    a Today candidate; the card shows its selected duration.
 3. **Routines** manages the reusable activity pool, including structured tags, duration policy,
-   cadence, status, and activity history.
+   cadence, status, activity history, and transparent duration calibration. The selected routine
+   reports whether it needs more completed sessions, supports the current estimate, has a material
+   in-range suggestion, or needs manual range review.
 4. **Calendar** presents one-time schedule blocks in a week-first agenda. Blocks may link to a work
    item, but remain independently editable. Date and time fields use the browser's IANA time zone so
    the displayed wall time and persisted instant cannot disagree.
@@ -61,6 +63,15 @@ A collection that changes during traversal asks the user to refresh instead of s
 partial list. Initial loading uses announced skeleton states, and mutations keep existing data
 visible while disabling only the submitted control.
 
+A duration suggestion is never applied on load. The user must choose **Apply estimate**, which sends
+the selected routine's complete duration policy and insight version to the dedicated atomic approval
+endpoint. The server re-reads the routine and current evidence before saving and permits only the
+expected duration to change; the ordinary routine `PATCH` remains the manual editor path. A routine or
+evidence conflict reloads both resources, shows the conflict, and requires approval again. The browser
+does not auto-retry the old suggestion. An out-of-range median opens ordinary duration editing instead
+of offering a direct apply action. Applying an estimate leaves the current Today plan unchanged until
+the user explicitly generates or regenerates it.
+
 ## Design system
 
 The interface uses warm paper-toned surfaces, ink-like neutrals, and a restrained violet accent for
@@ -73,8 +84,8 @@ desktop, and narrow screens.
 The Chromium smoke test exercises the central product path through real built processes and a fresh
 PostgreSQL database: create a workspace, add a routine to the pool, generate today's plan, complete
 the planned routine, reload, and confirm that completion persists. It does not intercept network
-requests or replace the API with mocks. Work opt-in has component and API evidence; its browser flow
-is not yet part of this single smoke scenario.
+requests or replace the API with mocks. Work opt-in and duration-calibration approval have component
+and API/PostgreSQL evidence; those interactions are not yet part of this single browser scenario.
 
 Install the local browser binary once, then run the bounded verifier:
 
@@ -98,6 +109,7 @@ a dedicated Chromium job and retains traces, screenshots, and video when it fail
 - Drag ranking, bulk editing, projects, subtasks, attachments, and saved searches
 - Recurrence authoring, calendar conflict detection, and automatic placement
 - Alternative-plan comparison and generalized plan undo
-- Learned-duration and adaptation settings
+- Learned cadence, energy, preference, overload, and adaptive-selection settings
+- Duration-insight dismissal, reset, automatic application, and history-comparison controls
 - Local-model advisor controls
 - Collaboration, sync, notifications, and cloud deployment

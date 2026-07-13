@@ -95,6 +95,27 @@ export interface Routine {
   readonly updatedAt: string;
 }
 
+export type RoutineDurationInsightStatus =
+  "insufficient_history" | "aligned" | "suggested" | "review_range";
+
+/** A read-only duration recommendation. Applying it requires explicit atomic approval. */
+export interface RoutineDurationInsight {
+  readonly routineId: string;
+  readonly routineVersion: number;
+  readonly status: RoutineDurationInsightStatus;
+  readonly sampleCount: number;
+  readonly minimumSamples: number;
+  readonly lookbackDays: number;
+  readonly evaluatedAt: string;
+  readonly windowStartedAt: string;
+  readonly currentExpectedMinutes: number;
+  readonly minimumMinutes: number;
+  readonly maximumMinutes: number;
+  readonly observedMedianMinutes: number | null;
+  readonly materialThresholdMinutes: number;
+  readonly suggestedExpectedMinutes: number | null;
+}
+
 export type PlanItemActivityState =
   "pending" | "started" | "completed" | "skipped" | "deferred" | "dismissed";
 

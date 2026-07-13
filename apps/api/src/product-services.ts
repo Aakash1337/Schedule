@@ -1,4 +1,5 @@
 import {
+  ApproveRoutineDurationInsight,
   CreateRoutine,
   CreateScheduleBlock,
   CreateWorkItem,
@@ -7,6 +8,7 @@ import {
   GetCurrentDailyPlan,
   GetDailyPlan,
   GetRoutine,
+  GetRoutineDurationInsight,
   GetScheduleBlock,
   GetWorkItem,
   GetWorkspace,
@@ -30,6 +32,7 @@ import {
 import type { ProductServices } from "./product-routes.js";
 
 export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): ProductServices {
+  const approveRoutineDurationInsight = new ApproveRoutineDurationInsight(unitOfWork, clock);
   const createWorkspace = new CreateWorkspace(unitOfWork, clock);
   const getWorkspace = new GetWorkspace(unitOfWork);
   const listWorkspaces = new ListWorkspaces(unitOfWork);
@@ -44,6 +47,7 @@ export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): Pro
   const updateScheduleBlock = new UpdateScheduleBlock(unitOfWork, clock);
   const deleteScheduleBlock = new DeleteScheduleBlock(unitOfWork, clock);
   const getRoutine = new GetRoutine(unitOfWork);
+  const getRoutineDurationInsight = new GetRoutineDurationInsight(unitOfWork, clock);
   const updateRoutine = new UpdateRoutine(unitOfWork, clock);
   const listRoutines = new ListRoutines(unitOfWork);
   const listRoutineActivity = new ListRoutineActivity(unitOfWork);
@@ -56,6 +60,7 @@ export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): Pro
   const getDailyPlan = new GetDailyPlan(unitOfWork);
 
   return {
+    approveRoutineDurationInsight: (command) => approveRoutineDurationInsight.execute(command),
     createWorkspace: (command) => createWorkspace.execute(command),
     getWorkspace: (query) => getWorkspace.execute(query),
     listWorkspaces: (query) => listWorkspaces.execute(query),
@@ -70,6 +75,7 @@ export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): Pro
     updateScheduleBlock: (command) => updateScheduleBlock.execute(command),
     deleteScheduleBlock: (command) => deleteScheduleBlock.execute(command),
     getRoutine: (query) => getRoutine.execute(query),
+    getRoutineDurationInsight: (query) => getRoutineDurationInsight.execute(query),
     updateRoutine: (command) => updateRoutine.execute(command),
     listRoutines: (query) => listRoutines.execute(query),
     listRoutineActivity: (query) => listRoutineActivity.execute(query),

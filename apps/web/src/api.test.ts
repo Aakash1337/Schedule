@@ -175,6 +175,64 @@ describe("web API client", () => {
     );
   });
 
+  it("retrieves a routine duration insight with a cancellable request", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            routineId: "routine-1",
+            routineVersion: 2,
+            status: "insufficient_history",
+            sampleCount: 1,
+            minimumSamples: 3,
+            lookbackDays: 90,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await api.getRoutineDurationInsight("workspace-1", "routine-1", controller.signal);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/routines/routine-1/duration-insight",
+      expect.objectContaining({ method: "GET", signal: controller.signal }),
+    );
+  });
+
+  it("approves a routine duration insight through its atomic command endpoint", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ id: "routine-1", version: 3 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const duration = {
+      minimumMinutes: 15,
+      expectedMinutes: 40,
+      maximumMinutes: 45,
+      splittable: false,
+      minimumSessionMinutes: 15,
+      overheadMinutes: 0,
+    };
+
+    await api.approveRoutineDurationInsight("workspace-1", "routine-1", {
+      expectedVersion: 2,
+      duration,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/routines/routine-1/duration-insight/approve",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ expectedVersion: 2, duration }),
+      }),
+    );
+  });
+
   it("handles audited 204 deletion responses", async () => {
     const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);

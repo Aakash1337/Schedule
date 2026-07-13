@@ -37,6 +37,8 @@ not authorize these product routes.
 | `GET`    | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`         | List a bounded routine page (`200`)              |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}`                              | Retrieve one routine (`200` or `404`)            |
 | `PATCH`  | `/v1/workspaces/{workspaceId}/routines/{routineId}`                              | Version-checked partial update (`200` or `409`)  |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight`             | Derive a read-only insight (`200` or `404`)      |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/approve`     | Atomically approve an insight (`200` or `409`)   |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`              | List stable, cursor-paginated history (`200`)    |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`              | Idempotently record activity (`200`)             |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans`                                             | Create revision 1 or retry an exact revision     |
@@ -53,7 +55,61 @@ Work items provide the initial backlog and status-column Kanban model through `b
 
 Schedule-block range reads require offset-bearing `from` and `to` instants, use half-open overlap (`startsAt < to` and `endsAt > from`), and accept ranges no longer than 93 days with the same bounded pagination convention. Absolute instants remain authoritative when `timeZone` changes. A block may reference a work item from the same workspace, but their lifecycles remain independent. Create and update validate the workspace and optional link. Update and deletion require `expectedVersion`; deletion returns `204` and appends an immutable audit snapshot in the same transaction. Recurrence authoring, conflict detection, and automatic placement are deferred.
 
-Routine updates require `expectedVersion`. Scalar fields are partial; if `tags`, `duration`, or `cadence` is supplied, that nested object is a complete replacement. A real change increments the routine version once. A semantic no-op returns the current routine without writing or incrementing its version. A stale version returns `409 routine.version_conflict`.
+Routine updates require `expectedVersion`. Scalar fields are partial; if `tags`, `duration`, or `cadence` is supplied, that nested object is a complete replacement. A real change increments the routine version once. A semantic no-op returns the current routine without writing or incrementing its version. A stale version returns `409 routine.version_conflict`. This generic `PATCH` is the manual editing path; it does not assert that a duration-insight suggestion is still current.
+
+The routine `duration-insight` route is a read-only calculation over same-workspace, same-routine
+activity. It considers completed sessions whose occurrence lies in the inclusive interval from
+`windowStartedAt` through `evaluatedAt` (the trailing 90 days), and whose occurrence and recording are
+not in the future. A qualifying completion uses its latest non-future `duration_corrected` amendment,
+ordered by recording time and then event ID, and is removed when it has a non-future
+`completion_reversed` amendment. At least three remaining positive, integer-duration samples are
+required.
+
+The response includes `routineId`, `routineVersion`, `status`, `sampleCount`, `minimumSamples`,
+`lookbackDays`, `evaluatedAt`, `windowStartedAt`, the current minimum/expected/maximum minutes,
+`observedMedianMinutes`, `materialThresholdMinutes`, and `suggestedExpectedMinutes`. Status is one of:
+
+- `insufficient_history`: fewer than three samples; both observed and suggested values are `null`;
+- `aligned`: the median is inside the configured range and differs from expected by less than
+  `max(5, ceil(expectedMinutes * 0.10))`;
+- `suggested`: the difference meets that threshold and the median remains inside the configured
+  range, so `suggestedExpectedMinutes` contains the median; or
+- `review_range`: the median is outside the configured minimum/maximum, so no direct suggestion is
+  returned.
+
+The `GET` route never mutates a routine or plan. A client accepts a suggestion with the dedicated
+`POST .../duration-insight/approve` command. Its body is strict and contains exactly an
+`expectedVersion` plus the complete duration replacement:
+
+```json
+{
+  "expectedVersion": 2,
+  "duration": {
+    "minimumMinutes": 20,
+    "expectedMinutes": 48,
+    "maximumMinutes": 60,
+    "splittable": false,
+    "minimumSessionMinutes": null,
+    "overheadMinutes": 0
+  }
+}
+```
+
+In one read-committed unit of work, the server acquires the same per-routine advisory lock used by
+activity appends, reloads the workspace-scoped routine, verifies its version, reads current evidence
+for the same inclusive 90-day window, recomputes the insight, and saves the routine. Read committed is
+intentional here: each statement after a lock wait sees commits made by the earlier lock holder. Every submitted
+duration field except `expectedMinutes` must equal the current
+user-owned value. A changed range, splitting, session, or overhead setting is rejected with
+`routine_duration_insight.approval_scope_invalid`; callers use the generic routine `PATCH` for those
+manual edits.
+
+A stale routine returns `409 routine.version_conflict`. If a completion, correction, or reversal
+means the requested expected duration is no longer the current supported suggestion, the command
+returns `409 routine_duration_insight.evidence_conflict` without saving. Clients must reload the
+routine and evidence and obtain fresh approval rather than retry automatically. Successful approval
+does not change the current Today plan or its head. A later explicit generation or regeneration can
+use the new expected duration.
 
 Routine activity history is ordered by newest ingestion first and accepts `limit` from 1–200 (default 50) plus an opaque, integrity-protected `cursor`. The cursor is bound to its workspace and routine. The first page captures a high-water mark, so later appends do not shift subsequent pages. A non-null `page.nextCursor` retrieves the next page. Local cursor signing keys are process-bound, so clients should restart pagination after an API restart.
 

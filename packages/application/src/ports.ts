@@ -151,9 +151,22 @@ export interface ActivityHistoryPage {
 
 export interface ActivityEventRepository {
   findById(workspaceId: WorkspaceId, id: ActivityEvent["id"]): Promise<ActivityEvent | null>;
+  /** Serializes routine activity writes with a duration-insight approval transaction. */
+  lockRoutineActivity(workspaceId: WorkspaceId, routineId: Routine["id"]): Promise<void>;
   listForPlanning(
     workspaceId: WorkspaceId,
     throughDate: LocalDate,
+  ): Promise<readonly ActivityEvent[]>;
+  /**
+   * Returns bounded, append-only evidence for calibrating one routine's duration.
+   * The implementation must include qualifying completions in the requested window and
+   * any non-future correction or reversal that references one of those completions.
+   */
+  listDurationEvidence(
+    workspaceId: WorkspaceId,
+    routineId: Routine["id"],
+    fromInclusive: Date,
+    throughInclusive: Date,
   ): Promise<readonly ActivityEvent[]>;
   append(event: ActivityEvent): Promise<ActivityEvent>;
   listHistory(
@@ -195,8 +208,19 @@ export interface TransactionContext {
   readonly dailyPlans: DailyPlanRepository;
 }
 
+export interface UnitOfWorkOptions {
+  /**
+   * Serializable remains the default. Read committed is reserved for operations that first
+   * acquire an advisory lock and must observe commits made by an earlier lock holder.
+   */
+  readonly isolationLevel?: "serializable" | "read_committed";
+}
+
 export interface UnitOfWork {
-  run<Result>(operation: (context: TransactionContext) => Promise<Result>): Promise<Result>;
+  run<Result>(
+    operation: (context: TransactionContext) => Promise<Result>,
+    options?: UnitOfWorkOptions,
+  ): Promise<Result>;
 }
 
 export interface Clock {

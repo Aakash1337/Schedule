@@ -7,6 +7,7 @@ import type {
   PlanItemActivityState,
   PlanSettings,
   Routine,
+  RoutineDurationInsight,
   RoutineStatus,
   ScheduleBlock,
   WorkItem,
@@ -230,6 +231,25 @@ export const api = {
     request<Routine>(
       workspacePath(workspaceId, `/routines/${encodeURIComponent(routineId)}`),
       signal === undefined ? {} : { signal },
+    ),
+
+  getRoutineDurationInsight: (workspaceId: string, routineId: string, signal?: AbortSignal) =>
+    request<RoutineDurationInsight>(
+      workspacePath(workspaceId, `/routines/${encodeURIComponent(routineId)}/duration-insight`),
+      signal === undefined ? {} : { signal },
+    ),
+
+  approveRoutineDurationInsight: (
+    workspaceId: string,
+    routineId: string,
+    input: { readonly expectedVersion: number; readonly duration: Routine["duration"] },
+  ) =>
+    request<Routine>(
+      workspacePath(
+        workspaceId,
+        `/routines/${encodeURIComponent(routineId)}/duration-insight/approve`,
+      ),
+      { method: "POST", json: input },
     ),
 
   createRoutine: (

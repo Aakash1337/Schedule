@@ -68,8 +68,10 @@ describe("routine management", () => {
         },
       },
       activityEvents: {
+        lockRoutineActivity: async () => undefined,
         findById: async () => event,
         listForPlanning: async () => [event],
+        listDurationEvidence: async () => [],
         append: async (candidate: ActivityEvent) => candidate,
         listHistory: async (
           _workspaceId: typeof workspace.id,

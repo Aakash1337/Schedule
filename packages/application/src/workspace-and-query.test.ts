@@ -136,8 +136,10 @@ function harness(
       insertMutation: async () => undefined,
     },
     activityEvents: {
+      lockRoutineActivity: async () => undefined,
       findById: async () => null,
       listForPlanning: async () => [],
+      listDurationEvidence: async () => [],
       append: async (event: never) => event,
       listHistory: async () => ({ items: [], nextCursor: null }),
     },

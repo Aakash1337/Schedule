@@ -30,6 +30,13 @@ fencing, exactly-once effect persistence, and second-attempt completion.
 
 The domain now includes a pure, seeded daily planner that balances cadence, time budget, task count, context, and recent completion history.
 
+Routine details also expose a transparent duration-calibration insight. After three completed
+sessions in the trailing 90 days, Schedule compares the routine's configured estimate with the
+observed median, applies recorded corrections, excludes reversed completions, and offers a
+version-checked update only when the user explicitly approves it. The approval command atomically
+revalidates the current routine and evidence before saving; the insight never rewrites a routine or
+the current Today plan on its own.
+
 The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface.
 
 An optional integration gateway gives a workspace-scoped machine credential read-only access to
@@ -97,7 +104,10 @@ After installing Chromium once with `pnpm exec playwright install chromium`, run
 `pnpm verify:web-e2e` to exercise the built web application, live API, fresh migrations, and an
 isolated PostgreSQL database through the routine-to-Today completion flow.
 
-With PostgreSQL running, verify backlog/Kanban and calendar management, routine creation and optimistic updates, stable activity-history pagination, idempotent routine and Today-item activity recording, deterministic plan generation, and atomic plan-revision persistence:
+With PostgreSQL running, verify backlog/Kanban and calendar management, routine creation and
+optimistic updates, duration calibration and approval, stable activity-history pagination,
+idempotent routine and Today-item activity recording, deterministic plan generation, and atomic
+plan-revision persistence:
 
 ```powershell
 pnpm verify:database

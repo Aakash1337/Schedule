@@ -839,7 +839,7 @@ try {
         contexts: ["computer"],
         categories: ["verification"],
       },
-      duration: { expectedMinutes: 30 },
+      duration: { minimumMinutes: 20, expectedMinutes: 30, maximumMinutes: 60 },
       cadence: { period: "week", targetCompletions: 3, maximumCompletions: 4 },
     },
   });
@@ -879,6 +879,35 @@ try {
     crossWorkspaceRoutineActivityRead.statusCode,
     404,
     crossWorkspaceRoutineActivityRead.body,
+  );
+  const crossWorkspaceDurationInsightRead = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/routines/${createdRoutineId}/duration-insight`,
+  });
+  assert.equal(
+    crossWorkspaceDurationInsightRead.statusCode,
+    404,
+    crossWorkspaceDurationInsightRead.body,
+  );
+  const crossWorkspaceDurationInsightApproval = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/routines/${createdRoutineId}/duration-insight/approve`,
+    payload: {
+      expectedVersion: 1,
+      duration: {
+        minimumMinutes: 20,
+        expectedMinutes: 30,
+        maximumMinutes: 60,
+        splittable: false,
+        minimumSessionMinutes: null,
+        overheadMinutes: 0,
+      },
+    },
+  });
+  assert.equal(
+    crossWorkspaceDurationInsightApproval.statusCode,
+    404,
+    crossWorkspaceDurationInsightApproval.body,
   );
   const crossWorkspaceRoutineActivity = await app.inject({
     method: "POST",
@@ -1182,7 +1211,7 @@ try {
     payload: {
       title: "Replacement routine",
       tags: { priority: "medium", contexts: ["computer"], categories: ["verification"] },
-      duration: { expectedMinutes: 30 },
+      duration: { minimumMinutes: 20, expectedMinutes: 30, maximumMinutes: 120 },
       cadence: { period: "week", targetCompletions: 1 },
     },
   });
@@ -1553,6 +1582,488 @@ try {
   assert.equal(staleUpdateResponse.statusCode, 409, staleUpdateResponse.body);
   assert.equal(
     staleUpdateResponse.json<{ error: { code: string } }>().error.code,
+    "routine.version_conflict",
+  );
+
+  // EVIDENCE: routine-duration-insight-api
+  // Immutable completions, their latest correction, and a reversal produce one transparent
+  // suggestion. Atomic approval revalidates current evidence and does not rewrite Today.
+  const durationSamples = [
+    { key: "duration-sample-1", occurredAt: "2026-07-11T06:00:00.000Z", minutes: 40 },
+    { key: "duration-sample-2", occurredAt: "2026-07-12T06:00:00.000Z", minutes: 45 },
+    { key: "duration-sample-3", occurredAt: "2026-07-13T06:00:00.000Z", minutes: 50 },
+    { key: "duration-sample-4", occurredAt: "2026-07-14T06:00:00.000Z", minutes: 55 },
+    {
+      key: "duration-window-boundary",
+      occurredAt: "2026-04-16T07:00:00.000Z",
+      minutes: 50,
+    },
+    {
+      key: "duration-before-window",
+      occurredAt: "2026-04-16T06:59:59.999Z",
+      minutes: 60,
+    },
+  ];
+  const durationCompletionIds: string[] = [];
+  const appendDurationSample = async (
+    sample: (typeof durationSamples)[number],
+  ): Promise<string> => {
+    const sampleResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/activity-events`,
+      headers: { "idempotency-key": sample.key },
+      payload: {
+        type: "completed",
+        occurredAt: sample.occurredAt,
+        timeZone: "UTC",
+        durationMinutes: sample.minutes,
+      },
+    });
+    assert.equal(sampleResponse.statusCode, 200, sampleResponse.body);
+    return (sampleResponse.json() as { id: string }).id;
+  };
+  for (const sample of durationSamples) {
+    durationCompletionIds.push(await appendDurationSample(sample));
+  }
+  const durationCorrectionResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/activity-events`,
+    headers: { "idempotency-key": "duration-sample-1-correction" },
+    payload: {
+      type: "duration_corrected",
+      occurredAt: "2026-07-15T06:30:00.000Z",
+      timeZone: "UTC",
+      durationMinutes: 50,
+      referenceEventId: durationCompletionIds[0],
+    },
+  });
+  assert.equal(durationCorrectionResponse.statusCode, 200, durationCorrectionResponse.body);
+  const durationReversalResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/activity-events`,
+    headers: { "idempotency-key": "duration-sample-4-reversal" },
+    payload: {
+      type: "completion_reversed",
+      occurredAt: "2026-07-15T06:40:00.000Z",
+      timeZone: "UTC",
+      referenceEventId: durationCompletionIds[3],
+    },
+  });
+  assert.equal(durationReversalResponse.statusCode, 200, durationReversalResponse.body);
+
+  const durationInsightResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/duration-insight`,
+  });
+  assert.equal(durationInsightResponse.statusCode, 200, durationInsightResponse.body);
+  assert.deepEqual(
+    durationInsightResponse.json<{
+      routineId: string;
+      routineVersion: number;
+      status: string;
+      sampleCount: number;
+      minimumSamples: number;
+      lookbackDays: number;
+      currentExpectedMinutes: number;
+      minimumMinutes: number;
+      maximumMinutes: number;
+      observedMedianMinutes: number | null;
+      suggestedExpectedMinutes: number | null;
+    }>(),
+    {
+      routineId: createdRoutineId,
+      routineVersion: 2,
+      status: "suggested",
+      sampleCount: 4,
+      minimumSamples: 3,
+      lookbackDays: 90,
+      evaluatedAt: "2026-07-15T07:00:00.000Z",
+      windowStartedAt: "2026-04-16T07:00:00.000Z",
+      currentExpectedMinutes: 30,
+      minimumMinutes: 20,
+      maximumMinutes: 60,
+      observedMedianMinutes: 50,
+      materialThresholdMinutes: 5,
+      suggestedExpectedMinutes: 50,
+    },
+  );
+
+  // A Today completion does not read or update its routine row. This interleaving proves that the
+  // approval's post-lock evidence reads still observe that completion after waiting for its commit.
+  for (const [index, minutes] of [40, 50, 60, 70].entries()) {
+    const alternativeSampleResponse: { statusCode: number; body: string } = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${createdWorkspaceId}/routines/${alternativeRoutineId}/activity-events`,
+      headers: { "idempotency-key": `duration-plan-race-sample-${index}` },
+      payload: {
+        type: "completed",
+        occurredAt: `2026-07-${String(11 + index).padStart(2, "0")}T06:00:00.000Z`,
+        timeZone: "UTC",
+        durationMinutes: minutes,
+      },
+    });
+    assert.equal(alternativeSampleResponse.statusCode, 200, alternativeSampleResponse.body);
+  }
+  const alternativeInsightBeforeRaceResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${alternativeRoutineId}/duration-insight`,
+  });
+  assert.equal(
+    alternativeInsightBeforeRaceResponse.statusCode,
+    200,
+    alternativeInsightBeforeRaceResponse.body,
+  );
+  assert.deepEqual(
+    alternativeInsightBeforeRaceResponse.json<{
+      routineVersion: number;
+      status: string;
+      sampleCount: number;
+      observedMedianMinutes: number | null;
+      suggestedExpectedMinutes: number | null;
+    }>(),
+    {
+      routineId: alternativeRoutineId,
+      routineVersion: 1,
+      status: "suggested",
+      sampleCount: 4,
+      minimumSamples: 3,
+      lookbackDays: 90,
+      evaluatedAt: "2026-07-15T07:00:00.000Z",
+      windowStartedAt: "2026-04-16T07:00:00.000Z",
+      currentExpectedMinutes: 30,
+      minimumMinutes: 20,
+      maximumMinutes: 120,
+      observedMedianMinutes: 55,
+      materialThresholdMinutes: 5,
+      suggestedExpectedMinutes: 55,
+    },
+  );
+
+  let markPlanCompletionLockAcquired: () => void = () => undefined;
+  const planCompletionLockAcquired = new Promise<void>((resolve) => {
+    markPlanCompletionLockAcquired = resolve;
+  });
+  const releasePlanCompletionLock = new Promise<void>((resolve) => {
+    releaseConcurrencyLock = resolve;
+  });
+  const alternativeRoutineLockKey = `${createdWorkspaceId}:routine:${alternativeRoutineId}`;
+  heldLock = lockConnection.sql.begin(async (sql) => {
+    await sql`select pg_advisory_xact_lock(hashtextextended(${alternativeRoutineLockKey}, 0))`;
+    markPlanCompletionLockAcquired();
+    await releasePlanCompletionLock;
+  });
+  await planCompletionLockAcquired;
+  const queuedPlanCompletion = app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/plans/2026-07-15/items/${replacement.items[0]!.id}/activity-events`,
+    headers: { "idempotency-key": "duration-plan-race-completion" },
+    payload: {
+      expectedPlanId: replacement.id,
+      expectedHeadVersion: 7,
+      type: "completed",
+      occurredAt: "2026-07-15T06:55:00.000Z",
+      timeZone: "UTC",
+      durationMinutes: 20,
+    },
+  });
+  let planCompletionWaiterObserved = false;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const [waiters] = await observerConnection.sql<{ value: number }[]>`
+      select count(*)::int as value
+      from pg_locks
+      where locktype = 'advisory' and not granted
+    `;
+    if ((waiters?.value ?? 0) >= 1) {
+      planCompletionWaiterObserved = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(
+    planCompletionWaiterObserved,
+    true,
+    "plan-item completion did not reach its routine activity lock",
+  );
+  const stalePlanEvidenceApproval = app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${alternativeRoutineId}/duration-insight/approve`,
+    payload: {
+      expectedVersion: 1,
+      duration: {
+        minimumMinutes: 20,
+        expectedMinutes: 55,
+        maximumMinutes: 120,
+        splittable: false,
+        minimumSessionMinutes: null,
+        overheadMinutes: 0,
+      },
+    },
+  });
+  let planEvidenceApprovalWaiterObserved = false;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const [waiters] = await observerConnection.sql<{ value: number }[]>`
+      select count(*)::int as value
+      from pg_locks
+      where locktype = 'advisory' and not granted
+    `;
+    if ((waiters?.value ?? 0) >= 2) {
+      planEvidenceApprovalWaiterObserved = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(
+    planEvidenceApprovalWaiterObserved,
+    true,
+    "duration approval did not wait behind the queued plan-item completion",
+  );
+  releaseHeldConcurrencyLock();
+  await heldLock;
+  heldLock = null;
+  const queuedPlanCompletionResponse = await queuedPlanCompletion;
+  assert.equal(queuedPlanCompletionResponse.statusCode, 200, queuedPlanCompletionResponse.body);
+  assert.equal(queuedPlanCompletionResponse.json<{ headVersion: number }>().headVersion, 8);
+  const stalePlanEvidenceApprovalResponse = await stalePlanEvidenceApproval;
+  assert.equal(
+    stalePlanEvidenceApprovalResponse.statusCode,
+    409,
+    stalePlanEvidenceApprovalResponse.body,
+  );
+  assert.equal(
+    stalePlanEvidenceApprovalResponse.json<{ error: { code: string } }>().error.code,
+    "routine_duration_insight.evidence_conflict",
+  );
+  const alternativeInsightAfterRaceResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${alternativeRoutineId}/duration-insight`,
+  });
+  assert.equal(
+    alternativeInsightAfterRaceResponse.statusCode,
+    200,
+    alternativeInsightAfterRaceResponse.body,
+  );
+  const alternativeInsightAfterRace = alternativeInsightAfterRaceResponse.json<{
+    sampleCount: number;
+    observedMedianMinutes: number | null;
+    suggestedExpectedMinutes: number | null;
+  }>();
+  assert.equal(alternativeInsightAfterRace.sampleCount, 5);
+  assert.equal(alternativeInsightAfterRace.observedMedianMinutes, 50);
+  assert.equal(alternativeInsightAfterRace.suggestedExpectedMinutes, 50);
+
+  let markDurationApprovalLockAcquired: () => void = () => undefined;
+  const durationApprovalLockAcquired = new Promise<void>((resolve) => {
+    markDurationApprovalLockAcquired = resolve;
+  });
+  const releaseDurationApprovalLock = new Promise<void>((resolve) => {
+    releaseConcurrencyLock = resolve;
+  });
+  heldLock = lockConnection.sql.begin(async (sql) => {
+    await sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+    markDurationApprovalLockAcquired();
+    await releaseDurationApprovalLock;
+  });
+  await durationApprovalLockAcquired;
+  const evidenceChange = app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/activity-events`,
+    headers: { "idempotency-key": "duration-sample-3-late-correction" },
+    payload: {
+      type: "duration_corrected",
+      occurredAt: "2026-07-15T06:50:00.000Z",
+      timeZone: "UTC",
+      durationMinutes: 25,
+      referenceEventId: durationCompletionIds[2],
+    },
+  });
+  let durationCorrectionWaiterObserved = false;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const [waiters] = await observerConnection.sql<{ value: number }[]>`
+      select count(*)::int as value
+      from pg_locks
+      where locktype = 'advisory' and not granted
+    `;
+    if ((waiters?.value ?? 0) >= 1) {
+      durationCorrectionWaiterObserved = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(
+    durationCorrectionWaiterObserved,
+    true,
+    "duration correction did not reach its referenced activity insert",
+  );
+  const staleEvidenceApproval = app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/duration-insight/approve`,
+    payload: {
+      expectedVersion: 2,
+      duration: {
+        minimumMinutes: 20,
+        expectedMinutes: 50,
+        maximumMinutes: 60,
+        splittable: false,
+        minimumSessionMinutes: null,
+        overheadMinutes: 0,
+      },
+    },
+  });
+  let durationApprovalWaiterObserved = false;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const [waiters] = await observerConnection.sql<{ value: number }[]>`
+      select count(*)::int as value
+      from pg_locks
+      where locktype = 'advisory' and not granted
+    `;
+    if ((waiters?.value ?? 0) >= 2) {
+      durationApprovalWaiterObserved = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(
+    durationApprovalWaiterObserved,
+    true,
+    "duration approval did not reach its versioned save",
+  );
+  releaseHeldConcurrencyLock();
+  await heldLock;
+  heldLock = null;
+  const evidenceChangeResponse = await evidenceChange;
+  assert.equal(evidenceChangeResponse.statusCode, 200, evidenceChangeResponse.body);
+  const staleEvidenceApprovalResponse = await staleEvidenceApproval;
+  assert.equal(staleEvidenceApprovalResponse.statusCode, 409, staleEvidenceApprovalResponse.body);
+  assert.equal(
+    staleEvidenceApprovalResponse.json<{ error: { code: string } }>().error.code,
+    "routine_duration_insight.evidence_conflict",
+  );
+  const refreshedDurationInsightResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/duration-insight`,
+  });
+  assert.equal(
+    refreshedDurationInsightResponse.statusCode,
+    200,
+    refreshedDurationInsightResponse.body,
+  );
+  assert.deepEqual(
+    refreshedDurationInsightResponse.json<{
+      routineVersion: number;
+      status: string;
+      sampleCount: number;
+      currentExpectedMinutes: number;
+      observedMedianMinutes: number | null;
+      suggestedExpectedMinutes: number | null;
+    }>(),
+    {
+      routineId: createdRoutineId,
+      routineVersion: 2,
+      status: "suggested",
+      sampleCount: 4,
+      minimumSamples: 3,
+      lookbackDays: 90,
+      evaluatedAt: "2026-07-15T07:00:00.000Z",
+      windowStartedAt: "2026-04-16T07:00:00.000Z",
+      currentExpectedMinutes: 30,
+      minimumMinutes: 20,
+      maximumMinutes: 60,
+      observedMedianMinutes: 48,
+      materialThresholdMinutes: 5,
+      suggestedExpectedMinutes: 48,
+    },
+  );
+  const planHeadsBeforeDurationApproval = await connection.sql<
+    { local_date: string; current_plan_id: string; version: number }[]
+  >`
+    select local_date::text, current_plan_id::text, version
+    from daily_plan_heads
+    where workspace_id = ${createdWorkspaceId}
+    order by local_date, id
+  `;
+  const durationApprovalResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/duration-insight/approve`,
+    payload: {
+      expectedVersion: 2,
+      duration: {
+        minimumMinutes: 20,
+        expectedMinutes: 48,
+        maximumMinutes: 60,
+        splittable: false,
+        minimumSessionMinutes: null,
+        overheadMinutes: 0,
+      },
+    },
+  });
+  assert.equal(durationApprovalResponse.statusCode, 200, durationApprovalResponse.body);
+  const approvedDurationRoutine = durationApprovalResponse.json<{
+    id: string;
+    version: number;
+    duration: {
+      minimumMinutes: number;
+      expectedMinutes: number;
+      maximumMinutes: number;
+      splittable: boolean;
+      minimumSessionMinutes: number | null;
+      overheadMinutes: number;
+    };
+  }>();
+  assert.equal(approvedDurationRoutine.id, createdRoutineId);
+  assert.equal(approvedDurationRoutine.version, 3);
+  assert.deepEqual(approvedDurationRoutine.duration, {
+    minimumMinutes: 20,
+    expectedMinutes: 48,
+    maximumMinutes: 60,
+    splittable: false,
+    minimumSessionMinutes: null,
+    overheadMinutes: 0,
+  });
+  const planHeadsAfterDurationApproval = await connection.sql<
+    { local_date: string; current_plan_id: string; version: number }[]
+  >`
+    select local_date::text, current_plan_id::text, version
+    from daily_plan_heads
+    where workspace_id = ${createdWorkspaceId}
+    order by local_date, id
+  `;
+  assert.deepEqual(planHeadsAfterDurationApproval, planHeadsBeforeDurationApproval);
+
+  const alignedDurationInsightResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/duration-insight`,
+  });
+  assert.equal(alignedDurationInsightResponse.statusCode, 200, alignedDurationInsightResponse.body);
+  const alignedDurationInsight = alignedDurationInsightResponse.json<{
+    routineVersion: number;
+    status: string;
+    currentExpectedMinutes: number;
+    observedMedianMinutes: number | null;
+    suggestedExpectedMinutes: number | null;
+  }>();
+  assert.equal(alignedDurationInsight.routineVersion, 3);
+  assert.equal(alignedDurationInsight.status, "aligned");
+  assert.equal(alignedDurationInsight.currentExpectedMinutes, 48);
+  assert.equal(alignedDurationInsight.observedMedianMinutes, 48);
+  assert.equal(alignedDurationInsight.suggestedExpectedMinutes, null);
+  const staleDurationApprovalResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${createdWorkspaceId}/routines/${createdRoutineId}/duration-insight/approve`,
+    payload: {
+      expectedVersion: 2,
+      duration: {
+        minimumMinutes: 20,
+        expectedMinutes: 48,
+        maximumMinutes: 60,
+        splittable: false,
+        minimumSessionMinutes: null,
+        overheadMinutes: 0,
+      },
+    },
+  });
+  assert.equal(staleDurationApprovalResponse.statusCode, 409, staleDurationApprovalResponse.body);
+  assert.equal(
+    staleDurationApprovalResponse.json<{ error: { code: string } }>().error.code,
     "routine.version_conflict",
   );
   const missingRoutineResponse = await app.inject({

@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-13
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v2 selects both reusable routines and explicitly opted-in one-time Work items. A provider-neutral authenticated inbound gateway now provides Today reads and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v2 selects both reusable routines and explicitly opted-in one-time Work items. Phase 3 has begun with a transparent, read-only routine-duration insight and an explicit approval flow; broader learned preferences and automatic adaptation remain deferred. A provider-neutral authenticated inbound gateway now provides Today reads and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
 
 ## 1. Product summary
 
@@ -109,7 +109,31 @@ The daily planning request defines both:
 - A preference for time accuracy, task-count accuracy, or balanced fitting
 - Available time windows and existing calendar commitments
 
-Observed duration is stored separately from the user's estimate. Once enough history exists, the system may calculate a learned estimate using a recency-weighted robust average. It should propose significant changes rather than silently rewriting user-entered values.
+Observed duration is stored separately from the user's estimate. The implemented routine insight
+uses completed sessions from the inclusive trailing 90-day window, requires at least three valid
+samples, applies the latest non-future correction for each completion, and excludes reversed or
+future evidence. Its robust estimate is the integer median (an even-sample midpoint rounds half up).
+
+The insight reports the evidence as insufficient until the sample minimum is met. With enough
+history, it reports the estimate as aligned when the median differs by less than the greater of five
+minutes or 10% of the current expected duration. It suggests the median only when that difference is
+material and the value remains inside the user-owned minimum and maximum. A median outside that range
+requires range review instead of offering a one-click change.
+
+This calculation is read-only. Accepting a suggestion sends its routine version and complete duration
+policy to a dedicated approval command. In one read-committed transaction, the server acquires the same
+per-routine advisory lock used by activity appends, reloads the routine and current 90-day evidence,
+recomputes the insight, and saves only when the same expected duration is still supported. The
+minimum, maximum, splitting, minimum-session, and overhead fields
+must still match the current user-owned policy; approval may change only the expected duration.
+Read committed is deliberate: statements made after an advisory-lock wait must see evidence committed
+by the earlier lock holder. Other product transactions remain serializable by default.
+
+Routine-version or evidence conflicts are not retried automatically. The generic routine `PATCH`
+remains the manual editing path and does not claim to approve an insight. Neither approval path
+changes the current Today plan. A later explicit plan generation or regeneration may use the newly
+approved estimate. Recency weighting and personalized calibration may be evaluated in later versions
+against real outcome data.
 
 ## 7. Daily planning pipeline
 
@@ -242,9 +266,14 @@ Unfinished items do not automatically become permanently urgent. Carryover press
 
 ## 10. Adaptation and learning
 
-Initial adaptive behavior should use transparent statistics rather than machine learning:
+Initial adaptive behavior uses transparent statistics rather than machine learning. The implemented
+first slice is routine-duration calibration: it shows the sample count, lookback window, observed
+median, current estimate, and whether more evidence, an explicit estimate update, or range review is
+needed. Approval uses a dedicated atomic command that revalidates current evidence and routine state;
+neither the insight nor its approval regenerates Today.
 
-- Duration calibration from completed sessions
+The following broader signals remain product targets:
+
 - Day and time preference detection
 - Completion likelihood by effort, energy, and context
 - Repeated-dismissal detection
@@ -260,9 +289,16 @@ Adaptation safeguards:
 - Allow accepting, rejecting, editing, or resetting learned behavior
 - Never lower the importance of a deadline solely because prior suggestions were skipped
 
+The current slice implements evidence thresholds, material-change gating, range review, visible
+evidence, and explicit approval. Rejection memory, dismissal and reset controls, learned cadence or
+energy preferences, adaptive probabilistic selection beyond the existing versioned deterministic
+planner, and automatic application of learned values remain deferred.
+
 ## 11. Optional local-model advisor
 
-The language model is an advisor, not the scheduling authority. Integration occurs through a provider-neutral `PlanningAdvisor` interface.
+No language-model advisor or `PlanningAdvisor` interface is implemented. This section defines a
+future target only: if added, a language model would advise rather than control scheduling, and
+integration would occur through a provider-neutral `PlanningAdvisor` interface.
 
 Potential implementations:
 
@@ -289,7 +325,10 @@ Prohibited responsibilities:
 - Bypassing eligibility constraints
 - Producing the only available plan
 
-Advisor output must use a versioned JSON schema, be validated, and time out safely. Invalid, unavailable, or slow model responses fall back to the deterministic planner. Prompts and responses should be locally inspectable and excluded from cloud synchronization unless explicitly enabled.
+Future advisor output must use a versioned JSON schema, be validated, and time out safely. Invalid,
+unavailable, or slow model responses must fall back to the deterministic planner. Prompts and
+responses should be locally inspectable and excluded from cloud synchronization unless explicitly
+enabled.
 
 ## 12. Conventional scheduling features
 
@@ -378,17 +417,23 @@ Success is not simply "more tasks completed." Useful measures include realistic 
 
 ### Phase 3 — Transparent adaptation
 
-- Learned duration estimates
-- Preference and overload observations
-- Suggested policy changes with approval and reset controls
-- Historical replay and algorithm comparison tools
+- Implemented: routine-duration insight from a corrected, reversal-aware 90-day median
+- Implemented: visible insufficient/aligned/suggested/range-review states and explicit atomic
+  approval with evidence revalidation and without automatic Today regeneration
+- Deferred: learned cadence, day/time, energy, preference, overload, and category-balance signals
+- Deferred: automatic application, rejection memory, reset controls, adaptive probabilistic
+  selection, historical replay, and algorithm comparison tools
 
 ### Phase 4 — Local-model advisor
 
-- Provider-neutral interface and schema validation
-- Natural-language routine creation and task breakdown
-- Context interpretation and plan explanations
-- Local privacy controls, diagnostics, and deterministic fallback
+- Deferred: provider-neutral interface and schema validation
+- Deferred: natural-language routine creation and task breakdown
+- Deferred: context interpretation and plan explanations
+- Deferred: local privacy controls, diagnostics, and deterministic fallback
+
+Gemma, Ollama, and other local or hosted models do not participate in duration calibration. Any
+future advisor remains optional and subordinate to the deterministic engine and explicit user
+approval.
 
 ### Phase 5 — Hosting and synchronization
 

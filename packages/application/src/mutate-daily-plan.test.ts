@@ -82,8 +82,10 @@ describe("MutateDailyPlan", () => {
         save: async () => undefined,
       },
       activityEvents: {
+        lockRoutineActivity: async () => undefined,
         findById: async () => null,
         listForPlanning: async () => [],
+        listDurationEvidence: async () => [],
         append: async (event) => event,
         listHistory: async () => ({ items: [], nextCursor: null }),
       },
