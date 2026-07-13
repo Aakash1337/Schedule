@@ -627,6 +627,78 @@
       ]
     },
     {
+      "id": "opt-in-automatic-schedule-change-events",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/WEBHOOKS.md",
+        "anchor": "## Automatic schedule-change events"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": ["tenant-binds the explicit schedule event subscription allowlist"]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/webhooks.test.ts",
+          "command": "unit",
+          "anchors": [
+            "reads active endpoint subscription state without destinations or secrets",
+            "strictly validates and atomically replaces the complete opt-in set"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/webhook-migration.test.ts",
+          "command": "unit",
+          "anchors": [
+            "uses a schema-qualified trigger with a constrained search path and endpoint-first locks",
+            "no-ops for irrelevant head updates and deduplicates deterministic event IDs",
+            "builds one privacy-thin exact body and atomically queues and audits each delivery"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/webhook-endpoints.test.ts",
+          "command": "unit",
+          "anchors": [
+            "strictly parses automatic subscription reads, enables, and disables",
+            "requires the exact replacement confirmation even for direct runner calls",
+            "lists subscriptions with only the endpoint identifier and event types"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/outbox.test.ts",
+          "command": "unit",
+          "anchors": ["excludes the same bounded topic set from exhausted recovery and new claims"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/index.test.ts",
+          "command": "unit",
+          "anchors": ["registers the webhook handler only when delivery is enabled"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-webhook-delivery.ts",
+          "command": "webhook-delivery",
+          "anchors": [
+            "verify default automatic subscription state",
+            "fan out initial automatic schedule change",
+            "delivery, outbox, audit, and body times must share the trigger occurrence instant",
+            "serialize concurrent subscription replacement and head advance",
+            "disable automatic subscription and suppress later fanout",
+            "verify automatic event transaction rollback",
+            "webhook delivery verification passed"
+          ]
+        }
+      ]
+    },
+    {
       "id": "transparent-adaptation",
       "status": "deferred",
       "risk": "normal",

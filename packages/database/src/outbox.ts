@@ -18,11 +18,19 @@ export interface ClaimedOutboxEvent {
 
 export const DEFAULT_OUTBOX_LEASE_DURATION_MS = 5 * 60_000;
 export const DEFAULT_OUTBOX_DEAD_LETTER_RECOVERY_LIMIT = 100;
+export const MAX_EXCLUDED_OUTBOX_TOPICS = 100;
+export const MAX_OUTBOX_TOPIC_LENGTH = 160;
 
 export interface ClaimNextOutboxEventOptions {
   readonly leaseDurationMs?: number;
   readonly maxAttempts: number;
   readonly deadLetterRecoveryLimit?: number;
+  /**
+   * Topics the worker must leave entirely untouched. This filter applies to
+   * both new claims and expired-claim recovery so a disabled integration does
+   * not consume attempts or move durable work into the dead-letter state.
+   */
+  readonly excludedTopics?: readonly string[];
 }
 
 export type OutboxClaimMutationResult = "applied" | "stale";
@@ -94,6 +102,33 @@ const assertPositiveInteger = (name: string, value: number): void => {
   }
 };
 
+const validateExcludedTopics = (topics: readonly string[] | undefined): readonly string[] => {
+  if (topics === undefined) return [];
+  if (!Array.isArray(topics)) {
+    throw new TypeError("excludedTopics must be an array");
+  }
+  if (topics.length > MAX_EXCLUDED_OUTBOX_TOPICS) {
+    throw new RangeError(
+      `excludedTopics must contain at most ${MAX_EXCLUDED_OUTBOX_TOPICS} topics`,
+    );
+  }
+
+  const uniqueTopics = new Set<string>();
+  for (const topic of topics) {
+    if (typeof topic !== "string" || topic.length === 0 || topic.length > MAX_OUTBOX_TOPIC_LENGTH) {
+      throw new RangeError(
+        `each excluded topic must be a non-empty string no longer than ${MAX_OUTBOX_TOPIC_LENGTH} characters`,
+      );
+    }
+    if (uniqueTopics.has(topic)) {
+      throw new RangeError("excludedTopics must not contain duplicates");
+    }
+    uniqueTopics.add(topic);
+  }
+
+  return [...topics];
+};
+
 /**
  * Claim at most one event immediately before dispatch. Delivery is at least
  * once: handlers must be idempotent because a process can stop after the
@@ -109,6 +144,7 @@ export async function claimNextOutboxEvent(
   assertPositiveInteger("leaseDurationMs", leaseDurationMs);
   assertPositiveInteger("maxAttempts", options.maxAttempts);
   assertPositiveInteger("deadLetterRecoveryLimit", deadLetterRecoveryLimit);
+  const excludedTopics = validateExcludedTopics(options.excludedTopics);
 
   const { deadLetteredRows, claimedRows } = await connection.sql.begin(async (transaction) => {
     const deadLetteredRows = await transaction<DeadLetteredOutboxRow[]>`
@@ -117,6 +153,7 @@ export async function claimNextOutboxEvent(
         from outbox_events
         where
           attempts >= ${options.maxAttempts}
+          and topic <> all(${excludedTopics}::text[])
           and (
             (status = 'pending' and available_at <= clock_timestamp())
             or (
@@ -154,6 +191,7 @@ export async function claimNextOutboxEvent(
         from outbox_events
         where
           attempts < ${options.maxAttempts}
+          and topic <> all(${excludedTopics}::text[])
           and (
             (status = 'pending' and available_at <= clock_timestamp())
             or (

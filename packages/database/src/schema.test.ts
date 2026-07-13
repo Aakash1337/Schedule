@@ -21,6 +21,7 @@ import {
   webhookDeliveries,
   webhookEndpointSecrets,
   webhookEndpoints,
+  webhookEventSubscriptions,
 } from "./schema.js";
 
 describe("database schema", () => {
@@ -43,6 +44,24 @@ describe("database schema", () => {
     expect(getTableName(webhookEndpoints)).toBe("webhook_endpoints");
     expect(getTableName(webhookEndpointSecrets)).toBe("webhook_endpoint_secrets");
     expect(getTableName(webhookDeliveries)).toBe("webhook_deliveries");
+    expect(getTableName(webhookEventSubscriptions)).toBe("webhook_event_subscriptions");
+  });
+
+  it("tenant-binds the explicit schedule event subscription allowlist", () => {
+    const config = getTableConfig(webhookEventSubscriptions);
+
+    expect(config.primaryKeys.map((constraint) => constraint.getName())).toContain(
+      "webhook_event_subscriptions_pk",
+    );
+    expect(config.foreignKeys.map((constraint) => constraint.getName())).toContain(
+      "webhook_event_subscriptions_endpoint_tenant_fk",
+    );
+    expect(config.indexes.map((constraint) => constraint.config.name)).toContain(
+      "webhook_event_subscriptions_workspace_event_idx",
+    );
+    expect(config.checks.map((constraint) => constraint.name)).toContain(
+      "webhook_event_subscriptions_event_type_allowed",
+    );
   });
 
   it("tenant-binds encrypted signing material and immutable exact-body deliveries", () => {

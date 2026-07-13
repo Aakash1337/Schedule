@@ -13,11 +13,14 @@ import {
   createDatabase,
   createWebhookEndpoint,
   enqueueWebhookTestDelivery,
+  getWebhookEventSubscriptions,
   listWebhookDeadLetters,
   listWebhookEndpoints,
   prepareWebhookSecretRotation,
   redriveWebhookDelivery,
+  replaceWebhookEventSubscriptions,
   revokeWebhookEndpoint,
+  SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE,
   type DatabaseConnection,
   type WebhookDeadLetter,
   type WebhookEndpoint,
@@ -32,6 +35,7 @@ import {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const KEY_ID = /^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const TEST_EVENT_TYPE = "schedule.webhook.test.v1";
+const REPLACE_SUBSCRIPTIONS_CONFIRMATION = "replace-automatic-subscriptions";
 
 const usage = `Usage:
   pnpm webhooks -- generate-master-key --id <key-id>
@@ -41,6 +45,8 @@ const usage = `Usage:
   pnpm webhooks -- activate-rotation --workspace <uuid> --endpoint <uuid> --secret <uuid>
   pnpm webhooks -- revoke --workspace <uuid> --endpoint <uuid>
   pnpm webhooks -- send-test --workspace <uuid> --endpoint <uuid>
+  pnpm webhooks -- list-subscriptions --workspace <uuid> --endpoint <uuid>
+  pnpm webhooks -- replace-subscriptions --workspace <uuid> --endpoint <uuid> --events <schedule.changed.v1|none> --confirm replace-automatic-subscriptions
   pnpm webhooks -- dead-letters --workspace <uuid> [--limit <1-100>]
   pnpm webhooks -- redrive --workspace <uuid> --delivery <uuid>`;
 
@@ -62,6 +68,18 @@ export type WebhookEndpointCliCommand =
     }
   | { readonly kind: "revoke"; readonly workspaceId: string; readonly endpointId: string }
   | { readonly kind: "send-test"; readonly workspaceId: string; readonly endpointId: string }
+  | {
+      readonly kind: "list-subscriptions";
+      readonly workspaceId: string;
+      readonly endpointId: string;
+    }
+  | {
+      readonly kind: "replace-subscriptions";
+      readonly workspaceId: string;
+      readonly endpointId: string;
+      readonly eventTypes: readonly (typeof SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE)[];
+      readonly confirmation: typeof REPLACE_SUBSCRIPTIONS_CONFIRMATION;
+    }
   | { readonly kind: "dead-letters"; readonly workspaceId: string; readonly limit: number }
   | { readonly kind: "redrive"; readonly workspaceId: string; readonly deliveryId: string };
 
@@ -74,6 +92,8 @@ export interface WebhookEndpointCliDependencies {
   readonly activateRotation: typeof activatePendingWebhookSecret;
   readonly revokeEndpoint: typeof revokeWebhookEndpoint;
   readonly enqueueTestDelivery: typeof enqueueWebhookTestDelivery;
+  readonly getEventSubscriptions: typeof getWebhookEventSubscriptions;
+  readonly replaceEventSubscriptions: typeof replaceWebhookEventSubscriptions;
   readonly listDeadLetters: typeof listWebhookDeadLetters;
   readonly redriveDelivery: typeof redriveWebhookDelivery;
   readonly validateUrl: typeof validateWebhookUrl;
@@ -94,6 +114,8 @@ const productionDependencies: WebhookEndpointCliDependencies = {
   activateRotation: activatePendingWebhookSecret,
   revokeEndpoint: revokeWebhookEndpoint,
   enqueueTestDelivery: enqueueWebhookTestDelivery,
+  getEventSubscriptions: getWebhookEventSubscriptions,
+  replaceEventSubscriptions: replaceWebhookEventSubscriptions,
   listDeadLetters: listWebhookDeadLetters,
   redriveDelivery: redriveWebhookDelivery,
   validateUrl: validateWebhookUrl,
@@ -174,6 +196,22 @@ function parseLimit(value: string | undefined): number {
   return Number(value);
 }
 
+function requireAutomaticEventTypes(
+  value: string | undefined,
+): readonly (typeof SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE)[] {
+  if (value === "none") return [];
+  if (value === SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE) {
+    return [SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE];
+  }
+  throw argumentError(`--events must be exactly ${SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE} or none.`);
+}
+
+function requireReplaceSubscriptionsConfirmation(value: string | undefined): void {
+  if (value !== REPLACE_SUBSCRIPTIONS_CONFIRMATION) {
+    throw argumentError(`--confirm must be exactly ${REPLACE_SUBSCRIPTIONS_CONFIRMATION}.`);
+  }
+}
+
 export function parseWebhookEndpointArguments(args: readonly string[]): WebhookEndpointCliCommand {
   const normalized = args.filter((value) => value !== "--");
   const command = normalized[0];
@@ -225,6 +263,22 @@ export function parseWebhookEndpointArguments(args: readonly string[]): WebhookE
   if (command === "revoke" || command === "send-test") {
     const value = workspaceEndpoint(["--workspace", "--endpoint"]);
     return { kind: command, workspaceId: value.workspaceId, endpointId: value.endpointId };
+  }
+  if (command === "list-subscriptions") {
+    const value = workspaceEndpoint(["--workspace", "--endpoint"]);
+    return { kind: command, workspaceId: value.workspaceId, endpointId: value.endpointId };
+  }
+  if (command === "replace-subscriptions") {
+    const value = workspaceEndpoint(["--workspace", "--endpoint", "--events", "--confirm"]);
+    const eventTypes = requireAutomaticEventTypes(value.flags.get("--events"));
+    requireReplaceSubscriptionsConfirmation(value.flags.get("--confirm"));
+    return {
+      kind: command,
+      workspaceId: value.workspaceId,
+      endpointId: value.endpointId,
+      eventTypes,
+      confirmation: REPLACE_SUBSCRIPTIONS_CONFIRMATION,
+    };
   }
   if (command === "dead-letters") {
     const flags = flagsFor(["--workspace", "--limit"]);
@@ -367,6 +421,13 @@ export async function runWebhookEndpointCommand(
     return;
   }
 
+  if (
+    command.kind === "replace-subscriptions" &&
+    command.confirmation !== REPLACE_SUBSCRIPTIONS_CONFIRMATION
+  ) {
+    throw new Error("Exact webhook subscription replacement confirmation is required.");
+  }
+
   const config = dependencies.loadConfig(environment);
   if (command.kind === "create") await preflightWebhookUrl(command.url, dependencies);
   await withConnection(config, dependencies, async (connection) => {
@@ -455,6 +516,44 @@ export async function runWebhookEndpointCommand(
           deliveryId: delivery.id,
           outboxEventId: delivery.outboxEventId,
           eventId: delivery.eventId,
+        }),
+      );
+      return;
+    }
+    if (command.kind === "list-subscriptions") {
+      const eventTypes = await dependencies
+        .getEventSubscriptions(connection, {
+          workspaceId: command.workspaceId,
+          endpointId: command.endpointId,
+        })
+        .catch(() => {
+          throw new Error("Webhook endpoint subscriptions could not be read.");
+        });
+      if (eventTypes === null) {
+        throw new Error("Webhook endpoint subscriptions could not be read.");
+      }
+      dependencies.write(JSON.stringify({ endpointId: command.endpointId, eventTypes }));
+      return;
+    }
+    if (command.kind === "replace-subscriptions") {
+      const result = await dependencies
+        .replaceEventSubscriptions(connection, {
+          workspaceId: command.workspaceId,
+          endpointId: command.endpointId,
+          eventTypes: command.eventTypes,
+        })
+        .catch(() => {
+          throw new Error("Webhook endpoint subscriptions could not be replaced.");
+        });
+      if (result === null) {
+        throw new Error("Webhook endpoint subscriptions could not be replaced.");
+      }
+      dependencies.write(
+        JSON.stringify({
+          endpointId: command.endpointId,
+          previousEventTypes: result.previousEventTypes,
+          eventTypes: result.eventTypes,
+          status: result.changed ? "replaced" : "unchanged",
         }),
       );
       return;

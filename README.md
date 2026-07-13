@@ -37,9 +37,10 @@ Today and a two-step, idempotent structured-command flow. It is disabled by defa
 authoritative; Hermes or another messaging agent belongs in an external adapter that calls this
 boundary instead of writing the database.
 
-A separate outbound webhook substrate can deliver signed, workspace-bound test events through the
-existing durable outbox. It is also disabled by default and deliberately publishes no schedule
-content yet; see the [webhook delivery guide](./docs/WEBHOOKS.md).
+A separate outbound webhook substrate can deliver signed, workspace-bound test events and explicitly
+subscribed privacy-thin Today-change invalidations through the existing durable outbox. It is also
+disabled by default and never publishes schedule contents; see the
+[webhook delivery guide](./docs/WEBHOOKS.md).
 
 `WorkItem` represents intent and workflow state. `ScheduleBlock` represents reserved time and may
 optionally reference a work item. Their lifecycles remain independent.
@@ -75,7 +76,9 @@ browser product routes.
 
 Outbound delivery remains disabled unless `WEBHOOK_DELIVERY_MODE=enabled` and a valid external
 master-key keyring is configured. Provision endpoints and verify a receiver with the CLI before
-enabling the worker; automatic schedule/reminder events are not part of this release.
+enabling the worker. Endpoints have no automatic subscriptions by default; an operator may opt one
+into `schedule.changed.v1`, which tells a receiver to refresh Today without carrying plan or task
+content. Reminder decisions and the Hermes/WhatsApp adapter are not part of this release.
 
 ## Verification
 

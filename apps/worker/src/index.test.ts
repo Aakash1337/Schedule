@@ -40,6 +40,13 @@ describe("worker entrypoint", () => {
     expect(processOnce).toHaveBeenCalledWith("SIGTERM", expect.any(Function));
     expect(mocks.runOutboxWorker).toHaveBeenCalledTimes(1);
     expect(mocks.runOutboxWorker.mock.calls[0]?.[3]).toBeInstanceOf(AbortSignal);
+    const dispatcher = mocks.runOutboxWorker.mock.calls[0]?.[2] as unknown as {
+      handlers: ReadonlyMap<string, unknown>;
+    };
+    expect(dispatcher.handlers.has("webhook.delivery.v1")).toBe(false);
+    expect(mocks.runOutboxWorker.mock.calls[0]?.[4]).toEqual({
+      excludedTopics: ["webhook.delivery.v1"],
+    });
     expect(mocks.database.close).toHaveBeenCalledTimes(1);
   });
 
@@ -53,5 +60,6 @@ describe("worker entrypoint", () => {
       handlers: ReadonlyMap<string, unknown>;
     };
     expect(dispatcher.handlers.has("webhook.delivery.v1")).toBe(true);
+    expect(mocks.runOutboxWorker.mock.calls.at(-1)?.[4]).toEqual({ excludedTopics: [] });
   });
 });

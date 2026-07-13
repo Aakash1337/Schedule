@@ -10,6 +10,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   unique,
@@ -968,6 +969,39 @@ export const webhookEndpoints = pgTable(
     check(
       "webhook_endpoints_updated_after_creation",
       sql`${table.updatedAt} >= ${table.createdAt}`,
+    ),
+  ],
+);
+
+/** Explicit opt-in event types for an outbound webhook endpoint. */
+export const webhookEventSubscriptions = pgTable(
+  "webhook_event_subscriptions",
+  {
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    endpointId: uuid("endpoint_id").notNull(),
+    eventType: varchar("event_type", { length: 160 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      name: "webhook_event_subscriptions_pk",
+      columns: [table.workspaceId, table.endpointId, table.eventType],
+    }),
+    foreignKey({
+      name: "webhook_event_subscriptions_endpoint_tenant_fk",
+      columns: [table.workspaceId, table.endpointId],
+      foreignColumns: [webhookEndpoints.workspaceId, webhookEndpoints.id],
+    }).onDelete("cascade"),
+    index("webhook_event_subscriptions_workspace_event_idx").on(
+      table.workspaceId,
+      table.eventType,
+      table.endpointId,
+    ),
+    check(
+      "webhook_event_subscriptions_event_type_allowed",
+      sql`${table.eventType} = 'schedule.changed.v1'`,
     ),
   ],
 );

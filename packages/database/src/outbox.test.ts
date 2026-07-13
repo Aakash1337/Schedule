@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { DatabaseConnection } from "./database.js";
 import {
+  MAX_EXCLUDED_OUTBOX_TOPICS,
   claimNextOutboxEvent,
   completeOutboxEvent,
   failOutboxEvent,
@@ -118,11 +119,26 @@ describe("outbox claims", () => {
     expect(recovery?.text).toContain("attempts >= ?");
     expect(recovery?.text).toContain("for update skip locked");
     expect(recovery?.text).toContain("status = 'dead_letter'");
-    expect(recovery?.values.slice(0, 3)).toEqual([3, 30_000, 10]);
+    expect(recovery?.text).toContain("topic <> all(?::text[])");
+    expect(recovery?.values.slice(0, 4)).toEqual([3, [], 30_000, 10]);
     expect(claim?.text).toContain("attempts < ?");
+    expect(claim?.text).toContain("topic <> all(?::text[])");
     expect(claim?.text).toContain("for update skip locked limit 1");
     expect(claim?.text).toContain("event.locked_at + interval '1 microsecond'");
-    expect(claim?.values).toEqual([3, 30_000]);
+    expect(claim?.values).toEqual([3, [], 30_000]);
+  });
+
+  it("excludes the same bounded topic set from exhausted recovery and new claims", async () => {
+    const excludedTopics = ["webhook.delivery.v1", "integration.paused"] as const;
+    const { connection, captures } = createConnection({ transactionRows: [[], []] });
+
+    await claimNextOutboxEvent(connection, { maxAttempts: 3, excludedTopics });
+
+    expect(captures).toHaveLength(2);
+    expect(captures[0]?.text).toContain("topic <> all(?::text[])");
+    expect(captures[1]?.text).toContain("topic <> all(?::text[])");
+    expect(captures[0]?.values[1]).toEqual(excludedTopics);
+    expect(captures[1]?.values[1]).toEqual(excludedTopics);
   });
 
   it("turns a max-attempt expired claim into a dead letter instead of reclaiming it", async () => {
@@ -163,6 +179,34 @@ describe("outbox claims", () => {
     await expect(
       claimNextOutboxEvent(connection, { maxAttempts: 3, deadLetterRecoveryLimit: 0 }),
     ).rejects.toThrow("deadLetterRecoveryLimit");
+    expect(captures).toEqual([]);
+  });
+
+  it("rejects invalid excluded topic lists before querying", async () => {
+    const { connection, captures } = createConnection({});
+    const oversizedList = Array.from(
+      { length: MAX_EXCLUDED_OUTBOX_TOPICS + 1 },
+      (_, index) => `topic.${index}`,
+    );
+
+    await expect(
+      claimNextOutboxEvent(connection, { maxAttempts: 3, excludedTopics: [""] }),
+    ).rejects.toThrow("non-empty string");
+    await expect(
+      claimNextOutboxEvent(connection, { maxAttempts: 3, excludedTopics: ["x".repeat(161)] }),
+    ).rejects.toThrow("160");
+    await expect(
+      claimNextOutboxEvent(connection, { maxAttempts: 3, excludedTopics: ["same", "same"] }),
+    ).rejects.toThrow("duplicates");
+    await expect(
+      claimNextOutboxEvent(connection, { maxAttempts: 3, excludedTopics: oversizedList }),
+    ).rejects.toThrow(`at most ${MAX_EXCLUDED_OUTBOX_TOPICS}`);
+    await expect(
+      claimNextOutboxEvent(connection, {
+        maxAttempts: 3,
+        excludedTopics: "not-an-array" as unknown as readonly string[],
+      }),
+    ).rejects.toThrow("must be an array");
     expect(captures).toEqual([]);
   });
 

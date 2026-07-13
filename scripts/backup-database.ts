@@ -27,6 +27,7 @@ export const expectedScheduleTables = [
   "webhook_deliveries",
   "webhook_endpoint_secrets",
   "webhook_endpoints",
+  "webhook_event_subscriptions",
   "work_items",
   "workspaces",
 ] as const;

@@ -4,14 +4,18 @@ import { describe, expect, it } from "vitest";
 
 import type { DatabaseConnection } from "./database.js";
 import {
+  SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE,
   WEBHOOK_DELIVERY_TOPIC,
   activatePendingWebhookSecret,
   createWebhookEndpoint,
   enqueueWebhookTestDelivery,
+  getWebhookEventSubscriptions,
+  listWebhookEventSubscriptions,
   listWebhookDeadLetters,
   loadWebhookDispatchRecord,
   prepareWebhookSecretRotation,
   redriveWebhookDelivery,
+  replaceWebhookEventSubscriptions,
   revokeWebhookEndpoint,
 } from "./webhooks.js";
 
@@ -135,6 +139,105 @@ describe("webhook persistence", () => {
     expect(captures[0]?.text).toContain("'masterKeyId', ?::text");
   });
 
+  it("reads active endpoint subscription state without destinations or secrets", async () => {
+    const stateRow = {
+      workspace_id: workspaceId,
+      endpoint_id: endpointId,
+      event_types: [SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE],
+    };
+    const one = createConnection([[stateRow]]);
+    await expect(
+      getWebhookEventSubscriptions(one.connection, { workspaceId, endpointId }),
+    ).resolves.toEqual([SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE]);
+    expect(one.captures[0]?.text).toContain("endpoint.status = 'active'");
+    expect(one.captures[0]?.text).not.toContain("endpoint.url");
+    expect(one.captures[0]?.text).not.toContain("secret");
+
+    const missing = createConnection([[]]);
+    await expect(
+      getWebhookEventSubscriptions(missing.connection, { workspaceId, endpointId }),
+    ).resolves.toBeNull();
+
+    const listed = createConnection([
+      [stateRow, { ...stateRow, endpoint_id: deliveryId, event_types: [] }],
+    ]);
+    await expect(listWebhookEventSubscriptions(listed.connection, workspaceId)).resolves.toEqual([
+      {
+        workspaceId,
+        endpointId,
+        eventTypes: [SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE],
+      },
+      { workspaceId, endpointId: deliveryId, eventTypes: [] },
+    ]);
+    expect(listed.captures[0]?.text).not.toMatch(/endpoint\.(url|name)/);
+    expect(listed.captures[0]?.text).not.toContain("secret");
+  });
+
+  it("strictly validates and atomically replaces the complete opt-in set", async () => {
+    const changed = createConnection([[{ id: endpointId }], [], [], [], []]);
+    await expect(
+      replaceWebhookEventSubscriptions(changed.connection, {
+        workspaceId,
+        endpointId,
+        eventTypes: [SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE],
+      }),
+    ).resolves.toEqual({
+      workspaceId,
+      endpointId,
+      previousEventTypes: [],
+      eventTypes: [SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE],
+      changed: true,
+    });
+    expect(changed.captures[0]?.text).toContain("status = 'active'");
+    expect(changed.captures[0]?.text).toContain("for update");
+    expect(changed.captures[1]?.text).toContain("for update");
+    expect(changed.captures[2]?.text).toContain("delete from webhook_event_subscriptions");
+    expect(changed.captures[3]?.text).toContain("insert into webhook_event_subscriptions");
+    expect(changed.captures[4]?.text).toContain("webhook.subscriptions.replaced");
+    expect(changed.captures[4]?.text).not.toContain("url");
+    expect(changed.captures[4]?.text).not.toContain("secret");
+
+    const unchanged = createConnection([
+      [{ id: endpointId }],
+      [{ event_type: SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE }],
+    ]);
+    await expect(
+      replaceWebhookEventSubscriptions(unchanged.connection, {
+        workspaceId,
+        endpointId,
+        eventTypes: [SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE],
+      }),
+    ).resolves.toMatchObject({ changed: false });
+    expect(unchanged.captures).toHaveLength(2);
+
+    const absent = createConnection([[]]);
+    await expect(
+      replaceWebhookEventSubscriptions(absent.connection, {
+        workspaceId,
+        endpointId,
+        eventTypes: [],
+      }),
+    ).resolves.toBeNull();
+    expect(absent.captures).toHaveLength(1);
+
+    const invalid = createConnection([]);
+    await expect(
+      replaceWebhookEventSubscriptions(invalid.connection, {
+        workspaceId,
+        endpointId,
+        eventTypes: ["schedule.changed.v2"],
+      }),
+    ).rejects.toThrow(/unsupported webhook event type/);
+    await expect(
+      replaceWebhookEventSubscriptions(invalid.connection, {
+        workspaceId,
+        endpointId,
+        eventTypes: [SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE, SCHEDULE_CHANGED_WEBHOOK_EVENT_TYPE],
+      }),
+    ).rejects.toThrow(/duplicates/);
+    expect(invalid.captures).toHaveLength(0);
+  });
+
   it("enforces exact encrypted-envelope shape before preparing a serialized rotation", async () => {
     const { connection, captures } = createConnection([[secretRow]]);
     await expect(
@@ -231,7 +334,11 @@ describe("webhook persistence", () => {
       created_at: now,
       outbox_event_id: outboxEventId,
     };
-    const { connection, captures } = createConnection([[deliveryRow]]);
+    const { connection, captures } = createConnection([
+      [{ id: endpointId }],
+      [{ endpoint_id: endpointId, secret_id: secretId }],
+      [deliveryRow],
+    ]);
     const result = await enqueueWebhookTestDelivery(connection, {
       workspaceId,
       endpointId,
@@ -242,15 +349,20 @@ describe("webhook persistence", () => {
     });
 
     expect(result).toMatchObject({ rawBody, bodySha256: deliveryRow.body_sha256, outboxEventId });
-    const query = captures[0]?.text;
+    expect(captures[0]?.text).toContain("from webhook_endpoints");
+    expect(captures[0]?.text).toContain("for share");
+    expect(captures[0]?.text).not.toContain("webhook_endpoint_secrets");
+    expect(captures[1]?.text).toContain("from webhook_endpoint_secrets");
+    expect(captures[1]?.text).toContain("for share");
+    const query = captures[2]?.text;
     expect(query).toContain("insert into webhook_deliveries");
     expect(query).toContain("insert into outbox_events");
     expect(query).toContain("returning delivery.id, delivery.workspace_id");
     expect(query).toContain("returning outbox_event.id, outbox_event.webhook_delivery_id");
     expect(query).toContain("jsonb_build_object('deliveryId', delivery.id::text)");
-    expect(captures[0]?.values).toContain(WEBHOOK_DELIVERY_TOPIC);
+    expect(captures[2]?.values).toContain(WEBHOOK_DELIVERY_TOPIC);
     expect(query).toContain("webhook.delivery.enqueued");
-    expect(captures[0]?.values).toContain(deliveryRow.body_sha256);
+    expect(captures[2]?.values).toContain(deliveryRow.body_sha256);
     await expect(
       enqueueWebhookTestDelivery(connection, {
         workspaceId,
@@ -261,6 +373,32 @@ describe("webhook persistence", () => {
         rawBody: "not JSON",
       }),
     ).rejects.toThrow(/JSON object or array/);
+
+    const missingEndpoint = createConnection([[]]);
+    await expect(
+      enqueueWebhookTestDelivery(missingEndpoint.connection, {
+        workspaceId,
+        endpointId,
+        eventId: "missing-endpoint",
+        eventType: "webhook.test",
+        eventOccurredAt: now,
+        rawBody,
+      }),
+    ).resolves.toBeNull();
+    expect(missingEndpoint.captures).toHaveLength(1);
+
+    const missingSecret = createConnection([[{ id: endpointId }], []]);
+    await expect(
+      enqueueWebhookTestDelivery(missingSecret.connection, {
+        workspaceId,
+        endpointId,
+        eventId: "missing-secret",
+        eventType: "webhook.test",
+        eventOccurredAt: now,
+        rawBody,
+      }),
+    ).resolves.toBeNull();
+    expect(missingSecret.captures).toHaveLength(2);
   });
 
   it("loads dispatch state only through matching outbox, delivery, workspace, endpoint, and secret records", async () => {
