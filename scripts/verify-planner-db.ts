@@ -8,12 +8,14 @@ import {
   GetDailyPlan,
   ListRoutines,
   RecordActivityEvent,
+  UpdateWorkItem,
 } from "../packages/application/src/index.js";
 import { createDatabase, PostgresUnitOfWork } from "../packages/database/src/index.js";
 import {
   createCadencePolicy,
   createDailyPlanningRequest,
   createDurationRange,
+  localDate,
   createStructuredTags,
   type WorkspaceId,
 } from "../packages/domain/src/index.js";
@@ -124,6 +126,44 @@ try {
     priority: "urgent",
     planningDurationMinutes: 15,
   });
+  // EVIDENCE: work-item-deadline-postgres-round-trip
+  // Dates are stored as calendar values, retained by the repository, and may be explicitly cleared.
+  const deadlineRoundTripWorkItem = await new CreateWorkItem(unitOfWork, clock).execute({
+    workspaceId: workspace,
+    title: "Database-backed deadline round trip",
+    status: "backlog",
+    priority: "low",
+    dueOn: localDate("2026-07-16"),
+  });
+  const [persistedDeadline] = await connection.sql<{ due_on: string | null }[]>`
+    select due_on::text as due_on
+    from work_items
+    where workspace_id = ${workspace}
+      and id = ${deadlineRoundTripWorkItem.id}
+  `;
+  assert.equal(persistedDeadline?.due_on, "2026-07-16");
+  const updatedDeadlineWorkItem = await new UpdateWorkItem(unitOfWork, clock).execute({
+    workspaceId: workspace,
+    workItemId: deadlineRoundTripWorkItem.id,
+    expectedVersion: deadlineRoundTripWorkItem.version,
+    dueOn: localDate("2026-07-17"),
+  });
+  assert.equal(updatedDeadlineWorkItem.dueOn, "2026-07-17");
+  const clearedDeadlineWorkItem = await new UpdateWorkItem(unitOfWork, clock).execute({
+    workspaceId: workspace,
+    workItemId: deadlineRoundTripWorkItem.id,
+    expectedVersion: updatedDeadlineWorkItem.version,
+    dueOn: null,
+  });
+  assert.equal(clearedDeadlineWorkItem.dueOn, null);
+  const [persistedClearedDeadline] = await connection.sql<{ due_on: string | null }[]>`
+    select due_on::text as due_on
+    from work_items
+    where workspace_id = ${workspace}
+      and id = ${deadlineRoundTripWorkItem.id}
+  `;
+  assert.equal(persistedClearedDeadline?.due_on, null);
+
   const terminalWorkItem = await new CreateWorkItem(unitOfWork, clock).execute({
     workspaceId: workspace,
     title: "Database-backed completed work",
@@ -179,6 +219,55 @@ try {
     work_item_id: plannableWorkItem.id,
   });
 
+  // EVIDENCE: work-item-deadline-planner-db
+  // Equal-priority work is ordered by due-date pressure, which is persisted with the plan explanation.
+  const dueTodayWorkItem = await new CreateWorkItem(unitOfWork, clock).execute({
+    workspaceId: workspace,
+    title: "Database-backed due-today work",
+    status: "planned",
+    priority: "medium",
+    planningDurationMinutes: 15,
+    dueOn: localDate("2026-07-17"),
+  });
+  const noDeadlineWorkItem = await new CreateWorkItem(unitOfWork, clock).execute({
+    workspaceId: workspace,
+    title: "Database-backed no-deadline work",
+    status: "planned",
+    priority: "medium",
+    planningDurationMinutes: 15,
+  });
+  const deadlinePlanningRequest = createDailyPlanningRequest({
+    workspaceId: workspace,
+    date: "2026-07-17",
+    timeZone: "UTC",
+    availableWindows: [
+      {
+        startsAt: new Date("2026-07-17T08:00:00.000Z"),
+        endsAt: new Date("2026-07-17T10:00:00.000Z"),
+      },
+    ],
+    targetMinutes: 75,
+    targetTaskCount: 4,
+    availableContexts: ["computer"],
+    seed: "deadline-planner-database-verification",
+    requestRevision: 1,
+  });
+  const deadlinePlan = await generator.execute({ request: deadlinePlanningRequest });
+  const dueTodayPlanItem = deadlinePlan.items.find(
+    (item) => item.workItemId === dueTodayWorkItem.id,
+  );
+  const noDeadlinePlanItem = deadlinePlan.items.find(
+    (item) => item.workItemId === noDeadlineWorkItem.id,
+  );
+  assert.notEqual(dueTodayPlanItem, undefined, "due-today work must be planned");
+  assert.notEqual(noDeadlinePlanItem, undefined, "no-deadline work must be planned");
+  assert.equal(dueTodayPlanItem!.scoreComponents.deadlinePressure, 3_000);
+  assert.equal(dueTodayPlanItem!.reasons.includes("Due today (+3000 deadline pressure)."), true);
+  assert.ok(
+    dueTodayPlanItem!.score > noDeadlinePlanItem!.score,
+    "due-today work must have a higher planner rank than otherwise equal-priority work without a deadline",
+  );
+
   const [counts] = await connection.sql<
     { routine_count: number; plan_count: number; item_count: number; event_count: number }[]
   >`
@@ -190,8 +279,8 @@ try {
   `;
   assert.deepEqual(counts, {
     routine_count: 1,
-    plan_count: 2,
-    item_count: 3,
+    plan_count: 3,
+    item_count: 7,
     event_count: 1,
   });
 

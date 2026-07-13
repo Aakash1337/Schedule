@@ -72,12 +72,13 @@ function integrationServices(): IntegrationServices {
     confirmCommand: vi.fn(
       async () =>
         ({
+          receiptVersion: 1,
           confirmationId: CONFIRMATION_ID,
           operation: "work_item.create",
           commandHash: "a".repeat(64),
           outcome: {
             type: "work_item.created",
-            workItem: { id: RESOURCE_ID, title: "Call the dentist" },
+            workItem: { id: RESOURCE_ID, title: "Call the dentist", dueOn: null },
           },
         }) as never,
     ),
@@ -387,12 +388,13 @@ describe("integration gateway routes", () => {
   });
 
   it.each([
-    { type: "work_item.create", title: "Call the dentist" },
+    { type: "work_item.create", title: "Call the dentist", dueOn: "2028-02-29" },
     {
       type: "work_item.update",
       workItemId: RESOURCE_ID,
       expectedVersion: 2,
       priority: "high",
+      dueOn: null,
     },
     {
       type: "schedule_block.create",
@@ -483,6 +485,13 @@ describe("integration gateway routes", () => {
         command: { type: "work_item.create", title: "Task" },
       },
       preparePayload({ type: "work_item.update", workItemId: RESOURCE_ID, expectedVersion: 1 }),
+      preparePayload({ type: "work_item.create", title: "Task", dueOn: "2027-02-29" }),
+      preparePayload({
+        type: "work_item.update",
+        workItemId: RESOURCE_ID,
+        expectedVersion: 1,
+        dueOn: "2028-2-29",
+      }),
       preparePayload({
         type: "schedule_block.update",
         scheduleBlockId: RESOURCE_ID,
@@ -550,7 +559,11 @@ describe("integration gateway routes", () => {
     expect(first.json()).toMatchObject({
       version: INTEGRATION_API_VERSION,
       requestId: CONFIRMATION_ID,
-      data: { confirmationId: CONFIRMATION_ID, operation: "work_item.create" },
+      data: {
+        receiptVersion: 1,
+        confirmationId: CONFIRMATION_ID,
+        operation: "work_item.create",
+      },
     });
     expect(services.confirmCommand).toHaveBeenCalledWith({
       principal: expect.objectContaining({ credentialId: CREDENTIAL_ID }),

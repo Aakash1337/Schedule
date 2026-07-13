@@ -329,6 +329,7 @@ try {
     status: "planned",
     priority: "high",
     planningDurationMinutes: 30,
+    dueOn: "2026-07-16",
   } as const satisfies IntegrationCommand;
   // EVIDENCE: integration-gateway-concurrent-prepare-exclusion
   // Same-request preparation races converge on one confirmation and one preparation audit.
@@ -402,7 +403,9 @@ try {
   const createdWorkItem = confirmedCreate.response.data.outcome.workItem as {
     readonly id: string;
     readonly version: number;
+    readonly dueOn: string | null;
   };
+  assert.equal(createdWorkItem.dueOn, "2026-07-16");
   const [confirmRaceState] = await connection.sql<
     {
       product_count: number;
@@ -451,6 +454,7 @@ try {
     expectedVersion: createdWorkItem.version,
     title: "Gateway-planned work updated",
     status: "in_progress",
+    dueOn: "2026-07-17",
   } as const satisfies IntegrationCommand;
   const preparedUpdate = await prepare(primaryCredential.token, randomUUID(), updateCommand);
   const reusedIdempotencyKey = await app.inject({
@@ -478,15 +482,34 @@ try {
     readonly id: string;
     readonly title: string;
     readonly version: number;
+    readonly dueOn: string | null;
   };
   assert.equal(updatedWorkItem.title, "Gateway-planned work updated");
   assert.equal(updatedWorkItem.version, 2);
+  assert.equal(updatedWorkItem.dueOn, "2026-07-17");
   const replayedUpdate = await confirm(
     primaryCredential.token,
     preparedUpdate.response.data.confirmationId,
     updateIdempotencyKey,
   );
   assert.deepEqual(replayedUpdate.response.data, confirmedUpdate.response.data);
+
+  // EVIDENCE: integration-gateway-work-item-deadline-clear
+  // Confirmed gateway mutations preserve calendar dates and can explicitly clear them.
+  const preparedDeadlineClear = await prepare(primaryCredential.token, randomUUID(), {
+    type: "work_item.update",
+    workItemId: createdWorkItem.id,
+    expectedVersion: updatedWorkItem.version,
+    dueOn: null,
+  });
+  const confirmedDeadlineClear = await confirm(
+    primaryCredential.token,
+    preparedDeadlineClear.response.data.confirmationId,
+    "verify-work-item-deadline-clear",
+  );
+  assert.equal(confirmedDeadlineClear.response.data.outcome.type, "work_item.updated");
+  assert.equal(confirmedDeadlineClear.response.data.outcome.workItem.dueOn, null);
+  assert.equal(confirmedDeadlineClear.response.data.outcome.workItem.version, 3);
 
   const consumedWithNewKey = await app.inject({
     method: "POST",
@@ -645,7 +668,7 @@ try {
       and c.id = ${preparedStaleUpdate.response.data.confirmationId}
   `;
   assert.equal(rollbackState?.title, "Gateway-planned work updated");
-  assert.equal(rollbackState?.version, 2);
+  assert.equal(rollbackState?.version, 3);
   assert.equal(rollbackState?.consumed_at, null);
   assert.equal(rollbackState?.request_count, 0);
   assert.equal(rollbackState?.confirmed_audit_count, 0);
@@ -804,8 +827,8 @@ try {
         where workspace_id = ${primaryWorkspaceId}
       ) as serialized_receipts
   `;
-  assert.equal(evidence?.receipt_count, 5);
-  assert.equal(evidence?.confirmed_audit_count, 5);
+  assert.equal(evidence?.receipt_count, 6);
+  assert.equal(evidence?.confirmed_audit_count, 6);
   assert.ok((evidence?.prepared_audit_count ?? 0) >= 7);
   assert.equal(evidence?.completed_plan_item_count, 1);
   for (const secret of [

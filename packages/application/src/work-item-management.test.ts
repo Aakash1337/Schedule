@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { createWorkspace, workItemId, workspaceId, type WorkItem } from "@schedule/domain";
+import {
+  createWorkspace,
+  localDate,
+  workItemId,
+  workspaceId,
+  type WorkItem,
+} from "@schedule/domain";
 
 import { CreateWorkItem } from "./create-work-item.js";
 import { GetWorkItem } from "./get-work-item.js";
@@ -133,6 +139,24 @@ describe("work item management", () => {
 
     expect(item.planningDurationMinutes).toBe(45);
     expect(removed).toMatchObject({ planningDurationMinutes: null, version: 2 });
+  });
+
+  it("persists a due date and permits explicitly clearing it", async () => {
+    const test = harness();
+    const item = await test.create.execute({
+      workspaceId: workspace.id,
+      title: "Submit quarterly return",
+      dueOn: localDate("2026-07-31"),
+    });
+    const cleared = await test.update.execute({
+      workspaceId: workspace.id,
+      workItemId: item.id,
+      expectedVersion: 1,
+      dueOn: null,
+    });
+
+    expect(item.dueOn).toBe("2026-07-31");
+    expect(cleared).toMatchObject({ dueOn: null, version: 2 });
   });
 
   it("rejects a missing workspace before persistence", async () => {

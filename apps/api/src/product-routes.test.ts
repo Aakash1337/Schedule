@@ -135,6 +135,7 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
         ...(command.description === undefined ? {} : { description: command.description }),
         ...(command.status === undefined ? {} : { status: command.status }),
         ...(command.priority === undefined ? {} : { priority: command.priority }),
+        ...(command.dueOn === undefined ? {} : { dueOn: command.dueOn }),
         ...(command.planningDurationMinutes === undefined
           ? {}
           : { planningDurationMinutes: command.planningDurationMinutes }),
@@ -464,6 +465,81 @@ describe("local product API", () => {
       invalidUpdateLow,
       invalidUpdateHigh,
     ]) {
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: { code: "request.validation_failed" } });
+    }
+  });
+
+  it("validates and round-trips nullable Gregorian work-item due dates", async () => {
+    const app = await appWith(createHarness().services);
+    const created = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/work-items`,
+      payload: { title: "File taxes", dueOn: "2028-02-29" },
+    });
+    const listed = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/work-items`,
+    });
+    const retrieved = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+    });
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+      payload: { expectedVersion: 1, dueOn: "2028-03-01" },
+    });
+    const cleared = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+      payload: { expectedVersion: 2, dueOn: null },
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ dueOn: "2028-02-29" });
+    expect(listed.json()).toMatchObject({ items: [{ id: workItemUuid, dueOn: "2028-02-29" }] });
+    expect(retrieved.json()).toMatchObject({ dueOn: "2028-02-29" });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({ dueOn: "2028-03-01", version: 2 });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json()).toMatchObject({ dueOn: null, version: 3 });
+  });
+
+  it("rejects impossible and noncanonical work-item due dates", async () => {
+    const app = await appWith(createHarness().services);
+    const invalidCreate = await Promise.all(
+      ["2027-02-29", "2028-2-29", "2028-02-30"].map((dueOn) =>
+        app.inject({
+          method: "POST",
+          url: `/v1/workspaces/${workspaceUuid}/work-items`,
+          payload: { title: "Invalid date", dueOn },
+        }),
+      ),
+    );
+    const created = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/work-items`,
+      payload: { title: "Existing task" },
+    });
+    const invalidUpdate = await Promise.all(
+      ["2027-02-29", "2028-2-29", "2028-02-30"].map((dueOn) =>
+        app.inject({
+          method: "PATCH",
+          url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+          payload: { expectedVersion: 1, dueOn },
+        }),
+      ),
+    );
+    const noOpUpdate = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+      payload: { expectedVersion: 1 },
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ dueOn: null });
+    for (const response of [...invalidCreate, ...invalidUpdate, noOpUpdate]) {
       expect(response.statusCode).toBe(400);
       expect(response.json()).toMatchObject({ error: { code: "request.validation_failed" } });
     }

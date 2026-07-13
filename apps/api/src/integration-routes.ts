@@ -71,6 +71,7 @@ const createWorkItemCommand = z.strictObject({
   description: z.string().max(4_000).nullable().optional(),
   status: workItemStatus.optional(),
   priority: workItemPriority.optional(),
+  dueOn: localDateText.nullable().optional(),
   planningDurationMinutes: z.number().int().positive().max(43_200).nullable().optional(),
 });
 
@@ -83,6 +84,7 @@ const updateWorkItemCommand = z
     description: z.string().max(4_000).nullable().optional(),
     status: workItemStatus.optional(),
     priority: workItemPriority.optional(),
+    dueOn: localDateText.nullable().optional(),
     planningDurationMinutes: z.number().int().positive().max(43_200).nullable().optional(),
   })
   .refine(
@@ -91,6 +93,7 @@ const updateWorkItemCommand = z
       command.description !== undefined ||
       command.status !== undefined ||
       command.priority !== undefined ||
+      command.dueOn !== undefined ||
       command.planningDurationMinutes !== undefined,
     { message: "At least one work item change is required." },
   );

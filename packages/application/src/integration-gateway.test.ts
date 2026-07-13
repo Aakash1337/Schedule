@@ -540,7 +540,7 @@ describe("integration Today and preparation", () => {
           description: "Read the release notes",
         },
         summary:
-          "Create work item “Task” (status backlog, priority none, not included in daily planning, description “Read the release notes”).",
+          "Create work item “Task” (status backlog, priority none, not included in daily planning, no due date, description “Read the release notes”).",
       },
       {
         command: {
@@ -551,6 +551,15 @@ describe("integration Today and preparation", () => {
           planningDurationMinutes: null,
         },
         summary: `Update work item ${SOURCE_WORK_ITEM_ID}: set status to cancelled; remove from daily planning.`,
+      },
+      {
+        command: {
+          type: "work_item.update",
+          workItemId: SOURCE_WORK_ITEM_ID,
+          expectedVersion: 1,
+          dueOn: "2026-08-01",
+        },
+        summary: `Update work item ${SOURCE_WORK_ITEM_ID}: set due date to 2026-08-01.`,
       },
       {
         command: {
@@ -660,6 +669,9 @@ describe("integration Today and preparation", () => {
       { type: "work_item.create", title: "Task", workspaceId: WORKSPACE_ID },
       { type: "work_item.create", title: "   " },
       { type: "work_item.create", title: "Task", description: "x".repeat(4_001) },
+      { type: "work_item.create", title: "Task", dueOn: "2026-02-29" },
+      { type: "work_item.create", title: "Task", dueOn: "2026-07-32" },
+      { type: "work_item.update", workItemId: SOURCE_WORK_ITEM_ID, expectedVersion: 1, dueOn: 1 },
       { type: "work_item.update", workItemId: SOURCE_WORK_ITEM_ID, expectedVersion: 1 },
       {
         type: "schedule_block.update",
@@ -731,6 +743,110 @@ describe("integration Today and preparation", () => {
 });
 
 describe("integration confirmation execution", () => {
+  it("canonicalizes, executes, clears, and replays work-item due dates", async () => {
+    const test = createHarness();
+    const withDueDate = await test.services.prepare.execute({
+      principal: test.principal,
+      requestId: "due-date-canonical",
+      command: { type: "work_item.create", title: "File return", dueOn: "2026-07-31" },
+    });
+    const withoutDueDate = await test.services.prepare.execute({
+      principal: test.principal,
+      requestId: "due-date-omitted",
+      command: { type: "work_item.create", title: "File return" },
+    });
+    expect(withDueDate.commandDisplay).toContain('"dueOn":"2026-07-31"');
+    expect(withDueDate.commandHash).not.toBe(withoutDueDate.commandHash);
+    expect(withDueDate.summary).toContain("due 2026-07-31");
+
+    const created = await test.services.confirm.execute({
+      principal: test.principal,
+      confirmationId: withDueDate.confirmationId,
+      idempotencyKey: "due-date-create",
+    });
+    if (created.outcome.type !== "work_item.created") throw new Error("unexpected outcome");
+    expect(created.receiptVersion).toBe(1);
+    expect(created.outcome.workItem.dueOn).toBe("2026-07-31");
+
+    const clear = await prepareAndConfirm(test, "due-date-clear", {
+      type: "work_item.update",
+      workItemId: created.outcome.workItem.id,
+      expectedVersion: 1,
+      dueOn: null,
+    });
+    expect(clear.outcome).toMatchObject({
+      type: "work_item.updated",
+      workItem: { dueOn: null, version: 2 },
+    });
+    expect(
+      test.workItems.find((item) => item.id === created.outcome.workItem.id)?.dueOn,
+    ).toBeNull();
+
+    const replay = await test.services.confirm.execute({
+      principal: test.principal,
+      confirmationId: withDueDate.confirmationId,
+      idempotencyKey: "due-date-create",
+    });
+    expect(replay).toEqual(created);
+
+    const storedResult = test.requests.find(
+      (request) => request.idempotencyKey === "due-date-create",
+    )?.result;
+    if (storedResult?.outcome.type !== "work_item.created") throw new Error("unexpected outcome");
+    const { dueOn: _dueOn, ...workItemWithoutDueDate } = storedResult.outcome.workItem;
+    void _dueOn;
+    const requestIndex = test.requests.findIndex(
+      (request) => request.idempotencyKey === "due-date-create",
+    );
+    test.requests[requestIndex] = {
+      ...test.requests[requestIndex]!,
+      result: {
+        ...storedResult,
+        outcome: {
+          ...storedResult.outcome,
+          workItem: workItemWithoutDueDate as typeof storedResult.outcome.workItem,
+        },
+      },
+    };
+    await expect(
+      test.services.confirm.execute({
+        principal: test.principal,
+        confirmationId: withDueDate.confirmationId,
+        idempotencyKey: "due-date-create",
+      }),
+    ).rejects.toMatchObject({ code: "integration.receipt_corrupt" });
+
+    const legacySource = await test.services.confirm.execute({
+      principal: test.principal,
+      confirmationId: withoutDueDate.confirmationId,
+      idempotencyKey: "due-date-legacy-replay",
+    });
+    if (legacySource.outcome.type !== "work_item.created") throw new Error("unexpected outcome");
+    expect(legacySource.receiptVersion).toBe(1);
+    expect(legacySource.outcome.workItem.dueOn).toBeNull();
+    const { receiptVersion: _receiptVersion, ...legacyEnvelope } = legacySource;
+    const { dueOn: _legacyDueOn, ...legacyWorkItem } = legacySource.outcome.workItem;
+    void _receiptVersion;
+    void _legacyDueOn;
+    const legacyResult = {
+      ...legacyEnvelope,
+      outcome: { ...legacySource.outcome, workItem: legacyWorkItem },
+    } as typeof legacySource;
+    const legacyRequestIndex = test.requests.findIndex(
+      (request) => request.idempotencyKey === "due-date-legacy-replay",
+    );
+    test.requests[legacyRequestIndex] = {
+      ...test.requests[legacyRequestIndex]!,
+      result: legacyResult,
+    };
+    const legacyReplay = await test.services.confirm.execute({
+      principal: test.principal,
+      confirmationId: withoutDueDate.confirmationId,
+      idempotencyKey: "due-date-legacy-replay",
+    });
+    expect(legacyReplay).toEqual(legacyResult);
+  });
+
   it("expires and consumes confirmations once while replaying the same receipt exactly", async () => {
     const expiredTest = createHarness();
     const expired = await expiredTest.services.prepare.execute({

@@ -30,9 +30,10 @@ import {
 } from "./routine-planning-feedback.js";
 import type { WorkItem } from "./work-item.js";
 
-export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v3";
-export const PLANNER_CONFIG_VERSION = "default-weights-v2";
+export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v4";
+export const PLANNER_CONFIG_VERSION = "default-weights-v3";
 export const PLANNER_PRNG_VERSION = "mulberry32-v1";
+const MAXIMUM_PLANNER_SCORE_COMPONENT = 1_000_000;
 
 export const planningFitPreferences = ["time", "task_count", "balanced"] as const;
 export type PlanningFitPreference = (typeof planningFitPreferences)[number];
@@ -96,6 +97,11 @@ export interface PlannerScoreWeights {
   readonly recentCompletion: number;
   readonly consecutiveDay: number;
   readonly skipFatigue: number;
+  readonly workItemDeadlineDueToday: number;
+  readonly workItemDeadlineFuturePerDay: number;
+  readonly workItemDeadlineOverdueBase: number;
+  readonly workItemDeadlineOverduePerDay: number;
+  readonly workItemDeadlineOverdueMaximum: number;
 }
 
 export interface PlannerConfig {
@@ -104,6 +110,7 @@ export interface PlannerConfig {
   readonly prngVersion: string;
   readonly maxCandidates: number;
   readonly searchIterations: number;
+  readonly workItemDeadlineHorizonDays: number;
   readonly selectionWeightFloor: number;
   readonly selectionWeightOffset: number;
   readonly score: PlannerScoreWeights;
@@ -115,6 +122,7 @@ export const DEFAULT_PLANNER_CONFIG: PlannerConfig = {
   prngVersion: PLANNER_PRNG_VERSION,
   maxCandidates: 128,
   searchIterations: 32,
+  workItemDeadlineHorizonDays: 14,
   selectionWeightFloor: 100,
   selectionWeightOffset: 250,
   score: {
@@ -135,6 +143,11 @@ export const DEFAULT_PLANNER_CONFIG: PlannerConfig = {
     recentCompletion: -250,
     consecutiveDay: -1_200,
     skipFatigue: -200,
+    workItemDeadlineDueToday: 3_000,
+    workItemDeadlineFuturePerDay: 200,
+    workItemDeadlineOverdueBase: 3_500,
+    workItemDeadlineOverduePerDay: 250,
+    workItemDeadlineOverdueMaximum: 5_000,
   },
 };
 
@@ -727,6 +740,7 @@ const workItemPriorityScore: Readonly<Record<WorkItem["priority"], number>> = {
 export function evaluateWorkItemForPlan(
   workItem: WorkItem,
   request: DailyPlanningRequest,
+  config: PlannerConfig = DEFAULT_PLANNER_CONFIG,
 ): WorkItemEvaluation {
   const exclusions: EligibilityCode[] = [];
   const duration = workItem.planningDurationMinutes;
@@ -742,7 +756,25 @@ export function evaluateWorkItemForPlan(
   ) {
     exclusions.push("duration_does_not_fit");
   }
-  const score = workItemPriorityScore[workItem.priority];
+  const priorityScore = workItemPriorityScore[workItem.priority];
+  const deadlinePressure = workItemDeadlinePressure(workItem.dueOn, request.date, config);
+  const score = priorityScore + deadlinePressure;
+  const scoreComponents: Record<string, number> = { priority: priorityScore };
+  const reasons = [
+    `${workItem.priority[0]?.toUpperCase() ?? ""}${workItem.priority.slice(1)} priority work item.`,
+  ];
+  if (workItem.dueOn !== null) {
+    scoreComponents.deadlinePressure = deadlinePressure;
+    reasons.push(
+      workItemDeadlineReason(
+        workItem.dueOn,
+        request.date,
+        deadlinePressure,
+        config.workItemDeadlineHorizonDays,
+      ),
+    );
+  }
+  reasons.push("One-time work items do not use cadence or activity-history scoring.");
   return {
     workItemId: workItem.id,
     eligible: exclusions.length === 0,
@@ -750,12 +782,47 @@ export function evaluateWorkItemForPlan(
     minimumScheduledMinutes: duration ?? 0,
     desiredScheduledMinutes: duration ?? 0,
     score,
-    scoreComponents: { priority: score },
-    reasons: [
-      `${workItem.priority[0]?.toUpperCase() ?? ""}${workItem.priority.slice(1)} priority work item.`,
-      "One-time work items do not use cadence or activity-history scoring.",
-    ],
+    scoreComponents,
+    reasons,
   };
+}
+
+function workItemDeadlinePressure(
+  dueOn: LocalDate | null,
+  date: LocalDate,
+  config: PlannerConfig,
+): number {
+  if (dueOn === null) return 0;
+  const daysUntilDue = daysBetweenLocalDates(date, dueOn);
+  if (daysUntilDue === 0) return config.score.workItemDeadlineDueToday;
+  if (daysUntilDue > 0) {
+    return daysUntilDue <= config.workItemDeadlineHorizonDays
+      ? (config.workItemDeadlineHorizonDays - daysUntilDue + 1) *
+          config.score.workItemDeadlineFuturePerDay
+      : 0;
+  }
+  return Math.min(
+    config.score.workItemDeadlineOverdueMaximum,
+    config.score.workItemDeadlineOverdueBase +
+      -daysUntilDue * config.score.workItemDeadlineOverduePerDay,
+  );
+}
+
+function workItemDeadlineReason(
+  dueOn: LocalDate,
+  date: LocalDate,
+  deadlinePressure: number,
+  deadlineHorizonDays: number,
+): string {
+  const daysUntilDue = daysBetweenLocalDates(date, dueOn);
+  if (daysUntilDue === 0) return `Due today (+${deadlinePressure} deadline pressure).`;
+  if (daysUntilDue < 0) {
+    return `${-daysUntilDue} day(s) overdue (+${deadlinePressure} deadline pressure).`;
+  }
+  if (daysUntilDue > deadlineHorizonDays) {
+    return `Due in ${daysUntilDue} day(s), outside the deadline horizon.`;
+  }
+  return `Due in ${daysUntilDue} day(s) (+${deadlinePressure} deadline pressure).`;
 }
 
 class Mulberry32 {
@@ -1030,6 +1097,12 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
     1,
   );
   invariant(
+    Number.isSafeInteger(config.workItemDeadlineHorizonDays) &&
+      config.workItemDeadlineHorizonDays >= 0,
+    "planning.work_item_deadline_horizon_invalid",
+    "Work-item deadline horizon must be a non-negative safe whole number of days.",
+  );
+  invariant(
     config.configVersion.trim().length > 0 && config.configVersion.length <= 120,
     "planning.config_version_invalid",
     "Planner configuration version must contain between 1 and 120 characters.",
@@ -1053,9 +1126,36 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
       .map(([, value]) => value as number),
   ];
   invariant(
-    scoreValues.every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 1_000_000),
+    scoreValues.every(
+      (value) => Number.isSafeInteger(value) && Math.abs(value) <= MAXIMUM_PLANNER_SCORE_COMPONENT,
+    ),
     "planning.score_weight_invalid",
     "Planner score weights must be safe whole numbers between -1,000,000 and 1,000,000.",
+  );
+  const deadlineScoreValues = [
+    config.score.workItemDeadlineDueToday,
+    config.score.workItemDeadlineFuturePerDay,
+    config.score.workItemDeadlineOverdueBase,
+    config.score.workItemDeadlineOverduePerDay,
+    config.score.workItemDeadlineOverdueMaximum,
+  ];
+  invariant(
+    deadlineScoreValues.every((value) => Number.isSafeInteger(value) && value >= 0),
+    "planning.work_item_deadline_score_invalid",
+    "Work-item deadline score weights must be non-negative safe whole numbers.",
+  );
+  const maximumFutureDeadlinePressure =
+    config.workItemDeadlineHorizonDays * config.score.workItemDeadlineFuturePerDay;
+  invariant(
+    Number.isSafeInteger(maximumFutureDeadlinePressure) &&
+      maximumFutureDeadlinePressure <= MAXIMUM_PLANNER_SCORE_COMPONENT,
+    "planning.work_item_deadline_future_range_invalid",
+    "Maximum future work-item deadline pressure must be a safe whole number no greater than 1,000,000.",
+  );
+  invariant(
+    config.score.workItemDeadlineOverdueMaximum >= config.score.workItemDeadlineOverdueBase,
+    "planning.work_item_deadline_overdue_bounds_invalid",
+    "Work-item overdue maximum must be greater than or equal to the overdue base.",
   );
   const routineIds = new Set<RoutineId>();
   for (const routine of input.routines) {
@@ -1127,7 +1227,7 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
       routine: null,
       workItem,
       source: { sourceType: "work_item" as const, routineId: null, workItemId: workItem.id },
-      evaluation: evaluateWorkItemForPlan(workItem, input.request),
+      evaluation: evaluateWorkItemForPlan(workItem, input.request, config),
     }));
   const evaluations = [...routineEvaluations, ...workItemEvaluations];
   const exclusions = evaluations

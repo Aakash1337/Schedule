@@ -7,8 +7,10 @@ import {
   planItemId,
   routineId,
   routinePlanningFeedbackId,
+  workItemId,
   workspaceId,
   type RoutinePlanningFeedback,
+  type WorkItem,
 } from "@schedule/domain";
 
 import type { DatabaseConnection } from "./database.js";
@@ -33,6 +35,7 @@ const requestIdentity = {
 };
 
 const successfulResult = {
+  receiptVersion: 1 as const,
   confirmationId: requestIdentity.confirmationId,
   operation: requestIdentity.operation,
   commandHash: requestIdentity.commandHash,
@@ -46,6 +49,7 @@ const successfulResult = {
       status: "backlog" as const,
       priority: "medium" as const,
       planningDurationMinutes: null,
+      dueOn: null,
       version: 1,
       createdAt: "2026-07-13T02:00:01.000Z",
       updatedAt: "2026-07-13T02:00:01.000Z",
@@ -129,6 +133,94 @@ describe("PostgresUnitOfWork", () => {
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: "read committed",
     });
+  });
+
+  it("persists a work item due date on insert and save", async () => {
+    const insertValues = vi.fn().mockResolvedValue(undefined);
+    const insert = vi.fn().mockReturnValue({ values: insertValues });
+    const returning = vi.fn().mockResolvedValue([{ id: "50000000-0000-4000-8000-000000000005" }]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const updateSet = vi.fn().mockReturnValue({ where });
+    const update = vi.fn().mockReturnValue({ set: updateSet });
+    const transaction = vi.fn(async (operation: (database: unknown) => Promise<unknown>) =>
+      operation({ insert, update }),
+    );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+    const item = {
+      id: workItemId("50000000-0000-4000-8000-000000000005"),
+      workspaceId: requestIdentity.workspaceId,
+      title: "Submit the report",
+      description: null,
+      status: "backlog",
+      priority: "medium",
+      planningDurationMinutes: 45,
+      dueOn: localDate("2026-07-20"),
+      version: 1,
+      createdAt: new Date("2026-07-13T02:00:01.000Z"),
+      updatedAt: new Date("2026-07-13T02:00:01.000Z"),
+    } satisfies WorkItem;
+
+    await new PostgresUnitOfWork(connection).run(async ({ workItems }) => {
+      await workItems.insert(item);
+      await workItems.save(
+        { ...item, version: 2, updatedAt: new Date("2026-07-13T03:00:00.000Z") },
+        1,
+      );
+    });
+
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ dueOn: "2026-07-20" }));
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ dueOn: "2026-07-20" }));
+  });
+
+  it("maps nullable due dates from work item rows", async () => {
+    const limit = vi
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          id: "50000000-0000-4000-8000-000000000005",
+          workspaceId: requestIdentity.workspaceId,
+          title: "Submit the report",
+          description: null,
+          status: "backlog",
+          priority: "medium",
+          planningDurationMinutes: 45,
+          dueOn: "2026-07-20",
+          version: 1,
+          createdAt: new Date("2026-07-13T02:00:01.000Z"),
+          updatedAt: new Date("2026-07-13T02:00:01.000Z"),
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "50000000-0000-4000-8000-000000000005",
+          workspaceId: requestIdentity.workspaceId,
+          title: "Submit the report",
+          description: null,
+          status: "backlog",
+          priority: "medium",
+          planningDurationMinutes: 45,
+          dueOn: null,
+          version: 1,
+          createdAt: new Date("2026-07-13T02:00:01.000Z"),
+          updatedAt: new Date("2026-07-13T02:00:01.000Z"),
+        },
+      ]);
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockReturnValue({ where });
+    const select = vi.fn().mockReturnValue({ from });
+    const transaction = vi.fn(async (operation: (database: unknown) => Promise<unknown>) =>
+      operation({ select }),
+    );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+    const unitOfWork = new PostgresUnitOfWork(connection);
+    const item = workItemId("50000000-0000-4000-8000-000000000005");
+
+    await expect(
+      unitOfWork.run(({ workItems }) => workItems.findById(requestIdentity.workspaceId, item)),
+    ).resolves.toMatchObject({ dueOn: "2026-07-20" });
+    await expect(
+      unitOfWork.run(({ workItems }) => workItems.findById(requestIdentity.workspaceId, item)),
+    ).resolves.toMatchObject({ dueOn: null });
   });
 });
 

@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-13
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v3 selects both reusable routines and explicitly opted-in one-time Work items while applying temporary routine feedback as a versioned hard constraint. Phase 3 has begun with a transparent, read-only routine-duration insight and an explicit approval flow; broader learned preferences and automatic adaptation remain deferred. A provider-neutral authenticated inbound gateway now provides Today reads and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v4 selects both reusable routines and explicitly opted-in one-time work items, applies temporary routine feedback as a versioned hard constraint, and adds transparent deadline pressure for eligible work. Phase 3 has begun with a transparent, read-only routine-duration insight and an explicit approval flow; broader learned preferences and automatic adaptation remain deferred. A provider-neutral authenticated inbound gateway now provides Today reads and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
 
 ## 1. Product summary
 
@@ -29,7 +29,7 @@ The planner considers both the user's available time and desired number of tasks
 
 ### 3.1 Work item
 
-A normal, actionable unit of work. It may belong to a project, appear on a Kanban board, have a deadline, or remain in a backlog. A work item remains off the automatic planner unless it has an explicit positive **planning duration**. An opted-in item is one-time work: it may appear at most once in a plan and may be selected again in later plan revisions, dates, or sessions until it is completed, cancelled, or opted out. It is not a recurring routine.
+A normal, actionable unit of work. It may belong to a project, appear on a Kanban board, have an optional local due date, or remain in a backlog. `dueOn` is either `null` or a real Gregorian `YYYY-MM-DD` local date, not an instant or time-zone conversion. A work item remains off the automatic planner unless it has an explicit positive **planning duration**. An opted-in item is one-time work: it may appear at most once in a plan and may be selected again in later plan revisions, dates, or sessions until it is completed, cancelled, or opted out. It is not a recurring routine.
 
 ### 3.2 Routine
 
@@ -110,7 +110,7 @@ Each item may define:
 - Whether it can be split into sessions
 - Minimum useful session length
 - Setup or travel overhead
-- Deadline or fixed calendar window
+- Optional due date or fixed calendar window
 
 The daily planning request defines both:
 
@@ -159,8 +159,9 @@ against real outcome data.
 
 The implemented planner draws candidates from reusable routines and from opted-in one-time work
 items. A work item is eligible only when it has a positive planning duration and is in `backlog`,
-`planned`, or `in_progress`; `blocked`, `done`, and `cancelled` work stays out of Today. Calendar
-blocks remain independent reservations rather than planner candidates or automatic placements.
+`planned`, or `in_progress`; `blocked`, `done`, and `cancelled` work stays out of Today. A due date
+does not override any of these eligibility or capacity constraints. Calendar blocks remain independent
+reservations rather than planner candidates or automatic placements.
 
 ### 7.2 Hard constraints
 
@@ -174,13 +175,19 @@ The engine first removes impossible choices, including:
 - Explicit exclusions or snoozes
 - Active **Not today** or **Not this week** routine feedback
 
-Deadlines and user-locked commitments may override ordinary eligibility rules, but the override must be shown.
+Deadlines add score pressure only. They never override ordinary eligibility, available-window capacity,
+or time and task-count limits. User-locked commitments are carried forward by the explicit mutation
+path and are not a general deadline override.
 
 ### 7.3 Scoring
 
 Each eligible candidate receives an explainable score assembled from normalized components. Routine
-scores use cadence and activity history. One-time work scores use its explicit priority only, so a
-work item cannot acquire accidental recurrence pressure from routine history:
+scores use cadence and activity history. One-time work uses its explicit priority plus deadline
+pressure, so it cannot acquire accidental recurrence pressure from routine history. The default
+deadline horizon is 14 days: work due today receives the configured
+`workItemDeadlineDueToday` increment, future work
+inside the horizon gains an increment for each day nearer its due date, and overdue work gains a
+capped increment. Work due beyond the horizon remains eligible but receives zero deadline pressure:
 
 ```text
 score =
@@ -362,7 +369,7 @@ The adaptive planner complements, rather than replaces:
 - One-time and recurring work
 - Dependencies and blockers
 - Subtasks and checklists
-- Deadlines, reminders, and notifications
+- Work-item due dates; reminders and notifications remain deferred
 - Search, filters, saved views, and bulk editing
 - Notes, links, and attachments
 - Import, export, backup, and restore
@@ -412,7 +419,6 @@ Success is not simply "more tasks completed." Useful measures include realistic 
 - Zero eligible tasks
 - Tasks whose minimum duration exceeds every available window
 - Conflicting minimum, target, maximum, and spacing rules
-- A deadline that conflicts with a cadence maximum
 - Reopening a completed item
 - Editing history and recalculating learned values
 - Duplicate suggestions across devices
@@ -435,7 +441,7 @@ Success is not simply "more tasks completed." Useful measures include realistic 
 - Implemented: lock, replace, regenerate, defer, dismiss, and completion flows
 - Implemented: append-only, resettable **Not today** and **Not this week** routine feedback with
   immediate optimistic, idempotent replanning
-- Implemented: Kanban/backlog work can opt into Today with a planning duration; calendar blocks remain independent
+- Implemented: Kanban/backlog work can opt into Today with a planning duration and an optional local due date; calendar blocks remain independent
 - Partial: "why selected" details are implemented; alternative-plan comparison is deferred
 
 ### Phase 3 — Transparent adaptation
@@ -479,7 +485,6 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
 - Default duration and task-count targets
 - Whether minimum cadence is a hard commitment or an urgency signal
 - Default exploration probability after a target is met
-- Whether a cadence maximum may be overridden by a deadline
 - How partial completion contributes to cadence
 - How much calendar auto-placement occurs versus simple task selection
 - Initial local-model runtime and model choice

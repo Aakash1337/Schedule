@@ -4,8 +4,11 @@ import {
   createDailyPlanningRequest,
   createRoutine,
   createWorkItem,
+  DEFAULT_PLANNER_CONFIG,
   dailyPlanId,
+  evaluateWorkItemForPlan,
   generateDailyPlan,
+  localDate,
   recordActivityEvent,
   replanDailyPlan,
   routineId,
@@ -96,6 +99,208 @@ describe("unified planner candidates", () => {
     expect(plan.exclusions.map((item) => item.codes)).toEqual(
       expect.arrayContaining([["work_item_not_plannable"], ["work_item_status_ineligible"]]),
     );
+  });
+
+  it("adds deterministic deadline pressure without bypassing work-item constraints", () => {
+    const dueDates = [
+      ["no-deadline", null, 2_000],
+      ["today", localDate("2026-07-15"), 5_000],
+      ["future", localDate("2026-07-17"), 4_600],
+      ["horizon", localDate("2026-07-29"), 2_200],
+      ["overdue", localDate("2026-07-13"), 6_000],
+      ["overdue-capped", localDate("2026-06-20"), 7_000],
+      ["outside", localDate("2026-07-30"), 2_000],
+    ] as const;
+    const items = dueDates.map(([id, dueOn]) =>
+      createWorkItem({
+        id: workItemId(`deadline-${id}`),
+        workspaceId: workspace,
+        title: id,
+        priority: "medium",
+        dueOn,
+        planningDurationMinutes: 10,
+        now: new Date("2026-07-01T00:00:00Z"),
+      }),
+    );
+    const deadlineRequest = createDailyPlanningRequest({
+      workspaceId: workspace,
+      date: "2026-07-15",
+      timeZone: "UTC",
+      availableWindows: [
+        { startsAt: new Date("2026-07-15T09:00:00Z"), endsAt: new Date("2026-07-15T10:00:00Z") },
+      ],
+      targetMinutes: 50,
+      targetTaskCount: 5,
+      seed: "deadline-seed",
+    });
+    const evaluations = items.map((item) => evaluateWorkItemForPlan(item, deadlineRequest));
+    const plan = generateDailyPlan({
+      id: dailyPlanId("deadline-plan"),
+      request: deadlineRequest,
+      routines: [],
+      workItems: items,
+      events: [],
+    });
+    const byWorkItemId = new Map(
+      evaluations.map((evaluation) => [evaluation.workItemId, evaluation]),
+    );
+
+    expect(byWorkItemId.get(workItemId("deadline-no-deadline"))).toMatchObject({
+      score: 2_000,
+      scoreComponents: { priority: 2_000 },
+    });
+    expect(byWorkItemId.get(workItemId("deadline-today"))).toMatchObject({
+      score: 5_000,
+      scoreComponents: { deadlinePressure: 3_000 },
+    });
+    expect(byWorkItemId.get(workItemId("deadline-future"))).toMatchObject({
+      score: 4_600,
+      scoreComponents: { deadlinePressure: 2_600 },
+    });
+    expect(byWorkItemId.get(workItemId("deadline-horizon"))).toMatchObject({
+      score: 2_200,
+      scoreComponents: { deadlinePressure: 200 },
+    });
+    expect(byWorkItemId.get(workItemId("deadline-overdue"))).toMatchObject({
+      score: 6_000,
+      scoreComponents: { deadlinePressure: 4_000 },
+    });
+    expect(byWorkItemId.get(workItemId("deadline-overdue-capped"))).toMatchObject({
+      score: 7_000,
+      scoreComponents: { deadlinePressure: 5_000 },
+    });
+    expect(byWorkItemId.get(workItemId("deadline-outside"))).toMatchObject({
+      score: 2_000,
+      scoreComponents: { deadlinePressure: 0 },
+    });
+    expect(
+      [...evaluations]
+        .sort((left, right) => right.score - left.score)
+        .map((evaluation) => evaluation.workItemId),
+    ).toEqual([
+      workItemId("deadline-overdue-capped"),
+      workItemId("deadline-overdue"),
+      workItemId("deadline-today"),
+      workItemId("deadline-future"),
+      workItemId("deadline-horizon"),
+      workItemId("deadline-no-deadline"),
+      workItemId("deadline-outside"),
+    ]);
+    expect(plan.inputSnapshot).toMatchObject({
+      config: { algorithmVersion: "deterministic-planner-v4", configVersion: "default-weights-v3" },
+      workItems: expect.arrayContaining([expect.objectContaining({ dueOn: "2026-07-15" })]),
+    });
+    const repeated = generateDailyPlan({
+      id: dailyPlanId("deadline-plan"),
+      request: deadlineRequest,
+      routines: [],
+      workItems: [...items].reverse(),
+      events: [],
+    });
+    expect(repeated.inputHash).toBe(plan.inputHash);
+    expect(repeated.items).toEqual(plan.items);
+
+    const ineligible = createWorkItem({
+      id: workItemId("deadline-ineligible"),
+      workspaceId: workspace,
+      title: "Ineligible",
+      dueOn: localDate("2026-07-15"),
+      planningDurationMinutes: null,
+      now: new Date("2026-07-01T00:00:00Z"),
+    });
+    expect(
+      generateDailyPlan({
+        request: deadlineRequest,
+        routines: [],
+        workItems: [ineligible],
+        events: [],
+      }).exclusions,
+    ).toContainEqual(
+      expect.objectContaining({ workItemId: ineligible.id, codes: ["work_item_not_plannable"] }),
+    );
+    expect(() =>
+      generateDailyPlan({
+        request: deadlineRequest,
+        routines: [],
+        events: [],
+        config: { ...DEFAULT_PLANNER_CONFIG, workItemDeadlineHorizonDays: -1 },
+      }),
+    ).toThrowError(
+      expect.objectContaining({ code: "planning.work_item_deadline_horizon_invalid" }),
+    );
+    expect(() =>
+      generateDailyPlan({
+        request: deadlineRequest,
+        routines: [],
+        events: [],
+        config: {
+          ...DEFAULT_PLANNER_CONFIG,
+          workItemDeadlineHorizonDays: Number.MAX_SAFE_INTEGER + 1,
+        },
+      }),
+    ).toThrowError(
+      expect.objectContaining({ code: "planning.work_item_deadline_horizon_invalid" }),
+    );
+    expect(() =>
+      generateDailyPlan({
+        request: deadlineRequest,
+        routines: [],
+        events: [],
+        config: {
+          ...DEFAULT_PLANNER_CONFIG,
+          score: { ...DEFAULT_PLANNER_CONFIG.score, workItemDeadlineFuturePerDay: -1 },
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "planning.work_item_deadline_score_invalid" }));
+    expect(() =>
+      generateDailyPlan({
+        request: deadlineRequest,
+        routines: [],
+        events: [],
+        config: {
+          ...DEFAULT_PLANNER_CONFIG,
+          workItemDeadlineHorizonDays: 2,
+          score: {
+            ...DEFAULT_PLANNER_CONFIG.score,
+            workItemDeadlineFuturePerDay: 500_001,
+          },
+        },
+      }),
+    ).toThrowError(
+      expect.objectContaining({ code: "planning.work_item_deadline_future_range_invalid" }),
+    );
+    expect(() =>
+      generateDailyPlan({
+        request: deadlineRequest,
+        routines: [],
+        events: [],
+        config: {
+          ...DEFAULT_PLANNER_CONFIG,
+          score: {
+            ...DEFAULT_PLANNER_CONFIG.score,
+            workItemDeadlineOverdueBase: 5_001,
+            workItemDeadlineOverdueMaximum: 5_000,
+          },
+        },
+      }),
+    ).toThrowError(
+      expect.objectContaining({ code: "planning.work_item_deadline_overdue_bounds_invalid" }),
+    );
+    expect(() =>
+      generateDailyPlan({
+        request: deadlineRequest,
+        routines: [],
+        events: [],
+        config: { ...DEFAULT_PLANNER_CONFIG, workItemDeadlineHorizonDays: 0 },
+      }),
+    ).not.toThrow();
+
+    const zeroFutureWeight = evaluateWorkItemForPlan(items[2]!, deadlineRequest, {
+      ...DEFAULT_PLANNER_CONFIG,
+      score: { ...DEFAULT_PLANNER_CONFIG.score, workItemDeadlineFuturePerDay: 0 },
+    });
+    expect(zeroFutureWeight.scoreComponents.deadlinePressure).toBe(0);
+    expect(zeroFutureWeight.reasons).toContain("Due in 2 day(s) (+0 deadline pressure).");
   });
 
   it("is deterministic and distinguishes routine and work sources with the same raw id", () => {

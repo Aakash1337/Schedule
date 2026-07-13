@@ -622,8 +622,8 @@ textarea:focus {
 .work-composer-form {
   display: grid;
   grid-template-columns:
-    minmax(190px, 1.3fr) minmax(220px, 1.7fr) 150px 130px minmax(170px, 0.9fr)
-    auto;
+    minmax(190px, 1.3fr) minmax(220px, 1.7fr) 150px 130px minmax(150px, 0.8fr)
+    minmax(170px, 0.9fr) auto;
   align-items: end;
   gap: 10px;
 }
@@ -808,6 +808,7 @@ textarea:focus {
 }
 
 .work-card-header h3 {
+  flex: 1 1 8rem;
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
@@ -815,8 +816,11 @@ textarea:focus {
 
 .work-card-header-actions {
   display: flex;
-  flex: none;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
   gap: 3px;
 }
 
@@ -2088,16 +2092,20 @@ textarea:focus {
 
 @media (max-width: 1180px) {
   .work-composer-form {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
   }
 
-  .work-composer-title-field,
-  .work-composer-description-field {
+  .work-composer-title-field {
     grid-column: span 3;
   }
 
+  .work-composer-description-field {
+    grid-column: span 4;
+  }
+
   .work-composer-status-field,
-  .work-composer-priority-field {
+  .work-composer-priority-field,
+  .work-composer-due-field {
     grid-column: span 2;
   }
 
@@ -2304,6 +2312,7 @@ textarea:focus {
   .work-composer-description-field,
   .work-composer-status-field,
   .work-composer-priority-field,
+  .work-composer-due-field,
   .work-composer-submit {
     grid-column: auto;
   }

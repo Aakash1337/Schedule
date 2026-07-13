@@ -34,9 +34,11 @@ The application uses a persistent desktop rail and a compact mobile navigation b
    **Temporarily hidden** list with an Undo control.
 2. **Work** groups one-time work items into the six supported status columns. Status changes use
    explicit controls because manual card ranking is not part of the API contract. Titles,
-   descriptions, priority, status, and an explicit **Include in Today** planning duration remain
-   editable from the board. Only opted-in `backlog`, `planned`, and `in_progress` work may become
-   a Today candidate; the card shows its selected duration.
+   descriptions, priority, status, optional local **Due date**, and an explicit **Include in Today**
+   planning duration remain editable from the board. A due date uses strict `YYYY-MM-DD` local-date
+   form and can be cleared. Only opted-in `backlog`, `planned`, and `in_progress` work may become a
+   Today candidate; the card shows its selected duration and due date when present. A due date adds
+   visible planner pressure but cannot make ineligible or over-capacity work appear in Today.
 3. **Routines** manages the reusable activity pool, including structured tags, duration policy,
    cadence, status, activity history, and transparent duration calibration. The selected routine
    reports whether it needs more completed sessions, supports the current estimate, has a material
@@ -127,6 +129,7 @@ a dedicated Chromium job and retains traces, screenshots, and video when it fail
 - Recurrence authoring, calendar conflict detection, and automatic placement
 - Alternative-plan comparison and generalized plan undo
 - Learned cadence, energy, preference, overload, and adaptive-selection settings
+- Work-item dependencies
 - Duration-insight dismissal, reset, automatic application, and history-comparison controls
 - Local-model advisor controls
 - Collaboration, sync, notifications, and cloud deployment

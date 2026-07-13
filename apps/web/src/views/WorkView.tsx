@@ -33,6 +33,7 @@ interface WorkEditDraft {
   readonly id: string;
   readonly title: string;
   readonly description: string;
+  readonly dueOn: string;
   readonly includeInDailyPlan: boolean;
   readonly planningDurationMinutes: string;
 }
@@ -57,6 +58,14 @@ function isPlanningDurationValid(value: string, included: boolean): boolean {
   return Number.isInteger(duration) && duration > 0 && duration <= 43_200;
 }
 
+function formatDueOn(dueOn: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(`${dueOn}T12:00:00`));
+}
+
 export function WorkView({ workspace }: WorkspaceViewProps) {
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("");
   const [board, setBoard] = useState<BoardData | null>(null);
@@ -70,6 +79,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const [description, setDescription] = useState("");
   const [newStatus, setNewStatus] = useState<WorkItemStatus>("backlog");
   const [newPriority, setNewPriority] = useState<WorkItemPriority>("none");
+  const [newDueOn, setNewDueOn] = useState("");
   const [includeInDailyPlan, setIncludeInDailyPlan] = useState(false);
   const [planningDurationMinutes, setPlanningDurationMinutes] = useState("30");
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -150,6 +160,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         description: description.trim().length === 0 ? null : description.trim(),
         status: newStatus,
         priority: newPriority,
+        dueOn: newDueOn || null,
         planningDurationMinutes: parsedPlanningDuration,
       });
       if (activeQueryKeyRef.current === requestKey) {
@@ -163,6 +174,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       setDescription("");
       setNewStatus("backlog");
       setNewPriority("none");
+      setNewDueOn("");
       setIncludeInDailyPlan(false);
       setPlanningDurationMinutes("30");
       titleInputRef.current?.focus();
@@ -180,6 +192,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       id: item.id,
       title: item.title,
       description: item.description ?? "",
+      dueOn: item.dueOn ?? "",
       includeInDailyPlan: item.planningDurationMinutes !== null,
       planningDurationMinutes:
         item.planningDurationMinutes === null ? "30" : String(item.planningDurationMinutes),
@@ -228,6 +241,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       readonly description?: string | null;
       readonly status?: WorkItemStatus;
       readonly priority?: WorkItemPriority;
+      readonly dueOn?: string | null;
       readonly planningDurationMinutes?: number | null;
     },
   ): Promise<boolean> {
@@ -290,6 +304,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     const saved = await updateItem(item, {
       title: normalizedTitle,
       description: editDraft.description.trim() || null,
+      dueOn: editDraft.dueOn || null,
       planningDurationMinutes: parsedPlanningDuration,
     });
     if (saved) closeEdit();
@@ -377,6 +392,18 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                 </option>
               ))}
             </select>
+          </Field>
+          <Field
+            label="Due date (optional)"
+            hint="Leave blank when this work has no deadline."
+            className="work-composer-due-field"
+          >
+            <input
+              type="date"
+              value={newDueOn}
+              onChange={(event) => setNewDueOn(event.currentTarget.value)}
+              disabled={creating}
+            />
           </Field>
           <fieldset className="work-planning-fieldset">
             <legend>Daily plan</legend>
@@ -513,6 +540,11 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                   Today · {item.planningDurationMinutes} min
                                 </span>
                               )}
+                              {item.dueOn === null ? null : (
+                                <span aria-label={`Due ${item.dueOn}`}>
+                                  Due {formatDueOn(item.dueOn)}
+                                </span>
+                              )}
                               <span
                                 className={`work-priority-badge work-priority-${item.priority}`}
                               >
@@ -559,6 +591,22 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                     );
                                   }}
                                   maxLength={4000}
+                                  disabled={pending}
+                                />
+                              </Field>
+                              <Field
+                                label="Due date (optional)"
+                                hint="Leave blank when this work has no deadline."
+                              >
+                                <input
+                                  type="date"
+                                  value={editDraft.dueOn}
+                                  onChange={(event) => {
+                                    const value = event.currentTarget.value;
+                                    setEditDraft((current) =>
+                                      current === null ? null : { ...current, dueOn: value },
+                                    );
+                                  }}
                                   disabled={pending}
                                 />
                               </Field>

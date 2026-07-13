@@ -2,7 +2,7 @@ import { expect, test, type Response } from "@playwright/test";
 
 function isMutationResponse(
   response: Response,
-  method: "POST",
+  method: "POST" | "PATCH",
   pathMatches: (pathname: string) => boolean,
   expectedOrigin: string,
 ): boolean {
@@ -95,15 +95,21 @@ test("persists temporary routine feedback and activity through the live Today pl
 
   await page.getByRole("button", { name: "Today", exact: true }).click();
   await expect(page.getByRole("main", { name: "Today view" })).toBeVisible();
+  const generatePlan = page.getByRole("button", { name: "Generate today's plan" });
+  const regeneratePlan = page.getByRole("button", { name: "Regenerate unlocked" });
+  await expect(generatePlan.or(regeneratePlan)).toBeVisible();
   const planResponsePromise = page.waitForResponse((response) =>
     isMutationResponse(
       response,
       "POST",
-      (pathname) => /^\/v1\/workspaces\/[^/]+\/plans$/.test(pathname),
+      (pathname) =>
+        /^\/v1\/workspaces\/[^/]+\/plans$/.test(pathname) ||
+        /^\/v1\/workspaces\/[^/]+\/plans\/[^/]+\/regenerations$/.test(pathname),
       expectedOrigin,
     ),
   );
-  await page.getByRole("button", { name: "Generate today's plan" }).click();
+  if (await generatePlan.isVisible()) await generatePlan.click();
+  else await regeneratePlan.click();
   expect((await planResponsePromise).status()).toBe(200);
 
   const plannedRoutines = page.getByRole("list", { name: "Today's planned items" });
@@ -227,6 +233,141 @@ test("persists temporary routine feedback and activity through the live Today pl
     .getByRole("article", { name: routineTitle });
   await expect(persistedRoutine.getByLabel("Status: Completed")).toBeVisible();
   await expect(persistedRoutine.getByRole("button", { name: "Undo completion" })).toBeVisible();
+  expect(pageErrors).toEqual([]);
+  expect(requestFailures).toEqual([]);
+  expect(unexpectedHttpResponses).toEqual([]);
+});
+
+test("persists work-item due dates and exposes deadline pressure through the live planning flow", async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  const requestFailures: string[] = [];
+  const unexpectedHttpResponses: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("requestfailed", (request) => {
+    requestFailures.push(`${request.method()} ${new URL(request.url()).pathname}`);
+  });
+  page.on("response", (response) => {
+    if (response.status() < 400) return;
+    const request = response.request();
+    const pathname = new URL(response.url()).pathname;
+    const expectedMissingCurrentPlan =
+      response.status() === 404 &&
+      request.method() === "GET" &&
+      /^\/v1\/workspaces\/[^/]+\/plans\/[^/]+\/current$/.test(pathname);
+    if (!expectedMissingCurrentPlan) {
+      unexpectedHttpResponses.push(`${response.status()} ${request.method()} ${pathname}`);
+    }
+  });
+
+  const planningDate = "2026-07-15";
+  const revisedDueDate = "2026-07-16";
+  const workItemTitle = "Submit the deadline report";
+
+  await page.clock.install({ time: new Date(`${planningDate}T12:00:00.000Z`) });
+  await page.goto("/");
+  const expectedOrigin = new URL(page.url()).origin;
+  const onboardingHeading = page.getByRole("heading", { name: "Give your days a shape." });
+  const workNavigation = page.getByRole("button", { name: "Work", exact: true });
+  await expect(onboardingHeading.or(workNavigation)).toBeVisible();
+  if (await onboardingHeading.isVisible()) {
+    const workspaceResponsePromise = page.waitForResponse((response) =>
+      isMutationResponse(
+        response,
+        "POST",
+        (pathname) => pathname === "/v1/workspaces",
+        expectedOrigin,
+      ),
+    );
+    await page.getByRole("textbox", { name: "Workspace name" }).fill("Deadline E2E workspace");
+    await page.getByRole("button", { name: "Create workspace" }).click();
+    expect((await workspaceResponsePromise).status()).toBe(201);
+  }
+
+  await workNavigation.click();
+  await expect(page.getByRole("main", { name: "Work view" })).toBeVisible();
+  await page.getByRole("textbox", { name: "Title" }).fill(workItemTitle);
+  await page.getByLabel("Due date (optional)").fill(planningDate);
+  await page.getByRole("checkbox", { name: "Include in Today" }).click();
+  await page.getByRole("spinbutton", { name: "Plan duration (minutes)" }).fill("30");
+  const createResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) => /^\/v1\/workspaces\/[^/]+\/work-items$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Add item" }).click();
+  expect((await createResponsePromise).status()).toBe(201);
+
+  const workCard = page.locator("article").filter({
+    has: page.getByRole("heading", { name: workItemTitle, exact: true }),
+  });
+  await expect(workCard).toBeVisible();
+  await expect(workCard.getByLabel(`Due ${planningDate}`)).toBeVisible();
+
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+  await expect(page.getByRole("main", { name: "Today view" })).toBeVisible();
+  const generatePlan = page.getByRole("button", { name: "Generate today's plan" });
+  const regeneratePlan = page.getByRole("button", { name: "Regenerate unlocked" });
+  await expect(generatePlan.or(regeneratePlan)).toBeVisible();
+  const planResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) =>
+        /^\/v1\/workspaces\/[^/]+\/plans$/.test(pathname) ||
+        /^\/v1\/workspaces\/[^/]+\/plans\/[^/]+\/regenerations$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  if (await generatePlan.isVisible()) await generatePlan.click();
+  else await regeneratePlan.click();
+  expect((await planResponsePromise).status()).toBe(200);
+
+  const plannedWorkItem = page
+    .getByRole("list", { name: "Today's planned items" })
+    .getByRole("article", { name: workItemTitle });
+  await expect(plannedWorkItem).toBeVisible();
+  await expect(
+    plannedWorkItem.getByText(/^Due today \(\+\d+ deadline pressure\)\.$/),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Work", exact: true }).click();
+  await workCard.getByRole("button", { name: `Edit details for ${workItemTitle}` }).click();
+  await expect(workCard.getByLabel("Due date (optional)")).toHaveValue(planningDate);
+  await workCard.getByLabel("Due date (optional)").fill(revisedDueDate);
+  const reviseResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "PATCH",
+      (pathname) => /^\/v1\/workspaces\/[^/]+\/work-items\/[^/]+$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await workCard.getByRole("button", { name: "Save details" }).click();
+  expect((await reviseResponsePromise).status()).toBe(200);
+  await expect(workCard.getByLabel(`Due ${revisedDueDate}`)).toBeVisible();
+
+  await workCard.getByRole("button", { name: `Edit details for ${workItemTitle}` }).click();
+  await workCard.getByLabel("Due date (optional)").fill("");
+  const clearResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "PATCH",
+      (pathname) => /^\/v1\/workspaces\/[^/]+\/work-items\/[^/]+$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await workCard.getByRole("button", { name: "Save details" }).click();
+  expect((await clearResponsePromise).status()).toBe(200);
+  await expect(workCard.getByLabel(`Due ${revisedDueDate}`)).toHaveCount(0);
+
+  await page.reload();
+  await expect(workCard.getByLabel(`Due ${planningDate}`)).toHaveCount(0);
+  await expect(workCard.getByLabel(`Due ${revisedDueDate}`)).toHaveCount(0);
   expect(pageErrors).toEqual([]);
   expect(requestFailures).toEqual([]);
   expect(unexpectedHttpResponses).toEqual([]);

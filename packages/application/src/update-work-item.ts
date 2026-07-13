@@ -2,6 +2,7 @@ import {
   DomainError,
   updateWorkItem,
   type WorkItem,
+  type LocalDate,
   type WorkItemId,
   type WorkItemPriority,
   type WorkItemStatus,
@@ -19,6 +20,7 @@ export interface UpdateWorkItemCommand {
   readonly status?: WorkItemStatus;
   readonly priority?: WorkItemPriority;
   readonly planningDurationMinutes?: number | null;
+  readonly dueOn?: LocalDate | null;
 }
 
 export class UpdateWorkItem {
@@ -56,6 +58,7 @@ export class UpdateWorkItem {
         ...(command.planningDurationMinutes === undefined
           ? {}
           : { planningDurationMinutes: command.planningDurationMinutes }),
+        ...(command.dueOn === undefined ? {} : { dueOn: command.dueOn }),
         now: this.clock.now(),
       });
       if (updated !== current) await workItems.save(updated, command.expectedVersion);

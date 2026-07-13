@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -31,6 +31,7 @@ const item: WorkItem = {
   description: "Summarize the MVP.",
   status: "planned",
   priority: "high",
+  dueOn: null,
   planningDurationMinutes: null,
   version: 3,
   createdAt: "2026-07-12T09:00:00.000Z",
@@ -152,12 +153,40 @@ describe("work board", () => {
         description: null,
         status: "backlog",
         priority: "none",
+        dueOn: null,
         planningDurationMinutes: 75,
       }),
     );
     expect(await screen.findByLabelText("Included in daily plan")).toHaveTextContent(
       "Today · 75 min",
     );
+  });
+
+  it("creates a work item with an optional local due date", async () => {
+    const user = userEvent.setup();
+    const created = { ...item, id: "item-due", title: "File the report", dueOn: "2026-07-20" };
+    apiMocks.createWorkItem.mockResolvedValue(created);
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await screen.findByRole("heading", { name: item.title });
+    await user.type(screen.getByRole("textbox", { name: "Title" }), created.title);
+    const dueDate = screen.getByLabelText(/Due date/);
+    expect(screen.getByText("Leave blank when this work has no deadline.")).toBeInTheDocument();
+    fireEvent.change(dueDate, { target: { value: "2026-07-20" } });
+    await user.click(screen.getByRole("button", { name: "Add item" }));
+
+    await waitFor(() =>
+      expect(apiMocks.createWorkItem).toHaveBeenCalledWith(workspace.id, {
+        title: created.title,
+        description: null,
+        status: "backlog",
+        priority: "none",
+        dueOn: "2026-07-20",
+        planningDurationMinutes: null,
+      }),
+    );
+    expect(await screen.findByLabelText("Due 2026-07-20")).toHaveTextContent("Due Jul 20, 2026");
   });
 
   it("can remove an item from Today's candidate pool while editing details", async () => {
@@ -197,6 +226,7 @@ describe("work board", () => {
         expectedVersion: plannable.version,
         title: plannable.title,
         description: plannable.description,
+        dueOn: null,
         planningDurationMinutes: null,
       }),
     );
@@ -233,10 +263,63 @@ describe("work board", () => {
         expectedVersion: item.version,
         title: updated.title,
         description: updated.description,
+        dueOn: null,
         planningDurationMinutes: null,
       }),
     );
     expect(await screen.findByRole("heading", { name: updated.title })).toBeInTheDocument();
+  });
+
+  it("edits and clears an optional due date without discarding the details draft", async () => {
+    const user = userEvent.setup();
+    const dated = { ...item, dueOn: "2026-07-20" };
+    const cleared = { ...dated, dueOn: null, version: 4 };
+    apiMocks.listWorkItems.mockResolvedValue({
+      items: [dated],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.updateWorkItem.mockResolvedValue(cleared);
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const heading = await screen.findByRole("heading", { name: dated.title });
+    const card = heading.closest("article");
+    if (card === null) throw new Error("Work card was not rendered.");
+    expect(within(card).getByLabelText("Due 2026-07-20")).toHaveTextContent("Due Jul 20, 2026");
+    await user.click(within(card).getByRole("button", { name: `Edit details for ${dated.title}` }));
+    const dueDate = within(card).getByLabelText(/Due date/);
+    expect(dueDate).toHaveValue("2026-07-20");
+    await user.clear(dueDate);
+    await user.click(within(card).getByRole("button", { name: "Save details" }));
+
+    await waitFor(() =>
+      expect(apiMocks.updateWorkItem).toHaveBeenCalledWith(workspace.id, dated.id, {
+        expectedVersion: dated.version,
+        title: dated.title,
+        description: dated.description,
+        dueOn: null,
+        planningDurationMinutes: null,
+      }),
+    );
+    expect(screen.queryByLabelText("Due 2026-07-20")).not.toBeInTheDocument();
+  });
+
+  it("preserves a due-date draft when a details save fails", async () => {
+    const user = userEvent.setup();
+    apiMocks.updateWorkItem.mockRejectedValue(new Error("Network unavailable."));
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const heading = await screen.findByRole("heading", { name: item.title });
+    const card = heading.closest("article");
+    if (card === null) throw new Error("Work card was not rendered.");
+    await user.click(within(card).getByRole("button", { name: `Edit details for ${item.title}` }));
+    const dueDate = within(card).getByLabelText(/Due date/);
+    fireEvent.change(dueDate, { target: { value: "2026-07-20" } });
+    await user.click(within(card).getByRole("button", { name: "Save details" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Network unavailable.");
+    expect(within(card).getByLabelText(/Due date/)).toHaveValue("2026-07-20");
   });
 
   it("keeps the latest priority-filter response when an earlier response finishes late", async () => {

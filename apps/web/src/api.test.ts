@@ -65,6 +65,54 @@ describe("web API client", () => {
     );
   });
 
+  it("sends local due dates unchanged for work-item create and update commands", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ id: "item-1", dueOn: "2026-07-20" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.createWorkItem("workspace-1", {
+      title: "Prepare release",
+      description: null,
+      status: "backlog",
+      priority: "high",
+      dueOn: "2026-07-20",
+      planningDurationMinutes: null,
+    });
+    await api.updateWorkItem("workspace-1", "item-1", {
+      expectedVersion: 1,
+      dueOn: null,
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/v1/workspaces/workspace-1/work-items",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          title: "Prepare release",
+          description: null,
+          status: "backlog",
+          priority: "high",
+          dueOn: "2026-07-20",
+          planningDurationMinutes: null,
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/v1/workspaces/workspace-1/work-items/item-1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ expectedVersion: 1, dueOn: null }),
+      }),
+    );
+  });
+
   it("reads offset-paginated collections through the final page", async () => {
     const firstPage = Array.from({ length: 200 }, (_, index) => ({ id: `item-${index}` }));
     let requestNumber = 0;

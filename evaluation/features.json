@@ -288,6 +288,111 @@
       ]
     },
     {
+      "id": "work-item-deadlines",
+      "status": "implemented",
+      "risk": "high",
+      "contract": { "file": "docs/PRODUCT.md", "anchor": "### 7.3 Scoring" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/work-item.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates, preserves, and clears a Gregorian due date with normal version semantics",
+            "rejects an invalid Gregorian due date %s"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/domain/src/unified-planning.test.ts",
+          "command": "unit",
+          "anchors": [
+            "adds deterministic deadline pressure without bypassing work-item constraints"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/work-item-management.test.ts",
+          "command": "unit",
+          "anchors": ["persists a due date and permits explicitly clearing it"]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/integration-gateway.test.ts",
+          "command": "unit",
+          "anchors": ["canonicalizes, executes, clears, and replays work-item due dates"]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": ["models unified planner sources with tenant-scoped foreign keys"]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/repositories.test.ts",
+          "command": "unit",
+          "anchors": [
+            "persists a work item due date on insert and save",
+            "maps nullable due dates from work item rows"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "validates and round-trips nullable Gregorian work-item due dates",
+            "rejects impossible and noncanonical work-item due dates"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/integration-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns the exact validated command so truncated or bidi text cannot hide approval data"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/WorkView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "creates a work item with an optional local due date",
+            "edits and clears an optional due date without discarding the details draft",
+            "preserves a due-date draft when a details save fails"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-planner-db.ts",
+          "command": "planner-db",
+          "anchors": ["work-item-deadline-postgres-round-trip", "work-item-deadline-planner-db"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-product-api.ts",
+          "command": "product-api",
+          "anchors": ["work-item-deadline-product-api"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-integration-gateway.ts",
+          "command": "integration-gateway",
+          "anchors": ["integration-gateway-work-item-deadline-clear"]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/planning-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": [
+            "persists work-item due dates and exposes deadline pressure through the live planning flow"
+          ]
+        }
+      ]
+    },
+    {
       "id": "calendar-block-management",
       "status": "implemented",
       "risk": "high",
