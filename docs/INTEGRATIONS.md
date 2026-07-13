@@ -403,8 +403,9 @@ security-sensitive recovery.
 
 - There is no Hermes runtime or WhatsApp transport in this repository. No endpoint accepts a chat
   message, audio, image, or natural-language instruction.
-- There are no outbound webhooks, push notifications, reminders, or delivery receipts in this first
-  integration release. An adapter must poll Today or use a future outbound contract.
+- A disabled-by-default [outbound webhook substrate](./WEBHOOKS.md) can send operator-queued signed
+  test events, but there are no automatic schedule events, push notifications, reminders, or
+  end-to-end phone delivery receipts. An adapter must still poll Today for current schedule data.
 - Version 1 does not create workspaces, routines, plans, or credentials over HTTP; delete commands
   are intentionally absent.
 - The integration API is machine-to-machine authentication for one workspace, not hosted end-user

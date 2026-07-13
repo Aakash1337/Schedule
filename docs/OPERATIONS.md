@@ -185,6 +185,53 @@ incomplete, the error preserves the original failure, every compensation failure
 connection-enable commands. Do not drop any named database in that state; stop clients, inspect
 `pg_database`, and follow the printed commands in order.
 
+## Outbound webhook operations
+
+Outbound webhook delivery is disabled by default. Provision its external encryption keyring and
+endpoint records while it remains disabled, verify the receiver, and only then enable the worker.
+The complete security boundary, signing contract, commands, and rotation procedure are in
+[WEBHOOKS.md](./WEBHOOKS.md).
+
+The supported endpoint workflow is CLI-only:
+
+```powershell
+pnpm webhooks -- generate-master-key --id primary
+pnpm webhooks -- create --workspace <workspace-uuid> --name "Hermes bridge" --url https://hooks.example.com/schedule
+pnpm webhooks -- send-test --workspace <workspace-uuid> --endpoint <endpoint-uuid>
+pnpm webhooks -- dead-letters --workspace <workspace-uuid>
+pnpm webhooks -- redrive --workspace <workspace-uuid> --delivery <delivery-uuid>
+```
+
+Keep `WEBHOOK_DELIVERY_MODE=disabled` during initial provisioning. Store `WEBHOOK_MASTER_KEYS`
+outside PostgreSQL and outside the repository, and keep every still-referenced old master key. A
+missing master key cannot decrypt an endpoint's stored envelope, so the worker fails that delivery
+closed. The one-time endpoint signing secret printed after creation or rotation belongs at the
+receiver and cannot be recovered from the database alone.
+
+For a delivery incident:
+
+1. Leave endpoint and secret history intact; list workspace-scoped dead-letter metadata.
+2. Check the receiver using its own logs and the opaque delivery ID. Schedule intentionally does not
+   print endpoint URLs, request or response bodies, signatures, DNS answers, key material, or raw
+   network exceptions in worker failures.
+3. Correct the receiver, DNS, certificate, or key configuration. Do not bypass the public-HTTPS DNS
+   policy to reach a private Hermes process; that requires a separate authenticated transport.
+4. Redrive the existing delivery. Redrive preserves the delivery ID, exact body, destination, and
+   secret version, so the receiver must deduplicate it.
+5. Revoke the endpoint if its destination or receiver secret may be compromised. Create a replacement
+   endpoint for a URL change; rotate through the staged prepare/activate commands for a secret change.
+
+After webhook persistence or migration changes, run the disposable PostgreSQL verifier:
+
+```powershell
+pnpm verify:webhook-delivery
+```
+
+The verifier covers workspace isolation, encrypted-envelope constraints, rotation, immutable body
+and outbox linkage, audit records, dead-letter redrive, revocation, and transactional rollback. It is
+also part of `pnpm verify:database` and the PostgreSQL CI job. Automatic schedule/reminder events and
+the Hermes/WhatsApp adapter remain deferred; a successful test delivery does not imply they exist.
+
 ## Routine verification
 
 For an existing database, preserve the backup-before-migration order:
@@ -203,9 +250,9 @@ when testing against a disposable PostgreSQL instance.
 
 GitHub CI keeps static checks and PostgreSQL integration checks in separate jobs. The integration job
 starts a fresh PostgreSQL 17 Compose project, applies every migration, and runs the planner, local
-product API, integration gateway, outbox lease/fencing, plan-state and weekday-migration upgrades,
-complete archive round-trip, and recovery state-machine verifiers. Diagnostics are captured on
-failure, and the job always removes the disposable database volume.
+product API, integration gateway, outbox lease/fencing, outbound webhook, plan-state and
+weekday-migration upgrades, complete archive round-trip, and recovery state-machine verifiers.
+Diagnostics are captured on failure, and the job always removes the disposable database volume.
 
 Migration `0012` adds weekday range, uniqueness, and exclusion/preference overlap constraints. It
 removes out-of-range legacy values, deduplicates in first-occurrence order, and resolves overlaps in

@@ -11,7 +11,7 @@ import {
   type DeadLetteredOutboxEvent,
 } from "@schedule/database";
 
-import type { OutboxDispatcher } from "./dispatcher.js";
+import { OutboxHandlerFailure, type OutboxDispatcher } from "./dispatcher.js";
 
 export interface OutboxWorkerOptions {
   readonly leaseDurationMs?: number;
@@ -88,6 +88,7 @@ const recordFailure = async (
   error: string,
   maxAttempts: number,
   source: "handler_error" | "unhandled_topic",
+  failure?: OutboxHandlerFailure,
 ): Promise<void> => {
   if (source === "unhandled_topic") {
     console.warn(
@@ -101,7 +102,13 @@ const recordFailure = async (
     );
   }
 
-  const result = await failOutboxEvent(database, event, error, maxAttempts);
+  const result =
+    failure === undefined
+      ? await failOutboxEvent(database, event, error, maxAttempts)
+      : await failOutboxEvent(database, event, error, maxAttempts, {
+          permanent: !failure.retryable,
+          ...(failure.retryDelayMs === undefined ? {} : { retryDelayMs: failure.retryDelayMs }),
+        });
   if (result === "stale") {
     logStaleClaim(event, "fail");
   } else if (result === "dead_lettered") {
@@ -164,7 +171,7 @@ const processClaimedEvent = async (
 
   const dispatch = dispatcher.dispatch(initialEvent, handlerController.signal).then(
     (result) => ({ kind: "handled" as const, handled: result.handled }),
-    () => ({ kind: "failed" as const }),
+    (error: unknown) => ({ kind: "failed" as const, error }),
   );
   let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
   let resolveShutdownDeadline: (() => void) | undefined;
@@ -216,12 +223,14 @@ const processClaimedEvent = async (
   if (leaseLost) throw new Error(LEASE_LOSS_FAILURE_DETAIL);
 
   if (outcome.kind === "failed") {
+    const failure = outcome.error instanceof OutboxHandlerFailure ? outcome.error : undefined;
     await recordFailure(
       database,
       currentEvent,
-      HANDLER_FAILURE_DETAIL,
+      failure?.code ?? HANDLER_FAILURE_DETAIL,
       config.OUTBOX_MAX_ATTEMPTS,
       "handler_error",
+      failure,
     );
     return;
   }

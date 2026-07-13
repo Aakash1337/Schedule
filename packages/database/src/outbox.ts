@@ -28,6 +28,18 @@ export interface ClaimNextOutboxEventOptions {
 export type OutboxClaimMutationResult = "applied" | "stale";
 export type OutboxFailureResult = "retry_scheduled" | "dead_lettered" | "stale";
 
+export interface FailOutboxEventOptions {
+  /**
+   * Mark a known terminal delivery error as a dead letter without consuming
+   * the remaining retry budget.  The claim fencing predicate still applies.
+   */
+  readonly permanent?: boolean;
+  /** A handler supplied retry hint, clamped to a conservative safe range. */
+  readonly retryDelayMs?: number;
+}
+
+export const MAX_OUTBOX_RETRY_DELAY_MS = 60_000;
+
 export interface DeadLetteredOutboxEvent {
   readonly id: string;
   readonly workspaceId: string | null;
@@ -244,15 +256,26 @@ export async function failOutboxEvent(
   event: ClaimedOutboxEvent,
   error: string,
   maxAttempts: number,
+  options: FailOutboxEventOptions = {},
 ): Promise<OutboxFailureResult> {
   assertPositiveInteger("maxAttempts", maxAttempts);
-  const retryDelayMs = Math.min(60_000, 1_000 * 2 ** Math.min(event.attempts, 6));
+  if (
+    options.retryDelayMs !== undefined &&
+    (!Number.isSafeInteger(options.retryDelayMs) || options.retryDelayMs < 0)
+  ) {
+    throw new RangeError("retryDelayMs must be a non-negative safe integer");
+  }
+  const retryDelayMs = Math.min(
+    MAX_OUTBOX_RETRY_DELAY_MS,
+    options.retryDelayMs ?? 1_000 * 2 ** Math.min(event.attempts, 6),
+  );
+  const permanent = options.permanent === true;
   const rows = await connection.sql<OutboxFailureRow[]>`
     update outbox_events
     set
-      status = case when attempts >= ${maxAttempts} then 'dead_letter'::outbox_status else 'pending'::outbox_status end,
+      status = case when ${permanent} or attempts >= ${maxAttempts} then 'dead_letter'::outbox_status else 'pending'::outbox_status end,
       available_at = case
-        when attempts >= ${maxAttempts} then available_at
+        when ${permanent} or attempts >= ${maxAttempts} then available_at
         else now() + (${retryDelayMs} * interval '1 millisecond')
       end,
       locked_at = null,

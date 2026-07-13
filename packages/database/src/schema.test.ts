@@ -18,6 +18,9 @@ import {
   scheduleBlocks,
   workItems,
   workspaces,
+  webhookDeliveries,
+  webhookEndpointSecrets,
+  webhookEndpoints,
 } from "./schema.js";
 
 describe("database schema", () => {
@@ -37,6 +40,56 @@ describe("database schema", () => {
     expect(getTableName(integrationCredentials)).toBe("integration_credentials");
     expect(getTableName(integrationConfirmations)).toBe("integration_confirmations");
     expect(getTableName(integrationRequests)).toBe("integration_requests");
+    expect(getTableName(webhookEndpoints)).toBe("webhook_endpoints");
+    expect(getTableName(webhookEndpointSecrets)).toBe("webhook_endpoint_secrets");
+    expect(getTableName(webhookDeliveries)).toBe("webhook_deliveries");
+  });
+
+  it("tenant-binds encrypted signing material and immutable exact-body deliveries", () => {
+    const endpointConfig = getTableConfig(webhookEndpoints);
+    const secretConfig = getTableConfig(webhookEndpointSecrets);
+    const deliveryConfig = getTableConfig(webhookDeliveries);
+    const outboxConfig = getTableConfig(outboxEvents);
+
+    expect(endpointConfig.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "webhook_endpoints_url_https",
+        "webhook_endpoints_revocation_consistent",
+      ]),
+    );
+    expect(secretConfig.columns.map((column) => column.name)).toContain("secret_envelope");
+    expect(secretConfig.columns.map((column) => column.name)).not.toContain("secret");
+    expect(secretConfig.indexes.map((constraint) => constraint.config.name)).toEqual(
+      expect.arrayContaining([
+        "webhook_endpoint_secrets_one_active_uq",
+        "webhook_endpoint_secrets_one_pending_uq",
+      ]),
+    );
+    expect(secretConfig.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "webhook_endpoint_secrets_version_positive",
+        "webhook_endpoint_secrets_envelope_shape",
+        "webhook_endpoint_secrets_lifecycle_consistent",
+      ]),
+    );
+    expect(deliveryConfig.foreignKeys.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "webhook_deliveries_endpoint_tenant_fk",
+        "webhook_deliveries_secret_tenant_fk",
+      ]),
+    );
+    expect(deliveryConfig.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "webhook_deliveries_raw_body_json_bounded",
+        "webhook_deliveries_body_sha256_matches",
+      ]),
+    );
+    expect(outboxConfig.foreignKeys.map((constraint) => constraint.getName())).toContain(
+      "outbox_events_webhook_delivery_tenant_fk",
+    );
+    expect(outboxConfig.checks.map((constraint) => constraint.name)).toContain(
+      "outbox_events_webhook_delivery_payload",
+    );
   });
 
   it("stores only credential digests and constrains the settled gateway scopes", () => {

@@ -16,6 +16,9 @@ const baselineTables = [
   "outbox_events",
   "recurrence_series",
   "schedule_blocks",
+  "webhook_deliveries",
+  "webhook_endpoint_secrets",
+  "webhook_endpoints",
   "work_items",
   "workspaces",
 ] as const;

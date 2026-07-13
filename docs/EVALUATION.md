@@ -24,17 +24,18 @@ drill job results establish whether that evidence actually passed in a particula
 
 ## Commands
 
-| Command                              | Purpose                                                                          | Requires PostgreSQL             |
-| ------------------------------------ | -------------------------------------------------------------------------------- | ------------------------------- |
-| `pnpm eval:features`                 | Validate feature-to-evidence traceability                                        | No                              |
-| `pnpm eval:planner`                  | Run deterministic planner quality scenarios                                      | No                              |
-| `pnpm test:coverage`                 | Run every unit/component test and enforce coverage floors                        | No                              |
-| `pnpm eval`                          | Validate traceability and run the covered test suite                             | No                              |
-| `pnpm verify:database`               | Exercise planner, product/integration APIs, outbox, and migrations on PostgreSQL | Yes                             |
-| `pnpm verify:backup-restore`         | Verify archive/schema/content/sequence fidelity                                  | Yes                             |
-| `pnpm verify:recovery-state-machine` | Exercise restore, promotion, rollback, and cleanup                               | Yes, disposable only            |
-| `pnpm verify:web-e2e`                | Exercise the built browser, API, migrations, and PostgreSQL planning loop        | Own disposable Compose database |
-| `pnpm eval:full`                     | Run every evaluation layer above, including Chromium                             | Yes, with the recovery sentinel |
+| Command                              | Purpose                                                                   | Requires PostgreSQL             |
+| ------------------------------------ | ------------------------------------------------------------------------- | ------------------------------- |
+| `pnpm eval:features`                 | Validate feature-to-evidence traceability                                 | No                              |
+| `pnpm eval:planner`                  | Run deterministic planner quality scenarios                               | No                              |
+| `pnpm test:coverage`                 | Run every unit/component test and enforce coverage floors                 | No                              |
+| `pnpm eval`                          | Validate traceability and run the covered test suite                      | No                              |
+| `pnpm verify:database`               | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL    | Yes                             |
+| `pnpm verify:webhook-delivery`       | Verify webhook persistence, isolation, rotation, redrive, and rollback    | Yes, disposable only            |
+| `pnpm verify:backup-restore`         | Verify archive/schema/content/sequence fidelity                           | Yes                             |
+| `pnpm verify:recovery-state-machine` | Exercise restore, promotion, rollback, and cleanup                        | Yes, disposable only            |
+| `pnpm verify:web-e2e`                | Exercise the built browser, API, migrations, and PostgreSQL planning loop | Own disposable Compose database |
+| `pnpm eval:full`                     | Run every evaluation layer above, including Chromium                      | Yes, with the recovery sentinel |
 
 The destructive recovery command requires the explicit environment guards documented in
 [`OPERATIONS.md`](./OPERATIONS.md). CI supplies those guards only inside its disposable Compose
@@ -42,7 +43,7 @@ project.
 
 ## Current scorecard
 
-The current audited unit/component suite contains 48 test files and 451 runtime test cases, plus one
+The current audited unit/component suite contains 54 test files and 569 runtime test cases, plus one
 live Chromium integration scenario. Parameterized state matrices expand into many cases, so this
 number must not be compared as though every case were an independent product feature.
 
@@ -50,8 +51,8 @@ number must not be compared as though every case were an independent product fea
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      19 / 19 |
-| Critical implemented features with CI-registered integration or drills |      11 / 11 |
+| Implemented features with CI-registered evidence                       |      20 / 20 |
+| Critical implemented features with CI-registered integration or drills |      12 / 12 |
 | Partial features with an explicit limitation                           |        0 / 0 |
 | Deferred features incorrectly counted as passing                       |            0 |
 | Missing or stale evidence anchors                                      |            0 |
@@ -64,15 +65,15 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     58.25% |   64.27% |    64.42% |  58.6% |
+| Whole repository, measured |     59.15% |   65.92% |    65.64% | 59.51% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     94.44% |   88.47% |    96.02% | 95.67% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     87.56% |    81.9% |      100% | 87.72% |
+| Application, measured      |     88.11% |   82.17% |      100% | 88.84% |
 | Application, required      |        83% |      76% |       98% |    83% |
 | API, measured              |     83.87% |    75.9% |     71.9% | 84.83% |
 | API, required              |        73% |      69% |       57% |    74% |
-| Worker, measured           |      94.9% |   89.04% |    92.59% | 97.85% |
+| Worker, measured           |     92.26% |   89.04% |    91.11% | 95.14% |
 | Worker, required           |        85% |      87% |       89% |    87% |
 | Web, measured              |     83.54% |   70.28% |    71.08% | 84.11% |
 | Web, required              |        75% |      63% |       70% |    79% |
@@ -121,12 +122,17 @@ The audit deliberately leaves these visible instead of turning them into false g
 - worker process-kill recovery covers crashes before a side effect and after an idempotent side
   effect but before acknowledgement; future external consumers must still enforce event-ID
   idempotency at their own durability boundary;
-- the integration gateway verifier covers real authenticated HTTP routes, all five command kinds,
-  credential workspace isolation, digest-only credentials, idempotent replay, and atomic rollback
-  against disposable PostgreSQL; it also proves bounded retention cleanup deletes only eligible old
-  receipts/confirmations while preserving fresh, processing, referenced, and audit rows, but does not
-  exercise a Hermes runtime, WhatsApp transport, natural-language interpretation, or outbound
-  notification delivery;
+- the inbound integration gateway verifier covers real authenticated HTTP routes, all five command
+  kinds, credential workspace isolation, digest-only credentials, idempotent replay, and atomic
+  rollback against disposable PostgreSQL; it also proves bounded retention cleanup deletes only
+  eligible old receipts/confirmations while preserving fresh, processing, referenced, and audit
+  rows, but does not exercise a Hermes runtime, WhatsApp transport, or natural-language
+  interpretation;
+- the outbound webhook verifier covers real PostgreSQL endpoint/secret lifecycles, workspace
+  isolation, immutable delivery/outbox linkage, dead-letter metadata, redrive identity, revocation,
+  audits, and rollback. DNS, pinned-address HTTPS, TLS, and the external receiver are unit-faked, so
+  there is no live-network delivery claim; only operator-queued test events exist, with automatic
+  product notifications and Hermes/WhatsApp events still deferred;
 - live browser evidence covers the central desktop Chromium mixed routine/work-item planning loop,
   including work completion and reversal, but not every browser, responsive layout, validation
   branch, or Calendar interaction; and

@@ -209,7 +209,33 @@ describe("outbox claims", () => {
 
     expect(captures[0]?.text).toContain("attempts >= ?");
     expect(captures[0]?.text).toContain("returning status::text as status");
-    expect(captures[0]?.values).toEqual([3, 3, 2_000, "temporary", event.id, event.lockedAt]);
+    expect(captures[0]?.values).toEqual([
+      false,
+      3,
+      false,
+      3,
+      2_000,
+      "temporary",
+      event.id,
+      event.lockedAt,
+    ]);
+  });
+
+  it("allows a fenced terminal failure and bounded handler retry delay", async () => {
+    const { connection, captures } = createConnection({
+      directRows: [[{ status: "dead_letter" }], [{ status: "pending" }]],
+    });
+    await expect(
+      failOutboxEvent(connection, event, "terminal", 99, { permanent: true }),
+    ).resolves.toBe("dead_lettered");
+    await expect(
+      failOutboxEvent(connection, event, "slow", 99, { retryDelayMs: 999_999 }),
+    ).resolves.toBe("retry_scheduled");
+    expect(captures[0]?.values.slice(0, 5)).toEqual([true, 99, true, 99, 2_000]);
+    expect(captures[1]?.values.slice(0, 5)).toEqual([false, 99, false, 99, 60_000]);
+    await expect(
+      failOutboxEvent(connection, event, "bad", 3, { retryDelayMs: -1 }),
+    ).rejects.toThrow("retryDelayMs");
   });
 
   it("releases only the current unstarted claim during graceful shutdown", async () => {
