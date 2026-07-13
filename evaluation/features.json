@@ -303,10 +303,21 @@
       "contract": { "file": "docs/OPERATIONS.md", "anchor": "## Verify the complete archive path" },
       "evidence": [
         {
+          "level": "unit",
+          "file": "scripts/backup-database.test.ts",
+          "command": "unit",
+          "anchors": [
+            "uses immutable private bytes and removes the snapshot after success",
+            "rejects empty files, directories, and symbolic links before invoking restore work"
+          ]
+        },
+        {
           "level": "drill",
           "file": "scripts/verify-backup-restore.ts",
           "command": "backup-restore",
-          "anchors": ["Backup/restore verification passed for every application table"]
+          "anchors": [
+            "Backup/restore verification passed valid round-trip, immutable snapshot, adversarial rejection"
+          ]
         }
       ]
     },
@@ -324,6 +335,7 @@
           "file": "scripts/restore-database.test.ts",
           "command": "unit",
           "anchors": [
+            "cleans only a staging database whose creation was positively acknowledged",
             "restores the original active name when staging promotion fails mid-swap",
             "undoes a rollback if enabling the promoted previous database fails"
           ]

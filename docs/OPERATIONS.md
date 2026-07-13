@@ -44,6 +44,12 @@ archives that are no longer required.
 
 Only restore archives created by this tool and kept under your control. PostgreSQL restore archives
 contain executable database definitions; they are not a safe interchange format for untrusted files.
+For a restore, the selected path must be a non-empty, non-symlink regular file. The command copies
+that file from one opened handle into an exclusive private temporary snapshot and uses only the
+snapshot for catalog validation and `pg_restore`. Replacing or rewriting the original path after
+snapshot creation cannot change the bytes being restored. The snapshot is removed before database
+promotion; requested POSIX modes are `0700` for its directory and `0600` for the file. As with backup
+files, Windows confidentiality still depends on the current account's temporary-directory ACLs.
 
 `pg_dump` takes a transactionally consistent snapshot while the app is running. For the clearest
 recovery point, stop the API and worker or stop `pnpm dev` before an important backup.
@@ -59,6 +65,10 @@ pnpm verify:backup-restore
 The verifier creates a temporary private archive, restores it into a uniquely named disposable
 database, and validates:
 
+- empty, plain-SQL, truncated, schema-only, and migration-ledger-filtered inputs are rejected without
+  changing the active database or creating recovery-role databases;
+- replacing the caller-controlled archive after private snapshot creation does not change the
+  verified bytes supplied to `pg_restore`;
 - the exact expected public application-table set;
 - the exact expected application-sequence set and every sequence's `last_value` / `is_called` state;
 - a supported ordered Drizzle migration-identity/timestamp sequence and the current migration count;
@@ -83,7 +93,10 @@ pnpm verify:recovery-state-machine
 ```
 
 The verifier creates and migrates a disposable active database, adds a private marker, backs up that
-database, and then changes the live disposable marker. It runs the real staged restore and promotion,
+database, and first proves that a malformed restore input leaves its OID, content, and all recovery
+roles unchanged. A second valid-but-incompatible archive is restored into staging and deliberately
+fails post-restore schema validation, proving OID-bound staging cleanup without altering the active
+database. It then changes the live disposable marker, runs the real staged restore and promotion,
 proves the archived state is active while the newer state is retained with connections disabled,
 runs the real rollback, and proves both database identities, content signals, and connection states
 were exchanged correctly. It then exercises the supported cleanup path. A final independent cleanup
@@ -109,16 +122,25 @@ pnpm db:restore -- C:\Users\you\.schedule\backups\schedule-<timestamp>.dump --co
 
 Stop the API, worker, web development process, database studio, and other clients first. The command:
 
-1. Restores the archive into a unique staging database.
-2. Validates every expected table and the migration ledger.
-3. Runs the current migrations against staging.
-4. Compares staging's full schema signal to a separate freshly migrated reference database.
-5. Runs the real PostgreSQL planner, product API, isolated outbox lease/fencing, and disposable
+1. Creates and verifies one private immutable snapshot of the chosen archive.
+2. Restores that snapshot into a unique staging database, then removes the snapshot before any
+   promotion can begin.
+3. Validates every expected table and the migration ledger.
+4. Runs the current migrations against staging.
+5. Compares staging's full schema signal to a separate freshly migrated reference database.
+6. Runs the real PostgreSQL planner, product API, isolated outbox lease/fencing, and disposable
    weekday-migration upgrade verifiers against the same PostgreSQL server.
-6. Restores verifier-only sequence movement and confirms no application-table, ledger, or sequence
+7. Restores verifier-only sequence movement and confirms no application-table, ledger, or sequence
    changes remain.
-7. Revalidates the complete schema and ordered migration identities.
-8. Disables connections briefly and promotes staging to `schedule`.
+8. Revalidates the complete schema and ordered migration identities.
+9. Disables connections briefly and promotes staging to `schedule`.
+
+Generated staging ownership is bound to its PostgreSQL OID and rechecked before connection changes,
+session termination, and removal. This protects against stale or accidentally reused names, but it
+is not a security boundary against another concurrent process using the same PostgreSQL superuser or
+the same operating-system account. The local procedure requires those credentials and the backup
+directory to remain under one user's control; hosted deployment must use separate restricted runtime,
+migration, and recovery roles.
 
 The staging `DATABASE_URL` exists only in the child-process environment. It is redacted from captured
 failure output and is never placed in command arguments.
