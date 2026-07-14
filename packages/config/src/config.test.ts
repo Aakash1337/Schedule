@@ -12,6 +12,9 @@ describe("runtime configuration", () => {
     expect(config.API_TRUSTED_PROXIES).toEqual([]);
     expect(config.PRODUCT_API_MODE).toBe("local_unauthenticated");
     expect(config.LOCAL_MODEL_ADVISOR_MODE).toBe("disabled");
+    expect(config.LOCAL_MODEL_PROPOSAL_MODE).toBe("disabled");
+    expect(config.LOCAL_MODEL_PROPOSAL_HMAC_KEY).toBeUndefined();
+    expect(config.LOCAL_MODEL_PROPOSAL_TTL_SECONDS).toBe(600);
     expect(config.LOCAL_MODEL_ADVISOR_URL).toBe("http://127.0.0.1:11434");
     expect(config.LOCAL_MODEL_ADVISOR_MODEL).toBe("gemma4:e4b");
     expect(config.LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS).toBe(2_000);
@@ -63,6 +66,28 @@ describe("runtime configuration", () => {
     expect(config.LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS).toBe(120_000);
     expect(config.LOCAL_MODEL_ADVISOR_MAX_RESPONSE_BYTES).toBe(65_536);
     expect(config.LOCAL_MODEL_ADVISOR_MAX_CONCURRENT).toBe(4);
+  });
+
+  it("enables proposal-only Ollama access only with a durable prompt-fingerprint key", () => {
+    const config = loadApiConfig({
+      LOCAL_MODEL_PROPOSAL_MODE: "ollama",
+      LOCAL_MODEL_PROPOSAL_HMAC_KEY: "a-secure-test-key-with-more-than-32-bytes",
+      LOCAL_MODEL_PROPOSAL_TTL_SECONDS: "3600",
+    });
+
+    expect(config.LOCAL_MODEL_PROPOSAL_MODE).toBe("ollama");
+    expect(config.LOCAL_MODEL_PROPOSAL_TTL_SECONDS).toBe(3_600);
+    expect(() => loadApiConfig({ LOCAL_MODEL_PROPOSAL_MODE: "ollama" })).toThrow(
+      /LOCAL_MODEL_PROPOSAL_HMAC_KEY/,
+    );
+    expect(() =>
+      loadApiConfig({
+        LOCAL_MODEL_PROPOSAL_MODE: "ollama",
+        LOCAL_MODEL_PROPOSAL_HMAC_KEY: "too-short",
+      }),
+    ).toThrow(/LOCAL_MODEL_PROPOSAL_HMAC_KEY/);
+    expect(() => loadApiConfig({ LOCAL_MODEL_PROPOSAL_TTL_SECONDS: "59" })).toThrow();
+    expect(() => loadApiConfig({ LOCAL_MODEL_PROPOSAL_TTL_SECONDS: "3601" })).toThrow();
   });
 
   it.each(["gemma4:e2b", "gemma4:e4b", "gemma4:26b", "gemma4:31b"] as const)(

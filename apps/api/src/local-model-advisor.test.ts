@@ -3,10 +3,14 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 
 import {
+  NATURAL_LANGUAGE_PROPOSER_CONTEXT_VERSION,
+  NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION,
   SCHEDULING_ADVISOR_CONTEXT_VERSION,
   SCHEDULING_ADVISOR_OUTPUT_VERSION,
   type SchedulingAdvisorContext,
   type SchedulingAdvisorOutput,
+  type NaturalLanguageProposerContext,
+  type NaturalLanguageProposerOutput,
 } from "@schedule/application";
 import { localDate } from "@schedule/domain";
 import { describe, expect, it } from "vitest";
@@ -84,6 +88,19 @@ const validOutput: SchedulingAdvisorOutput = {
       confidence: "low",
     },
   ],
+};
+
+const proposalContext: NaturalLanguageProposerContext = {
+  version: NATURAL_LANGUAGE_PROPOSER_CONTEXT_VERSION,
+  requestId: "88888888-8888-4888-8888-888888888888",
+  prompt: "Add prepare the quarterly report to my work list",
+};
+
+const validProposalOutput: NaturalLanguageProposerOutput = {
+  version: NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION,
+  summary: "Prepare one reviewable work item.",
+  warnings: ["Review the title before confirming."],
+  command: { type: "work_item.create", title: "Prepare the quarterly report" },
 };
 
 function ollamaEnvelope(output: unknown = validOutput): string {
@@ -597,6 +614,97 @@ describe("OllamaSchedulingAdvisor response validation", () => {
       expect(JSON.stringify(result)).not.toContain("This metadata must never leave the adapter");
       expect(JSON.stringify(result)).not.toContain("total_duration");
     });
+  });
+});
+
+describe("OllamaSchedulingAdvisor proposal boundary", () => {
+  it("sends a fixed tool-free proposal request and returns only strict review data", async () => {
+    let body = "";
+    const server = await startServer((request, response) => {
+      void readBody(request).then((value) => {
+        body = value;
+        sendJson(response, ollamaEnvelope(validProposalOutput));
+      });
+    });
+    try {
+      const advisor = new OllamaSchedulingAdvisor(advisorOptions(server.baseUrl));
+      await expect(advisor.propose(proposalContext)).resolves.toEqual({
+        status: "available",
+        output: validProposalOutput,
+      });
+      const outbound = JSON.parse(body) as {
+        readonly messages: readonly { readonly role: string; readonly content: string }[];
+        readonly format: {
+          readonly additionalProperties: boolean;
+          readonly properties: {
+            readonly command: { readonly oneOf: readonly unknown[] };
+          };
+        };
+        readonly tools?: unknown;
+        readonly think: boolean;
+      };
+      expect(outbound.messages[0]?.content).toContain("human must review and explicitly confirm");
+      expect(outbound.messages[1]?.content).toBe(
+        `BEGIN_UNTRUSTED_WORK_CONTEXT_JSON\n${JSON.stringify(proposalContext)}\nEND_UNTRUSTED_WORK_CONTEXT_JSON`,
+      );
+      expect(outbound.format.additionalProperties).toBe(false);
+      expect(outbound.format.properties.command.oneOf).toHaveLength(2);
+      expect(outbound).not.toHaveProperty("tools");
+      expect(outbound.think).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it.each([
+    [
+      "extra command field",
+      { ...validProposalOutput, command: { ...validProposalOutput.command, dueOn: "tomorrow" } },
+    ],
+    [
+      "unsupported command",
+      { ...validProposalOutput, command: { type: "work_item.delete", title: "No" } },
+    ],
+    [
+      "unsafe title",
+      { ...validProposalOutput, command: { type: "work_item.create", title: "First\nSecond" } },
+    ],
+    ["duplicate warnings", { ...validProposalOutput, warnings: ["Review it.", "Review it."] }],
+  ])("rejects proposal output with %s", async (_label, output) => {
+    await withResponse(ollamaEnvelope(output), async (advisor) => {
+      await expect(advisor.propose(proposalContext)).resolves.toEqual({
+        status: "unavailable",
+        reason: "malformed_response",
+      });
+    });
+  });
+
+  it("shares the same concurrency permit across advice and proposal work", async () => {
+    let heldResponse: ServerResponse | undefined;
+    let announceRequest: (() => void) | undefined;
+    const requestStarted = new Promise<void>((resolve) => {
+      announceRequest = resolve;
+    });
+    const server = await startServer((_request, response) => {
+      heldResponse = response;
+      announceRequest?.();
+    });
+    try {
+      const advisor = new OllamaSchedulingAdvisor(
+        advisorOptions(server.baseUrl, { maxConcurrent: 1 }),
+      );
+      const advice = advisor.advise(context);
+      await requestStarted;
+      await expect(advisor.propose(proposalContext)).resolves.toEqual({
+        status: "unavailable",
+        reason: "busy",
+      });
+      if (heldResponse === undefined) throw new Error("The held response was not captured.");
+      sendJson(heldResponse, ollamaEnvelope());
+      await expect(advice).resolves.toEqual({ status: "available", output: validOutput });
+    } finally {
+      await server.close();
+    }
   });
 });
 

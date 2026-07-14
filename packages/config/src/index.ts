@@ -14,6 +14,9 @@ const apiSchema = baseSchema.extend({
   API_TRUSTED_PROXIES: z.string().max(16_384).default(""),
   PRODUCT_API_MODE: z.enum(["disabled", "local_unauthenticated"]).optional(),
   LOCAL_MODEL_ADVISOR_MODE: z.enum(["disabled", "ollama"]).default("disabled"),
+  LOCAL_MODEL_PROPOSAL_MODE: z.enum(["disabled", "ollama"]).default("disabled"),
+  LOCAL_MODEL_PROPOSAL_HMAC_KEY: z.string().optional(),
+  LOCAL_MODEL_PROPOSAL_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(600),
   LOCAL_MODEL_ADVISOR_URL: z.string().default("http://127.0.0.1:11434"),
   LOCAL_MODEL_ADVISOR_MODEL: z
     .enum(["gemma4:e2b", "gemma4:e4b", "gemma4:26b", "gemma4:31b"])
@@ -254,6 +257,15 @@ export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): Api
   ) {
     throw new Error(
       "INTEGRATION_API_PEPPER must contain at least 32 characters when the integration API is enabled.",
+    );
+  }
+  if (
+    config.LOCAL_MODEL_PROPOSAL_MODE === "ollama" &&
+    (config.LOCAL_MODEL_PROPOSAL_HMAC_KEY === undefined ||
+      Buffer.byteLength(config.LOCAL_MODEL_PROPOSAL_HMAC_KEY, "utf8") < 32)
+  ) {
+    throw new Error(
+      "LOCAL_MODEL_PROPOSAL_HMAC_KEY must contain at least 32 bytes when natural-language proposals are enabled.",
     );
   }
   if (

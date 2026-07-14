@@ -3,6 +3,9 @@ import type {
   CurrentDailyPlan,
   DailyPlan,
   GeneratePlanInput,
+  NaturalLanguageConfirmationResult,
+  NaturalLanguageProposal,
+  NaturalLanguageProposalResult,
   NotificationDeliveryHistoryItem,
   NotificationIntent,
   NotificationMaterializationResult,
@@ -236,6 +239,83 @@ export const api = {
       method: "POST",
       json: input,
     }),
+
+  generateNaturalLanguageProposal: async (
+    workspaceId: string,
+    input: {
+      readonly version: "schedule.natural-language/v1";
+      readonly requestId: string;
+      readonly prompt: string;
+    },
+    signal?: AbortSignal,
+  ) => {
+    const result = await request<NaturalLanguageProposalResult>(
+      workspacePath(workspaceId, "/natural-language/proposals"),
+      {
+        method: "POST",
+        json: input,
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+    if (result.version !== "schedule.natural-language/v1" || result.requestId !== input.requestId) {
+      throw new ApiError(
+        502,
+        "natural_language.response_mismatch",
+        "The local model returned a mismatched proposal response.",
+        null,
+      );
+    }
+    return result;
+  },
+
+  updateNaturalLanguageProposal: (
+    workspaceId: string,
+    proposalId: string,
+    input: { readonly expectedVersion: number; readonly title: string },
+    signal?: AbortSignal,
+  ) =>
+    request<NaturalLanguageProposal>(
+      workspacePath(workspaceId, `/natural-language/proposals/${encodeURIComponent(proposalId)}`),
+      { method: "PATCH", json: input, ...(signal === undefined ? {} : { signal }) },
+    ),
+
+  cancelNaturalLanguageProposal: (
+    workspaceId: string,
+    proposalId: string,
+    expectedVersion: number,
+    signal?: AbortSignal,
+  ) =>
+    request<NaturalLanguageProposal>(
+      workspacePath(
+        workspaceId,
+        `/natural-language/proposals/${encodeURIComponent(proposalId)}/cancellations`,
+      ),
+      {
+        method: "POST",
+        json: { expectedVersion },
+        ...(signal === undefined ? {} : { signal }),
+      },
+    ),
+
+  confirmNaturalLanguageProposal: (
+    workspaceId: string,
+    proposalId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ) =>
+    request<NaturalLanguageConfirmationResult>(
+      workspacePath(
+        workspaceId,
+        `/natural-language/proposals/${encodeURIComponent(proposalId)}/confirmations`,
+      ),
+      {
+        method: "POST",
+        json: { expectedVersion },
+        idempotencyKey,
+        ...(signal === undefined ? {} : { signal }),
+      },
+    ),
 
   updateWorkItem: (
     workspaceId: string,

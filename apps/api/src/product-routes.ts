@@ -51,6 +51,13 @@ import type {
   UpdateNotificationRuleCommand,
   UpdateOneOffReminderCommand,
   CancelOneOffReminderCommand,
+  CancelNaturalLanguageProposalCommand,
+  ConfirmNaturalLanguageProposalCommand,
+  ConfirmNaturalLanguageProposalResult,
+  GenerateNaturalLanguageProposalCommand,
+  GenerateNaturalLanguageProposalResult,
+  PreparedNaturalLanguageProposal,
+  UpdateNaturalLanguageProposalCommand,
   UpdateScheduleBlockCommand,
   UpdateWorkItemCommand,
   DeleteScheduleBlockCommand,
@@ -148,6 +155,19 @@ export interface ProductServices {
     command: GetSchedulingAdviceCommand,
     signal?: AbortSignal,
   ): Promise<SchedulingAdviceResult>;
+  generateNaturalLanguageProposal(
+    command: GenerateNaturalLanguageProposalCommand,
+    signal?: AbortSignal,
+  ): Promise<GenerateNaturalLanguageProposalResult>;
+  updateNaturalLanguageProposal(
+    command: UpdateNaturalLanguageProposalCommand,
+  ): Promise<PreparedNaturalLanguageProposal>;
+  cancelNaturalLanguageProposal(
+    command: CancelNaturalLanguageProposalCommand,
+  ): Promise<PreparedNaturalLanguageProposal>;
+  confirmNaturalLanguageProposal(
+    command: ConfirmNaturalLanguageProposalCommand,
+  ): Promise<ConfirmNaturalLanguageProposalResult>;
   configureNotificationProfile(
     command: ConfigureNotificationProfileCommand,
   ): Promise<NotificationProfile>;
@@ -170,6 +190,12 @@ export interface ProductServices {
   ): Promise<MaterializeNotificationIntentsResult>;
 }
 
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" && error !== null && "name" in error && error.name === "AbortError"
+  );
+}
+
 export interface ProductApiLimits {
   readonly requestsPerMinute: number;
   readonly maxConcurrentPlans: number;
@@ -181,6 +207,14 @@ const DEFAULT_PRODUCT_API_LIMITS: ProductApiLimits = {
 };
 
 export const SCHEDULING_ADVICE_ROUTE = "/v1/workspaces/:workspaceId/advisor/advice";
+export const NATURAL_LANGUAGE_PROPOSAL_ROUTE =
+  "/v1/workspaces/:workspaceId/natural-language/proposals";
+export const NATURAL_LANGUAGE_PROPOSAL_ITEM_ROUTE =
+  "/v1/workspaces/:workspaceId/natural-language/proposals/:proposalId";
+export const NATURAL_LANGUAGE_PROPOSAL_CANCELLATION_ROUTE =
+  "/v1/workspaces/:workspaceId/natural-language/proposals/:proposalId/cancellations";
+export const NATURAL_LANGUAGE_PROPOSAL_CONFIRMATION_ROUTE =
+  "/v1/workspaces/:workspaceId/natural-language/proposals/:proposalId/confirmations";
 
 function installRateLimit(app: FastifyInstance, requestsPerMinute: number): void {
   const buckets = new Map<string, { startedAt: number; count: number }>();
@@ -218,6 +252,7 @@ const localDateText = z
   .refine(isValidLocalDate, "Expected a valid Gregorian date in YYYY-MM-DD format.");
 const instant = z.string().datetime({ offset: true });
 const workspaceParams = z.strictObject({ workspaceId: uuid });
+const naturalLanguageProposalParams = z.strictObject({ workspaceId: uuid, proposalId: uuid });
 const routineParams = z.strictObject({ workspaceId: uuid, routineId: uuid });
 const workItemParams = z.strictObject({ workspaceId: uuid, workItemId: uuid });
 const workItemDependencyParams = z.strictObject({
@@ -621,6 +656,18 @@ const schedulingAdviceBody = z.strictObject({
   expectedPlanId: uuid,
   expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
 });
+const naturalLanguageProposalBody = z.strictObject({
+  version: z.literal("schedule.natural-language/v1"),
+  requestId: uuid,
+  prompt: z.string().min(1).max(2_000),
+});
+const updateNaturalLanguageProposalBody = z.strictObject({
+  expectedVersion: z.number().int().positive().max(2_147_483_647),
+  title: z.string().min(1).max(240),
+});
+const naturalLanguageProposalVersionBody = z.strictObject({
+  expectedVersion: z.number().int().positive().max(2_147_483_647),
+});
 const planMutationBody = z.strictObject({
   expectedPlanId: uuid,
   expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
@@ -732,7 +779,13 @@ export async function registerProductRoutes(
   limits: ProductApiLimits = DEFAULT_PRODUCT_API_LIMITS,
 ): Promise<void> {
   app.addHook("onRequest", async (request, reply) => {
-    if (request.routeOptions.url === SCHEDULING_ADVICE_ROUTE) {
+    if (
+      request.routeOptions.url === SCHEDULING_ADVICE_ROUTE ||
+      request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_ROUTE ||
+      request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_ITEM_ROUTE ||
+      request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_CANCELLATION_ROUTE ||
+      request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_CONFIRMATION_ROUTE
+    ) {
       reply.header("cache-control", "no-store");
     }
   });
@@ -797,6 +850,70 @@ export async function registerProductRoutes(
       request.raw.off("aborted", abort);
       reply.raw.off("close", abortOnPrematureResponseClose);
     }
+  });
+
+  app.post(NATURAL_LANGUAGE_PROPOSAL_ROUTE, async (request, reply) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const body = parseRequest(naturalLanguageProposalBody, request.body);
+    const cancellation = new AbortController();
+    const abort = () => cancellation.abort();
+    const abortOnPrematureResponseClose = () => {
+      if (!reply.raw.writableEnded) abort();
+    };
+    request.raw.once("aborted", abort);
+    reply.raw.once("close", abortOnPrematureResponseClose);
+    if (request.raw.aborted || reply.raw.destroyed) abort();
+    try {
+      return await services.generateNaturalLanguageProposal(
+        {
+          version: body.version,
+          requestId: body.requestId,
+          workspaceId: workspaceId(params.workspaceId),
+          prompt: body.prompt,
+        },
+        cancellation.signal,
+      );
+    } catch (error) {
+      if (cancellation.signal.aborted && isAbortError(error)) return reply;
+      throw error;
+    } finally {
+      request.raw.off("aborted", abort);
+      reply.raw.off("close", abortOnPrematureResponseClose);
+    }
+  });
+
+  app.patch(NATURAL_LANGUAGE_PROPOSAL_ITEM_ROUTE, async (request) => {
+    const params = parseRequest(naturalLanguageProposalParams, request.params);
+    const body = parseRequest(updateNaturalLanguageProposalBody, request.body);
+    return services.updateNaturalLanguageProposal({
+      workspaceId: workspaceId(params.workspaceId),
+      proposalId: params.proposalId,
+      expectedVersion: body.expectedVersion,
+      title: body.title,
+    });
+  });
+
+  app.post(NATURAL_LANGUAGE_PROPOSAL_CANCELLATION_ROUTE, async (request) => {
+    const params = parseRequest(naturalLanguageProposalParams, request.params);
+    const body = parseRequest(naturalLanguageProposalVersionBody, request.body);
+    return services.cancelNaturalLanguageProposal({
+      workspaceId: workspaceId(params.workspaceId),
+      proposalId: params.proposalId,
+      expectedVersion: body.expectedVersion,
+    });
+  });
+
+  app.post(NATURAL_LANGUAGE_PROPOSAL_CONFIRMATION_ROUTE, async (request, reply) => {
+    const params = parseRequest(naturalLanguageProposalParams, request.params);
+    const body = parseRequest(naturalLanguageProposalVersionBody, request.body);
+    const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+    const result = await services.confirmNaturalLanguageProposal({
+      workspaceId: workspaceId(params.workspaceId),
+      proposalId: params.proposalId,
+      expectedVersion: body.expectedVersion,
+      idempotencyKey: key,
+    });
+    return reply.code(result.replayed ? 200 : 201).send(result);
   });
 
   app.post("/v1/workspaces/:workspaceId/work-items", async (request, reply) => {

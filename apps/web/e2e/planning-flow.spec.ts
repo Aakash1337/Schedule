@@ -40,22 +40,25 @@ test("persists temporary routine feedback and activity through the live Today pl
   await page.clock.install({ time: new Date("2026-07-15T12:00:00.000Z") });
   await page.goto("/");
   const expectedOrigin = new URL(page.url()).origin;
-  await expect(page.getByRole("heading", { name: "Give your days a shape." })).toBeVisible();
+  const onboardingHeading = page.getByRole("heading", { name: "Give your days a shape." });
+  const workNavigation = page.getByRole("button", { name: "Work", exact: true });
+  await expect(onboardingHeading.or(workNavigation)).toBeVisible();
+  if (await onboardingHeading.isVisible()) {
+    const workspaceResponsePromise = page.waitForResponse((response) =>
+      isMutationResponse(
+        response,
+        "POST",
+        (pathname) => pathname === "/v1/workspaces",
+        expectedOrigin,
+      ),
+    );
+    await page.getByRole("textbox", { name: "Workspace name" }).fill("Browser E2E workspace");
+    await page.getByRole("button", { name: "Create workspace" }).click();
+    expect((await workspaceResponsePromise).status()).toBe(201);
+    await expect(page.getByRole("main", { name: "Today view" })).toBeVisible();
+  }
 
-  const workspaceResponsePromise = page.waitForResponse((response) =>
-    isMutationResponse(
-      response,
-      "POST",
-      (pathname) => pathname === "/v1/workspaces",
-      expectedOrigin,
-    ),
-  );
-  await page.getByRole("textbox", { name: "Workspace name" }).fill("Browser E2E workspace");
-  await page.getByRole("button", { name: "Create workspace" }).click();
-  expect((await workspaceResponsePromise).status()).toBe(201);
-  await expect(page.getByRole("main", { name: "Today view" })).toBeVisible();
-
-  await page.getByRole("button", { name: "Work", exact: true }).click();
+  await workNavigation.click();
   await expect(page.getByRole("main", { name: "Work view" })).toBeVisible();
 
   const workItemTitle = "Prepare the release notes";

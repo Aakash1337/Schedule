@@ -3,16 +3,26 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api";
-import type { WorkItem, WorkItemDependency, Workspace } from "../types";
+import type {
+  NaturalLanguageProposal,
+  NaturalLanguageProposalResult,
+  WorkItem,
+  WorkItemDependency,
+  Workspace,
+} from "../types";
 import { WorkView } from "./WorkView";
 
 const apiMocks = vi.hoisted(() => ({
   addWorkItemPrerequisite: vi.fn(),
+  cancelNaturalLanguageProposal: vi.fn(),
+  confirmNaturalLanguageProposal: vi.fn(),
   createWorkItem: vi.fn(),
+  generateNaturalLanguageProposal: vi.fn(),
   listWorkItemDependencies: vi.fn(),
   listWorkItems: vi.fn(),
   removeWorkItemPrerequisite: vi.fn(),
   updateWorkItem: vi.fn(),
+  updateNaturalLanguageProposal: vi.fn(),
 }));
 
 vi.mock("../api", async (importOriginal) => {
@@ -40,6 +50,42 @@ const item: WorkItem = {
   createdAt: "2026-07-12T09:00:00.000Z",
   updatedAt: "2026-07-12T09:00:00.000Z",
 };
+
+function naturalLanguageProposal(title = "Prepare quarterly report"): NaturalLanguageProposal {
+  return {
+    id: "88888888-8888-4888-8888-888888888888",
+    requestId: "99999999-9999-4999-8999-999999999999",
+    commandHash: "a".repeat(64),
+    commandDisplay: JSON.stringify({ title, type: "work_item.create" }),
+    command: { type: "work_item.create", title },
+    provider: "ollama",
+    model: "gemma4:e4b",
+    status: "pending",
+    expiresAt: "2026-07-14T10:10:00.000Z",
+    version: 1,
+  };
+}
+
+function naturalLanguageResult(
+  proposal = naturalLanguageProposal(),
+): NaturalLanguageProposalResult {
+  return {
+    version: "schedule.natural-language/v1",
+    requestId: proposal.requestId,
+    status: "proposal",
+    reason: null,
+    summary: "Review one concrete backlog title.",
+    warnings: ["Nothing is created until you confirm."],
+    proposal,
+    provenance: {
+      provider: "ollama",
+      model: "gemma4:e4b",
+      requestedAt: "2026-07-14T10:00:00.000Z",
+      completedAt: "2026-07-14T10:00:01.000Z",
+      latencyMs: 1_000,
+    },
+  };
+}
 
 function dependency(
   prerequisiteWorkItemId: string,
@@ -140,6 +186,184 @@ describe("work board", () => {
         status: "done",
       }),
     );
+  });
+
+  it("prepares and cancels a local proposal without creating a work item", async () => {
+    const user = userEvent.setup();
+    const proposal = naturalLanguageProposal();
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(naturalLanguageResult(proposal));
+    apiMocks.cancelNaturalLanguageProposal.mockResolvedValue({
+      ...proposal,
+      status: "cancelled",
+      version: 2,
+    });
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(
+      screen.getByRole("textbox", { name: /^Describe one work item/ }),
+      "Add prepare the quarterly report to my work list",
+    );
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Create one backlog work item" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Confirming will atomically create this exact title in Backlog/),
+    ).toBeInTheDocument();
+    expect(apiMocks.generateNaturalLanguageProposal).toHaveBeenCalledWith(
+      workspace.id,
+      expect.objectContaining({
+        version: "schedule.natural-language/v1",
+        prompt: "Add prepare the quarterly report to my work list",
+        requestId: expect.any(String),
+      }),
+      expect.any(AbortSignal),
+    );
+    expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
+    expect(apiMocks.confirmNaturalLanguageProposal).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Cancel proposal" }));
+    expect(apiMocks.cancelNaturalLanguageProposal).toHaveBeenCalledWith(
+      workspace.id,
+      proposal.id,
+      proposal.version,
+      expect.any(AbortSignal),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Proposal cancelled. No work item was created.",
+    );
+    expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
+  });
+
+  it("persists an edited proposal, confirms explicitly, and focuses the created backlog card", async () => {
+    const user = userEvent.setup();
+    const proposal = naturalLanguageProposal();
+    const edited = {
+      ...proposal,
+      command: { ...proposal.command, title: "Prepare final quarterly report" },
+      version: 2,
+    };
+    const created: WorkItem = {
+      ...item,
+      id: proposal.id,
+      title: edited.command.title,
+      description: null,
+      status: "backlog",
+      priority: "none",
+      planningDurationMinutes: null,
+      version: 1,
+    };
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(naturalLanguageResult(proposal));
+    apiMocks.updateNaturalLanguageProposal.mockResolvedValue(edited);
+    apiMocks.confirmNaturalLanguageProposal.mockResolvedValue({
+      proposalId: proposal.id,
+      commandHash: edited.commandHash,
+      replayed: false,
+      workItem: created,
+    });
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(
+      screen.getByRole("textbox", { name: /^Describe one work item/ }),
+      "Prepare a quarterly report",
+    );
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+    const title = await screen.findByRole("textbox", { name: /^Work item title/ });
+    await user.clear(title);
+    await user.type(title, edited.command.title);
+    await user.click(screen.getByRole("button", { name: "Create this work item" }));
+
+    expect(apiMocks.updateNaturalLanguageProposal).toHaveBeenCalledWith(
+      workspace.id,
+      proposal.id,
+      { expectedVersion: 1, title: edited.command.title },
+      expect.any(AbortSignal),
+    );
+    expect(apiMocks.confirmNaturalLanguageProposal).toHaveBeenCalledWith(
+      workspace.id,
+      proposal.id,
+      edited.version,
+      expect.any(String),
+      expect.any(AbortSignal),
+    );
+    expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
+    const createdHeading = await screen.findByRole("heading", { name: created.title });
+    const card = createdHeading.closest("article");
+    if (card === null) throw new Error("Confirmed work card was not rendered.");
+    await waitFor(() => expect(card).toHaveFocus());
+    expect(screen.getByRole("status")).toHaveTextContent("was created in Backlog");
+  });
+
+  it("reuses the same confirmation key after an ambiguous failure", async () => {
+    const user = userEvent.setup();
+    const proposal = naturalLanguageProposal();
+    const created: WorkItem = {
+      ...item,
+      id: proposal.id,
+      title: proposal.command.title,
+      status: "backlog",
+      priority: "none",
+      version: 1,
+    };
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(naturalLanguageResult(proposal));
+    apiMocks.confirmNaturalLanguageProposal
+      .mockRejectedValueOnce(new Error("The connection closed before the result arrived."))
+      .mockResolvedValueOnce({
+        proposalId: proposal.id,
+        commandHash: proposal.commandHash,
+        replayed: true,
+        workItem: created,
+      });
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(screen.getByRole("textbox", { name: /^Describe one work item/ }), "Report");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+    await user.click(await screen.findByRole("button", { name: "Create this work item" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("same confirmation key");
+    await user.click(screen.getByRole("button", { name: "Create this work item" }));
+
+    await screen.findByRole("heading", { name: created.title });
+    const firstKey = apiMocks.confirmNaturalLanguageProposal.mock.calls[0]?.[3];
+    const secondKey = apiMocks.confirmNaturalLanguageProposal.mock.calls[1]?.[3];
+    expect(firstKey).toEqual(expect.any(String));
+    expect(secondKey).toBe(firstKey);
+    expect(apiMocks.confirmNaturalLanguageProposal).toHaveBeenCalledTimes(2);
+  });
+
+  it("aborts and discards proposal work when the workspace changes", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<NaturalLanguageProposalResult>();
+    let requestSignal: AbortSignal | undefined;
+    apiMocks.generateNaturalLanguageProposal.mockImplementation(
+      (_workspaceId: string, _input: unknown, signal: AbortSignal) => {
+        requestSignal = signal;
+        return pending.promise;
+      },
+    );
+    const nextWorkspace: Workspace = { ...workspace, id: "workspace-2", name: "Other" };
+
+    const { rerender } = render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(screen.getByRole("textbox", { name: /^Describe one work item/ }), "Old work");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+    await waitFor(() => expect(requestSignal).toBeInstanceOf(AbortSignal));
+
+    rerender(<WorkView workspace={nextWorkspace} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(requestSignal?.aborted).toBe(true));
+    await act(async () => {
+      pending.resolve(naturalLanguageResult(naturalLanguageProposal("Stale old-workspace task")));
+      await pending.promise;
+    });
+    expect(screen.queryByRole("heading", { name: "Describe work in your own words" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Stale old-workspace task" })).toBeNull();
   });
 
   it("opts a one-time item into Today with an explicit duration", async () => {

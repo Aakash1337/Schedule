@@ -43,6 +43,11 @@ import type {
   IntegrationRequestReservationInput,
   IntegrationTransactionContext,
   IntegrationUnitOfWork,
+  NaturalLanguageProposalRecord,
+  NaturalLanguageProposalRepository,
+  NaturalLanguageProposalTransactionContext,
+  NaturalLanguageProposalUnitOfWork,
+  NaturalLanguageWorkItemCommand,
   NotificationRepository,
   NotificationDeliveryRepository,
   NotificationDeliveryHistoryItem,
@@ -145,6 +150,7 @@ import {
   notificationIntents,
   notificationProfiles,
   notificationRules,
+  naturalLanguageProposals,
   oneOffReminders,
   planInteractionEvents,
   planMutations,
@@ -176,6 +182,7 @@ type DailyPlanItemStateRow = typeof dailyPlanItemStates.$inferSelect;
 type IntegrationCredentialRow = typeof integrationCredentials.$inferSelect;
 type IntegrationConfirmationRow = typeof integrationConfirmations.$inferSelect;
 type IntegrationRequestRow = typeof integrationRequests.$inferSelect;
+type NaturalLanguageProposalRow = typeof naturalLanguageProposals.$inferSelect;
 type NotificationDeliveryRequestRow = typeof notificationDeliveryRequests.$inferSelect;
 type NotificationProfileRow = typeof notificationProfiles.$inferSelect;
 type NotificationRuleRow = typeof notificationRules.$inferSelect;
@@ -372,6 +379,57 @@ function mapIntegrationRequest(row: IntegrationRequestRow): IntegrationRequestRe
     result: result as unknown as ConfirmedIntegrationCommandResult | null,
     createdAt: new Date(row.createdAt),
     completedAt: row.completedAt === null ? null : new Date(row.completedAt),
+  };
+}
+
+function mapNaturalLanguageProposal(
+  row: NaturalLanguageProposalRow,
+): NaturalLanguageProposalRecord {
+  const command = row.command as Readonly<Record<string, unknown>>;
+  if (
+    command === null ||
+    typeof command !== "object" ||
+    Array.isArray(command) ||
+    Object.keys(command).sort().join("\0") !== "title\0type" ||
+    command.type !== "work_item.create" ||
+    typeof command.title !== "string"
+  ) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal command is invalid.",
+    );
+  }
+  const typedCommand: NaturalLanguageWorkItemCommand = {
+    type: "work_item.create",
+    title: command.title,
+  };
+  const canonicalCommand = `{"title":${JSON.stringify(typedCommand.title)},"type":"work_item.create"}`;
+  const commandHash = createHash("sha256").update(canonicalCommand, "utf8").digest("hex");
+  if (canonicalCommand !== row.commandDisplay || commandHash !== row.commandHash) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal command does not match its digest.",
+    );
+  }
+  return {
+    id: row.id,
+    workspaceId: workspaceId(row.workspaceId),
+    requestId: row.requestId,
+    promptHash: row.promptHash,
+    commandHash: row.commandHash,
+    commandDisplay: row.commandDisplay,
+    command: typedCommand,
+    provider: row.provider,
+    model: row.model,
+    status: row.status,
+    expiresAt: new Date(row.expiresAt),
+    confirmationKeyHash: row.confirmationKeyHash,
+    resultWorkItemId: row.resultWorkItemId,
+    confirmedAt: row.confirmedAt === null ? null : new Date(row.confirmedAt),
+    cancelledAt: row.cancelledAt === null ? null : new Date(row.cancelledAt),
+    version: row.version,
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
   };
 }
 
@@ -4043,6 +4101,126 @@ export class PostgresIntegrationRequestRepository implements IntegrationRequestR
   }
 }
 
+export class PostgresNaturalLanguageProposalRepository implements NaturalLanguageProposalRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async findByRequestId(
+    targetWorkspaceId: WorkspaceId,
+    requestId: string,
+  ): Promise<NaturalLanguageProposalRecord | null> {
+    const [row] = await this.database
+      .select()
+      .from(naturalLanguageProposals)
+      .where(
+        and(
+          eq(naturalLanguageProposals.workspaceId, targetWorkspaceId),
+          eq(naturalLanguageProposals.requestId, requestId),
+        ),
+      )
+      .limit(1);
+    return row === undefined ? null : mapNaturalLanguageProposal(row);
+  }
+
+  async findByIdForUpdate(
+    targetWorkspaceId: WorkspaceId,
+    proposalId: string,
+  ): Promise<NaturalLanguageProposalRecord | null> {
+    const [row] = await this.database
+      .select()
+      .from(naturalLanguageProposals)
+      .where(
+        and(
+          eq(naturalLanguageProposals.workspaceId, targetWorkspaceId),
+          eq(naturalLanguageProposals.id, proposalId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    return row === undefined ? null : mapNaturalLanguageProposal(row);
+  }
+
+  async insertOrFind(record: NaturalLanguageProposalRecord): Promise<{
+    readonly kind: "inserted" | "existing";
+    readonly proposal: NaturalLanguageProposalRecord;
+  }> {
+    const [row] = await this.database
+      .insert(naturalLanguageProposals)
+      .values({
+        id: record.id,
+        workspaceId: record.workspaceId,
+        requestId: record.requestId,
+        promptHash: record.promptHash,
+        commandHash: record.commandHash,
+        commandDisplay: record.commandDisplay,
+        command: record.command as unknown as Record<string, unknown>,
+        provider: record.provider,
+        model: record.model,
+        status: record.status,
+        expiresAt: record.expiresAt,
+        confirmationKeyHash: record.confirmationKeyHash,
+        resultWorkItemId: record.resultWorkItemId,
+        confirmedAt: record.confirmedAt,
+        cancelledAt: record.cancelledAt,
+        version: record.version,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+      })
+      .onConflictDoUpdate({
+        target: [naturalLanguageProposals.workspaceId, naturalLanguageProposals.requestId],
+        // A no-op update serializes concurrent generation attempts and returns the winner.
+        set: { requestId: sql`${naturalLanguageProposals.requestId}` },
+      })
+      .returning({
+        ...getTableColumns(naturalLanguageProposals),
+        inserted: sql<boolean>`xmax = 0`.as("inserted"),
+      });
+    if (row === undefined) {
+      throw new DomainError(
+        "natural_language.proposal_write_conflict",
+        "The natural-language proposal could not be persisted.",
+      );
+    }
+    return {
+      kind: row.inserted ? "inserted" : "existing",
+      proposal: mapNaturalLanguageProposal(row),
+    };
+  }
+
+  async save(record: NaturalLanguageProposalRecord, expectedVersion: number): Promise<void> {
+    const updated = await this.database
+      .update(naturalLanguageProposals)
+      .set({
+        commandHash: record.commandHash,
+        commandDisplay: record.commandDisplay,
+        command: record.command as unknown as Record<string, unknown>,
+        provider: record.provider,
+        model: record.model,
+        status: record.status,
+        expiresAt: record.expiresAt,
+        confirmationKeyHash: record.confirmationKeyHash,
+        resultWorkItemId: record.resultWorkItemId,
+        confirmedAt: record.confirmedAt,
+        cancelledAt: record.cancelledAt,
+        version: record.version,
+        updatedAt: record.updatedAt,
+      })
+      .where(
+        and(
+          eq(naturalLanguageProposals.id, record.id),
+          eq(naturalLanguageProposals.workspaceId, record.workspaceId),
+          eq(naturalLanguageProposals.version, expectedVersion),
+        ),
+      )
+      .returning({ id: naturalLanguageProposals.id });
+    if (updated.length === 0) {
+      throw new DomainError(
+        "natural_language.version_conflict",
+        "The natural-language proposal changed before it could be saved.",
+      );
+    }
+  }
+}
+
 function createTransactionContext(database: DatabaseExecutor): TransactionContext {
   return {
     workspaces: new PostgresWorkspaceRepository(database),
@@ -4073,6 +4251,17 @@ function createIntegrationTransactionContext(
     auditEvents: new PostgresAuditEventRepository(database),
     dailyPlans: new PostgresDailyPlanRepository(database),
     notifications: new PostgresNotificationRepository(database),
+  };
+}
+
+function createNaturalLanguageProposalTransactionContext(
+  database: DatabaseExecutor,
+): NaturalLanguageProposalTransactionContext {
+  return {
+    workspaces: new PostgresWorkspaceRepository(database),
+    workItems: new PostgresWorkItemRepository(database),
+    auditEvents: new PostgresAuditEventRepository(database),
+    proposals: new PostgresNaturalLanguageProposalRepository(database),
   };
 }
 
@@ -4128,6 +4317,37 @@ export class PostgresIntegrationUnitOfWork implements IntegrationUnitOfWork {
             isolationLevel:
               options?.isolationLevel === "read_committed" ? "read committed" : "serializable",
           },
+        );
+      } catch (error) {
+        if (databaseErrorCode(error) !== "40001" || retry >= serializationRetryLimit) throw error;
+        await waitForSerializationRetry(retry);
+        retry += 1;
+      }
+    }
+  }
+}
+
+export class PostgresNaturalLanguageProposalUnitOfWork implements NaturalLanguageProposalUnitOfWork {
+  constructor(private readonly connection: DatabaseConnection) {}
+
+  async run<Result>(
+    operation: (context: NaturalLanguageProposalTransactionContext) => Promise<Result>,
+    signal?: AbortSignal,
+  ): Promise<Result> {
+    let retry = 0;
+    while (true) {
+      try {
+        signal?.throwIfAborted();
+        return await this.connection.db.transaction(
+          async (transaction) => {
+            signal?.throwIfAborted();
+            const result = await operation(
+              createNaturalLanguageProposalTransactionContext(transaction),
+            );
+            signal?.throwIfAborted();
+            return result;
+          },
+          { isolationLevel: "serializable" },
         );
       } catch (error) {
         if (databaseErrorCode(error) !== "40001" || retry >= serializationRetryLimit) throw error;

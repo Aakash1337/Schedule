@@ -70,7 +70,10 @@ function domainStatus(error: DomainError): number {
   if (error.code === "integration.scope_denied") return 403;
   if (
     error.code === "integration.confirmation_expired" ||
-    error.code === "integration.confirmation_consumed"
+    error.code === "integration.confirmation_consumed" ||
+    error.code === "natural_language.proposal_expired" ||
+    error.code === "natural_language.proposal_cancelled" ||
+    error.code === "natural_language.proposal_confirmed"
   ) {
     return 410;
   }
@@ -115,6 +118,12 @@ function publicDomainMessage(error: DomainError): string {
     case "integration.confirmation_expired":
     case "integration.confirmation_consumed":
       return "The requested confirmation is no longer available.";
+    case "natural_language.proposal_not_found":
+      return "The requested natural-language proposal does not exist.";
+    case "natural_language.proposal_expired":
+    case "natural_language.proposal_cancelled":
+    case "natural_language.proposal_confirmed":
+      return "The requested natural-language proposal is no longer available.";
     default:
       return error.message;
   }
@@ -141,6 +150,10 @@ const INTERNAL_INTEGRATION_FAILURES = new Set([
   "notification_delivery.request_write_conflict",
 ]);
 const INTERNAL_PLANNING_FAILURES = new Set(["planning.work_item_graph_corrupt"]);
+const INTERNAL_NATURAL_LANGUAGE_FAILURES = new Set([
+  "natural_language.confirmation_corrupt",
+  "natural_language.proposal_write_conflict",
+]);
 
 function isInternalIntegrationFailure(error: DomainError): boolean {
   return INTERNAL_INTEGRATION_FAILURES.has(error.code);
@@ -148,6 +161,10 @@ function isInternalIntegrationFailure(error: DomainError): boolean {
 
 function isInternalPlanningFailure(error: DomainError): boolean {
   return INTERNAL_PLANNING_FAILURES.has(error.code);
+}
+
+function isInternalNaturalLanguageFailure(error: DomainError): boolean {
+  return INTERNAL_NATURAL_LANGUAGE_FAILURES.has(error.code);
 }
 
 function errorStatusCode(error: unknown): number | undefined {
@@ -188,6 +205,8 @@ export function installErrorHandler(app: FastifyInstance): void {
       request.log.error({ code: error.code }, "planning invariant failed");
     } else if (error instanceof DomainError && isInternalIntegrationFailure(error)) {
       request.log.error({ code: error.code }, "integration invariant failed");
+    } else if (error instanceof DomainError && isInternalNaturalLanguageFailure(error)) {
+      request.log.error({ code: error.code }, "natural-language proposal invariant failed");
     } else if (error instanceof DomainError) {
       status = domainStatus(error);
       code = error.code;

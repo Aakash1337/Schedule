@@ -164,6 +164,11 @@ export const notificationDeliveryRequestOperation = pgEnum(
   "notification_delivery_request_operation",
   ["claim", "receipt"],
 );
+export const naturalLanguageProposalStatus = pgEnum("natural_language_proposal_status", [
+  "pending",
+  "confirmed",
+  "cancelled",
+]);
 
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -440,6 +445,97 @@ export const workItems = pgTable(
     check(
       "work_items_planning_duration_positive",
       sql`${table.planningDurationMinutes} IS NULL OR ${table.planningDurationMinutes} > 0`,
+    ),
+  ],
+);
+
+/**
+ * Expiring local-model proposals. Raw user prompts are deliberately represented only by a digest.
+ * Confirmation always executes the exact stored, canonical command.
+ */
+export const naturalLanguageProposals = pgTable(
+  "natural_language_proposals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    requestId: uuid("request_id").notNull(),
+    promptHash: varchar("prompt_hash", { length: 64 }).notNull(),
+    commandHash: varchar("command_hash", { length: 64 }).notNull(),
+    commandDisplay: text("command_display").notNull(),
+    command: jsonb("command").$type<Readonly<Record<string, unknown>>>().notNull(),
+    provider: varchar("provider", { length: 40 }).notNull(),
+    model: varchar("model", { length: 120 }),
+    status: naturalLanguageProposalStatus("status").notNull().default("pending"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    confirmationKeyHash: varchar("confirmation_key_hash", { length: 64 }),
+    resultWorkItemId: uuid("result_work_item_id"),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("natural_language_proposals_workspace_request_uq").on(
+      table.workspaceId,
+      table.requestId,
+    ),
+    index("natural_language_proposals_workspace_status_created_idx").on(
+      table.workspaceId,
+      table.status,
+      table.createdAt,
+      table.id,
+    ),
+    index("natural_language_proposals_workspace_expiry_idx").on(
+      table.workspaceId,
+      table.expiresAt,
+      table.id,
+    ),
+    foreignKey({
+      name: "natural_language_proposals_result_work_item_tenant_fk",
+      columns: [table.workspaceId, table.resultWorkItemId],
+      foreignColumns: [workItems.workspaceId, workItems.id],
+    }).onDelete("restrict"),
+    check("natural_language_proposals_version_positive", sql`${table.version} > 0`),
+    check(
+      "natural_language_proposals_prompt_hash_valid",
+      sql`${table.promptHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "natural_language_proposals_command_hash_valid",
+      sql`${table.commandHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "natural_language_proposals_confirmation_hash_valid",
+      sql`${table.confirmationKeyHash} IS NULL OR ${table.confirmationKeyHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "natural_language_proposals_command_display_bounded",
+      sql`char_length(${table.commandDisplay}) BETWEEN 1 AND 1000`,
+    ),
+    check(
+      "natural_language_proposals_expiry_after_creation",
+      sql`${table.expiresAt} >= ${table.createdAt} + interval '1 minute' AND ${table.expiresAt} <= ${table.createdAt} + interval '1 hour'`,
+    ),
+    check(
+      "natural_language_proposals_updated_after_creation",
+      sql`${table.updatedAt} >= ${table.createdAt}`,
+    ),
+    check(
+      "natural_language_proposals_lifecycle_valid",
+      sql`(
+        (${table.status} = 'pending' AND ${table.confirmationKeyHash} IS NULL AND ${table.resultWorkItemId} IS NULL AND ${table.confirmedAt} IS NULL AND ${table.cancelledAt} IS NULL)
+        OR
+        (${table.status} = 'confirmed' AND ${table.confirmationKeyHash} IS NOT NULL AND ${table.resultWorkItemId} IS NOT NULL AND ${table.confirmedAt} IS NOT NULL AND ${table.cancelledAt} IS NULL)
+        OR
+        (${table.status} = 'cancelled' AND ${table.confirmationKeyHash} IS NULL AND ${table.resultWorkItemId} IS NULL AND ${table.confirmedAt} IS NULL AND ${table.cancelledAt} IS NOT NULL)
+      )`,
+    ),
+    check(
+      "natural_language_proposals_terminal_time_valid",
+      sql`(${table.confirmedAt} IS NULL OR (${table.confirmedAt} >= ${table.createdAt} AND ${table.confirmedAt} <= ${table.expiresAt})) AND (${table.cancelledAt} IS NULL OR (${table.cancelledAt} >= ${table.createdAt} AND ${table.cancelledAt} <= ${table.expiresAt}))`,
     ),
   ],
 );

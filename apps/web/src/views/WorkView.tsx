@@ -1,4 +1,4 @@
-import { ChevronDown, Pencil, Plus, RefreshCw } from "lucide-react";
+import { ChevronDown, Pencil, Plus, RefreshCw, ShieldCheck, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { api, ApiError } from "../api";
@@ -6,6 +6,7 @@ import { Button, EmptyState, ErrorNotice, Field, PageHeader, PageSkeleton } from
 import type {
   WorkItem,
   WorkItemDependency,
+  NaturalLanguageProposal,
   WorkItemPriority,
   WorkItemStatus,
   WorkspaceViewProps,
@@ -80,6 +81,20 @@ function messageFor(error: unknown): string {
   return "The work board could not be updated.";
 }
 
+function proposalUnavailableMessage(reason: string | null): string {
+  if (reason === "disabled") {
+    return "Local work drafting is off. Enable the local proposal model to use this capture path.";
+  }
+  if (reason === "busy")
+    return "The local model is busy. Your text is safe here; try again shortly.";
+  if (reason === "timeout")
+    return "The local model took too long. Your text is still here to retry.";
+  if (reason === "no_proposal") {
+    return "Describe one concrete work item. No work item was created.";
+  }
+  return "The local model could not prepare a safe proposal. No work item was created.";
+}
+
 function priorityLabel(priority: WorkItemPriority): string {
   return priorities.find((option) => option.value === priority)?.label ?? priority;
 }
@@ -126,6 +141,24 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const [includeInDailyPlan, setIncludeInDailyPlan] = useState(false);
   const [planningDurationMinutes, setPlanningDurationMinutes] = useState("30");
   const titleInputRef = useRef<HTMLInputElement>(null);
+  const [proposalOpen, setProposalOpen] = useState(false);
+  const [proposalPrompt, setProposalPrompt] = useState("");
+  const [proposal, setProposal] = useState<NaturalLanguageProposal | null>(null);
+  const [proposalTitle, setProposalTitle] = useState("");
+  const [proposalSummary, setProposalSummary] = useState<string | null>(null);
+  const [proposalWarnings, setProposalWarnings] = useState<readonly string[]>([]);
+  const [proposalBusy, setProposalBusy] = useState<
+    "proposing" | "confirming" | "cancelling" | null
+  >(null);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+  const [proposalAnnouncement, setProposalAnnouncement] = useState<string | null>(null);
+  const [recentlyCreatedItemId, setRecentlyCreatedItemId] = useState<string | null>(null);
+  const proposalPromptRef = useRef<HTMLTextAreaElement>(null);
+  const proposalOpenerRef = useRef<HTMLElement | null>(null);
+  const proposalAbortRef = useRef<AbortController | null>(null);
+  const proposalOperationRef = useRef(0);
+  const proposalWorkspaceRef = useRef(workspace.id);
+  const confirmationKeyRef = useRef<string | null>(null);
   const editOpenerRef = useRef<HTMLElement | null>(null);
   const [editDraft, setEditDraft] = useState<WorkEditDraft | null>(null);
   const [prerequisiteSelections, setPrerequisiteSelections] = useState<
@@ -149,6 +182,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const activeQueryKey = queryKey(workspace.id, priorityFilter);
   const activeQueryKeyRef = useRef(activeQueryKey);
   activeQueryKeyRef.current = activeQueryKey;
+  proposalWorkspaceRef.current = workspace.id;
 
   const loadBoard = useCallback(
     async (signal?: AbortSignal, revalidateWorkspaceData = false) => {
@@ -221,6 +255,32 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   }, [workspace.id]);
 
   useEffect(() => {
+    proposalAbortRef.current?.abort();
+    proposalAbortRef.current = null;
+    proposalOperationRef.current += 1;
+    confirmationKeyRef.current = null;
+    setProposalOpen(false);
+    setProposalPrompt("");
+    setProposal(null);
+    setProposalTitle("");
+    setProposalSummary(null);
+    setProposalWarnings([]);
+    setProposalBusy(null);
+    setProposalError(null);
+    setProposalAnnouncement(null);
+    setRecentlyCreatedItemId(null);
+    return () => {
+      proposalAbortRef.current?.abort();
+      proposalOperationRef.current += 1;
+    };
+  }, [workspace.id]);
+
+  useEffect(() => {
+    if (!proposalOpen) return;
+    window.setTimeout(() => proposalPromptRef.current?.focus());
+  }, [proposalOpen]);
+
+  useEffect(() => {
     const controller = new AbortController();
     setActionError(null);
     setCreateError(null);
@@ -237,6 +297,18 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const items = board?.queryKey === activeQueryKey ? board.items : null;
   const allItems = board?.queryKey === activeQueryKey ? board.allItems : null;
   const dependencies = board?.queryKey === activeQueryKey ? board.dependencies : null;
+  useEffect(() => {
+    if (
+      recentlyCreatedItemId === null ||
+      items?.some((item) => item.id === recentlyCreatedItemId) !== true
+    ) {
+      return;
+    }
+    window.setTimeout(() => {
+      document.getElementById(`work-item-${recentlyCreatedItemId}`)?.focus();
+      setRecentlyCreatedItemId(null);
+    });
+  }, [items, recentlyCreatedItemId]);
   const allItemsById = useMemo(
     () => new Map((allItems ?? []).map((item) => [item.id, item] as const)),
     [allItems],
@@ -651,6 +723,237 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     }
   }
 
+  function beginProposalOperation(): {
+    readonly controller: AbortController;
+    readonly operation: number;
+    readonly workspaceId: string;
+  } {
+    proposalAbortRef.current?.abort();
+    const controller = new AbortController();
+    proposalAbortRef.current = controller;
+    proposalOperationRef.current += 1;
+    return {
+      controller,
+      operation: proposalOperationRef.current,
+      workspaceId: workspace.id,
+    };
+  }
+
+  function proposalOperationIsCurrent(operation: number, requestWorkspaceId: string): boolean {
+    return (
+      proposalOperationRef.current === operation &&
+      proposalWorkspaceRef.current === requestWorkspaceId
+    );
+  }
+
+  function openProposalPanel(): void {
+    proposalOpenerRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setProposalOpen(true);
+    setProposalError(null);
+  }
+
+  function closeProposalPanel(): void {
+    if (proposalBusy === "confirming" || proposalBusy === "cancelling") return;
+    if (proposalBusy === "proposing") {
+      proposalAbortRef.current?.abort();
+      proposalOperationRef.current += 1;
+      setProposalBusy(null);
+    }
+    setProposalOpen(false);
+    window.setTimeout(() => {
+      const opener = proposalOpenerRef.current;
+      if (opener?.isConnected === true) opener.focus();
+    });
+  }
+
+  async function prepareProposal(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    const prompt = proposalPrompt.trim();
+    if (prompt.length === 0 || proposalBusy !== null) return;
+    const request = beginProposalOperation();
+    const requestId = globalThis.crypto.randomUUID();
+    confirmationKeyRef.current = null;
+    setProposal(null);
+    setProposalTitle("");
+    setProposalSummary(null);
+    setProposalWarnings([]);
+    setProposalError(null);
+    setProposalAnnouncement(null);
+    setProposalBusy("proposing");
+    try {
+      const result = await api.generateNaturalLanguageProposal(
+        request.workspaceId,
+        {
+          version: "schedule.natural-language/v1",
+          requestId,
+          prompt,
+        },
+        request.controller.signal,
+      );
+      if (!proposalOperationIsCurrent(request.operation, request.workspaceId)) return;
+      if (result.status !== "proposal" || result.proposal === null) {
+        setProposalSummary(result.summary);
+        setProposalWarnings(result.warnings);
+        setProposalError(result.summary ?? proposalUnavailableMessage(result.reason));
+        setProposalAnnouncement("No work item was created.");
+        return;
+      }
+      setProposal(result.proposal);
+      setProposalTitle(result.proposal.command.title);
+      setProposalSummary(result.summary);
+      setProposalWarnings(result.warnings);
+      setProposalAnnouncement("Proposal ready for review. Nothing has been created yet.");
+      confirmationKeyRef.current = globalThis.crypto.randomUUID();
+    } catch (error) {
+      if (
+        !request.controller.signal.aborted &&
+        proposalOperationIsCurrent(request.operation, request.workspaceId)
+      ) {
+        setProposalError(messageFor(error));
+        setProposalAnnouncement("No work item was created.");
+      }
+    } finally {
+      if (proposalOperationIsCurrent(request.operation, request.workspaceId)) {
+        setProposalBusy(null);
+        if (proposalAbortRef.current === request.controller) proposalAbortRef.current = null;
+      }
+    }
+  }
+
+  async function cancelProposal(): Promise<void> {
+    if (proposal === null || proposalBusy !== null) return;
+    const request = beginProposalOperation();
+    setProposalBusy("cancelling");
+    setProposalError(null);
+    try {
+      await api.cancelNaturalLanguageProposal(
+        request.workspaceId,
+        proposal.id,
+        proposal.version,
+        request.controller.signal,
+      );
+      if (!proposalOperationIsCurrent(request.operation, request.workspaceId)) return;
+      setProposal(null);
+      setProposalTitle("");
+      setProposalSummary(null);
+      setProposalWarnings([]);
+      confirmationKeyRef.current = null;
+      setProposalAnnouncement("Proposal cancelled. No work item was created.");
+      window.setTimeout(() => proposalPromptRef.current?.focus());
+    } catch (error) {
+      if (
+        !request.controller.signal.aborted &&
+        proposalOperationIsCurrent(request.operation, request.workspaceId)
+      ) {
+        if (error instanceof ApiError && error.status === 410) {
+          setProposal(null);
+          confirmationKeyRef.current = null;
+          setProposalError("This proposal is no longer available. Review your text and try again.");
+        } else {
+          setProposalError(messageFor(error));
+        }
+      }
+    } finally {
+      if (proposalOperationIsCurrent(request.operation, request.workspaceId)) {
+        setProposalBusy(null);
+        if (proposalAbortRef.current === request.controller) proposalAbortRef.current = null;
+      }
+    }
+  }
+
+  async function confirmProposal(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (proposal === null || proposalBusy !== null) return;
+    const normalizedTitle = proposalTitle.trim();
+    if (normalizedTitle.length === 0) return;
+    const request = beginProposalOperation();
+    const confirmationKey = confirmationKeyRef.current ?? globalThis.crypto.randomUUID();
+    confirmationKeyRef.current = confirmationKey;
+    setProposalBusy("confirming");
+    setProposalError(null);
+    let currentProposal = proposal;
+    try {
+      if (normalizedTitle !== currentProposal.command.title) {
+        currentProposal = await api.updateNaturalLanguageProposal(
+          request.workspaceId,
+          currentProposal.id,
+          { expectedVersion: currentProposal.version, title: normalizedTitle },
+          request.controller.signal,
+        );
+        if (!proposalOperationIsCurrent(request.operation, request.workspaceId)) return;
+        setProposal(currentProposal);
+        setProposalTitle(currentProposal.command.title);
+      }
+      const result = await api.confirmNaturalLanguageProposal(
+        request.workspaceId,
+        currentProposal.id,
+        currentProposal.version,
+        confirmationKey,
+        request.controller.signal,
+      );
+      if (!proposalOperationIsCurrent(request.operation, request.workspaceId)) return;
+      const created = result.workItem;
+      updateWorkspaceDependencyData(request.workspaceId, (current) => ({
+        ...current,
+        allItems: current.allItems.some((item) => item.id === created.id)
+          ? current.allItems.map((item) => (item.id === created.id ? created : item))
+          : [...current.allItems, created],
+      }));
+      setBoard((current) => {
+        if (current?.queryKey !== activeQueryKeyRef.current) return current;
+        const allItems = current.allItems.some((item) => item.id === created.id)
+          ? current.allItems.map((item) => (item.id === created.id ? created : item))
+          : [...current.allItems, created];
+        const visible = priorityFilter === "" || created.priority === priorityFilter;
+        const items = current.items.some((item) => item.id === created.id)
+          ? current.items.map((item) => (item.id === created.id ? created : item))
+          : visible
+            ? [...current.items, created]
+            : current.items;
+        return { ...current, allItems, items };
+      });
+      if (priorityFilter !== "" && created.priority !== priorityFilter) setPriorityFilter("");
+      setRecentlyCreatedItemId(created.id);
+      setProposal(null);
+      setProposalPrompt("");
+      setProposalTitle("");
+      setProposalSummary(null);
+      setProposalWarnings([]);
+      setProposalOpen(false);
+      confirmationKeyRef.current = null;
+      setProposalAnnouncement(
+        result.replayed
+          ? `${created.title} was already created; the existing work item is shown.`
+          : `${created.title} was created in Backlog.`,
+      );
+    } catch (error) {
+      if (
+        !request.controller.signal.aborted &&
+        proposalOperationIsCurrent(request.operation, request.workspaceId)
+      ) {
+        if (error instanceof ApiError && error.status === 410) {
+          setProposal(null);
+          confirmationKeyRef.current = null;
+          setProposalError("This proposal expired or was closed. Review your text and try again.");
+        } else if (error instanceof ApiError && error.status === 409) {
+          setProposalError(
+            "This proposal changed or was confirmed elsewhere. No second work item was created.",
+          );
+        } else {
+          setProposalError(
+            `${messageFor(error)} You can retry; the same confirmation key will be reused.`,
+          );
+        }
+      }
+    } finally {
+      if (proposalOperationIsCurrent(request.operation, request.workspaceId)) {
+        setProposalBusy(null);
+        if (proposalAbortRef.current === request.controller) proposalAbortRef.current = null;
+      }
+    }
+  }
+
   return (
     <div className="work-view">
       <PageHeader
@@ -694,8 +997,162 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
             <p className="eyebrow">Quick capture</p>
             <h2 id="work-composer-title">Add a work item</h2>
           </div>
-          <p>Start it in any status. Opt in only the one-time work that belongs in Today.</p>
+          <div className="work-composer-heading-actions">
+            <p>Start it in any status. Opt in only the one-time work that belongs in Today.</p>
+            {!proposalOpen ? (
+              <Button
+                type="button"
+                variant="quiet"
+                aria-expanded="false"
+                aria-controls="work-natural-language-panel"
+                onClick={openProposalPanel}
+              >
+                <Sparkles size={16} aria-hidden="true" />
+                Describe work
+              </Button>
+            ) : null}
+          </div>
         </div>
+
+        {proposalOpen ? (
+          <section
+            id="work-natural-language-panel"
+            className="work-natural-language-panel"
+            aria-labelledby="work-natural-language-title"
+          >
+            <header className="work-natural-language-header">
+              <div>
+                <p className="eyebrow">Local proposal</p>
+                <h3 id="work-natural-language-title">Describe work in your own words</h3>
+              </div>
+              <Button
+                type="button"
+                variant="quiet"
+                className="icon-button"
+                aria-label="Close work proposal"
+                disabled={proposalBusy === "confirming" || proposalBusy === "cancelling"}
+                onClick={closeProposalPanel}
+              >
+                <X size={17} aria-hidden="true" />
+              </Button>
+            </header>
+            <p className="work-natural-language-trust">
+              <ShieldCheck size={17} aria-hidden="true" />
+              The local model can only suggest one backlog title. It cannot create or change work.
+            </p>
+            {proposalError === null ? null : (
+              <ErrorNotice message={proposalError} onDismiss={() => setProposalError(null)} />
+            )}
+
+            {proposal === null ? (
+              <form
+                className="work-natural-language-prompt"
+                onSubmit={(event) => void prepareProposal(event)}
+              >
+                <Field
+                  label="Describe one work item"
+                  hint="Keep this to one concrete outcome. You will review the exact title next."
+                >
+                  <textarea
+                    ref={proposalPromptRef}
+                    value={proposalPrompt}
+                    maxLength={2_000}
+                    required
+                    disabled={proposalBusy !== null}
+                    placeholder="For example: remind me to prepare the quarterly report"
+                    onChange={(event) => {
+                      setProposalPrompt(event.currentTarget.value);
+                      setProposalError(null);
+                    }}
+                  />
+                </Field>
+                <div className="work-natural-language-prompt-footer">
+                  <p>Nothing is created when you ask for a proposal.</p>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    busy={proposalBusy === "proposing"}
+                    disabled={proposalPrompt.trim().length === 0 || proposalBusy !== null}
+                  >
+                    <Sparkles size={16} aria-hidden="true" />
+                    Review proposal
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <form
+                className="work-natural-language-review"
+                onSubmit={(event) => void confirmProposal(event)}
+              >
+                <div className="work-natural-language-summary">
+                  <p className="eyebrow">Proposed command</p>
+                  <h4>Create one backlog work item</h4>
+                  {proposalSummary === null ? null : <p>{proposalSummary}</p>}
+                  {proposalWarnings.length === 0 ? null : (
+                    <ul>
+                      {proposalWarnings.map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <Field
+                  label="Work item title"
+                  hint="Editing this changes only the stored proposal. It still creates nothing."
+                >
+                  <input
+                    value={proposalTitle}
+                    maxLength={240}
+                    required
+                    disabled={proposalBusy !== null}
+                    onChange={(event) => {
+                      setProposalTitle(event.currentTarget.value);
+                      setProposalError(null);
+                    }}
+                  />
+                </Field>
+                <p className="work-natural-language-no-mutation">
+                  <ShieldCheck size={17} aria-hidden="true" />
+                  Nothing has been created yet. Confirming will atomically create this exact title
+                  in Backlog.
+                </p>
+                <p className="work-natural-language-provenance">
+                  Prepared by {proposal.model ?? proposal.provider}; expires at{" "}
+                  {new Date(proposal.expiresAt).toLocaleTimeString([], {
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}
+                  .
+                </p>
+                <div className="work-natural-language-actions">
+                  <Button
+                    type="button"
+                    variant="quiet"
+                    busy={proposalBusy === "cancelling"}
+                    disabled={proposalBusy !== null}
+                    onClick={() => void cancelProposal()}
+                  >
+                    Cancel proposal
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    busy={proposalBusy === "confirming"}
+                    disabled={proposalBusy !== null || proposalTitle.trim().length === 0}
+                  >
+                    Create this work item
+                  </Button>
+                </div>
+              </form>
+            )}
+          </section>
+        ) : null}
+
+        {proposalAnnouncement === null ? null : (
+          <p className="work-natural-language-announcement" role="status" aria-live="polite">
+            {proposalAnnouncement}
+          </p>
+        )}
 
         {createError === null ? null : (
           <ErrorNotice message={createError} onDismiss={() => setCreateError(null)} />
@@ -913,7 +1370,13 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                       const dependencyError = dependencyErrors[item.id] ?? null;
                       const dependencyAnnouncement = dependencyAnnouncements[item.id] ?? null;
                       return (
-                        <article className="work-card" aria-busy={pending} key={item.id}>
+                        <article
+                          id={`work-item-${item.id}`}
+                          className="work-card"
+                          aria-busy={pending}
+                          tabIndex={-1}
+                          key={item.id}
+                        >
                           <header className="work-card-header">
                             <h3>{item.title}</h3>
                             <span className="work-card-header-actions">

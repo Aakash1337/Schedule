@@ -8,6 +8,8 @@ Durable product and engineering specifications live here so the repository root 
   semantics, exact-once intent materialization, the fenced provider-neutral delivery gateway, and
   the local settings/planned/execution-history interface.
 - [Local product API](./API.md): local-only HTTP safety boundary, routes, errors, and example usage.
+- [Natural-language proposals](./NATURAL_LANGUAGE.md): review-only local model capture, privacy,
+  lifecycle, exactly-once confirmation, and deliberate command limits.
 - [Integration gateway](./INTEGRATIONS.md): authenticated automation credentials, versioned
   commands, confirmation, idempotency, reminder claims/receipts, and the future Hermes boundary.
 - [Outbound webhook delivery](./WEBHOOKS.md): encrypted endpoint secrets, signed delivery, opt-in

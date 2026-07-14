@@ -27,6 +27,50 @@ export interface WorkItem {
   readonly updatedAt: string;
 }
 
+export interface NaturalLanguageWorkItemCommand {
+  readonly type: "work_item.create";
+  readonly title: string;
+}
+
+export type NaturalLanguageProposalStatus = "pending" | "confirmed" | "cancelled";
+
+export interface NaturalLanguageProposal {
+  readonly id: string;
+  readonly requestId: string;
+  readonly commandHash: string;
+  readonly commandDisplay: string;
+  readonly command: NaturalLanguageWorkItemCommand;
+  readonly provider: string;
+  readonly model: string | null;
+  readonly status: NaturalLanguageProposalStatus;
+  readonly expiresAt: string;
+  readonly version: number;
+}
+
+export interface NaturalLanguageProposalResult {
+  readonly version: "schedule.natural-language/v1";
+  readonly requestId: string;
+  readonly status: "proposal" | "no_proposal" | "unavailable";
+  readonly reason: string | null;
+  readonly summary: string | null;
+  readonly warnings: readonly string[];
+  readonly proposal: NaturalLanguageProposal | null;
+  readonly provenance: {
+    readonly provider: "disabled" | "ollama" | "unknown";
+    readonly model: string | null;
+    readonly requestedAt: string;
+    readonly completedAt: string;
+    readonly latencyMs: number;
+  };
+}
+
+export interface NaturalLanguageConfirmationResult {
+  readonly proposalId: string;
+  readonly commandHash: string;
+  readonly replayed: boolean;
+  readonly workItem: WorkItem;
+}
+
 /** A directed edge: the dependent waits for the prerequisite to be done. */
 export interface WorkItemDependency {
   readonly workspaceId: string;

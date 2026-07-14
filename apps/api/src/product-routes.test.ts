@@ -43,6 +43,7 @@ const canonicalPrerequisiteWorkItemUuid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 const scheduleBlockUuid = "66666666-6666-4666-8666-666666666666";
 const durationFeedbackUuid = "77777777-7777-4777-8777-777777777777";
 const adviceRequestUuid = "88888888-8888-4888-8888-888888888888";
+const proposalUuid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const durationInsightKey = "a".repeat(64);
 const workspace = createWorkspace({
   id: workspaceId(workspaceUuid),
@@ -2162,6 +2163,75 @@ describe("local product API", () => {
     await aborted;
   });
 
+  it("treats a disconnected natural-language proposal as cancellation, not an API fault", async () => {
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let markAborted: (() => void) | undefined;
+    const aborted = new Promise<void>((resolve) => {
+      markAborted = resolve;
+    });
+    let reportedError = false;
+    const app = await appWith(
+      createHarness({
+        generateNaturalLanguageProposal: async (_command, signal) => {
+          markStarted?.();
+          await new Promise<void>((resolve, reject) => {
+            if (signal?.aborted === true) {
+              markAborted?.();
+              resolve();
+              return;
+            }
+            const timeout = setTimeout(
+              () => reject(new Error("The proposal request signal was not aborted.")),
+              2_000,
+            );
+            timeout.unref();
+            signal?.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timeout);
+                markAborted?.();
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          signal?.throwIfAborted();
+          throw new Error("The disconnected proposal unexpectedly continued.");
+        },
+      }).services,
+    );
+    app.addHook("onError", async () => {
+      reportedError = true;
+    });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (address === null || typeof address === "string") throw new Error("Expected a TCP address.");
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${String(address.port)}/v1/workspaces/${workspaceUuid}/natural-language/proposals`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          version: "schedule.natural-language/v1",
+          requestId: adviceRequestUuid,
+          prompt: "Add prepare quarterly report to my list",
+        }),
+        signal: controller.signal,
+      },
+    ).catch(() => undefined);
+
+    await started;
+    controller.abort();
+    await request;
+    await aborted;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(reportedError).toBe(false);
+  });
+
   it("bounds local request volume and body size without affecting health routes", async () => {
     const app = await buildApp({
       productServices: createHarness().services,
@@ -2292,6 +2362,183 @@ describe("local product API", () => {
       });
     }
     expect((await firstResponse).statusCode).toBe(200);
+  });
+
+  it("keeps natural-language capture proposal-only until an idempotent explicit confirmation", async () => {
+    const preparedProposal = {
+      id: proposalUuid,
+      requestId: adviceRequestUuid,
+      commandHash: "e".repeat(64),
+      commandDisplay: '{"title":"Prepare quarterly report","type":"work_item.create"}',
+      command: { type: "work_item.create" as const, title: "Prepare quarterly report" },
+      provider: "ollama",
+      model: "gemma4:e4b",
+      status: "pending" as const,
+      expiresAt: "2026-07-15T12:10:00.000Z",
+      version: 1,
+    };
+    const createdWorkItem = createWorkItem({
+      id: workItemId(proposalUuid),
+      workspaceId: workspace.id,
+      title: preparedProposal.command.title,
+      now: new Date("2026-07-15T12:00:01.000Z"),
+    });
+    let generatedCommand: unknown;
+    let generatedSignal: AbortSignal | undefined;
+    let editedCommand: unknown;
+    let cancelledCommand: unknown;
+    let confirmedCommand: unknown;
+    const app = await appWith(
+      createHarness({
+        generateNaturalLanguageProposal: async (command, signal) => {
+          generatedCommand = command;
+          generatedSignal = signal;
+          return {
+            version: "schedule.natural-language/v1",
+            requestId: command.requestId,
+            status: "proposal",
+            reason: null,
+            summary: "Review this title before creating it.",
+            warnings: [],
+            proposal: preparedProposal,
+            provenance: {
+              provider: "ollama",
+              model: "gemma4:e4b",
+              requestedAt: "2026-07-15T12:00:00.000Z",
+              completedAt: "2026-07-15T12:00:01.000Z",
+              latencyMs: 1_000,
+            },
+          };
+        },
+        updateNaturalLanguageProposal: async (command) => {
+          editedCommand = command;
+          return {
+            ...preparedProposal,
+            command: { ...preparedProposal.command, title: command.title },
+            version: 2,
+          };
+        },
+        cancelNaturalLanguageProposal: async (command) => {
+          cancelledCommand = command;
+          return { ...preparedProposal, status: "cancelled", version: 2 };
+        },
+        confirmNaturalLanguageProposal: async (command) => {
+          confirmedCommand = command;
+          return {
+            proposalId: proposalUuid,
+            commandHash: preparedProposal.commandHash,
+            replayed: false,
+            workItem: createdWorkItem,
+          };
+        },
+      }).services,
+    );
+    const baseUrl = `/v1/workspaces/${workspaceUuid}/natural-language/proposals`;
+
+    const generated = await app.inject({
+      method: "POST",
+      url: baseUrl,
+      payload: {
+        version: "schedule.natural-language/v1",
+        requestId: adviceRequestUuid,
+        prompt: "Add prepare quarterly report to my list",
+      },
+    });
+    expect(generated.statusCode).toBe(200);
+    expect(generated.headers["cache-control"]).toBe("no-store");
+    expect(generated.json()).toMatchObject({ status: "proposal", proposal: { id: proposalUuid } });
+    expect(generatedCommand).toMatchObject({
+      workspaceId: workspace.id,
+      requestId: adviceRequestUuid,
+      prompt: "Add prepare quarterly report to my list",
+    });
+    expect(generatedSignal).toBeInstanceOf(AbortSignal);
+
+    const edited = await app.inject({
+      method: "PATCH",
+      url: `${baseUrl}/${proposalUuid}`,
+      payload: { expectedVersion: 1, title: "Prepare final quarterly report" },
+    });
+    expect(edited.statusCode).toBe(200);
+    expect(edited.headers["cache-control"]).toBe("no-store");
+    expect(editedCommand).toMatchObject({ proposalId: proposalUuid, expectedVersion: 1 });
+
+    const cancelled = await app.inject({
+      method: "POST",
+      url: `${baseUrl}/${proposalUuid}/cancellations`,
+      payload: { expectedVersion: 1 },
+    });
+    expect(cancelled.statusCode).toBe(200);
+    expect(cancelledCommand).toMatchObject({ proposalId: proposalUuid, expectedVersion: 1 });
+
+    const missingKey = await app.inject({
+      method: "POST",
+      url: `${baseUrl}/${proposalUuid}/confirmations`,
+      payload: { expectedVersion: 1 },
+    });
+    expect(missingKey.statusCode).toBe(400);
+    expect(missingKey.headers["cache-control"]).toBe("no-store");
+
+    const confirmed = await app.inject({
+      method: "POST",
+      url: `${baseUrl}/${proposalUuid}/confirmations`,
+      headers: { "idempotency-key": "confirm-proposal-once" },
+      payload: { expectedVersion: 1 },
+    });
+    expect(confirmed.statusCode).toBe(201);
+    expect(confirmed.json()).toMatchObject({ replayed: false, workItem: { id: proposalUuid } });
+    expect(confirmedCommand).toMatchObject({
+      proposalId: proposalUuid,
+      idempotencyKey: "confirm-proposal-once",
+    });
+
+    const rejectedCallerControls = await app.inject({
+      method: "POST",
+      url: baseUrl,
+      payload: {
+        version: "schedule.natural-language/v1",
+        requestId: adviceRequestUuid,
+        prompt: "Add a task",
+        model: "remote-model",
+      },
+    });
+    expect(rejectedCallerControls.statusCode).toBe(400);
+  });
+
+  it("maps terminal proposal state to gone and redacts corrupt persisted commands", async () => {
+    const expiredApp = await appWith(
+      createHarness({
+        updateNaturalLanguageProposal: async () => {
+          throw new DomainError("natural_language.proposal_expired", "private expiry detail");
+        },
+      }).services,
+    );
+    const expired = await expiredApp.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/natural-language/proposals/${proposalUuid}`,
+      payload: { expectedVersion: 1, title: "Still valid" },
+    });
+    expect(expired.statusCode).toBe(410);
+    expect(expired.body).not.toContain("private expiry detail");
+
+    const corruptApp = await appWith(
+      createHarness({
+        confirmNaturalLanguageProposal: async () => {
+          throw new DomainError(
+            "natural_language.confirmation_corrupt",
+            "private persisted command",
+          );
+        },
+      }).services,
+    );
+    const corrupt = await corruptApp.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/natural-language/proposals/${proposalUuid}/confirmations`,
+      headers: { "idempotency-key": "corrupt-proposal" },
+      payload: { expectedVersion: 1 },
+    });
+    expect(corrupt.statusCode).toBe(500);
+    expect(corrupt.body).not.toContain("private persisted command");
   });
 
   it("redacts unexpected service errors", async () => {

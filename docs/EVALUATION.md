@@ -24,22 +24,23 @@ drill job results establish whether that evidence actually passed in a particula
 
 ## Commands
 
-| Command                               | Purpose                                                                     | Requires PostgreSQL             |
-| ------------------------------------- | --------------------------------------------------------------------------- | ------------------------------- |
-| `pnpm eval:features`                  | Validate feature-to-evidence traceability                                   | No                              |
-| `pnpm eval:planner`                   | Run deterministic planner quality scenarios                                 | No                              |
-| `pnpm test:coverage`                  | Run every unit/component test and enforce coverage floors                   | No                              |
-| `pnpm eval`                           | Validate traceability and run the covered test suite                        | No                              |
-| `pnpm verify:database`                | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
-| `pnpm verify:webhook-delivery`        | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback     | Yes, disposable only            |
-| `pnpm verify:notification-core`       | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
-| `pnpm verify:notification-delivery`   | Verify fenced claims/receipts, retries, expiry, and invalidation            | Yes, disposable only            |
-| `pnpm verify:notification-migrations` | Upgrade populated reminder/delivery state through migration 0027            | Yes, disposable only            |
-| `pnpm verify:local-model-advisor`     | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
-| `pnpm verify:backup-restore`          | Verify archive/schema/content/sequence fidelity                             | Yes                             |
-| `pnpm verify:recovery-state-machine`  | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
-| `pnpm verify:web-e2e`                 | Exercise the built browser, API, migrations, and PostgreSQL planning loop   | Own disposable Compose database |
-| `pnpm eval:full`                      | Run every evaluation layer above, including Chromium                        | Yes, with the recovery sentinel |
+| Command                                  | Purpose                                                                     | Requires PostgreSQL             |
+| ---------------------------------------- | --------------------------------------------------------------------------- | ------------------------------- |
+| `pnpm eval:features`                     | Validate feature-to-evidence traceability                                   | No                              |
+| `pnpm eval:planner`                      | Run deterministic planner quality scenarios                                 | No                              |
+| `pnpm test:coverage`                     | Run every unit/component test and enforce coverage floors                   | No                              |
+| `pnpm eval`                              | Validate traceability and run the covered test suite                        | No                              |
+| `pnpm verify:database`                   | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
+| `pnpm verify:natural-language-proposals` | Verify private persistence and concurrent exactly-once confirmation         | Yes                             |
+| `pnpm verify:webhook-delivery`           | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback     | Yes, disposable only            |
+| `pnpm verify:notification-core`          | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
+| `pnpm verify:notification-delivery`      | Verify fenced claims/receipts, retries, expiry, and invalidation            | Yes, disposable only            |
+| `pnpm verify:notification-migrations`    | Upgrade populated reminder/delivery state through migration 0027            | Yes, disposable only            |
+| `pnpm verify:local-model-advisor`        | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
+| `pnpm verify:backup-restore`             | Verify archive/schema/content/sequence fidelity                             | Yes                             |
+| `pnpm verify:recovery-state-machine`     | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
+| `pnpm verify:web-e2e`                    | Exercise the built browser, API, migrations, and PostgreSQL planning loop   | Own disposable Compose database |
+| `pnpm eval:full`                         | Run every evaluation layer above, including Chromium                        | Yes, with the recovery sentinel |
 
 The destructive recovery command requires the explicit environment guards documented in
 [`OPERATIONS.md`](./OPERATIONS.md). CI supplies those guards only inside its disposable Compose
@@ -47,8 +48,8 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 76 test files and 1,078 runtime test cases. Two
-additional Playwright specifications contain five live Chromium integration scenarios. Parameterized
+The package and script runners currently execute 77 test files and 1,124 runtime test cases. Three
+additional Playwright specifications contain six live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
 
@@ -56,11 +57,11 @@ an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      29 / 29 |
-| Critical implemented features with CI-registered integration or drills |      16 / 16 |
+| Implemented features with CI-registered evidence                       |      30 / 30 |
+| Critical implemented features with CI-registered integration or drills |      17 / 17 |
 | Partial features with an explicit limitation                           |        2 / 2 |
 | Deferred features explicitly tracked as not passing                    |        1 / 1 |
-| CI-registered evidence items                                           |          138 |
+| CI-registered evidence items                                           |          146 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -306,6 +307,35 @@ limit. That host-specific observation motivated the bounded 60-second default, b
 benchmark nor a claim that every cold load behaves like the controlled reload. Operators may need a
 different bounded timeout for another allowlisted model or machine.
 
+### Natural-language proposal evidence
+
+The Work proposal path has independent authority, persistence, transport, API, component, and live
+browser oracles. Application units require keyed and domain-separated prompt fingerprints, no raw
+prompt persistence, one strict command, safe canonical title text, pending-only replay, versioned
+edit/cancel, expiration, tenant isolation, audit rollback, deterministic result identity, exact
+same-key replay, and conflict for another confirmation key. Provider units require a fixed tool-free
+schema, no thinking, strict response validation, and one concurrency budget shared with the Today
+advisor.
+
+Schema and repository tests cover request uniqueness, prompt/command/key digest shapes, bounded TTL,
+terminal timestamps, tenant-bound result identity, expiry indexes, canonical JSON revalidation,
+row locking, optimistic saves, and serializable retry. API tests cover strict caller authority,
+disconnect cancellation, complete no-store behavior, `201` first confirmation versus `200` replay,
+terminal `410` mappings, and redacted corrupt-state failures. Work component and web-client tests
+cover no mutation during review/cancel, encoded routes, abort propagation, title edit before confirm,
+stable-key ambiguous retry, filter-safe insertion, focus transfer, and workspace-switch invalidation.
+
+`pnpm verify:natural-language-proposals` runs production repositories through independent real
+PostgreSQL connection pools. It asserts the schema has no prompt/summary/warnings columns, a prompt
+is not discoverable as an unkeyed SHA-256 value, no work exists before confirmation, concurrent
+same-key calls yield one creation and one replay, competing keys yield one creation and one precise
+conflict, exactly one confirmation audit exists, and another workspace cannot address the proposal.
+The live Chromium scenario uses the built API and production adapter against a strict in-process
+IPv4-loopback Ollama double. It proves the card is absent during review, persists the edited title,
+confirms through the real HTTP/database path, moves focus to the result, and reloads it without
+browser interception. These checks establish command authority, privacy, concurrency, and UI
+behavior; they do not score real-model title quality.
+
 ### Calendar-aware Today availability evidence
 
 Pure web units exercise the interval contract independently of React: no-overlap retention,
@@ -365,11 +395,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   product-safe execution-history projection that omits claim, lease, credential, and provider data.
   It has no periodic materializer, external provider/account binding, shared adapter dedupe store,
   or dead-letter redrive control;
-- five live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
+- six live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, plus
   explicit reminder setup, rule/one-off changes, materialization, safe execution history, and
-  a 320px reminder layout. They do not cover every browser, every responsive breakpoint, every
+  a 320px reminder layout, plus local proposal review/edit/confirm/replay/cancel/reload behavior
+  against a strict loopback model double. They do not cover every browser, every responsive breakpoint, every
   validation branch, Calendar interaction, or the duration-calibration approval flow;
 - work-item dependencies have domain, application, repository, API, component, and real PostgreSQL
   evidence, including a two-request reciprocal-add concurrency drill and the 320px live browser flow;
@@ -380,9 +411,10 @@ The audit deliberately leaves these visible instead of turning them into false g
   comparison, or local-model participation; and
 - the local-model advisor has CI unit/component evidence for its configuration, application,
   transport, API, and UI boundaries, while a real Ollama/Gemma call remains an operator-run smoke
-  check. There is no CI model invocation, quality benchmark, natural-language creation or task
-  breakdown, automatic plan or calibration application, hosted provider, or Hermes/WhatsApp delivery
-  path; and
+  check. The separate Work capture supports one reviewed backlog title with CI and PostgreSQL/browser
+  evidence, but there is no CI real-model invocation, quality benchmark, natural-language routine or
+  multi-task creation, task breakdown, automatic plan or calibration application, hosted provider,
+  or Hermes/WhatsApp delivery path; and
 - production outcome measures such as acceptance rate, completion rate, cadence attainment, and
   duration error need actual local usage data and are not CI release gates.
 

@@ -212,6 +212,31 @@ non-live; unavailable and failed states use alerts. Keyboard focus returns to th
 after completion when it is still present and enabled. These states are component-tested; the optional
 real-model smoke check is a separate operator command, not part of the Chromium product flow.
 
+## Natural-language proposal interaction
+
+The Work composer exposes **Describe work** as an optional alternative to ordinary structured quick
+capture. Its inline panel states that the local model can suggest only one backlog title and cannot
+create or change work. The prompt accepts one concrete outcome. **Review proposal** prepares only a
+server-persisted, expiring proposal; the next screen displays the exact command, transient summary
+and warnings, model provenance, expiration time, and the explicit message “Nothing has been created
+yet.”
+
+The title remains editable. Confirming a changed title first updates the proposal with its expected
+version and then sends one stable confirmation key. A transport failure keeps the proposal and key
+so the user can retry without duplicate work. **Cancel proposal** terminally cancels it and announces
+that no item was created. Closing during provider generation aborts that request; workspace changes
+abort and discard every in-flight or displayed proposal so a late response cannot cross workspaces.
+
+After a successful confirmation, the returned item is merged into Backlog without a second create
+call. Any active priority filter is cleared when necessary, and focus moves to the new work card so a
+keyboard user receives the same state transition as a pointer user. The ordinary composer remains
+available regardless of model configuration or availability. The panel does not expose provider
+settings, arbitrary commands, automation, or a prompt/model history. Component tests cover cancel,
+edit/confirm/focus, stable-key retry, and a deliberately late success after workspace cancellation.
+The live Chromium flow uses the built API and production adapter against a controllably held loopback
+model double—without browser interception—to prove cancellation, same-key replay, and workspace-switch
+request abortion.
+
 ## Design system
 
 The interface uses warm paper-toned surfaces, ink-like neutrals, and a restrained violet accent for
@@ -235,7 +260,9 @@ keyboard-adds a done prerequisite, reloads it, removes it, reloads its absence, 
 calibration approval has component and API/PostgreSQL evidence but is not yet part of a browser
 scenario. A fifth creates reminder policy, edits a rule, creates a one-off, explicitly materializes
 intents, inserts an execution fixture through the isolated PostgreSQL test boundary, and verifies the
-real product-safe history route and UI at desktop and 320px without request interception.
+real product-safe history route and UI at desktop and 320px without request interception. A sixth
+prepares one title through a strict loopback Ollama double, proves no card exists before confirmation,
+edits and confirms through the real API, verifies focus, and reloads the persisted backlog item.
 
 Install the local browser binary once, then run the bounded verifier:
 
@@ -261,5 +288,6 @@ a dedicated Chromium job and retains traces, screenshots, and video when it fail
 - Alternative-plan comparison and generalized plan undo
 - Learned cadence, energy, preference, overload, and adaptive-selection settings
 - Automatic duration-insight application and historical insight-comparison controls
-- Natural-language task/routine creation, model-driven plan application, and hosted advisor controls
+- Natural-language routine creation, tags/dates/duration, task breakdown, multi-command capture,
+  model-driven plan application, and hosted advisor controls
 - Collaboration, sync, automatic reminder execution, Hermes/WhatsApp transport, and cloud deployment

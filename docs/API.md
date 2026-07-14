@@ -18,6 +18,9 @@ not authorize these product routes.
 - The optional advisor is independently disabled by default. When enabled, its adapter accepts only
   one exact raw `http://127.0.0.1:<port>` Ollama origin and an allowlisted local Gemma model; it does
   not use DNS, redirects, proxies, tools, or credentials.
+- Natural-language proposals are separately disabled by default, use that same transport policy,
+  persist no prompt or free-form model prose, and cannot create work without a versioned,
+  idempotent confirmation request.
 - Local mode caps an installation at 20 workspaces; each workspace is capped at 500 routines, 5,000 activity events, 2,000 plan revisions, and 50 revisions for one date. Planning reads at most 2,001 dependency rows whose dependents are active opted-in candidates and fails closed with `planning.work_item_dependency_pool_too_large` when more than 2,000 relevant rows exist.
 - Plan responses expose the original planning request, input hash, and algorithm versions, but not routine snapshots or activity history from the complete persisted input snapshot.
 
@@ -32,6 +35,10 @@ not authorize these product routes.
 | `GET`    | `/v1/workspaces/{workspaceId}/work-items`                                                      | List a bounded work-item page                          |
 | `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Retrieve one work item                                 |
 | `PATCH`  | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Version-checked work-item update                       |
+| `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals`                                      | Prepare one review-only backlog-title proposal         |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}`                         | Version-checked proposal-title edit                    |
+| `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}/cancellations`           | Cancel a pending proposal without creating work        |
+| `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}/confirmations`           | Idempotently confirm and create the exact work item    |
 | `GET`    | `/v1/workspaces/{workspaceId}/work-item-dependencies`                                          | List a bounded dependency page                         |
 | `POST`   | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/prerequisites`                           | Add one direct prerequisite (`201` or `200`)           |
 | `DELETE` | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/prerequisites/{prerequisiteWorkItemId}`  | Idempotently remove a prerequisite (`204`)             |
@@ -293,6 +300,56 @@ Every plan item has a stable UUID, a typed source identity (`sourceType` plus ex
 Current plan items also expose `activityState`, `lastActivityEventId`, and `activityUpdatedAt`. An item activity request uses the same optimistic identity and idempotency requirements as locking, and supports `started`, `completed`, `skipped`, `deferred`, `dismissed`, or `completion_reversed`. A pending item may enter any direct action state; a started item may enter any terminal state. Terminal states cannot transition again, except that reversing a completion reopens it as pending. Only completion may include an actual `durationMinutes`. The resulting activity event records the plan, plan item, and typed source identity, advances the Today head once, and feeds later planner history. Completing a work-derived item marks its source work item `done` only from an active work status. Its reversal restores the saved prior status only if no later accepted completion or work-item edit has advanced the completion ownership version; otherwise the newer state wins unchanged. Lock state remains independent, and an action does not automatically regenerate the plan.
 
 Generic routine activity may still be recorded outside a plan. Item completion reversal uses the item endpoint so its append-only event, Today projection, conditional work-status restoration, and head version change atomically; generic reversal remains appropriate for routine activity recorded outside a plan.
+
+### Natural-language proposal lifecycle
+
+Natural-language capture is an explicit proposal-then-confirm flow. It is independently disabled by
+default and accepts only one versioned prompt request:
+
+```json
+{
+  "version": "schedule.natural-language/v1",
+  "requestId": "11111111-1111-4111-8111-111111111111",
+  "prompt": "Turn my launch notes into one checklist task"
+}
+```
+
+The caller cannot supply a command, provider, model, options, tools, destination ID, priority, date,
+duration, tags, or other mutation fields. A successful `200` response contains transient summary and
+warning text plus either one pending `work_item.create` title, `no_proposal`, or a bounded unavailable
+reason. Preparing a proposal does not create a work item or hold a database transaction open during
+inference. Reusing the same request UUID and normalized prompt returns the still-pending stored
+proposal without another provider call; reusing it for different text returns
+`409 natural_language.request_conflict`.
+
+The response's proposal has an ID, request ID, exact canonical command and command hash,
+provider/model identifiers, `pending` status, expiration instant, and positive optimistic version.
+The prompt, provider summary, warnings, raw envelope, and provider errors are not persisted. Schedule
+stores only a deployment-keyed prompt fingerprint for request-conflict detection. Every response in
+this route family, including validation and errors, uses `Cache-Control: no-store`.
+
+Editing sends `{ "expectedVersion": 1, "title": "Reviewed title" }` to the proposal item route.
+Cancellation sends only `{ "expectedVersion": 1 }` to its dedicated route. Both lock the exact
+tenant-scoped proposal and reject terminal state. An edit with a mismatched version conflicts unless
+the requested canonical title already equals the stored winner and the expected version is not from
+the future; this exact semantic replay returns the current version without another audit and lets a
+client recover when the original successful response was lost. An accepted change increments its
+version and appends an audit event. Cancellation requires the exact current version. Neither command
+creates work.
+
+Confirmation sends `{ "expectedVersion": 2 }` and requires an `Idempotency-Key`. The first accepted
+call returns `201` with the proposal ID, command hash, `replayed: false`, and the created backlog work
+item. The exact same key returns the original result with `200` and `replayed: true`; a different key
+after confirmation returns `409 natural_language.confirmation_conflict`. One serializable
+transaction locks and revalidates the proposal, expiration, version, canonical command digest, and
+deterministic result identity before creating the work item, marking confirmation, and auditing it.
+Concurrent confirmations therefore create one work item and one confirmation audit. Missing
+proposals return `404`; expired, cancelled, or already-consumed proposal operations return `410`;
+corrupt stored commands fail as a redacted `500`.
+
+There is intentionally no proposal-list or proposal-read route in version 1. Pending proposals are
+short-lived interaction state, not a prompt or model-output history. See
+[NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md) for the complete trust and persistence contract.
 
 The advisor route is an explicit read operation with no automatic retry. It requires
 a current plan and accepts this complete strict body; unknown fields, including `prompt`, `model`,

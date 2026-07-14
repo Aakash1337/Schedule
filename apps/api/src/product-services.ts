@@ -1,6 +1,7 @@
 import {
   AddWorkItemDependency,
   ApproveRoutineDurationInsight,
+  CancelNaturalLanguageProposal,
   CreateRoutine,
   CreateNotificationRule,
   CreateOneOffReminder,
@@ -9,6 +10,7 @@ import {
   CreateWorkspace,
   DismissRoutineDurationInsight,
   GenerateDailyPlan,
+  GenerateNaturalLanguageProposal,
   GetCurrentDailyPlan,
   GetDailyPlan,
   GetSchedulingAdvice,
@@ -42,8 +44,13 @@ import {
   UpdateWorkItem,
   UpdateRoutine,
   UpdateNotificationRule,
+  UpdateNaturalLanguageProposal,
   UpdateOneOffReminder,
+  ConfirmNaturalLanguageProposal,
   type Clock,
+  type NaturalLanguagePromptHasher,
+  type NaturalLanguageProposalUnitOfWork,
+  type NaturalLanguageProposer,
   type SchedulingAdvisor,
   type UnitOfWork,
 } from "@schedule/application";
@@ -51,10 +58,18 @@ import {
 import { DisabledSchedulingAdvisor } from "./local-model-advisor.js";
 import type { ProductServices } from "./product-routes.js";
 
+export interface NaturalLanguageProductOptions {
+  readonly unitOfWork: NaturalLanguageProposalUnitOfWork;
+  readonly proposer: NaturalLanguageProposer;
+  readonly promptHasher: NaturalLanguagePromptHasher;
+  readonly proposalTtlMilliseconds?: number;
+}
+
 export function createProductServices(
   unitOfWork: UnitOfWork,
   clock: Clock,
   advisor: SchedulingAdvisor = new DisabledSchedulingAdvisor(),
+  naturalLanguage?: NaturalLanguageProductOptions,
 ): ProductServices {
   const approveRoutineDurationInsight = new ApproveRoutineDurationInsight(unitOfWork, clock);
   const addWorkItemDependency = new AddWorkItemDependency(unitOfWork, clock);
@@ -103,6 +118,32 @@ export function createProductServices(
   const listNotificationIntents = new ListNotificationIntents(unitOfWork);
   const listNotificationDeliveries = new ListNotificationDeliveries(unitOfWork);
   const materializeNotificationIntents = new MaterializeNotificationIntents(unitOfWork, clock);
+  const generateNaturalLanguageProposal =
+    naturalLanguage === undefined
+      ? null
+      : new GenerateNaturalLanguageProposal(
+          naturalLanguage.unitOfWork,
+          naturalLanguage.proposer,
+          clock,
+          naturalLanguage.promptHasher,
+          naturalLanguage.proposalTtlMilliseconds,
+        );
+  const updateNaturalLanguageProposal =
+    naturalLanguage === undefined
+      ? null
+      : new UpdateNaturalLanguageProposal(naturalLanguage.unitOfWork, clock);
+  const cancelNaturalLanguageProposal =
+    naturalLanguage === undefined
+      ? null
+      : new CancelNaturalLanguageProposal(naturalLanguage.unitOfWork, clock);
+  const confirmNaturalLanguageProposal =
+    naturalLanguage === undefined
+      ? null
+      : new ConfirmNaturalLanguageProposal(naturalLanguage.unitOfWork, clock);
+
+  const naturalLanguageDisabled = (): never => {
+    throw new Error("Natural-language proposal services are not configured.");
+  };
 
   return {
     addWorkItemDependency: (command) => addWorkItemDependency.execute(command),
@@ -153,5 +194,21 @@ export function createProductServices(
     listNotificationIntents: (query) => listNotificationIntents.execute(query),
     listNotificationDeliveries: (query) => listNotificationDeliveries.execute(query),
     materializeNotificationIntents: (command) => materializeNotificationIntents.execute(command),
+    generateNaturalLanguageProposal: (command, signal) => {
+      if (generateNaturalLanguageProposal === null) return naturalLanguageDisabled();
+      return generateNaturalLanguageProposal.execute(command, signal);
+    },
+    updateNaturalLanguageProposal: (command) => {
+      if (updateNaturalLanguageProposal === null) return naturalLanguageDisabled();
+      return updateNaturalLanguageProposal.execute(command);
+    },
+    cancelNaturalLanguageProposal: (command) => {
+      if (cancelNaturalLanguageProposal === null) return naturalLanguageDisabled();
+      return cancelNaturalLanguageProposal.execute(command);
+    },
+    confirmNaturalLanguageProposal: (command) => {
+      if (confirmNaturalLanguageProposal === null) return naturalLanguageDisabled();
+      return confirmNaturalLanguageProposal.execute(command);
+    },
   };
 }

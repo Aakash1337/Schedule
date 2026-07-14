@@ -1,8 +1,15 @@
+import { randomBytes } from "node:crypto";
+
+import {
+  DisabledNaturalLanguageProposer,
+  HmacNaturalLanguagePromptHasher,
+} from "@schedule/application";
 import { loadApiConfig } from "@schedule/config";
 import {
   createDatabase,
   healthCheckDatabase,
   PostgresIntegrationUnitOfWork,
+  PostgresNaturalLanguageProposalUnitOfWork,
   PostgresUnitOfWork,
 } from "@schedule/database";
 
@@ -15,9 +22,10 @@ const config = loadApiConfig();
 const database = createDatabase(config.DATABASE_URL);
 const unitOfWork = new PostgresUnitOfWork(database);
 const integrationUnitOfWork = new PostgresIntegrationUnitOfWork(database);
+const naturalLanguageProposalUnitOfWork = new PostgresNaturalLanguageProposalUnitOfWork(database);
 const clock = { now: () => new Date() };
-const schedulingAdvisor =
-  config.LOCAL_MODEL_ADVISOR_MODE === "ollama"
+const localModel =
+  config.LOCAL_MODEL_ADVISOR_MODE === "ollama" || config.LOCAL_MODEL_PROPOSAL_MODE === "ollama"
     ? new OllamaSchedulingAdvisor({
         baseUrl: config.LOCAL_MODEL_ADVISOR_URL,
         model: config.LOCAL_MODEL_ADVISOR_MODEL,
@@ -26,8 +34,20 @@ const schedulingAdvisor =
         maxResponseBytes: config.LOCAL_MODEL_ADVISOR_MAX_RESPONSE_BYTES,
         maxConcurrent: config.LOCAL_MODEL_ADVISOR_MAX_CONCURRENT,
       })
-    : new DisabledSchedulingAdvisor();
-const productServices = createProductServices(unitOfWork, clock, schedulingAdvisor);
+    : null;
+const schedulingAdvisor =
+  config.LOCAL_MODEL_ADVISOR_MODE === "ollama" ? localModel! : new DisabledSchedulingAdvisor();
+const naturalLanguageProposer =
+  config.LOCAL_MODEL_PROPOSAL_MODE === "ollama"
+    ? localModel!
+    : new DisabledNaturalLanguageProposer();
+const promptHashKey = config.LOCAL_MODEL_PROPOSAL_HMAC_KEY ?? randomBytes(32).toString("base64url");
+const productServices = createProductServices(unitOfWork, clock, schedulingAdvisor, {
+  unitOfWork: naturalLanguageProposalUnitOfWork,
+  proposer: naturalLanguageProposer,
+  promptHasher: new HmacNaturalLanguagePromptHasher(promptHashKey),
+  proposalTtlMilliseconds: config.LOCAL_MODEL_PROPOSAL_TTL_SECONDS * 1_000,
+});
 const integrationPepper = config.INTEGRATION_API_PEPPER;
 let integrationServices: ReturnType<typeof createIntegrationServices> | undefined;
 if (config.INTEGRATION_API_MODE === "enabled") {

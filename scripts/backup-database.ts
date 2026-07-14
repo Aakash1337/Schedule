@@ -18,6 +18,7 @@ export const expectedScheduleTables = [
   "integration_confirmations",
   "integration_credentials",
   "integration_requests",
+  "natural_language_proposals",
   "notification_delivery_attempts",
   "notification_delivery_commands",
   "notification_delivery_requests",

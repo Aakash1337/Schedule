@@ -197,6 +197,13 @@
       "when": 1784033407241,
       "tag": "0027_confused_azazel",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1784037576177,
+      "tag": "0028_warm_rictor",
+      "breakpoints": true
     }
   ]
 }

@@ -261,6 +261,52 @@ Set `LOCAL_MODEL_ADVISOR_MODE=disabled` and restart the API for the kill switch.
 then returns a safe unavailable result without opening a network connection; the rest of Schedule is
 unchanged.
 
+## Local natural-language proposal drafting
+
+Proposal drafting is independently disabled. It uses the advisor's same strict loopback URL, model
+allowlist, timeouts, response limit, and shared concurrency permit, but it may be enabled while the
+Today advisor remains disabled. Configure a stable secret of at least 32 bytes and a lifetime from 60
+through 3,600 seconds:
+
+```dotenv
+LOCAL_MODEL_PROPOSAL_MODE=ollama
+LOCAL_MODEL_PROPOSAL_HMAC_KEY=replace-with-stable-random-secret-material
+LOCAL_MODEL_PROPOSAL_TTL_SECONDS=600
+LOCAL_MODEL_ADVISOR_URL=http://127.0.0.1:11434
+LOCAL_MODEL_ADVISOR_MODEL=gemma4:e4b
+```
+
+Generate the HMAC key with an operating-system secret generator and keep it outside source control,
+logs, backups of configuration text, and screenshots. Schedule uses it only for domain-separated
+prompt fingerprints; raw prompts and free-form model prose are not stored. Do not rotate the key
+while generation is enabled and pending proposals may exist: disable proposal mode, wait at least the
+configured TTL (at most one hour), rotate the secret, and restart. Existing confirmations do not
+need the original key, but replaying an old generation request after rotation cannot match its prior
+fingerprint.
+
+Migration `0028` creates `natural_language_proposals`, and the table is part of the exact backup and
+restore catalog. Back up before migration. After applying it, run the real concurrency verifier:
+
+```powershell
+pnpm db:migrate
+pnpm verify:natural-language-proposals
+```
+
+The verifier does not call Ollama. It uses production PostgreSQL repositories from two independent
+connection pools and checks private persistence, tenant isolation, same-key replay, competing-key
+conflict, and exactly one result/audit. The browser verifier starts a strict loopback model double and
+exercises the production adapter and UI. A real provider can be checked manually through the Work
+view after Ollama itself is healthy; this is usability smoke testing, not a correctness or quality
+gate.
+
+Set `LOCAL_MODEL_PROPOSAL_MODE=disabled` and restart the API for the generation kill switch. Pending
+proposals remain short-lived rows but cannot be reached through a list/read API; ordinary structured
+capture and every deterministic feature remain available. If confirmation reports a conflict, do not
+change keys and retry blindly: refresh the Work board and verify whether the deterministic result
+already exists. Expired or cancelled proposals must be prepared again with a new request ID.
+
+See [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md) for the full authority and privacy boundary.
+
 ## Outbound webhook operations
 
 Outbound webhook delivery is disabled by default. Provision its external encryption keyring and

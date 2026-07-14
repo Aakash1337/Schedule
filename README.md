@@ -9,6 +9,8 @@ authenticated automation boundary is in
 the [integration gateway guide](./docs/INTEGRATIONS.md). Local data protection and recovery
 procedures are in the [operations guide](./docs/OPERATIONS.md). Behavioral confidence and known test
 limitations are tracked in the [evaluation guide](./docs/EVALUATION.md).
+The local model's explicit, review-before-write capture contract is documented in
+[docs/NATURAL_LANGUAGE.md](./docs/NATURAL_LANGUAGE.md).
 
 Provider-neutral infrastructure for a customizable work-management and scheduling system.
 
@@ -40,6 +42,11 @@ revalidates the current routine and evidence before saving; the insight never re
 the current Today plan on its own.
 
 The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface. Work items can have directed same-workspace prerequisites. A dependent is eligible for new Today selection only when every direct prerequisite is `done`; links never change workflow status automatically, and transitive cycle checks keep the graph acyclic.
+
+The Work view can optionally ask the same loopback-only Ollama/Gemma boundary to prepare one backlog
+title from free-form text. It stores no raw prompt or model prose and performs no mutation until the
+user reviews the exact command and confirms it. Confirmation is tenant-scoped, expiring,
+version-checked, audited, and durable exactly-once under concurrent retries.
 
 An optional integration gateway gives a workspace-scoped machine credential read-only access to
 Today and a two-step, idempotent structured-command flow. It is disabled by default. Schedule stays
@@ -116,9 +123,12 @@ gaps.
 
 After installing Chromium once with `pnpm exec playwright install chromium`, run
 `pnpm verify:web-e2e` to exercise the built web application, live API, fresh migrations, and an
-isolated PostgreSQL database through five live flows: routine/Today activity and feedback, work-item
+isolated PostgreSQL database through six live flows: routine/Today activity and feedback, work-item
 deadline pressure, duration-insight dismissal/reset, accessible 320px prerequisite editing, and
-reminder policy/materialization/history with responsive checks.
+reminder policy/materialization/history with responsive checks. A sixth flow uses the production
+local-model adapter against a strict loopback double to review, edit, confirm, replay the same
+confirmation key, cancel, focus, and reload natural-language work proposals without browser request
+interception.
 
 With PostgreSQL running, verify backlog/Kanban, work-item prerequisites, and calendar management,
 routine creation and optimistic updates, duration calibration and approval, stable activity-history pagination,
@@ -129,8 +139,10 @@ plan-revision persistence:
 pnpm verify:database
 ```
 
-The database gate includes `verify:notification-core`, `verify:notification-delivery`, and
-`verify:notification-migrations`, covering all six deterministic occurrence sources, concurrent
+The database gate includes `verify:natural-language-proposals`, `verify:notification-core`,
+`verify:notification-delivery`, and `verify:notification-migrations`. The proposal verifier covers
+private persistence, tenant isolation, and concurrent same-key and competing-key confirmation. The
+reminder verifiers cover all six deterministic occurrence sources, concurrent
 exact-once materialization, source/target invalidation, fenced claim/receipt recovery, tenant
 constraints, and populated pre-0024/pre-0025/pre-0026/pre-0027 upgrades. The notification migration
 verifier checks the
@@ -139,7 +151,7 @@ workspace/schedule/id execution-history index without changing delivery or crede
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh
 PostgreSQL 17 Compose project. It also verifies a complete archive round trip, the real disposable
-restore/promote/rollback/cleanup state machine, and the five live Chromium product flows in a
+restore/promote/rollback/cleanup state machine, and the six live Chromium product flows in a
 separate disposable database.
 
 ## Local data protection

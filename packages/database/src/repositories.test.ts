@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it, vi } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 
@@ -21,6 +23,8 @@ import type { DatabaseConnection } from "./database.js";
 import {
   PostgresIntegrationRequestRepository,
   PostgresIntegrationUnitOfWork,
+  PostgresNaturalLanguageProposalRepository,
+  PostgresNaturalLanguageProposalUnitOfWork,
   PostgresRoutineDurationInsightFeedbackRepository,
   PostgresUnitOfWork,
   PostgresWorkItemDependencyRepository,
@@ -63,6 +67,29 @@ const successfulResult = {
   },
 };
 
+const proposalCommandDisplay = '{"title":"Send the report","type":"work_item.create"}';
+const proposalRow = {
+  id: "60000000-0000-4000-8000-000000000006",
+  workspaceId: requestIdentity.workspaceId,
+  requestId: "70000000-0000-4000-8000-000000000007",
+  promptHash: "c".repeat(64),
+  commandHash: createHash("sha256").update(proposalCommandDisplay).digest("hex"),
+  commandDisplay: proposalCommandDisplay,
+  command: { type: "work_item.create", title: "Send the report" },
+  provider: "ollama",
+  model: "gemma4:e4b",
+  status: "pending" as const,
+  expiresAt: new Date("2026-07-13T02:10:00.000Z"),
+  confirmationKeyHash: null,
+  resultWorkItemId: null,
+  confirmedAt: null,
+  cancelledAt: null,
+  version: 1,
+  createdAt: new Date("2026-07-13T02:00:00.000Z"),
+  updatedAt: new Date("2026-07-13T02:00:00.000Z"),
+  inserted: true,
+} as const;
+
 function requestRow(
   overrides: Readonly<Record<string, unknown>> = {},
 ): Readonly<Record<string, unknown>> {
@@ -79,6 +106,13 @@ function requestRow(
 }
 
 function reservationDatabase(row: Readonly<Record<string, unknown>>): DatabaseConnection["db"] {
+  const returning = vi.fn().mockResolvedValue([row]);
+  const onConflictDoUpdate = vi.fn().mockReturnValue({ returning });
+  const values = vi.fn().mockReturnValue({ onConflictDoUpdate });
+  return { insert: vi.fn().mockReturnValue({ values }) } as unknown as DatabaseConnection["db"];
+}
+
+function proposalInsertDatabase(row: Readonly<Record<string, unknown>>): DatabaseConnection["db"] {
   const returning = vi.fn().mockResolvedValue([row]);
   const onConflictDoUpdate = vi.fn().mockReturnValue({ returning });
   const values = vi.fn().mockReturnValue({ onConflictDoUpdate });
@@ -652,6 +686,104 @@ describe("PostgresIntegrationUnitOfWork", () => {
     ).resolves.toBe("committed");
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: "read committed",
+    });
+  });
+});
+
+describe("PostgresNaturalLanguageProposalUnitOfWork", () => {
+  it("retries serialization failures and exposes only proposal mutation repositories", async () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const serializationFailure = Object.assign(new Error("serialization failure"), {
+      code: "40001",
+    });
+    const transaction = vi
+      .fn()
+      .mockRejectedValueOnce(serializationFailure)
+      .mockImplementationOnce(async (operation: (transaction: unknown) => Promise<unknown>) =>
+        operation({}),
+      );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+
+    const repositories = await new PostgresNaturalLanguageProposalUnitOfWork(connection).run(
+      async (context) => Object.keys(context).sort(),
+    );
+
+    expect(repositories).toEqual(["auditEvents", "proposals", "workItems", "workspaces"]);
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(transaction).toHaveBeenLastCalledWith(expect.any(Function), {
+      isolationLevel: "serializable",
+    });
+    random.mockRestore();
+  });
+
+  it("rechecks cancellation after the operation and before transaction commit", async () => {
+    const controller = new AbortController();
+    const transaction = vi.fn(async (operation: (transaction: unknown) => Promise<unknown>) =>
+      operation({}),
+    );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+
+    await expect(
+      new PostgresNaturalLanguageProposalUnitOfWork(connection).run(async () => {
+        controller.abort();
+        return "must not commit";
+      }, controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(transaction).toHaveBeenCalledOnce();
+  });
+});
+
+describe("PostgresNaturalLanguageProposalRepository", () => {
+  it("atomically inserts or returns the request winner and validates its command digest", async () => {
+    const repository = new PostgresNaturalLanguageProposalRepository(
+      proposalInsertDatabase(proposalRow),
+    );
+
+    await expect(repository.insertOrFind(proposalRow)).resolves.toMatchObject({
+      kind: "inserted",
+      proposal: {
+        id: proposalRow.id,
+        workspaceId: proposalRow.workspaceId,
+        command: { type: "work_item.create", title: "Send the report" },
+      },
+    });
+  });
+
+  it("fails closed when persisted command JSON does not match its canonical digest", async () => {
+    const repository = new PostgresNaturalLanguageProposalRepository(
+      proposalInsertDatabase({ ...proposalRow, command: { ...proposalRow.command, extra: true } }),
+    );
+
+    await expect(repository.insertOrFind(proposalRow)).rejects.toMatchObject({
+      code: "natural_language.confirmation_corrupt",
+    });
+  });
+
+  it("takes a tenant-scoped row lock before proposal mutation", async () => {
+    const forUpdate = vi.fn().mockResolvedValue([proposalRow]);
+    const limit = vi.fn().mockReturnValue({ for: forUpdate });
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockReturnValue({ where });
+    const repository = new PostgresNaturalLanguageProposalRepository({
+      select: vi.fn().mockReturnValue({ from }),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(
+      repository.findByIdForUpdate(proposalRow.workspaceId, proposalRow.id),
+    ).resolves.toMatchObject({ id: proposalRow.id });
+    expect(forUpdate).toHaveBeenCalledWith("update");
+  });
+
+  it("requires an exact expected version when saving", async () => {
+    const returning = vi.fn().mockResolvedValue([]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    const repository = new PostgresNaturalLanguageProposalRepository({
+      update: vi.fn().mockReturnValue({ set }),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(repository.save(proposalRow, 1)).rejects.toMatchObject({
+      code: "natural_language.version_conflict",
     });
   });
 });

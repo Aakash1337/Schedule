@@ -548,6 +548,114 @@ describe("web API client", () => {
     );
   });
 
+  it("keeps the natural-language proposal lifecycle explicit, abortable, and idempotent", async () => {
+    const requestId = "2f0f423e-b13a-4e4c-a34c-34ab0ee8e68c";
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+            id: "proposal-1",
+            version: "schedule.natural-language/v1",
+            requestId,
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+    const generateInput = {
+      version: "schedule.natural-language/v1" as const,
+      requestId,
+      prompt: "Prepare the launch checklist",
+    };
+
+    await api.generateNaturalLanguageProposal("workspace/one", generateInput, controller.signal);
+    await api.updateNaturalLanguageProposal(
+      "workspace/one",
+      "proposal/one",
+      { expectedVersion: 1, title: "Prepare the launch checklist" },
+      controller.signal,
+    );
+    await api.cancelNaturalLanguageProposal("workspace/one", "proposal/one", 2, controller.signal);
+    await api.confirmNaturalLanguageProposal(
+      "workspace/one",
+      "proposal/one",
+      2,
+      "proposal-confirm-attempt-1",
+      controller.signal,
+    );
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/v1/workspaces/workspace%2Fone/natural-language/proposals",
+      expect.objectContaining({
+        method: "POST",
+        signal: controller.signal,
+        body: JSON.stringify(generateInput),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/v1/workspaces/workspace%2Fone/natural-language/proposals/proposal%2Fone",
+      expect.objectContaining({
+        method: "PATCH",
+        signal: controller.signal,
+        body: JSON.stringify({
+          expectedVersion: 1,
+          title: "Prepare the launch checklist",
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/v1/workspaces/workspace%2Fone/natural-language/proposals/proposal%2Fone/cancellations",
+      expect.objectContaining({
+        method: "POST",
+        signal: controller.signal,
+        body: JSON.stringify({ expectedVersion: 2 }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/v1/workspaces/workspace%2Fone/natural-language/proposals/proposal%2Fone/confirmations",
+      expect.objectContaining({
+        method: "POST",
+        signal: controller.signal,
+        body: JSON.stringify({ expectedVersion: 2 }),
+        headers: expect.any(Headers),
+      }),
+    );
+    const confirmationHeaders = new Headers(fetchMock.mock.calls[3]?.[1]?.headers);
+    expect(confirmationHeaders.get("Idempotency-Key")).toBe("proposal-confirm-attempt-1");
+  });
+
+  it.each([
+    ["protocol version", "schedule.natural-language/v2", "2f0f423e-b13a-4e4c-a34c-34ab0ee8e68c"],
+    ["request identity", "schedule.natural-language/v1", "97d55328-3527-434b-9e9e-2d22c3a73ddb"],
+  ])("rejects a proposal response with a mismatched %s", async (_label, version, requestId) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ version, requestId }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    );
+
+    await expect(
+      api.generateNaturalLanguageProposal("workspace-1", {
+        version: "schedule.natural-language/v1",
+        requestId: "2f0f423e-b13a-4e4c-a34c-34ab0ee8e68c",
+        prompt: "Prepare the launch checklist",
+      }),
+    ).rejects.toMatchObject({ code: "natural_language.response_mismatch", status: 502 });
+  });
+
   it("rejects a local-advisor response with a different request identity", async () => {
     vi.stubGlobal("crypto", {
       randomUUID: vi.fn(() => "2f0f423e-b13a-4e4c-a34c-34ab0ee8e68c"),

@@ -13,6 +13,8 @@ import {
   integrationConfirmations,
   integrationCredentials,
   integrationRequests,
+  naturalLanguageProposalStatus,
+  naturalLanguageProposals,
   notificationDeliveryAttemptOutcome,
   notificationDeliveryAttempts,
   notificationDeliveryCommands,
@@ -69,6 +71,7 @@ describe("database schema", () => {
     expect(getTableName(integrationCredentials)).toBe("integration_credentials");
     expect(getTableName(integrationConfirmations)).toBe("integration_confirmations");
     expect(getTableName(integrationRequests)).toBe("integration_requests");
+    expect(getTableName(naturalLanguageProposals)).toBe("natural_language_proposals");
     expect(getTableName(notificationProfiles)).toBe("notification_profiles");
     expect(getTableName(notificationRules)).toBe("notification_rules");
     expect(getTableName(oneOffReminders)).toBe("one_off_reminders");
@@ -370,6 +373,52 @@ describe("database schema", () => {
         "integration_requests_completion_after_creation",
       ]),
     );
+  });
+
+  it("constrains private, expiring, tenant-bound natural-language proposals", () => {
+    const config = getTableConfig(naturalLanguageProposals);
+    const columnNames = config.columns.map((column) => column.name);
+
+    expect(naturalLanguageProposalStatus.enumValues).toEqual(["pending", "confirmed", "cancelled"]);
+    expect(columnNames).toContain("prompt_hash");
+    expect(columnNames).not.toEqual(expect.arrayContaining(["prompt", "summary", "warnings"]));
+    expect(config.uniqueConstraints.map((constraint) => constraint.name)).toContain(
+      "natural_language_proposals_workspace_request_uq",
+    );
+    expect(config.foreignKeys.map((constraint) => constraint.getName())).toContain(
+      "natural_language_proposals_result_work_item_tenant_fk",
+    );
+    expect(config.indexes.map((constraint) => constraint.config.name)).toEqual(
+      expect.arrayContaining([
+        "natural_language_proposals_workspace_status_created_idx",
+        "natural_language_proposals_workspace_expiry_idx",
+      ]),
+    );
+    expect(config.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "natural_language_proposals_prompt_hash_valid",
+        "natural_language_proposals_command_hash_valid",
+        "natural_language_proposals_expiry_after_creation",
+        "natural_language_proposals_lifecycle_valid",
+        "natural_language_proposals_terminal_time_valid",
+      ]),
+    );
+  });
+
+  it("migrates natural-language proposal lifecycle and retention boundaries", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0028_warm_rictor.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain('CREATE TABLE "natural_language_proposals"');
+    expect(migration).not.toContain('"prompt" text');
+    expect(migration).not.toContain('"summary"');
+    expect(migration).toContain("interval '1 hour'");
+    expect(migration).toContain(
+      'CONSTRAINT "natural_language_proposals_result_work_item_tenant_fk"',
+    );
+    expect(migration).toContain('CREATE INDEX "natural_language_proposals_workspace_expiry_idx"');
   });
 
   it("constrains routine weekday arrays at the database boundary", () => {
