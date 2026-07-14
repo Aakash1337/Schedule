@@ -231,6 +231,45 @@ try {
   const primaryWorkspaceId = await createWorkspace("Integration gateway verification");
   const isolatedWorkspaceId = await createWorkspace("Integration gateway isolation verification");
 
+  const notificationProfile = await app.inject({
+    method: "PUT",
+    url: `/v1/workspaces/${primaryWorkspaceId}/notification-profile`,
+    payload: {
+      expectedVersion: null,
+      timeZone: "UTC",
+      quietHoursStartMinute: null,
+      quietHoursEndMinute: null,
+      quietHoursPolicy: "next_allowed",
+      catchUpWindowMinutes: 0,
+      dailyIntentLimit: 100,
+    },
+  });
+  assert.equal(notificationProfile.statusCode, 200, notificationProfile.body);
+  for (const payload of [
+    { kind: "work_item_due", localMinute: 480 },
+    { kind: "schedule_block_lead", leadMinutes: 15 },
+  ]) {
+    const response: { readonly statusCode: number; readonly body: string } = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${primaryWorkspaceId}/notification-rules`,
+      payload,
+    });
+    assert.equal(response.statusCode, 201, response.body);
+  }
+
+  const materializeNotifications = async () => {
+    const response = await app!.inject({
+      method: "POST",
+      url: `/v1/workspaces/${primaryWorkspaceId}/notification-intents/materializations`,
+      payload: {
+        from: "2026-07-15T07:00:00.000Z",
+        through: "2026-07-18T00:00:00.000Z",
+      },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    return response;
+  };
+
   const provisionCredential = async (
     targetWorkspaceId: string,
     name: string,
@@ -429,6 +468,12 @@ try {
     readonly dueOn: string | null;
   };
   assert.equal(createdWorkItem.dueOn, "2026-07-16");
+  await materializeNotifications();
+  const [initialDueIntent] = await connection.sql<{ count: number }[]>`
+    select count(*)::int as count from notification_intents
+    where workspace_id = ${primaryWorkspaceId} and work_item_id = ${createdWorkItem.id}
+  `;
+  assert.equal(initialDueIntent?.count, 1);
   const [confirmRaceState] = await connection.sql<
     {
       product_count: number;
@@ -510,12 +555,22 @@ try {
   assert.equal(updatedWorkItem.title, "Gateway-planned work updated");
   assert.equal(updatedWorkItem.version, 2);
   assert.equal(updatedWorkItem.dueOn, "2026-07-17");
+  const [dueIntentAfterGatewayUpdate] = await connection.sql<{ count: number }[]>`
+    select count(*)::int as count from notification_intents
+    where workspace_id = ${primaryWorkspaceId} and work_item_id = ${createdWorkItem.id}
+  `;
+  assert.equal(
+    dueIntentAfterGatewayUpdate?.count,
+    0,
+    "confirmed gateway work-item updates must invalidate pending reminder intents",
+  );
   const replayedUpdate = await confirm(
     primaryCredential.token,
     preparedUpdate.response.data.confirmationId,
     updateIdempotencyKey,
   );
   assert.deepEqual(replayedUpdate.response.data, confirmedUpdate.response.data);
+  await materializeNotifications();
 
   // EVIDENCE: integration-gateway-work-item-deadline-clear
   // Confirmed gateway mutations preserve calendar dates and can explicitly clear them.
@@ -533,6 +588,11 @@ try {
   assert.equal(confirmedDeadlineClear.response.data.outcome.type, "work_item.updated");
   assert.equal(confirmedDeadlineClear.response.data.outcome.workItem.dueOn, null);
   assert.equal(confirmedDeadlineClear.response.data.outcome.workItem.version, 3);
+  const [dueIntentAfterGatewayClear] = await connection.sql<{ count: number }[]>`
+    select count(*)::int as count from notification_intents
+    where workspace_id = ${primaryWorkspaceId} and work_item_id = ${createdWorkItem.id}
+  `;
+  assert.equal(dueIntentAfterGatewayClear?.count, 0);
 
   const consumedWithNewKey = await app.inject({
     method: "POST",
@@ -591,6 +651,12 @@ try {
     readonly id: string;
     readonly version: number;
   };
+  await materializeNotifications();
+  const [initialBlockIntent] = await connection.sql<{ count: number }[]>`
+    select count(*)::int as count from notification_intents
+    where workspace_id = ${primaryWorkspaceId} and schedule_block_id = ${createdScheduleBlock.id}
+  `;
+  assert.equal(initialBlockIntent?.count, 1);
 
   const preparedBlockUpdate = await prepare(primaryCredential.token, randomUUID(), {
     type: "schedule_block.update",
@@ -608,6 +674,15 @@ try {
   assert.equal(
     (confirmedBlockUpdate.response.data.outcome.scheduleBlock as { title: string }).title,
     "Gateway calendar block updated",
+  );
+  const [blockIntentAfterGatewayUpdate] = await connection.sql<{ count: number }[]>`
+    select count(*)::int as count from notification_intents
+    where workspace_id = ${primaryWorkspaceId} and schedule_block_id = ${createdScheduleBlock.id}
+  `;
+  assert.equal(
+    blockIntentAfterGatewayUpdate?.count,
+    0,
+    "confirmed gateway schedule-block updates must invalidate pending reminder intents",
   );
 
   const expiredRequestId = randomUUID();

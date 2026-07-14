@@ -24,19 +24,21 @@ drill job results establish whether that evidence actually passed in a particula
 
 ## Commands
 
-| Command                              | Purpose                                                                   | Requires PostgreSQL             |
-| ------------------------------------ | ------------------------------------------------------------------------- | ------------------------------- |
-| `pnpm eval:features`                 | Validate feature-to-evidence traceability                                 | No                              |
-| `pnpm eval:planner`                  | Run deterministic planner quality scenarios                               | No                              |
-| `pnpm test:coverage`                 | Run every unit/component test and enforce coverage floors                 | No                              |
-| `pnpm eval`                          | Validate traceability and run the covered test suite                      | No                              |
-| `pnpm verify:database`               | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL    | Yes                             |
-| `pnpm verify:webhook-delivery`       | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback   | Yes, disposable only            |
-| `pnpm verify:local-model-advisor`    | Opt-in smoke check against the configured local Ollama/Gemma provider     | Ollama and an allowlisted model |
-| `pnpm verify:backup-restore`         | Verify archive/schema/content/sequence fidelity                           | Yes                             |
-| `pnpm verify:recovery-state-machine` | Exercise restore, promotion, rollback, and cleanup                        | Yes, disposable only            |
-| `pnpm verify:web-e2e`                | Exercise the built browser, API, migrations, and PostgreSQL planning loop | Own disposable Compose database |
-| `pnpm eval:full`                     | Run every evaluation layer above, including Chromium                      | Yes, with the recovery sentinel |
+| Command                               | Purpose                                                                     | Requires PostgreSQL             |
+| ------------------------------------- | --------------------------------------------------------------------------- | ------------------------------- |
+| `pnpm eval:features`                  | Validate feature-to-evidence traceability                                   | No                              |
+| `pnpm eval:planner`                   | Run deterministic planner quality scenarios                                 | No                              |
+| `pnpm test:coverage`                  | Run every unit/component test and enforce coverage floors                   | No                              |
+| `pnpm eval`                           | Validate traceability and run the covered test suite                        | No                              |
+| `pnpm verify:database`                | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
+| `pnpm verify:webhook-delivery`        | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback     | Yes, disposable only            |
+| `pnpm verify:notification-core`       | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
+| `pnpm verify:notification-migrations` | Upgrade populated pre-0024 state and validate reminder constraints          | Yes, disposable only            |
+| `pnpm verify:local-model-advisor`     | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
+| `pnpm verify:backup-restore`          | Verify archive/schema/content/sequence fidelity                             | Yes                             |
+| `pnpm verify:recovery-state-machine`  | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
+| `pnpm verify:web-e2e`                 | Exercise the built browser, API, migrations, and PostgreSQL planning loop   | Own disposable Compose database |
+| `pnpm eval:full`                      | Run every evaluation layer above, including Chromium                        | Yes, with the recovery sentinel |
 
 The destructive recovery command requires the explicit environment guards documented in
 [`OPERATIONS.md`](./OPERATIONS.md). CI supplies those guards only inside its disposable Compose
@@ -44,7 +46,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 68 test files and 989 runtime test cases. The 69th
+The package and script runners currently execute 72 test files and 1,033 runtime test cases. The 73rd
 test file is the Playwright specification, which contains four live Chromium integration scenarios.
 Parameterized state matrices expand into many cases, so this number must not be compared as though
 every case were an independent product feature.
@@ -53,11 +55,11 @@ every case were an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      26 / 26 |
-| Critical implemented features with CI-registered integration or drills |      14 / 14 |
+| Implemented features with CI-registered evidence                       |      27 / 27 |
+| Critical implemented features with CI-registered integration or drills |      15 / 15 |
 | Partial features with an explicit limitation                           |        2 / 2 |
 | Deferred features explicitly tracked as not passing                    |        1 / 1 |
-| CI-registered evidence items                                           |          120 |
+| CI-registered evidence items                                           |          128 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -68,21 +70,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.91% |   71.05% |    68.45% | 60.21% |
+| Whole repository, measured |     59.89% |   71.39% |    67.63% | 60.20% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |     95.72% |   91.29% |    96.33% | 96.77% |
+| Domain, measured           |     96.31% |   92.32% |    96.81% | 97.30% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     89.67% |   83.89% |    99.61% | 90.47% |
+| Application, measured      |     90.84% |   84.05% |    99.69% | 91.61% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     87.58% |   79.74% |    80.10% | 88.87% |
+| API, measured              |     87.55% |   78.52% |    77.25% | 88.72% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.26% |   89.18% |    91.11% | 95.14% |
 | Worker, required           |        85% |      87% |       89% |    87% |
 | Web, measured              |     86.39% |   75.00% |    76.85% | 87.03% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 6,287 of 10,494 statements, 4,693 of 6,605 branches,
-1,428 of 2,086 functions, and 5,888 of 9,779 lines.
+The whole-repository totals are 6,921 of 11,555 statements, 5,107 of 7,153 branches,
+1,544 of 2,283 functions, and 6,514 of 10,820 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -349,8 +351,14 @@ The audit deliberately leaves these visible instead of turning them into false g
   fan-out, deterministic event identity, immutable delivery/outbox linkage, dead-letter metadata,
   redrive identity, revocation, audits, and rollback. DNS, pinned-address HTTPS, TLS, and the external
   receiver are unit-faked, so there is no live-network delivery claim. The automatic event is only an
-  invalidation; reminder policy, phone notifications, Hermes/WhatsApp transport, and downstream
-  delivery receipts remain deferred;
+  invalidation; it does not transport the now-implemented reminder intents, and phone notifications,
+  Hermes/WhatsApp transport, and downstream delivery receipts remain deferred;
+- the deterministic reminder core has domain/application/API/schema evidence, a populated migration
+  upgrade, real PostgreSQL coverage for all six source kinds, two-request advisory-lock concurrency,
+  policy/target/terminal invalidation, tenant and duplicate-key constraints, backup/restore
+  inclusion, and a no-outbox-side-effect check.
+  It has no periodic materializer, delivery claim/revalidation state, external provider transport,
+  acknowledgement/receipt path, or web settings/history interface yet;
 - four live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions. They do
@@ -366,7 +374,7 @@ The audit deliberately leaves these visible instead of turning them into false g
 - the local-model advisor has CI unit/component evidence for its configuration, application,
   transport, API, and UI boundaries, while a real Ollama/Gemma call remains an operator-run smoke
   check. There is no CI model invocation, quality benchmark, natural-language creation or task
-  breakdown, automatic plan or calibration application, hosted provider, or Hermes/WhatsApp/reminder
+  breakdown, automatic plan or calibration application, hosted provider, or Hermes/WhatsApp delivery
   path; and
 - production outcome measures such as acceptance rate, completion rate, cadence attainment, and
   duration error need actual local usage data and are not CI release gates.

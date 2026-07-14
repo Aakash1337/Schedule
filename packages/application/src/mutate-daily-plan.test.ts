@@ -84,6 +84,7 @@ describe("MutateDailyPlan", () => {
     const planningGraphLoads: Array<{ workItemLimit: number; dependencyLimit: number }> = [];
     const mutations: PlanMutationRecord[] = [];
     const routineFeedback: RoutinePlanningFeedback[] = [];
+    const invalidatedTargets: string[] = [];
     let unitOfWorkOptions: UnitOfWorkOptions | undefined;
     const context = {
       workspaces: {
@@ -166,6 +167,13 @@ describe("MutateDailyPlan", () => {
         },
       } as TransactionContext["workItemDependencies"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
+      notifications: {
+        lockWorkspace: async () => undefined,
+        deleteIntentsForTarget: async (_workspaceId, targetType, targetId) => {
+          invalidatedTargets.push(`${targetType}:${targetId}`);
+          return 0;
+        },
+      } as TransactionContext["notifications"],
       auditEvents: {} as TransactionContext["auditEvents"],
     } satisfies TransactionContext;
     const unitOfWork: UnitOfWork = {
@@ -197,6 +205,7 @@ describe("MutateDailyPlan", () => {
       feedbackLockCount: () => feedbackLockCount,
       dependencyLockCount: () => dependencyLockCount,
       planningGraphLoads,
+      invalidatedTargets,
       unitOfWorkOptions: () => unitOfWorkOptions,
     };
   }
@@ -221,6 +230,7 @@ describe("MutateDailyPlan", () => {
     expect(first.plan.items.some((item) => item.locked)).toBe(true);
     expect(retry).toEqual(first);
     expect(test.unitOfWorkOptions()).toBeUndefined();
+    expect(test.invalidatedTargets).toEqual([`daily_plan:${test.source.id}`]);
   });
 
   it("loads dependencies during regeneration and excludes an unmet unlocked dependent", async () => {

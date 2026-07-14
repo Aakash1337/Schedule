@@ -148,7 +148,11 @@ importers:
         specifier: 0.31.10
         version: 0.31.10
 
-  packages/domain: {}
+  packages/domain:
+    dependencies:
+      "@js-temporal/polyfill":
+        specifier: 0.5.1
+        version: 0.5.1
 
 packages:
   "@adobe/css-tools@4.5.0":
@@ -1169,6 +1173,13 @@ packages:
       {
         integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==,
       }
+
+  "@js-temporal/polyfill@0.5.1":
+    resolution:
+      {
+        integrity: sha512-hloP58zRVCRSpgDxmqCWJNlizAlUgJFqG2ypq79DCvyv9tHjRYMDOcPFjzfl/A1/YxDvRCZz8wvZvmapQnKwFQ==,
+      }
+    engines: { node: ">=12" }
 
   "@napi-rs/wasm-runtime@1.1.6":
     resolution:
@@ -2379,6 +2390,12 @@ packages:
     resolution:
       {
         integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==,
+      }
+
+  jsbi@4.3.2:
+    resolution:
+      {
+        integrity: sha512-9fqMSQbhJykSeii05nxKl4m6Eqn2P6rOlYiS+C5Dr/HPIU/7yZxu5qzbs40tgaFORiw2Amd0mirjxatXYMkIew==,
       }
 
   jsdom@29.1.1:
@@ -3777,6 +3794,10 @@ snapshots:
       "@jridgewell/resolve-uri": 3.1.2
       "@jridgewell/sourcemap-codec": 1.5.5
 
+  "@js-temporal/polyfill@0.5.1":
+    dependencies:
+      jsbi: 4.3.2
+
   "@napi-rs/wasm-runtime@1.1.6(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)":
     dependencies:
       "@emnapi/core": 1.11.1
@@ -4492,6 +4513,8 @@ snapshots:
   js-tokens@10.0.0: {}
 
   js-tokens@4.0.0: {}
+
+  jsbi@4.3.2: {}
 
   jsdom@29.1.1:
     dependencies:

@@ -63,15 +63,37 @@ export class RecordPlanItemActivity {
     if (!Number.isFinite(now.getTime())) {
       throw new DomainError("planning.timestamp_invalid", "A valid interaction time is required.");
     }
-    return this.unitOfWork.run(({ dailyPlans }) =>
-      dailyPlans.recordItemActivity({
+    return this.unitOfWork.run(async ({ dailyPlans, notifications }) => {
+      await notifications.lockWorkspace(command.workspaceId);
+      const result = await dailyPlans.recordItemActivity({
         ...command,
         durationMinutes,
         reason: command.reason ?? null,
         metadata: command.metadata ?? {},
         idempotencyKey,
         now,
-      }),
-    );
+      });
+      if (["completed", "skipped", "deferred", "dismissed"].includes(result.activityState)) {
+        await notifications.deleteIntentsForTarget(
+          command.workspaceId,
+          "daily_plan",
+          result.planId,
+          "daily_follow_up",
+        );
+      }
+      if (
+        result.activityState === "completed" &&
+        result.activityEvent.sourceType === "work_item" &&
+        result.activityEvent.workItemId !== null
+      ) {
+        await notifications.deleteIntentsForTarget(
+          command.workspaceId,
+          "work_item",
+          result.activityEvent.workItemId,
+          "work_item_due",
+        );
+      }
+      return result;
+    });
   }
 }

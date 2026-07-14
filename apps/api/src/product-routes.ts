@@ -12,6 +12,9 @@ import type {
   CreateWorkItemCommand,
   CreateWorkspaceCommand,
   CurrentDailyPlan,
+  ConfigureNotificationProfileCommand,
+  CreateNotificationRuleCommand,
+  CreateOneOffReminderCommand,
   DismissRoutineDurationInsightCommand,
   GenerateDailyPlanCommand,
   GetSchedulingAdviceCommand,
@@ -24,6 +27,10 @@ import type {
   GetWorkspaceQuery,
   ListRoutineActivityQuery,
   ListRoutinesQuery,
+  ListNotificationIntentsQuery,
+  ListOneOffRemindersQuery,
+  MaterializeNotificationIntentsCommand,
+  MaterializeNotificationIntentsResult,
   ListScheduleBlocksQuery,
   ListWorkItemDependenciesQuery,
   ListWorkItemsQuery,
@@ -39,6 +46,9 @@ import type {
   ResetRoutinePlanningFeedbackCommand,
   SetPlanItemLockCommand,
   UpdateRoutineCommand,
+  UpdateNotificationRuleCommand,
+  UpdateOneOffReminderCommand,
+  CancelOneOffReminderCommand,
   UpdateScheduleBlockCommand,
   UpdateWorkItemCommand,
   DeleteScheduleBlockCommand,
@@ -57,6 +67,8 @@ import {
   dailyPlanId,
   isValidLocalDate,
   localDate,
+  notificationRuleId,
+  oneOffReminderId,
   planItemId,
   routineId,
   routineDurationInsightKeyPattern,
@@ -66,12 +78,17 @@ import {
   type ActivityEvent,
   type DailyPlan,
   type JsonValue,
+  type NotificationIntent,
+  type NotificationProfile,
+  type NotificationRule,
+  type OneOffReminder,
   type Routine,
   type RoutineDurationInsight,
   type RoutineDurationInsightFeedback,
   type ScheduleBlock,
   type WorkItem,
   type Workspace,
+  type WorkspaceId,
   type Weekday,
 } from "@schedule/domain";
 import type { FastifyInstance } from "fastify";
@@ -129,6 +146,23 @@ export interface ProductServices {
     command: GetSchedulingAdviceCommand,
     signal?: AbortSignal,
   ): Promise<SchedulingAdviceResult>;
+  configureNotificationProfile(
+    command: ConfigureNotificationProfileCommand,
+  ): Promise<NotificationProfile>;
+  getNotificationProfile(workspaceId: WorkspaceId): Promise<NotificationProfile>;
+  createNotificationRule(command: CreateNotificationRuleCommand): Promise<NotificationRule>;
+  updateNotificationRule(command: UpdateNotificationRuleCommand): Promise<NotificationRule>;
+  listNotificationRules(workspaceId: WorkspaceId): Promise<readonly NotificationRule[]>;
+  createOneOffReminder(command: CreateOneOffReminderCommand): Promise<OneOffReminder>;
+  updateOneOffReminder(command: UpdateOneOffReminderCommand): Promise<OneOffReminder>;
+  cancelOneOffReminder(command: CancelOneOffReminderCommand): Promise<OneOffReminder>;
+  listOneOffReminders(query: ListOneOffRemindersQuery): Promise<readonly OneOffReminder[]>;
+  listNotificationIntents(
+    query: ListNotificationIntentsQuery,
+  ): Promise<readonly NotificationIntent[]>;
+  materializeNotificationIntents(
+    command: MaterializeNotificationIntentsCommand,
+  ): Promise<MaterializeNotificationIntentsResult>;
 }
 
 export interface ProductApiLimits {
@@ -187,6 +221,8 @@ const workItemDependencyParams = z.strictObject({
   prerequisiteWorkItemId: uuid,
 });
 const scheduleBlockParams = z.strictObject({ workspaceId: uuid, scheduleBlockId: uuid });
+const notificationRuleParams = z.strictObject({ workspaceId: uuid, notificationRuleId: uuid });
+const oneOffReminderParams = z.strictObject({ workspaceId: uuid, oneOffReminderId: uuid });
 const planParams = z.strictObject({ workspaceId: uuid, date: localDateText });
 const planItemParams = z.strictObject({ workspaceId: uuid, date: localDateText, itemId: uuid });
 const planRoutineParams = z.strictObject({
@@ -281,6 +317,90 @@ const updateScheduleBlockBody = z
   );
 const deleteScheduleBlockBody = z.strictObject({
   expectedVersion: z.number().int().positive().max(2_147_483_647),
+});
+const notificationProfileBody = z
+  .strictObject({
+    expectedVersion: z.number().int().positive().max(2_147_483_647).nullable(),
+    enabled: z.boolean().optional(),
+    timeZone: z.string().trim().min(1).max(80),
+    quietHoursStartMinute: z.number().int().min(0).max(1_439).nullable().optional(),
+    quietHoursEndMinute: z.number().int().min(0).max(1_439).nullable().optional(),
+    quietHoursPolicy: z.enum(["skip", "next_allowed"]).optional(),
+    catchUpWindowMinutes: z.number().int().min(0).max(10_080).optional(),
+    dailyIntentLimit: z.number().int().min(1).max(100).optional(),
+  })
+  .refine(
+    (body) => {
+      const start = body.quietHoursStartMinute;
+      const end = body.quietHoursEndMinute;
+      return (
+        (start === undefined && end === undefined) ||
+        (start === null && end === null) ||
+        (typeof start === "number" && typeof end === "number")
+      );
+    },
+    { message: "Quiet-hours start and end must be supplied together." },
+  );
+const notificationRuleKind = z.enum([
+  "daily_digest",
+  "daily_follow_up",
+  "plan_window_open",
+  "schedule_block_lead",
+  "work_item_due",
+]);
+const notificationRuleBody = z.strictObject({
+  kind: notificationRuleKind,
+  enabled: z.boolean().default(true),
+  localMinute: z.number().int().min(0).max(1_439).nullable().default(null),
+  leadMinutes: z.number().int().min(0).max(10_080).nullable().default(null),
+  cooldownMinutes: z.number().int().min(0).max(10_080).default(0),
+  priority: z.number().int().min(0).max(100).default(50),
+});
+const updateNotificationRuleBody = z
+  .strictObject({
+    expectedVersion: z.number().int().positive().max(2_147_483_647),
+    enabled: z.boolean().optional(),
+    localMinute: z.number().int().min(0).max(1_439).nullable().optional(),
+    leadMinutes: z.number().int().min(0).max(10_080).nullable().optional(),
+    cooldownMinutes: z.number().int().min(0).max(10_080).optional(),
+    priority: z.number().int().min(0).max(100).optional(),
+  })
+  .refine(
+    (body) =>
+      body.enabled !== undefined ||
+      body.localMinute !== undefined ||
+      body.leadMinutes !== undefined ||
+      body.cooldownMinutes !== undefined ||
+      body.priority !== undefined,
+    { message: "At least one notification rule change is required." },
+  );
+const oneOffReminderBody = z.strictObject({
+  title: z.string().trim().min(1).max(240),
+  scheduledFor: instant,
+});
+const updateOneOffReminderBody = z
+  .strictObject({
+    expectedVersion: z.number().int().positive().max(2_147_483_647),
+    title: z.string().trim().min(1).max(240).optional(),
+    scheduledFor: instant.optional(),
+  })
+  .refine((body) => body.title !== undefined || body.scheduledFor !== undefined, {
+    message: "At least one one-off reminder change is required.",
+  });
+const cancelOneOffReminderBody = z.strictObject({
+  expectedVersion: z.number().int().positive().max(2_147_483_647),
+});
+const notificationRangeQuery = z.strictObject({
+  from: instant,
+  to: instant,
+});
+const notificationIntentQuery = notificationRangeQuery.extend({
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
+const notificationMaterializationBody = z.strictObject({
+  from: instant,
+  through: instant,
 });
 const tagsBody = z
   .strictObject({
@@ -829,6 +949,142 @@ export async function registerProductRoutes(
       return reply.code(204).send();
     },
   );
+
+  app.put("/v1/workspaces/:workspaceId/notification-profile", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const body = parseRequest(notificationProfileBody, request.body);
+    return services.configureNotificationProfile({
+      workspaceId: workspaceId(params.workspaceId),
+      expectedVersion: body.expectedVersion,
+      timeZone: body.timeZone,
+      ...(body.enabled === undefined ? {} : { enabled: body.enabled }),
+      ...(body.quietHoursStartMinute === undefined
+        ? {}
+        : { quietHoursStartMinute: body.quietHoursStartMinute }),
+      ...(body.quietHoursEndMinute === undefined
+        ? {}
+        : { quietHoursEndMinute: body.quietHoursEndMinute }),
+      ...(body.quietHoursPolicy === undefined ? {} : { quietHoursPolicy: body.quietHoursPolicy }),
+      ...(body.catchUpWindowMinutes === undefined
+        ? {}
+        : { catchUpWindowMinutes: body.catchUpWindowMinutes }),
+      ...(body.dailyIntentLimit === undefined ? {} : { dailyIntentLimit: body.dailyIntentLimit }),
+    });
+  });
+
+  app.get("/v1/workspaces/:workspaceId/notification-profile", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    return services.getNotificationProfile(workspaceId(params.workspaceId));
+  });
+
+  app.post("/v1/workspaces/:workspaceId/notification-rules", async (request, reply) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const body = parseRequest(notificationRuleBody, request.body);
+    const created = await services.createNotificationRule({
+      workspaceId: workspaceId(params.workspaceId),
+      kind: body.kind,
+      enabled: body.enabled,
+      localMinute: body.localMinute,
+      leadMinutes: body.leadMinutes,
+      cooldownMinutes: body.cooldownMinutes,
+      priority: body.priority,
+    });
+    return reply.code(201).send(created);
+  });
+
+  app.get("/v1/workspaces/:workspaceId/notification-rules", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const items = await services.listNotificationRules(workspaceId(params.workspaceId));
+    return { items };
+  });
+
+  app.patch(
+    "/v1/workspaces/:workspaceId/notification-rules/:notificationRuleId",
+    async (request) => {
+      const params = parseRequest(notificationRuleParams, request.params);
+      const body = parseRequest(updateNotificationRuleBody, request.body);
+      return services.updateNotificationRule({
+        workspaceId: workspaceId(params.workspaceId),
+        ruleId: notificationRuleId(params.notificationRuleId),
+        expectedVersion: body.expectedVersion,
+        ...(body.enabled === undefined ? {} : { enabled: body.enabled }),
+        ...(body.localMinute === undefined ? {} : { localMinute: body.localMinute }),
+        ...(body.leadMinutes === undefined ? {} : { leadMinutes: body.leadMinutes }),
+        ...(body.cooldownMinutes === undefined ? {} : { cooldownMinutes: body.cooldownMinutes }),
+        ...(body.priority === undefined ? {} : { priority: body.priority }),
+      });
+    },
+  );
+
+  app.post("/v1/workspaces/:workspaceId/one-off-reminders", async (request, reply) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const body = parseRequest(oneOffReminderBody, request.body);
+    const created = await services.createOneOffReminder({
+      workspaceId: workspaceId(params.workspaceId),
+      title: body.title,
+      scheduledFor: new Date(body.scheduledFor),
+    });
+    return reply.code(201).send(created);
+  });
+
+  app.get("/v1/workspaces/:workspaceId/one-off-reminders", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(notificationRangeQuery, request.query);
+    const items = await services.listOneOffReminders({
+      workspaceId: workspaceId(params.workspaceId),
+      fromInclusive: new Date(query.from),
+      throughExclusive: new Date(query.to),
+    });
+    return { items };
+  });
+
+  app.patch("/v1/workspaces/:workspaceId/one-off-reminders/:oneOffReminderId", async (request) => {
+    const params = parseRequest(oneOffReminderParams, request.params);
+    const body = parseRequest(updateOneOffReminderBody, request.body);
+    return services.updateOneOffReminder({
+      workspaceId: workspaceId(params.workspaceId),
+      reminderId: oneOffReminderId(params.oneOffReminderId),
+      expectedVersion: body.expectedVersion,
+      ...(body.title === undefined ? {} : { title: body.title }),
+      ...(body.scheduledFor === undefined ? {} : { scheduledFor: new Date(body.scheduledFor) }),
+    });
+  });
+
+  app.post(
+    "/v1/workspaces/:workspaceId/one-off-reminders/:oneOffReminderId/cancellations",
+    async (request) => {
+      const params = parseRequest(oneOffReminderParams, request.params);
+      const body = parseRequest(cancelOneOffReminderBody, request.body);
+      return services.cancelOneOffReminder({
+        workspaceId: workspaceId(params.workspaceId),
+        reminderId: oneOffReminderId(params.oneOffReminderId),
+        expectedVersion: body.expectedVersion,
+      });
+    },
+  );
+
+  app.get("/v1/workspaces/:workspaceId/notification-intents", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(notificationIntentQuery, request.query);
+    const items = await services.listNotificationIntents({
+      workspaceId: workspaceId(params.workspaceId),
+      fromInclusive: new Date(query.from),
+      throughExclusive: new Date(query.to),
+      limit: query.limit,
+      offset: query.offset,
+    });
+    return { items, page: { limit: query.limit, offset: query.offset } };
+  });
+
+  app.post("/v1/workspaces/:workspaceId/notification-intents/materializations", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const body = parseRequest(notificationMaterializationBody, request.body);
+    return services.materializeNotificationIntents({
+      workspaceId: workspaceId(params.workspaceId),
+      fromInclusive: new Date(body.from),
+      throughExclusive: new Date(body.through),
+    });
+  });
 
   app.post("/v1/workspaces/:workspaceId/routines", async (request, reply) => {
     const params = parseRequest(workspaceParams, request.params);

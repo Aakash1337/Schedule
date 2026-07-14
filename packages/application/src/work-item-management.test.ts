@@ -25,6 +25,7 @@ describe("work item management", () => {
   function harness(options: { workspaceExists?: boolean } = {}) {
     const items: WorkItem[] = [];
     let saves = 0;
+    const invalidatedTargets: string[] = [];
     const context = {
       workspaces: {
         findById: async () => (options.workspaceExists === false ? null : workspace),
@@ -60,6 +61,13 @@ describe("work item management", () => {
           saves += 1;
         },
       },
+      notifications: {
+        lockWorkspace: async () => undefined,
+        deleteIntentsForTarget: async (_workspace, targetType, targetId) => {
+          invalidatedTargets.push(`${targetType}:${targetId}`);
+          return 0;
+        },
+      } as TransactionContext["notifications"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
       workItemDependencies: {
         loadPlanningGraph: async () => ({ workItems: [], dependencies: [] }),
@@ -78,6 +86,7 @@ describe("work item management", () => {
       update: new UpdateWorkItem(unitOfWork, clock),
       items,
       saves: () => saves,
+      invalidatedTargets,
     };
   }
 
@@ -124,6 +133,7 @@ describe("work item management", () => {
     expect(updated).toMatchObject({ status: "in_progress", priority: "high", version: 2 });
     expect(noOp).toBe(updated);
     expect(test.saves()).toBe(1);
+    expect(test.invalidatedTargets).toEqual([`work_item:${item.id}`]);
   });
 
   it("persists a planning duration and permits explicitly removing it", async () => {

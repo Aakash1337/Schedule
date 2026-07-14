@@ -8,6 +8,7 @@ import {
   planItemId,
   recordActivityEvent,
   routineId,
+  workItemId,
   workspaceId,
 } from "@schedule/domain";
 
@@ -21,9 +22,10 @@ describe("RecordPlanItemActivity", () => {
   const occurredAt = new Date("2026-07-15T10:00:00.000Z");
   const now = new Date("2026-07-15T10:01:00.000Z");
 
-  function harness(clockNow = now) {
+  function harness(clockNow = now, source: "routine" | "work_item" = "routine") {
     let captured: RecordPlanItemActivityInput | null = null;
     let transactionRuns = 0;
+    const invalidatedTargets: string[] = [];
     const context = {
       dailyPlans: {
         recordItemActivity: async (input: RecordPlanItemActivityInput) => {
@@ -35,7 +37,9 @@ describe("RecordPlanItemActivity", () => {
             activityEvent: recordActivityEvent({
               id: activityEventId("plan-item-activity-event"),
               workspaceId: input.workspaceId,
-              routineId: routineId("plan-item-activity-routine"),
+              ...(source === "routine"
+                ? { routineId: routineId("plan-item-activity-routine") }
+                : { sourceType: "work_item", workItemId: workItemId("plan-item-activity-work") }),
               planId: input.expectedPlanId,
               planItemId: input.itemId,
               type: input.type,
@@ -54,6 +58,13 @@ describe("RecordPlanItemActivity", () => {
           };
         },
       } as TransactionContext["dailyPlans"],
+      notifications: {
+        lockWorkspace: async () => undefined,
+        deleteIntentsForTarget: async (_workspaceId, targetType, targetId, kind) => {
+          invalidatedTargets.push(`${targetType}:${targetId}:${kind ?? "all"}`);
+          return 1;
+        },
+      } as TransactionContext["notifications"],
       workItemDependencies: {
         loadPlanningGraph: async () => ({ workItems: [], dependencies: [] }),
       } as TransactionContext["workItemDependencies"],
@@ -68,6 +79,7 @@ describe("RecordPlanItemActivity", () => {
       useCase: new RecordPlanItemActivity(unitOfWork, { now: () => new Date(clockNow) }),
       captured: () => captured,
       transactionRuns: () => transactionRuns,
+      invalidatedTargets,
     };
   }
 
@@ -94,6 +106,7 @@ describe("RecordPlanItemActivity", () => {
       idempotencyKey: "complete-item",
       now,
     });
+    expect(test.invalidatedTargets).toEqual([`daily_plan:${plan}:daily_follow_up`]);
   });
 
   it("rejects duration on a non-completion before opening a transaction", () => {
@@ -139,6 +152,45 @@ describe("RecordPlanItemActivity", () => {
       idempotencyKey: "reverse-completion",
       metadata: {},
     });
+    expect(test.invalidatedTargets).toEqual([]);
+  });
+
+  it("keeps a non-terminal activity from invalidating follow-up reminders", async () => {
+    const test = harness();
+    await test.useCase.execute({
+      workspaceId: workspace,
+      date: localDate("2026-07-15"),
+      expectedPlanId: plan,
+      itemId: item,
+      expectedHeadVersion: 4,
+      type: "started",
+      occurredAt,
+      timeZone: "UTC",
+      idempotencyKey: "start-item",
+    });
+
+    expect(test.invalidatedTargets).toEqual([]);
+  });
+
+  it("invalidates a completed work source's due reminder", async () => {
+    const test = harness(now, "work_item");
+    await test.useCase.execute({
+      workspaceId: workspace,
+      date: localDate("2026-07-15"),
+      expectedPlanId: plan,
+      itemId: item,
+      expectedHeadVersion: 4,
+      type: "completed",
+      occurredAt,
+      timeZone: "UTC",
+      durationMinutes: 31,
+      idempotencyKey: "complete-work-item",
+    });
+
+    expect(test.invalidatedTargets).toEqual([
+      `daily_plan:${plan}:daily_follow_up`,
+      `work_item:${workItemId("plan-item-activity-work")}:work_item_due`,
+    ]);
   });
 
   it.each([

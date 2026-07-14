@@ -116,6 +116,37 @@ export const webhookSecretStatus = pgEnum("webhook_secret_status", [
   "active",
   "retired",
 ]);
+export const notificationQuietHoursPolicy = pgEnum("notification_quiet_hours_policy", [
+  "skip",
+  "next_allowed",
+]);
+export const notificationRuleKind = pgEnum("notification_rule_kind", [
+  "daily_digest",
+  "daily_follow_up",
+  "plan_window_open",
+  "schedule_block_lead",
+  "work_item_due",
+]);
+export const notificationKind = pgEnum("notification_kind", [
+  "daily_digest",
+  "daily_follow_up",
+  "plan_window_open",
+  "schedule_block_lead",
+  "work_item_due",
+  "one_off",
+]);
+export const notificationTargetType = pgEnum("notification_target_type", [
+  "workspace",
+  "daily_plan",
+  "schedule_block",
+  "work_item",
+  "one_off",
+]);
+export const notificationLocalTimeResolution = pgEnum("notification_local_time_resolution", [
+  "exact",
+  "gap_later",
+  "overlap_earlier",
+]);
 
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -380,6 +411,7 @@ export const workItems = pgTable(
     unique("work_items_workspace_id_id_uq").on(table.workspaceId, table.id),
     index("work_items_workspace_status_idx").on(table.workspaceId, table.status),
     index("work_items_workspace_created_id_idx").on(table.workspaceId, table.createdAt, table.id),
+    index("work_items_workspace_due_id_idx").on(table.workspaceId, table.dueOn, table.id),
     index("work_items_workspace_status_priority_created_id_idx").on(
       table.workspaceId,
       table.status,
@@ -500,6 +532,115 @@ export const scheduleBlocks = pgTable(
     }).onDelete("cascade"),
     check("schedule_blocks_valid_range", sql`${table.endsAt} > ${table.startsAt}`),
     check("schedule_blocks_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
+export const notificationProfiles = pgTable(
+  "notification_profiles",
+  {
+    workspaceId: uuid("workspace_id")
+      .primaryKey()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    enabled: boolean("enabled").notNull().default(true),
+    timeZone: varchar("time_zone", { length: 80 }).notNull(),
+    quietHoursStartMinute: integer("quiet_hours_start_minute"),
+    quietHoursEndMinute: integer("quiet_hours_end_minute"),
+    quietHoursPolicy: notificationQuietHoursPolicy("quiet_hours_policy")
+      .notNull()
+      .default("next_allowed"),
+    catchUpWindowMinutes: integer("catch_up_window_minutes").notNull().default(60),
+    dailyIntentLimit: integer("daily_intent_limit").notNull().default(12),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check(
+      "notification_profiles_quiet_hours_pair",
+      sql`(${table.quietHoursStartMinute} IS NULL) = (${table.quietHoursEndMinute} IS NULL)`,
+    ),
+    check(
+      "notification_profiles_quiet_start_range",
+      sql`${table.quietHoursStartMinute} IS NULL OR ${table.quietHoursStartMinute} BETWEEN 0 AND 1439`,
+    ),
+    check(
+      "notification_profiles_quiet_end_range",
+      sql`${table.quietHoursEndMinute} IS NULL OR ${table.quietHoursEndMinute} BETWEEN 0 AND 1439`,
+    ),
+    check(
+      "notification_profiles_catch_up_range",
+      sql`${table.catchUpWindowMinutes} BETWEEN 0 AND 10080`,
+    ),
+    check(
+      "notification_profiles_daily_limit_range",
+      sql`${table.dailyIntentLimit} BETWEEN 1 AND 100`,
+    ),
+    check("notification_profiles_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
+export const notificationRules = pgTable(
+  "notification_rules",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    kind: notificationRuleKind("kind").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    localMinute: integer("local_minute"),
+    leadMinutes: integer("lead_minutes"),
+    cooldownMinutes: integer("cooldown_minutes").notNull().default(0),
+    priority: integer("priority").notNull().default(50),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("notification_rules_workspace_id_id_uq").on(table.workspaceId, table.id),
+    unique("notification_rules_workspace_id_kind_uq").on(table.workspaceId, table.id, table.kind),
+    index("notification_rules_workspace_kind_idx").on(table.workspaceId, table.kind, table.id),
+    check(
+      "notification_rules_configuration_valid",
+      sql`(
+        (${table.kind} IN ('daily_digest', 'daily_follow_up', 'work_item_due') AND ${table.localMinute} BETWEEN 0 AND 1439 AND ${table.leadMinutes} IS NULL)
+        OR
+        (${table.kind} IN ('plan_window_open', 'schedule_block_lead') AND ${table.localMinute} IS NULL AND ${table.leadMinutes} BETWEEN 0 AND 10080)
+      )`,
+    ),
+    check("notification_rules_cooldown_range", sql`${table.cooldownMinutes} BETWEEN 0 AND 10080`),
+    check("notification_rules_priority_range", sql`${table.priority} BETWEEN 0 AND 100`),
+    check("notification_rules_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
+export const oneOffReminders = pgTable(
+  "one_off_reminders",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    title: varchar("title", { length: 240 }).notNull(),
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("one_off_reminders_workspace_id_id_uq").on(table.workspaceId, table.id),
+    index("one_off_reminders_workspace_schedule_idx").on(
+      table.workspaceId,
+      table.scheduledFor,
+      table.id,
+    ),
+    check("one_off_reminders_title_nonempty", sql`char_length(btrim(${table.title})) > 0`),
+    check(
+      "one_off_reminders_cancellation_valid",
+      sql`${table.cancelledAt} IS NULL OR ${table.cancelledAt} >= ${table.createdAt}`,
+    ),
+    check("one_off_reminders_version_positive", sql`${table.version} > 0`),
   ],
 );
 
@@ -672,6 +813,109 @@ export const dailyPlans = pgTable(
     check("daily_plans_revision_positive", sql`${table.requestRevision} > 0`),
     check("daily_plans_minutes_nonnegative", sql`${table.totalMinutes} >= 0`),
     check("daily_plans_input_hash_length", sql`char_length(${table.inputHash}) = 64`),
+  ],
+);
+
+export const notificationIntents = pgTable(
+  "notification_intents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    ruleId: uuid("rule_id"),
+    ruleKind: notificationRuleKind("rule_kind"),
+    oneOffReminderId: uuid("one_off_reminder_id"),
+    kind: notificationKind("kind").notNull(),
+    occurrenceKey: varchar("occurrence_key", { length: 200 }).notNull(),
+    targetType: notificationTargetType("target_type").notNull(),
+    dailyPlanId: uuid("daily_plan_id"),
+    scheduleBlockId: uuid("schedule_block_id"),
+    workItemId: uuid("work_item_id"),
+    titleSnapshot: varchar("title_snapshot", { length: 240 }),
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    localDate: date("local_date").notNull(),
+    priority: integer("priority").notNull(),
+    policySnapshot: jsonb("policy_snapshot")
+      .$type<Record<string, string | number | boolean | null>>()
+      .notNull(),
+    localTimeResolution: notificationLocalTimeResolution("local_time_resolution").notNull(),
+    adjustedForQuietHours: boolean("adjusted_for_quiet_hours").notNull().default(false),
+    caughtUp: boolean("caught_up").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("notification_intents_workspace_id_id_uq").on(table.workspaceId, table.id),
+    unique("notification_intents_workspace_occurrence_uq").on(
+      table.workspaceId,
+      table.occurrenceKey,
+    ),
+    index("notification_intents_workspace_schedule_idx").on(
+      table.workspaceId,
+      table.scheduledFor,
+      table.id,
+    ),
+    index("notification_intents_workspace_rule_schedule_idx").on(
+      table.workspaceId,
+      table.ruleId,
+      table.scheduledFor,
+    ),
+    foreignKey({
+      name: "notification_intents_rule_tenant_kind_fk",
+      columns: [table.workspaceId, table.ruleId, table.ruleKind],
+      foreignColumns: [notificationRules.workspaceId, notificationRules.id, notificationRules.kind],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "notification_intents_one_off_tenant_fk",
+      columns: [table.workspaceId, table.oneOffReminderId],
+      foreignColumns: [oneOffReminders.workspaceId, oneOffReminders.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "notification_intents_daily_plan_tenant_fk",
+      columns: [table.workspaceId, table.dailyPlanId],
+      foreignColumns: [dailyPlans.workspaceId, dailyPlans.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "notification_intents_schedule_block_tenant_fk",
+      columns: [table.workspaceId, table.scheduleBlockId],
+      foreignColumns: [scheduleBlocks.workspaceId, scheduleBlocks.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "notification_intents_work_item_tenant_fk",
+      columns: [table.workspaceId, table.workItemId],
+      foreignColumns: [workItems.workspaceId, workItems.id],
+    }).onDelete("cascade"),
+    check(
+      "notification_intents_source_valid",
+      sql`(
+        (${table.kind} = 'one_off' AND ${table.ruleId} IS NULL AND ${table.ruleKind} IS NULL AND ${table.oneOffReminderId} IS NOT NULL)
+        OR
+        (${table.kind} <> 'one_off' AND ${table.ruleId} IS NOT NULL AND ${table.ruleKind} IS NOT NULL AND ${table.kind}::text = ${table.ruleKind}::text AND ${table.oneOffReminderId} IS NULL)
+      )`,
+    ),
+    check(
+      "notification_intents_target_valid",
+      sql`(
+        (${table.kind} = 'daily_digest' AND ${table.targetType} = 'workspace' AND ${table.dailyPlanId} IS NULL AND ${table.scheduleBlockId} IS NULL AND ${table.workItemId} IS NULL)
+        OR
+        (${table.kind} IN ('daily_follow_up', 'plan_window_open') AND ${table.targetType} = 'daily_plan' AND ${table.dailyPlanId} IS NOT NULL AND ${table.scheduleBlockId} IS NULL AND ${table.workItemId} IS NULL)
+        OR
+        (${table.kind} = 'schedule_block_lead' AND ${table.targetType} = 'schedule_block' AND ${table.dailyPlanId} IS NULL AND ${table.scheduleBlockId} IS NOT NULL AND ${table.workItemId} IS NULL)
+        OR
+        (${table.kind} = 'work_item_due' AND ${table.targetType} = 'work_item' AND ${table.dailyPlanId} IS NULL AND ${table.scheduleBlockId} IS NULL AND ${table.workItemId} IS NOT NULL)
+        OR
+        (${table.kind} = 'one_off' AND ${table.targetType} = 'one_off' AND ${table.dailyPlanId} IS NULL AND ${table.scheduleBlockId} IS NULL AND ${table.workItemId} IS NULL)
+      )`,
+    ),
+    check(
+      "notification_intents_occurrence_nonempty",
+      sql`char_length(btrim(${table.occurrenceKey})) > 0`,
+    ),
+    check("notification_intents_priority_range", sql`${table.priority} BETWEEN 0 AND 100`),
+    check(
+      "notification_intents_policy_snapshot_valid",
+      sql`jsonb_typeof(${table.policySnapshot}) = 'object' AND octet_length(${table.policySnapshot}::text) <= 4096`,
+    ),
   ],
 );
 

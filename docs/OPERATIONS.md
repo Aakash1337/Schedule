@@ -325,9 +325,47 @@ pnpm verify:webhook-delivery
 The verifier covers workspace isolation, encrypted-envelope constraints, rotation, subscription
 replacement, privacy-thin automatic event fan-out, immutable body and outbox linkage, audit records,
 dead-letter redrive, revocation, and transactional rollback. It is also part of
-`pnpm verify:database` and the PostgreSQL CI job. `schedule.changed.v1` is only an invalidation; the
-Hermes/WhatsApp adapter, reminder decisions, phone transport, and end-to-end receipts remain
-deferred. A successful test or invalidation delivery does not imply those systems exist.
+`pnpm verify:database` and the PostgreSQL CI job. `schedule.changed.v1` is only an invalidation; it
+does not transport the implemented reminder intents. The Hermes/WhatsApp adapter, phone transport,
+and end-to-end receipts remain deferred. A successful test or invalidation delivery does not imply
+those systems exist.
+
+## Deterministic reminder operations
+
+Migration `0024` adds `notification_profiles`, `notification_rules`, `one_off_reminders`, and
+`notification_intents`. These tables are part of the exact backup catalog and restore-content
+signal. Back up before applying the migration, then run:
+
+```powershell
+pnpm db:migrate
+pnpm verify:notification-core
+pnpm verify:notification-migrations
+pnpm verify:backup-restore
+```
+
+`verify:notification-core` uses the production local API and repositories. It creates every rule
+source and a one-off, launches two materializers concurrently, proves one intent per occurrence,
+checks cross-tenant source/target, rule-kind, and duplicate-key rejection, proves source/target edits
+and terminal activity invalidate the correct pending intents, proves target deletion cleanup, and
+confirms the outbox count is unchanged.
+`verify:notification-migrations` creates a nonce database, migrates it only through `0023`, seeds
+legacy data, applies `0024`, validates constraints, and drops the database. Both commands are also
+inside `verify:database` where applicable.
+
+There is currently no reminder daemon to monitor. Materialization happens only when the local
+product API command is explicitly invoked. If an operator invokes it manually, use a window no
+longer than 31 days and inspect all three result groups: `created`, `existing`, and `suppressed`.
+Repeated or concurrent invocation is safe. Policy and target changes never rewrite an intent; they
+transactionally delete affected pending intents under the same workspace notification lock. Deleting
+a referenced daily plan, schedule block, or work item also cascades its pending intent so it cannot
+later be delivered against a missing target.
+Until delivery revalidation and resolution records exist, do not treat a pending intent as proof a
+message should or did leave Schedule.
+
+Profile `enabled: false` is the policy kill switch. The versioned update invalidates existing pending
+intents and suppresses new candidate evaluation, but does not erase the profile, rules, or one-offs.
+External transport will have its own separate kill switch when implemented. See
+[REMINDERS.md](./REMINDERS.md).
 
 ## Routine verification
 

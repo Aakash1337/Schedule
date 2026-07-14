@@ -624,6 +624,7 @@ describe("PostgresIntegrationUnitOfWork", () => {
       "confirmations",
       "credentials",
       "dailyPlans",
+      "notifications",
       "requests",
       "scheduleBlocks",
       "workItems",

@@ -23,43 +23,54 @@ not authorize these product routes.
 
 ## Routes
 
-| Method   | Route                                                                                          | Result                                            |
-| -------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `POST`   | `/v1/workspaces`                                                                               | Create a workspace (`201`)                        |
-| `GET`    | `/v1/workspaces`                                                                               | List local workspaces                             |
-| `GET`    | `/v1/workspaces/{workspaceId}`                                                                 | Retrieve one workspace                            |
-| `POST`   | `/v1/workspaces/{workspaceId}/work-items`                                                      | Create a backlog/Kanban item (`201`)              |
-| `GET`    | `/v1/workspaces/{workspaceId}/work-items`                                                      | List a bounded work-item page                     |
-| `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Retrieve one work item                            |
-| `PATCH`  | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Version-checked work-item update                  |
-| `GET`    | `/v1/workspaces/{workspaceId}/work-item-dependencies`                                          | List a bounded dependency page                    |
-| `POST`   | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/prerequisites`                           | Add one direct prerequisite (`201` or `200`)      |
-| `DELETE` | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/prerequisites/{prerequisiteWorkItemId}`  | Idempotently remove a prerequisite (`204`)        |
-| `POST`   | `/v1/workspaces/{workspaceId}/schedule-blocks`                                                 | Create a calendar block (`201`)                   |
-| `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks?from={instant}&to={instant}`                     | List blocks overlapping a bounded range           |
-| `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Retrieve one calendar block                       |
-| `PATCH`  | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Version-checked calendar-block update             |
-| `DELETE` | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Version-checked audited deletion (`204`)          |
-| `POST`   | `/v1/workspaces/{workspaceId}/routines`                                                        | Create a routine (`201`)                          |
-| `GET`    | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`                       | List a bounded routine page (`200`)               |
-| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Retrieve one routine (`200` or `404`)             |
-| `PATCH`  | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Version-checked partial update (`200` or `409`)   |
-| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight`                           | Derive a read-only insight (`200` or `404`)       |
-| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/approve`                   | Atomically approve an insight (`200` or `409`)    |
-| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissals`                | Dismiss one exact insight (`200` or `409`)        |
-| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissal-resets`          | Restore one exact insight (`200` or `409`)        |
-| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | List stable, cursor-paginated history (`200`)     |
-| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | Idempotently record activity (`200`)              |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans`                                                           | Create revision 1 or retry an exact revision      |
-| `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}?revision=1`                                   | Retrieve an exact revision (`200` or `404`)       |
-| `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/current`                                      | Retrieve the current Today plan and head version  |
-| `POST`   | `/v1/workspaces/{workspaceId}/advisor/advice`                                                  | Request read-only local advice for a current plan |
-| `PATCH`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/lock`                          | Idempotently lock or unlock a current plan item   |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/activity-events`               | Record a current item action                      |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/regenerations`                                | Regenerate around locked items                    |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/replacement`                   | Replace one unlocked item                         |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/routine-feedback`              | Suppress one pending routine and replan           |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/routines/{routineId}/routine-feedback-resets` | Reset routine feedback and replan                 |
+| Method   | Route                                                                                          | Result                                                 |
+| -------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `POST`   | `/v1/workspaces`                                                                               | Create a workspace (`201`)                             |
+| `GET`    | `/v1/workspaces`                                                                               | List local workspaces                                  |
+| `GET`    | `/v1/workspaces/{workspaceId}`                                                                 | Retrieve one workspace                                 |
+| `POST`   | `/v1/workspaces/{workspaceId}/work-items`                                                      | Create a backlog/Kanban item (`201`)                   |
+| `GET`    | `/v1/workspaces/{workspaceId}/work-items`                                                      | List a bounded work-item page                          |
+| `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Retrieve one work item                                 |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Version-checked work-item update                       |
+| `GET`    | `/v1/workspaces/{workspaceId}/work-item-dependencies`                                          | List a bounded dependency page                         |
+| `POST`   | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/prerequisites`                           | Add one direct prerequisite (`201` or `200`)           |
+| `DELETE` | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/prerequisites/{prerequisiteWorkItemId}`  | Idempotently remove a prerequisite (`204`)             |
+| `POST`   | `/v1/workspaces/{workspaceId}/schedule-blocks`                                                 | Create a calendar block (`201`)                        |
+| `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks?from={instant}&to={instant}`                     | List blocks overlapping a bounded range                |
+| `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Retrieve one calendar block                            |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Version-checked calendar-block update                  |
+| `DELETE` | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Version-checked audited deletion (`204`)               |
+| `PUT`    | `/v1/workspaces/{workspaceId}/notification-profile`                                            | Create or version-update reminder policy               |
+| `GET`    | `/v1/workspaces/{workspaceId}/notification-profile`                                            | Read reminder policy                                   |
+| `POST`   | `/v1/workspaces/{workspaceId}/notification-rules`                                              | Create a deterministic reminder rule (`201`)           |
+| `GET`    | `/v1/workspaces/{workspaceId}/notification-rules`                                              | List reminder rules                                    |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/notification-rules/{notificationRuleId}`                         | Version-checked reminder-rule update                   |
+| `POST`   | `/v1/workspaces/{workspaceId}/one-off-reminders`                                               | Create an explicit reminder (`201`)                    |
+| `GET`    | `/v1/workspaces/{workspaceId}/one-off-reminders?from={instant}&to={instant}`                   | List up to 500 reminders in a range of at most 31 days |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/one-off-reminders/{oneOffReminderId}`                            | Version-checked explicit-reminder update               |
+| `POST`   | `/v1/workspaces/{workspaceId}/one-off-reminders/{oneOffReminderId}/cancellations`              | Cancel an explicit reminder                            |
+| `GET`    | `/v1/workspaces/{workspaceId}/notification-intents?from={instant}&to={instant}`                | List insert-only materialized intents                  |
+| `POST`   | `/v1/workspaces/{workspaceId}/notification-intents/materializations`                           | Materialize a bounded policy window                    |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines`                                                        | Create a routine (`201`)                               |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`                       | List a bounded routine page (`200`)                    |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Retrieve one routine (`200` or `404`)                  |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Version-checked partial update (`200` or `409`)        |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight`                           | Derive a read-only insight (`200` or `404`)            |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/approve`                   | Atomically approve an insight (`200` or `409`)         |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissals`                | Dismiss one exact insight (`200` or `409`)             |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissal-resets`          | Restore one exact insight (`200` or `409`)             |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | List stable, cursor-paginated history (`200`)          |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | Idempotently record activity (`200`)                   |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans`                                                           | Create revision 1 or retry an exact revision           |
+| `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}?revision=1`                                   | Retrieve an exact revision (`200` or `404`)            |
+| `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/current`                                      | Retrieve the current Today plan and head version       |
+| `POST`   | `/v1/workspaces/{workspaceId}/advisor/advice`                                                  | Request read-only local advice for a current plan      |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/lock`                          | Idempotently lock or unlock a current plan item        |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/activity-events`               | Record a current item action                           |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/regenerations`                                | Regenerate around locked items                         |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/replacement`                   | Replace one unlocked item                              |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/routine-feedback`              | Suppress one pending routine and replan                |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/routines/{routineId}/routine-feedback-resets` | Reset routine feedback and replan                      |
 
 Activity requests require an `Idempotency-Key` header containing 1–160 characters. Reusing a key with identical event content returns the original event. Reusing it for different content returns `409 activity.idempotency_conflict`. Public event responses omit the key because the caller already owns it and it is retry metadata, not activity history.
 
@@ -99,6 +110,52 @@ routes return only `500 internal.unexpected_error`, log the stable invariant cod
 neither the stored graph contents nor the internal error message.
 
 Schedule-block range reads require offset-bearing `from` and `to` instants, use half-open overlap (`startsAt < to` and `endsAt > from`), and accept ranges no longer than 93 days with the same bounded pagination convention. Absolute instants remain authoritative when `timeZone` changes. A block may reference a work item from the same workspace, but their lifecycles remain independent. Create and update validate the workspace and optional link. Update and deletion require `expectedVersion`; deletion returns `204` and appends an immutable audit snapshot in the same transaction. Recurrence authoring, conflict detection, and automatic placement are deferred.
+
+Notification policy is Schedule-owned and deterministic. Create the workspace profile with a strict
+`PUT` body such as:
+
+```json
+{
+  "expectedVersion": null,
+  "enabled": true,
+  "timeZone": "America/La_Paz",
+  "quietHoursStartMinute": 1320,
+  "quietHoursEndMinute": 420,
+  "quietHoursPolicy": "next_allowed",
+  "catchUpWindowMinutes": 60,
+  "dailyIntentLimit": 12
+}
+```
+
+`expectedVersion: null` creates; a positive exact version updates. Quiet-hour fields must be supplied
+together and may both be `null`. Rule creation accepts one of `daily_digest`, `daily_follow_up`,
+`plan_window_open`, `schedule_block_lead`, or `work_item_due`, plus `enabled`, `cooldownMinutes`, and
+`priority`. Digest, follow-up, and due rules require `localMinute` and no `leadMinutes`; plan-window
+and schedule-block rules require `leadMinutes` and no `localMinute`. A rule's kind is immutable;
+disable or version-update its timing and selection controls instead. A workspace is limited to 100
+stored rules; both create and list fail closed if persisted state exceeds that boundary.
+
+One-off creation accepts `{title, scheduledFor}`. Its update accepts a positive `expectedVersion`
+plus title and/or instant. Cancellation is a dedicated version-checked command and is idempotent only
+at the domain state boundary; a stale HTTP command still receives the normal version conflict.
+
+Materialization accepts offset-bearing instants and a maximum 31-day half-open window:
+
+```json
+{
+  "from": "2026-07-20T08:00:00.000Z",
+  "through": "2026-07-21T00:00:00.000Z"
+}
+```
+
+The response contains `created`, `existing`, and `suppressed`. Repeating or concurrently issuing the
+same request returns the natural-key winners under a workspace advisory lock. It never sends or
+queues a notification. Intent list reads accept `limit` 1–500 and a nonnegative `offset`. See
+[REMINDERS.md](./REMINDERS.md) for DST, quiet-hours, catch-up, priority, cooldown, and daily-limit
+semantics. Profile changes invalidate all pending intents; rule and one-off changes invalidate only
+their own. Schedule-block/work-item edits, plan replacement, and terminal item activity invalidate
+the affected pending target intents transactionally. No mutation rewrites a previously accepted
+intent in place.
 
 Routine updates require `expectedVersion`. Scalar fields are partial; if `tags`, `duration`, or `cadence` is supplied, that nested object is a complete replacement. A real change increments the routine version once. A semantic no-op returns the current routine without writing or incrementing its version. A stale version returns `409 routine.version_conflict`. The update takes the same per-routine advisory lock used by activity and duration-insight commands, then reloads and saves under read committed so a manual edit cannot race an approval, dismissal, reset, or evidence append. This generic `PATCH` is still the manual editing path; it does not assert that a duration-insight suggestion is current.
 

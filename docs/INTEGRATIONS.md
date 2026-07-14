@@ -397,8 +397,10 @@ a broader workspace read, and an adapter must still re-read before proposing a w
 Polling remains mandatory as a fallback. An endpoint has no subscription by default; delivery may
 also be globally disabled, delayed, dead-lettered, or interrupted during key rotation. Polling and
 webhook refreshes should enter the same idempotent reconciliation path. Neither path authorizes a
-phone notification: reminder policy, human/account binding, WhatsApp transport, and downstream
-delivery receipts belong to the external adapter.
+phone notification. Schedule now owns deterministic reminder policy and insert-only intent
+materialization, but the adapter still owns authenticated human/account binding and WhatsApp
+transport; downstream delivery resolution and receipts must cross a separate intent-ID-bound
+contract that is not implemented yet.
 
 ## Verification
 
@@ -490,6 +492,9 @@ security-sensitive recovery.
   test events and explicitly subscribed `schedule.changed.v1` invalidations. It cannot send schedule
   contents, push-notification requests, reminders, or end-to-end phone delivery receipts. An adapter
   must still read and poll Today for authoritative schedule data.
+- The [deterministic reminder core](./REMINDERS.md) stores Schedule-owned policy and insert-only intents.
+  It does not expose those intents through this machine gateway or authorize an adapter to deliver
+  them yet.
 - Version 1 does not create workspaces, routines, plans, or credentials over HTTP; delete commands
   are intentionally absent.
 - The integration API is machine-to-machine authentication for one workspace, not hosted end-user

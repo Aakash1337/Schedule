@@ -5,6 +5,7 @@ export * from "./daily-planning.js";
 export * from "./duration.js";
 export * from "./errors.js";
 export * from "./ids.js";
+export * from "./notification-policy.js";
 export * from "./routine.js";
 export * from "./routine-duration-insight.js";
 export * from "./routine-duration-insight-feedback.js";

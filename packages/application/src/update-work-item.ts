@@ -36,7 +36,8 @@ export class UpdateWorkItem {
         "Expected work item version must be a positive integer.",
       );
     }
-    return this.unitOfWork.run(async ({ workItems, workspaces }) => {
+    return this.unitOfWork.run(async ({ notifications, workItems, workspaces }) => {
+      await notifications.lockWorkspace(command.workspaceId);
       if ((await workspaces.findById(command.workspaceId)) === null) {
         throw new DomainError("workspace.not_found", "The workspace does not exist.");
       }
@@ -61,7 +62,10 @@ export class UpdateWorkItem {
         ...(command.dueOn === undefined ? {} : { dueOn: command.dueOn }),
         now: this.clock.now(),
       });
-      if (updated !== current) await workItems.save(updated, command.expectedVersion);
+      if (updated !== current) {
+        await workItems.save(updated, command.expectedVersion);
+        await notifications.deleteIntentsForTarget(command.workspaceId, "work_item", updated.id);
+      }
       return updated;
     });
   }

@@ -34,6 +34,7 @@ describe("schedule block management", () => {
     const blocks: ScheduleBlock[] = [];
     const audits: AuditEventRecord[] = [];
     let saves = 0;
+    const invalidatedTargets: string[] = [];
     const context = {
       workspaces: {
         findById: async (id) =>
@@ -71,6 +72,13 @@ describe("schedule block management", () => {
           blocks.splice(index, 1);
         },
       },
+      notifications: {
+        lockWorkspace: async () => undefined,
+        deleteIntentsForTarget: async (_workspace, targetType, targetId) => {
+          invalidatedTargets.push(`${targetType}:${targetId}`);
+          return 0;
+        },
+      } as TransactionContext["notifications"],
       auditEvents: { append: async (event: AuditEventRecord) => void audits.push(event) },
       routines: {} as TransactionContext["routines"],
       workItemDependencies: {
@@ -90,6 +98,7 @@ describe("schedule block management", () => {
       blocks,
       audits,
       saves: () => saves,
+      invalidatedTargets,
     };
   }
 
@@ -162,6 +171,7 @@ describe("schedule block management", () => {
     expect(updated.version).toBe(2);
     expect(noOp).toBe(updated);
     expect(test.saves()).toBe(1);
+    expect(test.invalidatedTargets).toEqual([`schedule_block:${block.id}`]);
   });
 
   it("deletes with an audit snapshot in the same unit of work", async () => {

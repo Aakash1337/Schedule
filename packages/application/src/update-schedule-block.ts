@@ -33,7 +33,8 @@ export class UpdateScheduleBlock {
         "Expected schedule block version must be a positive integer.",
       );
     }
-    return this.unitOfWork.run(async ({ scheduleBlocks, workItems, workspaces }) => {
+    return this.unitOfWork.run(async ({ notifications, scheduleBlocks, workItems, workspaces }) => {
+      await notifications.lockWorkspace(command.workspaceId);
       if ((await workspaces.findById(command.workspaceId)) === null) {
         throw new DomainError("workspace.not_found", "The workspace does not exist.");
       }
@@ -62,7 +63,14 @@ export class UpdateScheduleBlock {
         ...(command.timeZone === undefined ? {} : { timeZone: command.timeZone }),
         now: this.clock.now(),
       });
-      if (updated !== current) await scheduleBlocks.save(updated, command.expectedVersion);
+      if (updated !== current) {
+        await scheduleBlocks.save(updated, command.expectedVersion);
+        await notifications.deleteIntentsForTarget(
+          command.workspaceId,
+          "schedule_block",
+          updated.id,
+        );
+      }
       return updated;
     });
   }

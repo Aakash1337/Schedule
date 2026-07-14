@@ -39,6 +39,7 @@ import type {
   IntegrationRequestReservationInput,
   IntegrationTransactionContext,
   IntegrationUnitOfWork,
+  NotificationRepository,
   PlanItemLockResult,
   PlanItemActivityResult,
   PlanMutationRecord,
@@ -65,6 +66,9 @@ import {
   createWorkItemDependency,
   dailyPlanId,
   localDate,
+  notificationIntentId,
+  notificationRuleId,
+  oneOffReminderId,
   planItemId,
   isPlanItemActivityActionType,
   recordActivityEvent,
@@ -82,6 +86,16 @@ import {
   type DailyPlan,
   type JsonValue,
   type LocalDate,
+  type LocalTimeResolution,
+  type NotificationIntent,
+  type NotificationKind,
+  type NotificationPolicySnapshot,
+  type NotificationProfile,
+  type NotificationRule,
+  type NotificationRuleKind,
+  type NotificationTargetType,
+  type OneOffReminder,
+  type QuietHoursPolicy,
   type PlanExclusion,
   type PlanItem,
   type PlanWarning,
@@ -113,6 +127,10 @@ import {
   integrationConfirmations,
   integrationCredentials,
   integrationRequests,
+  notificationIntents,
+  notificationProfiles,
+  notificationRules,
+  oneOffReminders,
   planInteractionEvents,
   planMutations,
   routineDurationInsightFeedbackEvents,
@@ -143,6 +161,10 @@ type DailyPlanItemStateRow = typeof dailyPlanItemStates.$inferSelect;
 type IntegrationCredentialRow = typeof integrationCredentials.$inferSelect;
 type IntegrationConfirmationRow = typeof integrationConfirmations.$inferSelect;
 type IntegrationRequestRow = typeof integrationRequests.$inferSelect;
+type NotificationProfileRow = typeof notificationProfiles.$inferSelect;
+type NotificationRuleRow = typeof notificationRules.$inferSelect;
+type OneOffReminderRow = typeof oneOffReminders.$inferSelect;
+type NotificationIntentRow = typeof notificationIntents.$inferSelect;
 
 interface PlanningGraphDatabaseRow {
   readonly rowGroup: number;
@@ -159,6 +181,81 @@ function mapWorkspace(row: WorkspaceRow): Workspace {
     name: row.name,
     createdAt: new Date(row.createdAt),
     updatedAt: new Date(row.updatedAt),
+  };
+}
+
+function mapNotificationProfile(row: NotificationProfileRow): NotificationProfile {
+  return {
+    workspaceId: workspaceId(row.workspaceId),
+    enabled: row.enabled,
+    timeZone: row.timeZone,
+    quietHoursStartMinute: row.quietHoursStartMinute,
+    quietHoursEndMinute: row.quietHoursEndMinute,
+    quietHoursPolicy: row.quietHoursPolicy as QuietHoursPolicy,
+    catchUpWindowMinutes: row.catchUpWindowMinutes,
+    dailyIntentLimit: row.dailyIntentLimit,
+    version: row.version,
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+  };
+}
+
+function mapNotificationRule(row: NotificationRuleRow): NotificationRule {
+  return {
+    id: notificationRuleId(row.id),
+    workspaceId: workspaceId(row.workspaceId),
+    kind: row.kind as NotificationRuleKind,
+    enabled: row.enabled,
+    localMinute: row.localMinute,
+    leadMinutes: row.leadMinutes,
+    cooldownMinutes: row.cooldownMinutes,
+    priority: row.priority,
+    version: row.version,
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+  };
+}
+
+function mapOneOffReminder(row: OneOffReminderRow): OneOffReminder {
+  return {
+    id: oneOffReminderId(row.id),
+    workspaceId: workspaceId(row.workspaceId),
+    title: row.title,
+    scheduledFor: new Date(row.scheduledFor),
+    cancelledAt: row.cancelledAt === null ? null : new Date(row.cancelledAt),
+    version: row.version,
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+  };
+}
+
+function mapNotificationIntent(row: NotificationIntentRow): NotificationIntent {
+  const targetId =
+    row.targetType === "daily_plan"
+      ? row.dailyPlanId
+      : row.targetType === "schedule_block"
+        ? row.scheduleBlockId
+        : row.targetType === "work_item"
+          ? row.workItemId
+          : null;
+  return {
+    id: notificationIntentId(row.id),
+    workspaceId: workspaceId(row.workspaceId),
+    ruleId: row.ruleId === null ? null : notificationRuleId(row.ruleId),
+    oneOffReminderId: row.oneOffReminderId === null ? null : oneOffReminderId(row.oneOffReminderId),
+    kind: row.kind as NotificationKind,
+    occurrenceKey: row.occurrenceKey,
+    targetType: row.targetType as NotificationTargetType,
+    targetId,
+    titleSnapshot: row.titleSnapshot,
+    scheduledFor: new Date(row.scheduledFor),
+    localDate: localDate(row.localDate),
+    priority: row.priority,
+    policySnapshot: row.policySnapshot as NotificationPolicySnapshot,
+    localTimeResolution: row.localTimeResolution as LocalTimeResolution,
+    adjustedForQuietHours: row.adjustedForQuietHours,
+    caughtUp: row.caughtUp,
+    createdAt: new Date(row.createdAt),
   };
 }
 
@@ -1045,6 +1142,387 @@ class PostgresScheduleBlockRepository implements ScheduleBlockRepository {
         "The schedule block changed before this deletion could be saved.",
       );
     }
+  }
+}
+
+export class PostgresNotificationRepository implements NotificationRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async lockWorkspace(workspace: WorkspaceId): Promise<void> {
+    const canonicalWorkspace = workspace.toLowerCase();
+    await this.database.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`${canonicalWorkspace}:notifications`}, 0))`,
+    );
+  }
+
+  async findProfile(workspace: WorkspaceId): Promise<NotificationProfile | null> {
+    const [row] = await this.database
+      .select()
+      .from(notificationProfiles)
+      .where(eq(notificationProfiles.workspaceId, workspace))
+      .limit(1);
+    return row === undefined ? null : mapNotificationProfile(row);
+  }
+
+  async insertProfile(profile: NotificationProfile): Promise<void> {
+    await this.database.insert(notificationProfiles).values({
+      workspaceId: profile.workspaceId,
+      enabled: profile.enabled,
+      timeZone: profile.timeZone,
+      quietHoursStartMinute: profile.quietHoursStartMinute,
+      quietHoursEndMinute: profile.quietHoursEndMinute,
+      quietHoursPolicy: profile.quietHoursPolicy,
+      catchUpWindowMinutes: profile.catchUpWindowMinutes,
+      dailyIntentLimit: profile.dailyIntentLimit,
+      version: profile.version,
+      createdAt: profile.createdAt,
+      updatedAt: profile.updatedAt,
+    });
+  }
+
+  async saveProfile(profile: NotificationProfile, expectedVersion: number): Promise<void> {
+    const updated = await this.database
+      .update(notificationProfiles)
+      .set({
+        enabled: profile.enabled,
+        timeZone: profile.timeZone,
+        quietHoursStartMinute: profile.quietHoursStartMinute,
+        quietHoursEndMinute: profile.quietHoursEndMinute,
+        quietHoursPolicy: profile.quietHoursPolicy,
+        catchUpWindowMinutes: profile.catchUpWindowMinutes,
+        dailyIntentLimit: profile.dailyIntentLimit,
+        version: profile.version,
+        updatedAt: profile.updatedAt,
+      })
+      .where(
+        and(
+          eq(notificationProfiles.workspaceId, profile.workspaceId),
+          eq(notificationProfiles.version, expectedVersion),
+        ),
+      )
+      .returning({ workspaceId: notificationProfiles.workspaceId });
+    if (updated.length === 0) {
+      throw new DomainError(
+        "notification_profile.version_conflict",
+        "The notification profile changed before this update could be saved.",
+      );
+    }
+  }
+
+  async findRule(
+    workspace: WorkspaceId,
+    id: NotificationRule["id"],
+  ): Promise<NotificationRule | null> {
+    const [row] = await this.database
+      .select()
+      .from(notificationRules)
+      .where(and(eq(notificationRules.workspaceId, workspace), eq(notificationRules.id, id)))
+      .limit(1);
+    return row === undefined ? null : mapNotificationRule(row);
+  }
+
+  async listRules(workspace: WorkspaceId, limit: number): Promise<readonly NotificationRule[]> {
+    const rows = await this.database
+      .select()
+      .from(notificationRules)
+      .where(eq(notificationRules.workspaceId, workspace))
+      .orderBy(
+        asc(notificationRules.kind),
+        asc(notificationRules.createdAt),
+        asc(notificationRules.id),
+      )
+      .limit(limit);
+    return rows.map(mapNotificationRule);
+  }
+
+  async insertRule(rule: NotificationRule): Promise<void> {
+    await this.database.insert(notificationRules).values({
+      id: rule.id,
+      workspaceId: rule.workspaceId,
+      kind: rule.kind,
+      enabled: rule.enabled,
+      localMinute: rule.localMinute,
+      leadMinutes: rule.leadMinutes,
+      cooldownMinutes: rule.cooldownMinutes,
+      priority: rule.priority,
+      version: rule.version,
+      createdAt: rule.createdAt,
+      updatedAt: rule.updatedAt,
+    });
+  }
+
+  async saveRule(rule: NotificationRule, expectedVersion: number): Promise<void> {
+    const updated = await this.database
+      .update(notificationRules)
+      .set({
+        enabled: rule.enabled,
+        localMinute: rule.localMinute,
+        leadMinutes: rule.leadMinutes,
+        cooldownMinutes: rule.cooldownMinutes,
+        priority: rule.priority,
+        version: rule.version,
+        updatedAt: rule.updatedAt,
+      })
+      .where(
+        and(
+          eq(notificationRules.workspaceId, rule.workspaceId),
+          eq(notificationRules.id, rule.id),
+          eq(notificationRules.version, expectedVersion),
+        ),
+      )
+      .returning({ id: notificationRules.id });
+    if (updated.length === 0) {
+      throw new DomainError(
+        "notification_rule.version_conflict",
+        "The notification rule changed before this update could be saved.",
+      );
+    }
+  }
+
+  async findOneOffReminder(
+    workspace: WorkspaceId,
+    id: OneOffReminder["id"],
+  ): Promise<OneOffReminder | null> {
+    const [row] = await this.database
+      .select()
+      .from(oneOffReminders)
+      .where(and(eq(oneOffReminders.workspaceId, workspace), eq(oneOffReminders.id, id)))
+      .limit(1);
+    return row === undefined ? null : mapOneOffReminder(row);
+  }
+
+  async listOneOffReminders(
+    workspace: WorkspaceId,
+    fromInclusive: Date,
+    throughExclusive: Date,
+    limit: number,
+  ): Promise<readonly OneOffReminder[]> {
+    const rows = await this.database
+      .select()
+      .from(oneOffReminders)
+      .where(
+        and(
+          eq(oneOffReminders.workspaceId, workspace),
+          gte(oneOffReminders.scheduledFor, fromInclusive),
+          lt(oneOffReminders.scheduledFor, throughExclusive),
+        ),
+      )
+      .orderBy(asc(oneOffReminders.scheduledFor), asc(oneOffReminders.id))
+      .limit(limit);
+    return rows.map(mapOneOffReminder);
+  }
+
+  async insertOneOffReminder(reminder: OneOffReminder): Promise<void> {
+    await this.database.insert(oneOffReminders).values({
+      id: reminder.id,
+      workspaceId: reminder.workspaceId,
+      title: reminder.title,
+      scheduledFor: reminder.scheduledFor,
+      cancelledAt: reminder.cancelledAt,
+      version: reminder.version,
+      createdAt: reminder.createdAt,
+      updatedAt: reminder.updatedAt,
+    });
+  }
+
+  async saveOneOffReminder(reminder: OneOffReminder, expectedVersion: number): Promise<void> {
+    const updated = await this.database
+      .update(oneOffReminders)
+      .set({
+        title: reminder.title,
+        scheduledFor: reminder.scheduledFor,
+        cancelledAt: reminder.cancelledAt,
+        version: reminder.version,
+        updatedAt: reminder.updatedAt,
+      })
+      .where(
+        and(
+          eq(oneOffReminders.workspaceId, reminder.workspaceId),
+          eq(oneOffReminders.id, reminder.id),
+          eq(oneOffReminders.version, expectedVersion),
+        ),
+      )
+      .returning({ id: oneOffReminders.id });
+    if (updated.length === 0) {
+      throw new DomainError(
+        "one_off_reminder.version_conflict",
+        "The one-off reminder changed before this update could be saved.",
+      );
+    }
+  }
+
+  async listDueWorkItems(
+    workspace: WorkspaceId,
+    fromInclusive: LocalDate,
+    throughInclusive: LocalDate,
+    limit: number,
+  ): Promise<readonly WorkItem[]> {
+    const rows = await this.database
+      .select()
+      .from(workItems)
+      .where(
+        and(
+          eq(workItems.workspaceId, workspace),
+          isNotNull(workItems.dueOn),
+          gte(workItems.dueOn, fromInclusive),
+          lte(workItems.dueOn, throughInclusive),
+        ),
+      )
+      .orderBy(asc(workItems.dueOn), asc(workItems.id))
+      .limit(limit);
+    return rows.map(mapWorkItem);
+  }
+
+  async listIntents(
+    workspace: WorkspaceId,
+    fromInclusive: Date,
+    throughExclusive: Date,
+    limit: number,
+    offset: number,
+  ): Promise<readonly NotificationIntent[]> {
+    const rows = await this.database
+      .select()
+      .from(notificationIntents)
+      .where(
+        and(
+          eq(notificationIntents.workspaceId, workspace),
+          gte(notificationIntents.scheduledFor, fromInclusive),
+          lt(notificationIntents.scheduledFor, throughExclusive),
+        ),
+      )
+      .orderBy(asc(notificationIntents.scheduledFor), asc(notificationIntents.id))
+      .limit(limit)
+      .offset(offset);
+    return rows.map(mapNotificationIntent);
+  }
+
+  async insertIntent(intent: NotificationIntent): Promise<NotificationIntent> {
+    const [inserted] = await this.database
+      .insert(notificationIntents)
+      .values({
+        id: intent.id,
+        workspaceId: intent.workspaceId,
+        ruleId: intent.ruleId,
+        ruleKind: intent.ruleId === null ? null : (intent.kind as NotificationRuleKind),
+        oneOffReminderId: intent.oneOffReminderId,
+        kind: intent.kind,
+        occurrenceKey: intent.occurrenceKey,
+        targetType: intent.targetType,
+        dailyPlanId: intent.targetType === "daily_plan" ? intent.targetId : null,
+        scheduleBlockId: intent.targetType === "schedule_block" ? intent.targetId : null,
+        workItemId: intent.targetType === "work_item" ? intent.targetId : null,
+        titleSnapshot: intent.titleSnapshot,
+        scheduledFor: intent.scheduledFor,
+        localDate: intent.localDate,
+        priority: intent.priority,
+        policySnapshot: { ...intent.policySnapshot },
+        localTimeResolution: intent.localTimeResolution,
+        adjustedForQuietHours: intent.adjustedForQuietHours,
+        caughtUp: intent.caughtUp,
+        createdAt: intent.createdAt,
+      })
+      .onConflictDoNothing({
+        target: [notificationIntents.workspaceId, notificationIntents.occurrenceKey],
+      })
+      .returning();
+    if (inserted !== undefined) return mapNotificationIntent(inserted);
+
+    const [existing] = await this.database
+      .select()
+      .from(notificationIntents)
+      .where(
+        and(
+          eq(notificationIntents.workspaceId, intent.workspaceId),
+          eq(notificationIntents.occurrenceKey, intent.occurrenceKey),
+        ),
+      )
+      .limit(1);
+    if (existing === undefined) {
+      throw new DomainError(
+        "notification_intent.write_conflict",
+        "The notification intent could not be inserted or recovered.",
+      );
+    }
+    return mapNotificationIntent(existing);
+  }
+
+  async deleteIntentsForWorkspace(workspace: WorkspaceId): Promise<number> {
+    const deleted = await this.database
+      .delete(notificationIntents)
+      .where(eq(notificationIntents.workspaceId, workspace))
+      .returning({ id: notificationIntents.id });
+    return deleted.length;
+  }
+
+  async deleteIntentsForRule(
+    workspace: WorkspaceId,
+    ruleId: NotificationRule["id"],
+  ): Promise<number> {
+    const deleted = await this.database
+      .delete(notificationIntents)
+      .where(
+        and(eq(notificationIntents.workspaceId, workspace), eq(notificationIntents.ruleId, ruleId)),
+      )
+      .returning({ id: notificationIntents.id });
+    return deleted.length;
+  }
+
+  async deleteIntentsForOneOff(
+    workspace: WorkspaceId,
+    reminderId: OneOffReminder["id"],
+  ): Promise<number> {
+    const deleted = await this.database
+      .delete(notificationIntents)
+      .where(
+        and(
+          eq(notificationIntents.workspaceId, workspace),
+          eq(notificationIntents.oneOffReminderId, reminderId),
+        ),
+      )
+      .returning({ id: notificationIntents.id });
+    return deleted.length;
+  }
+
+  async deleteIntentsForTarget(
+    workspace: WorkspaceId,
+    targetType: Extract<NotificationTargetType, "daily_plan" | "schedule_block" | "work_item">,
+    targetId: string,
+    kind?: NotificationIntent["kind"],
+  ): Promise<number> {
+    const targetCondition =
+      targetType === "daily_plan"
+        ? eq(notificationIntents.dailyPlanId, targetId)
+        : targetType === "schedule_block"
+          ? eq(notificationIntents.scheduleBlockId, targetId)
+          : eq(notificationIntents.workItemId, targetId);
+    const deleted = await this.database
+      .delete(notificationIntents)
+      .where(
+        and(
+          eq(notificationIntents.workspaceId, workspace),
+          eq(notificationIntents.targetType, targetType),
+          targetCondition,
+          ...(kind === undefined ? [] : [eq(notificationIntents.kind, kind)]),
+        ),
+      )
+      .returning({ id: notificationIntents.id });
+    return deleted.length;
+  }
+
+  async deleteIntentsForTargetType(
+    workspace: WorkspaceId,
+    targetType: Extract<NotificationTargetType, "daily_plan" | "schedule_block" | "work_item">,
+  ): Promise<number> {
+    const deleted = await this.database
+      .delete(notificationIntents)
+      .where(
+        and(
+          eq(notificationIntents.workspaceId, workspace),
+          eq(notificationIntents.targetType, targetType),
+        ),
+      )
+      .returning({ id: notificationIntents.id });
+    return deleted.length;
   }
 }
 
@@ -2759,6 +3237,7 @@ function createTransactionContext(database: DatabaseExecutor): TransactionContex
     activityEvents: new PostgresActivityEventRepository(database),
     routineDurationInsightFeedback: new PostgresRoutineDurationInsightFeedbackRepository(database),
     dailyPlans: new PostgresDailyPlanRepository(database),
+    notifications: new PostgresNotificationRepository(database),
   };
 }
 
@@ -2774,6 +3253,7 @@ function createIntegrationTransactionContext(
     scheduleBlocks: new PostgresScheduleBlockRepository(database),
     auditEvents: new PostgresAuditEventRepository(database),
     dailyPlans: new PostgresDailyPlanRepository(database),
+    notifications: new PostgresNotificationRepository(database),
   };
 }
 

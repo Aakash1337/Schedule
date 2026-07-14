@@ -84,6 +84,8 @@ function createHarness() {
   const scheduleBlocks: ScheduleBlock[] = [];
   const audits: AuditEventRecord[] = [];
   const activityInputs: RecordPlanItemActivityInput[] = [];
+  const invalidatedTargets: string[] = [];
+  let notificationLocks = 0;
   const workItemListCalls: {
     workspaceId: string;
     status: string | undefined;
@@ -319,6 +321,15 @@ function createHarness() {
       listRoutineFeedbackForPlanning: async () => [],
       appendRoutineFeedback: async (feedback) => feedback,
     },
+    notifications: {
+      lockWorkspace: async () => {
+        notificationLocks += 1;
+      },
+      deleteIntentsForTarget: async (_workspaceId, targetType, targetId, kind) => {
+        invalidatedTargets.push(`${targetType}:${targetId}:${kind ?? "all"}`);
+        return 1;
+      },
+    } as IntegrationTransactionContext["notifications"],
   };
 
   const unitOfWork: IntegrationUnitOfWork = {
@@ -332,6 +343,8 @@ function createHarness() {
         scheduleBlocks: copy(scheduleBlocks),
         audits: copy(audits),
         activityInputs: copy(activityInputs),
+        invalidatedTargets: copy(invalidatedTargets),
+        notificationLocks,
       };
       try {
         return await operation(context);
@@ -343,6 +356,8 @@ function createHarness() {
         replace(scheduleBlocks, snapshot.scheduleBlocks);
         replace(audits, snapshot.audits);
         replace(activityInputs, snapshot.activityInputs);
+        replace(invalidatedTargets, snapshot.invalidatedTargets);
+        notificationLocks = snapshot.notificationLocks;
         throw error;
       }
     },
@@ -372,6 +387,10 @@ function createHarness() {
     scheduleBlocks,
     audits,
     activityInputs,
+    invalidatedTargets,
+    getNotificationLocks() {
+      return notificationLocks;
+    },
     workItemListCalls,
     getUnitOfWorkRuns() {
       return unitOfWorkRuns;
@@ -983,6 +1002,8 @@ describe("integration confirmation execution", () => {
       idempotencyKey: "due-date-create",
     });
     expect(replay).toEqual(created);
+    expect(test.getNotificationLocks()).toBe(2);
+    expect(test.invalidatedTargets).toEqual([`work_item:${created.outcome.workItem.id}:all`]);
 
     const storedResult = test.requests.find(
       (request) => request.idempotencyKey === "due-date-create",
@@ -1395,6 +1416,12 @@ describe("integration confirmation execution", () => {
     expect(activity.outcome).not.toHaveProperty("planItemActivity.activityEvent.idempotencyKey");
     expect(test.activityInputs[0]?.workspaceId).toBe(WORKSPACE_ID);
     expect(test.activityInputs[0]?.idempotencyKey).toMatch(/^integration:[0-9a-f]{64}$/);
+    expect(test.invalidatedTargets).toEqual([
+      `work_item:${SOURCE_WORK_ITEM_ID}:all`,
+      `schedule_block:${seededBlock.id}:all`,
+      `daily_plan:${PLAN_ID}:daily_follow_up`,
+      `work_item:${SOURCE_WORK_ITEM_ID}:work_item_due`,
+    ]);
     expect(
       JSON.parse(JSON.stringify([createdWork, updatedWork, createdBlock, updatedBlock, activity])),
     ).toBeDefined();

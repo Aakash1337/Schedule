@@ -3,6 +3,14 @@ import type {
   ActivityMetadataValue,
   DailyPlan,
   LocalDate,
+  NotificationIntent,
+  NotificationKind,
+  NotificationProfile,
+  NotificationRule,
+  NotificationRuleId,
+  NotificationTargetType,
+  OneOffReminder,
+  OneOffReminderId,
   Routine,
   RoutineDurationInsightFeedback,
   RoutineId,
@@ -225,6 +233,63 @@ export interface ActivityEventRepository {
   ): Promise<ActivityHistoryPage>;
 }
 
+export interface NotificationRepository {
+  /** Serializes policy evaluation and intent insertion for one workspace. */
+  lockWorkspace(workspaceId: WorkspaceId): Promise<void>;
+  findProfile(workspaceId: WorkspaceId): Promise<NotificationProfile | null>;
+  insertProfile(profile: NotificationProfile): Promise<void>;
+  saveProfile(profile: NotificationProfile, expectedVersion: number): Promise<void>;
+  findRule(workspaceId: WorkspaceId, id: NotificationRuleId): Promise<NotificationRule | null>;
+  listRules(workspaceId: WorkspaceId, limit: number): Promise<readonly NotificationRule[]>;
+  insertRule(rule: NotificationRule): Promise<void>;
+  saveRule(rule: NotificationRule, expectedVersion: number): Promise<void>;
+  findOneOffReminder(
+    workspaceId: WorkspaceId,
+    id: OneOffReminderId,
+  ): Promise<OneOffReminder | null>;
+  listOneOffReminders(
+    workspaceId: WorkspaceId,
+    fromInclusive: Date,
+    throughExclusive: Date,
+    limit: number,
+  ): Promise<readonly OneOffReminder[]>;
+  insertOneOffReminder(reminder: OneOffReminder): Promise<void>;
+  saveOneOffReminder(reminder: OneOffReminder, expectedVersion: number): Promise<void>;
+  listDueWorkItems(
+    workspaceId: WorkspaceId,
+    fromInclusive: LocalDate,
+    throughInclusive: LocalDate,
+    limit: number,
+  ): Promise<readonly WorkItem[]>;
+  listIntents(
+    workspaceId: WorkspaceId,
+    fromInclusive: Date,
+    throughExclusive: Date,
+    limit: number,
+    offset: number,
+  ): Promise<readonly NotificationIntent[]>;
+  /** Inserts the immutable intent, or returns the existing natural-key winner. */
+  insertIntent(intent: NotificationIntent): Promise<NotificationIntent>;
+  /** Invalidates all not-yet-delivered intents after a workspace policy change. */
+  deleteIntentsForWorkspace(workspaceId: WorkspaceId): Promise<number>;
+  /** Invalidates not-yet-delivered intents after one rule changes. */
+  deleteIntentsForRule(workspaceId: WorkspaceId, ruleId: NotificationRuleId): Promise<number>;
+  /** Invalidates not-yet-delivered intents after one explicit reminder changes. */
+  deleteIntentsForOneOff(workspaceId: WorkspaceId, reminderId: OneOffReminderId): Promise<number>;
+  /** Invalidates not-yet-delivered intents after a target resource changes. */
+  deleteIntentsForTarget(
+    workspaceId: WorkspaceId,
+    targetType: Extract<NotificationTargetType, "daily_plan" | "schedule_block" | "work_item">,
+    targetId: string,
+    kind?: NotificationKind,
+  ): Promise<number>;
+  /** Invalidates all not-yet-delivered intents for one target class. */
+  deleteIntentsForTargetType(
+    workspaceId: WorkspaceId,
+    targetType: Extract<NotificationTargetType, "daily_plan" | "schedule_block" | "work_item">,
+  ): Promise<number>;
+}
+
 /** Immutable user dispositions for one exact, evidence-derived duration insight. */
 export interface RoutineDurationInsightFeedbackRepository {
   /** Returns the latest disposition for this exact insight key. */
@@ -287,6 +352,7 @@ export interface TransactionContext {
   readonly activityEvents: ActivityEventRepository;
   readonly routineDurationInsightFeedback: RoutineDurationInsightFeedbackRepository;
   readonly dailyPlans: DailyPlanRepository;
+  readonly notifications: NotificationRepository;
 }
 
 export interface UnitOfWorkOptions {
@@ -573,6 +639,7 @@ export interface IntegrationTransactionContext {
   readonly scheduleBlocks: ScheduleBlockRepository;
   readonly auditEvents: AuditEventRepository;
   readonly dailyPlans: DailyPlanRepository;
+  readonly notifications: NotificationRepository;
 }
 
 export interface IntegrationUnitOfWork {

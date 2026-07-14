@@ -169,6 +169,13 @@
       "when": 1784006431491,
       "tag": "0023_little_raza",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784019892248,
+      "tag": "0024_fast_thundra",
+      "breakpoints": true
     }
   ]
 }

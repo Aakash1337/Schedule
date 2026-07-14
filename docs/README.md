@@ -4,6 +4,7 @@ Durable product and engineering specifications live here so the repository root 
 
 - [Product definition](./PRODUCT.md): product scope, terminology, behavior, phases, and deferred capabilities.
 - [Deterministic planner](./PLANNER.md): implemented planning rules, determinism, persistence, and concurrency contracts.
+- [Deterministic reminders](./REMINDERS.md): profile/rule/one-off policy, DST and quiet-hours semantics, exact-once intent materialization, and the delivery boundary.
 - [Local product API](./API.md): local-only HTTP safety boundary, routes, errors, and example usage.
 - [Inbound integration gateway](./INTEGRATIONS.md): authenticated automation credentials, versioned
   commands, confirmation, idempotency, and the future Hermes boundary.

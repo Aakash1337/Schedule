@@ -1305,7 +1305,14 @@ async function dispatchCommand(
           : { dueOn: command.dueOn === null ? null : localDate(command.dueOn) }),
         now,
       });
-      if (updated !== current) await context.workItems.save(updated, current.version);
+      if (updated !== current) {
+        await context.workItems.save(updated, current.version);
+        await context.notifications.deleteIntentsForTarget(
+          credential.workspaceId,
+          "work_item",
+          updated.id,
+        );
+      }
       return { type: "work_item.updated", workItem: toWorkItemDto(updated) };
     }
     case "schedule_block.create": {
@@ -1353,7 +1360,14 @@ async function dispatchCommand(
         ...(command.timeZone === undefined ? {} : { timeZone: command.timeZone }),
         now,
       });
-      if (updated !== current) await context.scheduleBlocks.save(updated, current.version);
+      if (updated !== current) {
+        await context.scheduleBlocks.save(updated, current.version);
+        await context.notifications.deleteIntentsForTarget(
+          credential.workspaceId,
+          "schedule_block",
+          updated.id,
+        );
+      }
       return { type: "schedule_block.updated", scheduleBlock: toScheduleBlockDto(updated) };
     }
     case "plan_item.activity": {
@@ -1375,6 +1389,26 @@ async function dispatchCommand(
         idempotencyKey: nestedIdempotencyKey,
         now,
       });
+      if (["completed", "skipped", "deferred", "dismissed"].includes(result.activityState)) {
+        await context.notifications.deleteIntentsForTarget(
+          credential.workspaceId,
+          "daily_plan",
+          result.planId,
+          "daily_follow_up",
+        );
+      }
+      if (
+        result.activityState === "completed" &&
+        result.activityEvent.sourceType === "work_item" &&
+        result.activityEvent.workItemId !== null
+      ) {
+        await context.notifications.deleteIntentsForTarget(
+          credential.workspaceId,
+          "work_item",
+          result.activityEvent.workItemId,
+          "work_item_due",
+        );
+      }
       return { type: "plan_item.activity_recorded", planItemActivity: planActivityDto(result) };
     }
     default:
@@ -1747,6 +1781,7 @@ export class ConfirmIntegrationCommand {
           "The integration confirmation has expired.",
         );
       }
+      await context.notifications.lockWorkspace(credential.workspaceId);
       if (!(await context.confirmations.consume(credential.id, confirmation.id, now))) {
         throw new DomainError(
           "integration.confirmation_consumed",

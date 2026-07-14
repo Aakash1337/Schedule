@@ -3,7 +3,8 @@
 Project documentation is indexed in [docs/README.md](./docs/README.md). The main specifications are
 the [product definition](./docs/PRODUCT.md),
 [deterministic planner contract](./docs/PLANNER.md), [local HTTP API](./docs/API.md), and
-[local web application](./docs/WEB.md). The provider-neutral authenticated automation boundary is in
+[local web application](./docs/WEB.md). Deterministic reminder policy and intent materialization are
+specified in [docs/REMINDERS.md](./docs/REMINDERS.md). The provider-neutral authenticated automation boundary is in
 the [integration gateway guide](./docs/INTEGRATIONS.md). Local data protection and recovery
 procedures are in the [operations guide](./docs/OPERATIONS.md). Behavioral confidence and known test
 limitations are tracked in the [evaluation guide](./docs/EVALUATION.md).
@@ -49,6 +50,12 @@ subscribed privacy-thin Today-change invalidations through the existing durable 
 disabled by default and never publishes schedule contents; see the
 [webhook delivery guide](./docs/WEBHOOKS.md).
 
+Schedule now also owns a deterministic reminder-policy core: versioned workspace profiles and rules,
+explicit one-off reminders, DST/quiet-hours/catch-up evaluation, and concurrency-safe insert-only
+pending-intent materialization with transactional invalidation when policy or targets change. The
+core performs no external delivery and never writes provider, recipient, conversation, or receipt
+state.
+
 `WorkItem` represents intent and workflow state. `ScheduleBlock` represents reserved time and may
 optionally reference a work item. Their lifecycles remain independent.
 
@@ -86,7 +93,8 @@ Outbound delivery remains disabled unless `WEBHOOK_DELIVERY_MODE=enabled` and a 
 master-key keyring is configured. Provision endpoints and verify a receiver with the CLI before
 enabling the worker. Endpoints have no automatic subscriptions by default; an operator may opt one
 into `schedule.changed.v1`, which tells a receiver to refresh Today without carrying plan or task
-content. Reminder decisions and the Hermes/WhatsApp adapter are not part of this release.
+content. Reminder policy decisions and durable intents are implemented; periodic execution,
+delivery, receipts, and the Hermes/WhatsApp adapter are not part of this release.
 
 ## Verification
 
@@ -114,6 +122,10 @@ plan-revision persistence:
 ```powershell
 pnpm verify:database
 ```
+
+The database gate includes `verify:notification-core` and `verify:notification-migrations`, covering
+all six deterministic occurrence sources, concurrent exact-once materialization, source/target
+invalidation, tenant constraints, no delivery side effects, and a populated pre-0024 upgrade.
 
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh

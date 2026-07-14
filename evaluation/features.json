@@ -11,6 +11,8 @@
     "outbox-db": { "command": "pnpm verify:database", "ci": true },
     "plan-state-migrations": { "command": "pnpm verify:database", "ci": true },
     "weekday-migrations": { "command": "pnpm verify:database", "ci": true },
+    "notification-core": { "command": "pnpm verify:database", "ci": true },
+    "notification-migrations": { "command": "pnpm verify:database", "ci": true },
     "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
     "recovery-state": {
       "command": "pnpm verify:recovery-state-machine",
@@ -1421,6 +1423,91 @@
             "formats only the allowed safe diagnostics",
             "runs the production adapter against a deterministic loopback Ollama response"
           ]
+        }
+      ]
+    },
+    {
+      "id": "deterministic-notification-policy-core",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/REMINDERS.md",
+        "anchor": "# Deterministic reminder policy core"
+      },
+      "limitations": [
+        "Materialization is an explicit local API command; no periodic worker, delivery claim/revalidation state, provider transport, acknowledgement, or receipt exists yet.",
+        "The web application has no reminder settings or intent-history interface, and the authenticated machine gateway does not expose intent delivery authorization."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/notification-policy.test.ts",
+          "command": "unit",
+          "anchors": [
+            "moves through a spring-forward gap using compatible/later semantics",
+            "chooses the earlier instant during a fall-back overlap",
+            "reapplies quiet policy when catch-up lands inside quiet hours",
+            "creates an immutable intent snapshot only from the matching accepted evaluation"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/materialize-notification-intents.test.ts",
+          "command": "unit",
+          "anchors": [
+            "materializes all supported deterministic sources and makes replay exact-once",
+            "applies the stable source-priority order before the daily cap",
+            "applies a rule cooldown deterministically across nearby targets",
+            "fails closed for malformed plan snapshots and invalid or unconfigured windows",
+            "supports the maximum window together with the maximum catch-up horizon",
+            "rejects overlarge persisted rule, window, and aggregate candidate sets"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/notification-management.test.ts",
+          "command": "unit",
+          "anchors": [
+            "enforces a bounded per-workspace rule count",
+            "creates, lists, updates, cancels, and audits one-off reminders",
+            "fails closed when a bounded one-off list still exceeds its result cap"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/record-plan-item-activity.test.ts",
+          "command": "unit",
+          "anchors": [
+            "keeps a non-terminal activity from invalidating follow-up reminders",
+            "invalidates a completed work source's due reminder"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": ["constrains deterministic notification policy and immutable intent sources"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/notification-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "wires profile, rules, one-offs, materialization, and intent reads",
+            "rejects unpaired quiet hours, mismatched rule configuration, and empty patches"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-notification-core.ts",
+          "command": "notification-core",
+          "anchors": ["Notification policy core verification passed"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-notification-migrations.ts",
+          "command": "notification-migrations",
+          "anchors": ["Notification migration verification passed"]
         }
       ]
     },
