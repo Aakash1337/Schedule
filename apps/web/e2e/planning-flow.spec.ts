@@ -899,11 +899,20 @@ test("persists subtasks and keeps parent containers out of Today in the live 320
   const overflowChildBounds = await overflowChild.boundingBox();
   expect(overflowChildBounds?.height ?? 0).toBeGreaterThanOrEqual(44);
 
+  await page.evaluate(async () => {
+    const browserGlobal = globalThis as unknown as {
+      readonly document: { readonly fonts: { readonly ready: Promise<unknown> } };
+    };
+    await browserGlobal.document.fonts.ready;
+  });
   const relationshipTargets = await page
     .locator(".work-hierarchy button:visible")
     .evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().height));
   expect(relationshipTargets.length).toBeGreaterThan(0);
-  expect(relationshipTargets.every((height) => height >= 44)).toBe(true);
+  expect(
+    relationshipTargets.filter((height) => height < 44),
+    `all relationship target heights: ${relationshipTargets.join(", ")}`,
+  ).toEqual([]);
   const overflow = await page.evaluate(() => {
     const browserGlobal = globalThis as unknown as {
       readonly document: {
