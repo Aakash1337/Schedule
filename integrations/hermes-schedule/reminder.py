@@ -87,8 +87,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         digest = format_today_digest(ScheduleClient.from_environment().get_today(requested_date))
     except ScheduleAdapterError as error:
-        print(f"Schedule reminder unavailable ({error.code}).", file=sys.stderr)
-        return 1
+        if error.code == "schedule_resource_not_found":
+            digest = format_today_digest({"date": requested_date, "plan": None})
+        else:
+            print(f"Schedule reminder unavailable ({error.code}).", file=sys.stderr)
+            return 1
     print(digest)
     return 0
 

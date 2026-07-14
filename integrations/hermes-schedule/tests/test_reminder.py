@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
+import io
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -23,10 +26,33 @@ if PACKAGE_NAME not in sys.modules:
     specification.loader.exec_module(package)
 
 from hermes_schedule.client import ScheduleAdapterError  # noqa: E402
+from hermes_schedule import reminder  # noqa: E402
 from hermes_schedule.reminder import MAXIMUM_ITEMS, format_today_digest  # noqa: E402
 
 
 class ReminderFormattingTests(unittest.TestCase):
+    def test_main_treats_a_missing_today_plan_as_an_informational_reminder(self) -> None:
+        class MissingPlanClient:
+            @staticmethod
+            def get_today(_local_date: str) -> dict[str, object]:
+                raise ScheduleAdapterError("schedule_resource_not_found")
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            patch.object(reminder.ScheduleClient, "from_environment", return_value=MissingPlanClient()),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            exit_code = reminder.main(["--date", "2026-07-15"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            stdout.getvalue(),
+            "Schedule for 2026-07-15: no Today plan has been generated.\n",
+        )
+        self.assertEqual(stderr.getvalue(), "")
+
     def test_reports_missing_and_completed_plans_without_inventing_work(self) -> None:
         self.assertEqual(
             format_today_digest({"date": "2026-07-15", "plan": None}),
