@@ -281,6 +281,53 @@ export interface CurrentDailyPlan extends DailyPlan {
   readonly headVersion: number;
 }
 
+export type DailyPlanFitInsightStatus = "insufficient_history" | "aligned" | "suggested";
+export type DailyPlanFitInsightDisposition = "available" | "dismissed";
+export type DailyPlanFitInsightFeedbackKind = "dismissed" | "reset";
+
+/** Deterministic, read-only target guidance derived from fully resolved past plans. */
+export interface DailyPlanFitInsight {
+  readonly status: DailyPlanFitInsightStatus;
+  readonly insightKey: string | null;
+  readonly disposition: DailyPlanFitInsightDisposition;
+  readonly dismissedAt: string | null;
+  readonly forDate: string;
+  readonly windowStartedOn: string;
+  readonly windowEndedOn: string;
+  readonly lookbackDays: number;
+  readonly sampleCount: number;
+  readonly minimumSamples: number;
+  readonly maximumSamples: number;
+  readonly evaluatedAt: string;
+  readonly typicalPlannedMinutes: number | null;
+  readonly typicalCompletedMinutes: number | null;
+  readonly materialThresholdMinutes: number | null;
+  readonly typicalPlannedTaskCount: number | null;
+  readonly typicalCompletedTaskCount: number | null;
+  readonly materialThresholdTaskCount: number | null;
+  readonly suggestedTargetMinutes: number | null;
+  readonly suggestedTargetTaskCount: number | null;
+}
+
+/** Immutable user feedback about one exact Daily Plan Fit evidence snapshot. */
+export interface DailyPlanFitInsightFeedback {
+  readonly id: string;
+  readonly ingestedSequence: number;
+  readonly workspaceId: string;
+  readonly forDate: string;
+  readonly insightKey: string;
+  readonly kind: DailyPlanFitInsightFeedbackKind;
+  readonly sampleCount: number;
+  readonly typicalPlannedMinutes: number;
+  readonly typicalCompletedMinutes: number;
+  readonly typicalPlannedTaskCount: number;
+  readonly typicalCompletedTaskCount: number;
+  readonly suggestedTargetMinutes: number;
+  readonly suggestedTargetTaskCount: number;
+  readonly idempotencyKey: string;
+  readonly recordedAt: string;
+}
+
 export type SchedulingAdviceUnavailableReason =
   | "disabled"
   | "busy"

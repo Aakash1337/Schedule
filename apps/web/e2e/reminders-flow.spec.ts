@@ -103,6 +103,9 @@ test("configures, materializes, audits, and responsively renders reminders throu
   const database = createDatabase(databaseUrl, 1);
   try {
     const inserted = await database.sql<{ id: string }[]>`
+      with stamped as (
+        select clock_timestamp() as value
+      )
       insert into notification_delivery_commands (
         id, workspace_id, intent_id, occurrence_key, kind, target_type, title_snapshot,
         scheduled_for, local_date, priority, status, attempts, available_at, completed_at,
@@ -110,9 +113,10 @@ test("configures, materializes, audits, and responsively renders reminders throu
       )
       select
         id, workspace_id, id, occurrence_key, kind, target_type, title_snapshot,
-        scheduled_for, local_date, priority, 'delivered', 1, clock_timestamp(),
-        clock_timestamp(), clock_timestamp(), clock_timestamp()
+        scheduled_for, local_date, priority, 'delivered', 1, stamped.value,
+        stamped.value, stamped.value, stamped.value
       from notification_intents
+      cross join stamped
       where workspace_id = ${workspace.id}
         and title_snapshot = ${reminderTitle}
       returning id::text

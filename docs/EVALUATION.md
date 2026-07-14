@@ -48,8 +48,8 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 78 test files and 1,142 runtime test cases. Three
-additional Playwright specifications contain seven live Chromium integration scenarios. Parameterized
+The package and script runners currently execute 80 test files and 1,178 runtime test cases. Three
+additional Playwright specifications contain eight live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
 
@@ -57,11 +57,11 @@ an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      31 / 31 |
+| Implemented features with CI-registered evidence                       |      32 / 32 |
 | Critical implemented features with CI-registered integration or drills |      18 / 18 |
 | Partial features with an explicit limitation                           |        2 / 2 |
 | Deferred features explicitly tracked as not passing                    |        1 / 1 |
-| CI-registered evidence items                                           |          156 |
+| CI-registered evidence items                                           |          165 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -72,21 +72,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     58.57% |   70.03% |    66.60% | 58.99% |
+| Whole repository, measured |     59.17% |   70.46% |    67.22% | 59.58% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |     96.34% |   92.40% |    96.83% | 97.33% |
+| Domain, measured           |     96.52% |   92.21% |    97.14% | 97.56% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     90.50% |   84.37% |    99.22% | 91.22% |
+| Application, measured      |     90.54% |   84.47% |    99.24% | 91.28% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     86.49% |   75.97% |    76.13% | 87.90% |
+| API, measured              |     86.49% |   75.97% |    75.50% | 87.87% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.26% |   89.18% |    91.11% | 95.14% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     84.49% |   73.40% |    72.44% | 84.93% |
+| Web, measured              |     84.63% |   72.68% |    73.07% | 85.08% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 7,989 of 13,638 statements, 5,899 of 8,423 branches,
-1,785 of 2,680 functions, and 7,544 of 12,787 lines.
+The whole-repository totals are 8,351 of 14,112 statements, 6,154 of 8,733 branches,
+1,856 of 2,761 functions, and 7,883 of 13,230 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -265,6 +265,39 @@ resurfacing after evidence changes, database rejection of feedback UPDATE/DELETE
 duration, Today-head, and planner state, and a queued routine edit winning before stale feedback can
 append. These are registered evidence targets, not a claim in this document that the checks have run.
 
+### Daily Plan Fit evidence
+
+Daily Plan Fit has separate deterministic calculation, feedback, persistence, transport, component,
+PostgreSQL, and browser oracles. Domain units require three fully resolved nonempty current heads,
+exclude whole plans with pending or started items, count only scheduled minutes and item count for
+completed work, cap evidence at the 28 most recent eligible samples, and remain invariant to input
+order and evaluation time. Domain and repository bounds fail closed above 512 items per plan and a
+candidate-derived total row ceiling. The calculation units verify half-up medians, the
+30-minute/20% and one-task/25%
+materiality thresholds, safe 30-minute/one-task floors, downward-only joint suggestions, canonical
+SHA-256 keys, and exact-key dismissal/reset resolution.
+
+Application units require tenant-first lookup, the bounded 90-day/90-candidate repository request,
+lowercase-canonical workspace locking, read-committed feedback transactions, evidence revalidation before append, exact
+idempotent replay before recalculation, semantic-key conflict rejection, and valid disposition
+transitions. Repository and schema tests cover one bounded current-head projection, malformed target
+exclusion, deterministic item grouping, tenant-bound append-only feedback, database-allocated
+ingestion order, and workspace-scoped idempotency. API units cover explicit local-date validation,
+strict lowercase SHA-256 feedback payloads, required idempotency, service delegation, and `409`
+mapping for stale evidence. Web API and Today component units cover all visible states, retry,
+stale-response protection, exact-key hide/restore, accessible focus and announcements, and the
+central authority rule: using a suggestion only prefills both fields and cannot generate a plan.
+
+The PostgreSQL verifier creates four real routines and three resolved current heads, derives the
+expected 90-minute/two-task suggestion from 180-minute/four-task plans, exercises dismiss/reset and
+exact replay, rejects semantic idempotency reuse and direct feedback UPDATE/DELETE, proves feedback
+does not mutate plan heads, proves mixed-case UUID spelling queues behind the same real PostgreSQL
+advisory lock, and changes terminal evidence so the old dismissal cannot hide the new key. The live
+Chromium flow repeats the visible lifecycle through built processes, real routes,
+migrations, and a disposable database, and confirms that plan creation occurs only after the user
+submits the prefilled form. These checks establish the implementation contract, not that its
+thresholds improve completion or wellbeing for a particular user.
+
 ### Local-model advisor evidence
 
 The implemented advisor scope is deliberately narrower than the broad feature name, so the registry
@@ -395,7 +428,7 @@ The audit deliberately leaves these visible instead of turning them into false g
   product-safe execution-history projection that omits claim, lease, credential, and provider data.
   It has no periodic materializer, external provider/account binding, shared adapter dedupe store,
   or dead-letter redrive control;
-- seven live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
+- eight live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a
   320px subtask create/complete/reload/detach/reparent/overflow flow with leaf-only planning, plus
@@ -415,6 +448,10 @@ The audit deliberately leaves these visible instead of turning them into false g
   exact-key dismissal/reset now preserves reversible rejection memory. It still has no production
   outcome data, learned cadence/energy/preference model, automatic application, historical insight
   comparison, or local-model participation; and
+- Daily Plan Fit has deterministic cross-layer and live-browser evidence but no production outcome
+  data for its 90-day window, minimum sample, medians, thresholds, or acceptance rate. It does not
+  recommend increases, learn a per-user policy, apply automatically, compare historical suggestion
+  outcomes, or use a model; and
 - the local-model advisor has CI unit/component evidence for its configuration, application,
   transport, API, and UI boundaries, while a real Ollama/Gemma call remains an operator-run smoke
   check. The separate Work capture supports one reviewed backlog title with CI and PostgreSQL/browser

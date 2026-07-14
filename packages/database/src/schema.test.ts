@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   activityEvents,
+  dailyPlanFitInsightFeedbackEvents,
+  dailyPlanFitInsightFeedbackKind,
   dailyPlanHeads,
   dailyPlanItemStates,
   dailyPlanItems,
@@ -60,6 +62,9 @@ describe("database schema", () => {
     expect(getTableName(activityEvents)).toBe("activity_events");
     expect(getTableName(dailyPlans)).toBe("daily_plans");
     expect(getTableName(dailyPlanItems)).toBe("daily_plan_items");
+    expect(getTableName(dailyPlanFitInsightFeedbackEvents)).toBe(
+      "daily_plan_fit_insight_feedback_events",
+    );
     expect(getTableName(dailyPlanHeads)).toBe("daily_plan_heads");
     expect(getTableName(dailyPlanItemStates)).toBe("daily_plan_item_states");
     expect(getTableName(planInteractionEvents)).toBe("plan_interaction_events");
@@ -686,6 +691,46 @@ describe("database schema", () => {
     );
     expect(migration).toContain(
       'BEFORE UPDATE OR DELETE ON "routine_duration_insight_feedback_events"',
+    );
+  });
+
+  it("stores and migrates append-only Daily Plan Fit feedback", () => {
+    const config = getTableConfig(dailyPlanFitInsightFeedbackEvents);
+    expect(dailyPlanFitInsightFeedbackKind.enumValues).toEqual(["dismissed", "reset"]);
+    expect(
+      config.uniqueConstraints
+        .find(
+          (constraint) =>
+            constraint.getName() === "daily_plan_fit_feedback_workspace_idempotency_uq",
+        )
+        ?.columns.map((column) => column.name),
+    ).toEqual(["workspace_id", "idempotency_key"]);
+    expect(config.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "daily_plan_fit_feedback_key_format",
+        "daily_plan_fit_feedback_sample_positive",
+        "daily_plan_fit_feedback_completed_minutes_nonnegative",
+        "daily_plan_fit_feedback_completed_tasks_nonnegative",
+        "daily_plan_fit_feedback_idempotency_canonical",
+        "daily_plan_fit_feedback_sequence_positive",
+      ]),
+    );
+
+    const migration = readFileSync(
+      new URL("../drizzle/0030_exotic_the_anarchist.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain(
+      "CREATE TYPE \"public\".\"daily_plan_fit_insight_feedback_kind\" AS ENUM('dismissed', 'reset')",
+    );
+    expect(migration).toContain(
+      '"daily_plan_fit_feedback_workspace_idempotency_uq" UNIQUE("workspace_id","idempotency_key")',
+    );
+    expect(migration).toContain(
+      'CREATE TRIGGER "daily_plan_fit_insight_feedback_events_prevent_change"',
+    );
+    expect(migration).toContain(
+      'BEFORE UPDATE OR DELETE ON "daily_plan_fit_insight_feedback_events"',
     );
   });
 

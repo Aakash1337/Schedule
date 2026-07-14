@@ -34,7 +34,8 @@ The application uses a persistent desktop rail and a compact mobile navigation b
    replacement, regeneration, warnings, and exclusions. Active **Not today** and **Not this week**
    instructions appear in a separate **Temporarily hidden** list with an Undo control. When a plan
    exists, **Ask local advisor** can request an optional, read-only review of that exact plan and its
-   eligible backlog.
+   eligible backlog. Before generation, **Deterministic Plan Fit** explains whether enough resolved
+   history exists, whether recent targets fit, or whether a smaller joint time/task target may help.
 2. **Work** groups one-time work items into the six supported status columns. Status changes use
    explicit controls because manual card ranking is not part of the API contract. Titles,
    descriptions, priority, status, optional local **Due date**, and an explicit **Include in Today**
@@ -172,6 +173,29 @@ later calendar edits do not silently rewrite an existing plan or its regeneratio
 client-owned opt-in preserves existing API callers while leaving a versioned server-side policy mode
 as a future option if multiple integrations need uniform enforcement.
 
+## Daily Plan Fit interaction
+
+The first-plan form independently loads workspace-scoped Plan Fit guidance for the selected local
+date. Loading, unavailable-with-retry, insufficient-history, aligned, available-suggestion, and
+dismissed states remain inline and do not block manual planning. When evidence exists, the panel
+shows the typical planned and completed minute/task pairs and explains that completed time means the
+scheduled duration of completed items. A plan counts only after every item is terminal.
+
+**Use _n_ minutes and _n_ tasks** only copies both suggested values into the editable fields, moves
+focus to the first target, and announces the result. It never submits the form. The user can review
+or change either field and must still choose **Generate today's plan**. The generated request and its
+persisted immutable snapshot therefore contain the values the user explicitly submitted, not a
+background recommendation.
+
+**Not now** appends feedback for the exact evidence key and refetches the panel. A paused suggestion
+keeps its evidence visible and offers **Show again**. Ambiguous retry retains the same idempotency
+key; other failures keep the action available, while a `409` discards the stale command, reloads the
+current evidence, and states that no old suggestion was applied. A workspace/date change aborts and
+invalidates older reads and feedback responses. Successful disposition changes return keyboard
+focus to the panel heading and use a polite live announcement.
+
+## Duration-calibration interaction
+
 A duration suggestion is never applied on load. The user must choose **Apply estimate**, which sends
 the selected routine's complete duration policy and insight version to the dedicated atomic approval
 endpoint. The server re-reads the routine and current evidence before saving and permits only the
@@ -284,7 +308,10 @@ scenario. A sixth creates reminder policy, edits a rule, creates a one-off, expl
 intents, inserts an execution fixture through the isolated PostgreSQL test boundary, and verifies the
 real product-safe history route and UI at desktop and 320px without request interception. A seventh
 prepares one title through a strict loopback Ollama double, proves no card exists before confirmation,
-edits and confirms through the real API, verifies focus, and reloads the persisted backlog item.
+edits and confirms through the real API, verifies focus, and reloads the persisted backlog item. An
+eighth creates three fully resolved historical plans, observes a joint 90-minute/two-task suggestion,
+dismisses and restores its exact key, copies both targets without creating a plan, and then generates
+only through the explicit form submission.
 
 Install the local browser binary once, then run the bounded verifier:
 
@@ -308,7 +335,8 @@ a dedicated Chromium job and retains traces, screenshots, and video when it fail
 - Drag ranking, bulk editing, projects, checklists, attachments, and saved searches
 - Recurrence authoring, calendar conflict detection, and automatic placement
 - Alternative-plan comparison and generalized plan undo
-- Learned cadence, energy, preference, overload, and adaptive-selection settings
+- Learned cadence, energy, preference, and adaptive-selection settings
+- Automatic Plan Fit application, upward target expansion, and editable Plan Fit policy
 - Automatic duration-insight application and historical insight-comparison controls
 - Natural-language routine creation, tags/dates/duration, task breakdown, multi-command capture,
   model-driven plan application, and hosted advisor controls

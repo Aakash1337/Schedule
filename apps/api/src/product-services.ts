@@ -8,11 +8,13 @@ import {
   CreateScheduleBlock,
   CreateWorkItem,
   CreateWorkspace,
+  DismissDailyPlanFitInsight,
   DismissRoutineDurationInsight,
   GenerateDailyPlan,
   GenerateNaturalLanguageProposal,
   GetCurrentDailyPlan,
   GetDailyPlan,
+  GetDailyPlanFitInsight,
   GetSchedulingAdvice,
   GetRoutine,
   GetNotificationProfile,
@@ -38,6 +40,7 @@ import {
   RecordActivityEvent,
   RecordPlanItemActivity,
   RemoveWorkItemDependency,
+  ResetDailyPlanFitInsightDismissal,
   ResetRoutineDurationInsightDismissal,
   SetPlanItemLock,
   DeleteScheduleBlock,
@@ -74,6 +77,7 @@ export function createProductServices(
 ): ProductServices {
   const approveRoutineDurationInsight = new ApproveRoutineDurationInsight(unitOfWork, clock);
   const addWorkItemDependency = new AddWorkItemDependency(unitOfWork, clock);
+  const dismissDailyPlanFitInsight = new DismissDailyPlanFitInsight(unitOfWork, clock);
   const dismissRoutineDurationInsight = new DismissRoutineDurationInsight(unitOfWork, clock);
   const createWorkspace = new CreateWorkspace(unitOfWork, clock);
   const getWorkspace = new GetWorkspace(unitOfWork);
@@ -104,9 +108,14 @@ export function createProductServices(
   );
   const generateDailyPlan = new GenerateDailyPlan(unitOfWork, clock);
   const getCurrentDailyPlan = new GetCurrentDailyPlan(unitOfWork);
+  const getDailyPlanFitInsight = new GetDailyPlanFitInsight(unitOfWork, clock);
   const setPlanItemLock = new SetPlanItemLock(unitOfWork, clock);
   const mutateDailyPlan = new MutateDailyPlan(unitOfWork, clock);
   const getDailyPlan = new GetDailyPlan(unitOfWork);
+  const resetDailyPlanFitInsightDismissal = new ResetDailyPlanFitInsightDismissal(
+    unitOfWork,
+    clock,
+  );
   const getSchedulingAdvice = new GetSchedulingAdvice(unitOfWork, advisor, clock);
   const configureNotificationProfile = new ConfigureNotificationProfile(unitOfWork, clock);
   const getNotificationProfile = new GetNotificationProfile(unitOfWork);
@@ -150,6 +159,7 @@ export function createProductServices(
   return {
     addWorkItemDependency: (command) => addWorkItemDependency.execute(command),
     approveRoutineDurationInsight: (command) => approveRoutineDurationInsight.execute(command),
+    dismissDailyPlanFitInsight: (command) => dismissDailyPlanFitInsight.execute(command),
     dismissRoutineDurationInsight: (command) => dismissRoutineDurationInsight.execute(command),
     createWorkspace: (command) => createWorkspace.execute(command),
     getWorkspace: (query) => getWorkspace.execute(query),
@@ -176,8 +186,11 @@ export function createProductServices(
     removeWorkItemDependency: (command) => removeWorkItemDependency.execute(command),
     resetRoutineDurationInsightDismissal: (command) =>
       resetRoutineDurationInsightDismissal.execute(command),
+    resetDailyPlanFitInsightDismissal: (command) =>
+      resetDailyPlanFitInsightDismissal.execute(command),
     generateDailyPlan: (command) => generateDailyPlan.execute(command),
     getCurrentDailyPlan: (query) => getCurrentDailyPlan.execute(query),
+    getDailyPlanFitInsight: (query) => getDailyPlanFitInsight.execute(query),
     setPlanItemLock: (command) => setPlanItemLock.execute(command),
     regenerateDailyPlan: (command) => mutateDailyPlan.regenerate(command),
     replacePlanItem: (command) => mutateDailyPlan.replace(command),

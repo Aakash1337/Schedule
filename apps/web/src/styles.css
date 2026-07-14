@@ -1482,6 +1482,110 @@ textarea:focus {
   font-weight: 750;
 }
 
+.today-plan-fit {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 22px;
+  padding: 17px 18px;
+  background: linear-gradient(135deg, var(--accent-soft), var(--paper-raised) 72%);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 11px;
+}
+
+.today-plan-fit + .today-form-group {
+  padding-top: 21px;
+  border-top: 1px solid var(--line);
+}
+
+.today-plan-fit > p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.79rem;
+  line-height: 1.5;
+}
+
+.today-plan-fit-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.today-plan-fit-heading h3 {
+  margin: 3px 0 0;
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.today-plan-fit-heading h3:focus-visible {
+  border-radius: 4px;
+  outline: 3px solid var(--accent-soft);
+  outline-offset: 3px;
+}
+
+.today-plan-fit-heading > span {
+  flex: none;
+  padding: 4px 7px;
+  color: var(--ink-soft);
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.today-plan-fit-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.today-plan-fit-facts div {
+  min-width: 0;
+  padding: 9px 10px;
+  background: color-mix(in oklab, var(--paper-raised) 88%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.today-plan-fit-facts dt {
+  color: var(--ink-soft);
+  font-size: 0.67rem;
+  font-weight: 730;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.today-plan-fit-facts dd {
+  margin: 3px 0 0;
+  font-size: 0.78rem;
+  font-weight: 720;
+}
+
+.today-plan-fit .today-plan-fit-note {
+  font-size: 0.71rem;
+}
+
+.today-plan-fit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.today-plan-fit-status {
+  padding: 8px 9px;
+  color: var(--ink);
+  background: var(--paper-raised);
+  border-radius: 7px;
+}
+
+.today-plan-fit .notice {
+  margin: 0;
+}
+
 .today-form-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3536,6 +3640,28 @@ textarea:focus {
 
   .button {
     min-height: 44px;
+  }
+
+  .today-plan-fit-heading {
+    display: grid;
+    gap: 7px;
+  }
+
+  .today-plan-fit-heading > span {
+    justify-self: start;
+  }
+
+  .today-plan-fit-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .today-plan-fit-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .today-plan-fit-actions .button {
+    width: 100%;
   }
 
   .icon-button,

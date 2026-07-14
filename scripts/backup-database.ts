@@ -11,6 +11,7 @@ export const composeDatabaseUser = "schedule";
 export const expectedScheduleTables = [
   "activity_events",
   "audit_events",
+  "daily_plan_fit_insight_feedback_events",
   "daily_plan_heads",
   "daily_plan_item_states",
   "daily_plan_items",
@@ -45,6 +46,10 @@ export const expectedScheduleTables = [
 export const expectedScheduleSequences = [
   { schema: "drizzle", name: "__drizzle_migrations_id_seq" },
   { schema: "public", name: "activity_events_ingested_sequence_seq" },
+  {
+    schema: "public",
+    name: "daily_plan_fit_insight_feedback_events_ingested_sequence_seq",
+  },
   { schema: "public", name: "plan_interaction_events_ingested_sequence_seq" },
   {
     schema: "public",

@@ -28,6 +28,15 @@ export * from "./notification-delivery.js";
 export * from "./generate-daily-plan.js";
 export * from "./get-daily-plan.js";
 export * from "./get-current-daily-plan.js";
+export * from "./get-daily-plan-fit-insight.js";
+export {
+  DismissDailyPlanFitInsight,
+  type DismissDailyPlanFitInsightCommand,
+} from "./dismiss-daily-plan-fit-insight.js";
+export {
+  ResetDailyPlanFitInsightDismissal,
+  type ResetDailyPlanFitInsightDismissalCommand,
+} from "./reset-daily-plan-fit-insight-dismissal.js";
 export * from "./integration-gateway.js";
 export * from "./invalidate-plan-item-activity-intents.js";
 export * from "./get-routine.js";

@@ -2,6 +2,8 @@ import type {
   ActivityEvent,
   ActivityMetadataValue,
   DailyPlan,
+  DailyPlanFitEvidencePlan,
+  DailyPlanFitInsightFeedback,
   LocalDate,
   NotificationIntent,
   NotificationKind,
@@ -344,6 +346,21 @@ export interface RoutineDurationInsightFeedbackRepository {
   append(feedback: RoutineDurationInsightFeedback): Promise<RoutineDurationInsightFeedback>;
 }
 
+/** Immutable exact-key feedback for workspace-level Daily Plan Fit guidance. */
+export interface DailyPlanFitInsightFeedbackRepository {
+  /** Serializes dismiss/reset commands without coupling history writers to presentation feedback. */
+  lockWorkspace(workspaceId: WorkspaceId): Promise<void>;
+  findLatestForKey(
+    workspaceId: WorkspaceId,
+    insightKey: string,
+  ): Promise<DailyPlanFitInsightFeedback | null>;
+  findByIdempotencyKey(
+    workspaceId: WorkspaceId,
+    idempotencyKey: string,
+  ): Promise<DailyPlanFitInsightFeedback | null>;
+  append(feedback: DailyPlanFitInsightFeedback): Promise<DailyPlanFitInsightFeedback>;
+}
+
 export interface DailyPlanRepository {
   findById(workspaceId: WorkspaceId, id: DailyPlan["id"]): Promise<DailyPlan | null>;
   findByRevision(
@@ -359,6 +376,13 @@ export interface DailyPlanRepository {
     workspaceId: WorkspaceId,
     dates: readonly LocalDate[],
   ): Promise<ReadonlyMap<LocalDate, CurrentDailyPlan>>;
+  /** Returns at most `candidateLimit` current-head projections in the prior local-date window. */
+  listFitEvidence(
+    workspaceId: WorkspaceId,
+    forDate: LocalDate,
+    lookbackDays: number,
+    candidateLimit: number,
+  ): Promise<readonly DailyPlanFitEvidencePlan[]>;
   setItemLock(input: SetPlanItemLockInput): Promise<PlanItemLockResult>;
   recordItemActivity(input: RecordPlanItemActivityInput): Promise<RecordedPlanItemActivityResult>;
   lockDay(workspaceId: WorkspaceId, date: LocalDate): Promise<void>;
@@ -393,6 +417,7 @@ export interface TransactionContext {
   readonly routines: RoutineRepository;
   readonly activityEvents: ActivityEventRepository;
   readonly routineDurationInsightFeedback: RoutineDurationInsightFeedbackRepository;
+  readonly dailyPlanFitInsightFeedback: DailyPlanFitInsightFeedbackRepository;
   readonly dailyPlans: DailyPlanRepository;
   readonly notifications: NotificationRepository;
 }

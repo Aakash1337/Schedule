@@ -4,12 +4,16 @@ import {
   CreateRoutine,
   CreateWorkItem,
   CreateWorkspace,
+  DismissDailyPlanFitInsight,
   DismissRoutineDurationInsight,
   GenerateDailyPlan,
+  GetDailyPlanFitInsight,
   GetDailyPlan,
   GetRoutineDurationInsight,
   ListRoutines,
   RecordActivityEvent,
+  RecordPlanItemActivity,
+  ResetDailyPlanFitInsightDismissal,
   ResetRoutineDurationInsightDismissal,
   UpdateRoutine,
   UpdateWorkItem,
@@ -21,6 +25,9 @@ import {
   createDurationRange,
   localDate,
   createStructuredTags,
+  workspaceId,
+  type DailyPlanId,
+  type PlanItemId,
   type WorkspaceId,
 } from "../packages/domain/src/index.js";
 
@@ -29,6 +36,7 @@ const databaseUrl =
 const connection = createDatabase(databaseUrl, 5);
 const clock = { now: () => new Date("2026-07-15T07:00:00.000Z") };
 let workspace: WorkspaceId | null = null;
+let fitWorkspace: WorkspaceId | null = null;
 
 async function waitingAdvisoryLockCount(): Promise<number> {
   const [row] = await connection.sql<{ waiting: number }[]>`
@@ -64,12 +72,19 @@ function assertDatabaseErrorCode(expected: string): (error: unknown) => boolean 
 }
 
 async function removeVerificationWorkspace(): Promise<void> {
-  if (workspace === null) return;
+  const workspaces = [workspace, fitWorkspace].filter(
+    (candidate): candidate is WorkspaceId => candidate !== null,
+  );
+  if (workspaces.length === 0) return;
   await connection.sql.begin(async (sql) => {
     await sql`select set_config('schedule.allow_activity_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_audit_event_mutation', 'on', true)`;
+    await sql`select set_config('schedule.allow_plan_interaction_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_routine_duration_insight_feedback_event_change', 'on', true)`;
-    await sql`delete from workspaces where id = ${workspace}`;
+    await sql`select set_config('schedule.allow_daily_plan_fit_insight_feedback_event_change', 'on', true)`;
+    for (const targetWorkspace of workspaces) {
+      await sql`delete from workspaces where id = ${targetWorkspace}`;
+    }
   });
 }
 
@@ -635,6 +650,335 @@ try {
       and routine_id = ${durationFeedbackRoutine.id}
   `;
   assert.equal(feedbackCountAfterConcurrentConflict?.count, 3);
+
+  // EVIDENCE: daily-plan-fit-insight-postgres
+  // Three fully resolved current heads derive one deterministic joint time/task suggestion.
+  fitWorkspace = (
+    await new CreateWorkspace(unitOfWork, clock).execute({
+      name: "Daily Plan Fit verification",
+    })
+  ).id;
+  const fitRoutines = [];
+  for (const title of ["Fit routine A", "Fit routine B", "Fit routine C", "Fit routine D"]) {
+    fitRoutines.push(
+      await new CreateRoutine(unitOfWork, clock).execute({
+        workspaceId: fitWorkspace,
+        title,
+        tags: createStructuredTags({
+          priority: "high",
+          energy: "normal",
+          contexts: ["computer"],
+          categories: ["plan-fit-verification"],
+        }),
+        duration: createDurationRange({ expectedMinutes: 45 }),
+        cadence: createCadencePolicy({
+          period: "day",
+          targetCompletions: 1,
+          maximumCompletions: 1,
+        }),
+      }),
+    );
+  }
+  assert.equal(fitRoutines.length, 4);
+
+  const fitGenerator = new GenerateDailyPlan(unitOfWork, clock);
+  const fitActivity = new RecordPlanItemActivity(unitOfWork, clock);
+  let latestFitPlanId: DailyPlanId | null = null;
+  let latestFitCompletedItemId: PlanItemId | null = null;
+  let latestFitHeadVersion = 0;
+  for (const [dateIndex, dateText] of ["2026-07-11", "2026-07-12", "2026-07-13"].entries()) {
+    const date = localDate(dateText);
+    const fitPlan = await fitGenerator.execute({
+      request: createDailyPlanningRequest({
+        workspaceId: fitWorkspace,
+        date,
+        timeZone: "UTC",
+        availableWindows: [
+          {
+            startsAt: new Date(`${dateText}T08:00:00.000Z`),
+            endsAt: new Date(`${dateText}T12:30:00.000Z`),
+          },
+        ],
+        targetMinutes: 180,
+        targetTaskCount: 4,
+        availableContexts: ["computer"],
+        seed: `daily-plan-fit-verification-${dateText}`,
+        requestRevision: 1,
+      }),
+    });
+    assert.equal(fitPlan.items.length, 4, "Plan Fit evidence needs four planned items per day");
+    let headVersion = 1;
+    for (const [itemIndex, item] of fitPlan.items.entries()) {
+      const type = itemIndex < 2 ? "completed" : "skipped";
+      const result = await fitActivity.execute({
+        workspaceId: fitWorkspace,
+        date,
+        expectedPlanId: fitPlan.id,
+        itemId: item.id,
+        expectedHeadVersion: headVersion,
+        type,
+        occurredAt: new Date(`${dateText}T${String(13 + itemIndex).padStart(2, "0")}:00:00.000Z`),
+        timeZone: "UTC",
+        ...(type === "completed" ? { durationMinutes: 45 } : {}),
+        idempotencyKey: `daily-plan-fit-${dateIndex}-${itemIndex}-${type}`,
+      });
+      headVersion = result.headVersion;
+    }
+    if (dateText === "2026-07-13") {
+      latestFitPlanId = fitPlan.id;
+      latestFitCompletedItemId = fitPlan.items[0]!.id;
+      latestFitHeadVersion = headVersion;
+    }
+  }
+
+  const fitForDate = localDate("2026-07-14");
+  const getPlanFitInsight = new GetDailyPlanFitInsight(unitOfWork, clock);
+  const dismissPlanFitInsight = new DismissDailyPlanFitInsight(unitOfWork, clock);
+  const resetPlanFitInsight = new ResetDailyPlanFitInsightDismissal(unitOfWork, clock);
+  const initialFitInsight = await getPlanFitInsight.execute({
+    workspaceId: fitWorkspace,
+    forDate: fitForDate,
+  });
+  assert.deepEqual(
+    {
+      status: initialFitInsight.status,
+      disposition: initialFitInsight.disposition,
+      sampleCount: initialFitInsight.sampleCount,
+      typicalPlannedMinutes: initialFitInsight.typicalPlannedMinutes,
+      typicalCompletedMinutes: initialFitInsight.typicalCompletedMinutes,
+      typicalPlannedTaskCount: initialFitInsight.typicalPlannedTaskCount,
+      typicalCompletedTaskCount: initialFitInsight.typicalCompletedTaskCount,
+      suggestedTargetMinutes: initialFitInsight.suggestedTargetMinutes,
+      suggestedTargetTaskCount: initialFitInsight.suggestedTargetTaskCount,
+    },
+    {
+      status: "suggested",
+      disposition: "available",
+      sampleCount: 3,
+      typicalPlannedMinutes: 180,
+      typicalCompletedMinutes: 90,
+      typicalPlannedTaskCount: 4,
+      typicalCompletedTaskCount: 2,
+      suggestedTargetMinutes: 90,
+      suggestedTargetTaskCount: 2,
+    },
+  );
+  assert.ok(initialFitInsight.insightKey);
+
+  const fitHeadsBeforeFeedback = await connection.sql<
+    { local_date: string; current_plan_id: string; version: number }[]
+  >`
+    select local_date::text, current_plan_id::text, version
+    from daily_plan_heads
+    where workspace_id = ${fitWorkspace}
+    order by local_date, id
+  `;
+  const firstFitDismissal = await dismissPlanFitInsight.execute({
+    workspaceId: fitWorkspace,
+    forDate: fitForDate,
+    insightKey: initialFitInsight.insightKey,
+    idempotencyKey: "daily-plan-fit-dismiss",
+  });
+  const replayedFitDismissal = await dismissPlanFitInsight.execute({
+    workspaceId: fitWorkspace,
+    forDate: fitForDate,
+    insightKey: initialFitInsight.insightKey,
+    idempotencyKey: "daily-plan-fit-dismiss",
+  });
+  assert.equal(replayedFitDismissal.id, firstFitDismissal.id);
+  assert.equal(
+    (await getPlanFitInsight.execute({ workspaceId: fitWorkspace, forDate: fitForDate }))
+      .disposition,
+    "dismissed",
+  );
+  await assert.rejects(
+    resetPlanFitInsight.execute({
+      workspaceId: fitWorkspace,
+      forDate: fitForDate,
+      insightKey: initialFitInsight.insightKey,
+      idempotencyKey: "daily-plan-fit-dismiss",
+    }),
+    (error: unknown) => {
+      assert.equal(
+        typeof error === "object" && error !== null && "code" in error
+          ? (error as { code: unknown }).code
+          : undefined,
+        "daily_plan_fit_insight.idempotency_conflict",
+      );
+      return true;
+    },
+  );
+  const firstFitReset = await resetPlanFitInsight.execute({
+    workspaceId: fitWorkspace,
+    forDate: fitForDate,
+    insightKey: initialFitInsight.insightKey,
+    idempotencyKey: "daily-plan-fit-reset",
+  });
+  const replayedFitReset = await resetPlanFitInsight.execute({
+    workspaceId: fitWorkspace,
+    forDate: fitForDate,
+    insightKey: initialFitInsight.insightKey,
+    idempotencyKey: "daily-plan-fit-reset",
+  });
+  assert.equal(replayedFitReset.id, firstFitReset.id);
+  assert.equal(
+    (await getPlanFitInsight.execute({ workspaceId: fitWorkspace, forDate: fitForDate }))
+      .disposition,
+    "available",
+  );
+
+  // UUID spelling cannot split the workspace feedback lock. An uppercase direct application call
+  // must queue behind the canonical lowercase key held by this transaction.
+  const waitingBeforeFitCaseCheck = await waitingAdvisoryLockCount();
+  let markFitCaseBlockerReady!: () => void;
+  let releaseFitCaseBlocker!: () => void;
+  const fitCaseBlockerReady = new Promise<void>((resolve) => {
+    markFitCaseBlockerReady = resolve;
+  });
+  const fitCaseBlockerRelease = new Promise<void>((resolve) => {
+    releaseFitCaseBlocker = resolve;
+  });
+  const fitFeedbackLockKey = `${fitWorkspace.toLowerCase()}:daily-plan-fit-feedback`;
+  const fitCaseBlocker = connection.sql.begin(async (sql) => {
+    await sql`select pg_advisory_xact_lock(hashtextextended(${fitFeedbackLockKey}, 0))`;
+    markFitCaseBlockerReady();
+    await fitCaseBlockerRelease;
+  });
+  await fitCaseBlockerReady;
+
+  let mixedCaseFitDismissal: ReturnType<DismissDailyPlanFitInsight["execute"]> | null = null;
+  let mixedCaseQueueReady = false;
+  try {
+    mixedCaseFitDismissal = dismissPlanFitInsight.execute({
+      workspaceId: workspaceId(fitWorkspace.toUpperCase()),
+      forDate: fitForDate,
+      insightKey: initialFitInsight.insightKey,
+      idempotencyKey: "daily-plan-fit-mixed-case-dismiss",
+    });
+    await waitForAdvisoryLockCount(waitingBeforeFitCaseCheck + 1);
+    mixedCaseQueueReady = true;
+  } finally {
+    releaseFitCaseBlocker();
+    await fitCaseBlocker;
+    if (!mixedCaseQueueReady && mixedCaseFitDismissal !== null) {
+      await Promise.allSettled([mixedCaseFitDismissal]);
+    }
+  }
+  assert.equal((await mixedCaseFitDismissal!).kind, "dismissed");
+  assert.equal(
+    (
+      await resetPlanFitInsight.execute({
+        workspaceId: fitWorkspace,
+        forDate: fitForDate,
+        insightKey: initialFitInsight.insightKey,
+        idempotencyKey: "daily-plan-fit-mixed-case-reset",
+      })
+    ).kind,
+    "reset",
+  );
+
+  await dismissPlanFitInsight.execute({
+    workspaceId: fitWorkspace,
+    forDate: fitForDate,
+    insightKey: initialFitInsight.insightKey,
+    idempotencyKey: "daily-plan-fit-dismiss-before-new-evidence",
+  });
+  const fitHeadsAfterFeedback = await connection.sql<
+    { local_date: string; current_plan_id: string; version: number }[]
+  >`
+    select local_date::text, current_plan_id::text, version
+    from daily_plan_heads
+    where workspace_id = ${fitWorkspace}
+    order by local_date, id
+  `;
+  assert.deepEqual(fitHeadsAfterFeedback, fitHeadsBeforeFeedback);
+
+  const fitFeedbackRows = await connection.sql<
+    { insight_key: string; kind: string; idempotency_key: string }[]
+  >`
+    select insight_key, kind::text, idempotency_key
+    from daily_plan_fit_insight_feedback_events
+    where workspace_id = ${fitWorkspace}
+    order by ingested_sequence, id
+  `;
+  assert.deepEqual(
+    fitFeedbackRows.map((row) => ({ ...row, insight_key: "initial-key" })),
+    [
+      {
+        insight_key: "initial-key",
+        kind: "dismissed",
+        idempotency_key: "daily-plan-fit-dismiss",
+      },
+      {
+        insight_key: "initial-key",
+        kind: "reset",
+        idempotency_key: "daily-plan-fit-reset",
+      },
+      {
+        insight_key: "initial-key",
+        kind: "dismissed",
+        idempotency_key: "daily-plan-fit-mixed-case-dismiss",
+      },
+      {
+        insight_key: "initial-key",
+        kind: "reset",
+        idempotency_key: "daily-plan-fit-mixed-case-reset",
+      },
+      {
+        insight_key: "initial-key",
+        kind: "dismissed",
+        idempotency_key: "daily-plan-fit-dismiss-before-new-evidence",
+      },
+    ],
+  );
+  await assert.rejects(
+    connection.sql`
+      update daily_plan_fit_insight_feedback_events
+      set kind = kind
+      where workspace_id = ${fitWorkspace}
+    `,
+    assertDatabaseErrorCode("55000"),
+  );
+  await assert.rejects(
+    connection.sql`
+      delete from daily_plan_fit_insight_feedback_events
+      where workspace_id = ${fitWorkspace}
+    `,
+    assertDatabaseErrorCode("55000"),
+  );
+
+  assert.ok(latestFitPlanId);
+  assert.ok(latestFitCompletedItemId);
+  const reopenedFitItem = await fitActivity.execute({
+    workspaceId: fitWorkspace,
+    date: localDate("2026-07-13"),
+    expectedPlanId: latestFitPlanId,
+    itemId: latestFitCompletedItemId,
+    expectedHeadVersion: latestFitHeadVersion,
+    type: "completion_reversed",
+    occurredAt: new Date("2026-07-14T01:00:00.000Z"),
+    timeZone: "UTC",
+    idempotencyKey: "daily-plan-fit-reverse-completion",
+  });
+  await fitActivity.execute({
+    workspaceId: fitWorkspace,
+    date: localDate("2026-07-13"),
+    expectedPlanId: latestFitPlanId,
+    itemId: latestFitCompletedItemId,
+    expectedHeadVersion: reopenedFitItem.headVersion,
+    type: "skipped",
+    occurredAt: new Date("2026-07-14T01:01:00.000Z"),
+    timeZone: "UTC",
+    idempotencyKey: "daily-plan-fit-skip-reopened-item",
+  });
+  const changedFitInsight = await getPlanFitInsight.execute({
+    workspaceId: fitWorkspace,
+    forDate: fitForDate,
+  });
+  assert.equal(changedFitInsight.status, "suggested");
+  assert.equal(changedFitInsight.disposition, "available");
+  assert.notEqual(changedFitInsight.insightKey, initialFitInsight.insightKey);
+  process.stdout.write("daily-plan-fit-insight verification passed\n");
 
   process.stdout.write("planner database verification passed\n");
 } finally {

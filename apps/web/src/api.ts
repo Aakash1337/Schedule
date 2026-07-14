@@ -2,6 +2,8 @@ import type {
   ActivityPage,
   CurrentDailyPlan,
   DailyPlan,
+  DailyPlanFitInsight,
+  DailyPlanFitInsightFeedback,
   GeneratePlanInput,
   NaturalLanguageConfirmationResult,
   NaturalLanguageProposal,
@@ -402,6 +404,44 @@ export const api = {
     request<Routine>(
       workspacePath(workspaceId, `/routines/${encodeURIComponent(routineId)}`),
       signal === undefined ? {} : { signal },
+    ),
+
+  getDailyPlanFitInsight: (workspaceId: string, forDate: string, signal?: AbortSignal) =>
+    request<DailyPlanFitInsight>(
+      queryPath(workspacePath(workspaceId, "/daily-plan-fit-insight"), { forDate }),
+      signal === undefined ? {} : { signal },
+    ),
+
+  dismissDailyPlanFitInsight: (
+    workspaceId: string,
+    input: { readonly forDate: string; readonly insightKey: string },
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ) =>
+    request<DailyPlanFitInsightFeedback>(
+      workspacePath(workspaceId, "/daily-plan-fit-insight/dismissals"),
+      {
+        method: "POST",
+        json: input,
+        idempotencyKey,
+        ...(signal === undefined ? {} : { signal }),
+      },
+    ),
+
+  resetDailyPlanFitInsightDismissal: (
+    workspaceId: string,
+    input: { readonly forDate: string; readonly insightKey: string },
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ) =>
+    request<DailyPlanFitInsightFeedback>(
+      workspacePath(workspaceId, "/daily-plan-fit-insight/dismissal-resets"),
+      {
+        method: "POST",
+        json: input,
+        idempotencyKey,
+        ...(signal === undefined ? {} : { signal }),
+      },
     ),
 
   getRoutineDurationInsight: (workspaceId: string, routineId: string, signal?: AbortSignal) =>

@@ -13,6 +13,7 @@ export type DailyPlanId = BrandedId<"DailyPlanId">;
 export type PlanItemId = BrandedId<"PlanItemId">;
 export type RoutinePlanningFeedbackId = BrandedId<"RoutinePlanningFeedbackId">;
 export type RoutineDurationInsightFeedbackId = BrandedId<"RoutineDurationInsightFeedbackId">;
+export type DailyPlanFitInsightFeedbackId = BrandedId<"DailyPlanFitInsightFeedbackId">;
 export type NotificationRuleId = BrandedId<"NotificationRuleId">;
 export type OneOffReminderId = BrandedId<"OneOffReminderId">;
 export type NotificationIntentId = BrandedId<"NotificationIntentId">;
@@ -49,6 +50,10 @@ export const routinePlanningFeedbackId = (
 export const routineDurationInsightFeedbackId = (
   value: string = randomUUID(),
 ): RoutineDurationInsightFeedbackId => toId(value, "RoutineDurationInsightFeedbackId");
+
+export const dailyPlanFitInsightFeedbackId = (
+  value: string = randomUUID(),
+): DailyPlanFitInsightFeedbackId => toId(value, "DailyPlanFitInsightFeedbackId");
 
 export const notificationRuleId = (value: string = randomUUID()): NotificationRuleId =>
   toId(value, "NotificationRuleId");

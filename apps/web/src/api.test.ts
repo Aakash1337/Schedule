@@ -441,6 +441,53 @@ describe("web API client", () => {
     );
   });
 
+  it("retrieves a Daily Plan Fit insight for an explicit local date", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ status: "insufficient_history", forDate: "2026-07-14" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await api.getDailyPlanFitInsight("workspace-1", "2026-07-14", controller.signal);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/daily-plan-fit-insight?forDate=2026-07-14",
+      expect.objectContaining({ method: "GET", signal: controller.signal }),
+    );
+  });
+
+  it.each([
+    ["dismiss", "/daily-plan-fit-insight/dismissals", "dismissDailyPlanFitInsight"],
+    ["reset", "/daily-plan-fit-insight/dismissal-resets", "resetDailyPlanFitInsightDismissal"],
+  ] as const)("records an idempotent Plan Fit %s", async (_kind, path, method) => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _options?: RequestInit) =>
+        new Response(JSON.stringify({ id: "feedback-1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const input = { forDate: "2026-07-14", insightKey: "a".repeat(64) };
+
+    await api[method]("workspace-1", input, "plan-fit-command-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/v1/workspaces/workspace-1${path}`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: expect.any(Headers),
+      }),
+    );
+    const options = fetchMock.mock.calls[0]?.[1];
+    expect((options?.headers as Headers).get("Idempotency-Key")).toBe("plan-fit-command-1");
+  });
+
   it("retrieves a routine duration insight with a cancellable request", async () => {
     const fetchMock = vi.fn(
       async () =>

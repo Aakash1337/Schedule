@@ -1256,8 +1256,8 @@
       "risk": "normal",
       "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 3 — Transparent adaptation" },
       "limitations": [
-        "Routine-duration calibration and reversible exact-key dismissal/reset are implemented; learned cadence, day/time, energy, preference, overload, and category-balance signals remain deferred.",
-        "Suggestions are never applied automatically, and adaptive probabilistic selection beyond the deterministic planner and historical insight comparison remain deferred.",
+        "Routine-duration calibration, Daily Plan Fit guidance, and reversible exact-key dismissal/reset are implemented; learned cadence, day/time, energy, preference, and category-balance signals remain deferred.",
+        "Suggestions are never applied automatically, and adaptive probabilistic selection beyond the deterministic planner, upward Plan Fit expansion, and historical insight comparison remain deferred.",
         "The statistical thresholds have contract evidence but no production outcome data, and no local or hosted model participates."
       ],
       "evidence": [
@@ -1432,6 +1432,113 @@
           "anchors": [
             "persists exact-evidence duration insight feedback and resurfaces changed evidence"
           ]
+        }
+      ]
+    },
+    {
+      "id": "daily-plan-fit-guidance",
+      "status": "implemented",
+      "risk": "high",
+      "contract": {
+        "file": "docs/PLANNER.md",
+        "anchor": "## Daily Plan Fit guidance"
+      },
+      "limitations": [
+        "Version 1 is downward-only and uses a fixed 90-day, three-to-28-sample median policy; it does not learn or recommend target increases.",
+        "Using a suggestion only prefills editable fields, and there is no automatic generation, historical outcome comparison, or model participation."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/daily-plan-fit-insight.test.ts",
+          "command": "unit",
+          "anchors": [
+            "requires three fully resolved, nonempty current plans",
+            "jointly recommends materially lower median time and task targets",
+            "does not emit an actionable suggestion for a sub-threshold gap",
+            "uses safe minimum targets when recent plans resolved with no completed items",
+            "caps evidence, ignores repository order, and excludes the evaluation clock from its key",
+            "rejects cross-workspace and duplicate evidence",
+            "fails closed when one evidence plan exceeds the item bound",
+            "resolves the latest exact-key dismissal and reset",
+            "normalizes idempotency and validates nonnegative completed medians"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/daily-plan-fit-insight.test.ts",
+          "command": "unit",
+          "anchors": [
+            "reads the bounded prior-plan projection and resolves exact-key feedback",
+            "rejects a missing workspace before reading history",
+            "rejects an invalid local date before opening a unit of work",
+            "dismisses then resets the same exact suggestion under a read-committed lock",
+            "returns an exact idempotent replay without recalculating evidence",
+            "rejects idempotency reuse and stale evidence",
+            "enforces disposition transitions"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/repositories.test.ts",
+          "command": "unit",
+          "anchors": [
+            "rejects unbounded history requests before querying",
+            "maps one bounded current-head query and skips malformed target snapshots",
+            "fails closed when one current plan exceeds the item projection bound",
+            "uses one canonical workspace advisory lock across UUID casing",
+            "loads the latest exact key and bounded idempotency receipt",
+            "lets PostgreSQL allocate the sequence and targets workspace idempotency",
+            "replays equivalent feedback but rejects changed semantics"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": ["stores and migrates append-only Daily Plan Fit feedback"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "serves and records exact-key Daily Plan Fit guidance for an explicit local date",
+            "validates Plan Fit payloads and maps stale evidence to conflict"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/api.test.ts",
+          "command": "unit",
+          "anchors": [
+            "retrieves a Daily Plan Fit insight for an explicit local date",
+            "records an idempotent Plan Fit %s"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/TodayView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "prefills both Plan Fit targets without generating until the user submits",
+            "announces Plan Fit loading without changing either target",
+            "aborts and ignores Plan Fit results from the previous workspace",
+            "dismisses and restores only the exact Plan Fit evidence key",
+            "refetches changed evidence after a stale Plan Fit feedback command"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-planner-db.ts",
+          "command": "planner-db",
+          "anchors": ["daily-plan-fit-insight-postgres"]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/planning-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": ["derives, prefills, and explicitly restores a Daily Plan Fit suggestion"]
         }
       ]
     },

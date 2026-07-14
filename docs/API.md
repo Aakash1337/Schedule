@@ -71,6 +71,9 @@ not authorize these product routes.
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/approve`                   | Atomically approve an insight (`200` or `409`)         |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissals`                | Dismiss one exact insight (`200` or `409`)             |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissal-resets`          | Restore one exact insight (`200` or `409`)             |
+| `GET`    | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight?forDate={YYYY-MM-DD}`                     | Derive read-only joint target guidance                 |
+| `POST`   | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/dismissals`                               | Dismiss one exact target suggestion                    |
+| `POST`   | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/dismissal-resets`                         | Restore one exact target suggestion                    |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | List stable, cursor-paginated history (`200`)          |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | Idempotently record activity (`200`)                   |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans`                                                           | Create revision 1 or retry an exact revision           |
@@ -310,6 +313,57 @@ routine version returns `409 routine.version_conflict`. Missing or malformed hea
 These feedback commands only change the insight's disposition. They never edit the routine or its
 duration, approve a suggestion, mutate Today or its head, regenerate a plan, or change planner input,
 scoring, and selection.
+
+The workspace-level `daily-plan-fit-insight` route requires an explicit real Gregorian `forDate`
+query value. It derives deterministic guidance from the current heads of fully resolved, nonempty
+plans in the preceding 90 local dates. Every item must be completed, skipped, deferred, or dismissed;
+a pending or started item excludes that plan from the sample. At most the 28 most recent eligible
+plans are used, at most 512 items are accepted in one evidence plan, and at least three samples are
+required. Completed workload is the scheduled minutes and count of items marked complete, not
+optional stopwatch duration. Oversized or over-ceiling evidence fails closed instead of deriving a
+partial recommendation.
+
+The response contains `status`, nullable `insightKey`, `disposition`, nullable `dismissedAt`,
+`forDate`, `windowStartedOn`, `windowEndedOn`, `lookbackDays`, `sampleCount`, `minimumSamples`,
+`maximumSamples`, `evaluatedAt`, the four nullable `typicalPlanned*` and `typicalCompleted*` medians,
+both nullable materiality thresholds, and nullable `suggestedTargetMinutes` and
+`suggestedTargetTaskCount`. Status is one of:
+
+- `insufficient_history`: fewer than three fully resolved current heads;
+- `aligned`: the median completed workload does not support a material downward adjustment; or
+- `suggested`: at least one dimension supports a material decrease and both proposed target values
+  are returned.
+
+Version 1 rounds proposed minutes to the nearest 15 with a 30-minute floor and uses a one-task floor.
+The minute threshold is the larger of 30 minutes or 20% of the planned median rounded up to 15; the
+task threshold is the larger of one task or 25% of the planned median rounded up. It does not
+recommend targets above the user's typical plan. `insufficient_history` and `aligned` are
+informational and have no key. A `suggested` result receives a lowercase SHA-256 key over the policy,
+requested date, evidence window, and canonical selected evidence; evaluation time and repository
+ordering are excluded.
+
+Dismiss and reset use strict bodies containing exactly the requested date and key, plus a required
+`Idempotency-Key` header of 1–160 characters:
+
+```json
+{
+  "forDate": "2026-07-14",
+  "insightKey": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+```
+
+The server takes a lowercase-canonical workspace-scoped advisory lock, resolves an exact accepted
+replay first, and then recalculates current evidence before appending an immutable `dismissed` or
+`reset` event. Exact retry
+returns the original event. Semantic key reuse returns
+`409 daily_plan_fit_insight.idempotency_conflict`; changed evidence returns
+`409 daily_plan_fit_insight.evidence_conflict`; and an invalid disposition transition returns
+`409 daily_plan_fit_insight.disposition_conflict`. A changed evidence snapshot has a different key,
+so it can surface as available despite an older dismissal.
+
+Neither the read nor feedback routes edit planning targets, create a plan revision, mutate a Today
+head, or affect planner input and scoring. Copying a suggestion into editable target fields is a
+client action; the ordinary explicit plan-generation request remains the only creation step.
 
 Routine activity history is ordered by newest ingestion first and accepts `limit` from 1–200 (default 50) plus an opaque, integrity-protected `cursor`. The cursor is bound to its workspace and routine. The first page captures a high-water mark, so later appends do not shift subsequent pages. A non-null `page.nextCursor` retrieves the next page. Local cursor signing keys are process-bound, so clients should restart pagination after an API restart.
 

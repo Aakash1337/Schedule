@@ -6,6 +6,8 @@ import { PgDialect } from "drizzle-orm/pg-core";
 
 import {
   activityEventId,
+  dailyPlanFitInsightMaximumItemsPerPlan,
+  dailyPlanFitInsightFeedbackId,
   dailyPlanId,
   localDate,
   planItemId,
@@ -16,6 +18,7 @@ import {
   workspaceId,
   type RoutinePlanningFeedback,
   type RoutineDurationInsightFeedback,
+  type DailyPlanFitInsightFeedback,
   type WorkItem,
   type WorkItemDependency,
 } from "@schedule/domain";
@@ -26,13 +29,18 @@ import {
   PostgresIntegrationUnitOfWork,
   PostgresNaturalLanguageProposalRepository,
   PostgresNaturalLanguageProposalUnitOfWork,
+  PostgresDailyPlanFitInsightFeedbackRepository,
   PostgresRoutineDurationInsightFeedbackRepository,
   PostgresUnitOfWork,
   PostgresWorkItemDependencyRepository,
   PostgresActivityEventRepository,
   PostgresDailyPlanRepository,
 } from "./repositories.js";
-import { routineDurationInsightFeedbackEvents, routinePlanningFeedbackEvents } from "./schema.js";
+import {
+  dailyPlanFitInsightFeedbackEvents,
+  routineDurationInsightFeedbackEvents,
+  routinePlanningFeedbackEvents,
+} from "./schema.js";
 
 const requestIdentity = {
   id: "10000000-0000-4000-8000-000000000001",
@@ -1194,6 +1202,153 @@ describe("PostgresDailyPlanRepository current-plan batches", () => {
   });
 });
 
+describe("PostgresDailyPlanRepository Daily Plan Fit evidence", () => {
+  it("rejects unbounded history requests before querying", async () => {
+    const execute = vi.fn();
+    const repository = new PostgresDailyPlanRepository({
+      execute,
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(
+      repository.listFitEvidence(
+        workspaceId("fit-evidence-workspace"),
+        localDate("2026-07-14"),
+        367,
+        90,
+      ),
+    ).rejects.toMatchObject({ code: "daily_plan_fit_insight.lookback_invalid" });
+    await expect(
+      repository.listFitEvidence(
+        workspaceId("fit-evidence-workspace"),
+        localDate("2026-07-14"),
+        90,
+        367,
+      ),
+    ).rejects.toMatchObject({ code: "daily_plan_fit_insight.candidate_limit_invalid" });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("maps one bounded current-head query and skips malformed target snapshots", async () => {
+    const workspace = workspaceId("fit-evidence-workspace");
+    const execute = vi.fn().mockResolvedValue([
+      {
+        planId: "fit-plan-1",
+        localDate: "2026-07-13",
+        targetMinutes: "180",
+        targetTaskCount: "4",
+        itemId: "fit-plan-1-item-1",
+        scheduledMinutes: 45,
+        activityState: "completed",
+        lastActivityEventId: "fit-plan-1-event-1",
+      },
+      {
+        planId: "fit-plan-1",
+        localDate: "2026-07-13",
+        targetMinutes: "180",
+        targetTaskCount: "4",
+        itemId: "fit-plan-1-item-2",
+        scheduledMinutes: 30,
+        activityState: "skipped",
+        lastActivityEventId: "fit-plan-1-event-2",
+      },
+      {
+        planId: "fit-plan-empty",
+        localDate: "2026-07-12",
+        targetMinutes: "60",
+        targetTaskCount: "2",
+        itemId: null,
+        scheduledMinutes: null,
+        activityState: null,
+        lastActivityEventId: null,
+      },
+      {
+        planId: "fit-plan-invalid",
+        localDate: "2026-07-11",
+        targetMinutes: "18.5",
+        targetTaskCount: "4",
+        itemId: null,
+        scheduledMinutes: null,
+        activityState: null,
+        lastActivityEventId: null,
+      },
+    ]);
+    const repository = new PostgresDailyPlanRepository({
+      execute,
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(
+      repository.listFitEvidence(workspace, localDate("2026-07-14"), 90, 90),
+    ).resolves.toEqual([
+      {
+        workspaceId: workspace,
+        planId: dailyPlanId("fit-plan-1"),
+        date: localDate("2026-07-13"),
+        targetMinutes: 180,
+        targetTaskCount: 4,
+        items: [
+          {
+            id: planItemId("fit-plan-1-item-1"),
+            scheduledMinutes: 45,
+            activityState: "completed",
+            lastActivityEventId: activityEventId("fit-plan-1-event-1"),
+          },
+          {
+            id: planItemId("fit-plan-1-item-2"),
+            scheduledMinutes: 30,
+            activityState: "skipped",
+            lastActivityEventId: activityEventId("fit-plan-1-event-2"),
+          },
+        ],
+      },
+      {
+        workspaceId: workspace,
+        planId: dailyPlanId("fit-plan-empty"),
+        date: localDate("2026-07-12"),
+        targetMinutes: 60,
+        targetTaskCount: 2,
+        items: [],
+      },
+    ]);
+    expect(execute).toHaveBeenCalledTimes(1);
+    const query = new PgDialect().sqlToQuery(execute.mock.calls[0]?.[0]);
+    expect(query.sql).toContain("with candidate_plans as materialized");
+    expect(query.sql).toContain('left join "daily_plan_items"');
+    expect(query.params).toEqual(
+      expect.arrayContaining([
+        workspace,
+        "2026-07-14",
+        90,
+        90 * dailyPlanFitInsightMaximumItemsPerPlan + 1,
+      ]),
+    );
+  });
+
+  it("fails closed when one current plan exceeds the item projection bound", async () => {
+    const rows = Array.from({ length: dailyPlanFitInsightMaximumItemsPerPlan + 1 }, (_, index) => ({
+      planId: "fit-plan-oversized",
+      localDate: "2026-07-13",
+      targetMinutes: "180",
+      targetTaskCount: "4",
+      itemId: `fit-plan-oversized-item-${index}`,
+      scheduledMinutes: 30,
+      activityState: "completed",
+      lastActivityEventId: `fit-plan-oversized-event-${index}`,
+    }));
+    const repository = new PostgresDailyPlanRepository({
+      execute: vi.fn().mockResolvedValue(rows),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(
+      repository.listFitEvidence(
+        workspaceId("fit-evidence-workspace"),
+        localDate("2026-07-14"),
+        90,
+        2,
+      ),
+    ).rejects.toMatchObject({ code: "daily_plan_fit_insight.item_limit_exceeded" });
+  });
+});
+
 describe("PostgresDailyPlanRepository routine feedback", () => {
   it("locks feedback mutations with a dedicated routine-scoped transaction key", async () => {
     const execute = vi.fn().mockResolvedValue(undefined);
@@ -1583,5 +1738,148 @@ describe("PostgresRoutineDurationInsightFeedbackRepository", () => {
     await expect(repository.append(durationFeedback())).rejects.toMatchObject({
       code: "routine_duration_insight.feedback_write_conflict",
     });
+  });
+});
+
+const planFitFeedbackWorkspace = workspaceId("94000000-0000-4000-8000-000000000001");
+const planFitFeedbackId = dailyPlanFitInsightFeedbackId("95000000-0000-4000-8000-000000000002");
+const planFitFeedbackKey = "c".repeat(64);
+
+function planFitFeedbackRow(
+  overrides: Readonly<Record<string, unknown>> = {},
+): Readonly<Record<string, unknown>> {
+  return {
+    id: planFitFeedbackId,
+    ingestedSequence: 31,
+    workspaceId: planFitFeedbackWorkspace,
+    forDate: "2026-07-14",
+    insightKey: planFitFeedbackKey,
+    kind: "dismissed",
+    sampleCount: 5,
+    typicalPlannedMinutes: 180,
+    typicalCompletedMinutes: 90,
+    typicalPlannedTaskCount: 4,
+    typicalCompletedTaskCount: 2,
+    suggestedTargetMinutes: 90,
+    suggestedTargetTaskCount: 2,
+    idempotencyKey: "plan-fit-feedback-db-test",
+    recordedAt: new Date("2026-07-14T15:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function planFitFeedback(
+  overrides: Partial<DailyPlanFitInsightFeedback> = {},
+): DailyPlanFitInsightFeedback {
+  return {
+    id: planFitFeedbackId,
+    ingestedSequence: 0,
+    workspaceId: planFitFeedbackWorkspace,
+    forDate: localDate("2026-07-14"),
+    insightKey: planFitFeedbackKey,
+    kind: "dismissed",
+    sampleCount: 5,
+    typicalPlannedMinutes: 180,
+    typicalCompletedMinutes: 90,
+    typicalPlannedTaskCount: 4,
+    typicalCompletedTaskCount: 2,
+    suggestedTargetMinutes: 90,
+    suggestedTargetTaskCount: 2,
+    idempotencyKey: "plan-fit-feedback-db-test",
+    recordedAt: new Date("2026-07-14T15:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+describe("PostgresDailyPlanFitInsightFeedbackRepository", () => {
+  it("uses one canonical workspace advisory lock across UUID casing", async () => {
+    const execute = vi.fn().mockResolvedValue([]);
+    const repository = new PostgresDailyPlanFitInsightFeedbackRepository({
+      execute,
+    } as unknown as DatabaseConnection["db"]);
+
+    await repository.lockWorkspace(workspaceId(planFitFeedbackWorkspace.toUpperCase()));
+
+    const statement = execute.mock.calls[0]?.[0] as { readonly queryChunks: readonly unknown[] };
+    expect(statement.queryChunks[1]).toBe(`${planFitFeedbackWorkspace}:daily-plan-fit-feedback`);
+  });
+
+  it("loads the latest exact key and bounded idempotency receipt", async () => {
+    const latest = latestDurationFeedbackDatabase([planFitFeedbackRow()]);
+    const latestRepository = new PostgresDailyPlanFitInsightFeedbackRepository(
+      latest.database as unknown as DatabaseConnection["db"],
+    );
+    await expect(
+      latestRepository.findLatestForKey(planFitFeedbackWorkspace, planFitFeedbackKey),
+    ).resolves.toMatchObject({
+      id: planFitFeedbackId,
+      ingestedSequence: 31,
+      forDate: "2026-07-14",
+      kind: "dismissed",
+    });
+    expect(latest.limit).toHaveBeenCalledWith(1);
+
+    const receipt = durationFeedbackByIdempotencyDatabase([planFitFeedbackRow()]);
+    const receiptRepository = new PostgresDailyPlanFitInsightFeedbackRepository(
+      receipt.database as unknown as DatabaseConnection["db"],
+    );
+    await expect(
+      receiptRepository.findByIdempotencyKey(planFitFeedbackWorkspace, "plan-fit-feedback-db-test"),
+    ).resolves.toMatchObject({ insightKey: planFitFeedbackKey });
+    expect(receipt.limit).toHaveBeenCalledWith(1);
+  });
+
+  it("lets PostgreSQL allocate the sequence and targets workspace idempotency", async () => {
+    const returning = vi.fn().mockResolvedValue([planFitFeedbackRow()]);
+    const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
+    const values = vi.fn().mockReturnValue({ onConflictDoNothing });
+    const repository = new PostgresDailyPlanFitInsightFeedbackRepository({
+      insert: vi.fn().mockReturnValue({ values }),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(repository.append(planFitFeedback())).resolves.toMatchObject({
+      id: planFitFeedbackId,
+      ingestedSequence: 31,
+    });
+    expect(values.mock.calls[0]?.[0]).not.toHaveProperty("ingestedSequence");
+    expect(onConflictDoNothing).toHaveBeenCalledWith({
+      target: [
+        dailyPlanFitInsightFeedbackEvents.workspaceId,
+        dailyPlanFitInsightFeedbackEvents.idempotencyKey,
+      ],
+    });
+  });
+
+  it("replays equivalent feedback but rejects changed semantics", async () => {
+    const databaseFor = (rows: readonly Readonly<Record<string, unknown>>[]) => {
+      const returning = vi.fn().mockResolvedValue([]);
+      const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
+      const values = vi.fn().mockReturnValue({ onConflictDoNothing });
+      const limit = vi.fn().mockResolvedValue(rows);
+      const where = vi.fn().mockReturnValue({ limit });
+      const from = vi.fn().mockReturnValue({ where });
+      return {
+        insert: vi.fn().mockReturnValue({ values }),
+        select: vi.fn().mockReturnValue({ from }),
+      };
+    };
+    const replay = new PostgresDailyPlanFitInsightFeedbackRepository(
+      databaseFor([planFitFeedbackRow()]) as unknown as DatabaseConnection["db"],
+    );
+    await expect(
+      replay.append(
+        planFitFeedback({
+          id: dailyPlanFitInsightFeedbackId("95000000-0000-4000-8000-000000000099"),
+          recordedAt: new Date("2026-07-14T15:05:00.000Z"),
+        }),
+      ),
+    ).resolves.toMatchObject({ id: planFitFeedbackId, ingestedSequence: 31 });
+
+    const conflict = new PostgresDailyPlanFitInsightFeedbackRepository(
+      databaseFor([planFitFeedbackRow()]) as unknown as DatabaseConnection["db"],
+    );
+    await expect(
+      conflict.append(planFitFeedback({ suggestedTargetMinutes: 120 })),
+    ).rejects.toMatchObject({ code: "daily_plan_fit_insight.idempotency_conflict" });
   });
 });

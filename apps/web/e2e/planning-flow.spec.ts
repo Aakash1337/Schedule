@@ -525,6 +525,171 @@ test("persists exact-evidence duration insight feedback and resurfaces changed e
   expect(unexpectedHttpResponses).toEqual([]);
 });
 
+test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", async ({ page }) => {
+  const pageErrors: string[] = [];
+  const requestFailures: string[] = [];
+  const unexpectedHttpResponses: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("requestfailed", (request) => {
+    requestFailures.push(`${request.method()} ${new URL(request.url()).pathname}`);
+  });
+  page.on("response", (response) => {
+    if (response.status() < 400) return;
+    const request = response.request();
+    const pathname = new URL(response.url()).pathname;
+    const expectedMissingCurrentPlan =
+      response.status() === 404 &&
+      request.method() === "GET" &&
+      /^\/v1\/workspaces\/[^/]+\/plans\/2026-07-14\/current$/.test(pathname);
+    if (!expectedMissingCurrentPlan) {
+      unexpectedHttpResponses.push(`${response.status()} ${request.method()} ${pathname}`);
+    }
+  });
+
+  await page.clock.install({ time: new Date("2026-07-14T12:00:00.000Z") });
+  const workspaceResponse = await page.request.post("/v1/workspaces", {
+    data: { name: "Daily Plan Fit E2E workspace" },
+  });
+  expect(workspaceResponse.status()).toBe(201);
+  const workspace = (await workspaceResponse.json()) as { readonly id: string };
+
+  for (const title of ["Fit A", "Fit B", "Fit C", "Fit D"]) {
+    const routineResponse = await page.request.post(`/v1/workspaces/${workspace.id}/routines`, {
+      data: {
+        title,
+        tags: {
+          priority: "high",
+          energy: "normal",
+          contexts: ["computer"],
+          categories: ["plan-fit-e2e"],
+        },
+        duration: {
+          minimumMinutes: 45,
+          expectedMinutes: 45,
+          maximumMinutes: 45,
+        },
+        cadence: {
+          period: "day",
+          targetCompletions: 1,
+          maximumCompletions: 1,
+        },
+      },
+    });
+    expect(routineResponse.status()).toBe(201);
+  }
+
+  for (const [dateIndex, date] of ["2026-07-11", "2026-07-12", "2026-07-13"].entries()) {
+    const planResponse = await page.request.post(`/v1/workspaces/${workspace.id}/plans`, {
+      data: {
+        date,
+        timeZone: "UTC",
+        availableWindows: [
+          {
+            startsAt: `${date}T08:00:00.000Z`,
+            endsAt: `${date}T12:30:00.000Z`,
+          },
+        ],
+        targetMinutes: 180,
+        targetTaskCount: 4,
+        availableContexts: ["computer"],
+        seed: `daily-plan-fit-e2e-${date}`,
+        requestRevision: 1,
+      },
+    });
+    expect(planResponse.status()).toBe(200);
+    const plan = (await planResponse.json()) as {
+      readonly id: string;
+      readonly items: readonly { readonly id: string }[];
+    };
+    expect(plan.items).toHaveLength(4);
+    let headVersion = 1;
+    for (const [itemIndex, item] of plan.items.entries()) {
+      const type = itemIndex < 2 ? "completed" : "skipped";
+      const activityResponse = await page.request.post(
+        `/v1/workspaces/${workspace.id}/plans/${date}/items/${item.id}/activity-events`,
+        {
+          headers: { "Idempotency-Key": `daily-plan-fit-e2e-${dateIndex}-${itemIndex}` },
+          data: {
+            expectedPlanId: plan.id,
+            expectedHeadVersion: headVersion,
+            type,
+            occurredAt: `${date}T${String(13 + itemIndex).padStart(2, "0")}:00:00.000Z`,
+            timeZone: "UTC",
+            durationMinutes: type === "completed" ? 45 : null,
+            reason: null,
+            metadata: {},
+          },
+        },
+      );
+      expect(activityResponse.status()).toBe(200);
+      headVersion = ((await activityResponse.json()) as { readonly headVersion: number })
+        .headVersion;
+    }
+  }
+
+  await page.addInitScript((workspaceId) => {
+    localStorage.setItem("schedule.selectedWorkspace", workspaceId);
+  }, workspace.id);
+  await page.goto("/");
+  const expectedOrigin = new URL(page.url()).origin;
+  await expect(page.getByRole("main", { name: "Today view" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Try 90 minutes and 2 tasks" })).toBeVisible();
+  await expect(page.getByText("3 resolved plans")).toBeVisible();
+  await expect(page.getByText("3h · 4 tasks")).toBeVisible();
+  await expect(page.getByText("1h 30m · 2 tasks")).toBeVisible();
+
+  const dismissalResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) => pathname === `/v1/workspaces/${workspace.id}/daily-plan-fit-insight/dismissals`,
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Not now", exact: true }).click();
+  expect((await dismissalResponsePromise).status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "Plan Fit suggestion paused" })).toBeFocused();
+
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Show again", exact: true })).toBeVisible();
+  const resetResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) =>
+        pathname === `/v1/workspaces/${workspace.id}/daily-plan-fit-insight/dismissal-resets`,
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Show again", exact: true }).click();
+  expect((await resetResponsePromise).status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "Try 90 minutes and 2 tasks" })).toBeFocused();
+
+  await page.getByRole("button", { name: "Use 90 minutes and 2 tasks" }).click();
+  await expect(page.getByRole("spinbutton", { name: /^Target minutes/ })).toHaveValue("90");
+  await expect(page.getByRole("spinbutton", { name: /^Target tasks/ })).toHaveValue("2");
+  await expect(page.getByRole("spinbutton", { name: /^Target minutes/ })).toBeFocused();
+  const absentPlan = await page.request.get(
+    `/v1/workspaces/${workspace.id}/plans/2026-07-14/current`,
+  );
+  expect(absentPlan.status()).toBe(404);
+
+  const generationResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) => pathname === `/v1/workspaces/${workspace.id}/plans`,
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Generate today's plan" }).click();
+  expect((await generationResponsePromise).status()).toBe(200);
+
+  expect(pageErrors).toEqual([]);
+  expect(requestFailures).toEqual([]);
+  expect(unexpectedHttpResponses).toEqual([]);
+});
+
 test("manages prerequisites accessibly through the live 320px work-board flow", async ({
   page,
 }) => {

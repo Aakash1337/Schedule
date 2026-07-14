@@ -11,7 +11,9 @@ import {
   createWorkItem,
   createWorkspace,
   dailyPlanId,
+  dailyPlanFitInsightFeedbackId,
   generateDailyPlan,
+  localDate,
   recordActivityEvent,
   routineId,
   routineDurationInsightFeedbackId,
@@ -22,6 +24,8 @@ import {
   workItemId,
   workspaceId,
   type DailyPlan,
+  type DailyPlanFitInsight,
+  type DailyPlanFitInsightFeedback,
   type RoutineDurationInsight,
   type RoutineDurationInsightFeedback,
   type WorkItemDependency,
@@ -45,6 +49,7 @@ const durationFeedbackUuid = "77777777-7777-4777-8777-777777777777";
 const adviceRequestUuid = "88888888-8888-4888-8888-888888888888";
 const proposalUuid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const durationInsightKey = "a".repeat(64);
+const planFitInsightKey = "b".repeat(64);
 const workspace = createWorkspace({
   id: workspaceId(workspaceUuid),
   name: "Local workspace",
@@ -99,6 +104,45 @@ const durationInsightFeedback = {
   idempotencyKey: "dismiss-duration-insight",
   recordedAt: new Date("2026-07-15T12:02:00.000Z"),
 } satisfies RoutineDurationInsightFeedback;
+const planFitInsight = {
+  status: "suggested",
+  insightKey: planFitInsightKey,
+  disposition: "available",
+  dismissedAt: null,
+  forDate: localDate("2026-07-15"),
+  windowStartedOn: localDate("2026-04-16"),
+  windowEndedOn: localDate("2026-07-14"),
+  lookbackDays: 90,
+  sampleCount: 5,
+  minimumSamples: 3,
+  maximumSamples: 28,
+  evaluatedAt: new Date("2026-07-15T12:00:00.000Z"),
+  typicalPlannedMinutes: 180,
+  typicalCompletedMinutes: 90,
+  materialThresholdMinutes: 45,
+  typicalPlannedTaskCount: 4,
+  typicalCompletedTaskCount: 2,
+  materialThresholdTaskCount: 1,
+  suggestedTargetMinutes: 90,
+  suggestedTargetTaskCount: 2,
+} satisfies DailyPlanFitInsight;
+const planFitFeedback = {
+  id: dailyPlanFitInsightFeedbackId("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
+  ingestedSequence: 1,
+  workspaceId: workspace.id,
+  forDate: planFitInsight.forDate,
+  insightKey: planFitInsightKey,
+  kind: "dismissed",
+  sampleCount: 5,
+  typicalPlannedMinutes: 180,
+  typicalCompletedMinutes: 90,
+  typicalPlannedTaskCount: 4,
+  typicalCompletedTaskCount: 2,
+  suggestedTargetMinutes: 90,
+  suggestedTargetTaskCount: 2,
+  idempotencyKey: "dismiss-plan-fit",
+  recordedAt: new Date("2026-07-15T12:03:00.000Z"),
+} satisfies DailyPlanFitInsightFeedback;
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -136,6 +180,7 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
         duration: command.duration,
         now: new Date("2026-07-15T12:00:00.000Z"),
       }),
+    dismissDailyPlanFitInsight: async () => planFitFeedback,
     dismissRoutineDurationInsight: async () => durationInsightFeedback,
     createWorkspace: async (command) => createWorkspace({ ...command, id: workspace.id }),
     getWorkspace: async () => workspace,
@@ -244,6 +289,12 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
     },
     getRoutine: async () => routine,
     getRoutineDurationInsight: async () => durationInsight,
+    getDailyPlanFitInsight: async () => planFitInsight,
+    resetDailyPlanFitInsightDismissal: async () => ({
+      ...planFitFeedback,
+      kind: "reset",
+      idempotencyKey: "reset-plan-fit",
+    }),
     updateRoutine: async (command) =>
       applyRoutineUpdate(routine, {
         ...(command.title === undefined ? {} : { title: command.title }),
@@ -1128,6 +1179,109 @@ describe("local product API", () => {
     expect(empty.statusCode).toBe(400);
     expect(stale.statusCode).toBe(409);
     expect(stale.json()).toMatchObject({ error: { code: "routine.version_conflict" } });
+  });
+
+  it("serves and records exact-key Daily Plan Fit guidance for an explicit local date", async () => {
+    const commands: unknown[] = [];
+    const app = await appWith(
+      createHarness({
+        getDailyPlanFitInsight: async (query) => {
+          commands.push(query);
+          return planFitInsight;
+        },
+        dismissDailyPlanFitInsight: async (command) => {
+          commands.push(command);
+          return planFitFeedback;
+        },
+        resetDailyPlanFitInsightDismissal: async (command) => {
+          commands.push(command);
+          return { ...planFitFeedback, kind: "reset" };
+        },
+      }).services,
+    );
+
+    const read = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight?forDate=2026-07-15`,
+    });
+    const dismiss = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight/dismissals`,
+      headers: { "idempotency-key": "plan-fit-dismiss-route" },
+      payload: { forDate: "2026-07-15", insightKey: planFitInsightKey },
+    });
+    const reset = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight/dismissal-resets`,
+      headers: { "idempotency-key": "plan-fit-reset-route" },
+      payload: { forDate: "2026-07-15", insightKey: planFitInsightKey },
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toMatchObject({
+      status: "suggested",
+      forDate: "2026-07-15",
+      suggestedTargetMinutes: 90,
+      suggestedTargetTaskCount: 2,
+    });
+    expect(dismiss.statusCode).toBe(200);
+    expect(reset.statusCode).toBe(200);
+    expect(commands).toEqual([
+      { workspaceId: workspace.id, forDate: localDate("2026-07-15") },
+      {
+        workspaceId: workspace.id,
+        forDate: localDate("2026-07-15"),
+        insightKey: planFitInsightKey,
+        idempotencyKey: "plan-fit-dismiss-route",
+      },
+      {
+        workspaceId: workspace.id,
+        forDate: localDate("2026-07-15"),
+        insightKey: planFitInsightKey,
+        idempotencyKey: "plan-fit-reset-route",
+      },
+    ]);
+  });
+
+  it("validates Plan Fit payloads and maps stale evidence to conflict", async () => {
+    const app = await appWith(
+      createHarness({
+        dismissDailyPlanFitInsight: async () => {
+          throw new DomainError(
+            "daily_plan_fit_insight.evidence_conflict",
+            "The evidence changed.",
+          );
+        },
+      }).services,
+    );
+    const path = `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight`;
+
+    const invalidDate = await app.inject({ method: "GET", url: `${path}?forDate=2026-02-30` });
+    const missingHeader = await app.inject({
+      method: "POST",
+      url: `${path}/dismissals`,
+      payload: { forDate: "2026-07-15", insightKey: planFitInsightKey },
+    });
+    const unknownField = await app.inject({
+      method: "POST",
+      url: `${path}/dismissals`,
+      headers: { "idempotency-key": "unknown-field" },
+      payload: { forDate: "2026-07-15", insightKey: planFitInsightKey, apply: true },
+    });
+    const stale = await app.inject({
+      method: "POST",
+      url: `${path}/dismissals`,
+      headers: { "idempotency-key": "stale-plan-fit" },
+      payload: { forDate: "2026-07-15", insightKey: planFitInsightKey },
+    });
+
+    expect(invalidDate.statusCode).toBe(400);
+    expect(missingHeader.statusCode).toBe(400);
+    expect(unknownField.statusCode).toBe(400);
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toMatchObject({
+      error: { code: "daily_plan_fit_insight.evidence_conflict" },
+    });
   });
 
   it("returns a scoped routine duration insight and validates both path identifiers", async () => {

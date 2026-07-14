@@ -100,6 +100,10 @@ export const routineDurationInsightFeedbackKind = pgEnum("routine_duration_insig
   "dismissed",
   "reset",
 ]);
+export const dailyPlanFitInsightFeedbackKind = pgEnum("daily_plan_fit_insight_feedback_kind", [
+  "dismissed",
+  "reset",
+]);
 export const planMutationKind = pgEnum("plan_mutation_kind", [
   "regenerate",
   "replace",
@@ -1606,6 +1610,77 @@ export const routineDurationInsightFeedbackEvents = pgTable(
       sql`char_length(${table.idempotencyKey}) > 0 AND ${table.idempotencyKey} = btrim(${table.idempotencyKey})`,
     ),
     check("duration_insight_feedback_sequence_positive", sql`${table.ingestedSequence} > 0`),
+  ],
+);
+
+/** Immutable user feedback for one exact workspace-level Daily Plan Fit evidence hash. */
+export const dailyPlanFitInsightFeedbackEvents = pgTable(
+  "daily_plan_fit_insight_feedback_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ingestedSequence: bigserial("ingested_sequence", { mode: "number" }).notNull(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    forDate: date("for_date").notNull(),
+    insightKey: varchar("insight_key", { length: 64 }).notNull(),
+    kind: dailyPlanFitInsightFeedbackKind("kind").notNull(),
+    sampleCount: integer("sample_count").notNull(),
+    typicalPlannedMinutes: integer("typical_planned_minutes").notNull(),
+    typicalCompletedMinutes: integer("typical_completed_minutes").notNull(),
+    typicalPlannedTaskCount: integer("typical_planned_task_count").notNull(),
+    typicalCompletedTaskCount: integer("typical_completed_task_count").notNull(),
+    suggestedTargetMinutes: integer("suggested_target_minutes").notNull(),
+    suggestedTargetTaskCount: integer("suggested_target_task_count").notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("daily_plan_fit_feedback_workspace_id_uq").on(table.workspaceId, table.id),
+    unique("daily_plan_fit_feedback_workspace_idempotency_uq").on(
+      table.workspaceId,
+      table.idempotencyKey,
+    ),
+    index("daily_plan_fit_feedback_key_sequence_idx").on(
+      table.workspaceId,
+      table.insightKey,
+      table.ingestedSequence.desc(),
+      table.id.desc(),
+    ),
+    check(
+      "daily_plan_fit_feedback_key_format",
+      sql`char_length(${table.insightKey}) = 64 AND ${table.insightKey} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check("daily_plan_fit_feedback_sample_positive", sql`${table.sampleCount} > 0`),
+    check(
+      "daily_plan_fit_feedback_planned_minutes_positive",
+      sql`${table.typicalPlannedMinutes} > 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_completed_minutes_nonnegative",
+      sql`${table.typicalCompletedMinutes} >= 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_planned_tasks_positive",
+      sql`${table.typicalPlannedTaskCount} > 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_completed_tasks_nonnegative",
+      sql`${table.typicalCompletedTaskCount} >= 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_suggested_minutes_positive",
+      sql`${table.suggestedTargetMinutes} > 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_suggested_tasks_positive",
+      sql`${table.suggestedTargetTaskCount} > 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_idempotency_canonical",
+      sql`char_length(${table.idempotencyKey}) > 0 AND ${table.idempotencyKey} = btrim(${table.idempotencyKey})`,
+    ),
+    check("daily_plan_fit_feedback_sequence_positive", sql`${table.ingestedSequence} > 0`),
   ],
 );
 

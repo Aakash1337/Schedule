@@ -30,6 +30,7 @@ import type {
   ClaimedNotificationDelivery,
   ClaimNotificationDeliveryInput,
   CurrentDailyPlan,
+  DailyPlanFitInsightFeedbackRepository,
   DailyPlanRepository,
   ConfirmedIntegrationCommandResult,
   IntegrationCommand,
@@ -82,11 +83,14 @@ import {
   createStructuredTags,
   createWorkItemDependency,
   dailyPlanId,
+  dailyPlanFitInsightMaximumItemsPerPlan,
+  dailyPlanFitInsightFeedbackId,
   localDate,
   notificationIntentId,
   notificationRuleId,
   oneOffReminderId,
   planItemId,
+  planItemActivityStates,
   isPlanItemActivityActionType,
   recordActivityEvent,
   reversePlanItemCompletion,
@@ -101,6 +105,8 @@ import {
   workspaceId,
   type ActivityEvent,
   type DailyPlan,
+  type DailyPlanFitEvidencePlan,
+  type DailyPlanFitInsightFeedback,
   type JsonValue,
   type LocalDate,
   type LocalTimeResolution,
@@ -137,6 +143,7 @@ import { databaseErrorCode, databaseErrorConstraint } from "./database-errors.js
 import {
   activityEvents,
   auditEvents,
+  dailyPlanFitInsightFeedbackEvents,
   dailyPlanHeads,
   dailyPlanItemStates,
   dailyPlanItems,
@@ -175,6 +182,7 @@ type RoutineRow = typeof routines.$inferSelect;
 type ActivityEventRow = typeof activityEvents.$inferSelect;
 type RoutineDurationInsightFeedbackEventRow =
   typeof routineDurationInsightFeedbackEvents.$inferSelect;
+type DailyPlanFitInsightFeedbackEventRow = typeof dailyPlanFitInsightFeedbackEvents.$inferSelect;
 type RoutinePlanningFeedbackEventRow = typeof routinePlanningFeedbackEvents.$inferSelect;
 type DailyPlanRow = typeof dailyPlans.$inferSelect;
 type DailyPlanItemRow = typeof dailyPlanItems.$inferSelect;
@@ -195,6 +203,17 @@ interface PlanningGraphDatabaseRow {
   readonly rowPosition: number;
   readonly rowKind: string;
   readonly payload: unknown;
+}
+
+interface DailyPlanFitEvidenceDatabaseRow {
+  readonly planId: string;
+  readonly localDate: string;
+  readonly targetMinutes: unknown;
+  readonly targetTaskCount: unknown;
+  readonly itemId: string | null;
+  readonly scheduledMinutes: number | null;
+  readonly activityState: string | null;
+  readonly lastActivityEventId: string | null;
 }
 
 const dependentWorkItems = alias(workItems, "dependent_work_items");
@@ -800,6 +819,28 @@ function mapRoutineDurationInsightFeedback(
     routineVersion: row.routineVersion,
     observedMedianMinutes: row.observedMedianMinutes,
     suggestedExpectedMinutes: row.suggestedExpectedMinutes,
+    idempotencyKey: row.idempotencyKey,
+    recordedAt: new Date(row.recordedAt),
+  };
+}
+
+function mapDailyPlanFitInsightFeedback(
+  row: DailyPlanFitInsightFeedbackEventRow,
+): DailyPlanFitInsightFeedback {
+  return {
+    id: dailyPlanFitInsightFeedbackId(row.id),
+    ingestedSequence: row.ingestedSequence,
+    workspaceId: workspaceId(row.workspaceId),
+    forDate: localDate(row.forDate),
+    insightKey: row.insightKey,
+    kind: row.kind,
+    sampleCount: row.sampleCount,
+    typicalPlannedMinutes: row.typicalPlannedMinutes,
+    typicalCompletedMinutes: row.typicalCompletedMinutes,
+    typicalPlannedTaskCount: row.typicalPlannedTaskCount,
+    typicalCompletedTaskCount: row.typicalCompletedTaskCount,
+    suggestedTargetMinutes: row.suggestedTargetMinutes,
+    suggestedTargetTaskCount: row.suggestedTargetTaskCount,
     idempotencyKey: row.idempotencyKey,
     recordedAt: new Date(row.recordedAt),
   };
@@ -2887,6 +2928,111 @@ export class PostgresRoutineDurationInsightFeedbackRepository implements Routine
   }
 }
 
+export class PostgresDailyPlanFitInsightFeedbackRepository implements DailyPlanFitInsightFeedbackRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async lockWorkspace(workspace: WorkspaceId): Promise<void> {
+    const canonicalWorkspace = workspace.toLowerCase();
+    await this.database.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`${canonicalWorkspace}:daily-plan-fit-feedback`}, 0))`,
+    );
+  }
+
+  async findLatestForKey(
+    workspace: WorkspaceId,
+    insightKey: string,
+  ): Promise<DailyPlanFitInsightFeedback | null> {
+    const [row] = await this.database
+      .select()
+      .from(dailyPlanFitInsightFeedbackEvents)
+      .where(
+        and(
+          eq(dailyPlanFitInsightFeedbackEvents.workspaceId, workspace),
+          eq(dailyPlanFitInsightFeedbackEvents.insightKey, insightKey),
+        ),
+      )
+      .orderBy(
+        desc(dailyPlanFitInsightFeedbackEvents.ingestedSequence),
+        desc(dailyPlanFitInsightFeedbackEvents.id),
+      )
+      .limit(1);
+    return row === undefined ? null : mapDailyPlanFitInsightFeedback(row);
+  }
+
+  async findByIdempotencyKey(
+    workspace: WorkspaceId,
+    idempotencyKey: string,
+  ): Promise<DailyPlanFitInsightFeedback | null> {
+    const [row] = await this.database
+      .select()
+      .from(dailyPlanFitInsightFeedbackEvents)
+      .where(
+        and(
+          eq(dailyPlanFitInsightFeedbackEvents.workspaceId, workspace),
+          eq(dailyPlanFitInsightFeedbackEvents.idempotencyKey, idempotencyKey),
+        ),
+      )
+      .limit(1);
+    return row === undefined ? null : mapDailyPlanFitInsightFeedback(row);
+  }
+
+  async append(feedback: DailyPlanFitInsightFeedback): Promise<DailyPlanFitInsightFeedback> {
+    const [inserted] = await this.database
+      .insert(dailyPlanFitInsightFeedbackEvents)
+      .values({
+        id: feedback.id,
+        workspaceId: feedback.workspaceId,
+        forDate: feedback.forDate,
+        insightKey: feedback.insightKey,
+        kind: feedback.kind,
+        sampleCount: feedback.sampleCount,
+        typicalPlannedMinutes: feedback.typicalPlannedMinutes,
+        typicalCompletedMinutes: feedback.typicalCompletedMinutes,
+        typicalPlannedTaskCount: feedback.typicalPlannedTaskCount,
+        typicalCompletedTaskCount: feedback.typicalCompletedTaskCount,
+        suggestedTargetMinutes: feedback.suggestedTargetMinutes,
+        suggestedTargetTaskCount: feedback.suggestedTargetTaskCount,
+        idempotencyKey: feedback.idempotencyKey,
+        recordedAt: feedback.recordedAt,
+      })
+      .onConflictDoNothing({
+        target: [
+          dailyPlanFitInsightFeedbackEvents.workspaceId,
+          dailyPlanFitInsightFeedbackEvents.idempotencyKey,
+        ],
+      })
+      .returning();
+    if (inserted !== undefined) return mapDailyPlanFitInsightFeedback(inserted);
+
+    const existing = await this.findByIdempotencyKey(feedback.workspaceId, feedback.idempotencyKey);
+    if (existing === null) {
+      throw new DomainError(
+        "daily_plan_fit_insight.feedback_write_conflict",
+        "Daily Plan Fit feedback could not be appended or loaded.",
+      );
+    }
+    const sameFeedback =
+      existing.workspaceId === feedback.workspaceId &&
+      existing.forDate === feedback.forDate &&
+      existing.insightKey === feedback.insightKey &&
+      existing.kind === feedback.kind &&
+      existing.sampleCount === feedback.sampleCount &&
+      existing.typicalPlannedMinutes === feedback.typicalPlannedMinutes &&
+      existing.typicalCompletedMinutes === feedback.typicalCompletedMinutes &&
+      existing.typicalPlannedTaskCount === feedback.typicalPlannedTaskCount &&
+      existing.typicalCompletedTaskCount === feedback.typicalCompletedTaskCount &&
+      existing.suggestedTargetMinutes === feedback.suggestedTargetMinutes &&
+      existing.suggestedTargetTaskCount === feedback.suggestedTargetTaskCount;
+    if (!sameFeedback) {
+      throw new DomainError(
+        "daily_plan_fit_insight.idempotency_conflict",
+        "This Daily Plan Fit idempotency key already belongs to different feedback.",
+      );
+    }
+    return existing;
+  }
+}
+
 const MAXIMUM_CURRENT_PLAN_BATCH_DATES = 366;
 
 export class PostgresDailyPlanRepository implements DailyPlanRepository {
@@ -3219,6 +3365,155 @@ export class PostgresDailyPlanRepository implements DailyPlanRepository {
       });
     }
     return currentByDate;
+  }
+
+  async listFitEvidence(
+    workspace: WorkspaceId,
+    forDate: LocalDate,
+    lookbackDays: number,
+    candidateLimit: number,
+  ): Promise<readonly DailyPlanFitEvidencePlan[]> {
+    if (!Number.isSafeInteger(lookbackDays) || lookbackDays < 1 || lookbackDays > 366) {
+      throw new DomainError(
+        "daily_plan_fit_insight.lookback_invalid",
+        "Daily Plan Fit lookback must be between 1 and 366 days.",
+      );
+    }
+    if (!Number.isSafeInteger(candidateLimit) || candidateLimit < 1 || candidateLimit > 366) {
+      throw new DomainError(
+        "daily_plan_fit_insight.candidate_limit_invalid",
+        "Daily Plan Fit candidate limit must be between 1 and 366 plans.",
+      );
+    }
+    const maximumRows = candidateLimit * dailyPlanFitInsightMaximumItemsPerPlan;
+    const rowLimit = maximumRows + 1;
+
+    const rows = (await this.database.execute(
+      sql<DailyPlanFitEvidenceDatabaseRow>`
+        with candidate_plans as materialized (
+          select
+            ${dailyPlans.id} as plan_id,
+            ${dailyPlanHeads.localDate} as local_date,
+            ${dailyPlans.inputSnapshot} #>> '{request,targetMinutes}' as target_minutes,
+            ${dailyPlans.inputSnapshot} #>> '{request,targetTaskCount}' as target_task_count
+          from ${dailyPlanHeads}
+          inner join ${dailyPlans}
+            on ${dailyPlans.workspaceId} = ${dailyPlanHeads.workspaceId}
+           and ${dailyPlans.id} = ${dailyPlanHeads.currentPlanId}
+          where ${dailyPlanHeads.workspaceId} = ${workspace}
+            and ${dailyPlanHeads.localDate} >= (${forDate}::date - ${lookbackDays}::integer)
+            and ${dailyPlanHeads.localDate} < ${forDate}::date
+          order by ${dailyPlanHeads.localDate} desc, ${dailyPlans.id} desc
+          limit ${candidateLimit}
+        )
+        select
+          candidate_plans.plan_id as "planId",
+          candidate_plans.local_date as "localDate",
+          candidate_plans.target_minutes as "targetMinutes",
+          candidate_plans.target_task_count as "targetTaskCount",
+          ${dailyPlanItems.id} as "itemId",
+          ${dailyPlanItems.scheduledMinutes} as "scheduledMinutes",
+          ${dailyPlanItemStates.activityState} as "activityState",
+          ${dailyPlanItemStates.lastActivityEventId} as "lastActivityEventId"
+        from candidate_plans
+        left join ${dailyPlanItems}
+          on ${dailyPlanItems.workspaceId} = ${workspace}
+         and ${dailyPlanItems.planId} = candidate_plans.plan_id
+        left join ${dailyPlanItemStates}
+          on ${dailyPlanItemStates.workspaceId} = ${dailyPlanItems.workspaceId}
+         and ${dailyPlanItemStates.planId} = ${dailyPlanItems.planId}
+         and ${dailyPlanItemStates.itemId} = ${dailyPlanItems.id}
+        order by candidate_plans.local_date desc, candidate_plans.plan_id desc,
+          ${dailyPlanItems.position} asc nulls last
+        limit ${rowLimit}
+      `,
+    )) as unknown as readonly DailyPlanFitEvidenceDatabaseRow[];
+    if (rows.length > maximumRows) {
+      throw new DomainError(
+        "daily_plan_fit_insight.item_pool_too_large",
+        "Daily Plan Fit evidence exceeds the bounded item pool.",
+      );
+    }
+
+    const positiveInteger = (value: unknown, maximum: number): number | null => {
+      const text = typeof value === "number" ? String(value) : value;
+      if (typeof text !== "string" || !/^[1-9][0-9]*$/.test(text)) return null;
+      const parsed = Number(text);
+      return Number.isSafeInteger(parsed) && parsed <= maximum ? parsed : null;
+    };
+    const byPlan = new Map<
+      string,
+      {
+        readonly evidence: {
+          workspaceId: WorkspaceId;
+          planId: DailyPlan["id"];
+          date: LocalDate;
+          targetMinutes: number;
+          targetTaskCount: number;
+          items: DailyPlanFitEvidencePlan["items"][number][];
+        };
+        readonly itemIds: Set<string>;
+        invalid: boolean;
+      }
+    >();
+    const invalidPlanIds = new Set<string>();
+
+    for (const row of rows) {
+      const targetMinutes = positiveInteger(row.targetMinutes, 43_200);
+      const targetTaskCount = positiveInteger(row.targetTaskCount, 512);
+      if (targetMinutes === null || targetTaskCount === null) {
+        invalidPlanIds.add(row.planId);
+        byPlan.delete(row.planId);
+        continue;
+      }
+      if (invalidPlanIds.has(row.planId)) continue;
+      let grouped = byPlan.get(row.planId);
+      if (grouped === undefined) {
+        grouped = {
+          evidence: {
+            workspaceId: workspace,
+            planId: dailyPlanId(row.planId),
+            date: localDate(row.localDate),
+            targetMinutes,
+            targetTaskCount,
+            items: [],
+          },
+          itemIds: new Set(),
+          invalid: false,
+        };
+        byPlan.set(row.planId, grouped);
+      }
+      if (row.itemId === null) continue;
+      if (
+        row.scheduledMinutes === null ||
+        !Number.isSafeInteger(row.scheduledMinutes) ||
+        row.scheduledMinutes < 1 ||
+        grouped.itemIds.has(row.itemId)
+      ) {
+        grouped.invalid = true;
+        continue;
+      }
+      if (grouped.itemIds.size >= dailyPlanFitInsightMaximumItemsPerPlan) {
+        throw new DomainError(
+          "daily_plan_fit_insight.item_limit_exceeded",
+          "A Plan Fit evidence plan exceeds the bounded item limit.",
+        );
+      }
+      grouped.itemIds.add(row.itemId);
+      const activityState = planItemActivityStates.some((state) => state === row.activityState)
+        ? (row.activityState as DailyPlanFitEvidencePlan["items"][number]["activityState"])
+        : "pending";
+      grouped.evidence.items.push({
+        id: planItemId(row.itemId),
+        scheduledMinutes: row.scheduledMinutes,
+        activityState,
+        lastActivityEventId:
+          row.lastActivityEventId === null ? null : activityEventId(row.lastActivityEventId),
+      });
+    }
+    return [...byPlan.values()]
+      .filter((grouped) => !grouped.invalid)
+      .map((grouped) => grouped.evidence);
   }
 
   async setItemLock(input: SetPlanItemLockInput): Promise<PlanItemLockResult> {
@@ -4261,6 +4556,7 @@ function createTransactionContext(database: DatabaseExecutor): TransactionContex
     routines: new PostgresRoutineRepository(database),
     activityEvents: new PostgresActivityEventRepository(database),
     routineDurationInsightFeedback: new PostgresRoutineDurationInsightFeedbackRepository(database),
+    dailyPlanFitInsightFeedback: new PostgresDailyPlanFitInsightFeedbackRepository(database),
     dailyPlans: new PostgresDailyPlanRepository(database),
     notifications: new PostgresNotificationRepository(database),
   };

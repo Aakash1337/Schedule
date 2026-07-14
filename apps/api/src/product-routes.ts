@@ -15,11 +15,13 @@ import type {
   ConfigureNotificationProfileCommand,
   CreateNotificationRuleCommand,
   CreateOneOffReminderCommand,
+  DismissDailyPlanFitInsightCommand,
   DismissRoutineDurationInsightCommand,
   GenerateDailyPlanCommand,
   GetSchedulingAdviceCommand,
   GetCurrentDailyPlanQuery,
   GetDailyPlanQuery,
+  GetDailyPlanFitInsightQuery,
   GetRoutineQuery,
   GetRoutineDurationInsightQuery,
   GetScheduleBlockQuery,
@@ -45,6 +47,7 @@ import type {
   RegenerateDailyPlanCommand,
   ReplacePlanItemCommand,
   RemoveWorkItemDependencyCommand,
+  ResetDailyPlanFitInsightDismissalCommand,
   ResetRoutineDurationInsightDismissalCommand,
   ResetRoutinePlanningFeedbackCommand,
   SetPlanItemLockCommand,
@@ -76,6 +79,7 @@ import {
   createDurationRange,
   createStructuredTags,
   dailyPlanId,
+  dailyPlanFitInsightKeyPattern,
   isValidLocalDate,
   localDate,
   notificationRuleId,
@@ -88,6 +92,8 @@ import {
   workspaceId,
   type ActivityEvent,
   type DailyPlan,
+  type DailyPlanFitInsight,
+  type DailyPlanFitInsightFeedback,
   type JsonValue,
   type NotificationIntent,
   type NotificationProfile,
@@ -117,6 +123,9 @@ export interface ProductServices {
     command: AddWorkItemDependencyCommand,
   ): Promise<AddWorkItemDependencyResult>;
   approveRoutineDurationInsight(command: ApproveRoutineDurationInsightCommand): Promise<Routine>;
+  dismissDailyPlanFitInsight(
+    command: DismissDailyPlanFitInsightCommand,
+  ): Promise<DailyPlanFitInsightFeedback>;
   dismissRoutineDurationInsight(
     command: DismissRoutineDurationInsightCommand,
   ): Promise<RoutineDurationInsightFeedback>;
@@ -138,6 +147,10 @@ export interface ProductServices {
   deleteScheduleBlock(command: DeleteScheduleBlockCommand): Promise<void>;
   getRoutine(query: GetRoutineQuery): Promise<Routine>;
   getRoutineDurationInsight(query: GetRoutineDurationInsightQuery): Promise<RoutineDurationInsight>;
+  getDailyPlanFitInsight(query: GetDailyPlanFitInsightQuery): Promise<DailyPlanFitInsight>;
+  resetDailyPlanFitInsightDismissal(
+    command: ResetDailyPlanFitInsightDismissalCommand,
+  ): Promise<DailyPlanFitInsightFeedback>;
   resetRoutineDurationInsightDismissal(
     command: ResetRoutineDurationInsightDismissalCommand,
   ): Promise<RoutineDurationInsightFeedback>;
@@ -570,6 +583,11 @@ const approveRoutineDurationInsightBody = z.strictObject({
 const routineDurationInsightFeedbackBody = z.strictObject({
   expectedVersion: z.number().int().positive().max(2_147_483_647),
   insightKey: z.string().regex(routineDurationInsightKeyPattern),
+});
+const dailyPlanFitInsightQuery = z.strictObject({ forDate: localDateText });
+const dailyPlanFitInsightFeedbackBody = z.strictObject({
+  forDate: localDateText,
+  insightKey: z.string().regex(dailyPlanFitInsightKeyPattern),
 });
 const activityHistoryQuery = z.strictObject({
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -1438,6 +1456,42 @@ export async function registerProductRoutes(
       }),
     );
   });
+
+  app.get("/v1/workspaces/:workspaceId/daily-plan-fit-insight", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(dailyPlanFitInsightQuery, request.query);
+    return services.getDailyPlanFitInsight({
+      workspaceId: workspaceId(params.workspaceId),
+      forDate: localDate(query.forDate),
+    });
+  });
+
+  app.post("/v1/workspaces/:workspaceId/daily-plan-fit-insight/dismissals", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const body = parseRequest(dailyPlanFitInsightFeedbackBody, request.body);
+    const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+    return services.dismissDailyPlanFitInsight({
+      workspaceId: workspaceId(params.workspaceId),
+      forDate: localDate(body.forDate),
+      insightKey: body.insightKey,
+      idempotencyKey: key,
+    });
+  });
+
+  app.post(
+    "/v1/workspaces/:workspaceId/daily-plan-fit-insight/dismissal-resets",
+    async (request) => {
+      const params = parseRequest(workspaceParams, request.params);
+      const body = parseRequest(dailyPlanFitInsightFeedbackBody, request.body);
+      const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+      return services.resetDailyPlanFitInsightDismissal({
+        workspaceId: workspaceId(params.workspaceId),
+        forDate: localDate(body.forDate),
+        insightKey: body.insightKey,
+        idempotencyKey: key,
+      });
+    },
+  );
 
   app.post("/v1/workspaces/:workspaceId/plans", async (request) => {
     const params = parseRequest(workspaceParams, request.params);

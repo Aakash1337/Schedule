@@ -2,6 +2,8 @@ export * from "./activity-event.js";
 export * from "./cadence-policy.js";
 export * from "./calendar.js";
 export * from "./daily-planning.js";
+export * from "./daily-plan-fit-insight.js";
+export * from "./daily-plan-fit-insight-feedback.js";
 export * from "./duration.js";
 export * from "./errors.js";
 export * from "./ids.js";

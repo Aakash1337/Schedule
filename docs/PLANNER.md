@@ -25,6 +25,7 @@ The following Phase 1 capabilities exist in code:
 - Immutable regeneration and replacement revisions with exact anchored-item carry-forward
 - Plan-item-scoped start, completion, skip, defer, and dismiss actions with projected Today state
 - Append-only **Not today** and **Not this week** routine feedback with reset and immediate replanning
+- Read-only Daily Plan Fit guidance from fully resolved prior plans, with exact-key dismissal and reset
 
 The planner is implemented as a pure domain operation in `packages/domain/src/daily-planning.ts`. It does not require PostgreSQL, a network connection, or a language model.
 
@@ -95,6 +96,7 @@ The database migration adds:
 - `work_item_dependencies`
 - `plan_interaction_events`
 - `plan_mutations`
+- `daily_plan_fit_insight_feedback_events`
 - `routine_duration_insight_feedback_events`
 - `routine_planning_feedback_events`
 
@@ -107,8 +109,8 @@ The PostgreSQL adapter implements this contract with a unique workspace/date/rev
 PostgreSQL units of work default to serializable isolation and retry serialization failures with
 bounded exponential backoff. Operations that first wait on an advisory lock and must observe the
 prior lock holder's commit explicitly use read committed; this includes routine policy updates,
-duration-insight approval and feedback, and routine-planning-feedback mutation. Routine saves include
-the expected version in the atomic update predicate.
+duration-insight approval and feedback, routine-planning-feedback mutation, and workspace-scoped
+Daily Plan Fit feedback. Routine saves include the expected version in the atomic update predicate.
 
 Dependency edits take a workspace-scoped advisory lock before reading the current graph. Addition
 validates both same-tenant endpoints and uses a recursive reachability query to reject direct and
@@ -147,11 +149,13 @@ archived exclusions.
 Each activity append receives a monotonic ingestion sequence after taking a per-source transaction lock, so the application write path cannot commit a lower sequence after a higher one. Existing rows are backfilled deterministically by recording time and ID when this column is introduced. Routine-history pages use the sequence as a newest-first keyset and preserve the first page's high-water mark in an integrity-protected, route-bound cursor, preventing later appends from shifting the remaining traversal. Public activity representations omit idempotency keys.
 
 Database triggers make `activity_events`, `audit_events`,
-`routine_duration_insight_feedback_events`, and `routine_planning_feedback_events` append-only and
+`daily_plan_fit_insight_feedback_events`, `routine_duration_insight_feedback_events`, and
+`routine_planning_feedback_events` append-only and
 require corrections and reversals to reference a completion from the same workspace and typed source.
 Plan-linked activity takes its source from the referenced plan item rather than trusting a
 client-supplied source. A completion may be reversed only once. Explicit local maintenance can set
 `schedule.allow_activity_event_mutation`, `schedule.allow_audit_event_mutation`,
+`schedule.allow_daily_plan_fit_insight_feedback_event_change`,
 `schedule.allow_routine_duration_insight_feedback_event_change`, or
 `schedule.allow_routine_planning_feedback_event_change` to `on` within its transaction; routine
 application operations do not set these escape hatches. Because an audit row otherwise blocks its
@@ -184,6 +188,42 @@ retroactively overwrite it, even after that older plan is refreshed. Idempotent 
 runs before this comparison, so an already accepted older command still replays its original result.
 
 Today item actions use the same per-day lock, current plan identity, head version, and workspace-scoped idempotency ledger. Each accepted action appends an activity event attributed to the exact typed plan source, advances the head, and transactionally updates a fast item-state projection. Pending items may be started or made terminal; started items may be completed, skipped, deferred, or dismissed; terminal items reject further transitions. A completion reversal is the narrow audited exception and reopens the item as pending; for routines it removes the completion from later cadence calculations. Completing a work-derived item marks only `backlog`, `planned`, or `in_progress` source work `done` and records the prior status plus completion ownership version in immutable event metadata. Reversal restores that prior status only when the work item still has the completion's expected version and `done` status; a later accepted completion or edit is never clobbered. This does not auto-regenerate the plan. The append-only activity record is the planner input, while the projection exists only for fast Today reads.
+
+## Daily Plan Fit guidance
+
+Daily Plan Fit is a read-only, deterministic interpretation of resolved plan history. For an
+explicit local `forDate`, it considers current plan heads from the preceding 90 local dates. A plan
+is an eligible sample only when it is nonempty and every item is terminal: completed, skipped,
+deferred, or dismissed. Pending or started work excludes the whole plan from the sample. Completed
+workload uses each completed item's scheduled minutes and item count; skips, deferrals, and
+dismissals close the plan but contribute zero completed workload. The calculation uses the 28 most
+recent eligible samples from a repository query bounded to 90 candidate heads, fails closed above
+512 items in any head or the corresponding total row ceiling, and requires at least three.
+
+The calculation takes half-up medians of planned minutes, completed minutes, planned task count, and
+completed task count. A proposed minute target is the smaller of the planned median and the completed
+median rounded to the nearest 15 minutes with a floor of 30. A proposed task target is the smaller
+of the planned median and completed median with a floor of one. Guidance is `suggested` only when at
+least one target decreases materially: the minute gap is at least the larger of 30 minutes or 20%
+of the planned median rounded up to 15, or the task gap is at least the larger of one task or 25% of
+the planned median rounded up. Otherwise the result is `aligned`; fewer than three samples yields
+`insufficient_history`. Version 1 deliberately never recommends an increase.
+
+An actionable pair receives a lowercase SHA-256 key over the calculation/policy version, requested
+date and evidence window, and canonical selected evidence including terminal activity identities.
+Evaluation time and repository order do not participate. The latest append-only `dismissed` or
+`reset` event for the exact workspace and key projects the suggestion as hidden or available.
+Feedback takes a lowercase-canonical workspace advisory lock under read committed isolation, so
+equivalent UUID casing cannot split serialization. It resolves exact idempotent replay first and
+recalculates the evidence before append. Changed evidence returns
+`daily_plan_fit_insight.evidence_conflict`; semantic key reuse and invalid disposition transitions
+also fail without a write. New resolved evidence produces a new key and can therefore surface a new
+suggestion without deleting the user's earlier feedback.
+
+The insight and its feedback never change plan targets, generate or regenerate a plan, edit a plan
+head, or enter planner scoring. The local Today interface may copy the suggested pair into the two
+editable target fields, but only an explicit subsequent Generate submission creates a plan. No
+language model, Hermes adapter, or provider participates in the calculation.
 
 ## Duration-calibration boundary
 
@@ -263,7 +303,8 @@ pnpm verify:planner-db
 - Authentication, authorization, and public network exposure
 - Exact start-time placement within a selected window
 - Alternative-plan branching and multi-step undo workflows
-- Learned cadence, preference, energy, and overload adjustments
+- Learned cadence, preference, energy, and adaptive-selection adjustments
+- Automatic Plan Fit application, upward target expansion, and user-editable Plan Fit policy
 - Automatic duration-insight application and historical insight comparison
 - User-editable scoring profiles
 - Natural-language creation, model-driven calibration or plan application, and hosted model advisors

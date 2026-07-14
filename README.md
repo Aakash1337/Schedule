@@ -41,6 +41,12 @@ version-checked update only when the user explicitly approves it. The approval c
 revalidates the current routine and evidence before saving; the insight never rewrites a routine or
 the current Today plan on its own.
 
+Today also exposes deterministic Daily Plan Fit guidance. Once at least three prior current plans
+are fully resolved, Schedule compares the median planned and completed time/task pairs across a
+bounded 90-day window and may suggest materially smaller joint targets. Using the suggestion only
+prefills both editable fields; explicit generation is still required. Exact evidence-backed
+dismissal and reset are append-only, and changed evidence receives a new key.
+
 The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface. Work items support arbitrary-depth, acyclic same-workspace subtasks plus directed prerequisites. Parent and child statuses remain independent, only leaf work is eligible for Today, and a dependent is newly selectable only when every direct prerequisite is `done`.
 
 The Work view can optionally ask the same loopback-only Ollama/Gemma boundary to prepare one backlog
@@ -123,18 +129,19 @@ gaps.
 
 After installing Chromium once with `pnpm exec playwright install chromium`, run
 `pnpm verify:web-e2e` to exercise the built web application, live API, fresh migrations, and an
-isolated PostgreSQL database through seven live flows: routine/Today activity and feedback,
+isolated PostgreSQL database through eight live flows: routine/Today activity and feedback,
 work-item deadline pressure, duration-insight dismissal/reset, accessible 320px prerequisite
-editing, mobile subtask persistence and leaf-only planning, and reminder
-policy/materialization/history with responsive checks. A seventh flow uses the production
+editing, mobile subtask persistence and leaf-only planning, reminder
+policy/materialization/history with responsive checks, and deterministic Daily Plan Fit
+prefill/dismissal/reset with explicit generation. The local proposal flow uses the production
 local-model adapter against a strict loopback double to review, edit, confirm, replay the same
 confirmation key, cancel, focus, and reload natural-language work proposals without browser request
 interception.
 
-With PostgreSQL running, verify backlog/Kanban, hierarchy, work-item prerequisites, and calendar management,
-routine creation and optimistic updates, duration calibration and approval, stable activity-history pagination,
-idempotent routine and Today-item activity recording, deterministic plan generation, and atomic
-plan-revision persistence:
+With PostgreSQL running, verify backlog/Kanban, hierarchy, work-item prerequisites, and calendar
+management, routine creation and optimistic updates, duration calibration and Daily Plan Fit,
+stable activity-history pagination, idempotent routine and Today-item activity recording,
+deterministic plan generation, and atomic plan-revision persistence:
 
 ```powershell
 pnpm verify:database
@@ -152,7 +159,7 @@ workspace/schedule/id execution-history index without changing delivery or crede
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh
 PostgreSQL 17 Compose project. It also verifies a complete archive round trip, the real disposable
-restore/promote/rollback/cleanup state machine, and the seven live Chromium product flows in a
+restore/promote/rollback/cleanup state machine, and the eight live Chromium product flows in a
 separate disposable database.
 
 ## Local data protection

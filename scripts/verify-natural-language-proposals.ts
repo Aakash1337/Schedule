@@ -103,6 +103,7 @@ async function removeVerificationWorkspaces(): Promise<void> {
   if (createdWorkspaceIds.length === 0) return;
   await observerConnection.sql.begin(async (sql) => {
     await sql`select set_config('schedule.allow_audit_event_mutation', 'on', true)`;
+    await sql`select set_config('schedule.allow_daily_plan_fit_insight_feedback_event_change', 'on', true)`;
     await sql`delete from workspaces where id = any(${createdWorkspaceIds})`;
   });
 }
