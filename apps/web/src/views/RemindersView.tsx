@@ -264,13 +264,24 @@ function ProfileForm({
       setValidationError("Enter whole numbers within the displayed reminder-policy ranges.");
       return;
     }
+    let quietHoursStartMinute: number | null = null;
+    let quietHoursEndMinute: number | null = null;
+    if (quietHoursEnabled) {
+      try {
+        quietHoursStartMinute = timeToMinute(quietStart);
+        quietHoursEndMinute = timeToMinute(quietEnd);
+      } catch {
+        setValidationError("Choose both a valid quiet-hours start and end time.");
+        return;
+      }
+    }
     setValidationError(null);
     await onSave({
       expectedVersion: profile?.version ?? null,
       enabled,
       timeZone: timeZone.trim(),
-      quietHoursStartMinute: quietHoursEnabled ? timeToMinute(quietStart) : null,
-      quietHoursEndMinute: quietHoursEnabled ? timeToMinute(quietEnd) : null,
+      quietHoursStartMinute,
+      quietHoursEndMinute,
       quietHoursPolicy: quietPolicy,
       catchUpWindowMinutes,
       dailyIntentLimit,
@@ -342,17 +353,27 @@ function ProfileForm({
         <Field label="Quiet hours start">
           <input
             type="time"
+            required={quietHoursEnabled}
             value={quietStart}
             disabled={!quietHoursEnabled}
-            onChange={(event) => setQuietStart(event.target.value)}
+            aria-invalid={quietHoursEnabled && quietStart === ""}
+            onChange={(event) => {
+              setQuietStart(event.target.value);
+              setValidationError(null);
+            }}
           />
         </Field>
         <Field label="Quiet hours end">
           <input
             type="time"
+            required={quietHoursEnabled}
             value={quietEnd}
             disabled={!quietHoursEnabled}
-            onChange={(event) => setQuietEnd(event.target.value)}
+            aria-invalid={quietHoursEnabled && quietEnd === ""}
+            onChange={(event) => {
+              setQuietEnd(event.target.value);
+              setValidationError(null);
+            }}
           />
         </Field>
         <Field label="During quiet hours">

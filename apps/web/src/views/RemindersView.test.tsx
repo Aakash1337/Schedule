@@ -337,4 +337,20 @@ describe("RemindersView", () => {
     expect(catchUp).toHaveAttribute("aria-invalid", "true");
     expect(apiMocks.configureNotificationProfile).not.toHaveBeenCalled();
   });
+
+  it("rejects blank enabled quiet-hour times before an API request", async () => {
+    const user = userEvent.setup();
+    render(<RemindersView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await screen.findByRole("heading", { name: "Policy and quiet hours" });
+    const quietStart = screen.getByLabelText("Quiet hours start");
+    await user.clear(quietStart);
+    const form = quietStart.closest("form");
+    if (form === null) throw new Error("Profile form was not rendered.");
+    fireEvent.submit(form);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Choose both a valid quiet-hours");
+    expect(quietStart).toHaveAttribute("aria-invalid", "true");
+    expect(apiMocks.configureNotificationProfile).not.toHaveBeenCalled();
+  });
 });
