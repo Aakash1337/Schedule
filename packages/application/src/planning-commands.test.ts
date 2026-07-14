@@ -56,6 +56,9 @@ describe("routine planning commands", () => {
         }),
       },
       workItems: {} as TransactionContext["workItems"],
+      workItemDependencies: {
+        loadPlanningGraph: async () => ({ workItems: [], dependencies: [] }),
+      } as TransactionContext["workItemDependencies"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
       auditEvents: {} as TransactionContext["auditEvents"],
       dailyPlans: {

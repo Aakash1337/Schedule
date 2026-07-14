@@ -18,7 +18,12 @@ import {
 } from "@schedule/domain";
 
 import type { Clock, CurrentDailyPlan, UnitOfWork } from "./ports.js";
-import { assertPlanningCandidatePoolSize } from "./planning-candidates.js";
+import {
+  assertPlanningCandidatePoolSize,
+  assertPlanningWorkItemDependencyPoolSize,
+  maximumPlanningCandidatePool,
+  maximumPlanningWorkItemDependencies,
+} from "./planning-candidates.js";
 
 interface BaseMutationCommand {
   readonly workspaceId: WorkspaceId;
@@ -187,7 +192,7 @@ export class MutateDailyPlan {
     const hash = payloadHash(kind, command, details);
     const now = this.clock.now();
     return this.unitOfWork.run(
-      async ({ routines, workItems, activityEvents, dailyPlans }) => {
+      async ({ routines, workItemDependencies, activityEvents, dailyPlans }) => {
         await dailyPlans.lockDay(command.workspaceId, command.request.date);
         const prior = await dailyPlans.findMutation(
           command.workspaceId,
@@ -315,13 +320,23 @@ export class MutateDailyPlan {
           ...command.request,
           requestRevision: current.plan.requestRevision + 1,
         };
-        const [routineCandidates, workItemCandidates, events, priorFeedback] = await Promise.all([
-          routines.listPlanningCandidates(command.workspaceId, request.date),
-          workItems.listPlanningCandidates(command.workspaceId),
-          activityEvents.listForPlanning(command.workspaceId, request.date),
-          dailyPlans.listRoutineFeedbackForPlanning(command.workspaceId, request.date),
-        ]);
-        assertPlanningCandidatePoolSize(routineCandidates.length, workItemCandidates.length);
+        const [routineCandidates, planningWorkItemGraph, events, priorFeedback] = await Promise.all(
+          [
+            routines.listPlanningCandidates(command.workspaceId, request.date),
+            workItemDependencies.loadPlanningGraph(
+              command.workspaceId,
+              maximumPlanningCandidatePool + 1,
+              maximumPlanningWorkItemDependencies + 1,
+            ),
+            activityEvents.listForPlanning(command.workspaceId, request.date),
+            dailyPlans.listRoutineFeedbackForPlanning(command.workspaceId, request.date),
+          ],
+        );
+        assertPlanningCandidatePoolSize(
+          routineCandidates.length,
+          planningWorkItemGraph.workItems.length,
+        );
+        assertPlanningWorkItemDependencyPoolSize(planningWorkItemGraph.dependencies.length);
         let routineFeedback = priorFeedback;
         if (feedbackRoutineId !== null) {
           const routine = routineCandidates.find((candidate) => candidate.id === feedbackRoutineId);
@@ -363,7 +378,8 @@ export class MutateDailyPlan {
           sourcePlan: current.plan,
           request,
           routines: routineCandidates,
-          workItems: workItemCandidates,
+          workItems: planningWorkItemGraph.workItems,
+          workItemDependencies: planningWorkItemGraph.dependencies,
           events,
           routineFeedback,
           anchoredItems: anchors,

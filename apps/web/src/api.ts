@@ -14,6 +14,7 @@ import type {
   ScheduleBlock,
   SchedulingAdviceResult,
   WorkItem,
+  WorkItemDependency,
   WorkItemPriority,
   WorkItemStatus,
   Workspace,
@@ -96,9 +97,10 @@ interface OffsetPass<Item> {
   readonly pagesRead: number;
 }
 
-async function readOffsetPass<Item extends { readonly id: string }>(
+async function readOffsetPass<Item>(
   path: string,
   values: Readonly<Record<string, string | number | undefined>>,
+  itemKey: (item: Item) => string,
   signal?: AbortSignal,
 ): Promise<OffsetPass<Item>> {
   const items: Item[] = [];
@@ -111,14 +113,15 @@ async function readOffsetPass<Item extends { readonly id: string }>(
       queryPath(path, { ...values, limit: OFFSET_PAGE_LIMIT, offset }),
       signal === undefined ? {} : { signal },
     );
-    const pageSignature = JSON.stringify(page.items.map((item) => item.id));
+    const pageSignature = JSON.stringify(page.items.map(itemKey));
     const repeatedPage = seenPages.has(pageSignature);
     seenPages.add(pageSignature);
 
     let newItemCount = 0;
     for (const item of page.items) {
-      if (seenIds.has(item.id)) continue;
-      seenIds.add(item.id);
+      const key = itemKey(item);
+      if (seenIds.has(key)) continue;
+      seenIds.add(key);
       items.push(item);
       newItemCount += 1;
     }
@@ -137,13 +140,38 @@ async function readOffsetPass<Item extends { readonly id: string }>(
   throw new Error("The collection is too large to load safely. Narrow the result and try again.");
 }
 
-function sameItemOrder<Item extends { readonly id: string }>(
+function sameItemOrder<Item>(
   first: readonly Item[],
   second: readonly Item[],
+  itemKey: (item: Item) => string,
 ): boolean {
   return (
-    first.length === second.length && first.every((item, index) => item.id === second[index]?.id)
+    first.length === second.length &&
+    first.every((item, index) => {
+      const secondItem = second[index];
+      return secondItem !== undefined && itemKey(item) === itemKey(secondItem);
+    })
   );
+}
+
+async function listAllOffsetPagesBy<Item>(
+  path: string,
+  values: Readonly<Record<string, string | number | undefined>>,
+  itemKey: (item: Item) => string,
+  signal?: AbortSignal,
+): Promise<Page<Item>> {
+  const first = await readOffsetPass<Item>(path, values, itemKey, signal);
+  if (first.pagesRead === 1) {
+    return { items: first.items, page: { limit: OFFSET_PAGE_LIMIT, offset: 0 } };
+  }
+
+  // Offset pagination has no server snapshot. Require two identical traversals
+  // before treating a multi-page collection as authoritative.
+  const confirmed = await readOffsetPass<Item>(path, values, itemKey, signal);
+  if (!sameItemOrder(first.items, confirmed.items, itemKey)) {
+    throw new Error(PAGINATION_CHANGED_MESSAGE);
+  }
+  return { items: confirmed.items, page: { limit: OFFSET_PAGE_LIMIT, offset: 0 } };
 }
 
 async function listAllOffsetPages<Item extends { readonly id: string }>(
@@ -151,16 +179,7 @@ async function listAllOffsetPages<Item extends { readonly id: string }>(
   values: Readonly<Record<string, string | number | undefined>>,
   signal?: AbortSignal,
 ): Promise<Page<Item>> {
-  const first = await readOffsetPass<Item>(path, values, signal);
-  if (first.pagesRead === 1) {
-    return { items: first.items, page: { limit: OFFSET_PAGE_LIMIT, offset: 0 } };
-  }
-
-  // Offset pagination has no server snapshot. Require two identical traversals
-  // before treating a multi-page collection as authoritative.
-  const confirmed = await readOffsetPass<Item>(path, values, signal);
-  if (!sameItemOrder(first.items, confirmed.items)) throw new Error(PAGINATION_CHANGED_MESSAGE);
-  return { items: confirmed.items, page: { limit: OFFSET_PAGE_LIMIT, offset: 0 } };
+  return listAllOffsetPagesBy(path, values, (item) => item.id, signal);
 }
 
 export function newIdempotencyKey(): string {
@@ -228,6 +247,40 @@ export const api = {
       method: "PATCH",
       json: input,
     }),
+
+  listWorkItemDependencies: (workspaceId: string, signal?: AbortSignal) =>
+    listAllOffsetPagesBy<WorkItemDependency>(
+      workspacePath(workspaceId, "/work-item-dependencies"),
+      {},
+      (dependency) => `${dependency.dependentWorkItemId}:${dependency.prerequisiteWorkItemId}`,
+      signal,
+    ),
+
+  addWorkItemPrerequisite: (
+    workspaceId: string,
+    dependentWorkItemId: string,
+    prerequisiteWorkItemId: string,
+  ) =>
+    request<WorkItemDependency>(
+      workspacePath(
+        workspaceId,
+        `/work-items/${encodeURIComponent(dependentWorkItemId)}/prerequisites`,
+      ),
+      { method: "POST", json: { prerequisiteWorkItemId } },
+    ),
+
+  removeWorkItemPrerequisite: (
+    workspaceId: string,
+    dependentWorkItemId: string,
+    prerequisiteWorkItemId: string,
+  ) =>
+    request<void>(
+      workspacePath(
+        workspaceId,
+        `/work-items/${encodeURIComponent(dependentWorkItemId)}/prerequisites/${encodeURIComponent(prerequisiteWorkItemId)}`,
+      ),
+      { method: "DELETE" },
+    ),
 
   listRoutines: (workspaceId: string, status?: RoutineStatus, signal?: AbortSignal) =>
     listAllOffsetPages<Routine>(workspacePath(workspaceId, "/routines"), { status }, signal),

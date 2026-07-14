@@ -7,7 +7,12 @@ import {
 } from "@schedule/domain";
 
 import type { Clock, UnitOfWork } from "./ports.js";
-import { assertPlanningCandidatePoolSize } from "./planning-candidates.js";
+import {
+  assertPlanningCandidatePoolSize,
+  assertPlanningWorkItemDependencyPoolSize,
+  maximumPlanningCandidatePool,
+  maximumPlanningWorkItemDependencies,
+} from "./planning-candidates.js";
 
 export interface GenerateDailyPlanCommand {
   readonly request: DailyPlanningRequest;
@@ -22,7 +27,7 @@ export class GenerateDailyPlan {
 
   async execute(command: GenerateDailyPlanCommand): Promise<DailyPlan> {
     return this.unitOfWork.run(
-      async ({ workspaces, routines, workItems, activityEvents, dailyPlans }) => {
+      async ({ workspaces, routines, workItemDependencies, activityEvents, dailyPlans }) => {
         if ((await workspaces.findById(command.request.workspaceId)) === null) {
           throw new DomainError("workspace.not_found", "The workspace does not exist.");
         }
@@ -44,20 +49,30 @@ export class GenerateDailyPlan {
             );
           }
         }
-        const [routineCandidates, workItemCandidates, events, routineFeedback] = await Promise.all([
-          routines.listPlanningCandidates(command.request.workspaceId, command.request.date),
-          workItems.listPlanningCandidates(command.request.workspaceId),
-          activityEvents.listForPlanning(command.request.workspaceId, command.request.date),
-          dailyPlans.listRoutineFeedbackForPlanning(
-            command.request.workspaceId,
-            command.request.date,
-          ),
-        ]);
-        assertPlanningCandidatePoolSize(routineCandidates.length, workItemCandidates.length);
+        const [routineCandidates, planningWorkItemGraph, events, routineFeedback] =
+          await Promise.all([
+            routines.listPlanningCandidates(command.request.workspaceId, command.request.date),
+            workItemDependencies.loadPlanningGraph(
+              command.request.workspaceId,
+              maximumPlanningCandidatePool + 1,
+              maximumPlanningWorkItemDependencies + 1,
+            ),
+            activityEvents.listForPlanning(command.request.workspaceId, command.request.date),
+            dailyPlans.listRoutineFeedbackForPlanning(
+              command.request.workspaceId,
+              command.request.date,
+            ),
+          ]);
+        assertPlanningCandidatePoolSize(
+          routineCandidates.length,
+          planningWorkItemGraph.workItems.length,
+        );
+        assertPlanningWorkItemDependencyPoolSize(planningWorkItemGraph.dependencies.length);
         const generated = generateDailyPlan({
           request: command.request,
           routines: routineCandidates,
-          workItems: workItemCandidates,
+          workItems: planningWorkItemGraph.workItems,
+          workItemDependencies: planningWorkItemGraph.dependencies,
           events,
           routineFeedback,
           generatedAt: this.clock.now(),

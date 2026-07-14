@@ -1,8 +1,8 @@
-import { expect, test, type Response } from "@playwright/test";
+import { expect, test, type Locator, type Response } from "@playwright/test";
 
 function isMutationResponse(
   response: Response,
-  method: "POST" | "PATCH",
+  method: "POST" | "PATCH" | "DELETE",
   pathMatches: (pathname: string) => boolean,
   expectedOrigin: string,
 ): boolean {
@@ -517,6 +517,193 @@ test("persists exact-evidence duration insight feedback and resurfaces changed e
   await expect(page.getByRole("button", { name: /Apply 50m estimate/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Show again", exact: true })).toHaveCount(0);
 
+  expect(pageErrors).toEqual([]);
+  expect(requestFailures).toEqual([]);
+  expect(unexpectedHttpResponses).toEqual([]);
+});
+
+test("manages prerequisites accessibly through the live 320px work-board flow", async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  const requestFailures: string[] = [];
+  const unexpectedHttpResponses: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("requestfailed", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    const successfulNoContentDelete =
+      request.method() === "DELETE" &&
+      /^\/v1\/workspaces\/[^/]+\/work-items\/[^/]+\/prerequisites\/[^/]+$/.test(pathname) &&
+      request.failure()?.errorText === "net::ERR_ABORTED";
+    // Chromium exposes Vite-proxied 204 responses as aborted after delivering the successful
+    // response headers. The test separately requires the matching response to be 204.
+    if (successfulNoContentDelete) return;
+    requestFailures.push(`${request.method()} ${new URL(request.url()).pathname}`);
+  });
+  page.on("response", (response) => {
+    if (response.status() < 400) return;
+    unexpectedHttpResponses.push(
+      `${response.status()} ${response.request().method()} ${new URL(response.url()).pathname}`,
+    );
+  });
+
+  const workspaceResponse = await page.request.post("/v1/workspaces", {
+    data: { name: "Mobile prerequisite E2E workspace" },
+  });
+  expect(workspaceResponse.status()).toBe(201);
+  const workspace = (await workspaceResponse.json()) as { readonly id: string };
+  await page.addInitScript((workspaceId) => {
+    localStorage.setItem("schedule.selectedWorkspace", workspaceId);
+  }, workspace.id);
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto("/#work");
+  const expectedOrigin = new URL(page.url()).origin;
+  const main = page.getByRole("main", { name: "Work view" });
+  await expect(main).toBeVisible();
+
+  const createWorkItem = async (title: string, status: "backlog" | "done") => {
+    await page.getByRole("textbox", { name: "Title" }).fill(title);
+    await page.getByRole("combobox", { name: "Starting status" }).selectOption(status);
+    const responsePromise = page.waitForResponse((response) =>
+      isMutationResponse(
+        response,
+        "POST",
+        (pathname) => /^\/v1\/workspaces\/[^/]+\/work-items$/.test(pathname),
+        expectedOrigin,
+      ),
+    );
+    await page.getByRole("button", { name: "Add item" }).click();
+    const response = await responsePromise;
+    expect(response.status()).toBe(201);
+    const created = (await response.json()) as { readonly id: string };
+    await expect(main.getByRole("heading", { name: title, exact: true })).toBeVisible();
+    return created;
+  };
+
+  const prerequisiteTitle = "Approve the mobile release";
+  const dependentTitle = "Publish the mobile release";
+  const prerequisite = await createWorkItem(prerequisiteTitle, "done");
+  await createWorkItem(dependentTitle, "backlog");
+
+  const dependentCard = page.locator("article").filter({
+    has: page.getByRole("heading", { name: dependentTitle, exact: true }),
+  });
+  const prerequisites = dependentCard.getByRole("region", { name: "Prerequisites" });
+  const summary = prerequisites.getByLabel(`Manage prerequisites for ${dependentTitle}`);
+  const dependentStatus = dependentCard.getByRole("combobox", {
+    name: `Status for ${dependentTitle}`,
+  });
+  await expect(prerequisites.getByText("No prerequisites linked.")).toBeVisible();
+  await expect(prerequisites.getByText("None", { exact: true })).toBeVisible();
+  await expect(dependentStatus).toHaveValue("backlog");
+
+  const expectMobileTarget = async (target: Locator) => {
+    await target.scrollIntoViewIfNeeded();
+    await expect(target).toBeInViewport();
+    const bounds = await target.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+  };
+
+  await expectMobileTarget(summary);
+  await summary.focus();
+  await expect(summary).toBeFocused();
+  await expect(summary).toHaveAttribute("aria-expanded", "false");
+  await summary.press("Enter");
+  await expect(summary).toHaveAttribute("aria-expanded", "true");
+
+  const prerequisiteSelect = prerequisites.getByRole("combobox", {
+    name: `Add prerequisite to ${dependentTitle}`,
+  });
+  const addPrerequisite = prerequisites.getByRole("button", {
+    name: `Add selected prerequisite to ${dependentTitle}`,
+  });
+  await expectMobileTarget(prerequisiteSelect);
+  await expectMobileTarget(addPrerequisite);
+  await prerequisiteSelect.selectOption(prerequisite.id);
+
+  const addResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) => /^\/v1\/workspaces\/[^/]+\/work-items\/[^/]+\/prerequisites$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await addPrerequisite.focus();
+  await expect(addPrerequisite).toBeFocused();
+  await addPrerequisite.press("Enter");
+  expect([200, 201]).toContain((await addResponsePromise).status());
+
+  await expect(summary).toBeFocused();
+  await expect(prerequisites.getByText("1/1 done", { exact: true })).toBeVisible();
+  await expect(prerequisites.getByText(prerequisiteTitle, { exact: true })).toBeVisible();
+  await expect(prerequisites.getByLabel(`${prerequisiteTitle} status: Done`)).toHaveText("Done");
+  await expect(
+    prerequisites.getByText(
+      `${prerequisiteTitle} is now a prerequisite. The work item status was not changed.`,
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(dependentStatus).toHaveValue("backlog");
+
+  const documentOverflow = await page.evaluate(() => {
+    const browserGlobal = globalThis as unknown as {
+      readonly document: {
+        readonly documentElement: { readonly scrollWidth: number; readonly clientWidth: number };
+        readonly body: { readonly scrollWidth: number; readonly clientWidth: number };
+      };
+    };
+    const browserDocument = browserGlobal.document;
+    return {
+      document:
+        browserDocument.documentElement.scrollWidth - browserDocument.documentElement.clientWidth,
+      body: browserDocument.body.scrollWidth - browserDocument.body.clientWidth,
+    };
+  });
+  expect(documentOverflow.document).toBeLessThanOrEqual(1);
+  expect(documentOverflow.body).toBeLessThanOrEqual(1);
+
+  await page.reload();
+  await expect(main).toBeVisible();
+  await expect(prerequisites.getByText("1/1 done", { exact: true })).toBeVisible();
+  await expect(prerequisites.getByLabel(`${prerequisiteTitle} status: Done`)).toBeVisible();
+  await expect(dependentStatus).toHaveValue("backlog");
+
+  const removePrerequisite = prerequisites.getByRole("button", {
+    name: `Remove ${prerequisiteTitle} as a prerequisite for ${dependentTitle}`,
+  });
+  await expectMobileTarget(removePrerequisite);
+  const removeResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "DELETE",
+      (pathname) =>
+        /^\/v1\/workspaces\/[^/]+\/work-items\/[^/]+\/prerequisites\/[^/]+$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await removePrerequisite.focus();
+  await expect(removePrerequisite).toBeFocused();
+  await removePrerequisite.press("Enter");
+  expect((await removeResponsePromise).status()).toBe(204);
+
+  await expect(prerequisites.getByText("No prerequisites linked.")).toBeVisible();
+  await expect(removePrerequisite).toHaveCount(0);
+  await expect(summary).toBeFocused();
+  await expect(dependentStatus).toHaveValue("backlog");
+  await expect(
+    prerequisites.getByText(
+      `${prerequisiteTitle} is no longer a prerequisite. The work item status was not changed.`,
+      { exact: true },
+    ),
+  ).toBeVisible();
+
+  await page.reload();
+  await expect(main).toBeVisible();
+  await expect(prerequisites.getByText("No prerequisites linked.")).toBeVisible();
+  await expect(removePrerequisite).toHaveCount(0);
+  await expect(dependentStatus).toHaveValue("backlog");
   expect(pageErrors).toEqual([]);
   expect(requestFailures).toEqual([]);
   expect(unexpectedHttpResponses).toEqual([]);

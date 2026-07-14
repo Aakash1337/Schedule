@@ -6,7 +6,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function pageResponse(items: readonly { readonly id: string }[], offset: number): Response {
+function pageResponse(items: readonly unknown[], offset: number): Response {
   return new Response(JSON.stringify({ items, page: { limit: 200, offset } }), {
     status: 200,
     headers: { "Content-Type": "application/json" },
@@ -110,6 +110,91 @@ describe("web API client", () => {
         method: "PATCH",
         body: JSON.stringify({ expectedVersion: 1, dueOn: null }),
       }),
+    );
+  });
+
+  it("aggregates offset-paginated work-item dependency edges", async () => {
+    const firstPage = Array.from({ length: 200 }, (_, index) => ({
+      workspaceId: "workspace-1",
+      prerequisiteWorkItemId: `prerequisite-${index}`,
+      dependentWorkItemId: "dependent-1",
+      createdAt: "2026-07-14T09:00:00.000Z",
+    }));
+    const finalEdge = {
+      workspaceId: "workspace-1",
+      prerequisiteWorkItemId: "prerequisite-200",
+      dependentWorkItemId: "dependent-1",
+      createdAt: "2026-07-14T09:01:00.000Z",
+    };
+    let requestNumber = 0;
+    const fetchMock = vi.fn(async () => {
+      const response =
+        requestNumber % 2 === 0 ? pageResponse(firstPage, 0) : pageResponse([finalEdge], 200);
+      requestNumber += 1;
+      return response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.listWorkItemDependencies("workspace-1")).resolves.toMatchObject({
+      items: expect.arrayContaining([finalEdge]),
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/v1/workspaces/workspace-1/work-item-dependencies?limit=200&offset=0",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/v1/workspaces/workspace-1/work-item-dependencies?limit=200&offset=200",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("posts an exact prerequisite replay without inventing an idempotency header", async () => {
+    const dependency = {
+      workspaceId: "workspace-1",
+      prerequisiteWorkItemId: "item-prerequisite",
+      dependentWorkItemId: "item-dependent",
+      createdAt: "2026-07-14T09:00:00.000Z",
+    };
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(new Headers(init?.headers).has("Idempotency-Key")).toBe(false);
+      return new Response(JSON.stringify(dependency), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      api.addWorkItemPrerequisite("workspace-1", "item-dependent", "item-prerequisite"),
+    ).resolves.toEqual(dependency);
+    await expect(
+      api.addWorkItemPrerequisite("workspace-1", "item-dependent", "item-prerequisite"),
+    ).resolves.toEqual(dependency);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/v1/workspaces/workspace-1/work-items/item-dependent/prerequisites",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ prerequisiteWorkItemId: "item-prerequisite" }),
+      }),
+    );
+  });
+
+  it("removes a prerequisite through the replay-safe delete route", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      api.removeWorkItemPrerequisite("workspace-1", "item-dependent", "item-prerequisite"),
+    ).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/work-items/item-dependent/prerequisites/item-prerequisite",
+      expect.objectContaining({ method: "DELETE" }),
     );
   });
 

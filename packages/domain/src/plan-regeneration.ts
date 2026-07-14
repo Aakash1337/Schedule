@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { invariant } from "./errors.js";
 import {
+  canonicalPlanningWorkItemDependencies,
   derivePlanItemId,
   generateDailyPlan,
   planSourceKey,
@@ -21,7 +22,13 @@ export type PlanMutationKind = "regenerate" | "replace" | "feedback" | "feedback
 
 export interface ReplanDailyPlanInput extends Pick<
   GenerateDailyPlanInput,
-  "id" | "routines" | "events" | "routineFeedback" | "config" | "generatedAt"
+  | "id"
+  | "routines"
+  | "events"
+  | "routineFeedback"
+  | "workItemDependencies"
+  | "config"
+  | "generatedAt"
 > {
   readonly workItems?: GenerateDailyPlanInput["workItems"];
   readonly sourcePlan: DailyPlan;
@@ -94,6 +101,11 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
     input.request.requestRevision > input.sourcePlan.requestRevision,
     "planning.revision_not_advanced",
     "A regenerated plan must use a later revision.",
+  );
+  const canonicalWorkItemDependencies = canonicalPlanningWorkItemDependencies(
+    input.workItemDependencies ?? [],
+    input.request.workspaceId,
+    input.workItems ?? [],
   );
   const sourceItems = new Map(input.sourcePlan.items.map((item) => [item.id, item]));
   const anchorIds = new Set<string>();
@@ -186,6 +198,14 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
     ...(input.excludedRoutineIds ?? []).map((id) => `routine:${id}`),
     ...(input.excludedWorkItemIds ?? []).map((id) => `work_item:${id}`),
   ]);
+  const residualWorkItems =
+    remainingMaximumMinutes < 1 || remainingMaximumTasks < 1
+      ? []
+      : (input.workItems ?? []).filter((workItem) => !excluded.has(`work_item:${workItem.id}`));
+  const residualWorkItemIds = new Set(residualWorkItems.map((workItem) => workItem.id));
+  const residualWorkItemDependencies = canonicalWorkItemDependencies.filter((dependency) =>
+    residualWorkItemIds.has(dependency.dependentWorkItemId),
+  );
   const resultId = input.id;
   const residual = generateDailyPlan({
     ...(resultId === undefined ? {} : { id: resultId }),
@@ -194,10 +214,8 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
       remainingMaximumMinutes < 1 || remainingMaximumTasks < 1
         ? []
         : input.routines.filter((routine) => !excluded.has(`routine:${routine.id}`)),
-    workItems:
-      remainingMaximumMinutes < 1 || remainingMaximumTasks < 1
-        ? []
-        : (input.workItems ?? []).filter((workItem) => !excluded.has(`work_item:${workItem.id}`)),
+    workItems: residualWorkItems,
+    workItemDependencies: residualWorkItemDependencies,
     events: input.events,
     ...(input.routineFeedback === undefined ? {} : { routineFeedback: input.routineFeedback }),
     ...(input.config === undefined ? {} : { config: input.config }),
@@ -248,6 +266,10 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
     excludedRoutineIds: [...new Set(input.excludedRoutineIds ?? [])].sort(),
     excludedWorkItemIds: [...new Set(input.excludedWorkItemIds ?? [])].sort(),
     excludedSources: [...new Set((input.excludedSources ?? []).map(planSourceKey))].sort(),
+    workItemDependencies: canonicalWorkItemDependencies.map((dependency) => ({
+      ...dependency,
+      createdAt: dependency.createdAt.toISOString(),
+    })),
     plannerInput: residual.inputSnapshot,
   } satisfies JsonValue;
   const inputHash = createHash("sha256").update(JSON.stringify(mutationSnapshot)).digest("hex");

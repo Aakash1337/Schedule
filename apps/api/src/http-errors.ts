@@ -124,9 +124,14 @@ const INTERNAL_INTEGRATION_FAILURES = new Set([
   "integration.result_invalid",
   "integration.timestamp_invalid",
 ]);
+const INTERNAL_PLANNING_FAILURES = new Set(["planning.work_item_graph_corrupt"]);
 
 function isInternalIntegrationFailure(error: DomainError): boolean {
   return INTERNAL_INTEGRATION_FAILURES.has(error.code);
+}
+
+function isInternalPlanningFailure(error: DomainError): boolean {
+  return INTERNAL_PLANNING_FAILURES.has(error.code);
 }
 
 function errorStatusCode(error: unknown): number | undefined {
@@ -163,6 +168,8 @@ export function installErrorHandler(app: FastifyInstance): void {
       status = 415;
       code = error.code;
       message = error.message;
+    } else if (error instanceof DomainError && isInternalPlanningFailure(error)) {
+      request.log.error({ code: error.code }, "planning invariant failed");
     } else if (error instanceof DomainError && isInternalIntegrationFailure(error)) {
       request.log.error({ code: error.code }, "integration invariant failed");
     } else if (error instanceof DomainError) {

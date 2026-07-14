@@ -1,4 +1,5 @@
 import {
+  AddWorkItemDependency,
   ApproveRoutineDurationInsight,
   CreateRoutine,
   CreateScheduleBlock,
@@ -17,11 +18,13 @@ import {
   ListRoutineActivity,
   ListRoutines,
   ListScheduleBlocks,
+  ListWorkItemDependencies,
   ListWorkItems,
   ListWorkspaces,
   MutateDailyPlan,
   RecordActivityEvent,
   RecordPlanItemActivity,
+  RemoveWorkItemDependency,
   ResetRoutineDurationInsightDismissal,
   SetPlanItemLock,
   DeleteScheduleBlock,
@@ -42,6 +45,7 @@ export function createProductServices(
   advisor: SchedulingAdvisor = new DisabledSchedulingAdvisor(),
 ): ProductServices {
   const approveRoutineDurationInsight = new ApproveRoutineDurationInsight(unitOfWork, clock);
+  const addWorkItemDependency = new AddWorkItemDependency(unitOfWork, clock);
   const dismissRoutineDurationInsight = new DismissRoutineDurationInsight(unitOfWork, clock);
   const createWorkspace = new CreateWorkspace(unitOfWork, clock);
   const getWorkspace = new GetWorkspace(unitOfWork);
@@ -54,6 +58,7 @@ export function createProductServices(
   const createScheduleBlock = new CreateScheduleBlock(unitOfWork, clock);
   const getScheduleBlock = new GetScheduleBlock(unitOfWork);
   const listScheduleBlocks = new ListScheduleBlocks(unitOfWork);
+  const listWorkItemDependencies = new ListWorkItemDependencies(unitOfWork);
   const updateScheduleBlock = new UpdateScheduleBlock(unitOfWork, clock);
   const deleteScheduleBlock = new DeleteScheduleBlock(unitOfWork, clock);
   const getRoutine = new GetRoutine(unitOfWork);
@@ -63,6 +68,7 @@ export function createProductServices(
   const listRoutineActivity = new ListRoutineActivity(unitOfWork);
   const recordActivityEvent = new RecordActivityEvent(unitOfWork, clock);
   const recordPlanItemActivity = new RecordPlanItemActivity(unitOfWork, clock);
+  const removeWorkItemDependency = new RemoveWorkItemDependency(unitOfWork, clock);
   const resetRoutineDurationInsightDismissal = new ResetRoutineDurationInsightDismissal(
     unitOfWork,
     clock,
@@ -75,6 +81,7 @@ export function createProductServices(
   const getSchedulingAdvice = new GetSchedulingAdvice(unitOfWork, advisor, clock);
 
   return {
+    addWorkItemDependency: (command) => addWorkItemDependency.execute(command),
     approveRoutineDurationInsight: (command) => approveRoutineDurationInsight.execute(command),
     dismissRoutineDurationInsight: (command) => dismissRoutineDurationInsight.execute(command),
     createWorkspace: (command) => createWorkspace.execute(command),
@@ -88,6 +95,7 @@ export function createProductServices(
     createScheduleBlock: (command) => createScheduleBlock.execute(command),
     getScheduleBlock: (query) => getScheduleBlock.execute(query),
     listScheduleBlocks: (query) => listScheduleBlocks.execute(query),
+    listWorkItemDependencies: (query) => listWorkItemDependencies.execute(query),
     updateScheduleBlock: (command) => updateScheduleBlock.execute(command),
     deleteScheduleBlock: (command) => deleteScheduleBlock.execute(command),
     getRoutine: (query) => getRoutine.execute(query),
@@ -97,6 +105,7 @@ export function createProductServices(
     listRoutineActivity: (query) => listRoutineActivity.execute(query),
     recordActivityEvent: (command) => recordActivityEvent.execute(command),
     recordPlanItemActivity: (command) => recordPlanItemActivity.execute(command),
+    removeWorkItemDependency: (command) => removeWorkItemDependency.execute(command),
     resetRoutineDurationInsightDismissal: (command) =>
       resetRoutineDurationInsightDismissal.execute(command),
     generateDailyPlan: (command) => generateDailyPlan.execute(command),

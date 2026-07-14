@@ -24,6 +24,7 @@ import {
   type DailyPlan,
   type RoutineDurationInsight,
   type RoutineDurationInsightFeedback,
+  type WorkItemDependency,
 } from "@schedule/domain";
 
 import { buildApp } from "./app.js";
@@ -35,6 +36,10 @@ const routineUuid = "22222222-2222-4222-8222-222222222222";
 const eventUuid = "33333333-3333-4333-8333-333333333333";
 const planUuid = "44444444-4444-4444-8444-444444444444";
 const workItemUuid = "55555555-5555-4555-8555-555555555555";
+const prerequisiteWorkItemUuid = "99999999-9999-4999-8999-999999999999";
+const canonicalWorkspaceUuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const canonicalDependentWorkItemUuid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const canonicalPrerequisiteWorkItemUuid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const scheduleBlockUuid = "66666666-6666-4666-8666-666666666666";
 const durationFeedbackUuid = "77777777-7777-4777-8777-777777777777";
 const adviceRequestUuid = "88888888-8888-4888-8888-888888888888";
@@ -101,6 +106,7 @@ afterEach(async () => {
 function createHarness(overrides: Partial<ProductServices> = {}) {
   let storedPlan: DailyPlan | null = null;
   let storedWorkItem: ReturnType<typeof createWorkItem> | null = null;
+  let storedDependency: WorkItemDependency | null = null;
   let storedScheduleBlock: ReturnType<typeof createScheduleBlock> | null = null;
   const activity = recordActivityEvent({
     id: activityEventId(eventUuid),
@@ -114,6 +120,16 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
     recordedAt: new Date("2026-07-15T12:01:00.000Z"),
   });
   const services: ProductServices = {
+    addWorkItemDependency: async (command) => {
+      if (storedDependency !== null) return { dependency: storedDependency, created: false };
+      storedDependency = {
+        workspaceId: command.workspaceId,
+        prerequisiteWorkItemId: command.prerequisiteWorkItemId,
+        dependentWorkItemId: command.dependentWorkItemId,
+        createdAt: new Date("2026-07-15T12:03:00.000Z"),
+      };
+      return { dependency: storedDependency, created: true };
+    },
     approveRoutineDurationInsight: async (command) =>
       applyRoutineUpdate(routine, {
         duration: command.duration,
@@ -150,6 +166,14 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       limit: query.limit ?? 100,
       offset: query.offset ?? 0,
     }),
+    listWorkItemDependencies: async (query) => ({
+      items: storedDependency === null ? [] : [storedDependency],
+      limit: query.limit ?? 100,
+      offset: query.offset ?? 0,
+    }),
+    removeWorkItemDependency: async () => {
+      storedDependency = null;
+    },
     updateWorkItem: async (command) => {
       if (storedWorkItem === null) throw new DomainError("work_item.not_found", "Missing.");
       storedWorkItem = applyWorkItemUpdate(storedWorkItem, {
@@ -604,6 +628,250 @@ describe("local product API", () => {
       expect(response.statusCode).toBe(400);
       expect(response.json()).toMatchObject({ error: { code: "request.validation_failed" } });
     }
+  });
+
+  it("creates, replays, lists, and idempotently removes work-item dependencies", async () => {
+    const app = await appWith(createHarness().services);
+    const dependencyPath = `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}/prerequisites`;
+    const payload = { prerequisiteWorkItemId: prerequisiteWorkItemUuid };
+
+    const created = await app.inject({ method: "POST", url: dependencyPath, payload });
+    const replayed = await app.inject({ method: "POST", url: dependencyPath, payload });
+    const listed = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/work-item-dependencies?limit=2&offset=0`,
+    });
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `${dependencyPath}/${prerequisiteWorkItemUuid}`,
+    });
+    const removedAgain = await app.inject({
+      method: "DELETE",
+      url: `${dependencyPath}/${prerequisiteWorkItemUuid}`,
+    });
+    const empty = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/work-item-dependencies`,
+    });
+
+    const expectedDependency = {
+      workspaceId: workspaceUuid,
+      prerequisiteWorkItemId: prerequisiteWorkItemUuid,
+      dependentWorkItemId: workItemUuid,
+      createdAt: "2026-07-15T12:03:00.000Z",
+    };
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toEqual(expectedDependency);
+    expect(replayed.statusCode).toBe(200);
+    expect(replayed.json()).toEqual(expectedDependency);
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toEqual({
+      items: [expectedDependency],
+      page: { limit: 2, offset: 0 },
+    });
+    expect(removed.statusCode).toBe(204);
+    expect(removed.body).toBe("");
+    expect(removedAgain.statusCode).toBe(204);
+    expect(removedAgain.body).toBe("");
+    expect(empty.json()).toEqual({ items: [], page: { limit: 100, offset: 0 } });
+  });
+
+  it("strictly validates dependency identifiers, bodies, and pagination", async () => {
+    let calls = 0;
+    const app = await appWith(
+      createHarness({
+        addWorkItemDependency: async () => {
+          calls += 1;
+          throw new Error("should not be called");
+        },
+        listWorkItemDependencies: async () => {
+          calls += 1;
+          throw new Error("should not be called");
+        },
+        removeWorkItemDependency: async () => {
+          calls += 1;
+          throw new Error("should not be called");
+        },
+      }).services,
+    );
+    const validPath = `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}/prerequisites`;
+    const invalidResponses = await Promise.all([
+      app.inject({
+        method: "GET",
+        url: "/v1/workspaces/not-a-uuid/work-item-dependencies",
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${workspaceUuid}/work-item-dependencies?limit=201`,
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${workspaceUuid}/work-item-dependencies?offset=-1`,
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${workspaceUuid}/work-item-dependencies?sort=createdAt`,
+      }),
+      app.inject({
+        method: "POST",
+        url: `/v1/workspaces/${workspaceUuid}/work-items/not-a-uuid/prerequisites`,
+        payload: { prerequisiteWorkItemId: prerequisiteWorkItemUuid },
+      }),
+      app.inject({
+        method: "POST",
+        url: validPath,
+        payload: { prerequisiteWorkItemId: "not-a-uuid" },
+      }),
+      app.inject({
+        method: "POST",
+        url: validPath,
+        payload: { prerequisiteWorkItemId: prerequisiteWorkItemUuid, force: true },
+      }),
+      app.inject({
+        method: "DELETE",
+        url: `${validPath}/not-a-uuid`,
+      }),
+    ]);
+
+    for (const response of invalidResponses) {
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: { code: "request.validation_failed" } });
+    }
+    expect(calls).toBe(0);
+  });
+
+  it("canonicalizes uppercase dependency UUID params and bodies before dispatch", async () => {
+    const addCommands: unknown[] = [];
+    const removeCommands: unknown[] = [];
+    const dependency = {
+      workspaceId: workspaceId(canonicalWorkspaceUuid),
+      prerequisiteWorkItemId: workItemId(canonicalPrerequisiteWorkItemUuid),
+      dependentWorkItemId: workItemId(canonicalDependentWorkItemUuid),
+      createdAt: new Date("2026-07-15T12:04:00.000Z"),
+    };
+    const app = await appWith(
+      createHarness({
+        addWorkItemDependency: async (command) => {
+          addCommands.push(command);
+          return { dependency, created: true };
+        },
+        removeWorkItemDependency: async (command) => {
+          removeCommands.push(command);
+        },
+      }).services,
+    );
+    const path = `/v1/workspaces/${canonicalWorkspaceUuid.toUpperCase()}/work-items/${canonicalDependentWorkItemUuid.toUpperCase()}/prerequisites`;
+
+    const created = await app.inject({
+      method: "POST",
+      url: path,
+      payload: { prerequisiteWorkItemId: canonicalPrerequisiteWorkItemUuid.toUpperCase() },
+    });
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `${path}/${canonicalPrerequisiteWorkItemUuid.toUpperCase()}`,
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toEqual({
+      workspaceId: canonicalWorkspaceUuid,
+      prerequisiteWorkItemId: canonicalPrerequisiteWorkItemUuid,
+      dependentWorkItemId: canonicalDependentWorkItemUuid,
+      createdAt: "2026-07-15T12:04:00.000Z",
+    });
+    expect(removed.statusCode).toBe(204);
+    expect(addCommands).toEqual([
+      {
+        workspaceId: dependency.workspaceId,
+        prerequisiteWorkItemId: dependency.prerequisiteWorkItemId,
+        dependentWorkItemId: dependency.dependentWorkItemId,
+      },
+    ]);
+    expect(removeCommands).toEqual(addCommands);
+  });
+
+  it("canonicalizes mixed-case self dependencies before domain validation", async () => {
+    const commands: unknown[] = [];
+    const app = await appWith(
+      createHarness({
+        addWorkItemDependency: async (command) => {
+          commands.push(command);
+          if (command.prerequisiteWorkItemId === command.dependentWorkItemId) {
+            throw new DomainError(
+              "work_item_dependency.self_reference_invalid",
+              "A work item cannot depend on itself.",
+            );
+          }
+          throw new Error("Mixed-case self dependency bypassed canonicalization.");
+        },
+      }).services,
+    );
+    const path = `/v1/workspaces/${canonicalWorkspaceUuid.toUpperCase()}/work-items/${canonicalDependentWorkItemUuid}/prerequisites`;
+    const response = await app.inject({
+      method: "POST",
+      url: path,
+      payload: { prerequisiteWorkItemId: canonicalDependentWorkItemUuid.toUpperCase() },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({
+      error: { code: "work_item_dependency.self_reference_invalid" },
+    });
+    expect(commands).toEqual([
+      {
+        workspaceId: workspaceId(canonicalWorkspaceUuid),
+        prerequisiteWorkItemId: workItemId(canonicalDependentWorkItemUuid),
+        dependentWorkItemId: workItemId(canonicalDependentWorkItemUuid),
+      },
+    ]);
+  });
+
+  it("maps dependency self-reference, cycle, and missing-item errors", async () => {
+    const app = await appWith(
+      createHarness({
+        addWorkItemDependency: async (command) => {
+          if (command.prerequisiteWorkItemId === command.dependentWorkItemId) {
+            throw new DomainError(
+              "work_item_dependency.self_reference_invalid",
+              "A work item cannot depend on itself.",
+            );
+          }
+          throw new DomainError(
+            "work_item_dependency.cycle_conflict",
+            "The dependency would create a cycle.",
+          );
+        },
+        removeWorkItemDependency: async () => {
+          throw new DomainError("work_item.not_found", "The work item does not exist.");
+        },
+      }).services,
+    );
+    const dependencyPath = `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}/prerequisites`;
+    const conflict = await app.inject({
+      method: "POST",
+      url: dependencyPath,
+      payload: { prerequisiteWorkItemId: prerequisiteWorkItemUuid },
+    });
+    const missing = await app.inject({
+      method: "DELETE",
+      url: `${dependencyPath}/${prerequisiteWorkItemUuid}`,
+    });
+    const selfReference = await app.inject({
+      method: "POST",
+      url: dependencyPath,
+      payload: { prerequisiteWorkItemId: workItemUuid },
+    });
+
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toMatchObject({
+      error: { code: "work_item_dependency.cycle_conflict" },
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toMatchObject({ error: { code: "work_item.not_found" } });
+    expect(selfReference.statusCode).toBe(422);
+    expect(selfReference.json()).toMatchObject({
+      error: { code: "work_item_dependency.self_reference_invalid" },
+    });
   });
 
   it("supports linked calendar-block range, update, and delete flows", async () => {
@@ -2043,5 +2311,54 @@ describe("local product API", () => {
     expect(response.statusCode).toBe(500);
     expect(response.json()).toMatchObject({ error: { code: "internal.unexpected_error" } });
     expect(response.body).not.toContain("password");
+  });
+
+  it("redacts and code-only logs corrupt planning work-item graphs", async () => {
+    const logLines: string[] = [];
+    const app = await buildApp({
+      logger: {
+        level: "error",
+        stream: {
+          write: (message: string) => {
+            logLines.push(message);
+          },
+        },
+      },
+      productServices: createHarness({
+        listWorkItemDependencies: async () => {
+          throw new DomainError(
+            "planning.work_item_graph_corrupt",
+            "private graph row contents must never leave the server",
+          );
+        },
+      }).services,
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/work-item-dependencies`,
+    });
+    const logRecords = logLines.map(
+      (line) => JSON.parse(line) as Readonly<Record<string, unknown>>,
+    );
+    const invariantLogs = logRecords.filter(
+      (record) => record.code === "planning.work_item_graph_corrupt",
+    );
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error).toEqual({
+      code: "internal.unexpected_error",
+      message: "An unexpected error occurred.",
+    });
+    expect(response.body).not.toContain("private graph row contents");
+    expect(invariantLogs).toHaveLength(1);
+    expect(invariantLogs[0]).toMatchObject({
+      level: 50,
+      code: "planning.work_item_graph_corrupt",
+      msg: "planning invariant failed",
+    });
+    expect(invariantLogs[0]).not.toHaveProperty("err");
+    expect(logLines.join("\n")).not.toContain("private graph row contents");
   });
 });

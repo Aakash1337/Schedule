@@ -13,11 +13,12 @@ not authorize these product routes.
 - This mode must not be exposed to an untrusted network. Authentication and authorization are required before public hosting.
 - CORS is disabled, JSON bodies are limited to 256 KiB, request objects reject unknown fields, and error responses do not include stack traces.
 - Product routes reject missing, malformed, or non-loopback `Host` authorities before routing. This protects the unauthenticated loopback service from browser DNS-rebinding attacks; `localhost`, IPv4 `127.0.0.0/8`, and IPv6 loopback (`[::1]`) are accepted with an optional valid port. Health and system-information endpoints remain outside this product-route guard for local process and container diagnostics.
+- Accepted UUID values in product-route paths and bodies are canonicalized to lowercase before service dispatch and identity comparison; responses therefore use the canonical spelling.
 - Product routes are limited to 240 requests per minute per source address and two concurrent plan generations per API process.
 - The optional advisor is independently disabled by default. When enabled, its adapter accepts only
   one exact raw `http://127.0.0.1:<port>` Ollama origin and an allowlisted local Gemma model; it does
   not use DNS, redirects, proxies, tools, or credentials.
-- Local mode caps an installation at 20 workspaces; each workspace is capped at 500 routines, 5,000 activity events, 2,000 plan revisions, and 50 revisions for one date.
+- Local mode caps an installation at 20 workspaces; each workspace is capped at 500 routines, 5,000 activity events, 2,000 plan revisions, and 50 revisions for one date. Planning reads at most 2,001 dependency rows whose dependents are active opted-in candidates and fails closed with `planning.work_item_dependency_pool_too_large` when more than 2,000 relevant rows exist.
 - Plan responses expose the original planning request, input hash, and algorithm versions, but not routine snapshots or activity history from the complete persisted input snapshot.
 
 ## Routes
@@ -31,6 +32,9 @@ not authorize these product routes.
 | `GET`    | `/v1/workspaces/{workspaceId}/work-items`                                                      | List a bounded work-item page                     |
 | `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Retrieve one work item                            |
 | `PATCH`  | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Version-checked work-item update                  |
+| `GET`    | `/v1/workspaces/{workspaceId}/work-item-dependencies`                                          | List a bounded dependency page                    |
+| `POST`   | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/prerequisites`                           | Add one direct prerequisite (`201` or `200`)      |
+| `DELETE` | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/prerequisites/{prerequisiteWorkItemId}`  | Idempotently remove a prerequisite (`204`)        |
 | `POST`   | `/v1/workspaces/{workspaceId}/schedule-blocks`                                                 | Create a calendar block (`201`)                   |
 | `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks?from={instant}&to={instant}`                     | List blocks overlapping a bounded range           |
 | `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Retrieve one calendar block                       |
@@ -60,6 +64,39 @@ not authorize these product routes.
 Activity requests require an `Idempotency-Key` header containing 1–160 characters. Reusing a key with identical event content returns the original event. Reusing it for different content returns `409 activity.idempotency_conflict`. Public event responses omit the key because the caller already owns it and it is retry metadata, not activity history.
 
 Work items provide the initial backlog and status-column Kanban model through `backlog`, `planned`, `in_progress`, `blocked`, `done`, and `cancelled`. `planningDurationMinutes` is nullable: `null` keeps normal work out of Today, while a positive value (up to 43,200) opts it into the planner. `dueOn` is independently nullable and, when present, must be a strict real Gregorian `YYYY-MM-DD` local date. Create may omit it or send `null`; update omission preserves it, while update `null` clears it. Only opted-in `backlog`, `planned`, and `in_progress` work is eligible, and a due date never overrides status, duration, window, time-budget, or task-count constraints. List requests accept optional `status` and `priority` filters plus `limit` from 1–200 and `offset` from 0–1,000,000. Ordering is stable by creation time and ID. Updates require `expectedVersion`, increment exactly once for a real semantic change, and preserve the version for a normalized no-op. Work-item hard deletion and manual card ranking are not part of this MVP surface; cancellation is the removal workflow, and clients group items by status. A completion from a stale plan never auto-transitions `blocked` or `cancelled` work to `done`.
+
+Work-item prerequisites are directed same-workspace edges. The `POST .../work-items/{dependentWorkItemId}/prerequisites` route accepts the strict body
+`{"prerequisiteWorkItemId":"<uuid>"}`. A new edge returns `201`; an exact existing edge returns the
+same dependency with `200`. `DELETE` uses both IDs in the path and returns `204` whether or not the
+edge still exists. Neither operation requires or changes a work-item version because the graph is a
+separate resource. The response shape is
+`{workspaceId, prerequisiteWorkItemId, dependentWorkItemId, createdAt}`, with `createdAt` as an ISO
+instant and every UUID in canonical lowercase form.
+
+`GET /work-item-dependencies` accepts only `limit` from 1–200 and `offset` from 0–1,000,000, with
+defaults of 100 and 0. It returns `{items, page:{limit,offset}}`. The collection route validates the
+workspace and paging. The mutation routes validate the workspace and both item IDs before changing
+the graph. Results have stable ascending order by creation time, prerequisite ID, and dependent ID. A
+missing workspace returns `404 workspace.not_found`; missing or cross-workspace items return
+`404 work_item.not_found`; a self-edge returns
+`422 work_item_dependency.self_reference_invalid`; and any
+direct or transitive cycle returns `409 work_item_dependency.cycle_conflict`. Both graph mutations
+take a workspace-scoped PostgreSQL advisory lock before reading the current graph, so concurrent
+additions cannot pass cycle validation against stale views. UUID case cannot bypass these rules: a
+mixed-case spelling of the same work item is still a `422` self-edge, and the advisory key uses the
+canonical workspace UUID. Concurrent reciprocal additions produce one created edge while the other
+request is rejected with the cycle conflict.
+
+Only `done` satisfies a direct prerequisite. Adding or removing an edge never changes either work
+item's status or version and never mutates the current Today revision or head. The planner applies the
+current graph when generating a new revision. On explicit regeneration, an unlocked dependent with an
+unmet prerequisite is neither retained nor newly selected. A locked nonterminal item preserves its
+anchor, while terminal items remain excluded under the existing replan rules.
+
+The combined work/dependency planning projection is decoded and order-checked defensively. Malformed
+persisted rows fail closed with the internal `planning.work_item_graph_corrupt` invariant. Product
+routes return only `500 internal.unexpected_error`, log the stable invariant code once, and expose
+neither the stored graph contents nor the internal error message.
 
 Schedule-block range reads require offset-bearing `from` and `to` instants, use half-open overlap (`startsAt < to` and `endsAt > from`), and accept ranges no longer than 93 days with the same bounded pagination convention. Absolute instants remain authoritative when `timeZone` changes. A block may reference a work item from the same workspace, but their lifecycles remain independent. Create and update validate the workspace and optional link. Update and deletion require `expectedVersion`; deletion returns `204` and appends an immutable audit snapshot in the same transaction. Recurrence authoring, conflict detection, and automatic placement are deferred.
 
@@ -199,7 +236,9 @@ Version 1 requires the literal `both` focus and rejects narrower values until th
 output semantics are defined. The server, not the caller, constructs an immutable
 `schedule.advisor-context/v1` projection. It contains a maximum of
 50 sorted current-plan items and 50 deterministically ordered eligible backlog items, selected
-scheduling fields, bounded reasons and warnings, and explicit truncation flags. It excludes
+scheduling fields, bounded reasons and warnings, and explicit truncation flags. Eligible backlog
+excludes current-plan work and any item whose direct prerequisites are not all `done`; candidates and
+their dependency/status projection come from one bounded database statement. The context excludes
 descriptions, workspace names, calendar blocks, activity history, full planner snapshots, secrets,
 and any dedicated or free-form model-instruction field. Titles and other stored text may be
 user-authored, so the fixed provider prompt treats every supplied string as untrusted data. Stored
@@ -257,8 +296,9 @@ advisor also returns `200` with the same snapshot, input, and provenance envelop
 `invalid_advice` as `reason`.
 
 The initial context read closes before the model call. Valid advice is returned only after a second
-short unit of work rebuilds and exactly compares the sanitized plan-and-backlog context. A stale
-expected identity or any plan/backlog change during inference returns
+short unit of work rebuilds and exactly compares the sanitized plan-and-backlog context plus its
+canonical dependency projection. A stale expected identity or any plan, backlog, dependency, or
+prerequisite-status change during inference returns
 `409 advisor.snapshot_conflict`; the model output is discarded. Missing workspaces or current plans
 return `404`; invalid context or policy data returns `422`. Every advisor response, including route
 validation, body-limit, rate-limit, and conflict errors, carries `Cache-Control: no-store`. If the

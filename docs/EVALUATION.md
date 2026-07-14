@@ -44,19 +44,20 @@ project.
 
 ## Current scorecard
 
-The current audited unit/component suite contains 66 test files and 913 runtime test cases, plus three
-live Chromium integration scenarios. Parameterized state matrices expand into many cases, so this
-number must not be compared as though every case were an independent product feature.
+The package and script runners currently execute 68 test files and 989 runtime test cases. The 69th
+test file is the Playwright specification, which contains four live Chromium integration scenarios.
+Parameterized state matrices expand into many cases, so this number must not be compared as though
+every case were an independent product feature.
 
 ### Feature evidence
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      25 / 25 |
+| Implemented features with CI-registered evidence                       |      26 / 26 |
 | Critical implemented features with CI-registered integration or drills |      14 / 14 |
 | Partial features with an explicit limitation                           |        2 / 2 |
-| CI-registered evidence items                                           |          107 |
-| Deferred features incorrectly counted as passing                       |            0 |
+| Deferred features explicitly tracked as not passing                    |        1 / 1 |
+| CI-registered evidence items                                           |          120 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -67,21 +68,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.31% |   70.42% |    67.42% | 59.58% |
+| Whole repository, measured |     59.91% |   71.05% |    68.45% | 60.21% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |     95.49% |   90.58% |    96.15% | 96.59% |
+| Domain, measured           |     95.72% |   91.29% |    96.33% | 96.77% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     89.43% |   84.04% |      100% | 90.29% |
+| Application, measured      |     89.67% |   83.89% |    99.61% | 90.47% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     87.17% |   79.47% |    79.21% | 88.49% |
+| API, measured              |     87.58% |   79.74% |    80.10% | 88.87% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.26% |   89.18% |    91.11% | 95.14% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     86.41% |   74.09% |    75.72% | 87.02% |
+| Web, measured              |     86.39% |   75.00% |    76.85% | 87.03% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 5,899 of 9,946 statements, 4,406 of 6,256 branches,
-1,310 of 1,943 functions, and 5,524 of 9,271 lines.
+The whole-repository totals are 6,287 of 10,494 statements, 4,693 of 6,605 branches,
+1,428 of 2,086 functions, and 5,888 of 9,779 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -114,10 +115,10 @@ exist.
 
 The deadline feature has independent domain, application, database, API, web, and executable
 PostgreSQL evidence. Domain tests require nullable real Gregorian local dates, normal version
-semantics for preserving and clearing a date, deterministic v4 deadline pressure for future, today,
+semantics for preserving and clearing a date, deterministic v5 deadline pressure for future, today,
 overdue, capped-overdue, and outside-horizon work, and continued exclusion of non-plannable work.
 The configured 14-day horizon and all deadline weights are validated before planning. The test also
-proves that reversed candidate order produces the same v4 snapshot hash and selected items.
+proves that reversed candidate order produces the same v5 snapshot hash and selected items.
 
 Application and repository tests cover create, update, explicit clear, database row mapping, and
 the nullable `due_on` column. Product API tests round-trip a leap-day date through create, get, list,
@@ -133,18 +134,65 @@ Work UI, generates Today through the live API and database, and observes the due
 pressure. The browser scenario is registered because it exists; it is not treated as the sole
 correctness oracle.
 
+### Work-item dependency evidence
+
+The dependency slice separates graph correctness, planner eligibility, persistence, transport, and
+interface behavior. Domain tests cover tenant-scoped edge construction, self-reference and timestamp
+validation, mixed-case equality for persisted PostgreSQL UUIDs without folding arbitrary domain IDs,
+done-only satisfaction across every direct prerequisite, canonical ordering and snapshot hashing,
+prerequisite projections outside the candidate list, malformed and duplicate input, and dependency-
+aware replanning with explicit nonterminal anchors. Planner v5 reports
+`work_item_dependency_unsatisfied` without changing work-item status or deadline scoring.
+
+Application tests cover graph-lock call ordering, same-tenant endpoint validation, exact duplicate-add
+replay, transitive-cycle rejection without a write or audit, idempotent missing-edge removal, audit
+only for real changes, mixed-case self-reference rejection before opening a transaction, stable
+bounded listing, relevant planner projection, and the 2,000-row fail-
+closed planning limit. Regeneration, feedback, and feedback-reset units prove that unmet dependents
+remain excluded, including when routine feedback frees capacity. Advisor units prove that unmet
+dependents are absent from provider membership, cannot be valid targets, and that dependency-status
+changes invalidate an in-flight review even when membership stays unchanged. Schema and repository
+tests cover the composite key, tenant foreign keys,
+cascading cleanup, database self-edge check, stable pagination, joined prerequisite status,
+the canonical workspace-scoped advisory-lock statement and key, a bounded ordered one-statement work/
+dependency projection with malformed-result rejection and unmasked database failures, and recursive
+tenant-scoped cycle detection.
+
+API tests cover strict UUID, body, and page validation; `201` create versus `200` exact replay;
+lowercase canonicalization of uppercase path/body values; mixed-case self-edge rejection; bounded
+listing; idempotent `204` removal; ISO timestamps; exact self-reference, cycle, and missing-item
+mappings; and redacted `500` responses with code-only invariant logging for corrupt graph projections.
+Web API and Work component tests cover complete offset traversal, title/status resolution
+outside the active priority filter, bounded candidate choices, inline add/remove, pending and failure
+states, cycle retention, focus restoration, cache/status merging, explicit graph revalidation and
+retry, workspace-switch cancellation, and the guarantee that dependency edits do not change workflow
+status.
+
+The PostgreSQL product-API verifier exercises the real add, replay, list, transitive-cycle,
+cross-workspace rejection, immutable-current-plan, regeneration exclusion, prerequisite completion,
+reselection, remove, repeated-remove, and audit paths. It also checks that rejected and replayed
+commands do not create graph or audit rows, that a mixed-case self-edge remains `422`, and that two
+simultaneous reciprocal additions serialize into exactly one `201` edge and one `409` cycle conflict.
+The passing 320px Chromium scenario keyboard-opens the progressive editor, checks 44px targets and
+horizontal fit, adds a done prerequisite, verifies focus, count, status, and unchanged workflow state,
+reloads the persisted edge, removes it, and reloads its absence without page, request, or HTTP errors.
+Together these establish the direct-prerequisite, two-request graph-mutation, and live-browser edit
+contracts.
+
 ### Temporary routine-feedback evidence
 
 Temporary routine feedback has independent oracles for policy, planning, persistence, command, and
 interface behavior. Domain tests cover inclusive day and routine-defined week boundaries, tenant and
 future-event filtering, deterministic latest-event resolution, reset and expiry, and immutable
 recording-time input. Planner tests require **Not today** and **Not this week** to be hard routine
-exclusions without changing score or cadence evidence, include the canonical latest event in the v3
+exclusions without changing score or cadence evidence, include the canonical latest event in the v5
 input snapshot and hash, and preserve that input through residual replanning.
 
 Application tests require an unlocked, pending routine source, prove immediate server-allocated
 replanning and identical idempotent replay, and show that an appended reset clears the active
-exclusion without resurrecting an older instruction. They also require read-committed feedback
+exclusion without resurrecting an older instruction. Both feedback and feedback-reset tests use the
+combined work/dependency graph and keep an unmet dependent out of newly freed capacity. They also
+require read-committed feedback
 transactions, compare the canonical sequence-and-ID head across plan dates, reject stale heads, fail
 closed on malformed snapshot metadata, and preserve accepted-command replay after the head advances.
 Schema and repository tests cover tenant-bound
@@ -219,9 +267,10 @@ The implemented advisor scope is deliberately narrower than the broad feature na
 marks it `partial`. Configuration units require disabled defaults, the exact four-model Gemma
 allowlist, one canonical raw IPv4-loopback HTTP origin, bounded numeric controls, and a request
 timeout no shorter than the connection timeout. Application units assert that the provider receives
-only a bounded sanitized current-plan and eligible-backlog projection, that no database unit of work
-is open during inference, and that valid advice is discarded when either the Today snapshot or
-eligible backlog changes before the exact post-call recheck. They also cover target membership,
+only a bounded sanitized current-plan and eligible-backlog projection, that unmet dependents are not
+provider members or valid targets, that no database unit of work is open during inference, and that
+valid advice is discarded when the Today snapshot, eligible backlog, or dependency fingerprint
+changes before the exact post-call recheck. They also cover bounded graph overflow, target membership,
 strict output structure, duplicate rejection, deterministic truncation, and the aggregate 64 KiB
 limit.
 
@@ -302,11 +351,14 @@ The audit deliberately leaves these visible instead of turning them into false g
   receiver are unit-faked, so there is no live-network delivery claim. The automatic event is only an
   invalidation; reminder policy, phone notifications, Hermes/WhatsApp transport, and downstream
   delivery receipts remain deferred;
-- live browser evidence covers the central desktop Chromium mixed routine/work-item planning loop,
-  including temporary routine feedback, reload, reset, work completion/reversal, and routine
-  completion. A second scenario covers duration-insight dismissal, persisted disposition, exact-key
-  reset, and resurfacing after changed evidence, but not every browser, responsive layout, validation
-  branch, Calendar interaction, or the duration-calibration approval flow;
+- four live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
+  feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
+  a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions. They do
+  not cover every browser, every responsive breakpoint, every validation branch, Calendar interaction,
+  or the duration-calibration approval flow;
+- work-item dependencies have domain, application, repository, API, component, and real PostgreSQL
+  evidence, including a two-request reciprocal-add concurrency drill and the 320px live browser flow;
+  dependency management is not exposed through the authenticated integration gateway;
 - duration calibration has domain, component, API, repository, and real PostgreSQL evidence, and
   exact-key dismissal/reset now preserves reversible rejection memory. It still has no production
   outcome data, learned cadence/energy/preference model, automatic application, historical insight

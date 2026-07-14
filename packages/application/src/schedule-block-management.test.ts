@@ -73,6 +73,9 @@ describe("schedule block management", () => {
       },
       auditEvents: { append: async (event: AuditEventRecord) => void audits.push(event) },
       routines: {} as TransactionContext["routines"],
+      workItemDependencies: {
+        loadPlanningGraph: async () => ({ workItems: [], dependencies: [] }),
+      } as TransactionContext["workItemDependencies"],
       activityEvents: {} as TransactionContext["activityEvents"],
       dailyPlans: {} as TransactionContext["dailyPlans"],
     } satisfies TransactionContext;

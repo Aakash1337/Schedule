@@ -17,6 +17,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 
 import type {
   ActivityHistoryCursor,
@@ -41,6 +42,7 @@ import type {
   PlanItemLockResult,
   PlanItemActivityResult,
   PlanMutationRecord,
+  PlanningWorkItemGraph,
   RecordPlanItemActivityInput,
   RoutineDurationInsightFeedbackRepository,
   RoutineRepository,
@@ -49,6 +51,7 @@ import type {
   TransactionContext,
   UnitOfWork,
   UnitOfWorkOptions,
+  WorkItemDependencyRepository,
   WorkItemRepository,
   WorkspaceRepository,
 } from "@schedule/application";
@@ -59,6 +62,7 @@ import {
   createDurationRange,
   createRoutine,
   createStructuredTags,
+  createWorkItemDependency,
   dailyPlanId,
   localDate,
   planItemId,
@@ -71,6 +75,8 @@ import {
   scheduleBlockId,
   transitionPlanItemActivity,
   workItemId,
+  workItemPriorities,
+  workItemStatuses,
   workspaceId,
   type ActivityEvent,
   type DailyPlan,
@@ -79,6 +85,7 @@ import {
   type PlanExclusion,
   type PlanItem,
   type PlanWarning,
+  type PlanningWorkItemDependency,
   type Routine,
   type RoutineDurationInsightFeedback,
   type RoutinePlanningFeedback,
@@ -86,6 +93,7 @@ import {
   type ScheduleBlock,
   type ScheduleBlockId,
   type WorkItem,
+  type WorkItemDependency,
   type WorkItemId,
   type WorkItemPriority,
   type WorkItemStatus,
@@ -111,6 +119,7 @@ import {
   routinePlanningFeedbackEvents,
   routines,
   scheduleBlocks,
+  workItemDependencies,
   workItems,
   workspaces,
 } from "./schema.js";
@@ -120,6 +129,7 @@ type DatabaseTransaction = Parameters<TransactionCallback>[0];
 type DatabaseExecutor = DatabaseConnection["db"] | DatabaseTransaction;
 
 type WorkItemRow = typeof workItems.$inferSelect;
+type WorkItemDependencyRow = typeof workItemDependencies.$inferSelect;
 type WorkspaceRow = typeof workspaces.$inferSelect;
 type ScheduleBlockRow = typeof scheduleBlocks.$inferSelect;
 type RoutineRow = typeof routines.$inferSelect;
@@ -133,6 +143,15 @@ type DailyPlanItemStateRow = typeof dailyPlanItemStates.$inferSelect;
 type IntegrationCredentialRow = typeof integrationCredentials.$inferSelect;
 type IntegrationConfirmationRow = typeof integrationConfirmations.$inferSelect;
 type IntegrationRequestRow = typeof integrationRequests.$inferSelect;
+
+interface PlanningGraphDatabaseRow {
+  readonly rowGroup: number;
+  readonly rowPosition: number;
+  readonly rowKind: string;
+  readonly payload: unknown;
+}
+
+const dependentWorkItems = alias(workItems, "dependent_work_items");
 
 function mapWorkspace(row: WorkspaceRow): Workspace {
   return {
@@ -233,6 +252,94 @@ function mapWorkItem(row: WorkItemRow): WorkItem {
     version: row.version,
     createdAt: new Date(row.createdAt),
     updatedAt: new Date(row.updatedAt),
+  };
+}
+
+function mapWorkItemDependency(row: WorkItemDependencyRow): WorkItemDependency {
+  return createWorkItemDependency({
+    workspaceId: workspaceId(row.workspaceId),
+    prerequisiteWorkItemId: workItemId(row.prerequisiteWorkItemId),
+    dependentWorkItemId: workItemId(row.dependentWorkItemId),
+    createdAt: new Date(row.createdAt),
+  });
+}
+
+function planningGraphCorrupt(): never {
+  throw new DomainError(
+    "planning.work_item_graph_corrupt",
+    "The stored work-item planning graph could not be decoded safely.",
+  );
+}
+
+function recordValue(value: unknown): Readonly<Record<string, unknown>> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return planningGraphCorrupt();
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function validTimestamp(value: unknown): Date {
+  if (typeof value !== "string") return planningGraphCorrupt();
+  const timestamp = new Date(value);
+  if (!Number.isFinite(timestamp.getTime())) return planningGraphCorrupt();
+  return timestamp;
+}
+
+function mapPlanningGraphWorkItem(payload: unknown): WorkItem {
+  const value = recordValue(payload);
+  if (
+    typeof value.id !== "string" ||
+    value.id.length === 0 ||
+    typeof value.workspaceId !== "string" ||
+    value.workspaceId.length === 0 ||
+    typeof value.title !== "string" ||
+    !(value.description === null || typeof value.description === "string") ||
+    !workItemStatuses.some((status) => status === value.status) ||
+    !workItemPriorities.some((priority) => priority === value.priority) ||
+    !Number.isSafeInteger(value.planningDurationMinutes) ||
+    (value.planningDurationMinutes as number) <= 0 ||
+    !(value.dueOn === null || typeof value.dueOn === "string") ||
+    !Number.isSafeInteger(value.version) ||
+    (value.version as number) <= 0
+  ) {
+    return planningGraphCorrupt();
+  }
+  return {
+    id: workItemId(value.id),
+    workspaceId: workspaceId(value.workspaceId),
+    title: value.title,
+    description: value.description,
+    status: value.status as WorkItemStatus,
+    priority: value.priority as WorkItemPriority,
+    planningDurationMinutes: value.planningDurationMinutes as number,
+    dueOn: value.dueOn === null ? null : localDate(value.dueOn),
+    version: value.version as number,
+    createdAt: validTimestamp(value.createdAt),
+    updatedAt: validTimestamp(value.updatedAt),
+  };
+}
+
+function mapPlanningGraphDependency(payload: unknown): PlanningWorkItemDependency {
+  const value = recordValue(payload);
+  if (
+    typeof value.workspaceId !== "string" ||
+    value.workspaceId.length === 0 ||
+    typeof value.prerequisiteWorkItemId !== "string" ||
+    value.prerequisiteWorkItemId.length === 0 ||
+    typeof value.dependentWorkItemId !== "string" ||
+    value.dependentWorkItemId.length === 0 ||
+    !workItemStatuses.some((status) => status === value.prerequisiteStatus)
+  ) {
+    return planningGraphCorrupt();
+  }
+  return {
+    ...createWorkItemDependency({
+      workspaceId: workspaceId(value.workspaceId),
+      prerequisiteWorkItemId: workItemId(value.prerequisiteWorkItemId),
+      dependentWorkItemId: workItemId(value.dependentWorkItemId),
+      createdAt: validTimestamp(value.createdAt),
+    }),
+    prerequisiteStatus: value.prerequisiteStatus as WorkItemStatus,
   };
 }
 
@@ -558,6 +665,288 @@ class PostgresWorkItemRepository implements WorkItemRepository {
         "The work item changed before this update could be saved.",
       );
     }
+  }
+}
+
+export class PostgresWorkItemDependencyRepository implements WorkItemDependencyRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async lockWorkspace(workspace: WorkspaceId): Promise<void> {
+    const canonicalWorkspace = workspace.toLowerCase();
+    await this.database.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`${canonicalWorkspace}:work-item-dependencies`}, 0))`,
+    );
+  }
+
+  async find(
+    workspace: WorkspaceId,
+    prerequisite: WorkItemId,
+    dependent: WorkItemId,
+  ): Promise<WorkItemDependency | null> {
+    const [row] = await this.database
+      .select()
+      .from(workItemDependencies)
+      .where(
+        and(
+          eq(workItemDependencies.workspaceId, workspace),
+          eq(workItemDependencies.prerequisiteWorkItemId, prerequisite),
+          eq(workItemDependencies.dependentWorkItemId, dependent),
+        ),
+      )
+      .limit(1);
+    return row === undefined ? null : mapWorkItemDependency(row);
+  }
+
+  async list(
+    workspace: WorkspaceId,
+    limit: number,
+    offset: number,
+  ): Promise<readonly WorkItemDependency[]> {
+    const rows = await this.database
+      .select()
+      .from(workItemDependencies)
+      .where(eq(workItemDependencies.workspaceId, workspace))
+      .orderBy(
+        asc(workItemDependencies.createdAt),
+        asc(workItemDependencies.prerequisiteWorkItemId),
+        asc(workItemDependencies.dependentWorkItemId),
+      )
+      .limit(limit)
+      .offset(offset);
+    return rows.map(mapWorkItemDependency);
+  }
+
+  async listForPlanning(
+    workspace: WorkspaceId,
+    limit: number,
+  ): Promise<readonly PlanningWorkItemDependency[]> {
+    const rows = await this.database
+      .select({
+        workspaceId: workItemDependencies.workspaceId,
+        prerequisiteWorkItemId: workItemDependencies.prerequisiteWorkItemId,
+        dependentWorkItemId: workItemDependencies.dependentWorkItemId,
+        createdAt: workItemDependencies.createdAt,
+        prerequisiteStatus: workItems.status,
+      })
+      .from(workItemDependencies)
+      .innerJoin(
+        workItems,
+        and(
+          eq(workItems.workspaceId, workItemDependencies.workspaceId),
+          eq(workItems.id, workItemDependencies.prerequisiteWorkItemId),
+        ),
+      )
+      .innerJoin(
+        dependentWorkItems,
+        and(
+          eq(dependentWorkItems.workspaceId, workItemDependencies.workspaceId),
+          eq(dependentWorkItems.id, workItemDependencies.dependentWorkItemId),
+        ),
+      )
+      .where(
+        and(
+          eq(workItemDependencies.workspaceId, workspace),
+          isNotNull(dependentWorkItems.planningDurationMinutes),
+          inArray(dependentWorkItems.status, ["backlog", "planned", "in_progress"]),
+        ),
+      )
+      .orderBy(
+        asc(workItemDependencies.createdAt),
+        asc(workItemDependencies.prerequisiteWorkItemId),
+        asc(workItemDependencies.dependentWorkItemId),
+      )
+      .limit(limit);
+    return rows.map((row) => ({
+      ...mapWorkItemDependency(row),
+      prerequisiteStatus: row.prerequisiteStatus,
+    }));
+  }
+
+  async loadPlanningGraph(
+    workspace: WorkspaceId,
+    workItemLimit: number,
+    dependencyLimit: number,
+  ): Promise<PlanningWorkItemGraph> {
+    const rawRows = await this.database.execute(
+      sql<PlanningGraphDatabaseRow>`
+        with candidate_work_items as materialized (
+          select
+            ${workItems.id},
+            ${workItems.workspaceId},
+            ${workItems.title},
+            ${workItems.description},
+            ${workItems.status},
+            ${workItems.priority},
+            ${workItems.planningDurationMinutes},
+            ${workItems.dueOn},
+            ${workItems.version},
+            ${workItems.createdAt},
+            ${workItems.updatedAt},
+            row_number() over (order by ${workItems.id})::integer as row_position
+          from ${workItems}
+          where ${workItems.workspaceId} = ${workspace}
+            and ${workItems.planningDurationMinutes} is not null
+            and ${workItems.status} in ('backlog', 'planned', 'in_progress')
+          order by ${workItems.id}
+          limit ${workItemLimit}
+        ),
+        relevant_dependencies as materialized (
+          select
+            ${workItemDependencies.workspaceId},
+            ${workItemDependencies.prerequisiteWorkItemId},
+            ${workItemDependencies.dependentWorkItemId},
+            ${workItemDependencies.createdAt},
+            prerequisite_work_items.status as prerequisite_status,
+            row_number() over (
+              order by
+                ${workItemDependencies.createdAt},
+                ${workItemDependencies.prerequisiteWorkItemId},
+                ${workItemDependencies.dependentWorkItemId}
+            )::integer as row_position
+          from ${workItemDependencies}
+          inner join candidate_work_items
+            on candidate_work_items.workspace_id = ${workItemDependencies.workspaceId}
+            and candidate_work_items.id = ${workItemDependencies.dependentWorkItemId}
+          inner join ${workItems} as prerequisite_work_items
+            on prerequisite_work_items.workspace_id = ${workItemDependencies.workspaceId}
+            and prerequisite_work_items.id = ${workItemDependencies.prerequisiteWorkItemId}
+          where ${workItemDependencies.workspaceId} = ${workspace}
+          order by
+            ${workItemDependencies.createdAt},
+            ${workItemDependencies.prerequisiteWorkItemId},
+            ${workItemDependencies.dependentWorkItemId}
+          limit ${dependencyLimit}
+        )
+        select
+          0::integer as "rowGroup",
+          candidate_work_items.row_position as "rowPosition",
+          'work_item'::text as "rowKind",
+          jsonb_build_object(
+            'id', candidate_work_items.id,
+            'workspaceId', candidate_work_items.workspace_id,
+            'title', candidate_work_items.title,
+            'description', candidate_work_items.description,
+            'status', candidate_work_items.status,
+            'priority', candidate_work_items.priority,
+            'planningDurationMinutes', candidate_work_items.planning_duration_minutes,
+            'dueOn', candidate_work_items.due_on,
+            'version', candidate_work_items.version,
+            'createdAt', candidate_work_items.created_at,
+            'updatedAt', candidate_work_items.updated_at
+          ) as payload
+        from candidate_work_items
+        union all
+        select
+          1::integer as "rowGroup",
+          relevant_dependencies.row_position as "rowPosition",
+          'dependency'::text as "rowKind",
+          jsonb_build_object(
+            'workspaceId', relevant_dependencies.workspace_id,
+            'prerequisiteWorkItemId', relevant_dependencies.prerequisite_work_item_id,
+            'dependentWorkItemId', relevant_dependencies.dependent_work_item_id,
+            'createdAt', relevant_dependencies.created_at,
+            'prerequisiteStatus', relevant_dependencies.prerequisite_status
+          ) as payload
+        from relevant_dependencies
+        order by "rowGroup", "rowPosition"
+      `,
+    );
+    const rows = rawRows as unknown as readonly PlanningGraphDatabaseRow[];
+
+    try {
+      const graph: {
+        workItems: WorkItem[];
+        dependencies: PlanningWorkItemDependency[];
+      } = { workItems: [], dependencies: [] };
+      let lastWorkItemPosition = 0;
+      let lastDependencyPosition = 0;
+      let dependenciesStarted = false;
+      for (const row of rows) {
+        if (!Number.isSafeInteger(row.rowPosition) || row.rowPosition < 1) {
+          return planningGraphCorrupt();
+        }
+        if (row.rowGroup === 0 && row.rowKind === "work_item" && !dependenciesStarted) {
+          if (row.rowPosition !== lastWorkItemPosition + 1) return planningGraphCorrupt();
+          graph.workItems.push(mapPlanningGraphWorkItem(row.payload));
+          lastWorkItemPosition = row.rowPosition;
+          continue;
+        }
+        if (row.rowGroup === 1 && row.rowKind === "dependency") {
+          dependenciesStarted = true;
+          if (row.rowPosition !== lastDependencyPosition + 1) return planningGraphCorrupt();
+          graph.dependencies.push(mapPlanningGraphDependency(row.payload));
+          lastDependencyPosition = row.rowPosition;
+          continue;
+        }
+        return planningGraphCorrupt();
+      }
+      if (graph.workItems.length > workItemLimit || graph.dependencies.length > dependencyLimit) {
+        return planningGraphCorrupt();
+      }
+      return graph;
+    } catch (error) {
+      if (error instanceof DomainError && error.code === "planning.work_item_graph_corrupt") {
+        throw error;
+      }
+      return planningGraphCorrupt();
+    }
+  }
+
+  async wouldCreateCycle(
+    workspace: WorkspaceId,
+    prerequisite: WorkItemId,
+    dependent: WorkItemId,
+  ): Promise<boolean> {
+    if (prerequisite === dependent) return true;
+    const rows = await this.database.execute(
+      sql<{ wouldCreateCycle: boolean }>`
+        with recursive reachable(work_item_id) as (
+          select ${workItemDependencies.dependentWorkItemId}
+          from ${workItemDependencies}
+          where ${workItemDependencies.workspaceId} = ${workspace}
+            and ${workItemDependencies.prerequisiteWorkItemId} = ${dependent}
+          union
+          select ${workItemDependencies.dependentWorkItemId}
+          from ${workItemDependencies}
+          inner join reachable
+            on ${workItemDependencies.prerequisiteWorkItemId} = reachable.work_item_id
+          where ${workItemDependencies.workspaceId} = ${workspace}
+        )
+        select exists (
+          select 1
+          from reachable
+          where reachable.work_item_id = ${prerequisite}
+        ) as "wouldCreateCycle"
+      `,
+    );
+    return rows[0]?.wouldCreateCycle === true;
+  }
+
+  async insert(dependency: WorkItemDependency): Promise<void> {
+    await this.database.insert(workItemDependencies).values({
+      workspaceId: dependency.workspaceId,
+      prerequisiteWorkItemId: dependency.prerequisiteWorkItemId,
+      dependentWorkItemId: dependency.dependentWorkItemId,
+      createdAt: dependency.createdAt,
+    });
+  }
+
+  async delete(
+    workspace: WorkspaceId,
+    prerequisite: WorkItemId,
+    dependent: WorkItemId,
+  ): Promise<boolean> {
+    const deleted = await this.database
+      .delete(workItemDependencies)
+      .where(
+        and(
+          eq(workItemDependencies.workspaceId, workspace),
+          eq(workItemDependencies.prerequisiteWorkItemId, prerequisite),
+          eq(workItemDependencies.dependentWorkItemId, dependent),
+        ),
+      )
+      .returning({ prerequisiteWorkItemId: workItemDependencies.prerequisiteWorkItemId });
+    return deleted.length === 1;
   }
 }
 
@@ -2363,6 +2752,7 @@ function createTransactionContext(database: DatabaseExecutor): TransactionContex
   return {
     workspaces: new PostgresWorkspaceRepository(database),
     workItems: new PostgresWorkItemRepository(database),
+    workItemDependencies: new PostgresWorkItemDependencyRepository(database),
     scheduleBlocks: new PostgresScheduleBlockRepository(database),
     auditEvents: new PostgresAuditEventRepository(database),
     routines: new PostgresRoutineRepository(database),

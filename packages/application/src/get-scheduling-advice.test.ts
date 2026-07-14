@@ -7,6 +7,7 @@ import {
   createRoutine,
   createStructuredTags,
   createWorkItem,
+  createWorkItemDependency,
   createWorkspace,
   dailyPlanId,
   generateDailyPlan,
@@ -16,6 +17,7 @@ import {
   workspaceId,
   type DailyPlan,
   type PlanWarning,
+  type PlanningWorkItemDependency,
   type WorkItem,
 } from "@schedule/domain";
 
@@ -126,6 +128,7 @@ function observationOutput(summary = "Keep the plan focused."): SchedulingAdviso
 interface HarnessOptions {
   readonly plan?: DailyPlan | null;
   readonly backlog?: readonly WorkItem[];
+  readonly dependencies?: readonly PlanningWorkItemDependency[];
   readonly provider?: string;
   readonly model?: string | null;
   readonly workspaceExists?: boolean;
@@ -135,12 +138,14 @@ function harness(options: HarnessOptions = {}) {
   let currentPlan = options.plan === undefined ? basePlan : options.plan;
   let headVersion = 3;
   let backlog = [...(options.backlog ?? [backlogItem])];
+  let dependencies = [...(options.dependencies ?? [])];
   let workspaceExists = options.workspaceExists ?? true;
   let providerImplementation = async (_context: SchedulingAdvisorContext) => observationOutput();
   const events: string[] = [];
   const contexts: SchedulingAdvisorContext[] = [];
   const signals: (AbortSignal | undefined)[] = [];
   let runCount = 0;
+  const planningGraphLoads: Array<{ workItemLimit: number; dependencyLimit: number }> = [];
 
   const transaction = {
     workspaces: {
@@ -168,11 +173,19 @@ function harness(options: HarnessOptions = {}) {
       appendRoutineFeedback: async (feedback) => feedback,
     },
     workItems: {
-      listPlanningCandidates: async () => backlog,
+      listPlanningCandidates: async () => {
+        throw new Error("separate advisor candidate reads are forbidden");
+      },
     } as TransactionContext["workItems"],
     routines: {} as TransactionContext["routines"],
     scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
     auditEvents: {} as TransactionContext["auditEvents"],
+    workItemDependencies: {
+      loadPlanningGraph: async (_workspaceId, workItemLimit, dependencyLimit) => {
+        planningGraphLoads.push({ workItemLimit, dependencyLimit });
+        return { workItems: backlog, dependencies };
+      },
+    } as TransactionContext["workItemDependencies"],
     activityEvents: {} as TransactionContext["activityEvents"],
     routineDurationInsightFeedback: {} as TransactionContext["routineDurationInsightFeedback"],
   } satisfies TransactionContext;
@@ -210,6 +223,7 @@ function harness(options: HarnessOptions = {}) {
     events,
     signals,
     runCount: () => runCount,
+    planningGraphLoads,
     setProviderImplementation: (
       implementation: (
         context: SchedulingAdvisorContext,
@@ -225,6 +239,9 @@ function harness(options: HarnessOptions = {}) {
     },
     setBacklog: (items: readonly WorkItem[]) => {
       backlog = [...items];
+    },
+    setDependencies: (items: readonly PlanningWorkItemDependency[]) => {
+      dependencies = [...items];
     },
     removeWorkspace: () => {
       workspaceExists = false;
@@ -401,6 +418,102 @@ describe("GetSchedulingAdvice", () => {
     await expect(test.useCase.execute(command)).rejects.toMatchObject({
       code: "advisor.snapshot_conflict",
     });
+  });
+
+  it("omits unmet dependents from provider membership and rejects a suggestion targeting one", async () => {
+    const dependency = {
+      ...createWorkItemDependency({
+        workspaceId: workspace.id,
+        prerequisiteWorkItemId: workItemId("advisor-unmet-prerequisite"),
+        dependentWorkItemId: backlogItem.id,
+        createdAt: new Date("2026-07-14T12:00:00.000Z"),
+      }),
+      prerequisiteStatus: "in_progress" as const,
+    };
+    const test = harness({ dependencies: [dependency] });
+    test.setProviderImplementation(async (context) => {
+      expect(context.backlog).toEqual([]);
+      return {
+        status: "available",
+        output: {
+          version: SCHEDULING_ADVISOR_OUTPUT_VERSION,
+          summary: "Consider blocked work.",
+          suggestions: [
+            {
+              kind: "consider_backlog",
+              targetType: "work_item",
+              targetId: backlogItem.id,
+              title: "Do this next",
+              rationale: "This target was not supplied to the provider.",
+              confidence: "low",
+            },
+          ],
+        },
+      };
+    });
+
+    await expect(test.useCase.execute(command)).resolves.toMatchObject({
+      status: "unavailable",
+      reason: "invalid_advice",
+    });
+    expect(test.planningGraphLoads).toEqual([{ workItemLimit: 501, dependencyLimit: 2_001 }]);
+  });
+
+  it("rejects advice when the dependency-status graph changes without changing membership", async () => {
+    const shared = createWorkItemDependency({
+      workspaceId: workspace.id,
+      prerequisiteWorkItemId: workItemId("advisor-changing-prerequisite"),
+      dependentWorkItemId: backlogItem.id,
+      createdAt: new Date("2026-07-14T12:00:00.000Z"),
+    });
+    const test = harness({ dependencies: [{ ...shared, prerequisiteStatus: "in_progress" }] });
+    test.setProviderImplementation(async (context) => {
+      expect(context.backlog).toEqual([]);
+      test.setDependencies([{ ...shared, prerequisiteStatus: "backlog" }]);
+      return observationOutput();
+    });
+
+    await expect(test.useCase.execute(command)).rejects.toMatchObject({
+      code: "advisor.snapshot_conflict",
+    });
+    expect(test.contexts).toHaveLength(1);
+    expect(test.planningGraphLoads).toEqual([
+      { workItemLimit: 501, dependencyLimit: 2_001 },
+      { workItemLimit: 501, dependencyLimit: 2_001 },
+    ]);
+  });
+
+  it("rejects oversized planning graphs before dispatching the provider", async () => {
+    const tooManyWorkItems = Array.from({ length: 501 }, (_, index) =>
+      createWorkItem({
+        id: workItemId(`advisor-bounded-work-${index}`),
+        workspaceId: workspace.id,
+        title: `Bounded work ${index}`,
+        planningDurationMinutes: 15,
+      }),
+    );
+    const workItemOverflow = harness({ backlog: tooManyWorkItems });
+    await expect(workItemOverflow.useCase.execute(command)).rejects.toMatchObject({
+      code: "planning.candidate_pool_too_large",
+    });
+    expect(workItemOverflow.contexts).toEqual([]);
+
+    const dependency = {
+      ...createWorkItemDependency({
+        workspaceId: workspace.id,
+        prerequisiteWorkItemId: workItemId("advisor-bounded-prerequisite"),
+        dependentWorkItemId: backlogItem.id,
+        createdAt: new Date("2026-07-14T12:00:00.000Z"),
+      }),
+      prerequisiteStatus: "done" as const,
+    };
+    const dependencyOverflow = harness({
+      dependencies: Array.from({ length: 2_001 }, () => dependency),
+    });
+    await expect(dependencyOverflow.useCase.execute(command)).rejects.toMatchObject({
+      code: "planning.work_item_dependency_pool_too_large",
+    });
+    expect(dependencyOverflow.contexts).toEqual([]);
   });
 
   it.each([

@@ -1,9 +1,9 @@
 # Adaptive Scheduling System — Product Specification
 
 Status: Working product definition
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v4 selects both reusable routines and explicitly opted-in one-time work items, applies temporary routine feedback as a versioned hard constraint, and adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent, read-only routine-duration insight, explicit approval, and reversible dismissal of one exact evidence-backed recommendation; broader learned preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. A provider-neutral authenticated inbound gateway provides Today reads, credential-scoped backlog/Kanban work-item discovery, and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language creation and task breakdown, automatic advisor application or calibration, hosted model providers, alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items with direct prerequisites, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v5 selects both reusable routines and explicitly opted-in one-time work items, applies temporary routine feedback, and hard-excludes work with unmet prerequisites from new selection and unlocked regeneration retention. A locked nonterminal item remains anchored under the existing user-authority rules. The planner also adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent, read-only routine-duration insight, explicit approval, and reversible dismissal of one exact evidence-backed recommendation; broader learned preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. A provider-neutral authenticated inbound gateway provides Today reads, credential-scoped backlog/Kanban work-item discovery, and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language creation and task breakdown, automatic advisor application or calibration, hosted model providers, alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
 
 ## 1. Product summary
 
@@ -30,6 +30,23 @@ The planner considers both the user's available time and desired number of tasks
 ### 3.1 Work item
 
 A normal, actionable unit of work. It may belong to a project, appear on a Kanban board, have an optional local due date, or remain in a backlog. `dueOn` is either `null` or a real Gregorian `YYYY-MM-DD` local date, not an instant or time-zone conversion. A work item remains off the automatic planner unless it has an explicit positive **planning duration**. An opted-in item is one-time work: it may appear at most once in a plan and may be selected again in later plan revisions, dates, or sessions until it is completed, cancelled, or opted out. It is not a recurring routine.
+
+### 3.1.1 Work-item prerequisite
+
+A direct prerequisite is a directed, same-workspace edge from a dependent work item to another work
+item that must be `done` before the dependent can be newly selected for Today. The edge is separate
+from workflow status: adding an unmet prerequisite does not change the dependent to `blocked`, and
+completing or reopening either item never changes the other item's status. A prerequisite in any
+status other than `done`, including `cancelled`, remains unsatisfied.
+
+The graph rejects self-reference and any edge that would create a direct or transitive cycle. Add and
+remove use set semantics: adding an existing edge returns it without creating another row, and
+removing an absent edge succeeds without side effects. Every endpoint and foreign key keeps both
+work items inside the same workspace. A workspace-scoped graph lock serializes cycle validation and
+mutation so concurrent additions cannot jointly create a cycle. Product UUIDs are canonicalized to
+lowercase before dispatch and lock-key derivation, while the domain also treats mixed-case spellings
+of one persisted PostgreSQL UUID as the same identity. Casing therefore cannot bypass self-edge or
+cycle protection.
 
 ### 3.2 Routine
 
@@ -198,6 +215,7 @@ The engine first removes impossible choices, including:
 - Minimum spacing not satisfied
 - Explicit exclusions or snoozes
 - Active **Not today** or **Not this week** routine feedback
+- Work with at least one direct prerequisite whose current status is not `done`
 
 Deadlines add score pressure only. They never override ordinary eligibility, available-window capacity,
 or time and task-count limits. User-locked commitments are carried forward by the explicit mutation
@@ -299,6 +317,15 @@ never overwritten. Activity actions do not automatically regenerate Today. The r
 describe the broader interaction target; alternatives, **less often**/**more often** adaptation, and
 generalized plan undo are not implemented yet.
 
+Dependency edits do not rewrite the current Today revision or change its optimistic head. An explicit
+regeneration reevaluates current edges: an unlocked item with an unmet prerequisite is removed from
+retention and cannot be newly selected, while a locked nonterminal item remains anchored under the
+existing user-authority rules. Terminal items remain excluded under the existing replan rules. Once
+every direct prerequisite is `done`, a later generation or regeneration may select the dependent
+again. The accepted revision remains immutable, and its
+canonical input snapshot records the exact dependency projection and prerequisite statuses used for
+that decision.
+
 The user can:
 
 - Set available time, desired task count, energy, context, and planning style
@@ -361,7 +388,9 @@ automatic invocation. The versioned request identifies the current plan ID and h
 requires the fixed `both` focus. Narrower focus modes remain unavailable until they have explicit
 projection and output-validation semantics.
 Schedule constructs the context itself from at most 50 sorted plan items and 50 eligible backlog
-items. It includes only bounded titles, plan reasons and warnings, scheduling fields, typed source
+items. An unselected work item is eligible for this projection only when it is active, opted in, and
+every direct prerequisite is `done`; unmet dependents are never sent to or targetable by the
+provider. It includes only bounded titles, plan reasons and warnings, scheduling fields, typed source
 identity, and truncation signals. Descriptions, workspace names, calendar blocks, arbitrary history,
 planner input snapshots, secrets, and dedicated or free-form model-instruction fields are not
 included. Titles and other stored text may be user-authored and are explicitly treated as untrusted
@@ -379,12 +408,14 @@ are discarded rather than persisted or exposed.
 
 The first snapshot is read in a short unit of work; inference runs after that unit of work has
 closed. Before returning valid advice, a second short unit of work rebuilds and compares the exact
-sanitized plan-and-backlog context. Any change returns `409 advisor.snapshot_conflict` and discards
-the advice. Disabled, busy, timed-out, unreachable, rejected, oversized, malformed, or semantically
-invalid provider results become bounded unavailable states. Unsafe or oversized stored context fails
-closed before provider dispatch with a bounded domain error. A disconnected caller cancels and
-destroys the pending loopback request so its concurrency permit is released promptly. Neither path
-alters the current plan.
+sanitized plan-and-backlog context and its canonical dependency projection. A dependency or
+prerequisite-status change conflicts even when visible backlog membership happens to remain the same.
+Any change returns `409 advisor.snapshot_conflict` and discards the advice. Disabled, busy,
+timed-out, unreachable, rejected, oversized, malformed, or semantically invalid provider results
+become bounded unavailable states. Unsafe or oversized stored context fails closed before provider
+dispatch with a bounded domain error. A disconnected caller cancels and destroys the pending
+loopback request so its concurrency permit is released promptly. Neither path alters the current
+plan.
 
 The implemented advisor may summarize the supplied plan, suggest focus or sequence among supplied
 plan items, and point out an eligible supplied backlog item. The following broader responsibilities
@@ -416,7 +447,7 @@ The adaptive planner complements, rather than replaces:
 - Projects and milestones
 - Calendar day, week, and month views
 - One-time and recurring work
-- Dependencies and blockers
+- Direct work-item prerequisites are implemented; project and milestone blockers remain targets
 - Subtasks and checklists
 - Work-item due dates; reminders and notifications remain deferred
 - Search, filters, saved views, and bulk editing
@@ -492,6 +523,8 @@ Success is not simply "more tasks completed." Useful measures include realistic 
   immediate optimistic, idempotent replanning
 - Implemented: Kanban/backlog work can opt into Today with a planning duration and an optional local
   due date
+- Implemented: directed same-workspace work prerequisites with idempotent editing, transitive cycle
+  rejection, and done-only eligibility for newly selected Today work
 - Implemented: opt-in calendar-aware first-plan availability, with a visible free-window preview,
   stale-calendar rejection, and the submitted windows preserved as deterministic planner input
 - Partial: "why selected" details are implemented; alternative-plan comparison is deferred
