@@ -299,6 +299,72 @@ describe("work board", () => {
     expect(screen.getByRole("status")).toHaveTextContent("was created in Backlog");
   });
 
+  it("does not insert a confirmed proposal into a priority filter selected in flight", async () => {
+    const user = userEvent.setup();
+    const proposal = naturalLanguageProposal();
+    const confirmation = deferred<{
+      proposalId: string;
+      commandHash: string;
+      replayed: boolean;
+      workItem: WorkItem;
+    }>();
+    const created: WorkItem = {
+      ...item,
+      id: proposal.id,
+      title: proposal.command.title,
+      status: "backlog",
+      priority: "none",
+      version: 1,
+    };
+    const filteredItem: WorkItem = {
+      ...item,
+      id: "item-filtered-high",
+      title: "Review incident report",
+    };
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(naturalLanguageResult(proposal));
+    apiMocks.confirmNaturalLanguageProposal.mockReturnValue(confirmation.promise);
+    apiMocks.listWorkItems.mockImplementation(
+      async (_workspaceId: string, filters: { priority?: string }) => ({
+        items: filters.priority === "high" ? [filteredItem] : [item],
+        page: { limit: 200, offset: 0 },
+      }),
+    );
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(screen.getByRole("textbox", { name: /^Describe one work item/ }), "Report");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+    await user.click(await screen.findByRole("button", { name: "Create this work item" }));
+    await waitFor(() => expect(apiMocks.confirmNaturalLanguageProposal).toHaveBeenCalledOnce());
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filter by priority" }), "high");
+    await waitFor(() =>
+      expect(apiMocks.listWorkItems).toHaveBeenCalledWith(
+        workspace.id,
+        { priority: "high" },
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(await screen.findByRole("heading", { name: filteredItem.title })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: item.title })).not.toBeInTheDocument();
+
+    await act(async () => {
+      confirmation.resolve({
+        proposalId: proposal.id,
+        commandHash: proposal.commandHash,
+        replayed: false,
+        workItem: created,
+      });
+      await confirmation.promise;
+    });
+
+    expect(screen.getByRole("combobox", { name: "Filter by priority" })).toHaveValue("high");
+    expect(screen.getByRole("heading", { name: filteredItem.title })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: created.title })).not.toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent("was created in Backlog");
+  });
+
   it("reuses the same confirmation key after an ambiguous failure", async () => {
     const user = userEvent.setup();
     const proposal = naturalLanguageProposal();

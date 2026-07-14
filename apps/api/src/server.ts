@@ -1,9 +1,4 @@
-import { randomBytes } from "node:crypto";
-
-import {
-  DisabledNaturalLanguageProposer,
-  HmacNaturalLanguagePromptHasher,
-} from "@schedule/application";
+import { DisabledNaturalLanguageProposer } from "@schedule/application";
 import { loadApiConfig } from "@schedule/config";
 import {
   createDatabase,
@@ -16,6 +11,7 @@ import {
 import { buildApp } from "./app.js";
 import { createIntegrationServices } from "./integration-services.js";
 import { DisabledSchedulingAdvisor, OllamaSchedulingAdvisor } from "./local-model-advisor.js";
+import { createNaturalLanguagePromptHasher } from "./natural-language-runtime.js";
 import { createProductServices } from "./product-services.js";
 
 const config = loadApiConfig();
@@ -41,11 +37,13 @@ const naturalLanguageProposer =
   config.LOCAL_MODEL_PROPOSAL_MODE === "ollama"
     ? localModel!
     : new DisabledNaturalLanguageProposer();
-const promptHashKey = config.LOCAL_MODEL_PROPOSAL_HMAC_KEY ?? randomBytes(32).toString("base64url");
 const productServices = createProductServices(unitOfWork, clock, schedulingAdvisor, {
   unitOfWork: naturalLanguageProposalUnitOfWork,
   proposer: naturalLanguageProposer,
-  promptHasher: new HmacNaturalLanguagePromptHasher(promptHashKey),
+  promptHasher: createNaturalLanguagePromptHasher(
+    config.LOCAL_MODEL_PROPOSAL_MODE,
+    config.LOCAL_MODEL_PROPOSAL_HMAC_KEY,
+  ),
   proposalTtlMilliseconds: config.LOCAL_MODEL_PROPOSAL_TTL_SECONDS * 1_000,
 });
 const integrationPepper = config.INTEGRATION_API_PEPPER;

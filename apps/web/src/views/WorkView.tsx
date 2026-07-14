@@ -868,6 +868,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     const normalizedTitle = proposalTitle.trim();
     if (normalizedTitle.length === 0) return;
     const request = beginProposalOperation();
+    const requestQueryKey = activeQueryKey;
     const confirmationKey = confirmationKeyRef.current ?? globalThis.crypto.randomUUID();
     confirmationKeyRef.current = confirmationKey;
     setProposalBusy("confirming");
@@ -901,7 +902,12 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
           : [...current.allItems, created],
       }));
       setBoard((current) => {
-        if (current?.queryKey !== activeQueryKeyRef.current) return current;
+        if (
+          activeQueryKeyRef.current !== requestQueryKey ||
+          current?.queryKey !== requestQueryKey
+        ) {
+          return current;
+        }
         const allItems = current.allItems.some((item) => item.id === created.id)
           ? current.allItems.map((item) => (item.id === created.id ? created : item))
           : [...current.allItems, created];
@@ -913,8 +919,10 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
             : current.items;
         return { ...current, allItems, items };
       });
-      if (priorityFilter !== "" && created.priority !== priorityFilter) setPriorityFilter("");
-      setRecentlyCreatedItemId(created.id);
+      if (activeQueryKeyRef.current === requestQueryKey) {
+        if (priorityFilter !== "" && created.priority !== priorityFilter) setPriorityFilter("");
+        setRecentlyCreatedItemId(created.id);
+      }
       setProposal(null);
       setProposalPrompt("");
       setProposalTitle("");
