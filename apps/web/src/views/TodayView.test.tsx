@@ -547,6 +547,38 @@ describe("Today commands", () => {
     ).toHaveFocus();
   });
 
+  it("hides stale Plan Fit actions when a post-feedback refresh fails", async () => {
+    const user = userEvent.setup();
+    const available = suggestedPlanFitInsight();
+    const dismissed = suggestedPlanFitInsight({
+      disposition: "dismissed",
+      dismissedAt: "2026-07-14T12:15:00.000Z",
+    });
+    apiMocks.getCurrentPlan.mockRejectedValue(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
+    apiMocks.getDailyPlanFitInsight
+      .mockResolvedValueOnce(available)
+      .mockRejectedValueOnce(new Error("refresh failed"))
+      .mockResolvedValueOnce(dismissed);
+    apiMocks.dismissDailyPlanFitInsight.mockResolvedValue({ id: "feedback-1" });
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await user.click(await screen.findByRole("button", { name: "Not now" }));
+
+    expect(await screen.findByRole("heading", { name: "Plan Fit is unavailable" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Not now" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Try 90 minutes and 2 tasks" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(
+      await screen.findByRole("heading", { name: "Plan Fit suggestion paused" }),
+    ).toBeVisible();
+  });
+
   it("refetches changed evidence after a stale Plan Fit feedback command", async () => {
     const user = userEvent.setup();
     apiMocks.getCurrentPlan.mockRejectedValue(

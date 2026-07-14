@@ -124,7 +124,7 @@ function DailyPlanFitPanel({
     );
   }
 
-  if (loadError !== null && insight === null) {
+  if (loadError !== null) {
     return (
       <section className="today-plan-fit" aria-labelledby="today-plan-fit-heading">
         <p className="eyebrow">Deterministic Plan Fit</p>
