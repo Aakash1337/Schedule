@@ -1,5 +1,15 @@
 import { expect, test, type Locator, type Response } from "@playwright/test";
 
+const MOBILE_TARGET_MINIMUM_CSS_PIXELS = 44;
+// Chromium can report a CSS min-height a few millionths of a pixel below its declared value.
+const CSS_PIXEL_MEASUREMENT_TOLERANCE = 0.01;
+
+function expectMobileTargetHeight(height: number, context?: string): void {
+  expect(height, context).toBeGreaterThanOrEqual(
+    MOBILE_TARGET_MINIMUM_CSS_PIXELS - CSS_PIXEL_MEASUREMENT_TOLERANCE,
+  );
+}
+
 function isMutationResponse(
   response: Response,
   method: "POST" | "PATCH" | "DELETE",
@@ -770,7 +780,7 @@ test("manages prerequisites accessibly through the live 320px work-board flow", 
     await expect(target).toBeInViewport();
     const bounds = await target.boundingBox();
     expect(bounds).not.toBeNull();
-    expect(bounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+    expectMobileTargetHeight(bounds?.height ?? 0);
   };
 
   await expectMobileTarget(summary);
@@ -938,7 +948,7 @@ test("persists subtasks and keeps parent containers out of Today in the live 320
   const addSubtask = parentCard.getByRole("button", { name: `Add subtask to ${parentTitle}` });
   await expect(addSubtask).toBeVisible();
   const addSubtaskBounds = await addSubtask.boundingBox();
-  expect(addSubtaskBounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+  expectMobileTargetHeight(addSubtaskBounds?.height ?? 0);
   await addSubtask.click();
   await expect(page.getByRole("heading", { name: "Add a subtask" })).toBeVisible();
   await expect(page.getByRole("status")).toContainText(`Subtask of ${parentTitle}`);
@@ -1057,12 +1067,12 @@ test("persists subtasks and keeps parent containers out of Today in the live 320
   const overflowSummary = parentCard.getByText("Show 1 more subtask", { exact: true });
   await expect(overflowSummary).toBeVisible();
   const overflowSummaryBounds = await overflowSummary.boundingBox();
-  expect(overflowSummaryBounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+  expectMobileTargetHeight(overflowSummaryBounds?.height ?? 0);
   await overflowSummary.click();
   const overflowChild = parentCard.getByRole("button", { name: /^Verify launch links/ });
   await expect(overflowChild).toBeVisible();
   const overflowChildBounds = await overflowChild.boundingBox();
-  expect(overflowChildBounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+  expectMobileTargetHeight(overflowChildBounds?.height ?? 0);
 
   await page.evaluate(async () => {
     const browserGlobal = globalThis as unknown as {
@@ -1075,7 +1085,9 @@ test("persists subtasks and keeps parent containers out of Today in the live 320
     .evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().height));
   expect(relationshipTargets.length).toBeGreaterThan(0);
   expect(
-    relationshipTargets.filter((height) => height < 44),
+    relationshipTargets.filter(
+      (height) => height < MOBILE_TARGET_MINIMUM_CSS_PIXELS - CSS_PIXEL_MEASUREMENT_TOLERANCE,
+    ),
     `all relationship target heights: ${relationshipTargets.join(", ")}`,
   ).toEqual([]);
   const overflow = await page.evaluate(() => {

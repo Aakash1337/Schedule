@@ -50,6 +50,15 @@ function isCurrentPlanResponse(
   );
 }
 
+function isDailyPlanFitInsightResponse(response: Response, expectedOrigin: string): boolean {
+  const url = new URL(response.url());
+  return (
+    url.origin === expectedOrigin &&
+    response.request().method() === "GET" &&
+    /^\/v1\/workspaces\/[^/]+\/daily-plan-fit-insight$/.test(url.pathname)
+  );
+}
+
 test("reviews and explicitly confirms a local natural-language proposal through the live stack", async ({
   page,
 }) => {
@@ -89,6 +98,9 @@ test("reviews and explicitly confirms a local natural-language proposal through 
   const workNavigation = page.getByRole("button", { name: "Work", exact: true });
   await expect(onboardingHeading.or(workNavigation)).toBeVisible();
   if (await onboardingHeading.isVisible()) {
+    const initialPlanFitResponsePromise = page.waitForResponse((response) =>
+      isDailyPlanFitInsightResponse(response, expectedOrigin),
+    );
     const workspaceResponsePromise = page.waitForResponse((response) =>
       isMutationResponse(
         response,
@@ -100,6 +112,7 @@ test("reviews and explicitly confirms a local natural-language proposal through 
     await page.getByRole("textbox", { name: "Workspace name" }).fill("Proposal E2E workspace");
     await page.getByRole("button", { name: "Create workspace" }).click();
     expect((await workspaceResponsePromise).status()).toBe(201);
+    expect((await initialPlanFitResponsePromise).status()).toBe(200);
   }
 
   await workNavigation.click();
