@@ -2,10 +2,12 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 import {
   AuthenticateIntegrationCredential,
+  ClaimNotificationDelivery,
   ConfirmIntegrationCommand,
   GetIntegrationToday,
   ListIntegrationWorkItems,
   PrepareIntegrationCommand,
+  RecordNotificationDeliveryReceipt,
   type Clock,
   type IntegrationUnitOfWork,
   type SecretVerifier,
@@ -34,6 +36,10 @@ export function createIntegrationServices(
   clock: Clock,
   pepper: string,
   confirmationTtlSeconds = 600,
+  deliveryOptions: {
+    readonly leaseDurationMilliseconds?: number;
+    readonly maxAttempts?: number;
+  } = {},
 ): IntegrationServices {
   if (
     !Number.isInteger(confirmationTtlSeconds) ||
@@ -56,6 +62,15 @@ export function createIntegrationServices(
     confirmationTtlSeconds * 1_000,
   );
   const confirmCommand = new ConfirmIntegrationCommand(unitOfWork, clock);
+  const claimNotificationDelivery = new ClaimNotificationDelivery(
+    unitOfWork,
+    deliveryOptions.leaseDurationMilliseconds,
+    deliveryOptions.maxAttempts,
+  );
+  const recordNotificationDeliveryReceipt = new RecordNotificationDeliveryReceipt(
+    unitOfWork,
+    deliveryOptions.maxAttempts,
+  );
 
   return {
     authenticateCredential: (input) => authenticateCredential.execute(input),
@@ -63,5 +78,7 @@ export function createIntegrationServices(
     listWorkItems: (input) => listWorkItems.execute(input),
     prepareCommand: (input) => prepareCommand.execute(input),
     confirmCommand: (input) => confirmCommand.execute(input),
+    claimNotificationDelivery: (input) => claimNotificationDelivery.execute(input),
+    recordNotificationDeliveryReceipt: (input) => recordNotificationDeliveryReceipt.execute(input),
   };
 }

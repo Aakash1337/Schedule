@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createScheduleBlock,
@@ -78,6 +78,9 @@ function createHarness() {
     updatedAt: new Date("2026-07-01T00:00:00.000Z"),
   };
   const credentials: IntegrationCredential[] = [credential];
+  const findCredentialByIdForUpdate = vi.fn(async (id: string) =>
+    credentials.find((item) => item.id === id),
+  );
   const confirmations: IntegrationConfirmationRecord[] = [];
   const requests: IntegrationRequestRecord[] = [];
   const workItems: WorkItem[] = [];
@@ -125,6 +128,7 @@ function createHarness() {
   const context: IntegrationTransactionContext = {
     credentials: {
       findById: async (id) => credentials.find((item) => item.id === id) ?? null,
+      findByIdForUpdate: async (id) => (await findCredentialByIdForUpdate(id)) ?? null,
       list: async (id) => credentials.filter((item) => item.workspaceId === id),
       insert: async (item) => {
         if (credentials.some((candidate) => candidate.id === item.id)) throw new Error("duplicate");
@@ -401,6 +405,7 @@ function createHarness() {
       return unitOfWorkRuns;
     },
     verifyCalls,
+    findCredentialByIdForUpdate,
     setNow(value: string) {
       currentTime = new Date(value);
     },
@@ -512,6 +517,7 @@ describe("integration credential boundary", () => {
     const replay = await test.services.revoke.execute({ credentialId: created.id });
     expect(revoked).toEqual(replay);
     expect(revoked).toMatchObject({ active: false, version: 2 });
+    expect(test.findCredentialByIdForUpdate).toHaveBeenCalledTimes(2);
     expect(
       test.audits.filter((event) => event.action === "integration.credential_revoked"),
     ).toHaveLength(1);

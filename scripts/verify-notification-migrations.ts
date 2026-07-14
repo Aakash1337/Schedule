@@ -49,6 +49,10 @@ try {
   if (notificationIndexMigration === undefined) {
     throw new Error("Notification target-index migration 0025 is missing from the journal.");
   }
+  const deliveryMigration = entries.find((entry) => entry.idx === 26);
+  if (deliveryMigration === undefined) {
+    throw new Error("Notification delivery migration 0026 is missing from the journal.");
+  }
   for (const migration of entries.filter((entry) => entry.idx < 24)) {
     await applyMigration(verification, migration.tag);
   }
@@ -445,8 +449,109 @@ try {
     );
   }
 
+  const legacyCredentialId = "00000000-0000-4000-8000-000000000030";
+  const deliveryCredentialId = "00000000-0000-4000-8000-000000000031";
+  await verification.sql`
+    insert into integration_credentials (
+      id, workspace_id, name, secret_digest, scopes
+    ) values (
+      ${legacyCredentialId}, ${legacyWorkspaceId}, 'Pre-delivery credential', ${"b".repeat(64)},
+      array['schedule:read', 'schedule:write']::text[]
+    )
+  `;
+  const [beforeDelivery] = await verification.sql<
+    {
+      commands: string | null;
+      attempts: string | null;
+      requests: string | null;
+    }[]
+  >`
+    select
+      to_regclass('public.notification_delivery_commands')::text as commands,
+      to_regclass('public.notification_delivery_attempts')::text as attempts,
+      to_regclass('public.notification_delivery_requests')::text as requests
+  `;
+  assert.deepEqual(beforeDelivery, { commands: null, attempts: null, requests: null });
+
+  await applyMigration(verification, deliveryMigration.tag);
+  const [deliveryUpgrade] = await verification.sql<
+    {
+      legacy_credentials: number;
+      intents: number;
+      commands: string | null;
+      attempts: string | null;
+      requests: string | null;
+    }[]
+  >`
+    select
+      (select count(*)::integer from integration_credentials where id = ${legacyCredentialId}) as legacy_credentials,
+      (select count(*)::integer from notification_intents where id = ${intent.id}) as intents,
+      to_regclass('public.notification_delivery_commands')::text as commands,
+      to_regclass('public.notification_delivery_attempts')::text as attempts,
+      to_regclass('public.notification_delivery_requests')::text as requests
+  `;
+  assert.deepEqual(deliveryUpgrade, {
+    legacy_credentials: 1,
+    intents: 1,
+    commands: "notification_delivery_commands",
+    attempts: "notification_delivery_attempts",
+    requests: "notification_delivery_requests",
+  });
+  const [deliveryRecoveryIndex] = await verification.sql<{ indexdef: string }[]>`
+    select indexdef from pg_indexes
+    where schemaname = 'public' and indexname = 'notification_delivery_commands_recovery_idx'
+  `;
+  assert.ok(deliveryRecoveryIndex !== undefined, "delivery recovery index must be installed");
+  const deliveryRecoveryIndexDefinition = deliveryRecoveryIndex.indexdef
+    .toLowerCase()
+    .replaceAll('"', "");
+  assert.ok(
+    deliveryRecoveryIndexDefinition.includes("using btree (workspace_id, lease_expires_at, id)"),
+    "delivery recovery index must preserve workspace/expiry/id key order",
+  );
+  for (const fragment of ["processing", "invalidated"]) {
+    assert.ok(
+      deliveryRecoveryIndexDefinition.includes(fragment),
+      `delivery recovery index must include ${fragment}`,
+    );
+  }
+  await verification.sql`
+    insert into integration_credentials (
+      id, workspace_id, name, secret_digest, scopes
+    ) values (
+      ${deliveryCredentialId}, ${legacyWorkspaceId}, 'Delivery-only credential', ${"c".repeat(64)},
+      array['schedule:delivery']::text[]
+    )
+  `;
+  await verification.sql`
+    insert into notification_delivery_commands (
+      id, workspace_id, intent_id, occurrence_key, kind, target_type, scheduled_for,
+      local_date, priority, available_at, created_at, updated_at
+    ) values (
+      ${intent.id}, ${legacyWorkspaceId}, ${intent.id}, 'migration-verification-occurrence',
+      'daily_digest', 'workspace', '2026-07-20T09:00:00.000Z', '2026-07-20', 50,
+      '2026-07-20T09:00:00.000Z', '2026-07-20T08:00:00.000Z', '2026-07-20T08:00:00.000Z'
+    )
+  `;
+  await expectConstraint(
+    () =>
+      verification!.sql`
+        insert into notification_delivery_commands (
+          id, workspace_id, intent_id, occurrence_key, kind, target_type, scheduled_for,
+          local_date, priority, available_at
+        ) values (
+          '00000000-0000-4000-8000-000000000032', ${legacyWorkspaceId},
+          '00000000-0000-4000-8000-000000000032', 'migration-verification-occurrence',
+          'daily_digest', 'workspace', '2026-07-20T09:00:00.000Z', '2026-07-20', 50,
+          '2026-07-20T09:00:00.000Z'
+        )
+      `,
+    "23505",
+    "notification_delivery_commands_workspace_occurrence_uq",
+  );
+
   console.log(
-    "Notification migration verification passed with legacy preservation, exhaustive source/target constraints, and a populated 0025 target-index upgrade.",
+    "Notification migration verification passed with populated policy and delivery upgrades through 0026, target indexes, legacy preservation, and exhaustive tenant constraints.",
   );
 } finally {
   await verification?.close();

@@ -13,6 +13,12 @@ import {
   integrationConfirmations,
   integrationCredentials,
   integrationRequests,
+  notificationDeliveryAttemptOutcome,
+  notificationDeliveryAttempts,
+  notificationDeliveryCommands,
+  notificationDeliveryRequests,
+  notificationDeliveryRequestOperation,
+  notificationDeliveryStatus,
   notificationIntents,
   notificationKind,
   notificationLocalTimeResolution,
@@ -67,10 +73,87 @@ describe("database schema", () => {
     expect(getTableName(notificationRules)).toBe("notification_rules");
     expect(getTableName(oneOffReminders)).toBe("one_off_reminders");
     expect(getTableName(notificationIntents)).toBe("notification_intents");
+    expect(getTableName(notificationDeliveryCommands)).toBe("notification_delivery_commands");
+    expect(getTableName(notificationDeliveryAttempts)).toBe("notification_delivery_attempts");
+    expect(getTableName(notificationDeliveryRequests)).toBe("notification_delivery_requests");
     expect(getTableName(webhookEndpoints)).toBe("webhook_endpoints");
     expect(getTableName(webhookEndpointSecrets)).toBe("webhook_endpoint_secrets");
     expect(getTableName(webhookDeliveries)).toBe("webhook_deliveries");
     expect(getTableName(webhookEventSubscriptions)).toBe("webhook_event_subscriptions");
+  });
+
+  it("fences provider-neutral notification delivery and exact request replay", () => {
+    expect(notificationDeliveryStatus.enumValues).toEqual([
+      "pending",
+      "processing",
+      "delivered",
+      "dead_letter",
+      "invalidated",
+    ]);
+    expect(notificationDeliveryAttemptOutcome.enumValues).toEqual([
+      "delivered",
+      "retryable_failure",
+      "permanent_failure",
+      "lease_expired",
+    ]);
+    expect(notificationDeliveryRequestOperation.enumValues).toEqual(["claim", "receipt"]);
+
+    const command = getTableConfig(notificationDeliveryCommands);
+    expect(command.uniqueConstraints.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "notification_delivery_commands_workspace_intent_uq",
+        "notification_delivery_commands_workspace_occurrence_uq",
+      ]),
+    );
+    expect(command.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "notification_delivery_commands_state_valid",
+        "notification_delivery_commands_failure_code_valid",
+        "notification_delivery_commands_timestamps_valid",
+      ]),
+    );
+    expect(command.indexes.map((constraint) => constraint.config.name)).toEqual(
+      expect.arrayContaining([
+        "notification_delivery_commands_claim_idx",
+        "notification_delivery_commands_recovery_idx",
+      ]),
+    );
+
+    const attempt = getTableConfig(notificationDeliveryAttempts);
+    expect(attempt.foreignKeys.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "notification_delivery_attempts_command_tenant_fk",
+        "notification_delivery_attempts_credential_tenant_fk",
+      ]),
+    );
+    expect(attempt.checks.map((constraint) => constraint.name)).toContain(
+      "notification_delivery_attempts_outcome_valid",
+    );
+
+    const request = getTableConfig(notificationDeliveryRequests);
+    expect(request.foreignKeys.map((constraint) => constraint.getName())).toContain(
+      "notification_delivery_requests_credential_tenant_fk",
+    );
+    expect(request.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "notification_delivery_requests_hash_valid",
+        "notification_delivery_requests_result_bounded",
+        "notification_delivery_requests_state_valid",
+      ]),
+    );
+  });
+
+  it("migrates the least-privilege delivery scope and lifecycle tables", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0026_puzzling_micromax.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain("'schedule:delivery'");
+    expect(migration).toContain('CREATE TABLE "notification_delivery_commands"');
+    expect(migration).toContain('CREATE TABLE "notification_delivery_attempts"');
+    expect(migration).toContain('CREATE TABLE "notification_delivery_requests"');
+    expect(migration).toContain('CREATE INDEX "notification_delivery_commands_recovery_idx"');
   });
 
   it("constrains deterministic notification policy and immutable intent sources", () => {

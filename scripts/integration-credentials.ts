@@ -14,6 +14,7 @@ import { createDatabase, PostgresIntegrationUnitOfWork } from "../packages/datab
 import { workspaceId } from "../packages/domain/src/index.js";
 
 export const integrationCredentialScopes = supportedIntegrationCredentialScopes;
+const defaultIntegrationCredentialScopes = ["schedule:read", "schedule:write"] as const;
 
 export type IntegrationCredentialCliCommand =
   | {
@@ -26,7 +27,7 @@ export type IntegrationCredentialCliCommand =
   | { readonly kind: "list"; readonly workspaceId: string };
 
 const usage = `Usage:
-  pnpm integration:credentials -- create --workspace <uuid> --name <text> [--scopes schedule:read,schedule:write]
+  pnpm integration:credentials -- create --workspace <uuid> --name <text> [--scopes schedule:read,schedule:write,schedule:delivery]
   pnpm integration:credentials -- revoke --credential <uuid>
   pnpm integration:credentials -- list --workspace <uuid>`;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -79,7 +80,8 @@ function parseFlags(
 }
 
 function parseScopes(value: string | undefined): readonly IntegrationCredentialScope[] {
-  if (value === undefined) return integrationCredentialScopes;
+  // Delivery authorizes external side effects and must always be explicitly granted.
+  if (value === undefined) return defaultIntegrationCredentialScopes;
   const requested = value.split(",").map((scope) => scope.trim());
   if (requested.some((scope) => scope === "")) {
     throw commandError("--scopes must be a comma-separated list without empty entries.");

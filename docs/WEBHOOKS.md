@@ -8,7 +8,7 @@ DNS policy, retries, and dead-letter handling. They can also explicitly subscrib
 privacy-thin `schedule.changed.v1` event described below. Every endpoint starts with no automatic
 subscriptions, including endpoints that existed before this event was introduced.
 
-This is not a reminder service, a WhatsApp transport, or automatic Hermes synchronization. The
+This is not the reminder-delivery gateway, a WhatsApp transport, or automatic Hermes synchronization. The
 automatic event is only an invalidation signal telling a receiver to refresh one Today projection;
 it does not publish titles, descriptions, plan contents, item or plan IDs, reasons, activity
 metadata, durations, credentials, or conversational content. Hermes continues to read authoritative
@@ -197,7 +197,7 @@ Delivery remains at least once and unordered. A Hermes-style receiver should:
 The receiver must keep polling Today as a fallback. Webhooks can be disabled, delayed, duplicated,
 delivered out of order, dead-lettered, or unavailable while an endpoint is being rotated. This event
 does not request a phone notification, carry reminder content, prove a WhatsApp message was sent, or
-replace the future Hermes/WhatsApp adapter.
+replace the separate provider-neutral reminder claim/receipt gateway or a future Hermes/WhatsApp adapter.
 
 ## Delivery behavior
 
@@ -270,7 +270,8 @@ dead-letter metadata, redrive identity, revocation, audits, and rollback behavio
 ## Current limits
 
 - The only automatic product event is the privacy-thin `schedule.changed.v1` invalidation. There are
-  no task-content, reminder, deadline, notification-request, or delivery-receipt events.
+  no task-content, reminder, deadline, notification-request, or reminder-receipt webhook events.
+  Reminder commands and receipts use the authenticated pull gateway in [INTEGRATIONS.md](./INTEGRATIONS.md).
 - Private-network and loopback callbacks are not supported. A future local Hermes transport needs a
   separate authenticated design rather than an unsafe general-purpose bypass.
 - Custom headers, redirects, HTTP, arbitrary ports, proxy routing, mTLS, per-endpoint ordering, and a

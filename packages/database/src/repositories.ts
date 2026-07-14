@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   and,
@@ -14,8 +14,10 @@ import {
   isNull,
   lt,
   lte,
+  notExists,
   or,
   sql,
+  type SQL,
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
@@ -25,6 +27,8 @@ import type {
   ActivityEventRepository,
   AuditEventRecord,
   AuditEventRepository,
+  ClaimedNotificationDelivery,
+  ClaimNotificationDeliveryInput,
   CurrentDailyPlan,
   DailyPlanRepository,
   ConfirmedIntegrationCommandResult,
@@ -40,6 +44,13 @@ import type {
   IntegrationTransactionContext,
   IntegrationUnitOfWork,
   NotificationRepository,
+  NotificationDeliveryRepository,
+  NotificationDeliveryReceiptResult,
+  NotificationDeliveryRequestRecord,
+  NotificationDeliveryRequestRepository,
+  NotificationDeliveryRequestReservationInput,
+  NotificationDeliveryRequestResult,
+  SettleNotificationDeliveryInput,
   PlanItemLockResult,
   RecordedPlanItemActivityResult,
   PlanMutationRecord,
@@ -127,6 +138,9 @@ import {
   integrationConfirmations,
   integrationCredentials,
   integrationRequests,
+  notificationDeliveryAttempts,
+  notificationDeliveryCommands,
+  notificationDeliveryRequests,
   notificationIntents,
   notificationProfiles,
   notificationRules,
@@ -161,6 +175,7 @@ type DailyPlanItemStateRow = typeof dailyPlanItemStates.$inferSelect;
 type IntegrationCredentialRow = typeof integrationCredentials.$inferSelect;
 type IntegrationConfirmationRow = typeof integrationConfirmations.$inferSelect;
 type IntegrationRequestRow = typeof integrationRequests.$inferSelect;
+type NotificationDeliveryRequestRow = typeof notificationDeliveryRequests.$inferSelect;
 type NotificationProfileRow = typeof notificationProfiles.$inferSelect;
 type NotificationRuleRow = typeof notificationRules.$inferSelect;
 type OneOffReminderRow = typeof oneOffReminders.$inferSelect;
@@ -331,6 +346,148 @@ function mapIntegrationRequest(row: IntegrationRequestRow): IntegrationRequestRe
     commandHash: row.commandHash,
     state: row.status,
     result: result as unknown as ConfirmedIntegrationCommandResult | null,
+    createdAt: new Date(row.createdAt),
+    completedAt: row.completedAt === null ? null : new Date(row.completedAt),
+  };
+}
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const notificationKinds = new Set<NotificationKind>([
+  "daily_digest",
+  "daily_follow_up",
+  "plan_window_open",
+  "schedule_block_lead",
+  "work_item_due",
+  "one_off",
+]);
+const notificationTargetTypes = new Set<NotificationTargetType>([
+  "workspace",
+  "daily_plan",
+  "schedule_block",
+  "work_item",
+  "one_off",
+]);
+
+function corruptNotificationDeliveryRequest(): never {
+  throw new DomainError(
+    "notification_delivery.request_corrupt",
+    "The stored notification delivery request result is invalid.",
+  );
+}
+
+function hasExactKeys(
+  value: Readonly<Record<string, unknown>>,
+  expected: readonly string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return (
+    actual.length === sortedExpected.length &&
+    actual.every((key, index) => key === sortedExpected[index])
+  );
+}
+
+function mapNotificationDeliveryRequest(
+  row: NotificationDeliveryRequestRow,
+): NotificationDeliveryRequestRecord {
+  const raw = row.result as Readonly<Record<string, unknown>> | null;
+  let result: NotificationDeliveryRequestResult | null = null;
+  if (raw !== null) {
+    if (raw.operation !== row.operation) return corruptNotificationDeliveryRequest();
+    if (row.operation === "claim") {
+      if (!hasExactKeys(raw, ["operation", "command"])) {
+        return corruptNotificationDeliveryRequest();
+      }
+      const command = raw.command;
+      if (command !== null) {
+        if (command === undefined || typeof command !== "object" || Array.isArray(command)) {
+          return corruptNotificationDeliveryRequest();
+        }
+        const value = command as Readonly<Record<string, unknown>>;
+        if (
+          !hasExactKeys(value, [
+            "deliveryId",
+            "intentId",
+            "dedupeKey",
+            "kind",
+            "targetType",
+            "title",
+            "scheduledFor",
+            "localDate",
+            "priority",
+            "attempt",
+            "claimToken",
+            "leaseExpiresAt",
+          ])
+        ) {
+          return corruptNotificationDeliveryRequest();
+        }
+        const scheduledFor =
+          typeof value.scheduledFor === "string" ? new Date(value.scheduledFor) : null;
+        const leaseExpiresAt =
+          typeof value.leaseExpiresAt === "string" ? new Date(value.leaseExpiresAt) : null;
+        if (
+          typeof value.deliveryId !== "string" ||
+          !uuidPattern.test(value.deliveryId) ||
+          value.intentId !== value.deliveryId ||
+          value.dedupeKey !== value.deliveryId ||
+          typeof value.kind !== "string" ||
+          !notificationKinds.has(value.kind as NotificationKind) ||
+          typeof value.targetType !== "string" ||
+          !notificationTargetTypes.has(value.targetType as NotificationTargetType) ||
+          (value.title !== null && (typeof value.title !== "string" || value.title.length > 240)) ||
+          scheduledFor === null ||
+          !Number.isFinite(scheduledFor.getTime()) ||
+          typeof value.localDate !== "string" ||
+          !/^\d{4}-\d{2}-\d{2}$/.test(value.localDate) ||
+          !Number.isInteger(value.priority) ||
+          (value.priority as number) < 0 ||
+          (value.priority as number) > 100 ||
+          !Number.isInteger(value.attempt) ||
+          (value.attempt as number) < 1 ||
+          typeof value.claimToken !== "string" ||
+          !uuidPattern.test(value.claimToken) ||
+          leaseExpiresAt === null ||
+          !Number.isFinite(leaseExpiresAt.getTime())
+        ) {
+          return corruptNotificationDeliveryRequest();
+        }
+      }
+      result = raw as unknown as NotificationDeliveryRequestResult;
+    } else {
+      if (!hasExactKeys(raw, ["operation", "receipt"])) {
+        return corruptNotificationDeliveryRequest();
+      }
+      const receipt = raw.receipt;
+      if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt)) {
+        return corruptNotificationDeliveryRequest();
+      }
+      const value = receipt as Readonly<Record<string, unknown>>;
+      if (!hasExactKeys(value, ["deliveryId", "status"])) {
+        return corruptNotificationDeliveryRequest();
+      }
+      if (
+        typeof value.deliveryId !== "string" ||
+        !uuidPattern.test(value.deliveryId) ||
+        (value.status !== "delivered" &&
+          value.status !== "retry_scheduled" &&
+          value.status !== "dead_lettered" &&
+          value.status !== "invalidated")
+      ) {
+        return corruptNotificationDeliveryRequest();
+      }
+      result = raw as unknown as NotificationDeliveryRequestResult;
+    }
+  }
+  return {
+    id: row.id,
+    credentialId: row.credentialId,
+    workspaceId: workspaceId(row.workspaceId),
+    idempotencyKey: row.idempotencyKey,
+    operation: row.operation,
+    requestHash: row.requestHash,
+    state: row.status,
+    result,
     createdAt: new Date(row.createdAt),
     completedAt: row.completedAt === null ? null : new Date(row.completedAt),
   };
@@ -1148,6 +1305,26 @@ class PostgresScheduleBlockRepository implements ScheduleBlockRepository {
 export class PostgresNotificationRepository implements NotificationRepository {
   constructor(private readonly database: DatabaseExecutor) {}
 
+  private async invalidateDeliveryCommands(condition: SQL<unknown>): Promise<void> {
+    const matchingIntentIds = this.database
+      .select({ id: notificationIntents.id })
+      .from(notificationIntents)
+      .where(condition);
+    await this.database
+      .update(notificationDeliveryCommands)
+      .set({
+        status: "invalidated",
+        completedAt: sql`greatest(clock_timestamp(), ${notificationDeliveryCommands.createdAt}, ${notificationDeliveryCommands.updatedAt})`,
+        updatedAt: sql`greatest(clock_timestamp(), ${notificationDeliveryCommands.createdAt}, ${notificationDeliveryCommands.updatedAt})`,
+      })
+      .where(
+        and(
+          inArray(notificationDeliveryCommands.status, ["pending", "processing"]),
+          inArray(notificationDeliveryCommands.intentId, matchingIntentIds),
+        ),
+      );
+  }
+
   async lockWorkspace(workspace: WorkspaceId): Promise<void> {
     const canonicalWorkspace = workspace.toLowerCase();
     await this.database.execute(
@@ -1397,6 +1574,22 @@ export class PostgresNotificationRepository implements NotificationRepository {
   }
 
   async insertIntent(intent: NotificationIntent): Promise<NotificationIntent> {
+    const [deliveredOccurrence] = await this.database
+      .select({ intentId: notificationDeliveryCommands.intentId })
+      .from(notificationDeliveryCommands)
+      .where(
+        and(
+          eq(notificationDeliveryCommands.workspaceId, intent.workspaceId),
+          eq(notificationDeliveryCommands.occurrenceKey, intent.occurrenceKey),
+        ),
+      )
+      .limit(1);
+    if (deliveredOccurrence !== undefined) {
+      // A command that has crossed the delivery boundary is the durable natural-key
+      // winner even if its mutable source intent was later invalidated and deleted.
+      return { ...intent, id: notificationIntentId(deliveredOccurrence.intentId) };
+    }
+
     const [inserted] = await this.database
       .insert(notificationIntents)
       .values({
@@ -1447,9 +1640,11 @@ export class PostgresNotificationRepository implements NotificationRepository {
   }
 
   async deleteIntentsForWorkspace(workspace: WorkspaceId): Promise<number> {
+    const condition = eq(notificationIntents.workspaceId, workspace);
+    await this.invalidateDeliveryCommands(condition);
     const deleted = await this.database
       .delete(notificationIntents)
-      .where(eq(notificationIntents.workspaceId, workspace))
+      .where(condition)
       .returning({ id: notificationIntents.id });
     return deleted.length;
   }
@@ -1458,11 +1653,14 @@ export class PostgresNotificationRepository implements NotificationRepository {
     workspace: WorkspaceId,
     ruleId: NotificationRule["id"],
   ): Promise<number> {
+    const condition = and(
+      eq(notificationIntents.workspaceId, workspace),
+      eq(notificationIntents.ruleId, ruleId),
+    )!;
+    await this.invalidateDeliveryCommands(condition);
     const deleted = await this.database
       .delete(notificationIntents)
-      .where(
-        and(eq(notificationIntents.workspaceId, workspace), eq(notificationIntents.ruleId, ruleId)),
-      )
+      .where(condition)
       .returning({ id: notificationIntents.id });
     return deleted.length;
   }
@@ -1471,14 +1669,14 @@ export class PostgresNotificationRepository implements NotificationRepository {
     workspace: WorkspaceId,
     reminderId: OneOffReminder["id"],
   ): Promise<number> {
+    const condition = and(
+      eq(notificationIntents.workspaceId, workspace),
+      eq(notificationIntents.oneOffReminderId, reminderId),
+    )!;
+    await this.invalidateDeliveryCommands(condition);
     const deleted = await this.database
       .delete(notificationIntents)
-      .where(
-        and(
-          eq(notificationIntents.workspaceId, workspace),
-          eq(notificationIntents.oneOffReminderId, reminderId),
-        ),
-      )
+      .where(condition)
       .returning({ id: notificationIntents.id });
     return deleted.length;
   }
@@ -1495,16 +1693,16 @@ export class PostgresNotificationRepository implements NotificationRepository {
         : targetType === "schedule_block"
           ? eq(notificationIntents.scheduleBlockId, targetId)
           : eq(notificationIntents.workItemId, targetId);
+    const condition = and(
+      eq(notificationIntents.workspaceId, workspace),
+      eq(notificationIntents.targetType, targetType),
+      targetCondition,
+      ...(kind === undefined ? [] : [eq(notificationIntents.kind, kind)]),
+    )!;
+    await this.invalidateDeliveryCommands(condition);
     const deleted = await this.database
       .delete(notificationIntents)
-      .where(
-        and(
-          eq(notificationIntents.workspaceId, workspace),
-          eq(notificationIntents.targetType, targetType),
-          targetCondition,
-          ...(kind === undefined ? [] : [eq(notificationIntents.kind, kind)]),
-        ),
-      )
+      .where(condition)
       .returning({ id: notificationIntents.id });
     return deleted.length;
   }
@@ -1513,16 +1711,499 @@ export class PostgresNotificationRepository implements NotificationRepository {
     workspace: WorkspaceId,
     targetType: Extract<NotificationTargetType, "daily_plan" | "schedule_block" | "work_item">,
   ): Promise<number> {
+    const condition = and(
+      eq(notificationIntents.workspaceId, workspace),
+      eq(notificationIntents.targetType, targetType),
+    )!;
+    await this.invalidateDeliveryCommands(condition);
     const deleted = await this.database
       .delete(notificationIntents)
-      .where(
-        and(
-          eq(notificationIntents.workspaceId, workspace),
-          eq(notificationIntents.targetType, targetType),
-        ),
-      )
+      .where(condition)
       .returning({ id: notificationIntents.id });
     return deleted.length;
+  }
+}
+
+const NOTIFICATION_DELIVERY_RECOVERY_LIMIT = 100;
+
+class PostgresNotificationDeliveryRepository implements NotificationDeliveryRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async currentTime(): Promise<Date> {
+    const rows = await this.database.execute(
+      sql<{ value: unknown }>`select clock_timestamp() as value`,
+    );
+    const value = rows[0]?.value;
+    const parsed = value instanceof Date || typeof value === "string" ? new Date(value) : null;
+    if (parsed === null || !Number.isFinite(parsed.getTime())) {
+      throw new DomainError(
+        "notification_delivery.clock_invalid",
+        "The database did not return a valid coordination timestamp.",
+      );
+    }
+    return parsed;
+  }
+
+  async claimNext(
+    input: ClaimNotificationDeliveryInput,
+  ): Promise<ClaimedNotificationDelivery | null> {
+    const coordinationNow = await this.currentTime();
+    const expired = await this.database
+      .select()
+      .from(notificationDeliveryCommands)
+      .where(
+        and(
+          eq(notificationDeliveryCommands.workspaceId, input.workspaceId),
+          inArray(notificationDeliveryCommands.status, ["processing", "invalidated"]),
+          lte(notificationDeliveryCommands.leaseExpiresAt, coordinationNow),
+        ),
+      )
+      .orderBy(
+        asc(notificationDeliveryCommands.leaseExpiresAt),
+        asc(notificationDeliveryCommands.id),
+      )
+      .limit(NOTIFICATION_DELIVERY_RECOVERY_LIMIT)
+      .for("update");
+
+    for (const command of expired) {
+      if (command.currentClaimToken === null) {
+        throw new DomainError(
+          "notification_delivery.command_corrupt",
+          "A processing delivery command is missing its claim token.",
+        );
+      }
+      await this.database
+        .update(notificationDeliveryAttempts)
+        .set({ outcome: "lease_expired", completedAt: coordinationNow })
+        .where(
+          and(
+            eq(notificationDeliveryAttempts.workspaceId, input.workspaceId),
+            eq(notificationDeliveryAttempts.deliveryId, command.id),
+            eq(notificationDeliveryAttempts.id, command.currentClaimToken),
+            isNull(notificationDeliveryAttempts.outcome),
+          ),
+        );
+      if (command.status === "invalidated") {
+        await this.database
+          .update(notificationDeliveryCommands)
+          .set({
+            currentClaimToken: null,
+            leaseExpiresAt: null,
+            updatedAt: coordinationNow,
+          })
+          .where(
+            and(
+              eq(notificationDeliveryCommands.workspaceId, input.workspaceId),
+              eq(notificationDeliveryCommands.id, command.id),
+              eq(notificationDeliveryCommands.status, "invalidated"),
+              eq(notificationDeliveryCommands.currentClaimToken, command.currentClaimToken),
+            ),
+          );
+        continue;
+      }
+      const exhausted = command.attempts >= input.maxAttempts;
+      await this.database
+        .update(notificationDeliveryCommands)
+        .set({
+          status: exhausted ? "dead_letter" : "pending",
+          availableAt: coordinationNow,
+          currentClaimToken: null,
+          leaseExpiresAt: null,
+          completedAt: exhausted ? coordinationNow : null,
+          lastFailureCode: "delivery.lease_expired",
+          updatedAt: coordinationNow,
+        })
+        .where(
+          and(
+            eq(notificationDeliveryCommands.workspaceId, input.workspaceId),
+            eq(notificationDeliveryCommands.id, command.id),
+            eq(notificationDeliveryCommands.status, "processing"),
+            eq(notificationDeliveryCommands.currentClaimToken, command.currentClaimToken),
+          ),
+        );
+    }
+
+    let [candidate] = await this.database
+      .select()
+      .from(notificationDeliveryCommands)
+      .where(
+        and(
+          eq(notificationDeliveryCommands.workspaceId, input.workspaceId),
+          eq(notificationDeliveryCommands.status, "pending"),
+          lte(notificationDeliveryCommands.availableAt, coordinationNow),
+          lt(notificationDeliveryCommands.attempts, input.maxAttempts),
+        ),
+      )
+      .orderBy(
+        desc(notificationDeliveryCommands.priority),
+        asc(notificationDeliveryCommands.availableAt),
+        asc(notificationDeliveryCommands.scheduledFor),
+        asc(notificationDeliveryCommands.id),
+      )
+      .limit(1)
+      .for("update");
+
+    if (candidate === undefined) {
+      const [intent] = await this.database
+        .select()
+        .from(notificationIntents)
+        .where(
+          and(
+            eq(notificationIntents.workspaceId, input.workspaceId),
+            lte(notificationIntents.scheduledFor, coordinationNow),
+            notExists(
+              this.database
+                .select({ id: notificationDeliveryCommands.id })
+                .from(notificationDeliveryCommands)
+                .where(
+                  and(
+                    eq(notificationDeliveryCommands.workspaceId, notificationIntents.workspaceId),
+                    eq(
+                      notificationDeliveryCommands.occurrenceKey,
+                      notificationIntents.occurrenceKey,
+                    ),
+                  ),
+                ),
+            ),
+          ),
+        )
+        .orderBy(
+          desc(notificationIntents.priority),
+          asc(notificationIntents.scheduledFor),
+          asc(notificationIntents.id),
+        )
+        .limit(1)
+        .for("update");
+      if (intent === undefined) return null;
+
+      [candidate] = await this.database
+        .insert(notificationDeliveryCommands)
+        .values({
+          id: intent.id,
+          workspaceId: intent.workspaceId,
+          intentId: intent.id,
+          occurrenceKey: intent.occurrenceKey,
+          kind: intent.kind,
+          targetType: intent.targetType,
+          titleSnapshot: intent.titleSnapshot,
+          scheduledFor: intent.scheduledFor,
+          localDate: intent.localDate,
+          priority: intent.priority,
+          status: "pending",
+          attempts: 0,
+          availableAt: coordinationNow,
+          createdAt: coordinationNow,
+          updatedAt: coordinationNow,
+        })
+        .returning();
+      if (candidate === undefined) {
+        throw new DomainError(
+          "notification_delivery.command_write_conflict",
+          "The delivery command could not be created.",
+        );
+      }
+    }
+
+    const claimNow = await this.currentTime();
+    const claimToken = randomUUID();
+    const attempt = candidate.attempts + 1;
+    const leaseExpiresAt = new Date(claimNow.getTime() + input.leaseDurationMilliseconds);
+    const [claimed] = await this.database
+      .update(notificationDeliveryCommands)
+      .set({
+        status: "processing",
+        attempts: attempt,
+        currentClaimToken: claimToken,
+        leaseExpiresAt,
+        completedAt: null,
+        lastFailureCode: null,
+        updatedAt: claimNow,
+      })
+      .where(
+        and(
+          eq(notificationDeliveryCommands.workspaceId, input.workspaceId),
+          eq(notificationDeliveryCommands.id, candidate.id),
+          eq(notificationDeliveryCommands.status, "pending"),
+          eq(notificationDeliveryCommands.attempts, candidate.attempts),
+        ),
+      )
+      .returning();
+    if (claimed === undefined) {
+      throw new DomainError(
+        "notification_delivery.claim_conflict",
+        "The delivery command changed before it could be claimed.",
+      );
+    }
+    await this.database.insert(notificationDeliveryAttempts).values({
+      id: claimToken,
+      workspaceId: input.workspaceId,
+      deliveryId: claimed.id,
+      credentialId: input.credentialId,
+      attemptNumber: attempt,
+      claimedAt: claimNow,
+      leaseExpiresAt,
+    });
+    return {
+      deliveryId: claimed.id,
+      intentId: claimed.intentId,
+      kind: claimed.kind as NotificationKind,
+      targetType: claimed.targetType as NotificationTargetType,
+      title: claimed.titleSnapshot,
+      scheduledFor: new Date(claimed.scheduledFor),
+      localDate: localDate(claimed.localDate),
+      priority: claimed.priority,
+      attempt,
+      claimToken,
+      leaseExpiresAt,
+    };
+  }
+
+  async settle(input: SettleNotificationDeliveryInput): Promise<NotificationDeliveryReceiptResult> {
+    const coordinationNow = await this.currentTime();
+    const [command] = await this.database
+      .select()
+      .from(notificationDeliveryCommands)
+      .where(
+        and(
+          eq(notificationDeliveryCommands.workspaceId, input.workspaceId),
+          eq(notificationDeliveryCommands.id, input.deliveryId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (command === undefined) {
+      throw new DomainError(
+        "notification_delivery.command_not_found",
+        "The delivery command does not exist in this workspace.",
+      );
+    }
+    if (
+      (command.status !== "processing" && command.status !== "invalidated") ||
+      command.currentClaimToken !== input.claimToken ||
+      command.leaseExpiresAt === null ||
+      command.leaseExpiresAt.getTime() <= coordinationNow.getTime()
+    ) {
+      throw new DomainError(
+        "notification_delivery.claim_stale",
+        "The delivery claim is stale or no longer owns this command.",
+      );
+    }
+
+    const [attempt] = await this.database
+      .select()
+      .from(notificationDeliveryAttempts)
+      .where(
+        and(
+          eq(notificationDeliveryAttempts.workspaceId, input.workspaceId),
+          eq(notificationDeliveryAttempts.deliveryId, input.deliveryId),
+          eq(notificationDeliveryAttempts.id, input.claimToken),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (
+      attempt === undefined ||
+      attempt.credentialId !== input.credentialId ||
+      attempt.outcome !== null
+    ) {
+      throw new DomainError(
+        "notification_delivery.claim_stale",
+        "The delivery claim is stale or belongs to another adapter credential.",
+      );
+    }
+    await this.database
+      .update(notificationDeliveryAttempts)
+      .set({
+        outcome: input.outcome,
+        failureCode: input.failureCode,
+        retryAfterSeconds: input.retryAfterSeconds,
+        completedAt: coordinationNow,
+      })
+      .where(eq(notificationDeliveryAttempts.id, input.claimToken));
+
+    if (command.status === "invalidated") {
+      await this.database
+        .update(notificationDeliveryCommands)
+        .set({
+          currentClaimToken: null,
+          leaseExpiresAt: null,
+          lastFailureCode: input.failureCode,
+          updatedAt: coordinationNow,
+        })
+        .where(
+          and(
+            eq(notificationDeliveryCommands.id, command.id),
+            eq(notificationDeliveryCommands.status, "invalidated"),
+            eq(notificationDeliveryCommands.currentClaimToken, input.claimToken),
+          ),
+        );
+      return { deliveryId: command.id, status: "invalidated" };
+    }
+
+    if (input.outcome === "delivered") {
+      await this.database
+        .update(notificationDeliveryCommands)
+        .set({
+          status: "delivered",
+          currentClaimToken: null,
+          leaseExpiresAt: null,
+          completedAt: coordinationNow,
+          lastFailureCode: null,
+          updatedAt: coordinationNow,
+        })
+        .where(eq(notificationDeliveryCommands.id, command.id));
+      return { deliveryId: command.id, status: "delivered" };
+    }
+
+    const deadLetter =
+      input.outcome === "permanent_failure" || command.attempts >= input.maxAttempts;
+    if (deadLetter) {
+      await this.database
+        .update(notificationDeliveryCommands)
+        .set({
+          status: "dead_letter",
+          currentClaimToken: null,
+          leaseExpiresAt: null,
+          completedAt: coordinationNow,
+          lastFailureCode: input.failureCode,
+          updatedAt: coordinationNow,
+        })
+        .where(eq(notificationDeliveryCommands.id, command.id));
+      return { deliveryId: command.id, status: "dead_lettered" };
+    }
+
+    const retryAfterSeconds = input.retryAfterSeconds;
+    if (retryAfterSeconds === null) {
+      throw new DomainError(
+        "notification_delivery.receipt_invalid",
+        "A retryable outcome must include retryAfterSeconds.",
+      );
+    }
+    await this.database
+      .update(notificationDeliveryCommands)
+      .set({
+        status: "pending",
+        availableAt: new Date(coordinationNow.getTime() + retryAfterSeconds * 1_000),
+        currentClaimToken: null,
+        leaseExpiresAt: null,
+        completedAt: null,
+        lastFailureCode: input.failureCode,
+        updatedAt: coordinationNow,
+      })
+      .where(eq(notificationDeliveryCommands.id, command.id));
+    return { deliveryId: command.id, status: "retry_scheduled" };
+  }
+}
+
+class PostgresNotificationDeliveryRequestRepository implements NotificationDeliveryRequestRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async reserve(input: NotificationDeliveryRequestReservationInput): Promise<{
+    readonly kind: "reserved" | "replay";
+    readonly request: NotificationDeliveryRequestRecord;
+  }> {
+    const [row] = await this.database
+      .insert(notificationDeliveryRequests)
+      .values({
+        id: input.id,
+        workspaceId: input.workspaceId,
+        credentialId: input.credentialId,
+        idempotencyKey: input.idempotencyKey,
+        operation: input.operation,
+        requestHash: input.requestHash,
+        status: "processing",
+        createdAt: input.createdAt,
+        updatedAt: input.createdAt,
+      })
+      .onConflictDoUpdate({
+        target: [
+          notificationDeliveryRequests.credentialId,
+          notificationDeliveryRequests.idempotencyKey,
+        ],
+        set: { idempotencyKey: sql`${notificationDeliveryRequests.idempotencyKey}` },
+      })
+      .returning({
+        ...getTableColumns(notificationDeliveryRequests),
+        inserted: sql<boolean>`xmax = 0`.as("inserted"),
+      });
+    if (row === undefined) {
+      throw new DomainError(
+        "notification_delivery.request_write_conflict",
+        "The notification delivery request could not be reserved.",
+      );
+    }
+    if (
+      row.workspaceId !== input.workspaceId ||
+      row.operation !== input.operation ||
+      row.requestHash !== input.requestHash
+    ) {
+      throw new DomainError(
+        "notification_delivery.request_conflict",
+        "This idempotency key already belongs to a different delivery request.",
+      );
+    }
+    const request = mapNotificationDeliveryRequest(row);
+    if (row.inserted) return { kind: "reserved", request };
+    if (request.state === "processing") {
+      throw new DomainError(
+        "notification_delivery.request_in_progress",
+        "This delivery request is already being processed.",
+      );
+    }
+    if (request.result === null || request.completedAt === null) {
+      throw new DomainError(
+        "notification_delivery.request_corrupt",
+        "The completed delivery request has no replayable result.",
+      );
+    }
+    return { kind: "replay", request };
+  }
+
+  async succeed(
+    id: string,
+    result: NotificationDeliveryRequestResult,
+    completedAt: Date,
+  ): Promise<NotificationDeliveryRequestRecord> {
+    const [current] = await this.database
+      .select()
+      .from(notificationDeliveryRequests)
+      .where(eq(notificationDeliveryRequests.id, id))
+      .limit(1)
+      .for("update");
+    if (current === undefined || current.status !== "processing") {
+      throw new DomainError(
+        "notification_delivery.request_not_found",
+        "The delivery request reservation is missing or already complete.",
+      );
+    }
+    if (result.operation !== current.operation) {
+      throw new DomainError(
+        "notification_delivery.request_conflict",
+        "The delivery result does not match its request operation.",
+      );
+    }
+    const [updated] = await this.database
+      .update(notificationDeliveryRequests)
+      .set({
+        status: "succeeded",
+        result: result as unknown as Record<string, unknown>,
+        completedAt,
+        updatedAt: completedAt,
+      })
+      .where(
+        and(
+          eq(notificationDeliveryRequests.id, id),
+          eq(notificationDeliveryRequests.status, "processing"),
+        ),
+      )
+      .returning();
+    if (updated === undefined) {
+      throw new DomainError(
+        "notification_delivery.request_write_conflict",
+        "The delivery request could not be completed.",
+      );
+    }
+    return mapNotificationDeliveryRequest(updated);
   }
 }
 
@@ -3038,6 +3719,16 @@ export class PostgresIntegrationCredentialRepository implements IntegrationCrede
     return row === undefined ? null : mapIntegrationCredential(row);
   }
 
+  async findByIdForUpdate(id: string): Promise<IntegrationCredential | null> {
+    const [row] = await this.database
+      .select()
+      .from(integrationCredentials)
+      .where(eq(integrationCredentials.id, id))
+      .limit(1)
+      .for("update");
+    return row === undefined ? null : mapIntegrationCredential(row);
+  }
+
   async list(workspace: WorkspaceId): Promise<readonly IntegrationCredential[]> {
     const rows = await this.database
       .select()
@@ -3327,6 +4018,8 @@ function createIntegrationTransactionContext(
     credentials: new PostgresIntegrationCredentialRepository(database),
     confirmations: new PostgresIntegrationConfirmationRepository(database),
     requests: new PostgresIntegrationRequestRepository(database),
+    notificationDeliveries: new PostgresNotificationDeliveryRepository(database),
+    notificationDeliveryRequests: new PostgresNotificationDeliveryRequestRepository(database),
     workspaces: new PostgresWorkspaceRepository(database),
     workItems: new PostgresWorkItemRepository(database),
     scheduleBlocks: new PostgresScheduleBlockRepository(database),
@@ -3377,13 +4070,17 @@ export class PostgresIntegrationUnitOfWork implements IntegrationUnitOfWork {
 
   async run<Result>(
     operation: (context: IntegrationTransactionContext) => Promise<Result>,
+    options?: UnitOfWorkOptions,
   ): Promise<Result> {
     let retry = 0;
     while (true) {
       try {
         return await this.connection.db.transaction(
           async (transaction) => operation(createIntegrationTransactionContext(transaction)),
-          { isolationLevel: "serializable" },
+          {
+            isolationLevel:
+              options?.isolationLevel === "read_committed" ? "read committed" : "serializable",
+          },
         );
       } catch (error) {
         if (databaseErrorCode(error) !== "40001" || retry >= serializationRetryLimit) throw error;

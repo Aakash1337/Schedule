@@ -51,6 +51,8 @@ not authorize these product routes.
 | `POST`   | `/v1/workspaces/{workspaceId}/one-off-reminders/{oneOffReminderId}/cancellations`              | Cancel an explicit reminder                            |
 | `GET`    | `/v1/workspaces/{workspaceId}/notification-intents?from={instant}&to={instant}`                | List insert-only materialized intents                  |
 | `POST`   | `/v1/workspaces/{workspaceId}/notification-intents/materializations`                           | Materialize a bounded policy window                    |
+| `POST`   | `/v1/integrations/reminder-deliveries/claim`                                                   | Claim one due reminder with `schedule:delivery`        |
+| `POST`   | `/v1/integrations/reminder-deliveries/receipt`                                                 | Record one fenced, bounded delivery outcome            |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines`                                                        | Create a routine (`201`)                               |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`                       | List a bounded routine page (`200`)                    |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Retrieve one routine (`200` or `404`)                  |
@@ -149,13 +151,21 @@ Materialization accepts offset-bearing instants and a maximum 31-day half-open w
 ```
 
 The response contains `created`, `existing`, and `suppressed`. Repeating or concurrently issuing the
-same request returns the natural-key winners under a workspace advisory lock. It never sends or
-queues a notification. Intent list reads accept `limit` 1–500 and a nonnegative `offset`. See
+same request returns the natural-key winners under a workspace advisory lock. Materialization never
+calls a provider or generic outbox. A later delivery-scoped adapter claim lazily creates the fenced
+command for a still-valid due intent. Intent list reads accept `limit` 1–500 and a nonnegative
+`offset`. See
 [REMINDERS.md](./REMINDERS.md) for DST, quiet-hours, catch-up, priority, cooldown, and daily-limit
 semantics. Profile changes invalidate all pending intents; rule and one-off changes invalidate only
 their own. Schedule-block/work-item edits, plan replacement, and terminal item activity invalidate
 the affected pending target intents transactionally. No mutation rewrites a previously accepted
 intent in place.
+
+The two `/v1/integrations/reminder-deliveries/*` routes are not local product routes. They require
+the integration bearer-token boundary, the explicit `schedule:delivery` scope, JSON, and an
+`Idempotency-Key`. Claim returns at most one privacy-bounded command; receipt accepts only a fenced
+`delivered`, `retryable_failure`, or `permanent_failure` outcome. See
+[INTEGRATIONS.md](./INTEGRATIONS.md#reminder-delivery) for the wire contract and adapter obligations.
 
 Routine updates require `expectedVersion`. Scalar fields are partial; if `tags`, `duration`, or `cadence` is supplied, that nested object is a complete replacement. A real change increments the routine version once. A semantic no-op returns the current routine without writing or incrementing its version. A stale version returns `409 routine.version_conflict`. The update takes the same per-routine advisory lock used by activity and duration-insight commands, then reloads and saves under read committed so a manual edit cannot race an approval, dismissal, reset, or evidence append. This generic `PATCH` is still the manual editing path; it does not assert that a duration-insight suggestion is current.
 

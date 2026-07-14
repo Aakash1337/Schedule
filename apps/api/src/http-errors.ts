@@ -77,7 +77,9 @@ function domainStatus(error: DomainError): number {
   if (
     error.code === "integration.request_conflict" ||
     error.code === "integration.receipt_conflict" ||
-    error.code === "integration.receipt_in_progress"
+    error.code === "integration.receipt_in_progress" ||
+    error.code === "notification_delivery.claim_stale" ||
+    error.code === "notification_delivery.request_in_progress"
   ) {
     return 409;
   }
@@ -103,6 +105,11 @@ function publicDomainMessage(error: DomainError): string {
     case "integration.receipt_conflict":
     case "integration.receipt_in_progress":
       return "The request conflicts with an existing integration request.";
+    case "notification_delivery.request_conflict":
+    case "notification_delivery.request_in_progress":
+      return "The request conflicts with an existing delivery request.";
+    case "notification_delivery.claim_stale":
+      return "The delivery claim is stale or no longer owns this command.";
     case "integration.confirmation_not_found":
       return "The requested confirmation does not exist.";
     case "integration.confirmation_expired":
@@ -123,6 +130,15 @@ const INTERNAL_INTEGRATION_FAILURES = new Set([
   "integration.receipt_write_conflict",
   "integration.result_invalid",
   "integration.timestamp_invalid",
+  "notification_delivery.claim_conflict",
+  "notification_delivery.clock_invalid",
+  "notification_delivery.command_corrupt",
+  "notification_delivery.command_write_conflict",
+  "notification_delivery.configuration_invalid",
+  "notification_delivery.receipt_invalid",
+  "notification_delivery.request_corrupt",
+  "notification_delivery.request_not_found",
+  "notification_delivery.request_write_conflict",
 ]);
 const INTERNAL_PLANNING_FAILURES = new Set(["planning.work_item_graph_corrupt"]);
 
