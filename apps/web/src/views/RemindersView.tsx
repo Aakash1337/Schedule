@@ -1030,8 +1030,8 @@ function PlannedTab({
   if (intents.length === 0) {
     return (
       <EmptyState title="No planned reminders in this window">
-        Configure policy and sources, then use “Refresh planned reminders.” Planning is explicit and
-        no periodic materializer runs yet.
+        Configure policy and sources, then use “Refresh planned reminders.” Your operator may also
+        enable background intent planning; provider delivery remains separate.
       </EmptyState>
     );
   }

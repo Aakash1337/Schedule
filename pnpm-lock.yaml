@@ -113,6 +113,9 @@ importers:
       "@schedule/database":
         specifier: workspace:*
         version: link:../../packages/database
+      "@schedule/domain":
+        specifier: workspace:*
+        version: link:../../packages/domain
 
   packages/application:
     dependencies:

@@ -3,11 +3,12 @@
 Status: Working product definition
 Last updated: 2026-07-14
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items with direct prerequisites and arbitrary-depth subtasks, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v5 selects both reusable routines and explicitly opted-in one-time leaf work items, applies temporary routine feedback, and hard-excludes parent containers and work with unmet prerequisites from new selection and unlocked regeneration retention. A locked nonterminal item remains anchored under the existing user-authority rules. The planner also adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent routine-duration insight with explicit approval, plus read-only Daily Plan Fit guidance that may prefill a smaller evidence-backed joint time/task target; both have reversible exact-key dismissal and neither applies automatically. Broader learned preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. The Work interface may separately prepare one expiring, editable backlog-title proposal from free-form text; no work exists until explicit, audited, exactly-once confirmation. A provider-neutral authenticated gateway provides Today reads, credential-scoped work-item discovery including hierarchy, reviewed create/reparent/detach mutations, and least-privilege reminder delivery claims/receipts for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. A deterministic reminder-policy core stores versioned profiles and rules, explicit one-offs, concurrency-safe immutable intents, and a provider-neutral fenced delivery lifecycle without performing provider transport. See [API.md](./API.md), [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md), [REMINDERS.md](./REMINDERS.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language routine creation, model-driven task breakdown, multi-command capture, automatic advisor application or calibration, hosted model providers, alternative-plan comparison, generalized undo, recurrence authoring, periodic reminder execution and phone delivery, a Hermes/WhatsApp transport, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items with direct prerequisites and arbitrary-depth subtasks, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v5 selects both reusable routines and explicitly opted-in one-time leaf work items, applies temporary routine feedback, and hard-excludes parent containers and work with unmet prerequisites from new selection and unlocked regeneration retention. A locked nonterminal item remains anchored under the existing user-authority rules. The planner also adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent routine-duration insight with explicit approval, plus read-only Daily Plan Fit guidance that may prefill a smaller evidence-backed joint time/task target; both have reversible exact-key dismissal and neither applies automatically. Broader learned preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. The Work interface may separately prepare one expiring, editable backlog-title proposal from free-form text; no work exists until explicit, audited, exactly-once confirmation. A provider-neutral authenticated gateway provides Today reads, credential-scoped work-item discovery including hierarchy, reviewed create/reparent/detach mutations, and least-privilege reminder delivery claims/receipts for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. A deterministic reminder-policy core stores versioned profiles and rules, explicit one-offs, concurrency-safe immutable intents, an opt-in local periodic materializer, and a provider-neutral fenced delivery lifecycle without performing provider transport. See [API.md](./API.md), [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md), [REMINDERS.md](./REMINDERS.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language routine creation, model-driven task breakdown, multi-command capture, automatic advisor application or calibration, hosted model providers, alternative-plan comparison, generalized undo, recurrence authoring, phone delivery, a Hermes/WhatsApp transport, and public hosting remain deferred.
 
-The local reminder interface now configures profiles, rules, and one-offs; explicitly materializes
-intents; and presents separate planned and product-safe execution histories. It does not imply that
-an external provider sent a message.
+The local reminder interface now configures profiles, rules, and one-offs; manually materializes
+intents; and presents separate planned and product-safe execution histories. An operator may also
+enable background intent materialization. Neither path implies that an external provider sent a
+message.
 
 ## 1. Product summary
 
@@ -498,7 +499,8 @@ The adaptive planner complements, rather than replaces:
 - Direct work-item prerequisites are implemented; project and milestone blockers remain targets
 - Arbitrary-depth work-item subtasks are implemented; checklist rows remain a target
 - Work-item due dates plus deterministic reminder policy, intent materialization, and a fenced
-  provider-neutral delivery gateway; periodic execution and provider transport remain deferred
+  provider-neutral delivery gateway; opt-in local periodic materialization is implemented while
+  provider transport remains deferred
 - Search, filters, saved views, and bulk editing
 - Notes, links, and attachments
 - Import, export, backup, and restore
@@ -514,7 +516,9 @@ quiet hours, bounded catch-up, rule cooldowns, stable priority, and a daily cap,
 insert-only natural-key intent under a workspace advisory lock. Two concurrent materializers cannot
 create duplicate occurrences.
 
-Materialization is currently an explicit local API command. No worker runs it periodically. A
+Materialization is available as an explicit local API command and as a disabled-by-default local
+worker mode. The worker captures one bounded catch-up/look-ahead window per tick, processes at most
+20 workspaces sequentially, and shares the same lock/idempotency boundary as manual calls. A
 least-privilege machine credential can claim and revalidate one due intent, then report a fenced
 bounded outcome. No destination, provider, account, channel, conversation, provider acknowledgement,
 or raw receipt is stored. Those responsibilities stay
@@ -638,9 +642,9 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
 - Implemented foundation: encrypted, signed outbound endpoints and explicit opt-in
   `schedule.changed.v1` invalidations; these are refresh hints, not reminders or a messaging adapter
 - Implemented foundation: deterministic reminder profiles, rules, one-offs, exact-once intent
-  materialization, and provider-neutral claim/receipt state; periodic execution, provider transport,
-  and human/account binding remain follow-on work, while local settings and bounded planned/execution
-  history are implemented
+  materialization, an opt-in bounded local materialization worker, and provider-neutral claim/receipt
+  state; provider transport and human/account binding remain follow-on work, while local settings and
+  bounded planned/execution history are implemented
 - Authentication and secure workspace isolation
 - Cloud deployment selected from measured operational needs
 - Offline-capable synchronization and conflict handling, if required

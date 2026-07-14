@@ -34,6 +34,7 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:natural-language-proposals` | Verify private persistence and concurrent exactly-once confirmation         | Yes                             |
 | `pnpm verify:webhook-delivery`           | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback     | Yes, disposable only            |
 | `pnpm verify:notification-core`          | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
+| `pnpm verify:notification-materializer`  | Verify bounded automatic ticks, replay, skips, and delivery separation      | Yes, disposable only            |
 | `pnpm verify:notification-delivery`      | Verify fenced claims/receipts, retries, expiry, and invalidation            | Yes, disposable only            |
 | `pnpm verify:notification-migrations`    | Upgrade populated reminder/delivery state through migration 0027            | Yes, disposable only            |
 | `pnpm verify:local-model-advisor`        | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
@@ -48,7 +49,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 80 test files and 1,178 runtime test cases. Three
+The package and script runners currently execute 81 test files and 1,196 runtime test cases. Three
 additional Playwright specifications contain eight live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -426,8 +427,13 @@ The audit deliberately leaves these visible instead of turning them into false g
   concurrent exclusion, retry/dead-letter, indexed expiry fencing/recovery, source invalidation,
   bounded receipts, audits, occurrence uniqueness, cross-tenant rejection, and a workspace-scoped,
   product-safe execution-history projection that omits claim, lease, credential, and provider data.
-  It has no periodic materializer, external provider/account binding, shared adapter dedupe store,
-  or dead-letter redrive control;
+  Its opt-in local materializer has unit evidence for disabled mode, bounded sequential cycles,
+  failure isolation, non-overlap, abort behavior, and sibling-service supervision, plus disposable
+  PostgreSQL evidence for catch-up boundaries, concurrent exact-once ticks, recreated-pool restart
+  replay, unconfigured-workspace skips, and no outbox/delivery side effects. It does not process-kill a materialization mid-transaction;
+  graceful shutdown waits for that transaction because the use case has no cancellation signal. It
+  also has no external provider/account binding, shared adapter dedupe store, or dead-letter redrive
+  control;
 - eight live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a

@@ -50,6 +50,19 @@ const workerSchema = baseSchema.extend({
   OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
   OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(25),
   OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(8),
+  NOTIFICATION_MATERIALIZATION_MODE: z.enum(["disabled", "enabled"]).default("disabled"),
+  NOTIFICATION_MATERIALIZATION_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(10_000)
+    .max(3_600_000)
+    .default(60_000),
+  NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(3_600_000)
+    .default(300_000),
   WEBHOOK_DELIVERY_MODE: z.enum(["disabled", "enabled"]).default("disabled"),
   WEBHOOK_MASTER_KEYS: z.string().max(4_096).default(""),
   WEBHOOK_ACTIVE_MASTER_KEY_ID: z.string().max(32).default(""),

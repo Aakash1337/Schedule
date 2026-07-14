@@ -386,6 +386,7 @@ of the exact backup catalog and restore-content signal. Back up before applying 
 ```powershell
 pnpm db:migrate
 pnpm verify:notification-core
+pnpm verify:notification-materializer
 pnpm verify:notification-delivery
 pnpm verify:notification-migrations
 pnpm verify:backup-restore
@@ -404,13 +405,39 @@ invalidation, dead letter, receipt fencing, and a credential-revocation lock rac
 delivery verifiers also assert the partial expired-lease recovery index. These commands are also
 inside `verify:database`.
 
-There is currently no periodic materialization daemon to monitor. Materialization happens only when
-the local product API command is explicitly invoked. If an operator invokes it manually, use a window no
-longer than 31 days and inspect all three result groups: `created`, `existing`, and `suppressed`.
+Automatic local materialization is disabled by default. Leave
+`NOTIFICATION_MATERIALIZATION_MODE=disabled` while policy is being provisioned. To enable it, set
+the mode to `enabled`, keep `NOTIFICATION_MATERIALIZATION_INTERVAL_MS` between 10 seconds and one
+hour, keep `NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS` between one second and one hour, and restart
+the worker. The defaults are a 60-second interval and five-minute look-ahead. This switch creates
+Schedule intents only; it does not enable webhook transport, claim the delivery gateway, or contact
+a provider.
+
+Each tick processes at most 20 workspaces sequentially. It passes one captured look-ahead window to
+the application use case, which applies each profile's own bounded catch-up horizon. Monitor the
+structured `notification_materialization_tick_completed` count fields and the
+fixed `notification_materialization_workspace_list_failed` /
+`notification_materialization_workspace_failed` classifications. A
+`notification_materialization_workspace_limit_exceeded` classification means persisted data
+violates the 20-workspace local-installation cap; the tick intentionally creates no intents until the
+invariant is restored. Logs intentionally omit titles,
+policy contents, occurrence keys, destinations, and raw exceptions. A SIGINT/SIGTERM prevents the
+next workspace or tick and waits for an already-running materialization transaction to settle before
+the shared database pool closes. Disable the mode and restart the worker to stop new automatic
+ticks; persisted intents remain subject to normal policy/source invalidation.
+
+Manual materialization remains available through the local product API. Use a window no longer than
+31 days and inspect all three result groups: `created`, `existing`, and `suppressed`.
 Repeated or concurrent invocation is safe. Policy and target changes never rewrite an intent; they
 transactionally delete affected pending intents under the same workspace notification lock. Deleting
 a referenced daily plan, schedule block, or work item also invalidates its open delivery command and
 removes the source intent so it cannot later be claimed against a missing target.
+
+`verify:notification-materializer` creates and migrates a disposable database, runs two production
+cycles concurrently through independent pools, repeats a restart cycle, and proves exact-once
+intents, catch-up acceptance/suppression, safe unconfigured-workspace skips, and unchanged
+outbox/delivery-command counts. It drops
+the nonce database even on failure and is included in `verify:database`.
 
 The provider-neutral delivery routes are pull-based and require an explicitly `schedule:delivery`
 credential; the default credential scopes do not grant delivery. Each claim leases one command for

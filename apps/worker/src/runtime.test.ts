@@ -3,13 +3,94 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { runWorkerRuntime } from "./runtime.js";
+import { runWorkerRuntime, runWorkerServices } from "./runtime.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe("worker process runtime", () => {
+  it("aborts sibling services and waits for their cleanup before surfacing a failure", async () => {
+    const controller = new AbortController();
+    let finishCleanup!: () => void;
+    const cleanup = new Promise<void>((resolve) => {
+      finishCleanup = resolve;
+    });
+    let siblingSettled = false;
+    const failure = new Error("private service failure");
+
+    const running = runWorkerServices(
+      [
+        async () => {
+          throw failure;
+        },
+        async (signal) => {
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", resolve, { once: true });
+            if (signal.aborted) resolve();
+          });
+          await cleanup;
+          siblingSettled = true;
+        },
+      ],
+      controller,
+    );
+
+    await vi.waitFor(() => expect(controller.signal.aborted).toBe(true));
+    expect(controller.signal.reason).toBe("worker service failed");
+    expect(siblingSettled).toBe(false);
+    finishCleanup();
+    await expect(running).rejects.toBe(failure);
+    expect(siblingSettled).toBe(true);
+  });
+
+  it("lets every service stop cleanly after an external shutdown signal", async () => {
+    const controller = new AbortController();
+    const stopped: number[] = [];
+    const service = (index: number) => async (signal: AbortSignal) => {
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", resolve, { once: true });
+      });
+      stopped.push(index);
+    };
+    const running = runWorkerServices([service(1), service(2)], controller);
+
+    controller.abort("SIGTERM");
+    await running;
+
+    expect(stopped).toEqual([1, 2]);
+  });
+
+  it("treats an unexpected clean service exit as fatal and stops its sibling", async () => {
+    const controller = new AbortController();
+    let siblingStopped = false;
+
+    await expect(
+      runWorkerServices(
+        [
+          async () => undefined,
+          async (signal) => {
+            await new Promise<void>((resolve) => {
+              signal.addEventListener("abort", resolve, { once: true });
+              if (signal.aborted) resolve();
+            });
+            siblingStopped = true;
+          },
+        ],
+        controller,
+      ),
+    ).rejects.toThrow("worker service stopped unexpectedly");
+
+    expect(controller.signal.reason).toBe("worker service failed");
+    expect(siblingStopped).toBe(true);
+  });
+
+  it("rejects an empty service set", async () => {
+    await expect(runWorkerServices([], new AbortController())).rejects.toThrow(
+      /At least one worker service/,
+    );
+  });
+
   it("closes cleanly without terminating after an orderly worker stop", async () => {
     const order: string[] = [];
     const terminate = vi.fn();

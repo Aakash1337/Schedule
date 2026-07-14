@@ -1,8 +1,12 @@
 import { loadWorkerConfig } from "@schedule/config";
-import { createDatabase } from "@schedule/database";
+import { createDatabase, PostgresUnitOfWork } from "@schedule/database";
 
 import { OutboxDispatcher } from "./dispatcher.js";
-import { runWorkerRuntime } from "./runtime.js";
+import {
+  createNotificationMaterializationDependencies,
+  runNotificationMaterializationWorker,
+} from "./notification-materializer.js";
+import { runWorkerRuntime, runWorkerServices, type WorkerService } from "./runtime.js";
 import {
   createDatabaseWebhookDeliveryHandler,
   WEBHOOK_DELIVERY_TOPIC,
@@ -34,10 +38,21 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => controller.abort(signal));
 }
 
-await runWorkerRuntime({
-  run: () =>
-    runOutboxWorker(config, database, dispatcher, controller.signal, {
+const services: WorkerService[] = [
+  (signal) =>
+    runOutboxWorker(config, database, dispatcher, signal, {
       excludedTopics: config.WEBHOOK_DELIVERY_MODE === "disabled" ? [WEBHOOK_DELIVERY_TOPIC] : [],
     }),
+];
+
+if (config.NOTIFICATION_MATERIALIZATION_MODE === "enabled") {
+  const dependencies = createNotificationMaterializationDependencies(
+    new PostgresUnitOfWork(database),
+  );
+  services.push((signal) => runNotificationMaterializationWorker(config, dependencies, signal));
+}
+
+await runWorkerRuntime({
+  run: () => runWorkerServices(services, controller),
   close: () => database.close(),
 });

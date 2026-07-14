@@ -4,6 +4,38 @@ export interface WorkerRuntimeOptions {
   readonly terminate?: (exitCode: number) => void;
 }
 
+export type WorkerService = (signal: AbortSignal) => Promise<void>;
+
+const noServiceFailure = Symbol("no worker service failure");
+
+/**
+ * Runs long-lived worker services as one lifecycle. A failure aborts every sibling, but the
+ * database-owning runtime does not regain control until all in-flight services have settled.
+ */
+export async function runWorkerServices(
+  services: readonly WorkerService[],
+  controller: AbortController,
+): Promise<void> {
+  if (services.length === 0) throw new RangeError("At least one worker service is required.");
+
+  let firstFailure: unknown | typeof noServiceFailure = noServiceFailure;
+  await Promise.all(
+    services.map(async (service) => {
+      try {
+        await service(controller.signal);
+        if (!controller.signal.aborted) {
+          throw new Error("worker service stopped unexpectedly");
+        }
+      } catch (error) {
+        if (firstFailure === noServiceFailure) firstFailure = error;
+        if (!controller.signal.aborted) controller.abort("worker service failed");
+      }
+    }),
+  );
+
+  if (firstFailure !== noServiceFailure) throw firstFailure;
+}
+
 function logFatal(failureClass: "worker_runtime_error" | "worker_shutdown_error"): void {
   console.error(
     JSON.stringify({

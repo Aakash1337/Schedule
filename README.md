@@ -68,10 +68,11 @@ Schedule now also owns a deterministic reminder-policy core: versioned workspace
 explicit one-off reminders, DST/quiet-hours/catch-up evaluation, and concurrency-safe insert-only
 pending-intent materialization with transactional invalidation when policy or targets change. The
 provider-neutral integration gateway can lease one due intent with a fenced claim and record a
-bounded delivery outcome. The web interface configures that policy, explicitly materializes
-intents, and separates planned reminder history from a product-safe execution history. Schedule
-still performs no provider transport and never stores provider, recipient, account, conversation,
-or raw receipt data.
+bounded delivery outcome. The web interface configures that policy, offers a manual materialization
+control, and separates planned reminder history from a product-safe execution history. An opt-in
+local worker can also materialize intents periodically with bounded catch-up and look-ahead windows.
+Schedule still performs no provider transport and never stores provider, recipient, account,
+conversation, or raw receipt data.
 
 `WorkItem` represents intent and workflow state. `ScheduleBlock` represents reserved time and may
 optionally reference a work item. Their lifecycles remain independent.
@@ -110,9 +111,11 @@ Outbound delivery remains disabled unless `WEBHOOK_DELIVERY_MODE=enabled` and a 
 master-key keyring is configured. Provision endpoints and verify a receiver with the CLI before
 enabling the worker. Endpoints have no automatic subscriptions by default; an operator may opt one
 into `schedule.changed.v1`, which tells a receiver to refresh Today without carrying plan or task
-content. Reminder policy decisions and durable intents are implemented; periodic execution,
-provider/account binding, and the Hermes/WhatsApp transport are not part of this release. The
-least-privilege claim/receipt gateway is implemented for an external adapter.
+content. Reminder policy decisions and durable intents are implemented; delivery polling,
+provider/account binding, and the Hermes/WhatsApp transport are not part of this release. Automatic
+local intent materialization is available but disabled by default; set
+`NOTIFICATION_MATERIALIZATION_MODE=enabled` only after reminder policy is configured. This does not
+enable delivery. The least-privilege claim/receipt gateway is implemented for an external adapter.
 
 ## Verification
 

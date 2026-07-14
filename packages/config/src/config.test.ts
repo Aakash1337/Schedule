@@ -174,6 +174,9 @@ describe("runtime configuration", () => {
 
   it("keeps outbound webhook delivery disabled with an immutable empty keyring by default", () => {
     const config = loadWorkerConfig({});
+    expect(config.NOTIFICATION_MATERIALIZATION_MODE).toBe("disabled");
+    expect(config.NOTIFICATION_MATERIALIZATION_INTERVAL_MS).toBe(60_000);
+    expect(config.NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS).toBe(300_000);
     expect(config.WEBHOOK_DELIVERY_MODE).toBe("disabled");
     expect(config.WEBHOOK_MASTER_KEYS).toEqual([]);
     expect(config.WEBHOOK_MASTER_KEYS_BY_ID.size).toBe(0);
@@ -185,6 +188,26 @@ describe("runtime configuration", () => {
     expect(config.WEBHOOK_MAX_DELIVERY_AGE_MS).toBe(604_800_000);
     expect(Object.isFrozen(config.WEBHOOK_MASTER_KEYS)).toBe(true);
     expect(Object.isFrozen(config.WEBHOOK_MASTER_KEYS_BY_ID)).toBe(true);
+  });
+
+  it("coerces bounded automatic notification materialization controls", () => {
+    const config = loadWorkerConfig({
+      NOTIFICATION_MATERIALIZATION_MODE: "enabled",
+      NOTIFICATION_MATERIALIZATION_INTERVAL_MS: "10000",
+      NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS: "1000",
+    });
+
+    expect(config.NOTIFICATION_MATERIALIZATION_MODE).toBe("enabled");
+    expect(config.NOTIFICATION_MATERIALIZATION_INTERVAL_MS).toBe(10_000);
+    expect(config.NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS).toBe(1_000);
+    expect(() => loadWorkerConfig({ NOTIFICATION_MATERIALIZATION_INTERVAL_MS: "9999" })).toThrow();
+    expect(() =>
+      loadWorkerConfig({ NOTIFICATION_MATERIALIZATION_INTERVAL_MS: "3600001" }),
+    ).toThrow();
+    expect(() => loadWorkerConfig({ NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS: "999" })).toThrow();
+    expect(() =>
+      loadWorkerConfig({ NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS: "3600001" }),
+    ).toThrow();
   });
 
   it("parses a canonical keyring and requires an active configured key before enabling delivery", () => {

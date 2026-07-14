@@ -13,6 +13,7 @@
   "dependencies": {
     "@schedule/application": "workspace:*",
     "@schedule/config": "workspace:*",
-    "@schedule/database": "workspace:*"
+    "@schedule/database": "workspace:*",
+    "@schedule/domain": "workspace:*"
   }
 }

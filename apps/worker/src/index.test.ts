@@ -8,6 +8,9 @@ const mocks = vi.hoisted(() => ({
     OUTBOX_POLL_INTERVAL_MS: 1_000,
     OUTBOX_BATCH_SIZE: 25,
     OUTBOX_MAX_ATTEMPTS: 3,
+    NOTIFICATION_MATERIALIZATION_MODE: "disabled" as "disabled" | "enabled",
+    NOTIFICATION_MATERIALIZATION_INTERVAL_MS: 60_000,
+    NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS: 300_000,
     WEBHOOK_DELIVERY_MODE: "disabled",
     WEBHOOK_MASTER_KEYS_BY_ID: new Map(),
     WEBHOOK_CONNECT_TIMEOUT_MS: 1_000,
@@ -17,18 +20,51 @@ const mocks = vi.hoisted(() => ({
     WEBHOOK_MAX_DELIVERY_AGE_MS: 60_000,
   },
   database: { close: vi.fn(async () => undefined) },
+  unitOfWork: {},
+  PostgresUnitOfWork: vi.fn(function () {
+    return mocks.unitOfWork;
+  }),
+  notificationDependencies: {},
+  createNotificationMaterializationDependencies: vi.fn(() => mocks.notificationDependencies),
+  runNotificationMaterializationWorker: vi.fn(async () => undefined),
   runOutboxWorker: vi.fn(async () => undefined),
+  runWorkerServices: vi.fn(
+    async (services: readonly ((signal: AbortSignal) => Promise<void>)[]) => {
+      const signal = new AbortController().signal;
+      await Promise.all(services.map(async (service) => await service(signal)));
+    },
+  ),
+  runWorkerRuntime: vi.fn(
+    async (options: { readonly run: () => Promise<void>; readonly close: () => Promise<void> }) => {
+      await options.run();
+      await options.close();
+    },
+  ),
 }));
 
 vi.mock("@schedule/config", () => ({ loadWorkerConfig: () => mocks.config }));
-vi.mock("@schedule/database", () => ({ createDatabase: () => mocks.database }));
+vi.mock("@schedule/database", () => ({
+  createDatabase: () => mocks.database,
+  PostgresUnitOfWork: mocks.PostgresUnitOfWork,
+}));
+vi.mock("./notification-materializer.js", () => ({
+  createNotificationMaterializationDependencies:
+    mocks.createNotificationMaterializationDependencies,
+  runNotificationMaterializationWorker: mocks.runNotificationMaterializationWorker,
+}));
+vi.mock("./runtime.js", () => ({
+  runWorkerRuntime: mocks.runWorkerRuntime,
+  runWorkerServices: mocks.runWorkerServices,
+}));
 vi.mock("./worker.js", () => ({ runOutboxWorker: mocks.runOutboxWorker }));
 
 describe("worker entrypoint", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.clearAllMocks();
     vi.resetModules();
     mocks.config.WEBHOOK_DELIVERY_MODE = "disabled";
+    mocks.config.NOTIFICATION_MATERIALIZATION_MODE = "disabled";
   });
 
   it("wires signals, runs the worker, and closes its database", async () => {
@@ -47,6 +83,26 @@ describe("worker entrypoint", () => {
     expect(mocks.runOutboxWorker.mock.calls[0]?.[4]).toEqual({
       excludedTopics: ["webhook.delivery.v1"],
     });
+    expect(mocks.database.close).toHaveBeenCalledTimes(1);
+    expect(mocks.createNotificationMaterializationDependencies).not.toHaveBeenCalled();
+    expect(mocks.runNotificationMaterializationWorker).not.toHaveBeenCalled();
+  });
+
+  it("starts automatic materialization only when explicitly enabled", async () => {
+    mocks.config.NOTIFICATION_MATERIALIZATION_MODE = "enabled";
+
+    await import("./index.js");
+
+    expect(mocks.PostgresUnitOfWork).toHaveBeenCalledWith(mocks.database);
+    expect(mocks.createNotificationMaterializationDependencies).toHaveBeenCalledWith(
+      mocks.unitOfWork,
+    );
+    expect(mocks.runNotificationMaterializationWorker).toHaveBeenCalledWith(
+      mocks.config,
+      mocks.notificationDependencies,
+      expect.any(AbortSignal),
+    );
+    expect(mocks.runOutboxWorker).toHaveBeenCalledTimes(1);
     expect(mocks.database.close).toHaveBeenCalledTimes(1);
   });
 

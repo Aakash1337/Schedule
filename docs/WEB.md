@@ -53,8 +53,9 @@ The application uses a persistent desktop rail and a compact mobile navigation b
    the displayed wall time and persisted instant cannot disagree.
 5. **Reminders** manages the versioned notification profile, reusable rules, and explicit one-offs.
    Separate **Planned** and **Execution** tabs distinguish immutable policy decisions from the
-   product-safe delivery lifecycle. Intent materialization is always an explicit button action, and
-   the interface never claims that a currently claimed command proves an external send.
+   product-safe delivery lifecycle. The interface exposes a manual materialization action and may
+   display intents created by the separately configured local worker; it never claims that a
+   currently claimed command proves an external send.
 
 Workspace creation is the first-run path. Returning sessions restore the last selected workspace and
 open Today.
@@ -142,13 +143,15 @@ requires a new decision instead of overwriting concurrent work. Rule kind is imm
 cancelled one-off remains terminal.
 
 The **Planned** tab reads insert-only notification intents and exposes **Refresh planned reminders**
-as the only materialization trigger. The **Execution** tab reads a separate product route whose DTO
+as a manual materialization trigger. An operator may separately enable the local worker, so
+background-created intents can appear on the next refresh. The **Execution** tab reads a separate product route whose DTO
 omits claim fencing, leases, credentials, destinations, providers, channels, recipients, dedupe
 internals, and provider payloads. Both histories use bounded pages and an explicit load-more control.
 The three tabs support Arrow Left/Right, Home, and End and use roving keyboard focus.
 
-Every reminder surface repeats the operational boundary: no periodic materializer, adapter polling,
-or WhatsApp/email/push/phone provider is connected. `processing` is described as a Schedule claim,
+Every reminder surface repeats the operational boundary: optional background intent planning is
+operator-controlled, while adapter polling and WhatsApp/email/push/phone providers remain
+unconnected. `processing` is described as a Schedule claim,
 not an external-send acknowledgement. At 320px, the navigation, tabs, forms, and status cards remain
 inside the viewport and interactive targets retain the 44px minimum used by the rest of the product.
 

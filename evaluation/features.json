@@ -14,6 +14,7 @@
     "plan-state-migrations": { "command": "pnpm verify:database", "ci": true },
     "weekday-migrations": { "command": "pnpm verify:database", "ci": true },
     "notification-core": { "command": "pnpm verify:database", "ci": true },
+    "notification-materializer": { "command": "pnpm verify:database", "ci": true },
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
     "notification-migrations": { "command": "pnpm verify:database", "ci": true },
     "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
@@ -1732,7 +1733,7 @@
         "anchor": "# Deterministic reminder policy core"
       },
       "limitations": [
-        "Materialization is an explicit local API command; no periodic worker invokes it yet.",
+        "Automatic local materialization is opt-in and disabled by default; an in-flight PostgreSQL materialization transaction is awaited rather than cancelled during shutdown.",
         "Provider transport and human/account binding remain external; the web interface is a local policy and history surface only."
       ],
       "evidence": [
@@ -1758,6 +1759,27 @@
             "fails closed for malformed plan snapshots and invalid or unconfigured windows",
             "supports the maximum window together with the maximum catch-up horizon",
             "rejects overlarge persisted rule, window, and aggregate candidate sets"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/notification-materializer.test.ts",
+          "command": "unit",
+          "anchors": [
+            "does no work while disabled",
+            "uses one bounded look-ahead window and processes at most 20 workspaces sequentially",
+            "fails a tick closed when persisted workspaces violate the local installation limit",
+            "isolates workspace failures, treats missing configuration as a skip, and emits no raw error",
+            "never overlaps ticks and exits promptly from its interval sleep"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/runtime.test.ts",
+          "command": "unit",
+          "anchors": [
+            "aborts sibling services and waits for their cleanup before surfacing a failure",
+            "lets every service stop cleanly after an external shutdown signal"
           ]
         },
         {
@@ -1799,6 +1821,14 @@
           "file": "scripts/verify-notification-core.ts",
           "command": "notification-core",
           "anchors": ["Notification policy core verification passed"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-notification-materializer.ts",
+          "command": "notification-materializer",
+          "anchors": [
+            "Notification materializer verification passed bounded automatic discovery, catch-up boundaries, concurrent exact-once replay, unconfigured skips, restart replay, and no delivery/outbox side effects"
+          ]
         },
         {
           "level": "integration",
@@ -1901,7 +1931,7 @@
         "anchor": "## Reminder interaction"
       },
       "limitations": [
-        "The interface requires explicit materialization and does not connect periodic execution, provider transport, or human/account destinations.",
+        "The interface exposes manual materialization and cannot observe or configure the optional local worker; it does not connect provider transport or human/account destinations.",
         "A claimed execution is presented as Schedule state, not proof of an external send."
       ],
       "evidence": [
