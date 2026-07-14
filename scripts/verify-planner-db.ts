@@ -901,31 +901,30 @@ try {
     where workspace_id = ${fitWorkspace}
     order by ingested_sequence, id
   `;
+  assert.ok(
+    fitFeedbackRows.every((row) => row.insight_key === initialFitInsight.insightKey),
+    "every Plan Fit feedback event must retain the exact reviewed evidence key",
+  );
   assert.deepEqual(
-    fitFeedbackRows.map((row) => ({ ...row, insight_key: "initial-key" })),
+    fitFeedbackRows.map(({ kind, idempotency_key }) => ({ kind, idempotency_key })),
     [
       {
-        insight_key: "initial-key",
         kind: "dismissed",
         idempotency_key: "daily-plan-fit-dismiss",
       },
       {
-        insight_key: "initial-key",
         kind: "reset",
         idempotency_key: "daily-plan-fit-reset",
       },
       {
-        insight_key: "initial-key",
         kind: "dismissed",
         idempotency_key: "daily-plan-fit-mixed-case-dismiss",
       },
       {
-        insight_key: "initial-key",
         kind: "reset",
         idempotency_key: "daily-plan-fit-mixed-case-reset",
       },
       {
-        insight_key: "initial-key",
         kind: "dismissed",
         idempotency_key: "daily-plan-fit-dismiss-before-new-evidence",
       },

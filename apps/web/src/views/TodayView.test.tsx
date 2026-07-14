@@ -430,6 +430,27 @@ describe("Today commands", () => {
     expect(await screen.findByRole("heading", { name: "Plan Fit is learning" })).toBeVisible();
   });
 
+  it("recovers from an initial Plan Fit load failure only after explicit retry", async () => {
+    const user = userEvent.setup();
+    apiMocks.getCurrentPlan.mockRejectedValue(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
+    apiMocks.getDailyPlanFitInsight
+      .mockRejectedValueOnce(new Error("initial load failed"))
+      .mockResolvedValueOnce(planFitInsight());
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByRole("heading", { name: "Plan Fit is unavailable" })).toBeVisible();
+    expect(screen.getByRole("spinbutton", { name: /^Target minutes/ })).toHaveValue(180);
+    expect(screen.getByRole("spinbutton", { name: /^Target tasks/ })).toHaveValue(4);
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByRole("heading", { name: "Plan Fit is learning" })).toBeVisible();
+    expect(apiMocks.getDailyPlanFitInsight).toHaveBeenCalledTimes(2);
+  });
+
   it("aborts and ignores Plan Fit results from the previous workspace", async () => {
     const firstRequest = deferred<DailyPlanFitInsight>();
     const secondRequest = deferred<DailyPlanFitInsight>();

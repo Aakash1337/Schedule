@@ -14,6 +14,7 @@ export const dailyPlanFitInsightMinimumSamples = 3;
 export const dailyPlanFitInsightMaximumSamples = 28;
 export const dailyPlanFitInsightMaximumCandidatePlans = 90;
 export const dailyPlanFitInsightMaximumItemsPerPlan = 512;
+export const dailyPlanFitInsightMaximumScheduledMinutes = 43_200;
 
 export const dailyPlanFitInsightStatuses = [
   "insufficient_history",
@@ -101,13 +102,13 @@ function canonicalResolvedSample(plan: DailyPlanFitEvidencePlan): CanonicalResol
     plan.targetMinutes,
     "daily_plan_fit_insight.target_minutes_invalid",
     "Plan Fit evidence requires a valid positive target-minute snapshot.",
-    43_200,
+    dailyPlanFitInsightMaximumScheduledMinutes,
   );
   positiveWhole(
     plan.targetTaskCount,
     "daily_plan_fit_insight.target_task_count_invalid",
     "Plan Fit evidence requires a valid positive target-task snapshot.",
-    512,
+    dailyPlanFitInsightMaximumItemsPerPlan,
   );
   invariant(
     plan.items.length <= dailyPlanFitInsightMaximumItemsPerPlan,
@@ -128,7 +129,7 @@ function canonicalResolvedSample(plan: DailyPlanFitEvidencePlan): CanonicalResol
       item.scheduledMinutes,
       "daily_plan_fit_insight.scheduled_minutes_invalid",
       "Plan Fit item evidence requires positive scheduled minutes.",
-      43_200,
+      dailyPlanFitInsightMaximumScheduledMinutes,
     );
     invariant(
       planItemActivityStates.some((state) => state === item.activityState),
