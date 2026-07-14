@@ -115,6 +115,15 @@ try {
     "23505",
     "external_identities_exact_binding_uq",
   );
+  await expectConstraint(
+    () =>
+      verification!.sql`
+        insert into external_identities (id, user_id, issuer, subject)
+        values (${randomUUID()}, ${user}, ${"\u{1f680}".repeat(500)}, 'x')
+      `,
+    "23514",
+    "external_identities_key_bytes_bounded",
+  );
   await verification.sql`
     insert into workspace_memberships (user_id, workspace_id) values (${user}, ${workspace})
   `;

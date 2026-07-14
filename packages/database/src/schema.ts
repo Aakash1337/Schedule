@@ -241,6 +241,10 @@ export const externalIdentities = pgTable(
     index("external_identities_user_idx").on(table.userId, table.id),
     check("external_identities_issuer_nonempty", sql`char_length(${table.issuer}) > 0`),
     check("external_identities_subject_nonempty", sql`char_length(${table.subject}) > 0`),
+    check(
+      "external_identities_key_bytes_bounded",
+      sql`octet_length(${table.issuer}) + octet_length(${table.subject}) <= 2000`,
+    ),
   ],
 );
 

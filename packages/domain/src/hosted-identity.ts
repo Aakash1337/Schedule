@@ -71,6 +71,8 @@ export interface WorkspaceMembership {
 const SESSION_DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 const MINIMUM_IDLE_TIMEOUT_SECONDS = 60;
 const MAXIMUM_IDLE_TIMEOUT_SECONDS = 30 * 24 * 60 * 60;
+export const MAX_EXTERNAL_IDENTITY_KEY_BYTES = 2_000;
+const utf8Encoder = new TextEncoder();
 
 function validInstant(value: Date, code: string, message: string): Date {
   invariant(Number.isFinite(value.getTime()), code, message);
@@ -147,6 +149,12 @@ export function createExternalIdentity(input: {
     input.subject.length <= 512,
     "external_identity.subject_too_long",
     "An external identity subject cannot exceed 512 characters.",
+  );
+  invariant(
+    utf8Encoder.encode(input.issuer).byteLength + utf8Encoder.encode(input.subject).byteLength <=
+      MAX_EXTERNAL_IDENTITY_KEY_BYTES,
+    "external_identity.key_too_large",
+    `An external identity issuer and subject cannot exceed ${MAX_EXTERNAL_IDENTITY_KEY_BYTES} UTF-8 bytes combined.`,
   );
   return {
     id: input.id ?? externalIdentityId(),

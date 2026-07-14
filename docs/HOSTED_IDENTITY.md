@@ -17,7 +17,9 @@ Four tables are introduced by migration `0031`:
   timestamps. It does not store a name, email, avatar, provider claim, password, or role.
 - `external_identities` binds a user to the exact provider `issuer` and `subject`. The pair uses a
   `C`-collated unique index; application lookup and provisioning preserve case, whitespace, and
-  Unicode bytes rather than merging through email or display claims.
+  Unicode bytes rather than merging through email or display claims. The exact pair is capped at
+  2,000 UTF-8 bytes in both the domain and database so every accepted value remains safely
+  indexable by PostgreSQL's B-tree implementation.
 - `browser_sessions` stores a public UUID selector and a peppered HMAC-SHA-256 digest. The 256-bit
   bearer secret exists only in the issued token and is never persisted. Idle and absolute expiry,
   revocation reason, and optimistic version are explicit.

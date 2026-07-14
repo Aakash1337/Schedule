@@ -35,7 +35,8 @@ CREATE TABLE "external_identities" (
 	"subject" varchar(512) NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "external_identities_issuer_nonempty" CHECK (char_length("external_identities"."issuer") > 0),
-	CONSTRAINT "external_identities_subject_nonempty" CHECK (char_length("external_identities"."subject") > 0)
+	CONSTRAINT "external_identities_subject_nonempty" CHECK (char_length("external_identities"."subject") > 0),
+	CONSTRAINT "external_identities_key_bytes_bounded" CHECK (octet_length("external_identities"."issuer") + octet_length("external_identities"."subject") <= 2000)
 );
 --> statement-breakpoint
 CREATE TABLE "users" (

@@ -90,6 +90,26 @@ describe("hosted identity domain", () => {
     ).toThrowError(expect.objectContaining({ code }));
   });
 
+  it("caps the combined UTF-8 identity key below PostgreSQL's B-tree entry limit", () => {
+    expect(() =>
+      createExternalIdentity({
+        userId: userId("oversized-key-user"),
+        issuer: "\u{1f680}".repeat(500),
+        subject: "x",
+        now: issuedAt,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "external_identity.key_too_large" }));
+
+    expect(
+      createExternalIdentity({
+        userId: userId("bounded-key-user"),
+        issuer: "i".repeat(1_488),
+        subject: "s".repeat(512),
+        now: issuedAt,
+      }),
+    ).toMatchObject({ subject: "s".repeat(512) });
+  });
+
   it("rejects malformed digests and invalid expiry order", () => {
     expect(() =>
       createBrowserSession({

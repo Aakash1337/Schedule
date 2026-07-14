@@ -1661,6 +1661,10 @@
         "external_identities_subject_nonempty": {
           "name": "external_identities_subject_nonempty",
           "value": "char_length(\"external_identities\".\"subject\") > 0"
+        },
+        "external_identities_key_bytes_bounded": {
+          "name": "external_identities_key_bytes_bounded",
+          "value": "octet_length(\"external_identities\".\"issuer\") + octet_length(\"external_identities\".\"subject\") <= 2000"
         }
       },
       "isRLSEnabled": false

@@ -111,6 +111,14 @@ try {
   });
   assert.notEqual(distinctCase.user.id, primaryUser.id);
   assert.notEqual(distinctIssuer.user.id, primaryUser.id);
+  await assert.rejects(
+    findOrProvision.execute({ issuer: "\u{1f680}".repeat(500), subject: "x" }),
+    (error: unknown) =>
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "external_identity.key_too_large",
+  );
 
   const identityCounts = await connection.sql<
     { users: number; identities: number; orphans: number }[]
