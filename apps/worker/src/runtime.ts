@@ -8,6 +8,29 @@ export type WorkerService = (signal: AbortSignal) => Promise<void>;
 
 const noServiceFailure = Symbol("no worker service failure");
 
+function logAuxiliaryFailure(): void {
+  console.error(
+    JSON.stringify({
+      level: "error",
+      failureClass: "worker_auxiliary_service_error",
+      message: "optional worker diagnostics stopped; primary processing continues",
+    }),
+  );
+}
+
+/** Runs optional diagnostics without granting them authority to stop primary processing. */
+export async function runNonCriticalWorkerService(
+  service: WorkerService,
+  signal: AbortSignal,
+): Promise<void> {
+  try {
+    await service(signal);
+    if (!signal.aborted) logAuxiliaryFailure();
+  } catch {
+    logAuxiliaryFailure();
+  }
+}
+
 /**
  * Runs long-lived worker services as one lifecycle. A failure aborts every sibling, but the
  * database-owning runtime does not regain control until all in-flight services have settled.

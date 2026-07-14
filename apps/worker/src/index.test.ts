@@ -22,6 +22,10 @@ const mocks = vi.hoisted(() => ({
     WEBHOOK_MAX_DELIVERY_AGE_MS: 60_000,
   },
   database: { close: vi.fn(async () => undefined) },
+  observabilityDatabase: { close: vi.fn(async () => undefined) },
+  createDatabase: vi.fn((_databaseUrl: string, maxConnections: number) =>
+    maxConnections === 1 ? mocks.observabilityDatabase : mocks.database,
+  ),
   unitOfWork: {},
   PostgresUnitOfWork: vi.fn(function () {
     return mocks.unitOfWork;
@@ -34,6 +38,15 @@ const mocks = vi.hoisted(() => ({
     return mocks.telemetry;
   }),
   runWorkerObservabilityServer: vi.fn(async () => undefined),
+  runNonCriticalWorkerService: vi.fn(
+    async (service: (signal: AbortSignal) => Promise<void>, signal: AbortSignal) => {
+      try {
+        await service(signal);
+      } catch {
+        // Mirrors the production helper's non-fatal boundary.
+      }
+    },
+  ),
   runOutboxWorker: vi.fn(async () => undefined),
   runWorkerServices: vi.fn(
     async (services: readonly ((signal: AbortSignal) => Promise<void>)[]) => {
@@ -51,7 +64,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@schedule/config", () => ({ loadWorkerConfig: () => mocks.config }));
 vi.mock("@schedule/database", () => ({
-  createDatabase: () => mocks.database,
+  createDatabase: mocks.createDatabase,
   PostgresUnitOfWork: mocks.PostgresUnitOfWork,
 }));
 vi.mock("./notification-materializer.js", () => ({
@@ -64,6 +77,7 @@ vi.mock("./observability.js", () => ({
   runWorkerObservabilityServer: mocks.runWorkerObservabilityServer,
 }));
 vi.mock("./runtime.js", () => ({
+  runNonCriticalWorkerService: mocks.runNonCriticalWorkerService,
   runWorkerRuntime: mocks.runWorkerRuntime,
   runWorkerServices: mocks.runWorkerServices,
 }));
@@ -144,9 +158,34 @@ describe("worker entrypoint", () => {
 
     await import("./index.js");
 
+    expect(mocks.createDatabase).toHaveBeenCalledWith("postgres://unused", 1, {
+      readOnly: true,
+      statementTimeoutMs: 5_000,
+      applicationName: "schedule-worker-observability",
+    });
     expect(mocks.runWorkerObservabilityServer).toHaveBeenCalledWith(
-      { port: 10_001, database: mocks.database, telemetry: mocks.telemetry },
+      {
+        port: 10_001,
+        database: mocks.observabilityDatabase,
+        telemetry: mocks.telemetry,
+        databaseOperationTimeoutMs: 5_000,
+      },
       expect.any(AbortSignal),
     );
+    expect(mocks.observabilityDatabase.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps primary processing alive when optional observability fails", async () => {
+    mocks.config.WORKER_OBSERVABILITY_MODE = "loopback";
+    mocks.runWorkerObservabilityServer.mockRejectedValueOnce(
+      new Error("private observability bind failure"),
+    );
+
+    await import("./index.js");
+
+    expect(mocks.runOutboxWorker).toHaveBeenCalledTimes(1);
+    expect(mocks.runNonCriticalWorkerService).toHaveBeenCalledTimes(1);
+    expect(mocks.database.close).toHaveBeenCalledTimes(1);
+    expect(mocks.observabilityDatabase.close).toHaveBeenCalledTimes(1);
   });
 });

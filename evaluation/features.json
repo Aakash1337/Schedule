@@ -2016,7 +2016,7 @@
           "file": "scripts/verify-worker-observability.ts",
           "command": "worker-observability",
           "anchors": [
-            "Worker observability verification passed loopback binding, health semantics, database queue gauges, retention-aware attempt gauges, fixed-cardinality metrics, redaction, database-failure signaling, and shutdown"
+            "Worker observability verification passed loopback binding, dedicated read-only database isolation, bounded health semantics, database queue gauges, retention-aware attempt gauges, fixed-cardinality metrics, redaction, database-failure signaling, and shutdown"
           ]
         }
       ]

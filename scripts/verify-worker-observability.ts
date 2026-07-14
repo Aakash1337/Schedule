@@ -21,6 +21,10 @@ const privateEventId = randomUUID();
 const privateTopic = "private.person.reminder";
 const privatePayload = "person@example.com/private-title";
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
 function databaseUrlFor(databaseName: string): string {
   const url = new URL(sourceDatabaseUrl);
   url.pathname = `/${databaseName}`;
@@ -72,7 +76,8 @@ async function applyCurrentMigrations(databaseUrl: string): Promise<void> {
 const adminConnection = createDatabase(databaseUrlFor("postgres"), 1);
 const disposableDatabaseUrl = databaseUrlFor(verificationDatabase);
 let databaseCreated = false;
-let workerConnection: DatabaseConnection | null = null;
+let writerConnection: DatabaseConnection | null = null;
+let observabilityConnection: DatabaseConnection | null = null;
 let controller: AbortController | null = null;
 let serverStopped: Promise<void> | null = null;
 
@@ -80,9 +85,14 @@ try {
   await adminConnection.sql.unsafe(`create database ${quotedVerificationDatabase()}`);
   databaseCreated = true;
   await applyCurrentMigrations(disposableDatabaseUrl);
-  workerConnection = createDatabase(disposableDatabaseUrl, 2);
+  writerConnection = createDatabase(disposableDatabaseUrl, 2);
+  observabilityConnection = createDatabase(disposableDatabaseUrl, 1, {
+    readOnly: true,
+    statementTimeoutMs: 5_000,
+    applicationName: "schedule-worker-observability-verifier",
+  });
 
-  await workerConnection.sql`
+  await writerConnection.sql`
     insert into outbox_events (id, topic, payload, status, available_at, created_at)
     values
       (
@@ -114,7 +124,7 @@ try {
   const retentionWorkspaceId = randomUUID();
   const retentionCredentialId = randomUUID();
   const retentionDeliveryId = randomUUID();
-  await workerConnection.sql.begin(async (transaction) => {
+  await writerConnection.sql.begin(async (transaction) => {
     await transaction`
       insert into workspaces (id, name)
       values (${retentionWorkspaceId}, 'Observability retention semantics')
@@ -170,13 +180,19 @@ try {
       )
     `;
   });
-  const retainedAttempts = await collectOperationalDatabaseSnapshot(workerConnection);
+  const retainedAttempts = await collectOperationalDatabaseSnapshot(observabilityConnection);
   assert.equal(retainedAttempts.notificationDeliveryAttempts, 1);
   assert.equal(retainedAttempts.notificationDeliveryDelivered, 1);
-  await workerConnection.sql`delete from workspaces where id = ${retentionWorkspaceId}`;
-  const deletedAttempts = await collectOperationalDatabaseSnapshot(workerConnection);
+  await writerConnection.sql`delete from workspaces where id = ${retentionWorkspaceId}`;
+  const deletedAttempts = await collectOperationalDatabaseSnapshot(observabilityConnection);
   assert.equal(deletedAttempts.notificationDeliveryAttempts, 0);
   assert.equal(deletedAttempts.notificationDeliveryDelivered, 0);
+  await assert.rejects(
+    observabilityConnection.sql`
+      insert into workspaces (id, name)
+      values (${randomUUID()}, 'Read-only pool must reject this write')
+    `,
+  );
 
   const telemetry = new WorkerTelemetry(() => new Date("2026-07-14T20:00:00.000Z"));
   telemetry.recordOutboxClaimed();
@@ -202,7 +218,7 @@ try {
   serverStopped = runWorkerObservabilityServer(
     {
       port: 0,
-      database: workerConnection,
+      database: observabilityConnection,
       telemetry,
       onListening: (bound) => resolveAddress?.(bound),
     },
@@ -233,13 +249,13 @@ try {
   assert.match(metrics, /schedule_notification_materialization_created_intents_total 2\n/);
   assert.match(metrics, /# TYPE schedule_notification_delivery_attempt_records gauge\n/);
   assert.match(metrics, /schedule_notification_delivery_attempt_records 0\n/);
-  assert.doesNotMatch(metrics, new RegExp(privateEventId, "u"));
-  assert.doesNotMatch(metrics, new RegExp(privateTopic, "u"));
-  assert.doesNotMatch(metrics, new RegExp(privatePayload.replace(".", "\\."), "u"));
+  assert.doesNotMatch(metrics, new RegExp(escapeRegExp(privateEventId), "u"));
+  assert.doesNotMatch(metrics, new RegExp(escapeRegExp(privateTopic), "u"));
+  assert.doesNotMatch(metrics, new RegExp(escapeRegExp(privatePayload), "u"));
   assert.doesNotMatch(metrics, /\{[^\n]*\}/u, "metrics must not contain dynamic labels");
 
-  await workerConnection.close();
-  workerConnection = null;
+  await observabilityConnection.close();
+  observabilityConnection = null;
   const unavailableReady = await fetch(`${baseUrl}/health/ready`);
   assert.equal(unavailableReady.status, 503);
   assert.deepEqual(await unavailableReady.json(), { status: "not_ready" });
@@ -255,12 +271,14 @@ try {
   serverStopped = null;
 
   process.stdout.write(
-    `Worker observability verification passed loopback binding, health semantics, database queue gauges, retention-aware attempt gauges, fixed-cardinality metrics, redaction, database-failure signaling, and shutdown in ${verificationDatabase}\n`,
+    `Worker observability verification passed loopback binding, dedicated read-only database isolation, bounded health semantics, database queue gauges, retention-aware attempt gauges, fixed-cardinality metrics, redaction, database-failure signaling, and shutdown in ${verificationDatabase}\n`,
   );
 } finally {
   controller?.abort("verification cleanup");
   if (serverStopped !== null) await serverStopped.catch(() => undefined);
-  if (workerConnection !== null) await workerConnection.close().catch(() => undefined);
+  if (observabilityConnection !== null)
+    await observabilityConnection.close().catch(() => undefined);
+  if (writerConnection !== null) await writerConnection.close().catch(() => undefined);
   if (databaseCreated) {
     await adminConnection.sql.unsafe(
       `drop database if exists ${quotedVerificationDatabase()} with (force)`,

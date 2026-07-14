@@ -1,3 +1,4 @@
+import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -42,20 +43,36 @@ async function startServer(
 ): Promise<{
   readonly baseUrl: string;
   readonly controller: AbortController;
+  readonly server: Server;
   readonly stopped: Promise<void>;
 }> {
   const controller = new AbortController();
   let resolveAddress: ((address: AddressInfo) => void) | undefined;
+  let boundServer: Server | undefined;
   const address = new Promise<AddressInfo>((resolve) => {
     resolveAddress = resolve;
   });
   const stopped = runWorkerObservabilityServer(
-    { port: 0, database, telemetry, onListening: (bound) => resolveAddress?.(bound) },
+    {
+      port: 0,
+      database,
+      telemetry,
+      onListening: (bound, server) => {
+        boundServer = server;
+        resolveAddress?.(bound);
+      },
+    },
     controller.signal,
   );
   const bound = await address;
   expect(bound.address).toBe("127.0.0.1");
-  return { baseUrl: `http://127.0.0.1:${bound.port}`, controller, stopped };
+  if (boundServer === undefined) throw new Error("Test server did not expose its listener.");
+  return {
+    baseUrl: `http://127.0.0.1:${bound.port}`,
+    controller,
+    server: boundServer,
+    stopped,
+  };
 }
 
 describe("worker telemetry", () => {
@@ -151,6 +168,14 @@ describe("operational database snapshot", () => {
         databaseWithSql(async () => [{ ...databaseSnapshot, outboxReady: -1 }]),
       ),
     ).rejects.toThrow(/outboxReady/);
+  });
+
+  it("bounds stalled aggregate queries with a fixed deadline", async () => {
+    const sql = vi.fn(() => new Promise<never>(() => undefined));
+
+    await expect(collectOperationalDatabaseSnapshot(databaseWithSql(sql), 10)).rejects.toThrow(
+      "Database operation exceeded its deadline.",
+    );
   });
 });
 
@@ -280,5 +305,63 @@ describe("worker observability HTTP server", () => {
         new AbortController().signal,
       ),
     ).rejects.toThrow(/port/);
+  });
+
+  it("closes the bound socket before surfacing a post-listen server error", async () => {
+    const failure = new Error("simulated listener failure");
+    const running = await startServer(databaseWithSql(async () => [{ ...databaseSnapshot }]));
+    controllers.push(running.controller);
+    servers.push(running.stopped);
+
+    running.server.emit("error", failure);
+    running.controller.abort("concurrent shutdown");
+
+    await expect(running.stopped).rejects.toBe(failure);
+    expect(running.server.listening).toBe(false);
+    expect(running.server.address()).toBeNull();
+  });
+
+  it("keeps error cleanup installed while exposing the newly bound listener", async () => {
+    const controller = new AbortController();
+    const failure = new Error("immediate listener failure");
+    let boundServer: Server | undefined;
+    const stopped = runWorkerObservabilityServer(
+      {
+        port: 0,
+        database: databaseWithSql(async () => [{ ...databaseSnapshot }]),
+        telemetry: new WorkerTelemetry(),
+        onListening: (_address, server) => {
+          boundServer = server;
+          server.emit("error", failure);
+        },
+      },
+      controller.signal,
+    );
+
+    await expect(stopped).rejects.toBe(failure);
+    expect(boundServer?.listening).toBe(false);
+    expect(boundServer?.address()).toBeNull();
+  });
+
+  it("closes the listener when the listening observer throws", async () => {
+    const controller = new AbortController();
+    const failure = new Error("listening observer failure");
+    let boundServer: Server | undefined;
+    const stopped = runWorkerObservabilityServer(
+      {
+        port: 0,
+        database: databaseWithSql(async () => [{ ...databaseSnapshot }]),
+        telemetry: new WorkerTelemetry(),
+        onListening: (_address, server) => {
+          boundServer = server;
+          throw failure;
+        },
+      },
+      controller.signal,
+    );
+
+    await expect(stopped).rejects.toBe(failure);
+    expect(boundServer?.listening).toBe(false);
+    expect(boundServer?.address()).toBeNull();
   });
 });

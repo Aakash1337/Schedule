@@ -1,13 +1,18 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { healthCheckDatabase, type DatabaseConnection } from "@schedule/database";
+import {
+  healthCheckDatabase,
+  withDatabaseOperationDeadline,
+  type DatabaseConnection,
+} from "@schedule/database";
 
 import type { NotificationMaterializationCycleSummary } from "./notification-materializer.js";
 
 const LOOPBACK_HOST = "127.0.0.1";
 const PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
+const DEFAULT_DATABASE_OPERATION_TIMEOUT_MS = 5_000;
 
 type TelemetryClock = () => Date;
 
@@ -218,9 +223,11 @@ function operationalNumber(value: unknown, field: keyof OperationalDatabaseSnaps
 
 export async function collectOperationalDatabaseSnapshot(
   connection: DatabaseConnection,
+  timeoutMs = DEFAULT_DATABASE_OPERATION_TIMEOUT_MS,
 ): Promise<OperationalDatabaseSnapshot> {
-  const rows = await connection.sql<OperationalDatabaseRow[]>`
-    with observation_clock as (
+  const rows = await withDatabaseOperationDeadline(
+    connection.sql<OperationalDatabaseRow[]>`
+      with observation_clock as (
       select clock_timestamp() as observed_at
     ), outbox as (
       select
@@ -268,8 +275,10 @@ export async function collectOperationalDatabaseSnapshot(
         count(*) filter (where outcome = 'lease_expired')::double precision as "notificationDeliveryLeaseExpired"
       from notification_delivery_attempts
     )
-    select * from outbox cross join intents cross join deliveries cross join attempts
-  `;
+      select * from outbox cross join intents cross join deliveries cross join attempts
+    `,
+    timeoutMs,
+  );
   const row = rows[0];
   if (rows.length !== 1 || row === undefined) {
     throw new Error("Operational database metrics returned an unexpected result.");
@@ -613,7 +622,8 @@ export interface RunWorkerObservabilityServerOptions {
   readonly port: number;
   readonly database: DatabaseConnection;
   readonly telemetry: WorkerTelemetry;
-  readonly onListening?: (address: AddressInfo) => void;
+  readonly databaseOperationTimeoutMs?: number;
+  readonly onListening?: (address: AddressInfo, server: Server) => void;
 }
 
 export async function runWorkerObservabilityServer(
@@ -625,49 +635,82 @@ export async function runWorkerObservabilityServer(
   }
   if (signal.aborted) return;
 
+  const databaseOperationTimeoutMs =
+    options.databaseOperationTimeoutMs ?? DEFAULT_DATABASE_OPERATION_TIMEOUT_MS;
+
   const server = createServer(
     createWorkerObservabilityHandler({
       telemetry: options.telemetry,
-      readinessCheck: async () => await healthCheckDatabase(options.database),
+      readinessCheck: async () =>
+        await healthCheckDatabase(options.database, databaseOperationTimeoutMs),
       collectDatabaseSnapshot: async () =>
-        await collectOperationalDatabaseSnapshot(options.database),
+        await collectOperationalDatabaseSnapshot(options.database, databaseOperationTimeoutMs),
     }),
   );
 
   await new Promise<void>((resolve, reject) => {
-    const onError = (error: Error): void => reject(error);
-    server.once("error", onError);
-    server.listen(options.port, LOOPBACK_HOST, () => {
-      server.off("error", onError);
-      const address = server.address();
-      if (address === null || typeof address === "string") {
-        reject(new Error("Worker observability server did not bind to a TCP address."));
-        return;
-      }
-      options.onListening?.(address);
-      resolve();
-    });
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    const finish = (): void => {
-      signal.removeEventListener("abort", close);
+    let closing = false;
+    let settled = false;
+    let firstFailure: Error | undefined;
+    const listenerError = (error: unknown): Error =>
+      error instanceof Error ? error : new Error("Worker observability listener failed.");
+    const finish = (failure?: Error): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
       server.removeListener("error", fail);
-      resolve();
+      if (failure === undefined) resolve();
+      else reject(failure);
     };
     const fail = (error: Error): void => {
-      signal.removeEventListener("abort", close);
-      reject(error);
+      close(error);
     };
-    const close = (): void => {
-      server.close((error) => {
-        if (error !== undefined) fail(error);
-        else finish();
+    const close = (failure?: Error): void => {
+      if (failure !== undefined && firstFailure === undefined) firstFailure = failure;
+      if (closing) return;
+      closing = true;
+      signal.removeEventListener("abort", onAbort);
+      try {
+        server.close((error) => {
+          finish(firstFailure ?? error);
+        });
+      } catch (error) {
+        firstFailure ??= listenerError(error);
+        try {
+          server.closeAllConnections();
+        } catch {
+          // The first fixed or listener failure remains authoritative.
+        }
+        finish(firstFailure);
+        return;
+      }
+      try {
+        server.closeAllConnections();
+      } catch (error) {
+        firstFailure ??= listenerError(error);
+      }
+    };
+    const onAbort = (): void => close();
+    server.on("error", fail);
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      server.listen(options.port, LOOPBACK_HOST, () => {
+        const address = server.address();
+        if (address === null || typeof address === "string") {
+          close(new Error("Worker observability server did not bind to a TCP address."));
+          return;
+        }
+        try {
+          options.onListening?.(address, server);
+        } catch (error) {
+          close(listenerError(error));
+          return;
+        }
+        if (signal.aborted) close();
       });
-      server.closeAllConnections();
-    };
-    server.once("error", fail);
-    signal.addEventListener("abort", close, { once: true });
+    } catch (error) {
+      close(listenerError(error));
+    }
     if (signal.aborted) close();
   });
 }

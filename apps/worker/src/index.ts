@@ -7,7 +7,12 @@ import {
   runNotificationMaterializationWorker,
 } from "./notification-materializer.js";
 import { runWorkerObservabilityServer, WorkerTelemetry } from "./observability.js";
-import { runWorkerRuntime, runWorkerServices, type WorkerService } from "./runtime.js";
+import {
+  runNonCriticalWorkerService,
+  runWorkerRuntime,
+  runWorkerServices,
+  type WorkerService,
+} from "./runtime.js";
 import {
   createDatabaseWebhookDeliveryHandler,
   WEBHOOK_DELIVERY_TOPIC,
@@ -16,6 +21,14 @@ import { runOutboxWorker } from "./worker.js";
 
 const config = loadWorkerConfig();
 const database = createDatabase(config.DATABASE_URL, 4);
+const observabilityDatabase =
+  config.WORKER_OBSERVABILITY_MODE === "loopback"
+    ? createDatabase(config.DATABASE_URL, 1, {
+        readOnly: true,
+        statementTimeoutMs: 5_000,
+        applicationName: "schedule-worker-observability",
+      })
+    : null;
 const dispatcher = new OutboxDispatcher(
   config.WEBHOOK_DELIVERY_MODE === "enabled"
     ? new Map([
@@ -57,16 +70,39 @@ if (config.NOTIFICATION_MATERIALIZATION_MODE === "enabled") {
   );
 }
 
-if (config.WORKER_OBSERVABILITY_MODE === "loopback") {
-  services.push((signal) =>
-    runWorkerObservabilityServer(
-      { port: config.WORKER_OBSERVABILITY_PORT, database, telemetry },
-      signal,
-    ),
-  );
-}
-
 await runWorkerRuntime({
-  run: () => runWorkerServices(services, controller),
-  close: () => database.close(),
+  run: async () => {
+    const observability =
+      observabilityDatabase === null
+        ? Promise.resolve()
+        : runNonCriticalWorkerService(
+            (signal) =>
+              runWorkerObservabilityServer(
+                {
+                  port: config.WORKER_OBSERVABILITY_PORT,
+                  database: observabilityDatabase,
+                  telemetry,
+                  databaseOperationTimeoutMs: 5_000,
+                },
+                signal,
+              ),
+            controller.signal,
+          );
+    try {
+      await runWorkerServices(services, controller);
+    } finally {
+      if (!controller.signal.aborted) controller.abort("primary worker services stopped");
+      await observability;
+    }
+  },
+  close: async () => {
+    const results = await Promise.allSettled([
+      database.close(),
+      ...(observabilityDatabase === null ? [] : [observabilityDatabase.close()]),
+    ]);
+    const failure = results.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (failure !== undefined) throw failure.reason;
+  },
 });

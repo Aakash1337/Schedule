@@ -32,9 +32,12 @@ The three read-only routes are:
   preventing an outage from looking like an empty queue.
 
 All responses use `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. The server sends
-no CORS headers, accepts only `GET`, and shuts down under the same abort-controlled worker lifecycle
-as outbox processing and notification materialization. A bind or listener failure is fatal to the
-combined worker so a partially observable process is not left running silently.
+no CORS headers, accepts only `GET`, and shuts down from the worker's shared abort signal. It uses a
+dedicated one-connection, read-only PostgreSQL pool rather than consuming the primary outbox or
+materialization pool. Both readiness and aggregate queries have a five-second client response
+deadline backed by a PostgreSQL statement timeout, which is the authoritative query cancellation
+mechanism. A bind, listener, or query failure emits only a
+fixed diagnostic classification; primary outbox and reminder processing continues.
 
 Example local checks:
 
@@ -48,7 +51,8 @@ Invoke-WebRequest http://127.0.0.1:9464/metrics | Select-Object -ExpandProperty 
 
 Metric names are fixed and have no labels. This deliberately trades dimensional drill-down for a
 strict cardinality and privacy boundary. Concurrent scrapes share one aggregate database collection
-so they cannot multiply the same query while it is in flight.
+so they cannot multiply the same query while it is in flight. The dedicated observability pool and
+deadline also bound the connection pressure of a stalled or over-frequent scraper.
 
 ### Process and database
 

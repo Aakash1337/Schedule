@@ -3,13 +3,40 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { runWorkerRuntime, runWorkerServices } from "./runtime.js";
+import { runNonCriticalWorkerService, runWorkerRuntime, runWorkerServices } from "./runtime.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe("worker process runtime", () => {
+  it("contains optional service failures without aborting primary work or leaking details", async () => {
+    const controller = new AbortController();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(
+      runNonCriticalWorkerService(async () => {
+        throw new Error("postgres://private-user:private-password@db.internal");
+      }, controller.signal),
+    ).resolves.toBeUndefined();
+
+    expect(controller.signal.aborted).toBe(false);
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining('"failureClass":"worker_auxiliary_service_error"'),
+    );
+    expect(consoleError.mock.calls.flat().join(" ")).not.toContain("private-password");
+  });
+
+  it("classifies an unexpected clean auxiliary exit without affecting shutdown", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await runNonCriticalWorkerService(async () => undefined, new AbortController().signal);
+
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining('"failureClass":"worker_auxiliary_service_error"'),
+    );
+  });
+
   it("aborts sibling services and waits for their cleanup before surfacing a failure", async () => {
     const controller = new AbortController();
     let finishCleanup!: () => void;
