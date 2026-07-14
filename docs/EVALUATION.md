@@ -345,15 +345,19 @@ The audit deliberately leaves these visible instead of turning them into false g
   idempotent replay, tenant isolation, pagination/filter behavior, and atomic rollback against
   disposable PostgreSQL; it also proves bounded retention cleanup deletes only
   eligible old receipts/confirmations while preserving fresh, processing, referenced, and audit
-  rows. It does not exercise a Hermes runtime, WhatsApp transport, provider delivery, or
-  natural-language interpretation;
+  rows. The separate Hermes adapter verifier covers deterministic plugin tests and a disposable
+  PostgreSQL/real Fastify prepare-and-confirm flow, including no mutation before confirmation and
+  exact idempotent execution. Neither verifier exercises a live WhatsApp account, phone delivery,
+  provider receipt, or natural-language quality benchmark;
 - the outbound webhook verifier covers real PostgreSQL endpoint/secret lifecycles, workspace
   isolation, default-empty and replacement subscription state, privacy-thin automatic Today-change
   fan-out, deterministic event identity, immutable delivery/outbox linkage, dead-letter metadata,
   redrive identity, revocation, audits, and rollback. DNS, pinned-address HTTPS, TLS, and the external
   receiver are unit-faked, so there is no live-network delivery claim. The automatic event is only an
   invalidation; it does not transport reminder commands. Phone notifications and Hermes/WhatsApp
-  transport remain deferred; claims and receipts use the separate authenticated pull gateway;
+  live transport remain unverified; claims and receipts use the separate authenticated pull gateway,
+  while the local Hermes helper's deterministic standard output is a narrower provider boundary and
+  not evidence of phone delivery;
 - the deterministic reminder core has domain/application/API/schema evidence, a populated migration
   upgrade, real PostgreSQL coverage for all six source kinds, two-request advisory-lock concurrency,
   policy/target/terminal invalidation, tenant and duplicate-key constraints, backup/restore
@@ -379,8 +383,8 @@ The audit deliberately leaves these visible instead of turning them into false g
 - the local-model advisor has CI unit/component evidence for its configuration, application,
   transport, API, and UI boundaries, while a real Ollama/Gemma call remains an operator-run smoke
   check. There is no CI model invocation, quality benchmark, natural-language creation or task
-  breakdown, automatic plan or calibration application, hosted provider, or Hermes/WhatsApp delivery
-  path; and
+  breakdown, automatic plan or calibration application, hosted provider, or integration between
+  model advice and the Hermes/reminder path; and
 - production outcome measures such as acceptance rate, completion rate, cadence attainment, and
   duration error need actual local usage data and are not CI release gates.
 

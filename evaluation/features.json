@@ -7,6 +7,10 @@
     "planner-db": { "command": "pnpm verify:database", "ci": true },
     "product-api": { "command": "pnpm verify:database", "ci": true },
     "integration-gateway": { "command": "pnpm verify:database", "ci": true },
+    "hermes-adapter": {
+      "command": "pnpm verify:hermes-adapter",
+      "ci": true
+    },
     "webhook-delivery": { "command": "pnpm verify:database", "ci": true },
     "outbox-db": { "command": "pnpm verify:database", "ci": true },
     "plan-state-migrations": { "command": "pnpm verify:database", "ci": true },
@@ -927,6 +931,89 @@
       ]
     },
     {
+      "id": "hermes-schedule-local-adapter",
+      "status": "partial",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HERMES.md",
+        "anchor": "## Verification and safe rollout"
+      },
+      "limitations": [
+        "CI verifies the production Python client against deterministic loopback fakes and a real Schedule gateway with disposable PostgreSQL; it does not load the plugin inside a live Hermes runtime.",
+        "Live WhatsApp delivery remains operator-run and requires an explicit WHATSAPP_HOME_CHANNEL; the local stdout reminder smoke does not establish phone delivery."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "integrations/hermes-schedule/tests/test_client.py",
+          "command": "hermes-adapter",
+          "anchors": [
+            "test_environment_accepts_only_an_exact_loopback_origin",
+            "test_prepares_then_confirms_with_distinct_request_and_replay_keys",
+            "test_rejects_prepare_integrity_drift_before_exposing_a_confirmation",
+            "test_rejects_mismatched_or_overbroad_confirmation_receipts",
+            "test_bounds_and_redacts_rejected_or_malformed_responses"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "integrations/hermes-schedule/tests/test_state.py",
+          "command": "hermes-adapter",
+          "anchors": [
+            "test_persists_only_keyed_binding_and_opaque_confirmation_metadata",
+            "test_rejects_a_different_sender_even_inside_the_same_session",
+            "test_claim_blocks_cancel_until_the_remote_attempt_finishes",
+            "test_rejects_a_stale_async_turn_context_after_a_newer_turn_arrives",
+            "test_stale_claim_can_only_retry_the_same_idempotent_confirmation",
+            "test_late_failure_cleanup_cannot_delete_a_newer_prepare_attempt"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "integrations/hermes-schedule/tests/test_tools.py",
+          "command": "hermes-adapter",
+          "anchors": [
+            "test_prepare_does_not_confirm_and_requires_the_exact_phrase_in_a_later_turn",
+            "test_hook_context_drives_writes_while_read_tools_remain_bounded",
+            "test_missing_sender_context_fails_closed_without_breaking_the_hook",
+            "test_a_newer_turn_invalidates_a_stale_async_tool_context",
+            "test_retry_reuses_the_same_idempotency_key_then_consumes_the_pending_change",
+            "test_persisted_state_contains_no_raw_session_sender_or_message"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "integrations/hermes-schedule/tests/test_reminder.py",
+          "command": "hermes-adapter",
+          "anchors": [
+            "test_lists_only_pending_and_started_items_with_a_hard_item_bound",
+            "test_neutralizes_line_and_bidi_controls_in_untrusted_titles",
+            "test_rejects_unbounded_or_malformed_plan_content"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/hermes-verification-safety.test.ts",
+          "command": "unit",
+          "anchors": [
+            "accepts only the expected authenticated loopback Schedule database",
+            "rejects unsafe source target"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hermes-adapter.ts",
+          "command": "hermes-adapter",
+          "anchors": [
+            "hermes-adapter-python-unittest",
+            "hermes-adapter-no-mutation-before-confirmation",
+            "hermes-adapter-exact-once-confirmation",
+            "Hermes adapter verification passed"
+          ]
+        }
+      ]
+    },
+    {
       "id": "credential-scoped-integration-work-item-discovery",
       "status": "implemented",
       "risk": "critical",
@@ -1341,7 +1428,7 @@
       "risk": "normal",
       "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 4 — Local-model advisor" },
       "limitations": [
-        "Only explicit read-only review of a bounded current plan and eligible backlog through local Ollama is implemented; natural-language creation and task breakdown, automatic application or calibration, hosted providers, and Hermes/WhatsApp/reminder behavior remain deferred.",
+        "Only explicit read-only review of a bounded current plan and eligible backlog through local Ollama is implemented; natural-language creation and task breakdown, automatic application or calibration, hosted providers, and any connection between advisor output and the local Hermes/reminder path remain deferred. The deterministic Hermes stdout reminder does not invoke the advisor, and live WhatsApp delivery is not established.",
         "The real Ollama/Gemma smoke command is operator-run and not a CI gate; CI validates the provider boundary with deterministic loopback fakes and does not establish model quality."
       ],
       "evidence": [

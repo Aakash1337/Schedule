@@ -8,7 +8,9 @@ Durable product and engineering specifications live here so the repository root 
   semantics, exact-once intent materialization, and the fenced provider-neutral delivery gateway.
 - [Local product API](./API.md): local-only HTTP safety boundary, routes, errors, and example usage.
 - [Integration gateway](./INTEGRATIONS.md): authenticated automation credentials, versioned
-  commands, confirmation, idempotency, reminder claims/receipts, and the future Hermes boundary.
+  commands, confirmation, idempotency, reminder claims/receipts, and the external-adapter boundary.
+- [Hermes Schedule plugin](./HERMES.md): local plugin installation, sender-bound confirmation,
+  deterministic reminders, WhatsApp prerequisites, privacy, and safe rollout.
 - [Outbound webhook delivery](./WEBHOOKS.md): encrypted endpoint secrets, signed delivery, opt-in
   privacy-thin Today-change invalidations, subscriptions, network policy, rotation, retries, and
   dead-letter operations.
