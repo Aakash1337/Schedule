@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { buildApp } from "../apps/api/src/app.js";
 import { createProductServices } from "../apps/api/src/product-services.js";
 import { createDatabase, PostgresUnitOfWork } from "../packages/database/src/index.js";
+import { expectConstraint } from "./lib/postgres-assertions.js";
 
 const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule";
@@ -14,31 +15,6 @@ const app = await buildApp({
   }),
 });
 const workspaceIds: string[] = [];
-
-function hasDatabaseConstraint(error: unknown, code: string, constraintName: string): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === code &&
-    "constraint_name" in error &&
-    (error as { constraint_name?: unknown }).constraint_name === constraintName
-  );
-}
-
-async function expectConstraint(
-  operation: () => Promise<unknown>,
-  code: string,
-  constraintName: string,
-): Promise<void> {
-  try {
-    await operation();
-  } catch (error) {
-    if (hasDatabaseConstraint(error, code, constraintName)) return;
-    throw error;
-  }
-  throw new Error(`Expected ${constraintName} to reject the statement.`);
-}
 
 async function createWorkspace(name: string): Promise<string> {
   const response = await app.inject({ method: "POST", url: "/v1/workspaces", payload: { name } });

@@ -104,6 +104,9 @@ interface HarnessOptions {
   readonly profile?: NotificationProfile | null;
   readonly existingIntents?: readonly NotificationIntent[];
   readonly oneOffResultCount?: number;
+  readonly dueResultCount?: number;
+  readonly blockResultCount?: number;
+  readonly concurrentInsertWinner?: boolean;
 }
 
 function defaultRules(): readonly NotificationRule[] {
@@ -163,6 +166,11 @@ function harness(options: HarnessOptions = {}) {
   const audits: AuditEventRecord[] = [];
   let lockCount = 0;
   let oneOffLimit = 0;
+  let dueLimit = 0;
+  const scheduleBlockReadLimits: number[] = [];
+  let planLookupDates: readonly string[] = [];
+  let planLookupCount = 0;
+  let concurrentInsertWinnerAvailable = options.concurrentInsertWinner ?? false;
   const repository: NotificationRepository = {
     lockWorkspace: async () => void (lockCount += 1),
     findProfile: async () => profile,
@@ -190,7 +198,17 @@ function harness(options: HarnessOptions = {}) {
     },
     insertOneOffReminder: async () => undefined,
     saveOneOffReminder: async () => undefined,
-    listDueWorkItems: async () => dueItems,
+    listDueWorkItems: async (_workspaceId, fromInclusive, throughInclusive, limit) => {
+      dueLimit = limit;
+      const matching = dueItems.filter(
+        (item) =>
+          item.dueOn !== null && item.dueOn >= fromInclusive && item.dueOn <= throughInclusive,
+      );
+      if (options.dueResultCount !== undefined && matching[0] !== undefined) {
+        return Array.from({ length: Math.min(options.dueResultCount, limit) }, () => matching[0]!);
+      }
+      return matching.slice(0, limit);
+    },
     listIntents: async (_workspaceId, fromInclusive, throughExclusive, limit, offset) =>
       [...intents.values()]
         .filter(
@@ -202,6 +220,15 @@ function harness(options: HarnessOptions = {}) {
     insertIntent: async (intent) => {
       const existing = intents.get(intent.occurrenceKey);
       if (existing !== undefined) return existing;
+      if (concurrentInsertWinnerAvailable) {
+        concurrentInsertWinnerAvailable = false;
+        const winner = {
+          ...intent,
+          id: notificationIntentId("intent-concurrent-natural-key-winner"),
+        };
+        intents.set(intent.occurrenceKey, winner);
+        return winner;
+      }
       intents.set(intent.occurrenceKey, intent);
       return intent;
     },
@@ -266,13 +293,32 @@ function harness(options: HarnessOptions = {}) {
         limit: number,
         offset: number,
       ) =>
-        blocks
-          .filter((block) => block.startsAt < throughExclusive && block.endsAt > fromInclusive)
-          .slice(offset, offset + limit),
+        (() => {
+          scheduleBlockReadLimits.push(limit);
+          const matching = blocks.filter(
+            (block) => block.startsAt < throughExclusive && block.endsAt > fromInclusive,
+          );
+          if (options.blockResultCount !== undefined && matching[0] !== undefined) {
+            return Array.from({ length: options.blockResultCount }, () => matching[0]!).slice(
+              offset,
+              offset + limit,
+            );
+          }
+          return matching.slice(offset, offset + limit);
+        })(),
     },
     dailyPlans: {
       findCurrent: async (_workspaceId: string, date: string) =>
         plan !== null && plan.date === date ? { plan, headVersion: 1 } : null,
+      findCurrentForDates: async (_workspaceId: string, dates: readonly string[]) => {
+        planLookupCount += 1;
+        planLookupDates = [...dates];
+        return new Map(
+          plan === null || !dates.includes(plan.date)
+            ? []
+            : [[plan.date, { plan, headVersion: 1 }]],
+        );
+      },
     },
     auditEvents: { append: async (event: AuditEventRecord) => void audits.push(event) },
   } as unknown as TransactionContext;
@@ -294,6 +340,18 @@ function harness(options: HarnessOptions = {}) {
     get oneOffLimit() {
       return oneOffLimit;
     },
+    get dueLimit() {
+      return dueLimit;
+    },
+    get scheduleBlockReadLimits() {
+      return scheduleBlockReadLimits;
+    },
+    get planLookupDates() {
+      return planLookupDates;
+    },
+    get planLookupCount() {
+      return planLookupCount;
+    },
     intents,
     service: new MaterializeNotificationIntents(unitOfWork, { now: () => new Date(now) }),
     transactionOptions,
@@ -314,6 +372,9 @@ describe("notification intent materialization", () => {
         "work_item_due",
       ].sort(),
     );
+    expect(test.planLookupCount).toBe(1);
+    expect(test.planLookupDates).toContain("2026-07-14");
+    expect(test.planLookupDates.length).toBeGreaterThan(1);
     expect(new Set(first.created.map((intent) => intent.occurrenceKey)).size).toBe(6);
     expect(first.existing).toEqual([]);
     expect(test.intents.size).toBe(6);
@@ -392,7 +453,7 @@ describe("notification intent materialization", () => {
     });
   });
 
-  it("recomputes cap dates in the active profile timezone", async () => {
+  it("keeps persisted local dates authoritative after the profile timezone changes", async () => {
     const candidateRule = createNotificationRule({
       workspaceId: workspace.id,
       kind: "daily_digest",
@@ -443,11 +504,13 @@ describe("notification intent materialization", () => {
       fromInclusive: new Date("2026-07-14T08:50:00.000Z"),
       throughExclusive: new Date("2026-07-14T09:10:00.000Z"),
     });
-    expect(result.created).toEqual([]);
-    expect(result.suppressed).toContainEqual({
-      occurrenceKey: `rule:${candidateRule.id}:daily_digest:day:2026-07-14`,
-      reason: "daily_limit",
-    });
+    expect(result.created).toHaveLength(1);
+    expect(result.created[0]?.occurrenceKey).toBe(
+      `rule:${candidateRule.id}:daily_digest:day:2026-07-14`,
+    );
+    expect(result.suppressed).not.toContainEqual(
+      expect.objectContaining({ reason: "daily_limit" }),
+    );
   });
 
   it("applies a rule cooldown deterministically across nearby targets", async () => {
@@ -486,6 +549,80 @@ describe("notification intent materialization", () => {
     const result = await test.service.execute(window);
     expect(result.created).toHaveLength(1);
     expect(result.created[0]?.targetId).toBe(firstBlock.id);
+    expect(result.suppressed).toContainEqual({
+      occurrenceKey: `rule:${scheduleRule.id}:schedule-block:${secondBlock.id}`,
+      reason: "cooldown",
+    });
+  });
+
+  it("counts a concurrent natural-key winner against the remaining daily budget", async () => {
+    const firstRule = createNotificationRule({
+      workspaceId: workspace.id,
+      kind: "daily_digest",
+      localMinute: 540,
+      now: new Date("2026-07-14T07:00:00.000Z"),
+    });
+    const secondRule = createNotificationRule({
+      workspaceId: workspace.id,
+      kind: "daily_digest",
+      localMinute: 600,
+      now: new Date("2026-07-14T07:00:00.000Z"),
+    });
+    const test = harness({
+      dailyIntentLimit: 1,
+      rules: [firstRule, secondRule],
+      reminders: [],
+      blocks: [],
+      dueItems: [],
+      plan: null,
+      concurrentInsertWinner: true,
+    });
+    const result = await test.service.execute(window);
+    expect(result.created).toEqual([]);
+    expect(result.existing).toHaveLength(1);
+    expect(result.suppressed).toContainEqual({
+      occurrenceKey: `rule:${secondRule.id}:daily_digest:day:2026-07-14`,
+      reason: "daily_limit",
+    });
+  });
+
+  it("uses a concurrent natural-key winner for later cooldown checks", async () => {
+    const scheduleRule = createNotificationRule({
+      workspaceId: workspace.id,
+      kind: "schedule_block_lead",
+      leadMinutes: 15,
+      cooldownMinutes: 30,
+      now: new Date("2026-07-14T07:00:00.000Z"),
+    });
+    const firstBlock = createScheduleBlock({
+      id: scheduleBlockId("concurrent-cooldown-first"),
+      workspaceId: workspace.id,
+      title: "First meeting",
+      startsAt: new Date("2026-07-14T11:00:00.000Z"),
+      endsAt: new Date("2026-07-14T11:30:00.000Z"),
+      timeZone: "UTC",
+      now: new Date("2026-07-14T07:00:00.000Z"),
+    });
+    const secondBlock = createScheduleBlock({
+      id: scheduleBlockId("concurrent-cooldown-second"),
+      workspaceId: workspace.id,
+      title: "Second meeting",
+      startsAt: new Date("2026-07-14T11:10:00.000Z"),
+      endsAt: new Date("2026-07-14T11:40:00.000Z"),
+      timeZone: "UTC",
+      now: new Date("2026-07-14T07:00:00.000Z"),
+    });
+    const test = harness({
+      rules: [scheduleRule],
+      reminders: [],
+      blocks: [firstBlock, secondBlock],
+      dueItems: [],
+      plan: null,
+      concurrentInsertWinner: true,
+    });
+    const result = await test.service.execute(window);
+    expect(result.created).toEqual([]);
+    expect(result.existing).toHaveLength(1);
     expect(result.suppressed).toContainEqual({
       occurrenceKey: `rule:${scheduleRule.id}:schedule-block:${secondBlock.id}`,
       reason: "cooldown",
@@ -561,6 +698,70 @@ describe("notification intent materialization", () => {
     expect(rejected.oneOffLimit).toBe(5_001);
   });
 
+  it("bounds due-work source reads at one row beyond the accepted limit", async () => {
+    const rule = createNotificationRule({
+      workspaceId: workspace.id,
+      kind: "work_item_due",
+      localMinute: 720,
+      now: new Date("2026-07-14T07:00:00.000Z"),
+    });
+    const accepted = harness({
+      rules: [rule],
+      reminders: [],
+      blocks: [],
+      plan: null,
+      dueResultCount: 5_000,
+    });
+    await expect(accepted.service.execute(window)).resolves.toMatchObject({
+      created: expect.any(Array),
+    });
+    expect(accepted.dueLimit).toBe(5_001);
+
+    const rejected = harness({
+      rules: [rule],
+      reminders: [],
+      blocks: [],
+      plan: null,
+      dueResultCount: 5_001,
+    });
+    await expect(rejected.service.execute(window)).rejects.toMatchObject({
+      code: "notification.materialization_source_limit",
+    });
+    expect(rejected.dueLimit).toBe(5_001);
+  });
+
+  it("bounds paged schedule-block source reads at one row beyond the accepted limit", async () => {
+    const rule = createNotificationRule({
+      workspaceId: workspace.id,
+      kind: "schedule_block_lead",
+      leadMinutes: 15,
+      now: new Date("2026-07-14T07:00:00.000Z"),
+    });
+    const accepted = harness({
+      rules: [rule],
+      reminders: [],
+      dueItems: [],
+      plan: null,
+      blockResultCount: 5_000,
+    });
+    await expect(accepted.service.execute(window)).resolves.toMatchObject({
+      created: expect.any(Array),
+    });
+    expect(accepted.scheduleBlockReadLimits).toEqual([...Array.from({ length: 10 }, () => 500), 1]);
+
+    const rejected = harness({
+      rules: [rule],
+      reminders: [],
+      dueItems: [],
+      plan: null,
+      blockResultCount: 5_001,
+    });
+    await expect(rejected.service.execute(window)).rejects.toMatchObject({
+      code: "notification.materialization_source_limit",
+    });
+    expect(rejected.scheduleBlockReadLimits.at(-1)).toBe(1);
+  });
+
   it("ignores cancelled one-offs, terminal work, and completed follow-up plans", async () => {
     const reminder = createOneOffReminder({
       workspaceId: workspace.id,
@@ -615,20 +816,16 @@ describe("notification intent materialization", () => {
       code: "notification_profile.not_found",
     });
     await expect(
-      Promise.resolve().then(() =>
-        harness().service.execute({
-          ...window,
-          throughExclusive: new Date("2026-09-01T00:00:00.000Z"),
-        }),
-      ),
+      harness().service.execute({
+        ...window,
+        throughExclusive: new Date("2026-09-01T00:00:00.000Z"),
+      }),
     ).rejects.toMatchObject({ code: "notification.materialization_window_too_large" });
     await expect(
-      Promise.resolve().then(() =>
-        harness().service.execute({
-          ...window,
-          throughExclusive: new Date("2026-07-14T07:00:00.000Z"),
-        }),
-      ),
+      harness().service.execute({
+        ...window,
+        throughExclusive: new Date("2026-07-14T07:00:00.000Z"),
+      }),
     ).rejects.toMatchObject({ code: "notification.materialization_window_invalid" });
   });
 

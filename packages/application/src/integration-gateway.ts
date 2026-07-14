@@ -45,6 +45,7 @@ import type {
   PreparedIntegrationCommand,
   SecretVerifier,
 } from "./ports.js";
+import { invalidatePlanItemActivityIntents } from "./invalidate-plan-item-activity-intents.js";
 
 const GENERIC_AUTHENTICATION_MESSAGE = "The integration credential could not be authenticated.";
 const DUMMY_SECRET_HASH = "0".repeat(64);
@@ -1389,30 +1390,11 @@ async function dispatchCommand(
         idempotencyKey: nestedIdempotencyKey,
         now,
       });
-      if (
-        !result.replayed &&
-        ["completed", "skipped", "deferred", "dismissed"].includes(result.activityState)
-      ) {
-        await context.notifications.deleteIntentsForTarget(
-          credential.workspaceId,
-          "daily_plan",
-          result.planId,
-          "daily_follow_up",
-        );
-      }
-      if (
-        !result.replayed &&
-        result.activityState === "completed" &&
-        result.activityEvent.sourceType === "work_item" &&
-        result.activityEvent.workItemId !== null
-      ) {
-        await context.notifications.deleteIntentsForTarget(
-          credential.workspaceId,
-          "work_item",
-          result.activityEvent.workItemId,
-          "work_item_due",
-        );
-      }
+      await invalidatePlanItemActivityIntents(
+        context.notifications,
+        credential.workspaceId,
+        result,
+      );
       return { type: "plan_item.activity_recorded", planItemActivity: planActivityDto(result) };
     }
     default:

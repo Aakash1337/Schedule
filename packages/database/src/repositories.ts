@@ -2330,6 +2330,73 @@ export class PostgresDailyPlanRepository implements DailyPlanRepository {
     return plan === null ? null : { plan, headVersion: head.version };
   }
 
+  async findCurrentForDates(
+    workspace: WorkspaceId,
+    dates: readonly LocalDate[],
+  ): Promise<ReadonlyMap<LocalDate, CurrentDailyPlan>> {
+    const uniqueDates = [...new Set(dates)];
+    if (uniqueDates.length === 0) return new Map();
+
+    const heads = await this.database
+      .select()
+      .from(dailyPlanHeads)
+      .where(
+        and(
+          eq(dailyPlanHeads.workspaceId, workspace),
+          inArray(dailyPlanHeads.localDate, uniqueDates),
+        ),
+      );
+    if (heads.length === 0) return new Map();
+
+    const planIds = [...new Set(heads.map((head) => head.currentPlanId))];
+    const [plans, items, states] = await Promise.all([
+      this.database
+        .select()
+        .from(dailyPlans)
+        .where(and(eq(dailyPlans.workspaceId, workspace), inArray(dailyPlans.id, planIds))),
+      this.database
+        .select()
+        .from(dailyPlanItems)
+        .where(
+          and(eq(dailyPlanItems.workspaceId, workspace), inArray(dailyPlanItems.planId, planIds)),
+        )
+        .orderBy(asc(dailyPlanItems.planId), asc(dailyPlanItems.position)),
+      this.database
+        .select()
+        .from(dailyPlanItemStates)
+        .where(
+          and(
+            eq(dailyPlanItemStates.workspaceId, workspace),
+            inArray(dailyPlanItemStates.planId, planIds),
+          ),
+        ),
+    ]);
+    const planById = new Map(plans.map((plan) => [plan.id, plan]));
+    const itemsByPlan = new Map<string, DailyPlanItemRow[]>();
+    for (const item of items) {
+      const planItems = itemsByPlan.get(item.planId) ?? [];
+      planItems.push(item);
+      itemsByPlan.set(item.planId, planItems);
+    }
+    const statesByPlan = new Map<string, DailyPlanItemStateRow[]>();
+    for (const state of states) {
+      const planStates = statesByPlan.get(state.planId) ?? [];
+      planStates.push(state);
+      statesByPlan.set(state.planId, planStates);
+    }
+
+    const currentByDate = new Map<LocalDate, CurrentDailyPlan>();
+    for (const head of heads) {
+      const plan = planById.get(head.currentPlanId);
+      if (plan === undefined) continue;
+      currentByDate.set(localDate(head.localDate), {
+        plan: mapDailyPlan(plan, itemsByPlan.get(plan.id) ?? [], statesByPlan.get(plan.id) ?? []),
+        headVersion: head.version,
+      });
+    }
+    return currentByDate;
+  }
+
   async setItemLock(input: SetPlanItemLockInput): Promise<PlanItemLockResult> {
     const payloadHash = createHash("sha256")
       .update(

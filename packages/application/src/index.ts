@@ -25,6 +25,7 @@ export * from "./generate-daily-plan.js";
 export * from "./get-daily-plan.js";
 export * from "./get-current-daily-plan.js";
 export * from "./integration-gateway.js";
+export * from "./invalidate-plan-item-activity-intents.js";
 export * from "./get-routine.js";
 export * from "./get-routine-duration-insight.js";
 export * from "./get-scheduling-advice.js";

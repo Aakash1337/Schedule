@@ -860,6 +860,18 @@ export const notificationIntents = pgTable(
       table.ruleId,
       table.scheduledFor,
     ),
+    index("notification_intents_workspace_daily_plan_idx")
+      .on(table.workspaceId, table.dailyPlanId)
+      .where(sql`${table.dailyPlanId} is not null`),
+    index("notification_intents_workspace_schedule_block_idx")
+      .on(table.workspaceId, table.scheduleBlockId)
+      .where(sql`${table.scheduleBlockId} is not null`),
+    index("notification_intents_workspace_work_item_idx")
+      .on(table.workspaceId, table.workItemId)
+      .where(sql`${table.workItemId} is not null`),
+    index("notification_intents_workspace_one_off_idx")
+      .on(table.workspaceId, table.oneOffReminderId)
+      .where(sql`${table.oneOffReminderId} is not null`),
     foreignKey({
       name: "notification_intents_rule_tenant_kind_fk",
       columns: [table.workspaceId, table.ruleId, table.ruleKind],

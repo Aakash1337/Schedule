@@ -367,9 +367,9 @@ async function buildCandidates(
   );
   const plans = new Map<LocalDate, DailyPlan>();
   if (needsPlans) {
-    for (const date of dates) {
-      const current = await context.dailyPlans.findCurrent(profile.workspaceId, date);
-      if (current !== null) plans.set(date, current.plan);
+    const currentByDate = await context.dailyPlans.findCurrentForDates(profile.workspaceId, dates);
+    for (const [date, current] of currentByDate) {
+      plans.set(date, current.plan);
     }
   }
 
@@ -500,11 +500,11 @@ export class MaterializeNotificationIntents {
     private readonly clock: Clock,
   ) {}
 
-  execute(
+  async execute(
     command: MaterializeNotificationIntentsCommand,
   ): Promise<MaterializeNotificationIntentsResult> {
     validateWindow(command.fromInclusive, command.throughExclusive);
-    return this.unitOfWork.run(
+    return await this.unitOfWork.run(
       async (context) => {
         await context.notifications.lockWorkspace(command.workspaceId);
         if ((await context.workspaces.findById(command.workspaceId)) === null) {
@@ -606,8 +606,7 @@ export class MaterializeNotificationIntents {
         const countByLocalDate = new Map<LocalDate, number>();
         const timesByRule = new Map<string, number[]>();
         for (const intent of existingInRange) {
-          const currentLocalDate = instantToLocalDate(intent.scheduledFor, profile.timeZone);
-          countByLocalDate.set(currentLocalDate, (countByLocalDate.get(currentLocalDate) ?? 0) + 1);
+          countByLocalDate.set(intent.localDate, (countByLocalDate.get(intent.localDate) ?? 0) + 1);
           if (intent.ruleId !== null) {
             const times = timesByRule.get(intent.ruleId) ?? [];
             times.push(intent.scheduledFor.getTime());
@@ -652,14 +651,17 @@ export class MaterializeNotificationIntents {
             createdAt: now,
           });
           const persisted = await context.notifications.insertIntent(proposed);
+          countByLocalDate.set(
+            persisted.localDate,
+            (countByLocalDate.get(persisted.localDate) ?? 0) + 1,
+          );
+          if (persisted.ruleId !== null) {
+            const times = timesByRule.get(persisted.ruleId) ?? [];
+            times.push(persisted.scheduledFor.getTime());
+            timesByRule.set(persisted.ruleId, times);
+          }
           if (persisted.id === proposed.id) {
             created.push(persisted);
-            countByLocalDate.set(entry.evaluation.localDate, dailyCount + 1);
-            if (persisted.ruleId !== null) {
-              const times = timesByRule.get(persisted.ruleId) ?? [];
-              times.push(persisted.scheduledFor.getTime());
-              timesByRule.set(persisted.ruleId, times);
-            }
           } else {
             existing.push(persisted);
           }

@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createDatabase, type DatabaseConnection } from "../packages/database/src/index.js";
+import { expectConstraint } from "./lib/postgres-assertions.js";
 
 const sourceDatabaseUrl =
   process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule";
@@ -27,31 +28,6 @@ async function applyMigration(connection: DatabaseConnection, tag: string): Prom
   }
 }
 
-function hasConstraint(error: unknown, code: string, constraintName: string): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === code &&
-    "constraint_name" in error &&
-    (error as { constraint_name?: unknown }).constraint_name === constraintName
-  );
-}
-
-async function expectConstraint(
-  operation: () => Promise<unknown>,
-  code: string,
-  constraintName: string,
-): Promise<void> {
-  try {
-    await operation();
-  } catch (error) {
-    if (hasConstraint(error, code, constraintName)) return;
-    throw error;
-  }
-  throw new Error(`Expected ${constraintName} to reject the statement.`);
-}
-
 try {
   await admin.sql.unsafe(`CREATE DATABASE "${verificationDatabase}" OWNER schedule`);
   verification = createDatabase(verificationUrl.toString(), 1);
@@ -68,6 +44,10 @@ try {
   const notificationMigration = entries.find((entry) => entry.idx === 24);
   if (notificationMigration === undefined) {
     throw new Error("Notification policy migration 0024 is missing from the journal.");
+  }
+  const notificationIndexMigration = entries.find((entry) => entry.idx === 25);
+  if (notificationIndexMigration === undefined) {
+    throw new Error("Notification target-index migration 0025 is missing from the journal.");
   }
   for (const migration of entries.filter((entry) => entry.idx < 24)) {
     await applyMigration(verification, migration.tag);
@@ -111,6 +91,14 @@ try {
   assert.equal(before?.notification_profiles, null);
 
   await applyMigration(verification, notificationMigration.tag);
+  const [beforeTargetIndexes] = await verification.sql<{ target_index: string | null }[]>`
+    select to_regclass('public.notification_intents_workspace_daily_plan_idx')::text as target_index
+  `;
+  assert.equal(
+    beforeTargetIndexes?.target_index,
+    null,
+    "target indexes must remain a separately deployable post-0024 migration",
+  );
   const [preserved] = await verification.sql<
     {
       workspace_count: number;
@@ -423,14 +411,42 @@ try {
       (select count(*)::integer from notification_intents where work_item_id = ${legacyWorkItemId}) as work_item
   `;
   assert.deepEqual(cascades, { plan: 0, block: 0, work_item: 0 });
-  const dueIndex = await verification.sql<{ indexname: string }[]>`
-    select indexname from pg_indexes
-    where schemaname = 'public' and indexname = 'work_items_workspace_due_id_idx'
+  await applyMigration(verification, notificationIndexMigration.tag);
+  const installedIndexes = await verification.sql<{ indexname: string; indexdef: string }[]>`
+    select indexname, indexdef from pg_indexes
+    where schemaname = 'public' and indexname in (
+      'work_items_workspace_due_id_idx',
+      'notification_intents_workspace_daily_plan_idx',
+      'notification_intents_workspace_schedule_block_idx',
+      'notification_intents_workspace_work_item_idx',
+      'notification_intents_workspace_one_off_idx'
+    )
   `;
-  assert.equal(dueIndex.length, 1, "notification due-work scan index must be installed");
+  const indexByName = new Map(installedIndexes.map((index) => [index.indexname, index.indexdef]));
+  assert.ok(
+    indexByName.has("work_items_workspace_due_id_idx"),
+    "notification due-work scan index must be installed",
+  );
+  for (const [indexName, targetColumn] of [
+    ["notification_intents_workspace_daily_plan_idx", "daily_plan_id"],
+    ["notification_intents_workspace_schedule_block_idx", "schedule_block_id"],
+    ["notification_intents_workspace_work_item_idx", "work_item_id"],
+    ["notification_intents_workspace_one_off_idx", "one_off_reminder_id"],
+  ] as const) {
+    const definition = indexByName.get(indexName);
+    assert.ok(definition !== undefined, `${indexName} must be installed`);
+    assert.match(
+      definition,
+      new RegExp(
+        `\\(workspace_id, ${targetColumn}\\).*WHERE \\(${targetColumn} IS NOT NULL\\)$`,
+        "i",
+      ),
+      `${indexName} must be a tenant-scoped partial target index`,
+    );
+  }
 
   console.log(
-    "Notification migration verification passed with legacy preservation and exhaustive source/target constraints.",
+    "Notification migration verification passed with legacy preservation, exhaustive source/target constraints, and a populated 0025 target-index upgrade.",
   );
 } finally {
   await verification?.close();

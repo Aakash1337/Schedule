@@ -125,6 +125,7 @@ function harness(
       },
       insertForRevision: async (plan: DailyPlan) => plan,
       findCurrent: async () => null,
+      findCurrentForDates: async () => new Map(),
       setItemLock: async () => {
         throw new Error("not used");
       },

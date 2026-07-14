@@ -26,9 +26,11 @@ describe("RecordPlanItemActivity", () => {
     let captured: RecordPlanItemActivityInput | null = null;
     let transactionRuns = 0;
     const invalidatedTargets: string[] = [];
+    const callOrder: string[] = [];
     const context = {
       dailyPlans: {
         recordItemActivity: async (input: RecordPlanItemActivityInput) => {
+          callOrder.push("record");
           captured = input;
           return {
             planId: input.expectedPlanId,
@@ -60,8 +62,9 @@ describe("RecordPlanItemActivity", () => {
         },
       } as TransactionContext["dailyPlans"],
       notifications: {
-        lockWorkspace: async () => undefined,
+        lockWorkspace: async () => void callOrder.push("lock"),
         deleteIntentsForTarget: async (_workspaceId, targetType, targetId, kind) => {
+          callOrder.push("delete");
           invalidatedTargets.push(`${targetType}:${targetId}:${kind ?? "all"}`);
           return 1;
         },
@@ -81,6 +84,7 @@ describe("RecordPlanItemActivity", () => {
       captured: () => captured,
       transactionRuns: () => transactionRuns,
       invalidatedTargets,
+      callOrder,
     };
   }
 
@@ -108,6 +112,7 @@ describe("RecordPlanItemActivity", () => {
       now,
     });
     expect(test.invalidatedTargets).toEqual([`daily_plan:${plan}:daily_follow_up`]);
+    expect(test.callOrder).toEqual(["lock", "record", "delete"]);
   });
 
   it("rejects duration on a non-completion before opening a transaction", () => {

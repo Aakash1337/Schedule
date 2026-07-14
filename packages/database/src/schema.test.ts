@@ -156,6 +156,10 @@ describe("database schema", () => {
       expect.arrayContaining([
         "notification_intents_workspace_schedule_idx",
         "notification_intents_workspace_rule_schedule_idx",
+        "notification_intents_workspace_daily_plan_idx",
+        "notification_intents_workspace_schedule_block_idx",
+        "notification_intents_workspace_work_item_idx",
+        "notification_intents_workspace_one_off_idx",
       ]),
     );
     expect(intent.checks.map((constraint) => constraint.name)).toEqual(

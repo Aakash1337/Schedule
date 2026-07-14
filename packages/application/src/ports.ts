@@ -322,6 +322,11 @@ export interface DailyPlanRepository {
   /** Atomically inserts the revision or returns the plan already stored for that revision. */
   insertForRevision(plan: DailyPlan): Promise<DailyPlan>;
   findCurrent(workspaceId: WorkspaceId, date: LocalDate): Promise<CurrentDailyPlan | null>;
+  /** Loads current plans for a bounded set of dates without a query per date. */
+  findCurrentForDates(
+    workspaceId: WorkspaceId,
+    dates: readonly LocalDate[],
+  ): Promise<ReadonlyMap<LocalDate, CurrentDailyPlan>>;
   setItemLock(input: SetPlanItemLockInput): Promise<PlanItemLockResult>;
   recordItemActivity(input: RecordPlanItemActivityInput): Promise<RecordedPlanItemActivityResult>;
   lockDay(workspaceId: WorkspaceId, date: LocalDate): Promise<void>;

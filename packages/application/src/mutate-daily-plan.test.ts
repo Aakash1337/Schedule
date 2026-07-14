@@ -116,6 +116,10 @@ describe("MutateDailyPlan", () => {
           return plan;
         },
         findCurrent: async () => (current === null ? null : { plan: current, headVersion }),
+        findCurrentForDates: async (_workspaceId, dates) =>
+          current === null || !dates.includes(current.date)
+            ? new Map()
+            : new Map([[current.date, { plan: current, headVersion }]]),
         setItemLock: async () => {
           throw new Error("not used");
         },

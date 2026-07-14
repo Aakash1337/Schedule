@@ -96,6 +96,10 @@ describe("GenerateDailyPlan", () => {
           return stored;
         },
         findCurrent: async () => (stored === undefined ? null : { plan: stored, headVersion: 1 }),
+        findCurrentForDates: async (_workspaceId, dates) =>
+          stored === undefined || !dates.includes(stored.date)
+            ? new Map()
+            : new Map([[stored.date, { plan: stored, headVersion: 1 }]]),
         setItemLock: async (input) => ({
           planId: input.expectedPlanId,
           itemId: input.itemId,

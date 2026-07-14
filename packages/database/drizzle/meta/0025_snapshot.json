@@ -1,6 +1,6 @@
 {
-  "id": "5cf22bf9-7a4b-45cd-863a-c690d1d87d29",
-  "prevId": "87f5793f-8a86-4c75-baa2-fbb4b57b7791",
+  "id": "1d962ae2-d5ab-441c-9622-8401cf9e5ac8",
+  "prevId": "5cf22bf9-7a4b-45cd-863a-c690d1d87d29",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2008,6 +2008,94 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "notification_intents_workspace_daily_plan_idx": {
+          "name": "notification_intents_workspace_daily_plan_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "daily_plan_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"notification_intents\".\"daily_plan_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "notification_intents_workspace_schedule_block_idx": {
+          "name": "notification_intents_workspace_schedule_block_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "schedule_block_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"notification_intents\".\"schedule_block_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "notification_intents_workspace_work_item_idx": {
+          "name": "notification_intents_workspace_work_item_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "work_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"notification_intents\".\"work_item_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "notification_intents_workspace_one_off_idx": {
+          "name": "notification_intents_workspace_one_off_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "one_off_reminder_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"notification_intents\".\"one_off_reminder_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}

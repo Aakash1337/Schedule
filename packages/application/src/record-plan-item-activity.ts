@@ -10,6 +10,7 @@ import {
 } from "@schedule/domain";
 
 import type { Clock, PlanItemActivityResult, UnitOfWork } from "./ports.js";
+import { invalidatePlanItemActivityIntents } from "./invalidate-plan-item-activity-intents.js";
 
 export interface RecordPlanItemActivityCommand {
   readonly workspaceId: WorkspaceId;
@@ -73,30 +74,7 @@ export class RecordPlanItemActivity {
         idempotencyKey,
         now,
       });
-      if (
-        !result.replayed &&
-        ["completed", "skipped", "deferred", "dismissed"].includes(result.activityState)
-      ) {
-        await notifications.deleteIntentsForTarget(
-          command.workspaceId,
-          "daily_plan",
-          result.planId,
-          "daily_follow_up",
-        );
-      }
-      if (
-        !result.replayed &&
-        result.activityState === "completed" &&
-        result.activityEvent.sourceType === "work_item" &&
-        result.activityEvent.workItemId !== null
-      ) {
-        await notifications.deleteIntentsForTarget(
-          command.workspaceId,
-          "work_item",
-          result.activityEvent.workItemId,
-          "work_item_due",
-        );
-      }
+      await invalidatePlanItemActivityIntents(notifications, command.workspaceId, result);
       return {
         planId: result.planId,
         itemId: result.itemId,

@@ -869,6 +869,93 @@ function latestFeedbackQueryDatabase(rows: readonly Readonly<Record<string, unkn
   return { database: { select }, limit, orderBy, select };
 }
 
+describe("PostgresDailyPlanRepository current-plan batches", () => {
+  it("loads multiple dates in four bounded query stages and omits missing dates", async () => {
+    const workspace = workspaceId("batch-plan-workspace");
+    const firstDate = localDate("2026-07-14");
+    const secondDate = localDate("2026-07-15");
+    const missingDate = localDate("2026-07-16");
+    const firstPlanId = dailyPlanId("batch-plan-first");
+    const secondPlanId = dailyPlanId("batch-plan-second");
+    const heads = [
+      { workspaceId: workspace, localDate: firstDate, currentPlanId: firstPlanId, version: 3 },
+      { workspaceId: workspace, localDate: secondDate, currentPlanId: secondPlanId, version: 7 },
+    ];
+    const planRow = (id: string, date: string, revision: number) => ({
+      id,
+      workspaceId: workspace,
+      localDate: date,
+      timeZone: "UTC",
+      totalMinutes: 0,
+      fitness: 0,
+      algorithmVersion: "batch-test",
+      configVersion: "batch-test",
+      prngVersion: "batch-test",
+      seed: `seed-${date}`,
+      requestRevision: revision,
+      inputHash: "a".repeat(64),
+      inputSnapshot: {},
+      exclusions: [],
+      warnings: [],
+      generatedAt: new Date(`${date}T07:00:00.000Z`),
+    });
+    const wherePredicates: Parameters<PgDialect["sqlToQuery"]>[0][] = [];
+    const fromWhere = (rows: readonly unknown[]) => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn((predicate: Parameters<PgDialect["sqlToQuery"]>[0]) => {
+          wherePredicates.push(predicate);
+          return Promise.resolve(rows);
+        }),
+      }),
+    });
+    const itemsFromWhere = {
+      from: vi.fn().mockReturnValue({
+        where: vi.fn((predicate: Parameters<PgDialect["sqlToQuery"]>[0]) => {
+          wherePredicates.push(predicate);
+          return { orderBy: vi.fn().mockResolvedValue([]) };
+        }),
+      }),
+    };
+    const select = vi
+      .fn()
+      .mockReturnValueOnce(fromWhere(heads))
+      .mockReturnValueOnce(
+        fromWhere([planRow(firstPlanId, firstDate, 1), planRow(secondPlanId, secondDate, 2)]),
+      )
+      .mockReturnValueOnce(itemsFromWhere)
+      .mockReturnValueOnce(fromWhere([]));
+    const repository = new PostgresDailyPlanRepository({
+      select,
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(repository.findCurrentForDates(workspace, [])).resolves.toEqual(new Map());
+    const current = await repository.findCurrentForDates(workspace, [
+      firstDate,
+      secondDate,
+      missingDate,
+      firstDate,
+    ]);
+
+    expect(select).toHaveBeenCalledTimes(4);
+    expect(wherePredicates).toHaveLength(4);
+    expect(
+      wherePredicates.every((predicate) =>
+        new PgDialect().sqlToQuery(predicate).params.includes(workspace),
+      ),
+    ).toBe(true);
+    expect([...current.keys()]).toEqual([firstDate, secondDate]);
+    expect(current.get(firstDate)).toMatchObject({
+      headVersion: 3,
+      plan: { id: firstPlanId, date: firstDate, items: [] },
+    });
+    expect(current.get(secondDate)).toMatchObject({
+      headVersion: 7,
+      plan: { id: secondPlanId, date: secondDate, items: [] },
+    });
+    expect(current.has(missingDate)).toBe(false);
+  });
+});
+
 describe("PostgresDailyPlanRepository routine feedback", () => {
   it("locks feedback mutations with a dedicated routine-scoped transaction key", async () => {
     const execute = vi.fn().mockResolvedValue(undefined);

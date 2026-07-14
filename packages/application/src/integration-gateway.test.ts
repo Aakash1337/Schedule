@@ -285,6 +285,10 @@ function createHarness() {
         workspaceIdValue === WORKSPACE_ID && date === currentPlan.date
           ? { plan: currentPlan, headVersion: 1 }
           : null,
+      findCurrentForDates: async (workspaceIdValue, dates) =>
+        workspaceIdValue === WORKSPACE_ID && dates.includes(currentPlan.date)
+          ? new Map([[currentPlan.date, { plan: currentPlan, headVersion: 1 }]])
+          : new Map(),
       setItemLock: async () => {
         throw new Error("not used");
       },
