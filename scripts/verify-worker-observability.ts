@@ -105,6 +105,14 @@ try {
       ),
       (
         ${randomUUID()},
+        'verification.excluded',
+        '{}'::jsonb,
+        'pending',
+        clock_timestamp() - interval '1 minute',
+        clock_timestamp() - interval '2 minutes'
+      ),
+      (
+        ${randomUUID()},
         'verification.processing',
         '{}'::jsonb,
         'processing',
@@ -187,6 +195,54 @@ try {
   const deletedAttempts = await collectOperationalDatabaseSnapshot(observabilityConnection);
   assert.equal(deletedAttempts.notificationDeliveryAttempts, 0);
   assert.equal(deletedAttempts.notificationDeliveryDelivered, 0);
+
+  const intentWorkspaceId = randomUUID();
+  const fencedReminderId = randomUUID();
+  const readyReminderId = randomUUID();
+  const fencedIntentId = randomUUID();
+  const readyIntentId = randomUUID();
+  const fencedOccurrence = "observability-fenced-occurrence";
+  await writerConnection.sql.begin(async (transaction) => {
+    await transaction`
+      insert into workspaces (id, name)
+      values (${intentWorkspaceId}, 'Observability occurrence fencing')
+    `;
+    await transaction`
+      insert into one_off_reminders (id, workspace_id, title, scheduled_for)
+      values
+        (${fencedReminderId}, ${intentWorkspaceId}, 'Fenced reminder', clock_timestamp() - interval '2 minutes'),
+        (${readyReminderId}, ${intentWorkspaceId}, 'Ready reminder', clock_timestamp() - interval '2 minutes')
+    `;
+    await transaction`
+      insert into notification_intents (
+        id, workspace_id, one_off_reminder_id, kind, occurrence_key, target_type,
+        scheduled_for, local_date, priority, policy_snapshot, local_time_resolution
+      ) values
+        (
+          ${fencedIntentId}, ${intentWorkspaceId}, ${fencedReminderId}, 'one_off',
+          ${fencedOccurrence}, 'one_off', clock_timestamp() - interval '2 minutes',
+          current_date, 50, '{}'::jsonb, 'exact'
+        ),
+        (
+          ${readyIntentId}, ${intentWorkspaceId}, ${readyReminderId}, 'one_off',
+          'observability-ready-occurrence', 'one_off', clock_timestamp() - interval '2 minutes',
+          current_date, 50, '{}'::jsonb, 'exact'
+        )
+    `;
+    await transaction`
+      insert into notification_delivery_commands (
+        id, workspace_id, intent_id, occurrence_key, kind, target_type,
+        scheduled_for, local_date, priority, status, attempts, available_at
+      ) values (
+        ${randomUUID()}, ${intentWorkspaceId}, ${randomUUID()}, ${fencedOccurrence},
+        'one_off', 'one_off', clock_timestamp() - interval '2 minutes', current_date,
+        50, 'pending', 0, clock_timestamp() - interval '2 minutes'
+      )
+    `;
+  });
+  const occurrenceAwareSnapshot = await collectOperationalDatabaseSnapshot(observabilityConnection);
+  assert.equal(occurrenceAwareSnapshot.notificationIntentsReady, 1);
+
   await assert.rejects(
     observabilityConnection.sql`
       insert into workspaces (id, name)
@@ -220,6 +276,7 @@ try {
       port: 0,
       database: observabilityConnection,
       telemetry,
+      excludedOutboxTopics: ["verification.excluded"],
       onListening: (bound) => resolveAddress?.(bound),
     },
     controller.signal,
@@ -247,6 +304,7 @@ try {
   assert.match(metrics, /schedule_outbox_dead_letter 1\n/);
   assert.match(metrics, /schedule_outbox_claimed_total 1\n/);
   assert.match(metrics, /schedule_notification_materialization_created_intents_total 2\n/);
+  assert.match(metrics, /schedule_notification_intents_ready 1\n/);
   assert.match(metrics, /# TYPE schedule_notification_delivery_attempt_records gauge\n/);
   assert.match(metrics, /schedule_notification_delivery_attempt_records 0\n/);
   assert.doesNotMatch(metrics, new RegExp(escapeRegExp(privateEventId), "u"));

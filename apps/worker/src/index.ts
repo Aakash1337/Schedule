@@ -48,6 +48,8 @@ const dispatcher = new OutboxDispatcher(
 );
 const controller = new AbortController();
 const telemetry = new WorkerTelemetry();
+const excludedOutboxTopics =
+  config.WEBHOOK_DELIVERY_MODE === "disabled" ? [WEBHOOK_DELIVERY_TOPIC] : [];
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => controller.abort(signal));
@@ -56,7 +58,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 const services: WorkerService[] = [
   (signal) =>
     runOutboxWorker(config, database, dispatcher, signal, {
-      excludedTopics: config.WEBHOOK_DELIVERY_MODE === "disabled" ? [WEBHOOK_DELIVERY_TOPIC] : [],
+      excludedTopics: excludedOutboxTopics,
       telemetry,
     }),
 ];
@@ -83,6 +85,7 @@ await runWorkerRuntime({
                   database: observabilityDatabase,
                   telemetry,
                   databaseOperationTimeoutMs: 5_000,
+                  excludedOutboxTopics,
                 },
                 signal,
               ),

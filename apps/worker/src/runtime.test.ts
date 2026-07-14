@@ -37,6 +37,19 @@ describe("worker process runtime", () => {
     );
   });
 
+  it("suppresses auxiliary failure classifications during orderly shutdown", async () => {
+    const controller = new AbortController();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await runNonCriticalWorkerService(async (signal) => {
+      controller.abort("SIGTERM");
+      expect(signal.aborted).toBe(true);
+      throw new Error("expected socket closure during shutdown");
+    }, controller.signal);
+
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
   it("aborts sibling services and waits for their cleanup before surfacing a failure", async () => {
     const controller = new AbortController();
     let finishCleanup!: () => void;

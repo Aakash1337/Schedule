@@ -25,10 +25,10 @@ export async function runNonCriticalWorkerService(
 ): Promise<void> {
   try {
     await service(signal);
-    if (!signal.aborted) logAuxiliaryFailure();
   } catch {
-    logAuxiliaryFailure();
+    // Failure details stay inside the optional service boundary.
   }
+  if (!signal.aborted) logAuxiliaryFailure();
 }
 
 /**

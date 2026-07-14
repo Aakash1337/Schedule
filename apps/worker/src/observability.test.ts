@@ -151,12 +151,15 @@ describe("worker telemetry", () => {
 describe("operational database snapshot", () => {
   it("normalizes the single aggregate row without retaining source identifiers", async () => {
     const sql = vi.fn(async () => [{ ...databaseSnapshot }]);
-    await expect(collectOperationalDatabaseSnapshot(databaseWithSql(sql))).resolves.toEqual(
-      databaseSnapshot,
-    );
+    await expect(
+      collectOperationalDatabaseSnapshot(databaseWithSql(sql), 5_000, ["webhook.delivery.v1"]),
+    ).resolves.toEqual(databaseSnapshot);
     expect(sql).toHaveBeenCalledTimes(1);
-    expect(String(sql.mock.calls[0]?.[0])).not.toContain("title_snapshot");
-    expect(String(sql.mock.calls[0]?.[0])).not.toContain("occurrence_key");
+    const query = sql.mock.calls[0]?.[0].join(" ") ?? "";
+    expect(query).not.toContain("title_snapshot");
+    expect(query).toContain("topic <> all(");
+    expect(query.match(/command\.occurrence_key = intent\.occurrence_key/gu)).toHaveLength(2);
+    expect(sql.mock.calls[0]?.slice(1)).toEqual([["webhook.delivery.v1"], ["webhook.delivery.v1"]]);
   });
 
   it("fails closed on missing or invalid aggregate values", async () => {
@@ -215,7 +218,9 @@ describe("worker observability HTTP server", () => {
 
   it("binds to loopback and serves bounded health, metrics, and method responses", async () => {
     const sql = vi.fn(async (strings: TemplateStringsArray) =>
-      strings.join(" ").includes("select 1") ? [{ healthy: 1 }] : [{ ...databaseSnapshot }],
+      strings.join(" ").includes("observation_clock")
+        ? [{ ...databaseSnapshot }]
+        : [{ healthy: 1 }],
     );
     const running = await startServer(databaseWithSql(sql));
     controllers.push(running.controller);

@@ -169,6 +169,7 @@ describe("worker entrypoint", () => {
         database: mocks.observabilityDatabase,
         telemetry: mocks.telemetry,
         databaseOperationTimeoutMs: 5_000,
+        excludedOutboxTopics: ["webhook.delivery.v1"],
       },
       expect.any(AbortSignal),
     );

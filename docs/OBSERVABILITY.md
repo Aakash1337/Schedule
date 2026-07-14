@@ -76,7 +76,8 @@ deadline also bound the connection pressure of a stalled or over-frequent scrape
 
 Process counters reset when the worker restarts. Queue gauges are a fresh aggregate PostgreSQL
 snapshot. “Ready” means the persisted availability time is no later than PostgreSQL's captured
-clock; future retries do not inflate ready age.
+clock and the event topic is claimable by this worker configuration; future retries and disabled
+webhook-delivery topics do not inflate ready age.
 
 ### Notification materialization
 
@@ -113,7 +114,9 @@ fails, and shutdown does not interrupt the cycle.
 The attempt-record gauges are retained aggregates from PostgreSQL, so they survive a worker restart
 but can decrease when a workspace and its retained history are deleted. They describe Schedule
 claim/receipt state only. A `delivered` receipt remains an adapter assertion and is not independently
-verified phone delivery.
+verified phone delivery. Intent readiness uses the same workspace-plus-occurrence fence as delivery
+claiming, so a rematerialized intent cannot appear ready after that occurrence already crossed the
+delivery boundary.
 
 ## Initial alert guidance
 

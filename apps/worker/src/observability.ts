@@ -224,7 +224,9 @@ function operationalNumber(value: unknown, field: keyof OperationalDatabaseSnaps
 export async function collectOperationalDatabaseSnapshot(
   connection: DatabaseConnection,
   timeoutMs = DEFAULT_DATABASE_OPERATION_TIMEOUT_MS,
+  excludedOutboxTopics: readonly string[] = [],
 ): Promise<OperationalDatabaseSnapshot> {
+  const excludedTopics = [...excludedOutboxTopics];
   const rows = await withDatabaseOperationDeadline(
     connection.sql<OperationalDatabaseRow[]>`
       with observation_clock as (
@@ -232,25 +234,39 @@ export async function collectOperationalDatabaseSnapshot(
     ), outbox as (
       select
         count(*) filter (
-          where status = 'pending' and available_at <= (select observed_at from observation_clock)
+          where status = 'pending'
+            and topic <> all(${excludedTopics}::text[])
+            and available_at <= (select observed_at from observation_clock)
         )::double precision as "outboxReady",
         count(*) filter (where status = 'processing')::double precision as "outboxProcessing",
         count(*) filter (where status = 'dead_letter')::double precision as "outboxDeadLetter",
         coalesce(extract(epoch from (select observed_at from observation_clock) - min(available_at) filter (
-          where status = 'pending' and available_at <= (select observed_at from observation_clock)
+          where status = 'pending'
+            and topic <> all(${excludedTopics}::text[])
+            and available_at <= (select observed_at from observation_clock)
         )), 0)::double precision as "outboxOldestReadyAgeSeconds"
       from outbox_events
     ), intents as (
       select
         count(*) filter (
-          where command.id is null and intent.scheduled_for <= (select observed_at from observation_clock)
+          where intent.scheduled_for <= (select observed_at from observation_clock)
+            and not exists (
+              select 1
+              from notification_delivery_commands as command
+              where command.workspace_id = intent.workspace_id
+                and command.occurrence_key = intent.occurrence_key
+            )
         )::double precision as "notificationIntentsReady",
         coalesce(extract(epoch from (select observed_at from observation_clock) - min(intent.scheduled_for) filter (
-          where command.id is null and intent.scheduled_for <= (select observed_at from observation_clock)
+          where intent.scheduled_for <= (select observed_at from observation_clock)
+            and not exists (
+              select 1
+              from notification_delivery_commands as command
+              where command.workspace_id = intent.workspace_id
+                and command.occurrence_key = intent.occurrence_key
+            )
         )), 0)::double precision as "notificationIntentsOldestReadyAgeSeconds"
       from notification_intents as intent
-      left join notification_delivery_commands as command
-        on command.workspace_id = intent.workspace_id and command.intent_id = intent.id
     ), deliveries as (
       select
         count(*) filter (
@@ -623,6 +639,7 @@ export interface RunWorkerObservabilityServerOptions {
   readonly database: DatabaseConnection;
   readonly telemetry: WorkerTelemetry;
   readonly databaseOperationTimeoutMs?: number;
+  readonly excludedOutboxTopics?: readonly string[];
   readonly onListening?: (address: AddressInfo, server: Server) => void;
 }
 
@@ -644,7 +661,11 @@ export async function runWorkerObservabilityServer(
       readinessCheck: async () =>
         await healthCheckDatabase(options.database, databaseOperationTimeoutMs),
       collectDatabaseSnapshot: async () =>
-        await collectOperationalDatabaseSnapshot(options.database, databaseOperationTimeoutMs),
+        await collectOperationalDatabaseSnapshot(
+          options.database,
+          databaseOperationTimeoutMs,
+          options.excludedOutboxTopics,
+        ),
     }),
   );
 
