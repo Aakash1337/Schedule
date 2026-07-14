@@ -43,7 +43,7 @@ project.
 
 ## Current scorecard
 
-The current audited unit/component suite contains 58 test files and 684 runtime test cases, plus two
+The current audited unit/component suite contains 61 test files and 760 runtime test cases, plus two
 live Chromium integration scenarios. Parameterized state matrices expand into many cases, so this
 number must not be compared as though every case were an independent product feature.
 
@@ -51,8 +51,8 @@ number must not be compared as though every case were an independent product fea
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      23 / 23 |
-| Critical implemented features with CI-registered integration or drills |      13 / 13 |
+| Implemented features with CI-registered evidence                       |      24 / 24 |
+| Critical implemented features with CI-registered integration or drills |      14 / 14 |
 | Partial features with an explicit limitation                           |        1 / 1 |
 | Deferred features incorrectly counted as passing                       |            0 |
 | Missing or stale evidence anchors                                      |            0 |
@@ -228,12 +228,13 @@ The audit deliberately leaves these visible instead of turning them into false g
 - worker process-kill recovery covers crashes before a side effect and after an idempotent side
   effect but before acknowledgement; future external consumers must still enforce event-ID
   idempotency at their own durability boundary;
-- the inbound integration gateway verifier covers real authenticated HTTP routes, all five command
-  kinds, credential workspace isolation, digest-only credentials, idempotent replay, and atomic
-  rollback against disposable PostgreSQL; it also proves bounded retention cleanup deletes only
+- the inbound integration gateway verifier covers real authenticated HTTP routes, credential-scoped
+  Today and backlog/Kanban work-item discovery, all five command kinds, digest-only credentials,
+  idempotent replay, tenant isolation, pagination/filter behavior, and atomic rollback against
+  disposable PostgreSQL; it also proves bounded retention cleanup deletes only
   eligible old receipts/confirmations while preserving fresh, processing, referenced, and audit
-  rows, but does not exercise a Hermes runtime, WhatsApp transport, or natural-language
-  interpretation;
+  rows. It does not exercise a Hermes runtime, WhatsApp transport, provider delivery, or
+  natural-language interpretation;
 - the outbound webhook verifier covers real PostgreSQL endpoint/secret lifecycles, workspace
   isolation, default-empty and replacement subscription state, privacy-thin automatic Today-change
   fan-out, deterministic event identity, immutable delivery/outbox linkage, dead-letter metadata,

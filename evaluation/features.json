@@ -727,6 +727,48 @@
       ]
     },
     {
+      "id": "credential-scoped-integration-work-item-discovery",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/INTEGRATIONS.md",
+        "anchor": "### Work-item discovery"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/integration-gateway.test.ts",
+          "command": "unit",
+          "anchors": [
+            "lists credential-scoped work items with stable filters, paging, and public DTOs",
+            "derives workspace and scope exclusively from the revalidated credential",
+            "rejects invalid filters and paging before entering the unit of work",
+            "fails before listing when the credential workspace has disappeared"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/integration-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "lists credential-scoped work items with stable versions and serialized dates",
+            "passes only validated optional work-item filters and numeric paging",
+            "authenticates work-item reads before rejecting strict query drift",
+            "requires schedule:read credentials before work-item reads"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-integration-gateway.ts",
+          "command": "integration-gateway",
+          "anchors": [
+            "integration-gateway-work-item-discovery",
+            "integration gateway verification passed"
+          ]
+        }
+      ]
+    },
+    {
       "id": "integration-history-retention",
       "status": "implemented",
       "risk": "critical",

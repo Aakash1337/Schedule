@@ -98,6 +98,22 @@ export interface GetIntegrationTodayQuery {
   readonly date: string;
 }
 
+export interface ListIntegrationWorkItemsQuery {
+  readonly principal: IntegrationPrincipal;
+  readonly status?: unknown;
+  readonly priority?: unknown;
+  readonly limit?: unknown;
+  readonly offset?: unknown;
+}
+
+export interface IntegrationWorkItemPageResult {
+  readonly items: readonly IntegrationWorkItemDto[];
+  readonly page: {
+    readonly limit: number;
+    readonly offset: number;
+  };
+}
+
 export interface PrepareIntegrationCommandInput {
   readonly principal: IntegrationPrincipal;
   readonly requestId: string;
@@ -436,6 +452,67 @@ export class GetIntegrationToday {
         headVersion: current.headVersion,
         plan: toJsonValue({ ...plan, request }),
       };
+    });
+  }
+}
+
+function optionalWorkItemStatus(value: unknown): (typeof workItemStatuses)[number] | undefined {
+  if (value === undefined) return undefined;
+  if (!workItemStatuses.includes(value as never)) {
+    throw new DomainError("integration.work_item_status_invalid", "status is not supported.");
+  }
+  return value as (typeof workItemStatuses)[number];
+}
+
+function optionalWorkItemPriority(value: unknown): (typeof workItemPriorities)[number] | undefined {
+  if (value === undefined) return undefined;
+  if (!workItemPriorities.includes(value as never)) {
+    throw new DomainError("integration.work_item_priority_invalid", "priority is not supported.");
+  }
+  return value as (typeof workItemPriorities)[number];
+}
+
+function boundedIntegrationPageValue(
+  value: unknown,
+  field: "limit" | "offset",
+  defaultValue: number,
+  minimum: number,
+  maximum: number,
+): number {
+  if (value === undefined) return defaultValue;
+  if (!Number.isInteger(value) || typeof value !== "number" || value < minimum || value > maximum) {
+    throw new DomainError(
+      `integration.work_item_${field}_invalid`,
+      `${field} must be a whole number between ${minimum} and ${maximum}.`,
+    );
+  }
+  return value;
+}
+
+export class ListIntegrationWorkItems {
+  constructor(
+    private readonly unitOfWork: IntegrationUnitOfWork,
+    private readonly clock: Clock,
+  ) {}
+
+  execute(query: ListIntegrationWorkItemsQuery): Promise<IntegrationWorkItemPageResult> {
+    const now = validNow(this.clock);
+    const status = optionalWorkItemStatus(query.status);
+    const priority = optionalWorkItemPriority(query.priority);
+    const limit = boundedIntegrationPageValue(query.limit, "limit", 100, 1, 200);
+    const offset = boundedIntegrationPageValue(query.offset, "offset", 0, 0, 1_000_000);
+    return this.unitOfWork.run(async ({ credentials, workspaces, workItems }) => {
+      const credential = await revalidateCredential(
+        credentials,
+        query.principal,
+        "schedule:read",
+        now,
+      );
+      if ((await workspaces.findById(credential.workspaceId)) === null) {
+        throw new DomainError("workspace.not_found", "The workspace does not exist.");
+      }
+      const items = await workItems.list(credential.workspaceId, status, priority, limit, offset);
+      return { items: items.map(toWorkItemDto), page: { limit, offset } };
     });
   }
 }

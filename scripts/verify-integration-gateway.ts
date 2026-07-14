@@ -114,6 +114,29 @@ interface ErrorEnvelope {
   readonly requestId: string;
 }
 
+interface IntegrationWorkItem {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly title: string;
+  readonly description: string | null;
+  readonly status: string;
+  readonly priority: string;
+  readonly planningDurationMinutes: number;
+  readonly dueOn: string | null;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+interface IntegrationWorkItemListEnvelope {
+  readonly version: typeof VERSION;
+  readonly requestId: string;
+  readonly data: {
+    readonly items: readonly IntegrationWorkItem[];
+    readonly page: { readonly limit: number; readonly offset: number };
+  };
+}
+
 function authorization(token: string): { readonly authorization: string } {
   return { authorization: `Bearer ${token}` };
 }
@@ -684,6 +707,292 @@ try {
     },
   });
   assert.equal(createIsolatedWorkItem.statusCode, 201, createIsolatedWorkItem.body);
+
+  const createPrimaryDiscoveryCandidate = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${primaryWorkspaceId}/work-items`,
+    payload: {
+      title: "Gateway discovery candidate",
+      description: "Returned by the authenticated discovery endpoint",
+      status: "blocked",
+      priority: "urgent",
+      planningDurationMinutes: 45,
+      dueOn: "2026-07-18",
+    },
+  });
+  assert.equal(
+    createPrimaryDiscoveryCandidate.statusCode,
+    201,
+    createPrimaryDiscoveryCandidate.body,
+  );
+  const primaryDiscoveryCandidate = createPrimaryDiscoveryCandidate.json<{ id: string }>();
+
+  const createPrimaryPaginationCandidate = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${primaryWorkspaceId}/work-items`,
+    payload: {
+      title: "Gateway pagination candidate",
+      status: "cancelled",
+      priority: "low",
+      planningDurationMinutes: 20,
+    },
+  });
+  assert.equal(
+    createPrimaryPaginationCandidate.statusCode,
+    201,
+    createPrimaryPaginationCandidate.body,
+  );
+  const primaryPaginationCandidate = createPrimaryPaginationCandidate.json<{ id: string }>();
+
+  interface DiscoveryReadState {
+    readonly primary_work_item_count: number;
+    readonly isolated_work_item_count: number;
+    readonly total_work_item_count: number;
+    readonly primary_audit_count: number;
+    readonly isolated_audit_count: number;
+    readonly total_audit_count: number;
+    readonly primary_integration_audit_count: number;
+    readonly isolated_integration_audit_count: number;
+    readonly total_integration_audit_count: number;
+    readonly integration_request_count: number;
+    readonly integration_confirmation_count: number;
+    readonly work_item_snapshot: string;
+    readonly credential_snapshot: string;
+    readonly integration_request_snapshot: string;
+    readonly integration_confirmation_snapshot: string;
+    readonly audit_event_snapshot: string;
+    readonly primary_item_version: number;
+  }
+
+  const snapshotDiscoveryReadState = async (): Promise<DiscoveryReadState> => {
+    const [state] = await connection!.sql<DiscoveryReadState[]>`
+      select
+        (select count(*)::int from work_items where workspace_id = ${primaryWorkspaceId}) as primary_work_item_count,
+        (select count(*)::int from work_items where workspace_id = ${isolatedWorkspaceId}) as isolated_work_item_count,
+        (select count(*)::int from work_items) as total_work_item_count,
+        (select count(*)::int from audit_events where workspace_id = ${primaryWorkspaceId}) as primary_audit_count,
+        (select count(*)::int from audit_events where workspace_id = ${isolatedWorkspaceId}) as isolated_audit_count,
+        (select count(*)::int from audit_events) as total_audit_count,
+        (select count(*)::int from audit_events where workspace_id = ${primaryWorkspaceId} and action like 'integration.%') as primary_integration_audit_count,
+        (select count(*)::int from audit_events where workspace_id = ${isolatedWorkspaceId} and action like 'integration.%') as isolated_integration_audit_count,
+        (select count(*)::int from audit_events where action like 'integration.%') as total_integration_audit_count,
+        (select count(*)::int from integration_requests) as integration_request_count,
+        (select count(*)::int from integration_confirmations) as integration_confirmation_count,
+        (
+          select coalesce(jsonb_agg(to_jsonb(w) order by w.created_at, w.id)::text, '[]')
+          from work_items w
+        ) as work_item_snapshot,
+        (
+          select coalesce(
+            jsonb_agg(to_jsonb(c) order by c.id)::text,
+            '[]'
+          )
+          from integration_credentials c
+        ) as credential_snapshot,
+        (
+          select coalesce(jsonb_agg(to_jsonb(r) order by r.created_at, r.id)::text, '[]')
+          from integration_requests r
+        ) as integration_request_snapshot,
+        (
+          select coalesce(jsonb_agg(to_jsonb(c) order by c.created_at, c.id)::text, '[]')
+          from integration_confirmations c
+        ) as integration_confirmation_snapshot,
+        (
+          select coalesce(jsonb_agg(to_jsonb(a) order by a.occurred_at, a.id)::text, '[]')
+          from audit_events a
+        ) as audit_event_snapshot,
+        (select version from work_items where id = ${createdWorkItem.id}) as primary_item_version
+    `;
+    assert.ok(state);
+    return state;
+  };
+
+  const workItemDiscoveryStateBefore = await snapshotDiscoveryReadState();
+
+  const listIntegrationWorkItems = async (
+    token: string,
+    query = "",
+  ): Promise<{ readonly response: IntegrationWorkItemListEnvelope; readonly rawBody: string }> => {
+    const response = await app!.inject({
+      method: "GET",
+      url: `/v1/integrations/work-items${query === "" ? "" : `?${query}`}`,
+      headers: authorization(token),
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.headers["cache-control"], "no-store");
+    return { response: response.json<IntegrationWorkItemListEnvelope>(), rawBody: response.body };
+  };
+
+  // EVIDENCE: integration-gateway-work-item-discovery
+  // Discovery is read-only and credential-tenant-bound: adapters can enumerate current IDs/versions
+  // before preparing optimistic writes, without selecting a workspace themselves.
+  const readOnlyDiscovery = await listIntegrationWorkItems(
+    readOnlyCredential.token,
+    "status=blocked&priority=urgent&limit=10&offset=0",
+  );
+  assert.equal(readOnlyDiscovery.response.version, VERSION);
+  assert.notEqual(readOnlyDiscovery.response.requestId, "");
+  assert.deepEqual(readOnlyDiscovery.response.data.page, { limit: 10, offset: 0 });
+  assert.equal(readOnlyDiscovery.response.data.items.length, 1);
+  const discoveredCandidate = readOnlyDiscovery.response.data.items[0];
+  assert.ok(discoveredCandidate);
+  assert.equal(discoveredCandidate.id, primaryDiscoveryCandidate.id);
+  assert.equal(discoveredCandidate.workspaceId, primaryWorkspaceId);
+  assert.equal(discoveredCandidate.status, "blocked");
+  assert.equal(discoveredCandidate.priority, "urgent");
+  assert.equal(discoveredCandidate.planningDurationMinutes, 45);
+  assert.equal(discoveredCandidate.dueOn, "2026-07-18");
+  assert.equal(discoveredCandidate.version, 1);
+  assert.equal(discoveredCandidate.title, "Gateway discovery candidate");
+  assert.equal(discoveredCandidate.description, "Returned by the authenticated discovery endpoint");
+  assert.equal(discoveredCandidate.createdAt, now.toISOString());
+  assert.equal(discoveredCandidate.updatedAt, now.toISOString());
+  assert.equal(
+    new Date(discoveredCandidate.createdAt).toISOString(),
+    discoveredCandidate.createdAt,
+  );
+  assert.equal(
+    new Date(discoveredCandidate.updatedAt).toISOString(),
+    discoveredCandidate.updatedAt,
+  );
+
+  const statusOnlyDiscovery = await listIntegrationWorkItems(
+    readOnlyCredential.token,
+    "status=blocked&limit=10&offset=0",
+  );
+  assert.deepEqual(
+    statusOnlyDiscovery.response.data.items.map((item) => item.id),
+    [primaryDiscoveryCandidate.id],
+  );
+  const priorityOnlyDiscovery = await listIntegrationWorkItems(
+    readOnlyCredential.token,
+    "priority=urgent&limit=10&offset=0",
+  );
+  assert.deepEqual(
+    priorityOnlyDiscovery.response.data.items.map((item) => item.id),
+    [primaryDiscoveryCandidate.id],
+  );
+
+  const defaultDiscovery = await listIntegrationWorkItems(readOnlyCredential.token);
+  assert.deepEqual(defaultDiscovery.response.data.page, { limit: 100, offset: 0 });
+
+  const workItemDiscoveryScopeDenied = await app.inject({
+    method: "GET",
+    url: "/v1/integrations/work-items",
+    headers: authorization(writeOnlyCredential.token),
+  });
+  assertError(workItemDiscoveryScopeDenied, 403, "integration.scope_denied");
+
+  const workItemDiscoveryWorkspaceOverride = await app.inject({
+    method: "GET",
+    url: `/v1/integrations/work-items?workspaceId=${isolatedWorkspaceId}`,
+    headers: authorization(primaryCredential.token),
+  });
+  assertError(workItemDiscoveryWorkspaceOverride, 400, "request.validation_failed");
+
+  const invalidPaginationQueries = ["limit=0", "limit=201", "offset=1000001"];
+  for (const field of ["limit", "offset"] as const) {
+    for (const invalidValue of ["", "%20", "-1", "%2B1", "1.0", "1e2", "0x1", "01"]) {
+      invalidPaginationQueries.push(`${field}=${invalidValue}`);
+    }
+  }
+  for (const invalidPaginationQuery of invalidPaginationQueries) {
+    const invalidPagination = await app.inject({
+      method: "GET",
+      url: `/v1/integrations/work-items?${invalidPaginationQuery}`,
+      headers: authorization(primaryCredential.token),
+    });
+    assertError(invalidPagination, 400, "request.validation_failed");
+  }
+
+  const maximumPaging = await listIntegrationWorkItems(
+    primaryCredential.token,
+    "limit=200&offset=1000000",
+  );
+  assert.deepEqual(maximumPaging.response.data.page, { limit: 200, offset: 1_000_000 });
+  assert.deepEqual(maximumPaging.response.data.items, []);
+
+  const primaryPageZero = await listIntegrationWorkItems(
+    primaryCredential.token,
+    "limit=1&offset=0",
+  );
+  const primaryPageZeroReplay = await listIntegrationWorkItems(
+    primaryCredential.token,
+    "limit=1&offset=0",
+  );
+  const primaryPageOne = await listIntegrationWorkItems(
+    primaryCredential.token,
+    "limit=1&offset=1",
+  );
+  assert.deepEqual(primaryPageZero.response.data.page, { limit: 1, offset: 0 });
+  assert.deepEqual(primaryPageOne.response.data.page, { limit: 1, offset: 1 });
+  assert.equal(primaryPageZero.response.data.items.length, 1);
+  assert.equal(primaryPageOne.response.data.items.length, 1);
+  assert.deepEqual(primaryPageZero.response.data.items, primaryPageZeroReplay.response.data.items);
+  const expectedPrimaryDiscoveryOrder = [
+    createdWorkItem.id,
+    ...[primaryDiscoveryCandidate.id, primaryPaginationCandidate.id].sort(),
+  ];
+  assert.equal(primaryPageZero.response.data.items[0]?.id, expectedPrimaryDiscoveryOrder[0]);
+  assert.equal(primaryPageOne.response.data.items[0]?.id, expectedPrimaryDiscoveryOrder[1]);
+  assert.equal(
+    primaryPageZero.response.data.items.some((item) => item.workspaceId === isolatedWorkspaceId),
+    false,
+  );
+  assert.equal(
+    primaryPageOne.response.data.items.some((item) => item.workspaceId === isolatedWorkspaceId),
+    false,
+  );
+
+  const primaryFullDiscovery = await listIntegrationWorkItems(
+    primaryCredential.token,
+    "limit=200&offset=0",
+  );
+  assert.deepEqual(primaryFullDiscovery.response.data.page, { limit: 200, offset: 0 });
+  assert.deepEqual(
+    primaryFullDiscovery.response.data.items.map((item) => item.id),
+    expectedPrimaryDiscoveryOrder,
+  );
+  assert.equal(
+    primaryFullDiscovery.response.data.items.every(
+      (item) => item.workspaceId === primaryWorkspaceId,
+    ),
+    true,
+  );
+  assert.equal(
+    primaryFullDiscovery.response.data.items.some((item) => item.id === createdWorkItem.id),
+    true,
+  );
+  assert.equal(
+    primaryFullDiscovery.response.data.items.some(
+      (item) => item.id === primaryDiscoveryCandidate.id,
+    ),
+    true,
+  );
+  assert.equal(
+    primaryFullDiscovery.response.data.items.some(
+      (item) => item.id === primaryPaginationCandidate.id,
+    ),
+    true,
+  );
+
+  const isolatedDiscovery = await listIntegrationWorkItems(
+    isolatedCredential.token,
+    "limit=10&offset=0",
+  );
+  assert.equal(isolatedDiscovery.response.data.items.length, 1);
+  assert.equal(isolatedDiscovery.response.data.items[0]?.workspaceId, isolatedWorkspaceId);
+  assert.equal(
+    isolatedDiscovery.response.data.items.some((item) => item.id === createdWorkItem.id),
+    false,
+  );
+  assert.equal(
+    isolatedDiscovery.response.data.items.some((item) => item.id === primaryDiscoveryCandidate.id),
+    false,
+  );
+
+  const workItemDiscoveryStateAfter = await snapshotDiscoveryReadState();
+  assert.deepEqual(workItemDiscoveryStateAfter, workItemDiscoveryStateBefore);
 
   const generatePlan = async (targetWorkspaceId: string, seed: string) => {
     const response = await app!.inject({

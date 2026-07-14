@@ -104,18 +104,54 @@ Successful responses are non-cacheable and use one envelope:
 The prepare response uses the caller's `requestId`, confirm uses the stable `confirmationId`, and
 Today uses the server's HTTP request ID. The command-specific value is always inside `data`.
 
-The only routes in version 1 are:
+The version 1 routes are:
 
-| Method | Route                               | Scope            | Behavior                                     |
-| ------ | ----------------------------------- | ---------------- | -------------------------------------------- |
-| `GET`  | `/v1/integrations/today?date=DATE`  | `schedule:read`  | Read the credential workspace's current plan |
-| `POST` | `/v1/integrations/commands/prepare` | `schedule:write` | Validate and prepare one exact mutation      |
-| `POST` | `/v1/integrations/commands/confirm` | `schedule:write` | Execute one prepared mutation idempotently   |
+| Method | Route                                                          | Scope            | Behavior                                                      |
+| ------ | -------------------------------------------------------------- | ---------------- | ------------------------------------------------------------- |
+| `GET`  | `/v1/integrations/today?date=DATE`                             | `schedule:read`  | Read the credential workspace's current plan                  |
+| `GET`  | `/v1/integrations/work-items?status=&priority=&limit=&offset=` | `schedule:read`  | Discover the credential workspace's backlog/Kanban work items |
+| `POST` | `/v1/integrations/commands/prepare`                            | `schedule:write` | Validate and prepare one exact mutation                       |
+| `POST` | `/v1/integrations/commands/confirm`                            | `schedule:write` | Execute one prepared mutation idempotently                    |
 
 `DATE` is a real Gregorian local date in `YYYY-MM-DD` form. Today obtains the workspace exclusively
 from the credential and never creates a missing plan. Its response `data` is
 `{workspaceId,date,headVersion,plan}`; `plan` is the same public current-plan representation returned
 by the local product API.
+
+### Work-item discovery
+
+`GET /v1/integrations/work-items` is an authenticated, provider-neutral read surface for an adapter
+that needs to locate work before it prepares a structured mutation. It requires `schedule:read`.
+The server revalidates the stored credential and derives the workspace and scopes only from that
+credential. The route has no `workspaceId` parameter; a supplied `workspaceId`, unknown query field,
+or invalid value is rejected rather than treated as an override.
+
+The only optional query fields are:
+
+| Field      | Allowed values / range                                                 | Default |
+| ---------- | ---------------------------------------------------------------------- | ------- |
+| `status`   | `backlog`, `planned`, `in_progress`, `blocked`, `done`, or `cancelled` | omitted |
+| `priority` | `none`, `low`, `medium`, `high`, or `urgent`                           | omitted |
+| `limit`    | Canonical unsigned base-10 integer from `1` through `200`              | `100`   |
+| `offset`   | Canonical unsigned base-10 integer from `0` through `1000000`          | `0`     |
+
+`limit` and `offset` default only when absent. When present, each must use canonical unsigned
+base-10 decimal syntax: no empty value, sign, whitespace, decimal point, exponent, hexadecimal
+notation, or noncanonical leading zero is accepted. For example, `limit=25` and `offset=0` are valid;
+`limit=025`, `limit=+25`, `limit=25.0`, and `offset=00` are rejected.
+
+The response keeps the normal `schedule.integration/v1` no-store envelope. Its `data` is
+`{items,page}`, where `page` is `{limit,offset}` and each item is the public
+`IntegrationWorkItemDto`: `id`, `workspaceId`, `title`, `description`, `status`, `priority`,
+`planningDurationMinutes`, `dueOn`, `version`, `createdAt`, and `updatedAt`. Timestamps are ISO-8601
+UTC strings and `dueOn` is either `null` or the local `YYYY-MM-DD` value.
+
+Results use the repository's stable order for one query, but offset pagination is not a snapshot.
+Concurrent creates or updates can move later pages. An adapter should reconcile by ID, tolerate a
+duplicate or skipped item between pages, and re-read a selected work item from a fresh discovery
+response before it prepares `work_item.update`. The latest returned `version` must be supplied as
+`expectedVersion`; a conflict is a signal to re-read and ask again, never to overwrite the newer
+state.
 
 ### Prepare envelope
 
@@ -261,6 +297,17 @@ curl --fail-with-body \
   'https://schedule.example.test/v1/integrations/today?date=2026-07-13'
 ```
 
+Discover backlog work before proposing an update:
+
+```bash
+curl --fail-with-body \
+  -H 'Authorization: Bearer <credential-uuid>.<base64url-secret>' \
+  'https://schedule.example.test/v1/integrations/work-items?status=backlog&priority=high&limit=25&offset=0'
+```
+
+Treat this list as a discovery result, not a durable conversational snapshot. Before preparing an
+update, re-read the chosen item and use its fresh `version` as `expectedVersion`.
+
 Prepare an update:
 
 ```bash
@@ -342,6 +389,10 @@ credential-scoped `GET /v1/integrations/today?date=<YYYY-MM-DD>` route for the s
 read response is authoritative: its `headVersion` may already be greater than the notification
 because delivery is at least once and unordered. The adapter should update its projection from that
 response, not infer a task change from the event or attach reminder semantics to it.
+
+If the adapter also maintains a backlog or Kanban projection, it can poll the credential-scoped
+`GET /v1/integrations/work-items` route and reconcile item IDs and versions. The event never grants
+a broader workspace read, and an adapter must still re-read before proposing a write.
 
 Polling remains mandatory as a fallback. An endpoint has no subscription by default; delivery may
 also be globally disabled, delayed, dead-lettered, or interrupted during key rotation. Polling and
@@ -432,6 +483,9 @@ security-sensitive recovery.
 
 - There is no Hermes runtime or WhatsApp transport in this repository. No endpoint accepts a chat
   message, audio, image, or natural-language instruction.
+- Work-item discovery makes a future Hermes-style adapter capable of finding credential-scoped
+  backlog/Kanban IDs and versions. It does not implement provider delivery, message ingestion,
+  intent parsing, human/account binding, or phone alerts.
 - A disabled-by-default [outbound webhook substrate](./WEBHOOKS.md) can send operator-queued signed
   test events and explicitly subscribed `schedule.changed.v1` invalidations. It cannot send schedule
   contents, push-notification requests, reminders, or end-to-end phone delivery receipts. An adapter
