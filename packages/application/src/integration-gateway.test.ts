@@ -311,6 +311,7 @@ function createHarness() {
           activityState: input.type === "completion_reversed" ? "pending" : input.type,
           activityEvent: event,
           headVersion: input.expectedHeadVersion + 1,
+          replayed: false,
         };
       },
       lockDay: async () => undefined,

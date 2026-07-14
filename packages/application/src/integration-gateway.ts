@@ -1389,7 +1389,10 @@ async function dispatchCommand(
         idempotencyKey: nestedIdempotencyKey,
         now,
       });
-      if (["completed", "skipped", "deferred", "dismissed"].includes(result.activityState)) {
+      if (
+        !result.replayed &&
+        ["completed", "skipped", "deferred", "dismissed"].includes(result.activityState)
+      ) {
         await context.notifications.deleteIntentsForTarget(
           credential.workspaceId,
           "daily_plan",
@@ -1398,6 +1401,7 @@ async function dispatchCommand(
         );
       }
       if (
+        !result.replayed &&
         result.activityState === "completed" &&
         result.activityEvent.sourceType === "work_item" &&
         result.activityEvent.workItemId !== null

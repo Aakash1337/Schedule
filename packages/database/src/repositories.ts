@@ -41,7 +41,7 @@ import type {
   IntegrationUnitOfWork,
   NotificationRepository,
   PlanItemLockResult,
-  PlanItemActivityResult,
+  RecordedPlanItemActivityResult,
   PlanMutationRecord,
   PlanningWorkItemGraph,
   RecordPlanItemActivityInput,
@@ -2462,7 +2462,9 @@ export class PostgresDailyPlanRepository implements DailyPlanRepository {
     };
   }
 
-  async recordItemActivity(input: RecordPlanItemActivityInput): Promise<PlanItemActivityResult> {
+  async recordItemActivity(
+    input: RecordPlanItemActivityInput,
+  ): Promise<RecordedPlanItemActivityResult> {
     const normalizedReason = input.reason?.trim() || null;
     const payloadHash = createHash("sha256")
       .update(
@@ -2526,6 +2528,7 @@ export class PostgresDailyPlanRepository implements DailyPlanRepository {
         activityState: prior.type === "completion_reversed" ? "pending" : prior.type,
         activityEvent: mapActivityEvent(activity),
         headVersion: prior.resultHeadVersion,
+        replayed: true,
       };
     }
     const [head] = await this.database
@@ -2771,6 +2774,7 @@ export class PostgresDailyPlanRepository implements DailyPlanRepository {
       activityState,
       activityEvent,
       headVersion: resultHeadVersion,
+      replayed: false,
     };
   }
 

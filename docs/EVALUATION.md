@@ -46,7 +46,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 72 test files and 1,033 runtime test cases. The 73rd
+The package and script runners currently execute 72 test files and 1,034 runtime test cases. The 73rd
 test file is the Playwright specification, which contains four live Chromium integration scenarios.
 Parameterized state matrices expand into many cases, so this number must not be compared as though
 every case were an independent product feature.
@@ -70,11 +70,11 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.89% |   71.39% |    67.63% | 60.20% |
+| Whole repository, measured |     59.82% |   71.42% |    67.60% | 60.13% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     96.31% |   92.32% |    96.81% | 97.30% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     90.84% |   84.05% |    99.69% | 91.61% |
+| Application, measured      |     90.84% |   84.11% |    99.69% | 91.61% |
 | Application, required      |        83% |      76% |       98% |    83% |
 | API, measured              |     87.55% |   78.52% |    77.25% | 88.72% |
 | API, required              |        73% |      69% |       57% |    74% |
@@ -83,8 +83,8 @@ quality levels.
 | Web, measured              |     86.39% |   75.00% |    76.85% | 87.03% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 6,921 of 11,555 statements, 5,107 of 7,153 branches,
-1,544 of 2,283 functions, and 6,514 of 10,820 lines.
+The whole-repository totals are 6,921 of 11,569 statements, 5,113 of 7,159 branches,
+1,544 of 2,284 functions, and 6,514 of 10,833 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global

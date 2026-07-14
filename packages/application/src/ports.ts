@@ -79,6 +79,11 @@ export interface PlanItemActivityResult {
   readonly headVersion: number;
 }
 
+/** Repository-only metadata used to keep idempotent replays free of new side effects. */
+export interface RecordedPlanItemActivityResult extends PlanItemActivityResult {
+  readonly replayed: boolean;
+}
+
 export interface PlanMutationRecord {
   readonly workspaceId: WorkspaceId;
   readonly date: LocalDate;
@@ -318,7 +323,7 @@ export interface DailyPlanRepository {
   insertForRevision(plan: DailyPlan): Promise<DailyPlan>;
   findCurrent(workspaceId: WorkspaceId, date: LocalDate): Promise<CurrentDailyPlan | null>;
   setItemLock(input: SetPlanItemLockInput): Promise<PlanItemLockResult>;
-  recordItemActivity(input: RecordPlanItemActivityInput): Promise<PlanItemActivityResult>;
+  recordItemActivity(input: RecordPlanItemActivityInput): Promise<RecordedPlanItemActivityResult>;
   lockDay(workspaceId: WorkspaceId, date: LocalDate): Promise<void>;
   findMutation(
     workspaceId: WorkspaceId,

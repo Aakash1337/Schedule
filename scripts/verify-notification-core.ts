@@ -93,6 +93,16 @@ try {
   });
   assert.equal(workItemResponse.statusCode, 201, workItemResponse.body);
   const workItemId = workItemResponse.json<{ id: string }>().id;
+  const remainingWorkItemResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${workspaceId}/work-items`,
+    payload: {
+      title: "Remaining notification verification task",
+      priority: "medium",
+      planningDurationMinutes: 30,
+    },
+  });
+  assert.equal(remainingWorkItemResponse.statusCode, 201, remainingWorkItemResponse.body);
 
   const planResponse = await app.inject({
     method: "POST",
@@ -106,17 +116,22 @@ try {
           endsAt: "2026-07-20T11:00:00.000Z",
         },
       ],
-      targetMinutes: 30,
-      targetTaskCount: 1,
+      targetMinutes: 60,
+      targetTaskCount: 2,
       availableContexts: [],
       seed: "notification-core-verification",
       requestRevision: 1,
     },
   });
   assert.equal(planResponse.statusCode, 200, planResponse.body);
-  const plan = planResponse.json<{ id: string; items: { id: string }[] }>();
-  assert.equal(plan.items.length, 1);
+  const plan = planResponse.json<{
+    id: string;
+    items: { id: string; workItemId: string | null }[];
+  }>();
+  assert.equal(plan.items.length, 2);
   const planId = plan.id;
+  const duePlanItem = plan.items.find((item) => item.workItemId === workItemId);
+  assert.ok(duePlanItem !== undefined);
 
   const blockResponse = await app.inject({
     method: "POST",
@@ -345,9 +360,9 @@ try {
   assert.equal(rematerializeWorkItem.statusCode, 200, rematerializeWorkItem.body);
   assert.equal(rematerializeWorkItem.json<{ created: unknown[] }>().created.length, 1);
 
-  const completePlanItem = await app.inject({
+  const completePlanItemRequest = {
     method: "POST",
-    url: `/v1/workspaces/${workspaceId}/plans/2026-07-20/items/${plan.items[0]!.id}/activity-events`,
+    url: `/v1/workspaces/${workspaceId}/plans/2026-07-20/items/${duePlanItem.id}/activity-events`,
     headers: { "idempotency-key": "notification-core-completion" },
     payload: {
       expectedPlanId: planId,
@@ -357,7 +372,8 @@ try {
       timeZone: "UTC",
       durationMinutes: 30,
     },
-  });
+  } as const;
+  const completePlanItem = await app.inject(completePlanItemRequest);
   assert.equal(completePlanItem.statusCode, 200, completePlanItem.body);
   const planIntentKinds = await connection.sql<{ kind: string; count: number }[]>`
     select kind, count(*)::integer as count from notification_intents
@@ -377,6 +393,22 @@ try {
     dueIntentAfterCompletion?.count,
     0,
     "completing a work-backed plan item must invalidate its due reminder",
+  );
+  const rematerializeRemainingFollowUp = await app.inject(materializationRequest);
+  assert.equal(rematerializeRemainingFollowUp.statusCode, 200, rematerializeRemainingFollowUp.body);
+  assert.equal(rematerializeRemainingFollowUp.json<{ created: unknown[] }>().created.length, 1);
+  const replayCompletion = await app.inject(completePlanItemRequest);
+  assert.equal(replayCompletion.statusCode, 200, replayCompletion.body);
+  assert.deepEqual(replayCompletion.json(), completePlanItem.json());
+  const [followUpAfterReplay] = await connection.sql<{ count: number }[]>`
+    select count(*)::integer as count from notification_intents
+    where workspace_id = ${workspaceId} and daily_plan_id = ${planId}
+      and kind = 'daily_follow_up'
+  `;
+  assert.equal(
+    followUpAfterReplay?.count,
+    1,
+    "an idempotent activity replay must preserve a newly rematerialized follow-up",
   );
 
   const [outboxAfter] = await connection.sql<{ count: number }[]>`
@@ -728,7 +760,7 @@ try {
   );
 
   console.log(
-    "Notification policy core verification passed: six source kinds, concurrent exact-once materialization, source and target invalidation, selective terminal cleanup, fail-closed production query/candidate limits, exhaustive tenant/target constraints, target deletion cleanup, and no delivery side effects.",
+    "Notification policy core verification passed: six source kinds, concurrent exact-once materialization, source and target invalidation, replay-safe selective terminal cleanup, fail-closed production query/candidate limits, exhaustive tenant/target constraints, target deletion cleanup, and no delivery side effects.",
   );
 } finally {
   await removeWorkspaces();

@@ -73,7 +73,10 @@ export class RecordPlanItemActivity {
         idempotencyKey,
         now,
       });
-      if (["completed", "skipped", "deferred", "dismissed"].includes(result.activityState)) {
+      if (
+        !result.replayed &&
+        ["completed", "skipped", "deferred", "dismissed"].includes(result.activityState)
+      ) {
         await notifications.deleteIntentsForTarget(
           command.workspaceId,
           "daily_plan",
@@ -82,6 +85,7 @@ export class RecordPlanItemActivity {
         );
       }
       if (
+        !result.replayed &&
         result.activityState === "completed" &&
         result.activityEvent.sourceType === "work_item" &&
         result.activityEvent.workItemId !== null
@@ -93,7 +97,13 @@ export class RecordPlanItemActivity {
           "work_item_due",
         );
       }
-      return result;
+      return {
+        planId: result.planId,
+        itemId: result.itemId,
+        activityState: result.activityState,
+        activityEvent: result.activityEvent,
+        headVersion: result.headVersion,
+      };
     });
   }
 }

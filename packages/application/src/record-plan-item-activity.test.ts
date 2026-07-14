@@ -22,7 +22,7 @@ describe("RecordPlanItemActivity", () => {
   const occurredAt = new Date("2026-07-15T10:00:00.000Z");
   const now = new Date("2026-07-15T10:01:00.000Z");
 
-  function harness(clockNow = now, source: "routine" | "work_item" = "routine") {
+  function harness(clockNow = now, source: "routine" | "work_item" = "routine", replayed = false) {
     let captured: RecordPlanItemActivityInput | null = null;
     let transactionRuns = 0;
     const invalidatedTargets: string[] = [];
@@ -55,6 +55,7 @@ describe("RecordPlanItemActivity", () => {
               recordedAt: input.now,
             }),
             headVersion: input.expectedHeadVersion + 1,
+            replayed,
           };
         },
       } as TransactionContext["dailyPlans"],
@@ -191,6 +192,25 @@ describe("RecordPlanItemActivity", () => {
       `daily_plan:${plan}:daily_follow_up`,
       `work_item:${workItemId("plan-item-activity-work")}:work_item_due`,
     ]);
+  });
+
+  it("does not invalidate newly materialized reminders when a terminal action replays", async () => {
+    const test = harness(now, "work_item", true);
+    const result = await test.useCase.execute({
+      workspaceId: workspace,
+      date: localDate("2026-07-15"),
+      expectedPlanId: plan,
+      itemId: item,
+      expectedHeadVersion: 4,
+      type: "completed",
+      occurredAt,
+      timeZone: "UTC",
+      durationMinutes: 31,
+      idempotencyKey: "replay-completion",
+    });
+
+    expect(result).not.toHaveProperty("replayed");
+    expect(test.invalidatedTargets).toEqual([]);
   });
 
   it.each([

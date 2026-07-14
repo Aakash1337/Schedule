@@ -58,7 +58,8 @@ intents in the same transaction as the source change. Terminal activity removes 
 `daily_follow_up` for the plan, and a completed work-backed item also removes its `work_item_due`
 intent, so unrelated plan-window reminders survive. The normal API and confirmed integration
 gateway acquire the same workspace notification lock before these mutations. A later materializer
-recreates only occurrences that remain valid under current state.
+recreates only occurrences that remain valid under current state. Idempotent activity replays are
+identified by the persistence boundary and never repeat invalidation side effects.
 
 ## Time and selection semantics
 
