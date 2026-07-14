@@ -23,6 +23,7 @@ import {
   ConfirmIntegrationCommand,
   GetIntegrationToday,
   ListIntegrationCredentials,
+  ListIntegrationWorkItems,
   PrepareIntegrationCommand,
   ProvisionIntegrationCredential,
   RevokeIntegrationCredential,
@@ -57,6 +58,7 @@ function createHarness() {
   let currentTime = new Date(BASE_NOW);
   let failAudit = false;
   let failRequestSucceed = false;
+  let unitOfWorkRuns = 0;
   const workspace = createWorkspace({
     id: WORKSPACE_ID,
     name: "Integration Test",
@@ -82,6 +84,13 @@ function createHarness() {
   const scheduleBlocks: ScheduleBlock[] = [];
   const audits: AuditEventRecord[] = [];
   const activityInputs: RecordPlanItemActivityInput[] = [];
+  const workItemListCalls: {
+    workspaceId: string;
+    status: string | undefined;
+    priority: string | undefined;
+    limit: number;
+    offset: number;
+  }[] = [];
   const verifyCalls: { secret: string; secretHash: string }[] = [];
   const currentPlan: DailyPlan = {
     id: PLAN_ID,
@@ -214,7 +223,23 @@ function createHarness() {
     workItems: {
       findById: async (workspaceIdValue, id) =>
         workItems.find((item) => item.workspaceId === workspaceIdValue && item.id === id) ?? null,
-      list: async () => workItems,
+      list: async (workspaceIdValue, status, priority, limit, offset) => {
+        workItemListCalls.push({
+          workspaceId: workspaceIdValue,
+          status,
+          priority,
+          limit,
+          offset,
+        });
+        return workItems
+          .filter(
+            (item) =>
+              item.workspaceId === workspaceIdValue &&
+              (status === undefined || item.status === status) &&
+              (priority === undefined || item.priority === priority),
+          )
+          .slice(offset, offset + limit);
+      },
       listPlanningCandidates: async () => workItems,
       insert: async (item) => {
         workItems.push(item);
@@ -298,6 +323,7 @@ function createHarness() {
 
   const unitOfWork: IntegrationUnitOfWork = {
     run: async (operation) => {
+      unitOfWorkRuns += 1;
       const snapshot = {
         credentials: copy(credentials),
         confirmations: copy(confirmations),
@@ -346,6 +372,10 @@ function createHarness() {
     scheduleBlocks,
     audits,
     activityInputs,
+    workItemListCalls,
+    getUnitOfWorkRuns() {
+      return unitOfWorkRuns;
+    },
     verifyCalls,
     setNow(value: string) {
       currentTime = new Date(value);
@@ -359,6 +389,7 @@ function createHarness() {
     services: {
       authenticate: new AuthenticateIntegrationCredential(unitOfWork, clock, secretVerifier),
       getToday: new GetIntegrationToday(unitOfWork, clock),
+      listWorkItems: new ListIntegrationWorkItems(unitOfWork, clock),
       prepare: new PrepareIntegrationCommand(unitOfWork, clock),
       confirm: new ConfirmIntegrationCommand(unitOfWork, clock),
       provision: new ProvisionIntegrationCredential(unitOfWork, clock),
@@ -481,6 +512,170 @@ describe("integration credential boundary", () => {
         secretHash: "A".repeat(64),
       }),
     ).toThrow(expect.objectContaining({ code: "integration.secret_hash_invalid" }));
+  });
+});
+
+describe("integration work-item reads", () => {
+  it("lists credential-scoped work items with stable filters, paging, and public DTOs", async () => {
+    const test = createHarness();
+    const first = createWorkItem({
+      id: workItemId("50000000-0000-4000-8000-000000000011"),
+      workspaceId: WORKSPACE_ID,
+      title: "First",
+      status: "backlog",
+      priority: "medium",
+      now: new Date("2026-07-10T08:00:00.000Z"),
+    });
+    const second = createWorkItem({
+      id: workItemId("50000000-0000-4000-8000-000000000012"),
+      workspaceId: WORKSPACE_ID,
+      title: "Second",
+      status: "in_progress",
+      priority: "high",
+      now: new Date("2026-07-11T08:00:00.000Z"),
+    });
+    const third = createWorkItem({
+      id: workItemId("50000000-0000-4000-8000-000000000013"),
+      workspaceId: WORKSPACE_ID,
+      title: "Third",
+      status: "backlog",
+      priority: "medium",
+      now: new Date("2026-07-12T08:00:00.000Z"),
+    });
+    test.workItems.push(first, second, third);
+
+    const filtered = await test.services.listWorkItems.execute({
+      principal: test.principal,
+      status: "backlog",
+      priority: "medium",
+      limit: 1,
+      offset: 1,
+    });
+    expect(filtered).toEqual({
+      items: [
+        expect.objectContaining({
+          id: third.id,
+          workspaceId: WORKSPACE_ID,
+          title: "Third",
+          version: 1,
+          createdAt: "2026-07-12T08:00:00.000Z",
+          updatedAt: "2026-07-12T08:00:00.000Z",
+        }),
+      ],
+      page: { limit: 1, offset: 1 },
+    });
+    expect(test.workItemListCalls).toEqual([
+      {
+        workspaceId: WORKSPACE_ID,
+        status: "backlog",
+        priority: "medium",
+        limit: 1,
+        offset: 1,
+      },
+    ]);
+    expect(test.audits).toHaveLength(0);
+
+    const defaults = await test.services.listWorkItems.execute({ principal: test.principal });
+    expect(defaults.items.map((item) => item.id)).toEqual([first.id, second.id, third.id]);
+    expect(defaults.page).toEqual({ limit: 100, offset: 0 });
+  });
+
+  it("derives workspace and scope exclusively from the revalidated credential", async () => {
+    const test = createHarness();
+    const primary = createWorkItem({
+      id: workItemId("50000000-0000-4000-8000-000000000021"),
+      workspaceId: WORKSPACE_ID,
+      title: "Private",
+      now: BASE_NOW,
+    });
+    const foreign = createWorkItem({
+      id: workItemId("50000000-0000-4000-8000-000000000022"),
+      workspaceId: OTHER_WORKSPACE_ID,
+      title: "Foreign",
+      now: BASE_NOW,
+    });
+    test.workItems.push(primary, foreign);
+
+    const result = await test.services.listWorkItems.execute({
+      principal: { ...test.principal, workspaceId: OTHER_WORKSPACE_ID, scopes: [] },
+    });
+    expect(result.items.map((item) => item.id)).toEqual([primary.id]);
+    expect(test.workItemListCalls[0]?.workspaceId).toBe(WORKSPACE_ID);
+
+    test.credentials[0] = { ...test.credentials[0]!, scopes: ["schedule:write"] };
+    await expect(
+      test.services.listWorkItems.execute({ principal: test.principal }),
+    ).rejects.toMatchObject({ code: "integration.scope_denied" });
+    expect(test.workItemListCalls).toHaveLength(1);
+  });
+
+  it("revalidates credential revocation and expiry before listing", async () => {
+    for (const credentialPatch of [
+      { active: false, revokedAt: BASE_NOW },
+      { expiresAt: BASE_NOW },
+    ] as const) {
+      const test = createHarness();
+      test.credentials[0] = { ...test.credentials[0]!, ...credentialPatch };
+      await expect(
+        test.services.listWorkItems.execute({ principal: test.principal }),
+      ).rejects.toMatchObject({ code: "integration.authentication_failed" });
+      expect(test.workItemListCalls).toHaveLength(0);
+    }
+  });
+
+  it("requires a valid clock timestamp before opening the unit of work", () => {
+    const test = createHarness();
+    const service = new ListIntegrationWorkItems(test.unitOfWork, {
+      now: () => new Date("not-a-timestamp"),
+    });
+    expect(() => service.execute({ principal: test.principal })).toThrow(
+      expect.objectContaining({ code: "integration.timestamp_invalid" }),
+    );
+    expect(test.getUnitOfWorkRuns()).toBe(0);
+    expect(test.workItemListCalls).toHaveLength(0);
+  });
+
+  it("rejects invalid filters and paging before entering the unit of work", async () => {
+    const invalidQueries = [
+      { status: "unknown" },
+      { priority: "unknown" },
+      { limit: 0 },
+      { limit: 201 },
+      { limit: 1.5 },
+      { offset: -1 },
+      { offset: 1_000_001 },
+      { offset: 0.5 },
+    ];
+    for (const query of invalidQueries) {
+      const test = createHarness();
+      const before = test.getUnitOfWorkRuns();
+      expect(() =>
+        test.services.listWorkItems.execute({ principal: test.principal, ...query }),
+      ).toThrow(
+        expect.objectContaining({ code: expect.stringMatching(/^integration\.work_item_/) }),
+      );
+      expect(test.getUnitOfWorkRuns()).toBe(before);
+      expect(test.workItemListCalls).toHaveLength(0);
+    }
+  });
+
+  it("fails before listing when the credential workspace has disappeared", async () => {
+    const test = createHarness();
+    test.credentials.push({
+      ...test.credentials[0]!,
+      id: OTHER_CREDENTIAL_ID,
+      workspaceId: OTHER_WORKSPACE_ID,
+    });
+    await expect(
+      test.services.listWorkItems.execute({
+        principal: {
+          credentialId: OTHER_CREDENTIAL_ID,
+          workspaceId: WORKSPACE_ID,
+          scopes: ["schedule:read"],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "workspace.not_found" });
+    expect(test.workItemListCalls).toHaveLength(0);
   });
 });
 

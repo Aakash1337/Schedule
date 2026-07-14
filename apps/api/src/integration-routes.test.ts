@@ -57,6 +57,27 @@ function integrationServices(): IntegrationServices {
       scopes: ["schedule:read", "schedule:write"],
     })),
     getToday: vi.fn(async () => ({ date: "2026-07-13", plan: null }) as never),
+    listWorkItems: vi.fn(
+      async () =>
+        ({
+          items: [
+            {
+              id: RESOURCE_ID,
+              workspaceId: WORKSPACE_ID,
+              title: "Call the dentist",
+              description: null,
+              status: "planned",
+              priority: "high",
+              planningDurationMinutes: 45,
+              dueOn: "2026-07-15",
+              version: 3,
+              createdAt: "2026-07-13T12:00:00.000Z",
+              updatedAt: "2026-07-13T13:00:00.000Z",
+            },
+          ],
+          page: { limit: 100, offset: 0 },
+        }) as never,
+    ),
     prepareCommand: vi.fn(async (input) => {
       const display = commandDisplay(input.command);
       return {
@@ -385,6 +406,152 @@ describe("integration gateway routes", () => {
       principal: expect.objectContaining({ workspaceId: WORKSPACE_ID }),
       date: "2026-07-13",
     });
+  });
+
+  it("lists credential-scoped work items with stable versions and serialized dates", async () => {
+    const services = integrationServices();
+    const app = await integrationApp(services);
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/integrations/work-items",
+      headers: { authorization: AUTHORIZATION },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    const body = response.json();
+    expect(body).toMatchObject({
+      version: INTEGRATION_API_VERSION,
+      requestId: expect.any(String),
+    });
+    expect(body.data).toEqual({
+      items: [
+        {
+          id: RESOURCE_ID,
+          workspaceId: WORKSPACE_ID,
+          title: "Call the dentist",
+          description: null,
+          status: "planned",
+          priority: "high",
+          planningDurationMinutes: 45,
+          dueOn: "2026-07-15",
+          version: 3,
+          createdAt: "2026-07-13T12:00:00.000Z",
+          updatedAt: "2026-07-13T13:00:00.000Z",
+        },
+      ],
+      page: { limit: 100, offset: 0 },
+    });
+    expect(services.listWorkItems).toHaveBeenCalledWith({
+      principal: expect.objectContaining({ workspaceId: WORKSPACE_ID }),
+      limit: 100,
+      offset: 0,
+    });
+  });
+
+  it("passes only validated optional work-item filters and numeric paging", async () => {
+    const services = integrationServices();
+    vi.mocked(services.listWorkItems).mockResolvedValueOnce({
+      items: [],
+      page: { limit: 25, offset: 50 },
+    } as never);
+    const app = await integrationApp(services);
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/integrations/work-items?status=in_progress&priority=urgent&limit=25&offset=50",
+      headers: { authorization: AUTHORIZATION },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toEqual({ items: [], page: { limit: 25, offset: 50 } });
+    expect(services.listWorkItems).toHaveBeenCalledWith({
+      principal: expect.objectContaining({ credentialId: CREDENTIAL_ID }),
+      status: "in_progress",
+      priority: "urgent",
+      limit: 25,
+      offset: 50,
+    });
+  });
+
+  it("authenticates work-item reads before rejecting strict query drift", async () => {
+    const services = integrationServices();
+    const app = await integrationApp(services);
+
+    for (const query of [
+      "workspaceId=00000000-0000-4000-8000-000000000002",
+      "status=not-a-status",
+      "priority=not-a-priority",
+      "limit=0",
+      "limit=201",
+      "limit=not-a-number",
+      "limit=0x1",
+      "limit=1e2",
+      "limit=01",
+      "limit=%2B1",
+      "limit=-1",
+      "offset=-1",
+      "offset=1000001",
+      "offset=not-a-number",
+      "offset=",
+      "offset=%20",
+    ]) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/v1/integrations/work-items?${query}`,
+        headers: { authorization: AUTHORIZATION },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe("request.validation_failed");
+      expect(response.headers["cache-control"]).toBe("no-store");
+    }
+
+    expect(services.authenticateCredential).toHaveBeenCalledTimes(16);
+    expect(services.authenticateCredential).toHaveBeenCalledWith({
+      credentialId: CREDENTIAL_ID,
+      secret: SECRET,
+      requiredScope: "schedule:read",
+    });
+    expect(services.listWorkItems).not.toHaveBeenCalled();
+  });
+
+  it("requires schedule:read credentials before work-item reads", async () => {
+    const services = integrationServices();
+    vi.mocked(services.authenticateCredential).mockRejectedValueOnce(
+      new DomainError("integration.scope_denied", "credential lacks schedule:read"),
+    );
+    const app = await integrationApp(services);
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/integrations/work-items?unknown=value",
+      headers: { authorization: AUTHORIZATION },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json().error.code).toBe("integration.scope_denied");
+    expect(services.listWorkItems).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed or missing credentials before validating work-item queries", async () => {
+    const services = integrationServices();
+    const app = await integrationApp(services);
+
+    for (const authorization of [undefined, "Bearer private-token"]) {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/integrations/work-items?limit=1e2",
+        headers: authorization === undefined ? {} : { authorization },
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(response.json().error).toEqual({
+        code: "integration.authentication_failed",
+        message: "Authentication failed.",
+      });
+      expect(response.headers["cache-control"]).toBe("no-store");
+    }
+
+    expect(services.authenticateCredential).not.toHaveBeenCalled();
+    expect(services.listWorkItems).not.toHaveBeenCalled();
   });
 
   it.each([

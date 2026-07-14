@@ -5,6 +5,8 @@ import type {
   IntegrationCredentialScope,
   IntegrationPrincipal,
   IntegrationTodayResult,
+  IntegrationWorkItemPageResult,
+  ListIntegrationWorkItemsQuery,
   PreparedIntegrationCommand,
 } from "@schedule/application";
 import { isValidLocalDate } from "@schedule/domain";
@@ -30,6 +32,7 @@ export interface IntegrationServices {
     readonly principal: IntegrationPrincipal;
     readonly date: string;
   }): Promise<IntegrationTodayResult>;
+  listWorkItems(input: ListIntegrationWorkItemsQuery): Promise<IntegrationWorkItemPageResult>;
   prepareCommand(input: {
     readonly principal: IntegrationPrincipal;
     readonly requestId: string;
@@ -180,6 +183,21 @@ const confirmBody = z.strictObject({
   confirmationId: uuid,
 });
 const todayQuery = z.strictObject({ date: localDateText });
+function canonicalPageValue(minimum: number, maximum: number, defaultValue: number) {
+  return z
+    .string()
+    .regex(/^(?:0|[1-9]\d*)$/, "Expected a canonical unsigned base-10 integer.")
+    .transform(Number)
+    .pipe(z.number().int().min(minimum).max(maximum))
+    .default(defaultValue);
+}
+
+const workItemsQuery = z.strictObject({
+  status: workItemStatus.optional(),
+  priority: workItemPriority.optional(),
+  limit: canonicalPageValue(1, 200, 100),
+  offset: canonicalPageValue(0, 1_000_000, 0),
+});
 const idempotencyKey = z.string().trim().min(1).max(160);
 
 interface CredentialToken {
@@ -316,6 +334,19 @@ export async function registerIntegrationRoutes(
     const principal = await authenticate(request, reply, "schedule:read");
     const query = parseRequest(todayQuery, request.query);
     const result = await services.getToday({ principal, date: query.date });
+    return envelope(request.id, result);
+  });
+
+  app.get("/v1/integrations/work-items", async (request, reply) => {
+    const principal = await authenticate(request, reply, "schedule:read");
+    const query = parseRequest(workItemsQuery, request.query);
+    const result = await services.listWorkItems({
+      principal,
+      ...(query.status === undefined ? {} : { status: query.status }),
+      ...(query.priority === undefined ? {} : { priority: query.priority }),
+      limit: query.limit,
+      offset: query.offset,
+    });
     return envelope(request.id, result);
   });
 

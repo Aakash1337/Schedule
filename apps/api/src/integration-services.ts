@@ -4,6 +4,7 @@ import {
   AuthenticateIntegrationCredential,
   ConfirmIntegrationCommand,
   GetIntegrationToday,
+  ListIntegrationWorkItems,
   PrepareIntegrationCommand,
   type Clock,
   type IntegrationUnitOfWork,
@@ -48,6 +49,7 @@ export function createIntegrationServices(
     createIntegrationSecretVerifier(pepper),
   );
   const getToday = new GetIntegrationToday(unitOfWork, clock);
+  const listWorkItems = new ListIntegrationWorkItems(unitOfWork, clock);
   const prepareCommand = new PrepareIntegrationCommand(
     unitOfWork,
     clock,
@@ -58,6 +60,7 @@ export function createIntegrationServices(
   return {
     authenticateCredential: (input) => authenticateCredential.execute(input),
     getToday: (input) => getToday.execute(input),
+    listWorkItems: (input) => listWorkItems.execute(input),
     prepareCommand: (input) => prepareCommand.execute(input),
     confirmCommand: (input) => confirmCommand.execute(input),
   };
