@@ -413,6 +413,42 @@
       ]
     },
     {
+      "id": "calendar-aware-today-availability",
+      "status": "implemented",
+      "risk": "high",
+      "contract": {
+        "file": "docs/PLANNER.md",
+        "anchor": "## Client-derived calendar availability"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/web/src/availability.test.ts",
+          "command": "unit",
+          "anchors": [
+            "retains the full range when no schedule block intersects it",
+            "clips, sorts, and merges overlapping or adjacent occupied intervals",
+            "makes snapshots order-independent and sensitive to relevant revisions",
+            "fails closed for malformed interval data"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/TodayView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "subtracts calendar blocks into explicit free windows before generating",
+            "stops a stale calendar submission and succeeds after the user reviews the update",
+            "prevents generation when calendar blocks consume the selected range",
+            "fails closed on a calendar load error while preserving the manual range escape hatch",
+            "fails closed when a successful calendar response contains malformed block data",
+            "aborts and ignores calendar availability returned for a previous workspace",
+            "cancels an old submit-time calendar read across an A to B to A workspace switch"
+          ]
+        }
+      ]
+    },
+    {
       "id": "workspace-isolation",
       "status": "implemented",
       "risk": "critical",

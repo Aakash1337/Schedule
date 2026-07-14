@@ -27,12 +27,14 @@ pnpm dev
 
 The application uses a persistent desktop rail and a compact mobile navigation bar:
 
-1. **Today** creates and operates the current daily plan. It accepts one planning window, both time
-   and task-count targets, fit preference, energy, and contexts. Plan items expose explanations,
-   locks, activity actions, temporary routine feedback, replacement, regeneration, warnings, and
-   exclusions. Active **Not today** and **Not this week** instructions appear in a separate
-   **Temporarily hidden** list with an Undo control. When a plan exists, **Ask local advisor** can
-   request an optional, read-only review of that exact plan and its eligible backlog.
+1. **Today** creates and operates the current daily plan. It accepts an outer planning range, both
+   time and task-count targets, fit preference, energy, and contexts. Before the first plan, an
+   optional **Exclude calendar blocks** control can turn that range into multiple explicit free
+   windows. Plan items expose explanations, locks, activity actions, temporary routine feedback,
+   replacement, regeneration, warnings, and exclusions. Active **Not today** and **Not this week**
+   instructions appear in a separate **Temporarily hidden** list with an Undo control. When a plan
+   exists, **Ask local advisor** can request an optional, read-only review of that exact plan and its
+   eligible backlog.
 2. **Work** groups one-time work items into the six supported status columns. Status changes use
    explicit controls because manual card ranking is not part of the API contract. Titles,
    descriptions, priority, status, optional local **Due date**, and an explicit **Include in Today**
@@ -80,6 +82,27 @@ date has changed the routine-global feedback head, the older plan remains unchan
 directs the user to the newer plan rather than claiming the unchanged older revision is authoritative.
 After a successful suppression removes the initiating control, keyboard focus moves to the newly
 rendered Undo action; reloads and ordinary plan changes do not steal focus.
+
+## Calendar-aware Today availability
+
+The first-plan form keeps manual availability as the default. When **Exclude calendar blocks** is
+enabled, Today reads all schedule blocks that overlap the browser-local civil day, clips them to the
+selected outer range, sorts and merges overlapping or adjacent reservations, and previews the
+remaining half-open free windows plus their combined minutes. Blocks that touch only the range edge
+do not consume capacity. The preview is an ordinary labelled list with polite loading/success status
+and actionable error or fully-booked states; no modal or hidden automatic choice is involved.
+
+Immediately before generation, Today reads the day again and compares the identity, version, and
+clipped timing of every block that affects the selected range. A changed snapshot updates the
+preview and stops the command so the user must review and submit again. A failed or malformed
+calendar read also stops generation. The user can retry or explicitly turn the option off to submit
+the original manual range. Late responses from an earlier workspace are aborted and ignored.
+
+The exact derived windows in the accepted generation request are authoritative and are persisted
+with the immutable plan input. The planner and API do not independently query schedule blocks, and
+later calendar edits do not silently rewrite an existing plan or its regeneration settings. This
+client-owned opt-in preserves existing API callers while leaving a versioned server-side policy mode
+as a future option if multiple integrations need uniform enforcement.
 
 A duration suggestion is never applied on load. The user must choose **Apply estimate**, which sends
 the selected routine's complete duration policy and insight version to the dedicated atomic approval

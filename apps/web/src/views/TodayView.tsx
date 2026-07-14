@@ -12,12 +12,21 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { api, ApiError, newIdempotencyKey } from "../api";
+import {
+  availabilitySnapshotKey,
+  countIntersectingScheduleBlocks,
+  deriveFreeAvailability,
+  totalAvailabilityMinutes,
+  type AvailabilityWindow,
+} from "../availability";
 import { Button, EmptyState, ErrorNotice, Field, PageHeader, PageSkeleton } from "../components/ui";
 import {
+  addDays,
   browserTimeZone,
   formatDay,
   formatMinutes,
   formatTime,
+  localDateKey,
   localDateTimeToIso,
   splitTags,
   todayKey,
@@ -31,6 +40,7 @@ import type {
   PlanSettings,
   PlanningFitPreference,
   RoutinePlanningFeedbackSuppressionKind,
+  ScheduleBlock,
   SchedulingAdviceResult,
   SchedulingAdviceUnavailableReason,
   WorkspaceViewProps,
@@ -55,6 +65,7 @@ interface CommandSuccess {
 }
 
 type AdvisorPhase = "idle" | "loading";
+type CalendarAvailabilityPhase = "idle" | "loading" | "ready" | "error";
 
 const ADVISOR_UNAVAILABLE_MESSAGES: Readonly<Record<SchedulingAdviceUnavailableReason, string>> = {
   disabled: "Local advice is turned off in the server configuration.",
@@ -72,6 +83,14 @@ function planQueryKey(workspaceId: string, date: string): string {
   return JSON.stringify([workspaceId, date]);
 }
 
+function calendarDayRange(date: string): AvailabilityWindow {
+  const nextDate = localDateKey(addDays(new Date(`${date}T12:00:00`), 1));
+  return {
+    startsAt: localDateTimeToIso(date, "00:00"),
+    endsAt: localDateTimeToIso(nextDate, "00:00"),
+  };
+}
+
 function planSnapshotKey(plan: CurrentDailyPlan): string {
   return JSON.stringify([plan.workspaceId, plan.date, plan.id, plan.headVersion]);
 }
@@ -80,6 +99,10 @@ function messageForError(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
   return "The local API could not complete this request.";
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 function displayCode(value: string): string {
@@ -221,6 +244,118 @@ function SchedulingAdvisorPanel({
         </div>
       )}
     </section>
+  );
+}
+
+function CalendarAvailabilityControl({
+  enabled,
+  phase,
+  error,
+  windowIsValid,
+  freeWindows,
+  intersectingBlockCount,
+  disabled,
+  onEnabledChange,
+  onRefresh,
+}: {
+  readonly enabled: boolean;
+  readonly phase: CalendarAvailabilityPhase;
+  readonly error: string | null;
+  readonly windowIsValid: boolean;
+  readonly freeWindows: readonly AvailabilityWindow[];
+  readonly intersectingBlockCount: number;
+  readonly disabled: boolean;
+  readonly onEnabledChange: (enabled: boolean) => void;
+  readonly onRefresh: () => void;
+}) {
+  const totalMinutes = totalAvailabilityMinutes(freeWindows);
+  return (
+    <div className="today-calendar-availability">
+      <label className="today-calendar-toggle">
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={disabled}
+          aria-label="Exclude calendar blocks"
+          aria-describedby="today-calendar-availability-hint"
+          onChange={(event) => onEnabledChange(event.target.checked)}
+        />
+        <span>
+          <strong>Exclude calendar blocks</strong>
+          <small id="today-calendar-availability-hint">
+            Treat reservations inside this range as unavailable planning time.
+          </small>
+        </span>
+      </label>
+
+      {!enabled ? null : (
+        <div className="today-calendar-preview">
+          <div className="today-calendar-preview-heading">
+            <span>Free planning windows</span>
+            {phase === "loading" ? null : (
+              <Button
+                type="button"
+                variant="quiet"
+                disabled={disabled}
+                aria-label="Refresh calendar availability"
+                onClick={onRefresh}
+              >
+                <RefreshCw size={14} aria-hidden="true" />
+                Refresh
+              </Button>
+            )}
+          </div>
+
+          {phase === "loading" ? (
+            <p className="today-calendar-state" role="status" aria-live="polite">
+              Checking today&apos;s calendar.
+            </p>
+          ) : null}
+
+          {phase === "error" ? (
+            <p className="today-calendar-state today-calendar-state-error" role="alert">
+              {error ?? "Calendar availability could not be loaded."} Retry, or turn this option off
+              to use the range manually.
+            </p>
+          ) : null}
+
+          {phase === "ready" && !windowIsValid ? (
+            <p className="today-calendar-state today-calendar-state-error" role="alert">
+              Choose a planning range that ends after it starts.
+            </p>
+          ) : null}
+
+          {phase === "ready" && windowIsValid && freeWindows.length === 0 ? (
+            <p className="today-calendar-state today-calendar-state-error" role="alert">
+              Calendar blocks fill this entire range. Expand the range or turn this option off.
+            </p>
+          ) : null}
+
+          {phase === "ready" && windowIsValid && freeWindows.length > 0 ? (
+            <>
+              <p className="today-calendar-state" role="status" aria-live="polite">
+                <strong>{formatMinutes(totalMinutes)} free</strong> across {freeWindows.length}{" "}
+                {freeWindows.length === 1 ? "window" : "windows"}.
+                {intersectingBlockCount === 0
+                  ? " No calendar blocks overlap this range."
+                  : ` Excluding ${intersectingBlockCount} calendar ${
+                      intersectingBlockCount === 1 ? "block" : "blocks"
+                    }.`}
+              </p>
+              <ol className="today-calendar-windows" aria-label="Free planning windows">
+                {freeWindows.map((window) => (
+                  <li key={`${window.startsAt}:${window.endsAt}`}>
+                    <span>{formatTime(window.startsAt)}</span>
+                    <span aria-hidden="true">–</span>
+                    <span>{formatTime(window.endsAt)}</span>
+                  </li>
+                ))}
+              </ol>
+            </>
+          ) : null}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -370,6 +505,10 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const [advisorError, setAdvisorError] = useState<string | null>(null);
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("17:00");
+  const [calendarAware, setCalendarAware] = useState(false);
+  const [calendarPhase, setCalendarPhase] = useState<CalendarAvailabilityPhase>("idle");
+  const [calendarBlocks, setCalendarBlocks] = useState<readonly ScheduleBlock[]>([]);
+  const [calendarError, setCalendarError] = useState<string | null>(null);
   const [targetMinutes, setTargetMinutes] = useState("180");
   const [targetTaskCount, setTargetTaskCount] = useState("4");
   const [fitPreference, setFitPreference] = useState<PlanningFitPreference>("balanced");
@@ -381,6 +520,8 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const shouldFocusRecentFeedbackUndoRef = useRef(false);
   const todayViewRef = useRef<HTMLElement>(null);
   const advisorControllerRef = useRef<AbortController | null>(null);
+  const calendarControllerRef = useRef<AbortController | null>(null);
+  const generationControllerRef = useRef<AbortController | null>(null);
   const advisorEpochRef = useRef(0);
   const shouldRestoreAdvisorFocusRef = useRef(false);
   const activeQueryKey = planQueryKey(workspace.id, date);
@@ -399,6 +540,38 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
       }),
     [date],
   );
+  const calendarRange = useMemo(() => {
+    try {
+      return calendarDayRange(date);
+    } catch {
+      return null;
+    }
+  }, [date]);
+  const planningWindow = useMemo<AvailabilityWindow | null>(() => {
+    try {
+      const startsAt = localDateTimeToIso(date, startTime);
+      const endsAt = localDateTimeToIso(date, endTime);
+      return new Date(endsAt) > new Date(startsAt) ? { startsAt, endsAt } : null;
+    } catch {
+      return null;
+    }
+  }, [date, endTime, startTime]);
+  const calendarFreeWindows = useMemo(() => {
+    if (calendarPhase !== "ready" || planningWindow === null) return [];
+    try {
+      return deriveFreeAvailability(planningWindow, calendarBlocks);
+    } catch {
+      return [];
+    }
+  }, [calendarBlocks, calendarPhase, planningWindow]);
+  const intersectingCalendarBlockCount = useMemo(() => {
+    if (calendarPhase !== "ready" || planningWindow === null) return 0;
+    try {
+      return countIntersectingScheduleBlocks(planningWindow, calendarBlocks);
+    } catch {
+      return 0;
+    }
+  }, [calendarBlocks, calendarPhase, planningWindow]);
 
   const invalidateAdvisor = useCallback(() => {
     advisorEpochRef.current += 1;
@@ -444,8 +617,59 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     [acceptLoadedPlan, date, workspace.id],
   );
 
+  const loadCalendarAvailability = useCallback(async () => {
+    calendarControllerRef.current?.abort();
+    const controller = new AbortController();
+    calendarControllerRef.current = controller;
+    const requestKey = activeQueryKey;
+    const requestIsActive = () =>
+      !controller.signal.aborted &&
+      calendarControllerRef.current === controller &&
+      activeQueryKeyRef.current === requestKey;
+
+    setCalendarPhase("loading");
+    setCalendarError(null);
+    try {
+      if (calendarRange === null) {
+        throw new RangeError("The local calendar day could not be represented safely.");
+      }
+      const page = await api.listScheduleBlocks(
+        workspace.id,
+        calendarRange.startsAt,
+        calendarRange.endsAt,
+        controller.signal,
+      );
+      if (!requestIsActive()) return;
+      deriveFreeAvailability(calendarRange, page.items);
+      setCalendarBlocks(page.items);
+      setCalendarPhase("ready");
+    } catch (error) {
+      if (!requestIsActive() || isAbortError(error)) return;
+      setCalendarBlocks([]);
+      setCalendarPhase("error");
+      setCalendarError(`Calendar availability could not be loaded. ${messageForError(error)}`);
+    } finally {
+      if (calendarControllerRef.current === controller) calendarControllerRef.current = null;
+    }
+  }, [activeQueryKey, calendarRange, workspace.id]);
+
+  useEffect(() => {
+    if (!calendarAware) {
+      calendarControllerRef.current?.abort();
+      calendarControllerRef.current = null;
+      setCalendarBlocks([]);
+      setCalendarPhase("idle");
+      setCalendarError(null);
+      return;
+    }
+    void loadCalendarAvailability();
+    return () => calendarControllerRef.current?.abort();
+  }, [calendarAware, loadCalendarAvailability]);
+
   useEffect(() => {
     const controller = new AbortController();
+    generationControllerRef.current?.abort();
+    generationControllerRef.current = null;
     invalidateAdvisor();
     planSnapshotKeyRef.current = null;
     setPlan(null);
@@ -458,6 +682,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     return () => {
       controller.abort();
       advisorControllerRef.current?.abort();
+      generationControllerRef.current?.abort();
     };
   }, [invalidateAdvisor, loadCurrentPlan]);
 
@@ -504,7 +729,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
 
   async function runCommand(
     key: string,
-    operation: (requestKey: string) => Promise<void>,
+    operation: (requestKey: string) => Promise<void | false>,
     success: string | CommandSuccess,
     retryIdentity?: string,
   ): Promise<void> {
@@ -514,7 +739,8 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     setCommandError(null);
     setFeedback(null);
     try {
-      await operation(requestKey);
+      const completed = await operation(requestKey);
+      if (completed === false) return;
       if (retryIdentity !== undefined) pendingCommandsRef.current.delete(retryIdentity);
       if (activeQueryKeyRef.current !== requestKey) return;
       setFeedback(typeof success === "string" ? { message: success } : success);
@@ -570,12 +796,38 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
       return;
     }
 
+    const outerWindow = { startsAt, endsAt };
+    let availableWindows: readonly AvailabilityWindow[] = [outerWindow];
+    let loadedCalendarSnapshot: string | null = null;
+    if (calendarAware) {
+      if (calendarPhase !== "ready" || calendarRange === null) {
+        setCommandError(
+          "Calendar availability is not ready. Refresh it, or turn the option off to use the range manually.",
+        );
+        return;
+      }
+      try {
+        availableWindows = deriveFreeAvailability(outerWindow, calendarBlocks);
+        loadedCalendarSnapshot = availabilitySnapshotKey(outerWindow, calendarBlocks);
+      } catch (error) {
+        setCommandError(`Calendar availability is invalid. ${messageForError(error)}`);
+        return;
+      }
+      if (availableWindows.length === 0) {
+        setCommandError(
+          "Calendar blocks fill this entire planning range. Expand the range or turn the option off.",
+        );
+        return;
+      }
+    }
+
     const seed = [
       "today",
       workspace.id,
       date,
       startTime,
       endTime,
+      calendarAware ? "calendar-aware" : "manual",
       String(minutes),
       String(count),
       fitPreference,
@@ -585,25 +837,83 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
       .join(":")
       .slice(0, 240);
 
-    await runCommand(
-      "generate",
-      async (requestKey) => {
-        await api.generatePlan(workspace.id, {
-          date,
-          timeZone,
-          availableWindows: [{ startsAt, endsAt }],
-          targetMinutes: minutes,
-          targetTaskCount: count,
-          fitPreference,
-          energy: energy || null,
-          availableContexts,
-          seed,
-          requestRevision: 1,
-        });
-        await refreshPlan(requestKey);
-      },
-      "Today's plan is ready.",
-    );
+    generationControllerRef.current?.abort();
+    const generationController = new AbortController();
+    generationControllerRef.current = generationController;
+    const generationIsActive = (requestKey: string) =>
+      !generationController.signal.aborted &&
+      generationControllerRef.current === generationController &&
+      activeQueryKeyRef.current === requestKey;
+
+    try {
+      await runCommand(
+        "generate",
+        async (requestKey) => {
+          if (loadedCalendarSnapshot !== null && calendarRange !== null) {
+            let freshBlocks: readonly ScheduleBlock[];
+            try {
+              const freshPage = await api.listScheduleBlocks(
+                workspace.id,
+                calendarRange.startsAt,
+                calendarRange.endsAt,
+                generationController.signal,
+              );
+              if (!generationIsActive(requestKey)) return false;
+              deriveFreeAvailability(calendarRange, freshPage.items);
+              freshBlocks = freshPage.items;
+            } catch (error) {
+              if (!generationIsActive(requestKey) || isAbortError(error)) return false;
+              const detail = `Calendar availability could not be refreshed. ${messageForError(error)}`;
+              setCalendarBlocks([]);
+              setCalendarPhase("error");
+              setCalendarError(detail);
+              throw new Error(detail, { cause: error });
+            }
+
+            const freshSnapshot = availabilitySnapshotKey(outerWindow, freshBlocks);
+            setCalendarBlocks(freshBlocks);
+            setCalendarPhase("ready");
+            setCalendarError(null);
+            if (freshSnapshot !== loadedCalendarSnapshot) {
+              throw new Error(
+                "Your calendar changed. Review the updated free windows, then generate again.",
+              );
+            }
+          }
+          if (!generationIsActive(requestKey)) return false;
+          try {
+            await api.generatePlan(workspace.id, {
+              date,
+              timeZone,
+              availableWindows,
+              targetMinutes: minutes,
+              targetTaskCount: count,
+              fitPreference,
+              energy: energy || null,
+              availableContexts,
+              seed,
+              requestRevision: 1,
+            });
+            if (!generationIsActive(requestKey)) return false;
+            const current = await api.getCurrentPlan(
+              workspace.id,
+              date,
+              generationController.signal,
+            );
+            if (!generationIsActive(requestKey)) return false;
+            acceptLoadedPlan(current);
+          } catch (error) {
+            if (!generationIsActive(requestKey) || isAbortError(error)) return false;
+            throw error;
+          }
+        },
+        "Today's plan is ready.",
+      );
+    } finally {
+      if (generationControllerRef.current === generationController) {
+        generationControllerRef.current = null;
+      }
+    }
   }
 
   async function setLock(item: PlanItem): Promise<void> {
@@ -933,6 +1243,9 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     [plan],
   );
   const commandInProgress = busyAction !== null;
+  const calendarGenerationBlocked =
+    calendarAware &&
+    (calendarPhase !== "ready" || planningWindow === null || calendarFreeWindows.length === 0);
 
   useEffect(() => {
     if (
@@ -1041,7 +1354,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
             <p className="eyebrow">First plan</p>
             <h2 id="today-plan-setup-heading">Shape the time you have</h2>
             <p>
-              Start with one availability window. The planner will balance duration, task count,
+              Start with an outer availability range. The planner will balance duration, task count,
               cadence, and recent activity.
             </p>
           </div>
@@ -1069,6 +1382,17 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
                   />
                 </Field>
               </div>
+              <CalendarAvailabilityControl
+                enabled={calendarAware}
+                phase={calendarPhase}
+                error={calendarError}
+                windowIsValid={planningWindow !== null}
+                freeWindows={calendarFreeWindows}
+                intersectingBlockCount={intersectingCalendarBlockCount}
+                disabled={commandInProgress}
+                onEnabledChange={setCalendarAware}
+                onRefresh={() => void loadCalendarAvailability()}
+              />
             </fieldset>
 
             <fieldset className="today-form-group">
@@ -1140,7 +1464,12 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
             </fieldset>
 
             <div className="today-form-actions">
-              <Button type="submit" variant="primary" busy={busyAction === "generate"}>
+              <Button
+                type="submit"
+                variant="primary"
+                busy={busyAction === "generate"}
+                disabled={commandInProgress || calendarGenerationBlocked}
+              >
                 Generate today's plan
               </Button>
               <span>{timeZone}</span>

@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-13
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v4 selects both reusable routines and explicitly opted-in one-time work items, applies temporary routine feedback as a versioned hard constraint, and adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent, read-only routine-duration insight, explicit approval, and reversible dismissal of one exact evidence-backed recommendation; broader learned preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. A provider-neutral authenticated inbound gateway provides Today reads, credential-scoped backlog/Kanban work-item discovery, and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language creation and task breakdown, automatic advisor application or calibration, hosted model providers, alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v4 selects both reusable routines and explicitly opted-in one-time work items, applies temporary routine feedback as a versioned hard constraint, and adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent, read-only routine-duration insight, explicit approval, and reversible dismissal of one exact evidence-backed recommendation; broader learned preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. A provider-neutral authenticated inbound gateway provides Today reads, credential-scoped backlog/Kanban work-item discovery, and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language creation and task breakdown, automatic advisor application or calibration, hosted model providers, alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
 
 ## 1. Product summary
 
@@ -182,8 +182,10 @@ against real outcome data.
 The implemented planner draws candidates from reusable routines and from opted-in one-time work
 items. A work item is eligible only when it has a positive planning duration and is in `backlog`,
 `planned`, or `in_progress`; `blocked`, `done`, and `cancelled` work stays out of Today. A due date
-does not override any of these eligibility or capacity constraints. Calendar blocks remain independent
-reservations rather than planner candidates or automatic placements.
+does not override any of these eligibility or capacity constraints. Calendar blocks remain
+independent reservations rather than planner candidates or automatic placements. For an initial
+plan, Today can explicitly subtract those reservations from a user-selected outer range and submit
+the resulting free windows; the persisted windows, not a later calendar query, remain authoritative.
 
 ### 7.2 Hard constraints
 
@@ -488,7 +490,10 @@ Success is not simply "more tasks completed." Useful measures include realistic 
 - Implemented: lock, replace, regenerate, defer, dismiss, and completion flows
 - Implemented: append-only, resettable **Not today** and **Not this week** routine feedback with
   immediate optimistic, idempotent replanning
-- Implemented: Kanban/backlog work can opt into Today with a planning duration and an optional local due date; calendar blocks remain independent
+- Implemented: Kanban/backlog work can opt into Today with a planning duration and an optional local
+  due date
+- Implemented: opt-in calendar-aware first-plan availability, with a visible free-window preview,
+  stale-calendar rejection, and the submitted windows preserved as deterministic planner input
 - Partial: "why selected" details are implemented; alternative-plan comparison is deferred
 
 ### Phase 3 — Transparent adaptation
