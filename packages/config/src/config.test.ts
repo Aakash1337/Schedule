@@ -11,6 +11,13 @@ describe("runtime configuration", () => {
     expect(config.API_PORT).toBe(4_000);
     expect(config.API_TRUSTED_PROXIES).toEqual([]);
     expect(config.PRODUCT_API_MODE).toBe("local_unauthenticated");
+    expect(config.LOCAL_MODEL_ADVISOR_MODE).toBe("disabled");
+    expect(config.LOCAL_MODEL_ADVISOR_URL).toBe("http://127.0.0.1:11434");
+    expect(config.LOCAL_MODEL_ADVISOR_MODEL).toBe("gemma4:e4b");
+    expect(config.LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS).toBe(2_000);
+    expect(config.LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS).toBe(60_000);
+    expect(config.LOCAL_MODEL_ADVISOR_MAX_RESPONSE_BYTES).toBe(32_768);
+    expect(config.LOCAL_MODEL_ADVISOR_MAX_CONCURRENT).toBe(1);
     expect(config.INTEGRATION_API_MODE).toBe("disabled");
     expect(config.INTEGRATION_API_PEPPER).toBeUndefined();
     expect(config.INTEGRATION_CONFIRMATION_TTL_SECONDS).toBe(600);
@@ -36,6 +43,103 @@ describe("runtime configuration", () => {
         PRODUCT_API_MODE: "local_unauthenticated",
       }),
     ).toThrow(/non-production loopback/);
+  });
+
+  it("loads an explicitly enabled local Ollama advisor with bounded controls", () => {
+    const config = loadApiConfig({
+      LOCAL_MODEL_ADVISOR_MODE: "ollama",
+      LOCAL_MODEL_ADVISOR_URL: "http://127.0.0.1:12345",
+      LOCAL_MODEL_ADVISOR_MODEL: "gemma4:31b",
+      LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS: "100",
+      LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS: "120000",
+      LOCAL_MODEL_ADVISOR_MAX_RESPONSE_BYTES: "65536",
+      LOCAL_MODEL_ADVISOR_MAX_CONCURRENT: "4",
+    });
+
+    expect(config.LOCAL_MODEL_ADVISOR_MODE).toBe("ollama");
+    expect(config.LOCAL_MODEL_ADVISOR_URL).toBe("http://127.0.0.1:12345");
+    expect(config.LOCAL_MODEL_ADVISOR_MODEL).toBe("gemma4:31b");
+    expect(config.LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS).toBe(100);
+    expect(config.LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS).toBe(120_000);
+    expect(config.LOCAL_MODEL_ADVISOR_MAX_RESPONSE_BYTES).toBe(65_536);
+    expect(config.LOCAL_MODEL_ADVISOR_MAX_CONCURRENT).toBe(4);
+  });
+
+  it.each(["gemma4:e2b", "gemma4:e4b", "gemma4:26b", "gemma4:31b"] as const)(
+    "accepts the local-only advisor model %s",
+    (model) => {
+      expect(loadApiConfig({ LOCAL_MODEL_ADVISOR_MODEL: model }).LOCAL_MODEL_ADVISOR_MODEL).toBe(
+        model,
+      );
+    },
+  );
+
+  it("rejects unsupported local-model advisor modes", () => {
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_MODE: "enabled" })).toThrow();
+  });
+
+  it.each([
+    "http://localhost:11434",
+    "http://127.0.0.2:11434",
+    "http://127.1:11434",
+    "http://2130706433:11434",
+    "http://0177.0.0.1:11434",
+    "http://[::1]:11434",
+    "https://127.0.0.1:11434",
+    "http://user:pass@127.0.0.1:11434",
+    "http://127.0.0.1:11434/",
+    "http://127.0.0.1:11434/api",
+    "http://127.0.0.1:11434?next=http://example.com",
+    "http://127.0.0.1:11434#fragment",
+    "http://127.0.0.1:0",
+    "http://127.0.0.1:65536",
+    "http://127.0.0.1:011434",
+    " http://127.0.0.1:11434",
+  ])("rejects non-canonical local-model advisor URL %s", (value) => {
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_URL: value })).toThrow(
+      /LOCAL_MODEL_ADVISOR_URL/,
+    );
+  });
+
+  it.each([
+    "gemma4",
+    "gemma4:latest",
+    "gemma4:e4b-cloud",
+    "gemma4:E4B",
+    " gemma4:e4b",
+    "gemma4:e4b ",
+  ])("rejects non-allowlisted local-model advisor model %s", (value) => {
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_MODEL: value })).toThrow();
+  });
+
+  it("coerces and bounds every local-model advisor resource control", () => {
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS: "99" })).toThrow();
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS: "10001" })).toThrow();
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS: "100.5" })).toThrow();
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS: "999" })).toThrow();
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS: "120001" })).toThrow();
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS: "1000.5" })).toThrow();
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_MAX_RESPONSE_BYTES: "1023" })).toThrow();
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_MAX_RESPONSE_BYTES: "65537" })).toThrow();
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_MAX_RESPONSE_BYTES: "2048.5" })).toThrow();
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_MAX_CONCURRENT: "0" })).toThrow();
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_MAX_CONCURRENT: "5" })).toThrow();
+    expect(() => loadApiConfig({ LOCAL_MODEL_ADVISOR_MAX_CONCURRENT: "1.5" })).toThrow();
+  });
+
+  it("requires the local-model request timeout to cover the connect timeout", () => {
+    expect(
+      loadApiConfig({
+        LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS: "10000",
+        LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS: "10000",
+      }).LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS,
+    ).toBe(10_000);
+    expect(() =>
+      loadApiConfig({
+        LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS: "10000",
+        LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS: "9999",
+      }),
+    ).toThrow(/LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS/);
   });
 
   it("coerces worker numbers from environment strings", () => {

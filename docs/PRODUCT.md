@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-13
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v4 selects both reusable routines and explicitly opted-in one-time work items, applies temporary routine feedback as a versioned hard constraint, and adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent, read-only routine-duration insight, explicit approval, and reversible dismissal of one exact evidence-backed recommendation; broader learned preferences and automatic adaptation remain deferred. A provider-neutral authenticated inbound gateway now provides Today reads, credential-scoped backlog/Kanban work-item discovery, and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items, bounded non-recurring calendar-block management, and a responsive local web interface. Planner v4 selects both reusable routines and explicitly opted-in one-time work items, applies temporary routine feedback as a versioned hard constraint, and adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent, read-only routine-duration insight, explicit approval, and reversible dismissal of one exact evidence-backed recommendation; broader learned preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. A provider-neutral authenticated inbound gateway provides Today reads, credential-scoped backlog/Kanban work-item discovery, and confirmed structured mutations for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. See [API.md](./API.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language creation and task breakdown, automatic advisor application or calibration, hosted model providers, alternative-plan comparison, generalized undo, recurrence authoring, reminder and phone-notification events, a Hermes/WhatsApp adapter, and public hosting remain deferred.
 
 ## 1. Product summary
 
@@ -12,7 +12,7 @@ planner. The current local MVP supports ordinary one-time work, a status-based b
 non-recurring calendar blocks, and a pool of reusable routines from which it generates a practical
 daily plan. Projects and the broader conventional feature set in section 12 remain product targets.
 
-The planner considers both the user's available time and desired number of tasks. It uses explicit rules, completion history, and controlled randomness to balance priority, cadence, variety, urgency, effort, and personal context. An optional local language model may advise the planner, but the deterministic scheduling engine remains authoritative.
+The planner considers both the user's available time and desired number of tasks. It uses explicit rules, completion history, and controlled randomness to balance priority, cadence, variety, urgency, effort, and personal context. An optional local language model may review a completed plan snapshot, but the deterministic scheduling engine remains authoritative.
 
 ## 2. Product principles
 
@@ -346,26 +346,54 @@ historical insight comparison; and automatic application of learned values remai
 
 ## 11. Optional local-model advisor
 
-No language-model advisor or `PlanningAdvisor` interface is implemented. This section defines a
-future target only: if added, a language model would advise rather than control scheduling, and
-integration would occur through a provider-neutral `PlanningAdvisor` interface.
+The implemented first slice is an optional, read-only review of one current Today snapshot. A
+provider-neutral `SchedulingAdvisor` application port receives an immutable data projection and has
+no repository, transaction, or command-service access. The disabled provider is the default. An
+operator may explicitly enable the Ollama adapter at one canonical raw
+`http://127.0.0.1:<port>` origin and choose only `gemma4:e2b`, `gemma4:e4b`, `gemma4:26b`, or
+`gemma4:31b`; `gemma4:e4b` is the default configured model. Ollama is never an application-readiness
+dependency.
 
-Potential implementations:
+The user starts every review with **Ask local advisor**. There is no free-form advisor prompt and no
+automatic invocation. The versioned request identifies the current plan ID and head version and
+requires the fixed `both` focus. Narrower focus modes remain unavailable until they have explicit
+projection and output-validation semantics.
+Schedule constructs the context itself from at most 50 sorted plan items and 50 eligible backlog
+items. It includes only bounded titles, plan reasons and warnings, scheduling fields, typed source
+identity, and truncation signals. Descriptions, workspace names, calendar blocks, arbitrary history,
+planner input snapshots, secrets, and dedicated or free-form model-instruction fields are not
+included. Titles and other stored text may be user-authored and are explicitly treated as untrusted
+data. Text is normalized, control and bidirectional-formatting characters are removed, and the
+complete context is capped at 64 KiB before it leaves the application layer.
 
-- Disabled advisor
-- Local Ollama-compatible advisor
-- Local OpenAI-compatible endpoint
-- Future hosted provider
+The Ollama request is one direct HTTP call to `/api/chat` with a fixed system instruction, no tools,
+no redirects or proxy/DNS resolution, `stream: false`, `think: false`, a fixed JSON output schema,
+and bounded generation, connection, total-time, response-size, and concurrency controls. There is no
+automatic retry. Schedule accepts only a versioned summary plus at most five `focus`, `sequence`,
+`consider_backlog`, or `plan_observation` suggestions. Every target must identify an item in the
+supplied snapshot, unknown fields and duplicate suggestions fail validation, and confidence is
+limited to `low` or `medium`. Raw provider envelopes, thinking metadata, and provider error bodies
+are discarded rather than persisted or exposed.
 
-Appropriate responsibilities:
+The first snapshot is read in a short unit of work; inference runs after that unit of work has
+closed. Before returning valid advice, a second short unit of work rebuilds and compares the exact
+sanitized plan-and-backlog context. Any change returns `409 advisor.snapshot_conflict` and discards
+the advice. Disabled, busy, timed-out, unreachable, rejected, oversized, malformed, or semantically
+invalid provider results become bounded unavailable states. Unsafe or oversized stored context fails
+closed before provider dispatch with a bounded domain error. A disconnected caller cancels and
+destroys the pending loopback request so its concurrency permit is released promptly. Neither path
+alters the current plan.
 
-- Convert natural-language requests into proposed structured tasks or routines
-- Suggest tags, duration ranges, cadence, energy, and context
-- Break large work into feasible sessions
-- Interpret daily context such as "I am tired and have two free hours"
-- Explain plans in natural language
-- Identify unrealistic or contradictory settings
-- Propose policy changes for user approval
+The implemented advisor may summarize the supplied plan, suggest focus or sequence among supplied
+plan items, and point out an eligible supplied backlog item. The following broader responsibilities
+remain deferred:
+
+- Converting natural-language requests into tasks or routines
+- Suggesting or writing tags, duration policies, cadence, energy, or context
+- Breaking work into newly persisted sessions or subtasks
+- Interpreting free-form daily context
+- Applying recommendations, calibrating user values, or changing planner policy
+- Local OpenAI-compatible endpoints and hosted providers
 
 Prohibited responsibilities:
 
@@ -374,11 +402,8 @@ Prohibited responsibilities:
 - Silently changing priorities, deadlines, or cadence
 - Bypassing eligibility constraints
 - Producing the only available plan
-
-Future advisor output must use a versioned JSON schema, be validated, and time out safely. Invalid,
-unavailable, or slow model responses must fall back to the deterministic planner. Prompts and
-responses should be locally inspectable and excluded from cloud synchronization unless explicitly
-enabled.
+- Exposing an Apply or Accept control for model output
+- Participating in duration calibration or automatic adaptation
 
 ## 12. Conventional scheduling features
 
@@ -479,14 +504,19 @@ Success is not simply "more tasks completed." Useful measures include realistic 
 
 ### Phase 4 — Local-model advisor
 
-- Deferred: provider-neutral interface and schema validation
+- Implemented: provider-neutral read-only interface, bounded sanitized snapshot, strict versioned
+  schema validation, and exact post-inference snapshot revalidation
+- Implemented: disabled-by-default direct-loopback Ollama adapter with an exact local Gemma
+  allowlist, fixed request shape, resource limits, deterministic unavailable states, and no retries
+- Implemented: explicit Today review with provenance, accessible loading/failure states, stale-result
+  rejection, and no Apply or mutation control
 - Deferred: natural-language routine creation and task breakdown
-- Deferred: context interpretation and plan explanations
-- Deferred: local privacy controls, diagnostics, and deterministic fallback
+- Deferred: free-form context interpretation, automatic application, duration calibration, and
+  model-driven planner changes
+- Deferred: local OpenAI-compatible endpoints and hosted model providers
 
-Gemma, Ollama, and other local or hosted models do not participate in duration calibration. Any
-future advisor remains optional and subordinate to the deterministic engine and explicit user
-approval.
+Gemma and Ollama do not participate in duration calibration, eligibility, scoring, selection, or
+plan mutation. The advisor remains optional and subordinate to the deterministic engine.
 
 ### Phase 5 — Hosting and synchronization
 
@@ -512,7 +542,7 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
 - Default exploration probability after a target is met
 - How partial completion contributes to cadence
 - How much calendar auto-placement occurs versus simple task selection
-- Initial local-model runtime and model choice
+- Whether and how to add a hosted model provider after authentication and explicit cloud consent
 - Single-user versus early multi-user product scope
 - Notification philosophy and escalation limits
 

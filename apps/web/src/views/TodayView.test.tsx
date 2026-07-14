@@ -4,13 +4,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api";
 import { todayKey } from "../date";
-import type { CurrentDailyPlan, Workspace } from "../types";
+import type {
+  CurrentDailyPlan,
+  SchedulingAdviceResult,
+  SchedulingAdviceUnavailableReason,
+  Workspace,
+} from "../types";
 import { TodayView } from "./TodayView";
 
 const apiMocks = vi.hoisted(() => ({
   applyRoutineFeedback: vi.fn(),
   generatePlan: vi.fn(),
   getCurrentPlan: vi.fn(),
+  getSchedulingAdvice: vi.fn(),
   recordPlanItemActivity: vi.fn(),
   regeneratePlan: vi.fn(),
   replacePlanItem: vi.fn(),
@@ -90,6 +96,45 @@ const plan: CurrentDailyPlan = {
   },
   headVersion: 2,
 };
+
+function availableAdvice(overrides: Partial<SchedulingAdviceResult> = {}): SchedulingAdviceResult {
+  return {
+    version: "schedule.advisor/v1",
+    requestId: "84cf5854-f934-4a23-a4da-a961dd108f3b",
+    status: "available",
+    reason: null,
+    snapshot: { date: plan.date, planId: plan.id, headVersion: plan.headVersion },
+    provenance: {
+      provider: "ollama",
+      model: "gemma4:e4b",
+      requestedAt: "2026-07-13T14:00:00.000Z",
+      completedAt: "2026-07-13T14:00:02.000Z",
+      latencyMs: 2_000,
+    },
+    summary: "Keep the first block focused and leave room for the backlog.",
+    suggestions: [
+      {
+        id: "advice-1",
+        kind: "focus",
+        targetType: "plan_item",
+        targetId: "plan-item-1",
+        title: "Start with Spanish",
+        rationale: "It is already selected and fits the first available window.",
+        confidence: "medium",
+      },
+    ],
+    input: {
+      planItemCount: 1,
+      backlogCount: 2,
+      truncated: { planItems: false, backlog: false },
+    },
+    ...overrides,
+  };
+}
+
+function unavailableAdvice(reason: SchedulingAdviceUnavailableReason): SchedulingAdviceResult {
+  return availableAdvice({ status: "unavailable", reason, summary: null, suggestions: [] });
+}
 
 function deferred<Value>() {
   let resolve!: (value: Value | PromiseLike<Value>) => void;
@@ -662,5 +707,221 @@ describe("Today commands", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("plan was recalculated");
     expect(screen.queryByRole("heading", { name: "Temporarily hidden" })).not.toBeInTheDocument();
     expect(apiMocks.recordPlanItemActivity).not.toHaveBeenCalled();
+  });
+});
+
+describe("Today local advisor", () => {
+  it("keeps the plan visible while loading and restores focus after rendering advice", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<SchedulingAdviceResult>();
+    apiMocks.getSchedulingAdvice.mockReturnValue(pending.promise);
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const trigger = await screen.findByRole("button", { name: "Ask local advisor" });
+    expect(trigger).toHaveAttribute("aria-controls", "today-advisor");
+    expect(trigger).toHaveAccessibleDescription("Advice only. It cannot change your schedule.");
+    await user.click(trigger);
+
+    expect(trigger).toBeDisabled();
+    expect(trigger).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Reviewing this plan and its eligible backlog",
+    );
+    expect(screen.getByRole("heading", { name: "Practice Spanish" })).toBeVisible();
+    expect(apiMocks.getSchedulingAdvice).toHaveBeenCalledWith(
+      workspace.id,
+      {
+        date: plan.date,
+        expectedPlanId: plan.id,
+        expectedHeadVersion: plan.headVersion,
+      },
+      expect.any(AbortSignal),
+    );
+
+    await act(async () => {
+      pending.resolve(availableAdvice());
+      await pending.promise;
+    });
+
+    expect(
+      await screen.findByText("Keep the first block focused and leave room for the backlog."),
+    ).toBeVisible();
+    expect(screen.getByRole("list", { name: "Local advisor suggestions" })).toBeVisible();
+    expect(screen.getByText("Start with Spanish")).toBeVisible();
+    expect(screen.getByText(/based on plan head 2/i)).toBeVisible();
+    expect(screen.getByText("Advice only. It cannot change your schedule.")).toBeVisible();
+    expect(await screen.findByRole("status")).toHaveTextContent("Local advisor review ready.");
+    expect(
+      screen.getByText("Start with Spanish").closest(".today-advisor-result"),
+    ).not.toHaveAttribute("aria-live");
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(trigger).toHaveAttribute("aria-busy", "false");
+    expect(screen.queryByRole("button", { name: /apply|accept/i })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["disabled", "turned off in the server configuration"],
+    ["busy", "already reviewing another request"],
+    ["timeout", "took too long to respond"],
+    ["unreachable", "could not be reached"],
+  ] as const)(
+    "renders a deterministic %s state without changing the plan",
+    async (reason, copy) => {
+      const user = userEvent.setup();
+      apiMocks.getSchedulingAdvice.mockResolvedValue(unavailableAdvice(reason));
+
+      render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+      const trigger = await screen.findByRole("button", { name: "Ask local advisor" });
+      await user.click(trigger);
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(copy);
+      expect(screen.getByRole("heading", { name: "Practice Spanish" })).toBeVisible();
+      expect(apiMocks.setPlanItemLock).not.toHaveBeenCalled();
+      expect(apiMocks.regeneratePlan).not.toHaveBeenCalled();
+      await waitFor(() => expect(trigger).toHaveFocus());
+    },
+  );
+
+  it("renders hostile model text literally and never creates model-supplied elements", async () => {
+    const user = userEvent.setup();
+    const summary = '<img src="x" onerror="alert(1)">';
+    const title = "<script>alert('title')</script>";
+    const rationale = "<button>Apply this now</button>";
+    apiMocks.getSchedulingAdvice.mockResolvedValue(
+      availableAdvice({
+        summary,
+        suggestions: [
+          {
+            id: "advice-hostile",
+            kind: "plan_observation",
+            targetType: null,
+            targetId: null,
+            title,
+            rationale,
+            confidence: "low",
+          },
+        ],
+      }),
+    );
+
+    const { container } = render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Ask local advisor" }));
+
+    expect(await screen.findByText(summary)).toBeVisible();
+    expect(screen.getByText(title)).toBeVisible();
+    expect(screen.getByText(rationale)).toBeVisible();
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.querySelector(".today-advisor-suggestions button")).toBeNull();
+  });
+
+  it("refreshes the plan and discards advice after an advisor snapshot conflict", async () => {
+    const user = userEvent.setup();
+    const latest = { ...plan, headVersion: 3 };
+    apiMocks.getCurrentPlan.mockResolvedValueOnce(plan).mockResolvedValueOnce(latest);
+    apiMocks.getSchedulingAdvice.mockRejectedValue(
+      new ApiError(409, "advisor.snapshot_conflict", "The scheduling context changed.", null),
+    );
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Ask local advisor" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The plan changed while the advisor was working. Review the current plan and ask again.",
+    );
+    expect(apiMocks.getCurrentPlan).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/head 3$/i)).toBeVisible();
+    expect(
+      screen.queryByText("Keep the first block focused and leave room for the backlog."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("aborts and ignores late advice when a scheduling command changes the head", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<SchedulingAdviceResult>();
+    apiMocks.getSchedulingAdvice.mockReturnValue(pending.promise);
+    apiMocks.setPlanItemLock.mockResolvedValue({
+      planId: plan.id,
+      itemId: "plan-item-1",
+      locked: true,
+      headVersion: 3,
+    });
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Ask local advisor" }));
+    const advisorSignal = apiMocks.getSchedulingAdvice.mock.calls[0]?.[2] as AbortSignal;
+    await user.click(screen.getByRole("button", { name: "Lock" }));
+
+    await waitFor(() => expect(advisorSignal.aborted).toBe(true));
+    expect(await screen.findByRole("button", { name: "Unlock" })).toBeVisible();
+    await act(async () => {
+      pending.resolve(availableAdvice({ requestId: "1c65bdc1-a495-4fe6-bcec-b40f0e417fdd" }));
+      await pending.promise;
+    });
+
+    expect(
+      screen.queryByText("Keep the first block focused and leave room for the backlog."),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Ask for a short, read-only review based on the current plan snapshot."),
+    ).toBeVisible();
+  });
+
+  it("aborts and ignores advice returned for a previously selected workspace", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<SchedulingAdviceResult>();
+    const secondWorkspace = { ...workspace, id: "workspace-2", name: "Shared" };
+    const secondPlan: CurrentDailyPlan = {
+      ...plan,
+      id: "plan-2",
+      workspaceId: secondWorkspace.id,
+      items: plan.items.map((item) => ({
+        ...item,
+        id: "plan-item-2",
+        title: "Review the budget",
+      })),
+    };
+    apiMocks.getCurrentPlan.mockImplementation(async (workspaceId: string) =>
+      workspaceId === workspace.id ? plan : secondPlan,
+    );
+    apiMocks.getSchedulingAdvice.mockReturnValue(pending.promise);
+
+    const { rerender } = render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Ask local advisor" }));
+    const advisorSignal = apiMocks.getSchedulingAdvice.mock.calls[0]?.[2] as AbortSignal;
+
+    rerender(<TodayView workspace={secondWorkspace} onNavigate={vi.fn()} />);
+    expect(await screen.findByRole("heading", { name: "Review the budget" })).toBeVisible();
+    await waitFor(() => expect(advisorSignal.aborted).toBe(true));
+
+    await act(async () => {
+      pending.resolve(availableAdvice({ requestId: "404e0c7e-05ac-4c3c-88ef-c657b9dd1dad" }));
+      await pending.promise;
+    });
+    expect(screen.getByRole("heading", { name: "Review the budget" })).toBeVisible();
+    expect(
+      screen.queryByText("Keep the first block focused and leave room for the backlog."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("clears advice when a manual refresh observes a different plan head", async () => {
+    const user = userEvent.setup();
+    const latest = { ...plan, headVersion: 5 };
+    apiMocks.getCurrentPlan.mockResolvedValueOnce(plan).mockResolvedValueOnce(latest);
+    apiMocks.getSchedulingAdvice.mockResolvedValue(availableAdvice());
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Ask local advisor" }));
+    expect(
+      await screen.findByText("Keep the first block focused and leave room for the backlog."),
+    ).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(await screen.findByText(/Generated with planner-v1, head 5/i)).toBeVisible();
+    expect(
+      screen.queryByText("Keep the first block focused and leave room for the backlog."),
+    ).not.toBeInTheDocument();
   });
 });

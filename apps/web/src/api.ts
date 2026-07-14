@@ -12,6 +12,7 @@ import type {
   RoutinePlanningFeedbackSuppressionKind,
   RoutineStatus,
   ScheduleBlock,
+  SchedulingAdviceResult,
   WorkItem,
   WorkItemPriority,
   WorkItemStatus,
@@ -381,6 +382,42 @@ export const api = {
       workspacePath(workspaceId, `/plans/${date}/current`),
       signal === undefined ? {} : { signal },
     ),
+
+  getSchedulingAdvice: async (
+    workspaceId: string,
+    input: {
+      readonly date: string;
+      readonly expectedPlanId: string;
+      readonly expectedHeadVersion: number;
+    },
+    signal?: AbortSignal,
+  ) => {
+    const requestId = globalThis.crypto.randomUUID();
+    const result = await request<SchedulingAdviceResult>(
+      workspacePath(workspaceId, "/advisor/advice"),
+      {
+        method: "POST",
+        json: {
+          version: "schedule.advisor/v1",
+          requestId,
+          date: input.date,
+          focus: "both",
+          expectedPlanId: input.expectedPlanId,
+          expectedHeadVersion: input.expectedHeadVersion,
+        },
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+    if (result.version !== "schedule.advisor/v1" || result.requestId !== requestId) {
+      throw new ApiError(
+        502,
+        "advisor.response_mismatch",
+        "The local advisor returned a mismatched response.",
+        null,
+      );
+    }
+    return result;
+  },
 
   generatePlan: (workspaceId: string, input: GeneratePlanInput) =>
     request<DailyPlan>(workspacePath(workspaceId, "/plans"), {

@@ -8,6 +8,7 @@ import {
   GenerateDailyPlan,
   GetCurrentDailyPlan,
   GetDailyPlan,
+  GetSchedulingAdvice,
   GetRoutine,
   GetRoutineDurationInsight,
   GetScheduleBlock,
@@ -28,12 +29,18 @@ import {
   UpdateWorkItem,
   UpdateRoutine,
   type Clock,
+  type SchedulingAdvisor,
   type UnitOfWork,
 } from "@schedule/application";
 
+import { DisabledSchedulingAdvisor } from "./local-model-advisor.js";
 import type { ProductServices } from "./product-routes.js";
 
-export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): ProductServices {
+export function createProductServices(
+  unitOfWork: UnitOfWork,
+  clock: Clock,
+  advisor: SchedulingAdvisor = new DisabledSchedulingAdvisor(),
+): ProductServices {
   const approveRoutineDurationInsight = new ApproveRoutineDurationInsight(unitOfWork, clock);
   const dismissRoutineDurationInsight = new DismissRoutineDurationInsight(unitOfWork, clock);
   const createWorkspace = new CreateWorkspace(unitOfWork, clock);
@@ -65,6 +72,7 @@ export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): Pro
   const setPlanItemLock = new SetPlanItemLock(unitOfWork, clock);
   const mutateDailyPlan = new MutateDailyPlan(unitOfWork, clock);
   const getDailyPlan = new GetDailyPlan(unitOfWork);
+  const getSchedulingAdvice = new GetSchedulingAdvice(unitOfWork, advisor, clock);
 
   return {
     approveRoutineDurationInsight: (command) => approveRoutineDurationInsight.execute(command),
@@ -99,5 +107,6 @@ export function createProductServices(unitOfWork: UnitOfWork, clock: Clock): Pro
     applyRoutineFeedback: (command) => mutateDailyPlan.applyRoutineFeedback(command),
     resetRoutineFeedback: (command) => mutateDailyPlan.resetRoutineFeedback(command),
     getDailyPlan: (query) => getDailyPlan.execute(query),
+    getSchedulingAdvice: (command, signal) => getSchedulingAdvice.execute(command, signal),
   };
 }

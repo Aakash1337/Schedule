@@ -32,6 +32,7 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm eval`                          | Validate traceability and run the covered test suite                      | No                              |
 | `pnpm verify:database`               | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL    | Yes                             |
 | `pnpm verify:webhook-delivery`       | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback   | Yes, disposable only            |
+| `pnpm verify:local-model-advisor`    | Opt-in smoke check against the configured local Ollama/Gemma provider     | Ollama and an allowlisted model |
 | `pnpm verify:backup-restore`         | Verify archive/schema/content/sequence fidelity                           | Yes                             |
 | `pnpm verify:recovery-state-machine` | Exercise restore, promotion, rollback, and cleanup                        | Yes, disposable only            |
 | `pnpm verify:web-e2e`                | Exercise the built browser, API, migrations, and PostgreSQL planning loop | Own disposable Compose database |
@@ -43,7 +44,7 @@ project.
 
 ## Current scorecard
 
-The current audited unit/component suite contains 61 test files and 760 runtime test cases, plus two
+The current audited unit/component suite contains 65 test files and 896 runtime test cases, plus three
 live Chromium integration scenarios. Parameterized state matrices expand into many cases, so this
 number must not be compared as though every case were an independent product feature.
 
@@ -53,7 +54,8 @@ number must not be compared as though every case were an independent product fea
 | ---------------------------------------------------------------------- | -----------: |
 | Implemented features with CI-registered evidence                       |      24 / 24 |
 | Critical implemented features with CI-registered integration or drills |      14 / 14 |
-| Partial features with an explicit limitation                           |        1 / 1 |
+| Partial features with an explicit limitation                           |        2 / 2 |
+| CI-registered evidence items                                           |          105 |
 | Deferred features incorrectly counted as passing                       |            0 |
 | Missing or stale evidence anchors                                      |            0 |
 
@@ -65,21 +67,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |      57.9% |    67.9% |    65.31% | 58.15% |
+| Whole repository, measured |     58.85% |    70.2% |    66.99% |  59.1% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |     94.96% |   89.75% |    95.89% | 96.14% |
+| Domain, measured           |     95.49% |   90.58% |    96.15% | 96.59% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |      88.6% |    82.7% |      100% | 89.28% |
+| Application, measured      |     89.43% |   84.04% |      100% | 90.29% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     84.66% |    77.1% |    74.04% | 85.61% |
+| API, measured              |     87.14% |   79.38% |    79.21% | 88.46% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.26% |   89.18% |    91.11% | 95.14% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     82.98% |   70.71% |    70.11% | 83.48% |
+| Web, measured              |     84.27% |    72.6% |    72.22% | 84.88% |
 | Web, required              |        75% |      63% |       70% |    79% |
 
-The whole-repository totals are 4,902 of 8,465 statements, 3,601 of 5,303 branches,
-1,113 of 1,704 functions, and 4,582 of 7,879 lines.
+The whole-repository totals are 5,752 of 9,773 statements, 4,305 of 6,132 branches,
+1,283 of 1,915 functions, and 5,386 of 9,113 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -211,6 +213,47 @@ resurfacing after evidence changes, database rejection of feedback UPDATE/DELETE
 duration, Today-head, and planner state, and a queued routine edit winning before stale feedback can
 append. These are registered evidence targets, not a claim in this document that the checks have run.
 
+### Local-model advisor evidence
+
+The implemented advisor scope is deliberately narrower than the broad feature name, so the registry
+marks it `partial`. Configuration units require disabled defaults, the exact four-model Gemma
+allowlist, one canonical raw IPv4-loopback HTTP origin, bounded numeric controls, and a request
+timeout no shorter than the connection timeout. Application units assert that the provider receives
+only a bounded sanitized current-plan and eligible-backlog projection, that no database unit of work
+is open during inference, and that valid advice is discarded when either the Today snapshot or
+eligible backlog changes before the exact post-call recheck. They also cover target membership,
+strict output structure, duplicate rejection, deterministic truncation, and the aggregate 64 KiB
+limit.
+
+Adapter units use disposable loopback HTTP servers rather than a model. They prove the immutable
+`/api/chat` path, fixed tool-free request, direct `127.0.0.1` peer, no redirect or retry, separate
+connect/total limits, streamed and declared response-size limits, bounded concurrency with permit
+release including caller cancellation, strict schema/canonical-text validation, and removal of raw
+Ollama metadata. Product API units cover the strict versioned `both` request, exact request
+correlation, rejection of caller-controlled provider fields before dispatch, disconnect cancellation,
+disabled/unavailable responses, early `Cache-Control: no-store` on parser/body/rate-limit failures, and
+`advisor.snapshot_conflict` mapping. Today component units cover fixed request construction, visible
+non-blocking loading, safe unavailable messages, literal hostile-text rendering, absence of model-
+supplied elements or mutation controls, focus restoration, conflict refresh, and stale response
+invalidation across plan and workspace changes.
+
+`scripts/verify-local-model-advisor.test.ts` is CI-executed unit evidence for the smoke verifier
+itself: it requires explicit Ollama mode, runs the production adapter against a deterministic
+loopback-compatible server, validates target relationships and input immutability, and ensures
+successful diagnostics contain only provider, model, latency, and suggestion count while failures
+contain only a fixed allowlisted reason. The actual
+`pnpm verify:local-model-advisor` invocation is intentionally manual and opt-in. It calls the
+production adapter with one synthetic plan item and one synthetic backlog item, but it is not run in
+CI, does not exercise the product API or database snapshot recheck, and is not evidence that Gemma's
+recommendations improve scheduling outcomes.
+
+During the 2026-07-13 local audit, the production adapter passed this smoke check against the
+installed `gemma4:e4b` model. A warm run completed in about 3.9 seconds and a separately controlled
+model reload in about 12.9 seconds; an earlier first-ever cold load exceeded the former 45-second
+limit. That host-specific observation motivated the bounded 60-second default, but it is neither a
+benchmark nor a claim that every cold load behaves like the controlled reload. Operators may need a
+different bounded timeout for another allowlisted model or machine.
+
 ## Known evidence gaps
 
 The audit deliberately leaves these visible instead of turning them into false green checks:
@@ -251,6 +294,11 @@ The audit deliberately leaves these visible instead of turning them into false g
   exact-key dismissal/reset now preserves reversible rejection memory. It still has no production
   outcome data, learned cadence/energy/preference model, automatic application, historical insight
   comparison, or local-model participation; and
+- the local-model advisor has CI unit/component evidence for its configuration, application,
+  transport, API, and UI boundaries, while a real Ollama/Gemma call remains an operator-run smoke
+  check. There is no CI model invocation, quality benchmark, natural-language creation or task
+  breakdown, automatic plan or calibration application, hosted provider, or Hermes/WhatsApp/reminder
+  path; and
 - production outcome measures such as acceptance rate, completion rate, cadence attainment, and
   duration error need actual local usage data and are not CI release gates.
 

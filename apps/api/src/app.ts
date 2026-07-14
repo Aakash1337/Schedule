@@ -6,6 +6,7 @@ import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastif
 import { installErrorHandler } from "./http-errors.js";
 import {
   registerProductRoutes,
+  SCHEDULING_ADVICE_ROUTE,
   type ProductApiLimits,
   type ProductServices,
 } from "./product-routes.js";
@@ -120,6 +121,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   if (options.productServices !== undefined) {
     await app.register(async (productApp) => {
       productApp.addHook("onRequest", async (request, reply) => {
+        if (request.routeOptions.url === SCHEDULING_ADVICE_ROUTE) {
+          reply.header("cache-control", "no-store");
+        }
         if (isAllowedLocalProductHost(request.headers.host)) return;
         return reply.code(403).send({
           error: {

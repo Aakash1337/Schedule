@@ -31,7 +31,8 @@ The application uses a persistent desktop rail and a compact mobile navigation b
    and task-count targets, fit preference, energy, and contexts. Plan items expose explanations,
    locks, activity actions, temporary routine feedback, replacement, regeneration, warnings, and
    exclusions. Active **Not today** and **Not this week** instructions appear in a separate
-   **Temporarily hidden** list with an Undo control.
+   **Temporarily hidden** list with an Undo control. When a plan exists, **Ask local advisor** can
+   request an optional, read-only review of that exact plan and its eligible backlog.
 2. **Work** groups one-time work items into the six supported status columns. Status changes use
    explicit controls because manual card ranking is not part of the API contract. Titles,
    descriptions, priority, status, optional local **Due date**, and an explicit **Include in Today**
@@ -105,6 +106,36 @@ message announces the new disposition. Changed completion evidence or relevant d
 produces a new key, so a still-actionable recommendation automatically appears as available even if
 an earlier key was dismissed.
 
+## Local-advisor interaction
+
+The Today header exposes **Ask local advisor** only after a current plan has loaded. It sends a fresh
+request ID, the visible plan ID and head version, the selected date, and the fixed `both` focus. There
+is no prompt field, model picker, automatic invocation, or background retry. The current plan remains
+visible while the button shows a busy state, and a second advisor request cannot start. Today
+mutations remain user-controlled and invalidate the pending or displayed review.
+
+The inline **Local advisor** panel always states, “Advice only. It cannot change your schedule.” A
+successful response shows the validated summary, an ordered suggestion list, low/medium confidence,
+the configured model, completion time, source plan head, reviewed item counts, and whether the input
+was truncated. Model strings render only as ordinary React text. The panel contains no **Apply**,
+**Accept**, task-creation, plan-mutation, or planner-setting action.
+
+Disabled, busy, timeout, unreachable, provider-rejected, oversized, malformed, and invalid-advice
+results produce specific safe messages while preserving the plan. Transport failure uses a bounded
+generic message and requires a new explicit click. If the API returns
+`409 advisor.snapshot_conflict`, or if the response snapshot does not exactly identify the requested
+date, plan, and head, the browser discards the result, reloads the authoritative plan, and asks the
+user to review it before trying again. A workspace/date change, plan mutation, regeneration, refresh,
+or newer request aborts or invalidates the earlier review so a late response cannot replace current
+state. Closing or aborting the browser request also propagates cancellation through the API to the
+local provider request, releasing its concurrency permit.
+
+The trigger is programmatically associated with the panel and its non-mutation guarantee. The loading
+message and a concise completion message use polite live regions, while the detailed result remains
+non-live; unavailable and failed states use alerts. Keyboard focus returns to the triggering button
+after completion when it is still present and enabled. These states are component-tested; the optional
+real-model smoke check is a separate operator command, not part of the Chromium product flow.
+
 ## Design system
 
 The interface uses warm paper-toned surfaces, ink-like neutrals, and a restrained violet accent for
@@ -149,5 +180,5 @@ a dedicated Chromium job and retains traces, screenshots, and video when it fail
 - Learned cadence, energy, preference, overload, and adaptive-selection settings
 - Work-item dependencies
 - Automatic duration-insight application and historical insight-comparison controls
-- Local-model advisor controls
-- Collaboration, sync, notifications, and cloud deployment
+- Natural-language task/routine creation, model-driven plan application, and hosted advisor controls
+- Collaboration, sync, reminder/notification policy, Hermes/WhatsApp transport, and cloud deployment

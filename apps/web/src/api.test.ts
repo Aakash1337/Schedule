@@ -357,6 +357,76 @@ describe("web API client", () => {
     );
   });
 
+  it("requests read-only local advice with a generated UUID and cancellation signal", async () => {
+    const requestId = "2f0f423e-b13a-4e4c-a34c-34ab0ee8e68c";
+    const randomUUID = vi.fn(() => requestId);
+    vi.stubGlobal("crypto", { randomUUID });
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ version: "schedule.advisor/v1", requestId }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    const result = await api.getSchedulingAdvice(
+      "workspace-1",
+      {
+        date: "2026-07-13",
+        expectedPlanId: "plan-1",
+        expectedHeadVersion: 4,
+      },
+      controller.signal,
+    );
+
+    expect(randomUUID).toHaveBeenCalledOnce();
+    expect(result.requestId).toBe(requestId);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/advisor/advice",
+      expect.objectContaining({
+        method: "POST",
+        signal: controller.signal,
+        body: JSON.stringify({
+          version: "schedule.advisor/v1",
+          requestId,
+          date: "2026-07-13",
+          focus: "both",
+          expectedPlanId: "plan-1",
+          expectedHeadVersion: 4,
+        }),
+      }),
+    );
+  });
+
+  it("rejects a local-advisor response with a different request identity", async () => {
+    vi.stubGlobal("crypto", {
+      randomUUID: vi.fn(() => "2f0f423e-b13a-4e4c-a34c-34ab0ee8e68c"),
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              version: "schedule.advisor/v1",
+              requestId: "97d55328-3527-434b-9e9e-2d22c3a73ddb",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+      ),
+    );
+
+    await expect(
+      api.getSchedulingAdvice("workspace-1", {
+        date: "2026-07-13",
+        expectedPlanId: "plan-1",
+        expectedHeadVersion: 4,
+      }),
+    ).rejects.toMatchObject({ code: "advisor.response_mismatch", status: 502 });
+  });
+
   it("maps the shared API error envelope", async () => {
     vi.stubGlobal(
       "fetch",
