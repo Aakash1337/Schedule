@@ -8,12 +8,15 @@ import {
   createRoutine,
   createStructuredTags,
   createWorkItem,
+  createWorkItemDependency,
   createWorkspace,
   dailyPlanId,
   generateDailyPlan,
   routineId,
+  workItemId,
   workspaceId,
   type DailyPlan,
+  type PlanningWorkItemDependency,
   type Routine,
   type WorkItem,
 } from "@schedule/domain";
@@ -54,8 +57,11 @@ describe("GenerateDailyPlan", () => {
     routineCandidates: readonly Routine[] = [routine],
     workItemCandidates: readonly WorkItem[] = [],
     workspaceExists = true,
+    workItemDependencies: readonly PlanningWorkItemDependency[] = [],
   ) {
     let stored = existing;
+    let dependencyLockCount = 0;
+    const planningGraphLoads: Array<{ workItemLimit: number; dependencyLimit: number }> = [];
     const context = {
       workspaces: {
         findById: async () =>
@@ -108,8 +114,22 @@ describe("GenerateDailyPlan", () => {
         appendRoutineFeedback: async (feedback) => feedback,
       },
       workItems: {
-        listPlanningCandidates: async () => workItemCandidates,
+        listPlanningCandidates: async () => {
+          throw new Error("separate work-item candidate reads are forbidden");
+        },
       } as TransactionContext["workItems"],
+      workItemDependencies: {
+        lockWorkspace: async () => {
+          dependencyLockCount += 1;
+        },
+        listForPlanning: async () => {
+          throw new Error("separate dependency planning reads are forbidden");
+        },
+        loadPlanningGraph: async (_workspaceId, workItemLimit, dependencyLimit) => {
+          planningGraphLoads.push({ workItemLimit, dependencyLimit });
+          return { workItems: workItemCandidates, dependencies: workItemDependencies };
+        },
+      } as TransactionContext["workItemDependencies"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
       auditEvents: {} as TransactionContext["auditEvents"],
     } satisfies TransactionContext;
@@ -125,6 +145,8 @@ describe("GenerateDailyPlan", () => {
         now: () => new Date("2026-07-15T07:05:00.000Z"),
       }),
       getStored: () => stored,
+      dependencyLockCount: () => dependencyLockCount,
+      planningGraphLoads,
     };
   }
 
@@ -180,6 +202,87 @@ describe("GenerateDailyPlan", () => {
     await expect(
       harness(undefined, routineCandidates, workItemCandidates).useCase.execute({ request }),
     ).rejects.toMatchObject<Partial<DomainError>>({ code: "planning.candidate_pool_too_large" });
+  });
+
+  it("loads a bounded dependency projection and excludes an unmet dependent", async () => {
+    const prerequisiteId = workItemId("application-plan-prerequisite");
+    const dependent = createWorkItem({
+      id: workItemId("application-plan-dependent"),
+      workspaceId: workspace,
+      title: "Publish release",
+      planningDurationMinutes: 30,
+    });
+    const dependency = {
+      ...createWorkItemDependency({
+        workspaceId: workspace,
+        prerequisiteWorkItemId: prerequisiteId,
+        dependentWorkItemId: dependent.id,
+        createdAt: new Date("2026-07-14T12:00:00.000Z"),
+      }),
+      prerequisiteStatus: "backlog" as const,
+    };
+    const test = harness(undefined, [], [dependent], true, [dependency]);
+
+    const plan = await test.useCase.execute({ request });
+
+    expect(plan.items).toEqual([]);
+    expect(plan.exclusions).toContainEqual(
+      expect.objectContaining({
+        sourceType: "work_item",
+        workItemId: dependent.id,
+        codes: ["work_item_dependency_unsatisfied"],
+      }),
+    );
+    expect(test.dependencyLockCount()).toBe(0);
+    expect(test.planningGraphLoads).toEqual([{ workItemLimit: 501, dependencyLimit: 2_001 }]);
+  });
+
+  it("fails closed when dependency planning data exceeds 2,000 rows", async () => {
+    const dependent = createWorkItem({
+      id: workItemId("application-plan-bounded-dependent"),
+      workspaceId: workspace,
+      title: "Bounded dependent",
+      planningDurationMinutes: 30,
+    });
+    const dependency = {
+      ...createWorkItemDependency({
+        workspaceId: workspace,
+        prerequisiteWorkItemId: workItemId("application-plan-bounded-prerequisite"),
+        dependentWorkItemId: dependent.id,
+        createdAt: new Date("2026-07-14T12:00:00.000Z"),
+      }),
+      prerequisiteStatus: "backlog" as const,
+    };
+    const test = harness(
+      undefined,
+      [],
+      [dependent],
+      true,
+      Array.from({ length: 2_001 }, () => dependency),
+    );
+
+    await expect(test.useCase.execute({ request })).rejects.toMatchObject({
+      code: "planning.work_item_dependency_pool_too_large",
+    });
+    expect(test.getStored()).toBeUndefined();
+  });
+
+  it("fails closed if the combined graph contains a noncandidate dependent edge", async () => {
+    const dependency = {
+      ...createWorkItemDependency({
+        workspaceId: workspace,
+        prerequisiteWorkItemId: workItemId("application-plan-irrelevant-prerequisite"),
+        dependentWorkItemId: workItemId("application-plan-irrelevant-dependent"),
+        createdAt: new Date("2026-07-14T12:00:00.000Z"),
+      }),
+      prerequisiteStatus: "backlog" as const,
+    };
+    const test = harness(undefined, [routine], [], true, [dependency]);
+
+    await expect(test.useCase.execute({ request })).rejects.toMatchObject({
+      code: "planning.work_item_dependency_reference_invalid",
+    });
+    expect(test.planningGraphLoads).toEqual([{ workItemLimit: 501, dependencyLimit: 2_001 }]);
   });
 
   it("can exactly retry a later generic revision that was already persisted", async () => {

@@ -15,7 +15,9 @@ import type {
   ScheduleBlock,
   ScheduleBlockId,
   WorkItem,
+  WorkItemDependency,
   WorkItemId,
+  PlanningWorkItemDependency,
   WorkItemPriority,
   WorkItemStatus,
   Workspace,
@@ -94,6 +96,49 @@ export interface WorkItemRepository {
   listPlanningCandidates(workspaceId: WorkspaceId): Promise<readonly WorkItem[]>;
   insert(item: WorkItem): Promise<void>;
   save(item: WorkItem, expectedVersion: number): Promise<void>;
+}
+
+/** One transactionally consistent planner candidate/dependency projection. */
+export interface PlanningWorkItemGraph {
+  readonly workItems: readonly WorkItem[];
+  readonly dependencies: readonly PlanningWorkItemDependency[];
+}
+
+export interface WorkItemDependencyRepository {
+  /** Serializes workspace-wide DAG mutations and their validation reads. */
+  lockWorkspace(workspaceId: WorkspaceId): Promise<void>;
+  find(
+    workspaceId: WorkspaceId,
+    prerequisiteWorkItemId: WorkItemId,
+    dependentWorkItemId: WorkItemId,
+  ): Promise<WorkItemDependency | null>;
+  list(
+    workspaceId: WorkspaceId,
+    limit: number,
+    offset: number,
+  ): Promise<readonly WorkItemDependency[]>;
+  /** Returns a bounded planner projection including each prerequisite's current status. */
+  listForPlanning(
+    workspaceId: WorkspaceId,
+    limit: number,
+  ): Promise<readonly PlanningWorkItemDependency[]>;
+  /** Loads candidate work items and their relevant dependency rows from one database snapshot. */
+  loadPlanningGraph(
+    workspaceId: WorkspaceId,
+    workItemLimit: number,
+    dependencyLimit: number,
+  ): Promise<PlanningWorkItemGraph>;
+  wouldCreateCycle(
+    workspaceId: WorkspaceId,
+    prerequisiteWorkItemId: WorkItemId,
+    dependentWorkItemId: WorkItemId,
+  ): Promise<boolean>;
+  insert(dependency: WorkItemDependency): Promise<void>;
+  delete(
+    workspaceId: WorkspaceId,
+    prerequisiteWorkItemId: WorkItemId,
+    dependentWorkItemId: WorkItemId,
+  ): Promise<boolean>;
 }
 
 export interface ScheduleBlockRepository {
@@ -235,6 +280,7 @@ export interface DailyPlanRepository {
 export interface TransactionContext {
   readonly workspaces: WorkspaceRepository;
   readonly workItems: WorkItemRepository;
+  readonly workItemDependencies: WorkItemDependencyRepository;
   readonly scheduleBlocks: ScheduleBlockRepository;
   readonly auditEvents: AuditEventRepository;
   readonly routines: RoutineRepository;

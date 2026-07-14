@@ -27,6 +27,14 @@ export interface WorkItem {
   readonly updatedAt: string;
 }
 
+/** A directed edge: the dependent waits for the prerequisite to be done. */
+export interface WorkItemDependency {
+  readonly workspaceId: string;
+  readonly prerequisiteWorkItemId: string;
+  readonly dependentWorkItemId: string;
+  readonly createdAt: string;
+}
+
 export interface ScheduleBlock {
   readonly id: string;
   readonly workspaceId: string;

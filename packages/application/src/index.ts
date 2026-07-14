@@ -1,4 +1,5 @@
 export * from "./create-schedule-block.js";
+export * from "./add-work-item-dependency.js";
 export * from "./approve-routine-duration-insight.js";
 export {
   DismissRoutineDurationInsight,
@@ -12,6 +13,7 @@ export * from "./create-routine.js";
 export * from "./create-work-item.js";
 export * from "./get-work-item.js";
 export * from "./list-work-items.js";
+export * from "./list-work-item-dependencies.js";
 export * from "./update-work-item.js";
 export * from "./webhook-security.js";
 export * from "./create-workspace.js";
@@ -27,9 +29,11 @@ export * from "./get-scheduling-advice.js";
 export * from "./list-routine-activity.js";
 export * from "./list-routines.js";
 export * from "./mutate-daily-plan.js";
+export * from "./planning-candidates.js";
 export * from "./ports.js";
 export * from "./record-activity-event.js";
 export * from "./record-plan-item-activity.js";
+export * from "./remove-work-item-dependency.js";
 export {
   ResetRoutineDurationInsightDismissal,
   type ResetRoutineDurationInsightDismissalCommand,

@@ -1,9 +1,15 @@
-import { Pencil, Plus } from "lucide-react";
+import { ChevronDown, Pencil, Plus, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { api, ApiError } from "../api";
 import { Button, EmptyState, ErrorNotice, Field, PageHeader, PageSkeleton } from "../components/ui";
-import type { WorkItem, WorkItemPriority, WorkItemStatus, WorkspaceViewProps } from "../types";
+import type {
+  WorkItem,
+  WorkItemDependency,
+  WorkItemPriority,
+  WorkItemStatus,
+  WorkspaceViewProps,
+} from "../types";
 
 const statuses: readonly { readonly value: WorkItemStatus; readonly label: string }[] = [
   { value: "backlog", label: "Backlog" },
@@ -27,6 +33,14 @@ type PriorityFilter = WorkItemPriority | "";
 interface BoardData {
   readonly queryKey: string;
   readonly items: readonly WorkItem[];
+  readonly allItems: readonly WorkItem[];
+  readonly dependencies: readonly WorkItemDependency[];
+}
+
+interface WorkspaceDependencyData {
+  readonly workspaceId: string;
+  readonly allItems: readonly WorkItem[];
+  readonly dependencies: readonly WorkItemDependency[];
 }
 
 interface WorkEditDraft {
@@ -42,6 +56,24 @@ function queryKey(workspaceId: string, priority: PriorityFilter): string {
   return `${workspaceId}:${priority || "all"}`;
 }
 
+function mergeWorkItems(
+  current: readonly WorkItem[],
+  fresh: readonly WorkItem[],
+): readonly WorkItem[] {
+  const mergedById = new Map(current.map((item) => [item.id, item] as const));
+  const currentIds = new Set(current.map((item) => item.id));
+  for (const item of fresh) {
+    const existing = mergedById.get(item.id);
+    if (existing === undefined || item.version >= existing.version) mergedById.set(item.id, item);
+  }
+  return [
+    ...current.map((item) => mergedById.get(item.id) ?? item),
+    ...fresh
+      .filter((item) => !currentIds.has(item.id))
+      .map((item) => mergedById.get(item.id) ?? item),
+  ];
+}
+
 function messageFor(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
@@ -50,6 +82,17 @@ function messageFor(error: unknown): string {
 
 function priorityLabel(priority: WorkItemPriority): string {
   return priorities.find((option) => option.value === priority)?.label ?? priority;
+}
+
+function statusLabel(status: WorkItemStatus): string {
+  return statuses.find((option) => option.value === status)?.label ?? status;
+}
+
+function dependencyMessageFor(error: unknown): string {
+  if (error instanceof ApiError && error.code === "work_item_dependency.cycle_conflict") {
+    return "That prerequisite would create a cycle. Choose a different work item.";
+  }
+  return messageFor(error);
 }
 
 function isPlanningDurationValid(value: string, included: boolean): boolean {
@@ -85,24 +128,80 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const titleInputRef = useRef<HTMLInputElement>(null);
   const editOpenerRef = useRef<HTMLElement | null>(null);
   const [editDraft, setEditDraft] = useState<WorkEditDraft | null>(null);
+  const [prerequisiteSelections, setPrerequisiteSelections] = useState<
+    Readonly<Record<string, string>>
+  >({});
+  const [dependencyPendingTokens, setDependencyPendingTokens] = useState<
+    ReadonlyMap<string, string>
+  >(new Map());
+  const [dependencyErrors, setDependencyErrors] = useState<
+    Readonly<Record<string, string | undefined>>
+  >({});
+  const [dependencyAnnouncements, setDependencyAnnouncements] = useState<
+    Readonly<Record<string, string | undefined>>
+  >({});
+  const [openDependencyEditorId, setOpenDependencyEditorId] = useState<string | null>(null);
+  const dependencyRequestSequence = useRef(0);
+  const workspaceDependencyDataRef = useRef<WorkspaceDependencyData | null>(null);
+  const prerequisiteSelectRefs = useRef(new Map<string, HTMLSelectElement>());
+  const prerequisiteSummaryRefs = useRef(new Map<string, HTMLElement>());
 
   const activeQueryKey = queryKey(workspace.id, priorityFilter);
   const activeQueryKeyRef = useRef(activeQueryKey);
   activeQueryKeyRef.current = activeQueryKey;
 
   const loadBoard = useCallback(
-    async (signal?: AbortSignal) => {
+    async (signal?: AbortSignal, revalidateWorkspaceData = false) => {
       const requestKey = queryKey(workspace.id, priorityFilter);
       setLoading(true);
       setLoadError(null);
       try {
-        const result = await api.listWorkItems(
+        const cachedWorkspaceData =
+          workspaceDependencyDataRef.current?.workspaceId === workspace.id
+            ? workspaceDependencyDataRef.current
+            : null;
+        const filteredItemsRequest = api.listWorkItems(
           workspace.id,
           priorityFilter === "" ? {} : { priority: priorityFilter },
           signal,
         );
+        const workspaceDataRequest =
+          cachedWorkspaceData === null || revalidateWorkspaceData
+            ? Promise.all([
+                priorityFilter === ""
+                  ? filteredItemsRequest
+                  : api.listWorkItems(workspace.id, {}, signal),
+                api.listWorkItemDependencies(workspace.id, signal),
+              ]).then(([allItems, dependencies]): WorkspaceDependencyData => ({
+                workspaceId: workspace.id,
+                allItems: allItems.items,
+                dependencies: dependencies.items,
+              }))
+            : Promise.resolve(cachedWorkspaceData);
+        const [result, workspaceData] = await Promise.all([
+          filteredItemsRequest,
+          workspaceDataRequest,
+        ]);
         if (!signal?.aborted && activeQueryKeyRef.current === requestKey) {
-          setBoard({ queryKey: requestKey, items: result.items });
+          const mergedWorkspaceData = {
+            ...workspaceData,
+            allItems: mergeWorkItems(workspaceData.allItems, result.items),
+          };
+          const mergedItemsById = new Map(
+            mergedWorkspaceData.allItems.map((item) => [item.id, item] as const),
+          );
+          const resultItems = (
+            revalidateWorkspaceData ? mergedWorkspaceData.allItems : result.items
+          )
+            .map((item) => mergedItemsById.get(item.id) ?? item)
+            .filter((item) => priorityFilter === "" || item.priority === priorityFilter);
+          workspaceDependencyDataRef.current = mergedWorkspaceData;
+          setBoard({
+            queryKey: requestKey,
+            items: resultItems,
+            allItems: mergedWorkspaceData.allItems,
+            dependencies: mergedWorkspaceData.dependencies,
+          });
         }
       } catch (error) {
         if (!signal?.aborted && activeQueryKeyRef.current === requestKey) {
@@ -116,15 +215,41 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   );
 
   useEffect(() => {
+    if (workspaceDependencyDataRef.current?.workspaceId !== workspace.id) {
+      workspaceDependencyDataRef.current = null;
+    }
+  }, [workspace.id]);
+
+  useEffect(() => {
     const controller = new AbortController();
     setActionError(null);
     setCreateError(null);
     setEditDraft(null);
+    setPrerequisiteSelections({});
+    setDependencyPendingTokens(new Map());
+    setDependencyErrors({});
+    setDependencyAnnouncements({});
+    setOpenDependencyEditorId(null);
     void loadBoard(controller.signal);
     return () => controller.abort();
   }, [loadBoard]);
 
   const items = board?.queryKey === activeQueryKey ? board.items : null;
+  const allItems = board?.queryKey === activeQueryKey ? board.allItems : null;
+  const dependencies = board?.queryKey === activeQueryKey ? board.dependencies : null;
+  const allItemsById = useMemo(
+    () => new Map((allItems ?? []).map((item) => [item.id, item] as const)),
+    [allItems],
+  );
+  const dependenciesByDependentId = useMemo(() => {
+    const grouped = new Map<string, WorkItemDependency[]>();
+    for (const dependency of dependencies ?? []) {
+      const current = grouped.get(dependency.dependentWorkItemId) ?? [];
+      current.push(dependency);
+      grouped.set(dependency.dependentWorkItemId, current);
+    }
+    return grouped;
+  }, [dependencies]);
   const itemsByStatus = useMemo(() => {
     const grouped = new Map<WorkItemStatus, readonly WorkItem[]>();
     for (const status of statuses) {
@@ -139,6 +264,15 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     planningDurationMinutes,
     includeInDailyPlan,
   );
+
+  function updateWorkspaceDependencyData(
+    workspaceId: string,
+    update: (current: WorkspaceDependencyData) => WorkspaceDependencyData,
+  ): void {
+    const current = workspaceDependencyDataRef.current;
+    if (current?.workspaceId !== workspaceId) return;
+    workspaceDependencyDataRef.current = update(current);
+  }
 
   async function createItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -164,10 +298,22 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         planningDurationMinutes: parsedPlanningDuration,
       });
       if (activeQueryKeyRef.current === requestKey) {
+        updateWorkspaceDependencyData(requestWorkspaceId, (current) => ({
+          ...current,
+          allItems: current.allItems.some((item) => item.id === created.id)
+            ? current.allItems.map((item) => (item.id === created.id ? created : item))
+            : [...current.allItems, created],
+        }));
         setBoard((current) => {
           if (current?.queryKey !== requestKey) return current;
-          if (priorityFilter !== "" && created.priority !== priorityFilter) return current;
-          return { ...current, items: [...current.items, created] };
+          const allItems = current.allItems.some((item) => item.id === created.id)
+            ? current.allItems.map((item) => (item.id === created.id ? created : item))
+            : [...current.allItems, created];
+          const items =
+            priorityFilter !== "" && created.priority !== priorityFilter
+              ? current.items
+              : [...current.items, created];
+          return { ...current, items, allItems };
         });
       }
       setTitle("");
@@ -215,12 +361,29 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   ) {
     setActionError("This work item changed elsewhere. Refreshing the board now.");
     try {
-      const result = await api.listWorkItems(
+      const filteredItemsRequest = api.listWorkItems(
         requestWorkspaceId,
         priorityFilter === "" ? {} : { priority: priorityFilter },
       );
+      const allItemsRequest =
+        priorityFilter === "" ? filteredItemsRequest : api.listWorkItems(requestWorkspaceId, {});
+      const [result, allItems, dependencies] = await Promise.all([
+        filteredItemsRequest,
+        allItemsRequest,
+        api.listWorkItemDependencies(requestWorkspaceId),
+      ]);
       if (activeQueryKeyRef.current !== requestKey) return;
-      setBoard({ queryKey: requestKey, items: result.items });
+      workspaceDependencyDataRef.current = {
+        workspaceId: requestWorkspaceId,
+        allItems: allItems.items,
+        dependencies: dependencies.items,
+      };
+      setBoard({
+        queryKey: requestKey,
+        items: result.items,
+        allItems: allItems.items,
+        dependencies: dependencies.items,
+      });
       if (editDraft?.id === itemId) closeEdit();
       setActionError(
         "This work item changed elsewhere. The board has been refreshed and unsaved detail edits were not applied.",
@@ -258,13 +421,24 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       });
       if (activeQueryKeyRef.current !== requestKey) return false;
 
+      updateWorkspaceDependencyData(requestWorkspaceId, (current) => ({
+        ...current,
+        allItems: current.allItems.map((candidate) =>
+          candidate.id === updated.id ? updated : candidate,
+        ),
+      }));
+
       setBoard((current) => {
         if (current?.queryKey !== requestKey) return current;
         const updatedItems = current.items.map((candidate) =>
           candidate.id === updated.id ? updated : candidate,
         );
+        const updatedAllItems = current.allItems.map((candidate) =>
+          candidate.id === updated.id ? updated : candidate,
+        );
         return {
           ...current,
+          allItems: updatedAllItems,
           items:
             priorityFilter === "" || updated.priority === priorityFilter
               ? updatedItems
@@ -310,6 +484,173 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     if (saved) closeEdit();
   }
 
+  function beginDependencyMutation(itemId: string, requestKey: string): string | null {
+    if (dependencyPendingTokens.has(itemId)) return null;
+    const token = `${requestKey}:${dependencyRequestSequence.current + 1}`;
+    dependencyRequestSequence.current += 1;
+    setDependencyPendingTokens((current) => {
+      const next = new Map(current);
+      next.set(itemId, token);
+      return next;
+    });
+    setDependencyErrors((current) => ({ ...current, [itemId]: undefined }));
+    setDependencyAnnouncements((current) => ({ ...current, [itemId]: undefined }));
+    return token;
+  }
+
+  function finishDependencyMutation(itemId: string, token: string): void {
+    setDependencyPendingTokens((current) => {
+      if (current.get(itemId) !== token) return current;
+      const next = new Map(current);
+      next.delete(itemId);
+      return next;
+    });
+  }
+
+  function focusDependencyEditor(
+    itemId: string,
+    requestKey: string,
+    target: "select" | "summary",
+  ): void {
+    window.setTimeout(() => {
+      if (activeQueryKeyRef.current !== requestKey) return;
+      const element =
+        target === "select"
+          ? prerequisiteSelectRefs.current.get(itemId)
+          : prerequisiteSummaryRefs.current.get(itemId);
+      element?.focus();
+    });
+  }
+
+  async function addPrerequisite(event: FormEvent<HTMLFormElement>, item: WorkItem): Promise<void> {
+    event.preventDefault();
+    const prerequisiteWorkItemId = prerequisiteSelections[item.id] ?? "";
+    const prerequisite = allItemsById.get(prerequisiteWorkItemId);
+    const currentDependencies = dependenciesByDependentId.get(item.id) ?? [];
+    if (
+      prerequisiteWorkItemId.length === 0 ||
+      prerequisite === undefined ||
+      prerequisite.workspaceId !== workspace.id ||
+      prerequisiteWorkItemId === item.id ||
+      currentDependencies.some(
+        (dependency) => dependency.prerequisiteWorkItemId === prerequisiteWorkItemId,
+      )
+    ) {
+      return;
+    }
+
+    const requestWorkspaceId = workspace.id;
+    const requestKey = activeQueryKey;
+    const token = beginDependencyMutation(item.id, requestKey);
+    if (token === null) return;
+    const candidateCount = (allItems ?? []).filter(
+      (candidate) =>
+        candidate.id !== item.id &&
+        !currentDependencies.some(
+          (dependency) => dependency.prerequisiteWorkItemId === candidate.id,
+        ),
+    ).length;
+
+    try {
+      const dependency = await api.addWorkItemPrerequisite(
+        requestWorkspaceId,
+        item.id,
+        prerequisiteWorkItemId,
+      );
+      if (activeQueryKeyRef.current !== requestKey) return;
+      if (
+        dependency.workspaceId !== requestWorkspaceId ||
+        dependency.dependentWorkItemId !== item.id ||
+        dependency.prerequisiteWorkItemId !== prerequisiteWorkItemId
+      ) {
+        throw new Error("The prerequisite response did not match the requested work items.");
+      }
+      setBoard((current) => {
+        if (current?.queryKey !== requestKey) return current;
+        const exists = current.dependencies.some(
+          (candidate) =>
+            candidate.dependentWorkItemId === dependency.dependentWorkItemId &&
+            candidate.prerequisiteWorkItemId === dependency.prerequisiteWorkItemId,
+        );
+        return exists
+          ? current
+          : { ...current, dependencies: [...current.dependencies, dependency] };
+      });
+      updateWorkspaceDependencyData(requestWorkspaceId, (current) => {
+        const exists = current.dependencies.some(
+          (candidate) =>
+            candidate.dependentWorkItemId === dependency.dependentWorkItemId &&
+            candidate.prerequisiteWorkItemId === dependency.prerequisiteWorkItemId,
+        );
+        return exists
+          ? current
+          : { ...current, dependencies: [...current.dependencies, dependency] };
+      });
+      setPrerequisiteSelections((current) => ({ ...current, [item.id]: "" }));
+      setDependencyAnnouncements((current) => ({
+        ...current,
+        [item.id]: `${prerequisite.title} is now a prerequisite. The work item status was not changed.`,
+      }));
+      focusDependencyEditor(item.id, requestKey, candidateCount > 1 ? "select" : "summary");
+    } catch (error) {
+      if (activeQueryKeyRef.current === requestKey) {
+        setDependencyErrors((current) => ({
+          ...current,
+          [item.id]: dependencyMessageFor(error),
+        }));
+      }
+    } finally {
+      finishDependencyMutation(item.id, token);
+    }
+  }
+
+  async function removePrerequisite(item: WorkItem, prerequisiteWorkItemId: string): Promise<void> {
+    const requestWorkspaceId = workspace.id;
+    const requestKey = activeQueryKey;
+    const token = beginDependencyMutation(item.id, requestKey);
+    if (token === null) return;
+    const prerequisiteTitle = allItemsById.get(prerequisiteWorkItemId)?.title ?? "The prerequisite";
+
+    try {
+      await api.removeWorkItemPrerequisite(requestWorkspaceId, item.id, prerequisiteWorkItemId);
+      if (activeQueryKeyRef.current !== requestKey) return;
+      setBoard((current) =>
+        current?.queryKey !== requestKey
+          ? current
+          : {
+              ...current,
+              dependencies: current.dependencies.filter(
+                (dependency) =>
+                  dependency.dependentWorkItemId !== item.id ||
+                  dependency.prerequisiteWorkItemId !== prerequisiteWorkItemId,
+              ),
+            },
+      );
+      updateWorkspaceDependencyData(requestWorkspaceId, (current) => ({
+        ...current,
+        dependencies: current.dependencies.filter(
+          (dependency) =>
+            dependency.dependentWorkItemId !== item.id ||
+            dependency.prerequisiteWorkItemId !== prerequisiteWorkItemId,
+        ),
+      }));
+      setDependencyAnnouncements((current) => ({
+        ...current,
+        [item.id]: `${prerequisiteTitle} is no longer a prerequisite. The work item status was not changed.`,
+      }));
+      focusDependencyEditor(item.id, requestKey, "summary");
+    } catch (error) {
+      if (activeQueryKeyRef.current === requestKey) {
+        setDependencyErrors((current) => ({
+          ...current,
+          [item.id]: dependencyMessageFor(error),
+        }));
+      }
+    } finally {
+      finishDependencyMutation(item.id, token);
+    }
+  }
+
   return (
     <div className="work-view">
       <PageHeader
@@ -317,20 +658,33 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         title="Work board"
         description="Capture work, choose what can enter Today, and move it through a clear six-step flow."
         actions={
-          <Field label="Filter by priority" className="work-priority-filter">
-            <select
-              value={priorityFilter}
-              onChange={(event) => setPriorityFilter(event.currentTarget.value as PriorityFilter)}
-              disabled={creating || pendingItemIds.size > 0}
+          <>
+            <Field label="Filter by priority" className="work-priority-filter">
+              <select
+                value={priorityFilter}
+                onChange={(event) => setPriorityFilter(event.currentTarget.value as PriorityFilter)}
+                disabled={creating || pendingItemIds.size > 0 || dependencyPendingTokens.size > 0}
+              >
+                <option value="">All priorities</option>
+                {priorities.map((priority) => (
+                  <option value={priority.value} key={priority.value}>
+                    {priority.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Button
+              type="button"
+              variant="quiet"
+              className="work-board-refresh"
+              busy={loading}
+              disabled={creating || pendingItemIds.size > 0 || dependencyPendingTokens.size > 0}
+              onClick={() => void loadBoard(undefined, true)}
             >
-              <option value="">All priorities</option>
-              {priorities.map((priority) => (
-                <option value={priority.value} key={priority.value}>
-                  {priority.label}
-                </option>
-              ))}
-            </select>
-          </Field>
+              {loading ? null : <RefreshCw size={15} aria-hidden="true" />}
+              Refresh board
+            </Button>
+          </>
         }
       />
 
@@ -455,7 +809,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         <ErrorNotice
           message={loadError}
           action={
-            <Button type="button" variant="quiet" onClick={() => void loadBoard()}>
+            <Button type="button" variant="quiet" onClick={() => void loadBoard(undefined, true)}>
               Retry
             </Button>
           }
@@ -527,6 +881,37 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                     ) : null}
                     {columnItems.map((item) => {
                       const pending = pendingItemIds.has(item.id);
+                      const dependencyPending = dependencyPendingTokens.has(item.id);
+                      const cardPending = pending || dependencyPending;
+                      const itemDependencies = [
+                        ...(dependenciesByDependentId.get(item.id) ?? []),
+                      ].sort((left, right) => {
+                        const leftTitle =
+                          allItemsById.get(left.prerequisiteWorkItemId)?.title ?? "";
+                        const rightTitle =
+                          allItemsById.get(right.prerequisiteWorkItemId)?.title ?? "";
+                        return leftTitle.localeCompare(rightTitle);
+                      });
+                      const linkedPrerequisiteIds = new Set(
+                        itemDependencies.map((dependency) => dependency.prerequisiteWorkItemId),
+                      );
+                      const dependencyEditorOpen = openDependencyEditorId === item.id;
+                      const prerequisiteCandidates = dependencyEditorOpen
+                        ? [...(allItems ?? [])]
+                            .filter(
+                              (candidate) =>
+                                candidate.id !== item.id &&
+                                !linkedPrerequisiteIds.has(candidate.id),
+                            )
+                            .sort((left, right) => left.title.localeCompare(right.title))
+                        : [];
+                      const completedPrerequisites = itemDependencies.filter(
+                        (dependency) =>
+                          allItemsById.get(dependency.prerequisiteWorkItemId)?.status === "done",
+                      ).length;
+                      const dependencyHeadingId = `work-dependencies-${item.id}`;
+                      const dependencyError = dependencyErrors[item.id] ?? null;
+                      const dependencyAnnouncement = dependencyAnnouncements[item.id] ?? null;
                       return (
                         <article className="work-card" aria-busy={pending} key={item.id}>
                           <header className="work-card-header">
@@ -554,7 +939,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                 type="button"
                                 className="icon-button work-card-edit-button"
                                 onClick={() => openEdit(item)}
-                                disabled={pending}
+                                disabled={cardPending}
                                 aria-label={`Edit details for ${item.title}`}
                               >
                                 <Pencil size={14} aria-hidden="true" />
@@ -578,7 +963,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                   }}
                                   maxLength={240}
                                   required
-                                  disabled={pending}
+                                  disabled={cardPending}
                                 />
                               </Field>
                               <Field label="Description (optional)">
@@ -591,7 +976,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                     );
                                   }}
                                   maxLength={4000}
-                                  disabled={pending}
+                                  disabled={cardPending}
                                 />
                               </Field>
                               <Field
@@ -607,7 +992,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                       current === null ? null : { ...current, dueOn: value },
                                     );
                                   }}
-                                  disabled={pending}
+                                  disabled={cardPending}
                                 />
                               </Field>
                               <fieldset className="work-card-planning-fieldset">
@@ -616,7 +1001,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                   <input
                                     type="checkbox"
                                     checked={editDraft.includeInDailyPlan}
-                                    disabled={pending}
+                                    disabled={cardPending}
                                     onChange={(event) => {
                                       const checked = event.currentTarget.checked;
                                       setEditDraft((current) =>
@@ -637,7 +1022,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                       step={1}
                                       inputMode="numeric"
                                       value={editDraft.planningDurationMinutes}
-                                      disabled={pending}
+                                      disabled={cardPending}
                                       aria-invalid={
                                         !isPlanningDurationValid(
                                           editDraft.planningDurationMinutes,
@@ -674,6 +1059,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                   variant="primary"
                                   busy={pending}
                                   disabled={
+                                    cardPending ||
                                     editDraft.title.trim().length === 0 ||
                                     !isPlanningDurationValid(
                                       editDraft.planningDurationMinutes,
@@ -688,6 +1074,188 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                           ) : item.description === null ? null : (
                             <p className="work-card-description">{item.description}</p>
                           )}
+                          <section
+                            className="work-dependencies"
+                            aria-labelledby={dependencyHeadingId}
+                          >
+                            <div className="work-dependencies-heading">
+                              <h4 id={dependencyHeadingId}>Prerequisites</h4>
+                              <span>
+                                {itemDependencies.length === 0
+                                  ? "None"
+                                  : `${completedPrerequisites}/${itemDependencies.length} done`}
+                              </span>
+                            </div>
+
+                            {itemDependencies.length === 0 ? (
+                              <p className="work-dependencies-empty">No prerequisites linked.</p>
+                            ) : (
+                              <ul className="work-dependency-list">
+                                {itemDependencies.map((dependency) => {
+                                  const prerequisite = allItemsById.get(
+                                    dependency.prerequisiteWorkItemId,
+                                  );
+                                  const prerequisiteTitle =
+                                    prerequisite?.title ?? "Unavailable work item";
+                                  return (
+                                    <li key={dependency.prerequisiteWorkItemId}>
+                                      <span className="work-dependency-summary">
+                                        <strong>{prerequisiteTitle}</strong>
+                                        <span
+                                          className={`work-dependency-status${
+                                            prerequisite === undefined
+                                              ? ""
+                                              : ` work-dependency-status-${prerequisite.status}`
+                                          }`}
+                                          aria-label={`${prerequisiteTitle} status: ${
+                                            prerequisite === undefined
+                                              ? "Unavailable"
+                                              : statusLabel(prerequisite.status)
+                                          }`}
+                                        >
+                                          {prerequisite === undefined
+                                            ? "Unavailable"
+                                            : statusLabel(prerequisite.status)}
+                                        </span>
+                                      </span>
+                                      <Button
+                                        type="button"
+                                        variant="quiet"
+                                        className="work-dependency-remove"
+                                        disabled={cardPending}
+                                        aria-label={`Remove ${prerequisiteTitle} as a prerequisite for ${item.title}`}
+                                        onClick={() =>
+                                          void removePrerequisite(
+                                            item,
+                                            dependency.prerequisiteWorkItemId,
+                                          )
+                                        }
+                                      >
+                                        Remove
+                                      </Button>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+
+                            <p className="work-dependencies-hint">
+                              Today waits until every prerequisite is Done. Adding or removing a
+                              link never changes a work item status.
+                            </p>
+
+                            {dependencyError === null ? null : (
+                              <ErrorNotice
+                                message={dependencyError}
+                                onDismiss={() =>
+                                  setDependencyErrors((current) => ({
+                                    ...current,
+                                    [item.id]: undefined,
+                                  }))
+                                }
+                              />
+                            )}
+                            {dependencyAnnouncement === null ? null : (
+                              <p
+                                className="work-dependency-announcement"
+                                role="status"
+                                aria-live="polite"
+                                aria-atomic="true"
+                              >
+                                {dependencyAnnouncement}
+                              </p>
+                            )}
+                            {dependencyPending ? (
+                              <p
+                                className="work-dependency-pending"
+                                role="status"
+                                aria-live="polite"
+                                aria-atomic="true"
+                              >
+                                Saving prerequisite change...
+                              </p>
+                            ) : null}
+
+                            <details
+                              className="work-dependency-editor"
+                              open={dependencyEditorOpen}
+                              onToggle={(event) => {
+                                const open = event.currentTarget.open;
+                                setOpenDependencyEditorId((current) =>
+                                  open ? item.id : current === item.id ? null : current,
+                                );
+                              }}
+                            >
+                              <summary
+                                ref={(element) => {
+                                  if (element === null) {
+                                    prerequisiteSummaryRefs.current.delete(item.id);
+                                  } else {
+                                    prerequisiteSummaryRefs.current.set(item.id, element);
+                                  }
+                                }}
+                                aria-label={`Manage prerequisites for ${item.title}`}
+                                aria-expanded={dependencyEditorOpen}
+                              >
+                                <ChevronDown
+                                  className="work-dependency-chevron"
+                                  data-state={dependencyEditorOpen ? "open" : "closed"}
+                                  size={15}
+                                  aria-hidden="true"
+                                />
+                                <span>Manage prerequisites</span>
+                              </summary>
+                              {dependencyEditorOpen ? (
+                                <form onSubmit={(event) => void addPrerequisite(event, item)}>
+                                  <label>
+                                    <span>Add a prerequisite</span>
+                                    <select
+                                      ref={(element) => {
+                                        if (element === null) {
+                                          prerequisiteSelectRefs.current.delete(item.id);
+                                        } else {
+                                          prerequisiteSelectRefs.current.set(item.id, element);
+                                        }
+                                      }}
+                                      value={prerequisiteSelections[item.id] ?? ""}
+                                      aria-label={`Add prerequisite to ${item.title}`}
+                                      disabled={cardPending || prerequisiteCandidates.length === 0}
+                                      onChange={(event) => {
+                                        const value = event.currentTarget.value;
+                                        setPrerequisiteSelections((current) => ({
+                                          ...current,
+                                          [item.id]: value,
+                                        }));
+                                      }}
+                                    >
+                                      <option value="">
+                                        {prerequisiteCandidates.length === 0
+                                          ? "No available work items"
+                                          : "Choose a work item"}
+                                      </option>
+                                      {prerequisiteCandidates.map((candidate) => (
+                                        <option value={candidate.id} key={candidate.id}>
+                                          {candidate.title} ({statusLabel(candidate.status)})
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                  <Button
+                                    type="submit"
+                                    variant="quiet"
+                                    disabled={
+                                      cardPending ||
+                                      prerequisiteCandidates.length === 0 ||
+                                      (prerequisiteSelections[item.id] ?? "").length === 0
+                                    }
+                                    aria-label={`Add selected prerequisite to ${item.title}`}
+                                  >
+                                    Add
+                                  </Button>
+                                </form>
+                              ) : null}
+                            </details>
+                          </section>
                           <div className="work-card-controls">
                             <label className="work-card-control">
                               <span>Status</span>
@@ -698,7 +1266,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                     status: event.currentTarget.value as WorkItemStatus,
                                   })
                                 }
-                                disabled={pending}
+                                disabled={cardPending}
                                 aria-label={`Status for ${item.title}`}
                               >
                                 {statuses.map((option) => (
@@ -717,7 +1285,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                     priority: event.currentTarget.value as WorkItemPriority,
                                   })
                                 }
-                                disabled={pending}
+                                disabled={cardPending}
                                 aria-label={`Priority for ${item.title}`}
                               >
                                 {priorities.map((option) => (

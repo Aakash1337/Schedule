@@ -5,6 +5,7 @@ import type {
   SchedulingAdvisorContext,
   TransactionContext,
   UnitOfWork,
+  WorkItemDependencyRepository,
   Workspace,
 } from "@schedule/application";
 import {
@@ -15,6 +16,7 @@ import {
   createDurationRange,
   createRoutine,
   createStructuredTags,
+  createWorkItem,
   createWorkspace,
   dailyPlanId,
   generateDailyPlan,
@@ -25,9 +27,23 @@ import {
   workItemId,
   workspaceId,
   type RoutineDurationInsightFeedback,
+  type WorkItemDependency,
 } from "@schedule/domain";
 
 import { createProductServices } from "./product-services.js";
+
+function createWorkItemDependencyRepositoryStub(): WorkItemDependencyRepository {
+  return {
+    lockWorkspace: async () => undefined,
+    find: async () => null,
+    list: async () => [],
+    listForPlanning: async () => [],
+    loadPlanningGraph: async () => ({ workItems: [], dependencies: [] }),
+    wouldCreateCycle: async () => false,
+    insert: async () => undefined,
+    delete: async () => false,
+  };
+}
 
 describe("createProductServices", () => {
   it("exposes the complete product handler surface and delegates workspace creation", async () => {
@@ -40,6 +56,7 @@ describe("createProductServices", () => {
           inserted.push(workspace);
         },
       },
+      workItemDependencies: createWorkItemDependencyRepositoryStub(),
     } as TransactionContext;
     const unitOfWork: UnitOfWork = {
       run: async (operation) => operation(context),
@@ -49,6 +66,7 @@ describe("createProductServices", () => {
     });
 
     expect(Object.keys(services).sort()).toEqual([
+      "addWorkItemDependency",
       "applyRoutineFeedback",
       "approveRoutineDurationInsight",
       "createRoutine",
@@ -69,11 +87,13 @@ describe("createProductServices", () => {
       "listRoutineActivity",
       "listRoutines",
       "listScheduleBlocks",
+      "listWorkItemDependencies",
       "listWorkItems",
       "listWorkspaces",
       "recordActivityEvent",
       "recordPlanItemActivity",
       "regenerateDailyPlan",
+      "removeWorkItemDependency",
       "replacePlanItem",
       "resetRoutineDurationInsightDismissal",
       "resetRoutineFeedback",
@@ -94,6 +114,13 @@ describe("createProductServices", () => {
       items: [],
     });
     await Promise.all([
+      expect(
+        services.addWorkItemDependency({
+          workspaceId: missingWorkspace,
+          prerequisiteWorkItemId: workItemId("missing-prerequisite"),
+          dependentWorkItemId: workItemId("missing-dependent"),
+        }),
+      ).rejects.toMatchObject({ code: "workspace.not_found" }),
       expect(
         services.approveRoutineDurationInsight({
           workspaceId: missingWorkspace,
@@ -157,6 +184,20 @@ describe("createProductServices", () => {
         services.listWorkItems({ workspaceId: missingWorkspace, limit: 10, offset: 0 }),
       ).rejects.toMatchObject({ code: "workspace.not_found" }),
       expect(
+        services.listWorkItemDependencies({
+          workspaceId: missingWorkspace,
+          limit: 10,
+          offset: 0,
+        }),
+      ).rejects.toMatchObject({ code: "workspace.not_found" }),
+      expect(
+        services.removeWorkItemDependency({
+          workspaceId: missingWorkspace,
+          prerequisiteWorkItemId: workItemId("missing-prerequisite-removal"),
+          dependentWorkItemId: workItemId("missing-dependent-removal"),
+        }),
+      ).rejects.toMatchObject({ code: "workspace.not_found" }),
+      expect(
         services.getScheduleBlock({
           workspaceId: missingWorkspace,
           scheduleBlockId: scheduleBlockId("missing-block"),
@@ -213,6 +254,7 @@ describe("createProductServices", () => {
     const feedback: RoutineDurationInsightFeedback[] = [];
     const context = {
       workspaces: { findById: async () => workspace },
+      workItemDependencies: createWorkItemDependencyRepositoryStub(),
       routines: { findById: async () => routine },
       activityEvents: {
         lockRoutineActivity: async () => undefined,
@@ -254,6 +296,116 @@ describe("createProductServices", () => {
     expect(feedback).toEqual([dismissed, reset]);
   });
 
+  it("delegates dependency creation, replay, listing, and idempotent removal", async () => {
+    const now = new Date("2026-07-15T12:00:00.000Z");
+    const workspace = createWorkspace({
+      id: workspaceId("dependency-service-workspace"),
+      name: "Dependencies",
+      now,
+    });
+    const prerequisite = createWorkItem({
+      id: workItemId("dependency-service-prerequisite"),
+      workspaceId: workspace.id,
+      title: "Prepare outline",
+      now,
+    });
+    const dependent = createWorkItem({
+      id: workItemId("dependency-service-dependent"),
+      workspaceId: workspace.id,
+      title: "Write report",
+      now,
+    });
+    let dependency: WorkItemDependency | null = null;
+    const audits: unknown[] = [];
+    const context = {
+      workspaces: {
+        findById: async () => workspace,
+      },
+      workItems: {
+        findById: async (_workspaceId: string, id: string) => {
+          if (id === prerequisite.id) return prerequisite;
+          if (id === dependent.id) return dependent;
+          return null;
+        },
+      },
+      workItemDependencies: {
+        lockWorkspace: async () => undefined,
+        find: async () => dependency,
+        list: async (_workspaceId: string, limit: number, offset: number) =>
+          (dependency === null ? [] : [dependency]).slice(offset, offset + limit),
+        loadPlanningGraph: async (
+          _workspaceId: string,
+          workItemLimit: number,
+          dependencyLimit: number,
+        ) => {
+          const workItems = [prerequisite, dependent]
+            .filter(
+              (item) =>
+                ["backlog", "planned", "in_progress"].includes(item.status) &&
+                item.planningDurationMinutes !== null,
+            )
+            .slice(0, workItemLimit);
+          const candidateIds = new Set(workItems.map((item) => item.id));
+          return {
+            workItems,
+            dependencies:
+              dependency !== null && candidateIds.has(dependency.dependentWorkItemId)
+                ? [{ ...dependency, prerequisiteStatus: prerequisite.status }].slice(
+                    0,
+                    dependencyLimit,
+                  )
+                : [],
+          };
+        },
+        wouldCreateCycle: async () => false,
+        insert: async (created: WorkItemDependency) => {
+          dependency = created;
+        },
+        delete: async () => {
+          if (dependency === null) return false;
+          dependency = null;
+          return true;
+        },
+      },
+      auditEvents: {
+        append: async (event: unknown) => {
+          audits.push(event);
+        },
+      },
+    } as TransactionContext;
+    const services = createProductServices(
+      { run: async (operation) => operation(context) },
+      { now: () => now },
+    );
+    const command = {
+      workspaceId: workspace.id,
+      prerequisiteWorkItemId: prerequisite.id,
+      dependentWorkItemId: dependent.id,
+    };
+
+    const created = await services.addWorkItemDependency(command);
+    const replayed = await services.addWorkItemDependency(command);
+    const listed = await services.listWorkItemDependencies({
+      workspaceId: workspace.id,
+      limit: 10,
+      offset: 0,
+    });
+    await services.removeWorkItemDependency(command);
+    await services.removeWorkItemDependency(command);
+    const empty = await services.listWorkItemDependencies({
+      workspaceId: workspace.id,
+      limit: 10,
+      offset: 0,
+    });
+
+    expect(created).toMatchObject({ created: true, dependency: command });
+    expect(created.dependency.createdAt).toEqual(now);
+    expect(replayed).toEqual({ dependency: created.dependency, created: false });
+    expect(listed).toEqual({ items: [created.dependency], limit: 10, offset: 0 });
+    expect(empty).toEqual({ items: [], limit: 10, offset: 0 });
+    expect(audits.length).toBeGreaterThanOrEqual(1);
+  });
+
   it("defaults to disabled, read-only advice without provider or verification work", async () => {
     const now = new Date("2026-07-15T12:00:00.000Z");
     const workspace = createWorkspace({
@@ -293,6 +445,7 @@ describe("createProductServices", () => {
     });
     const context = {
       workspaces: { findById: async () => workspace },
+      workItemDependencies: createWorkItemDependencyRepositoryStub(),
       dailyPlans: { findCurrent: async () => ({ plan, headVersion: 4 }) },
       workItems: { listPlanningCandidates: async () => [] },
     } as TransactionContext;
@@ -350,6 +503,7 @@ describe("createProductServices", () => {
     });
     const context = {
       workspaces: { findById: async () => workspace },
+      workItemDependencies: createWorkItemDependencyRepositoryStub(),
       dailyPlans: { findCurrent: async () => ({ plan, headVersion: 2 }) },
       workItems: { listPlanningCandidates: async () => [] },
     } as TransactionContext;

@@ -41,7 +41,8 @@ The application uses a persistent desktop rail and a compact mobile navigation b
    planning duration remain editable from the board. A due date uses strict `YYYY-MM-DD` local-date
    form and can be cleared. Only opted-in `backlog`, `planned`, and `in_progress` work may become a
    Today candidate; the card shows its selected duration and due date when present. A due date adds
-   visible planner pressure but cannot make ineligible or over-capacity work appear in Today.
+   visible planner pressure but cannot make ineligible or over-capacity work appear in Today. Each
+   card also lists its direct prerequisites, their workflow statuses, and how many are done.
 3. **Routines** manages the reusable activity pool, including structured tags, duration policy,
    cadence, status, activity history, and transparent duration calibration. The selected routine
    reports whether it needs more completed sessions, supports the current estimate, has a material
@@ -69,6 +70,31 @@ exhaustion and, when more than one page is involved, accepted only after two ide
 A collection that changes during traversal asks the user to refresh instead of silently presenting a
 partial list. Initial loading uses announced skeleton states, and mutations keep existing data
 visible while disabling only the submitted control.
+
+## Work-item prerequisites
+
+The Work board loads the complete bounded work-item and dependency collections even when a priority
+filter hides some cards, so a linked prerequisite does not disappear merely because the board is
+filtered. Each card's **Manage prerequisites** disclosure offers other unlinked work items, excludes
+self-reference, and shows every existing prerequisite with its title and current status. `Done` is
+the only satisfied status; the interface does not equate the workflow's manual `Blocked` column with
+dependency state.
+
+The complete workspace catalog and edge collection are cached across priority-filter changes, while
+fresh filtered records merge back into the catalog so visible prerequisite statuses do not go stale.
+An explicit board refresh revalidates both collections; a failed refresh remains retryable, and a
+workspace change discards the cache and ignores late responses from the prior workspace.
+
+Add and Remove use the API's natural set idempotency without inventing an `Idempotency-Key` header.
+Only the affected card is busy while a request is pending. Success updates the local edge collection,
+announces that the work-item status was not changed, and returns focus to the remaining editor or
+summary. A cycle conflict stays local to the card and explains that another prerequisite must be
+chosen. Other failures remain visible and retryable. Responses from a previous workspace or stale
+collection request are ignored under the same query-key and cancellation rules as the board.
+
+Changing prerequisites does not alter the current Today plan. The user must explicitly regenerate
+Today to reevaluate unlocked selected work. Locked nonterminal items retain their established anchor
+authority, while terminal items remain excluded under the existing replan rules.
 
 Pending, unlocked routine items expose **Not today** and **Not this week** under a separate planning-
 feedback control; work items and started or terminal routines do not. The browser sends the current
@@ -143,6 +169,10 @@ the configured model, completion time, source plan head, reviewed item counts, a
 was truncated. Model strings render only as ordinary React text. The panel contains no **Apply**,
 **Accept**, task-creation, plan-mutation, or planner-setting action.
 
+Backlog advice can target only an item the server supplied after applying the same done-only direct-
+prerequisite eligibility rule as planning. An unmet dependent is absent from the model context and
+cannot become a valid suggestion target.
+
 Disabled, busy, timeout, unreachable, provider-rejected, oversized, malformed, and invalid-advice
 results produce specific safe messages while preserving the plan. Transport failure uses a bounded
 generic message and requires a new explicit click. If the API returns
@@ -173,10 +203,14 @@ PostgreSQL database: create a workspace, opt in one-time work, add a routine, an
 plan; apply **Not today**, verify the separate hidden state survives reload, reset it, and verify the
 routine returns pending; then complete and reverse work, complete the routine, reload, and confirm
 that activity persists. It asserts successful feedback and reset HTTP responses and does not
-intercept network requests or replace the API with mocks. A separate Chromium scenario creates live
-completion evidence, dismisses and reloads an exact duration insight, resets it, dismisses it again,
-then appends changed evidence and expects the new key to resurface as available. Duration-calibration
-approval has component and API/PostgreSQL evidence but is not yet part of a browser scenario.
+intercept network requests or replace the API with mocks. A second scenario persists a work-item due
+date and exposes its deadline pressure through live planning. A third creates completion evidence,
+dismisses and reloads an exact duration insight, resets it, dismisses it again, then appends changed
+evidence and expects the new key to resurface as available. The fourth runs the Work board at 320px,
+keyboard-adds a done prerequisite, reloads it, removes it, reloads its absence, and asserts focus,
+44px targets, horizontal fit, unchanged workflow status, and clean page/network results. Duration-
+calibration approval has component and API/PostgreSQL evidence but is not yet part of a browser
+scenario.
 
 Install the local browser binary once, then run the bounded verifier:
 
@@ -201,7 +235,6 @@ a dedicated Chromium job and retains traces, screenshots, and video when it fail
 - Recurrence authoring, calendar conflict detection, and automatic placement
 - Alternative-plan comparison and generalized plan undo
 - Learned cadence, energy, preference, overload, and adaptive-selection settings
-- Work-item dependencies
 - Automatic duration-insight application and historical insight-comparison controls
 - Natural-language task/routine creation, model-driven plan application, and hosted advisor controls
 - Collaboration, sync, reminder/notification policy, Hermes/WhatsApp transport, and cloud deployment

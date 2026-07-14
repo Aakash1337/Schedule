@@ -37,7 +37,7 @@ version-checked update only when the user explicitly approves it. The approval c
 revalidates the current routine and evidence before saving; the insight never rewrites a routine or
 the current Today plan on its own.
 
-The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface.
+The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface. Work items can have directed same-workspace prerequisites. A dependent is eligible for new Today selection only when every direct prerequisite is `done`; links never change workflow status automatically, and transitive cycle checks keep the graph acyclic.
 
 An optional integration gateway gives a workspace-scoped machine credential read-only access to
 Today and a two-step, idempotent structured-command flow. It is disabled by default. Schedule stays
@@ -103,10 +103,11 @@ gaps.
 
 After installing Chromium once with `pnpm exec playwright install chromium`, run
 `pnpm verify:web-e2e` to exercise the built web application, live API, fresh migrations, and an
-isolated PostgreSQL database through the routine-to-Today completion flow.
+isolated PostgreSQL database through four live flows: routine/Today activity and feedback, work-item
+deadline pressure, duration-insight dismissal/reset, and accessible 320px prerequisite editing.
 
-With PostgreSQL running, verify backlog/Kanban and calendar management, routine creation and
-optimistic updates, duration calibration and approval, stable activity-history pagination,
+With PostgreSQL running, verify backlog/Kanban, work-item prerequisites, and calendar management,
+routine creation and optimistic updates, duration calibration and approval, stable activity-history pagination,
 idempotent routine and Today-item activity recording, deterministic plan generation, and atomic
 plan-revision persistence:
 
@@ -117,8 +118,8 @@ pnpm verify:database
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh
 PostgreSQL 17 Compose project. It also verifies a complete archive round trip, the real disposable
-restore/promote/rollback/cleanup state machine, and the live Chromium planning flow in a separate
-disposable database.
+restore/promote/rollback/cleanup state machine, and the four live Chromium product flows in a
+separate disposable database.
 
 ## Local data protection
 

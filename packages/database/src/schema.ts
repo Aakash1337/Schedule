@@ -395,6 +395,48 @@ export const workItems = pgTable(
   ],
 );
 
+/** Tenant-scoped directed edges between one-time work items. */
+export const workItemDependencies = pgTable(
+  "work_item_dependencies",
+  {
+    workspaceId: uuid("workspace_id").notNull(),
+    prerequisiteWorkItemId: uuid("prerequisite_work_item_id").notNull(),
+    dependentWorkItemId: uuid("dependent_work_item_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "work_item_dependencies_pk",
+      columns: [table.workspaceId, table.prerequisiteWorkItemId, table.dependentWorkItemId],
+    }),
+    index("work_item_dependencies_dependent_idx").on(
+      table.workspaceId,
+      table.dependentWorkItemId,
+      table.prerequisiteWorkItemId,
+    ),
+    index("work_item_dependencies_list_idx").on(
+      table.workspaceId,
+      table.createdAt,
+      table.prerequisiteWorkItemId,
+      table.dependentWorkItemId,
+    ),
+    foreignKey({
+      name: "work_item_dependencies_prerequisite_tenant_fk",
+      columns: [table.workspaceId, table.prerequisiteWorkItemId],
+      foreignColumns: [workItems.workspaceId, workItems.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "work_item_dependencies_dependent_tenant_fk",
+      columns: [table.workspaceId, table.dependentWorkItemId],
+      foreignColumns: [workItems.workspaceId, workItems.id],
+    }).onDelete("cascade"),
+    check(
+      "work_item_dependencies_not_self",
+      sql`${table.prerequisiteWorkItemId} <> ${table.dependentWorkItemId}`,
+    ),
+  ],
+);
+
 export const recurrenceSeries = pgTable(
   "recurrence_series",
   {

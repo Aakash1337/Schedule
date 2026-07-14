@@ -23,6 +23,7 @@ import {
   routinePlanningFeedbackKind,
   routines,
   scheduleBlocks,
+  workItemDependencies,
   workItems,
   workspaces,
   webhookDeliveries,
@@ -35,6 +36,7 @@ describe("database schema", () => {
   it("uses stable table names for core infrastructure", () => {
     expect(getTableName(workspaces)).toBe("workspaces");
     expect(getTableName(workItems)).toBe("work_items");
+    expect(getTableName(workItemDependencies)).toBe("work_item_dependencies");
     expect(getTableName(scheduleBlocks)).toBe("schedule_blocks");
     expect(getTableName(outboxEvents)).toBe("outbox_events");
     expect(getTableName(routines)).toBe("routines");
@@ -211,6 +213,49 @@ describe("database schema", () => {
     );
   });
 
+  it("stores tenant-bound directed work-item dependency edges", () => {
+    const config = getTableConfig(workItemDependencies);
+
+    expect(config.columns.map((column) => column.name)).toEqual([
+      "workspace_id",
+      "prerequisite_work_item_id",
+      "dependent_work_item_id",
+      "created_at",
+    ]);
+    expect(config.primaryKeys.map((constraint) => constraint.getName())).toContain(
+      "work_item_dependencies_pk",
+    );
+    expect(config.foreignKeys.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "work_item_dependencies_prerequisite_tenant_fk",
+        "work_item_dependencies_dependent_tenant_fk",
+      ]),
+    );
+    expect(
+      config.foreignKeys.map((constraint) => ({
+        name: constraint.getName(),
+        onDelete: constraint.onDelete,
+      })),
+    ).toEqual(
+      expect.arrayContaining([
+        {
+          name: "work_item_dependencies_prerequisite_tenant_fk",
+          onDelete: "cascade",
+        },
+        { name: "work_item_dependencies_dependent_tenant_fk", onDelete: "cascade" },
+      ]),
+    );
+    expect(config.indexes.map((constraint) => constraint.config.name)).toEqual(
+      expect.arrayContaining([
+        "work_item_dependencies_dependent_idx",
+        "work_item_dependencies_list_idx",
+      ]),
+    );
+    expect(config.checks.map((constraint) => constraint.name)).toContain(
+      "work_item_dependencies_not_self",
+    );
+  });
+
   it("stores tenant-bound immutable routine planning feedback with strict horizon policy", () => {
     const config = getTableConfig(routinePlanningFeedbackEvents);
 
@@ -361,6 +406,29 @@ describe("database schema", () => {
     );
     expect(migration).toContain(
       'BEFORE UPDATE OR DELETE ON "routine_duration_insight_feedback_events"',
+    );
+  });
+
+  it("migrates dependency edges with tenant isolation and cascading cleanup", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0023_little_raza.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain(
+      'CONSTRAINT "work_item_dependencies_pk" PRIMARY KEY("workspace_id","prerequisite_work_item_id","dependent_work_item_id")',
+    );
+    expect(migration).toContain(
+      'CONSTRAINT "work_item_dependencies_not_self" CHECK ("work_item_dependencies"."prerequisite_work_item_id" <> "work_item_dependencies"."dependent_work_item_id")',
+    );
+    expect(migration).toContain(
+      'CONSTRAINT "work_item_dependencies_prerequisite_tenant_fk" FOREIGN KEY ("workspace_id","prerequisite_work_item_id") REFERENCES "public"."work_items"("workspace_id","id") ON DELETE cascade',
+    );
+    expect(migration).toContain(
+      'CONSTRAINT "work_item_dependencies_dependent_tenant_fk" FOREIGN KEY ("workspace_id","dependent_work_item_id") REFERENCES "public"."work_items"("workspace_id","id") ON DELETE cascade',
+    );
+    expect(migration).toContain(
+      '"work_item_dependencies_list_idx" ON "work_item_dependencies" USING btree ("workspace_id","created_at","prerequisite_work_item_id","dependent_work_item_id")',
     );
   });
 });

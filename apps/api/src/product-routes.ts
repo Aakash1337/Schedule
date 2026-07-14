@@ -1,6 +1,8 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 import type {
+  AddWorkItemDependencyCommand,
+  AddWorkItemDependencyResult,
   ApproveRoutineDurationInsightCommand,
   ApplyRoutinePlanningFeedbackCommand,
   ActivityHistoryCursor,
@@ -23,6 +25,7 @@ import type {
   ListRoutineActivityQuery,
   ListRoutinesQuery,
   ListScheduleBlocksQuery,
+  ListWorkItemDependenciesQuery,
   ListWorkItemsQuery,
   ListWorkspacesQuery,
   PlanItemLockResult,
@@ -31,6 +34,7 @@ import type {
   RecordPlanItemActivityCommand,
   RegenerateDailyPlanCommand,
   ReplacePlanItemCommand,
+  RemoveWorkItemDependencyCommand,
   ResetRoutineDurationInsightDismissalCommand,
   ResetRoutinePlanningFeedbackCommand,
   SetPlanItemLockCommand,
@@ -41,6 +45,7 @@ import type {
   ScheduleBlockPage,
   SchedulingAdviceResult,
   WorkItemPage,
+  WorkItemDependencyPage,
   WorkspacePage,
 } from "@schedule/application";
 import {
@@ -80,6 +85,9 @@ import {
 } from "./http-errors.js";
 
 export interface ProductServices {
+  addWorkItemDependency(
+    command: AddWorkItemDependencyCommand,
+  ): Promise<AddWorkItemDependencyResult>;
   approveRoutineDurationInsight(command: ApproveRoutineDurationInsightCommand): Promise<Routine>;
   dismissRoutineDurationInsight(
     command: DismissRoutineDurationInsightCommand,
@@ -91,6 +99,8 @@ export interface ProductServices {
   createWorkItem(command: CreateWorkItemCommand): Promise<WorkItem>;
   getWorkItem(query: GetWorkItemQuery): Promise<WorkItem>;
   listWorkItems(query: ListWorkItemsQuery): Promise<WorkItemPage>;
+  listWorkItemDependencies(query: ListWorkItemDependenciesQuery): Promise<WorkItemDependencyPage>;
+  removeWorkItemDependency(command: RemoveWorkItemDependencyCommand): Promise<void>;
   updateWorkItem(command: UpdateWorkItemCommand): Promise<WorkItem>;
   createScheduleBlock(command: CreateScheduleBlockCommand): Promise<ScheduleBlock>;
   getScheduleBlock(query: GetScheduleBlockQuery): Promise<ScheduleBlock>;
@@ -160,7 +170,10 @@ function installRateLimit(app: FastifyInstance, requestsPerMinute: number): void
   });
 }
 
-const uuid = z.string().uuid();
+const uuid = z
+  .string()
+  .uuid()
+  .transform((value) => value.toLowerCase());
 const localDateText = z
   .string()
   .refine(isValidLocalDate, "Expected a valid Gregorian date in YYYY-MM-DD format.");
@@ -168,6 +181,11 @@ const instant = z.string().datetime({ offset: true });
 const workspaceParams = z.strictObject({ workspaceId: uuid });
 const routineParams = z.strictObject({ workspaceId: uuid, routineId: uuid });
 const workItemParams = z.strictObject({ workspaceId: uuid, workItemId: uuid });
+const workItemDependencyParams = z.strictObject({
+  workspaceId: uuid,
+  workItemId: uuid,
+  prerequisiteWorkItemId: uuid,
+});
 const scheduleBlockParams = z.strictObject({ workspaceId: uuid, scheduleBlockId: uuid });
 const planParams = z.strictObject({ workspaceId: uuid, date: localDateText });
 const planItemParams = z.strictObject({ workspaceId: uuid, date: localDateText, itemId: uuid });
@@ -205,6 +223,11 @@ const workItemQuery = z.strictObject({
   limit: z.coerce.number().int().min(1).max(200).default(100),
   offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
 });
+const workItemDependencyQuery = z.strictObject({
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
+const workItemDependencyBody = z.strictObject({ prerequisiteWorkItemId: uuid });
 const updateWorkItemBody = z
   .strictObject({
     expectedVersion: z.number().int().positive().max(2_147_483_647),
@@ -674,6 +697,44 @@ export async function registerProductRoutes(
     });
     return { items: page.items, page: { limit: page.limit, offset: page.offset } };
   });
+
+  app.get("/v1/workspaces/:workspaceId/work-item-dependencies", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(workItemDependencyQuery, request.query);
+    const page = await services.listWorkItemDependencies({
+      workspaceId: workspaceId(params.workspaceId),
+      limit: query.limit,
+      offset: query.offset,
+    });
+    return { items: page.items, page: { limit: page.limit, offset: page.offset } };
+  });
+
+  app.post(
+    "/v1/workspaces/:workspaceId/work-items/:workItemId/prerequisites",
+    async (request, reply) => {
+      const params = parseRequest(workItemParams, request.params);
+      const body = parseRequest(workItemDependencyBody, request.body);
+      const result = await services.addWorkItemDependency({
+        workspaceId: workspaceId(params.workspaceId),
+        prerequisiteWorkItemId: workItemId(body.prerequisiteWorkItemId),
+        dependentWorkItemId: workItemId(params.workItemId),
+      });
+      return reply.code(result.created ? 201 : 200).send(result.dependency);
+    },
+  );
+
+  app.delete(
+    "/v1/workspaces/:workspaceId/work-items/:workItemId/prerequisites/:prerequisiteWorkItemId",
+    async (request, reply) => {
+      const params = parseRequest(workItemDependencyParams, request.params);
+      await services.removeWorkItemDependency({
+        workspaceId: workspaceId(params.workspaceId),
+        prerequisiteWorkItemId: workItemId(params.prerequisiteWorkItemId),
+        dependentWorkItemId: workItemId(params.workItemId),
+      });
+      return reply.code(204).send();
+    },
+  );
 
   app.get("/v1/workspaces/:workspaceId/work-items/:workItemId", async (request) => {
     const params = parseRequest(workItemParams, request.params);

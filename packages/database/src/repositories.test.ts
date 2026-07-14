@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 import {
   activityEventId,
@@ -13,6 +14,7 @@ import {
   type RoutinePlanningFeedback,
   type RoutineDurationInsightFeedback,
   type WorkItem,
+  type WorkItemDependency,
 } from "@schedule/domain";
 
 import type { DatabaseConnection } from "./database.js";
@@ -21,6 +23,7 @@ import {
   PostgresIntegrationUnitOfWork,
   PostgresRoutineDurationInsightFeedbackRepository,
   PostgresUnitOfWork,
+  PostgresWorkItemDependencyRepository,
   PostgresActivityEventRepository,
   PostgresDailyPlanRepository,
 } from "./repositories.js";
@@ -138,15 +141,18 @@ describe("PostgresUnitOfWork", () => {
     });
   });
 
-  it("wires duration-insight feedback into every product transaction", async () => {
+  it("wires product graph and insight feedback repositories into every transaction", async () => {
     const transaction = vi.fn(async (operation: (transaction: unknown) => Promise<unknown>) =>
       operation({}),
     );
     const connection = { db: { transaction } } as unknown as DatabaseConnection;
 
-    await expect(
-      new PostgresUnitOfWork(connection).run(async (context) => Object.keys(context).sort()),
-    ).resolves.toContain("routineDurationInsightFeedback");
+    const repositories = await new PostgresUnitOfWork(connection).run(async (context) =>
+      Object.keys(context).sort(),
+    );
+
+    expect(repositories).toContain("workItemDependencies");
+    expect(repositories).toContain("routineDurationInsightFeedback");
   });
 
   it("persists a work item due date on insert and save", async () => {
@@ -235,6 +241,360 @@ describe("PostgresUnitOfWork", () => {
     await expect(
       unitOfWork.run(({ workItems }) => workItems.findById(requestIdentity.workspaceId, item)),
     ).resolves.toMatchObject({ dueOn: null });
+  });
+});
+
+const dependencyWorkspace = workspaceId("61000000-0000-4000-8000-000000000001");
+const dependencyPrerequisite = workItemId("62000000-0000-4000-8000-000000000002");
+const dependencyDependent = workItemId("63000000-0000-4000-8000-000000000003");
+const dependencyCreatedAt = new Date("2026-07-14T12:00:00.000Z");
+
+function dependencyRow(
+  overrides: Readonly<Record<string, unknown>> = {},
+): Readonly<Record<string, unknown>> {
+  return {
+    workspaceId: dependencyWorkspace,
+    prerequisiteWorkItemId: dependencyPrerequisite,
+    dependentWorkItemId: dependencyDependent,
+    createdAt: dependencyCreatedAt,
+    ...overrides,
+  };
+}
+
+const dependency = {
+  workspaceId: dependencyWorkspace,
+  prerequisiteWorkItemId: dependencyPrerequisite,
+  dependentWorkItemId: dependencyDependent,
+  createdAt: dependencyCreatedAt,
+} satisfies WorkItemDependency;
+
+describe("PostgresWorkItemDependencyRepository", () => {
+  it("uses one workspace-scoped advisory key for graph mutations", async () => {
+    const execute = vi.fn().mockResolvedValue([]);
+    const repository = new PostgresWorkItemDependencyRepository({
+      execute,
+    } as unknown as DatabaseConnection["db"]);
+    const uppercaseWorkspace = workspaceId(dependencyWorkspace.toUpperCase());
+
+    await repository.lockWorkspace(dependencyWorkspace);
+    await repository.lockWorkspace(uppercaseWorkspace);
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    const dialect = new PgDialect();
+    const lowercaseQuery = dialect.sqlToQuery(execute.mock.calls[0]?.[0]);
+    const uppercaseQuery = dialect.sqlToQuery(execute.mock.calls[1]?.[0]);
+    expect(uppercaseQuery.sql).toBe(lowercaseQuery.sql);
+    expect(uppercaseQuery.params).toEqual(lowercaseQuery.params);
+    expect(lowercaseQuery.params).toEqual([`${dependencyWorkspace}:work-item-dependencies`]);
+  });
+
+  it("finds one tenant-scoped edge and returns a defensive timestamp copy", async () => {
+    const limit = vi.fn().mockResolvedValue([dependencyRow()]);
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockReturnValue({ where });
+    const select = vi.fn().mockReturnValue({ from });
+    const repository = new PostgresWorkItemDependencyRepository({
+      select,
+    } as unknown as DatabaseConnection["db"]);
+
+    const found = await repository.find(
+      dependencyWorkspace,
+      dependencyPrerequisite,
+      dependencyDependent,
+    );
+
+    expect(found).toEqual(dependency);
+    expect(found?.createdAt).not.toBe(dependencyCreatedAt);
+    expect(limit).toHaveBeenCalledWith(1);
+  });
+
+  it("returns null for a missing edge", async () => {
+    const limit = vi.fn().mockResolvedValue([]);
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockReturnValue({ where });
+    const repository = new PostgresWorkItemDependencyRepository({
+      select: vi.fn().mockReturnValue({ from }),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(
+      repository.find(dependencyWorkspace, dependencyPrerequisite, dependencyDependent),
+    ).resolves.toBeNull();
+  });
+
+  it("paginates dependency edges in stable timestamp and identity order", async () => {
+    const offset = vi.fn().mockResolvedValue([dependencyRow()]);
+    const limit = vi.fn().mockReturnValue({ offset });
+    const orderBy = vi.fn().mockReturnValue({ limit });
+    const where = vi.fn().mockReturnValue({ orderBy });
+    const from = vi.fn().mockReturnValue({ where });
+    const repository = new PostgresWorkItemDependencyRepository({
+      select: vi.fn().mockReturnValue({ from }),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(repository.list(dependencyWorkspace, 25, 50)).resolves.toEqual([dependency]);
+    expect(orderBy).toHaveBeenCalledTimes(1);
+    expect(orderBy.mock.calls[0]).toHaveLength(3);
+    expect(limit).toHaveBeenCalledWith(25);
+    expect(offset).toHaveBeenCalledWith(50);
+  });
+
+  it("joins prerequisite status and excludes ineligible dependent work from the planner bound", async () => {
+    const limit = vi.fn().mockResolvedValue([dependencyRow({ prerequisiteStatus: "done" })]);
+    const orderBy = vi.fn().mockReturnValue({ limit });
+    const where = vi.fn().mockReturnValue({ orderBy });
+    const dependentJoin = vi.fn().mockReturnValue({ where });
+    const prerequisiteJoin = vi.fn().mockReturnValue({ innerJoin: dependentJoin });
+    const from = vi.fn().mockReturnValue({ innerJoin: prerequisiteJoin });
+    const select = vi.fn().mockReturnValue({ from });
+    const repository = new PostgresWorkItemDependencyRepository({
+      select,
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(repository.listForPlanning(dependencyWorkspace, 2_001)).resolves.toEqual([
+      { ...dependency, createdAt: new Date(dependencyCreatedAt), prerequisiteStatus: "done" },
+    ]);
+    expect(prerequisiteJoin).toHaveBeenCalledTimes(1);
+    expect(dependentJoin).toHaveBeenCalledTimes(1);
+    const predicate = where.mock.calls[0]?.[0];
+    const compiled = new PgDialect().sqlToQuery(predicate);
+    expect(compiled.sql).toContain(
+      '"dependent_work_items"."planning_duration_minutes" is not null',
+    );
+    expect(compiled.sql).toContain('"dependent_work_items"."status" in');
+    expect(compiled.params).toEqual(expect.arrayContaining(["backlog", "planned", "in_progress"]));
+    expect(orderBy.mock.calls[0]).toHaveLength(3);
+    expect(limit).toHaveBeenCalledWith(2_001);
+  });
+
+  it("loads candidates and relevant dependencies with one bounded ordered statement", async () => {
+    const execute = vi.fn().mockResolvedValue([
+      {
+        rowGroup: 0,
+        rowPosition: 1,
+        rowKind: "work_item",
+        payload: {
+          id: dependencyDependent,
+          workspaceId: dependencyWorkspace,
+          title: "Publish release notes",
+          description: null,
+          status: "backlog",
+          priority: "high",
+          planningDurationMinutes: 30,
+          dueOn: "2026-07-20",
+          version: 2,
+          createdAt: "2026-07-14T11:00:00.000Z",
+          updatedAt: "2026-07-14T12:00:00.000Z",
+        },
+      },
+      {
+        rowGroup: 1,
+        rowPosition: 1,
+        rowKind: "dependency",
+        payload: {
+          workspaceId: dependencyWorkspace,
+          prerequisiteWorkItemId: dependencyPrerequisite,
+          dependentWorkItemId: dependencyDependent,
+          createdAt: dependencyCreatedAt.toISOString(),
+          prerequisiteStatus: "done",
+        },
+      },
+    ]);
+    const repository = new PostgresWorkItemDependencyRepository({
+      execute,
+    } as unknown as DatabaseConnection["db"]);
+
+    const graph = await repository.loadPlanningGraph(dependencyWorkspace, 501, 2_001);
+
+    expect(graph.workItems).toEqual([
+      expect.objectContaining({
+        id: dependencyDependent,
+        planningDurationMinutes: 30,
+        dueOn: "2026-07-20",
+        createdAt: new Date("2026-07-14T11:00:00.000Z"),
+      }),
+    ]);
+    expect(graph.dependencies).toEqual([
+      {
+        ...dependency,
+        createdAt: new Date(dependencyCreatedAt),
+        prerequisiteStatus: "done",
+      },
+    ]);
+    expect(execute).toHaveBeenCalledTimes(1);
+    const statement = execute.mock.calls[0]?.[0];
+    const compiled = new PgDialect().sqlToQuery(statement);
+    expect(compiled.sql).toContain("with candidate_work_items as materialized");
+    expect(compiled.sql).toContain('"work_items"."planning_duration_minutes" is not null');
+    expect(compiled.sql).toContain(
+      "\"work_items\".\"status\" in ('backlog', 'planned', 'in_progress')",
+    );
+    expect(compiled.sql).toContain("inner join candidate_work_items");
+    expect(compiled.sql).toContain('inner join "work_items" as prerequisite_work_items');
+    expect(compiled.sql).toContain('order by "rowGroup", "rowPosition"');
+    expect(compiled.params).toEqual([dependencyWorkspace, 501, dependencyWorkspace, 2_001]);
+  });
+
+  it("fails closed when a one-statement graph projection is malformed or unordered", async () => {
+    const validWorkItemPayload = {
+      id: dependencyDependent,
+      workspaceId: dependencyWorkspace,
+      title: "Publish release notes",
+      description: null,
+      status: "backlog",
+      priority: "high",
+      planningDurationMinutes: 30,
+      dueOn: "2026-07-20",
+      version: 2,
+      createdAt: "2026-07-14T11:00:00.000Z",
+      updatedAt: "2026-07-14T12:00:00.000Z",
+    } as const;
+    const validDependencyPayload = {
+      workspaceId: dependencyWorkspace,
+      prerequisiteWorkItemId: dependencyPrerequisite,
+      dependentWorkItemId: dependencyDependent,
+      createdAt: dependencyCreatedAt.toISOString(),
+      prerequisiteStatus: "done",
+    } as const;
+    const invalidProjections = [
+      [
+        {
+          rowGroup: 1,
+          rowPosition: 2,
+          rowKind: "dependency",
+          payload: validDependencyPayload,
+        },
+      ],
+      [
+        {
+          rowGroup: 0,
+          rowPosition: 1,
+          rowKind: "work_item",
+          payload: { ...validWorkItemPayload, status: "unsupported" },
+        },
+      ],
+      [
+        {
+          rowGroup: 1,
+          rowPosition: 1,
+          rowKind: "dependency",
+          payload: { ...validDependencyPayload, prerequisiteStatus: "unsupported" },
+        },
+      ],
+      [
+        {
+          rowGroup: 0,
+          rowPosition: 1,
+          rowKind: "work_item",
+          payload: { ...validWorkItemPayload, dueOn: "2026-02-30" },
+        },
+      ],
+      [
+        {
+          rowGroup: 0,
+          rowPosition: 1,
+          rowKind: "work_item",
+          payload: { ...validWorkItemPayload, id: "   " },
+        },
+      ],
+      [
+        {
+          rowGroup: 1,
+          rowPosition: 1,
+          rowKind: "dependency",
+          payload: { ...validDependencyPayload, workspaceId: "   " },
+        },
+      ],
+      [
+        {
+          rowGroup: 1,
+          rowPosition: 1,
+          rowKind: "dependency",
+          payload: {
+            ...validDependencyPayload,
+            dependentWorkItemId: dependencyPrerequisite,
+          },
+        },
+      ],
+    ] as const;
+
+    for (const projection of invalidProjections) {
+      const execute = vi.fn().mockResolvedValue(projection);
+      const repository = new PostgresWorkItemDependencyRepository({
+        execute,
+      } as unknown as DatabaseConnection["db"]);
+
+      await expect(
+        repository.loadPlanningGraph(dependencyWorkspace, 501, 2_001),
+      ).rejects.toMatchObject({ code: "planning.work_item_graph_corrupt" });
+      expect(execute).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("does not mask database failures while loading a planning graph", async () => {
+    const databaseFailure = new Error("database query failed");
+    const execute = vi.fn().mockRejectedValue(databaseFailure);
+    const repository = new PostgresWorkItemDependencyRepository({
+      execute,
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(repository.loadPlanningGraph(dependencyWorkspace, 501, 2_001)).rejects.toBe(
+      databaseFailure,
+    );
+  });
+
+  it("uses a tenant-scoped recursive query for transitive cycle detection", async () => {
+    const execute = vi.fn().mockResolvedValue([{ wouldCreateCycle: true }]);
+    const repository = new PostgresWorkItemDependencyRepository({
+      execute,
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(
+      repository.wouldCreateCycle(dependencyWorkspace, dependencyPrerequisite, dependencyDependent),
+    ).resolves.toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
+    const statement = execute.mock.calls[0]?.[0] as { readonly queryChunks: readonly unknown[] };
+    expect(statement.queryChunks.filter((chunk) => chunk === dependencyWorkspace)).toHaveLength(2);
+  });
+
+  it("rejects a self-cycle without querying the graph", async () => {
+    const execute = vi.fn();
+    const repository = new PostgresWorkItemDependencyRepository({
+      execute,
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(
+      repository.wouldCreateCycle(
+        dependencyWorkspace,
+        dependencyPrerequisite,
+        dependencyPrerequisite,
+      ),
+    ).resolves.toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("persists and deletes only the exact directed edge", async () => {
+    const values = vi.fn().mockResolvedValue(undefined);
+    const insert = vi.fn().mockReturnValue({ values });
+    const returning = vi
+      .fn()
+      .mockResolvedValueOnce([{ prerequisiteWorkItemId: dependencyPrerequisite }])
+      .mockResolvedValueOnce([]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const deleteFrom = vi.fn().mockReturnValue({ where });
+    const repository = new PostgresWorkItemDependencyRepository({
+      insert,
+      delete: deleteFrom,
+    } as unknown as DatabaseConnection["db"]);
+
+    await repository.insert(dependency);
+    await expect(
+      repository.delete(dependencyWorkspace, dependencyPrerequisite, dependencyDependent),
+    ).resolves.toBe(true);
+    await expect(
+      repository.delete(dependencyWorkspace, dependencyPrerequisite, dependencyDependent),
+    ).resolves.toBe(false);
+    expect(values).toHaveBeenCalledWith(dependency);
+    expect(where).toHaveBeenCalledTimes(2);
   });
 });
 

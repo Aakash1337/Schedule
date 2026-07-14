@@ -54,6 +54,9 @@ describe("RecordPlanItemActivity", () => {
           };
         },
       } as TransactionContext["dailyPlans"],
+      workItemDependencies: {
+        loadPlanningGraph: async () => ({ workItems: [], dependencies: [] }),
+      } as TransactionContext["workItemDependencies"],
     } as TransactionContext;
     const unitOfWork: UnitOfWork = {
       run: async (operation) => {

@@ -98,6 +98,9 @@ describe("routine management", () => {
         },
       },
       workItems: {} as TransactionContext["workItems"],
+      workItemDependencies: {
+        loadPlanningGraph: async () => ({ workItems: [], dependencies: [] }),
+      } as TransactionContext["workItemDependencies"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
       auditEvents: {} as TransactionContext["auditEvents"],
       routineDurationInsightFeedback: {} as TransactionContext["routineDurationInsightFeedback"],

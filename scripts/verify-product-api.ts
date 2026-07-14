@@ -655,6 +655,457 @@ try {
       .items.some((item) => item.workItemId === terminalRegenerationWork.id),
     true,
   );
+
+  // EVIDENCE: work-item-dependencies-product-api
+  // The live API and PostgreSQL graph preserve set idempotency, tenant isolation, acyclicity,
+  // immutable plan revisions, and done-only prerequisite eligibility.
+  type DependencyDto = {
+    readonly workspaceId: string;
+    readonly prerequisiteWorkItemId: string;
+    readonly dependentWorkItemId: string;
+    readonly createdAt: string;
+  };
+  type DependencyPage = {
+    readonly items: readonly DependencyDto[];
+    readonly page: { readonly limit: number; readonly offset: number };
+  };
+  const listDependencies = async (workspaceId: string): Promise<DependencyPage> => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceId}/work-item-dependencies?limit=200&offset=0`,
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    return response.json<DependencyPage>();
+  };
+  const dependencyPairs = (page: DependencyPage): readonly string[] =>
+    page.items
+      .map((dependency) => `${dependency.dependentWorkItemId}:${dependency.prerequisiteWorkItemId}`)
+      .sort();
+  const dependencyAuditActions = async (): Promise<readonly string[]> => {
+    const rows = await connection.sql<{ action: string }[]>`
+      select action
+      from audit_events
+      where workspace_id = ${isolatedWorkspaceId}
+        and entity_type = 'work_item_dependency'
+    `;
+    return rows.map((row) => row.action).sort();
+  };
+
+  const prerequisiteResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items`,
+    payload: {
+      title: "Dependency prerequisite",
+      status: "backlog",
+      priority: "medium",
+    },
+  });
+  assert.equal(prerequisiteResponse.statusCode, 201, prerequisiteResponse.body);
+  const prerequisite = prerequisiteResponse.json<{ id: string; status: string; version: number }>();
+  const dependentResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items`,
+    payload: {
+      title: "Dependency-gated work",
+      status: "backlog",
+      priority: "urgent",
+      planningDurationMinutes: 20,
+    },
+  });
+  assert.equal(dependentResponse.statusCode, 201, dependentResponse.body);
+  const dependent = dependentResponse.json<{ id: string; status: string; version: number }>();
+  const tailResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items`,
+    payload: {
+      title: "Dependency cycle tail",
+      status: "backlog",
+      priority: "low",
+    },
+  });
+  assert.equal(tailResponse.statusCode, 201, tailResponse.body);
+  const tail = tailResponse.json<{ id: string; status: string; version: number }>();
+  assert.deepEqual(await listDependencies(isolatedWorkspaceId), {
+    items: [],
+    page: { limit: 200, offset: 0 },
+  });
+
+  const dependencyPlanRequest = {
+    date: "2026-07-19",
+    timeZone: "UTC",
+    availableWindows: [
+      {
+        startsAt: "2026-07-19T08:00:00.000Z",
+        endsAt: "2026-07-19T09:00:00.000Z",
+      },
+    ],
+    targetMinutes: 20,
+    targetTaskCount: 1,
+    availableContexts: [] as string[],
+    seed: "dependency-before-edge-v5",
+    requestRevision: 1,
+  };
+  const dependencyInitialPlanResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans`,
+    payload: dependencyPlanRequest,
+  });
+  assert.equal(dependencyInitialPlanResponse.statusCode, 200, dependencyInitialPlanResponse.body);
+  const dependencyInitialPlan = dependencyInitialPlanResponse.json<{
+    readonly id: string;
+    readonly items: readonly { readonly workItemId: string | null }[];
+  }>();
+  assert.equal(
+    dependencyInitialPlan.items.some((item) => item.workItemId === dependent.id),
+    true,
+    "the dependent must be selectable before its prerequisite edge exists",
+  );
+
+  const firstDependencyRequest = {
+    method: "POST" as const,
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${dependent.id}/prerequisites`,
+    payload: { prerequisiteWorkItemId: prerequisite.id },
+  };
+  const firstDependencyResponse = await app.inject(firstDependencyRequest);
+  assert.equal(firstDependencyResponse.statusCode, 201, firstDependencyResponse.body);
+  const firstDependency = firstDependencyResponse.json<DependencyDto>();
+  assert.deepEqual(firstDependency, {
+    workspaceId: isolatedWorkspaceId,
+    prerequisiteWorkItemId: prerequisite.id,
+    dependentWorkItemId: dependent.id,
+    createdAt: firstDependency.createdAt,
+  });
+  assert.equal(new Date(firstDependency.createdAt).toISOString(), firstDependency.createdAt);
+  const replayedFirstDependency = await app.inject(firstDependencyRequest);
+  assert.equal(replayedFirstDependency.statusCode, 200, replayedFirstDependency.body);
+  assert.deepEqual(replayedFirstDependency.json(), firstDependency);
+  assert.deepEqual(await dependencyAuditActions(), ["work_item_dependency.added"]);
+
+  const secondDependencyResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${prerequisite.id}/prerequisites`,
+    payload: { prerequisiteWorkItemId: tail.id },
+  });
+  assert.equal(secondDependencyResponse.statusCode, 201, secondDependencyResponse.body);
+  const expectedDependencyPairs = [
+    `${dependent.id}:${prerequisite.id}`,
+    `${prerequisite.id}:${tail.id}`,
+  ].sort();
+  const dependencyPage = await listDependencies(isolatedWorkspaceId);
+  assert.deepEqual(dependencyPairs(dependencyPage), expectedDependencyPairs);
+  assert.deepEqual(dependencyPage.page, { limit: 200, offset: 0 });
+  assert.deepEqual(await dependencyAuditActions(), [
+    "work_item_dependency.added",
+    "work_item_dependency.added",
+  ]);
+
+  const unchangedDependentResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${dependent.id}`,
+  });
+  assert.equal(unchangedDependentResponse.statusCode, 200, unchangedDependentResponse.body);
+  const unchangedDependent = unchangedDependentResponse.json<{
+    status: string;
+    version: number;
+  }>();
+  assert.equal(unchangedDependent.status, dependent.status);
+  assert.equal(unchangedDependent.version, dependent.version);
+  const planAfterDependencyEditResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans/2026-07-19/current`,
+  });
+  assert.equal(
+    planAfterDependencyEditResponse.statusCode,
+    200,
+    planAfterDependencyEditResponse.body,
+  );
+  const planAfterDependencyEdit = planAfterDependencyEditResponse.json<{
+    readonly id: string;
+    readonly headVersion: number;
+    readonly items: readonly { readonly workItemId: string | null }[];
+  }>();
+  assert.equal(planAfterDependencyEdit.id, dependencyInitialPlan.id);
+  assert.equal(planAfterDependencyEdit.headVersion, 1);
+  assert.equal(
+    planAfterDependencyEdit.items.some((item) => item.workItemId === dependent.id),
+    true,
+    "editing the graph must not mutate the current Today revision",
+  );
+
+  const cycleResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${tail.id}/prerequisites`,
+    payload: { prerequisiteWorkItemId: dependent.id },
+  });
+  assert.equal(cycleResponse.statusCode, 409, cycleResponse.body);
+  assert.equal(
+    cycleResponse.json<{ error: { code: string } }>().error.code,
+    "work_item_dependency.cycle_conflict",
+  );
+  assert.deepEqual(
+    dependencyPairs(await listDependencies(isolatedWorkspaceId)),
+    expectedDependencyPairs,
+  );
+  assert.deepEqual(await dependencyAuditActions(), [
+    "work_item_dependency.added",
+    "work_item_dependency.added",
+  ]);
+
+  const crossWorkspaceDependencyResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${dependent.id}/prerequisites`,
+    payload: { prerequisiteWorkItemId: createdWorkItem.id },
+  });
+  assert.equal(
+    crossWorkspaceDependencyResponse.statusCode,
+    404,
+    crossWorkspaceDependencyResponse.body,
+  );
+  assert.equal(
+    crossWorkspaceDependencyResponse.json<{ error: { code: string } }>().error.code,
+    "work_item.not_found",
+  );
+  assert.deepEqual(
+    dependencyPairs(await listDependencies(isolatedWorkspaceId)),
+    expectedDependencyPairs,
+  );
+  assert.deepEqual(await listDependencies(createdWorkspaceId), {
+    items: [],
+    page: { limit: 200, offset: 0 },
+  });
+  assert.deepEqual(await dependencyAuditActions(), [
+    "work_item_dependency.added",
+    "work_item_dependency.added",
+  ]);
+
+  const blockedDependencyPlanResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans/2026-07-19/regenerations`,
+    headers: { "idempotency-key": "dependency-blocked-regeneration" },
+    payload: {
+      expectedPlanId: dependencyInitialPlan.id,
+      expectedHeadVersion: 1,
+      request: {
+        timeZone: "UTC",
+        availableWindows: dependencyPlanRequest.availableWindows,
+        targetMinutes: 20,
+        targetTaskCount: 1,
+        availableContexts: [],
+        seed: "dependency-blocked-regeneration-v5",
+      },
+    },
+  });
+  assert.equal(blockedDependencyPlanResponse.statusCode, 200, blockedDependencyPlanResponse.body);
+  const blockedDependencyPlan = blockedDependencyPlanResponse.json<{
+    readonly id: string;
+    readonly headVersion: number;
+    readonly items: readonly { readonly workItemId: string | null }[];
+    readonly exclusions: readonly {
+      readonly workItemId: string | null;
+      readonly codes: readonly string[];
+    }[];
+  }>();
+  assert.equal(blockedDependencyPlan.headVersion, 2);
+  assert.equal(
+    blockedDependencyPlan.items.some((item) => item.workItemId === dependent.id),
+    false,
+    "explicit regeneration must remove an unlocked dependent with an unmet prerequisite",
+  );
+  assert.equal(
+    blockedDependencyPlan.exclusions
+      .find((exclusion) => exclusion.workItemId === dependent.id)
+      ?.codes.includes("work_item_dependency_unsatisfied"),
+    true,
+  );
+  const immutableDependencyRevisionResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans/2026-07-19?revision=1`,
+  });
+  assert.equal(
+    immutableDependencyRevisionResponse.statusCode,
+    200,
+    immutableDependencyRevisionResponse.body,
+  );
+  assert.equal(
+    immutableDependencyRevisionResponse
+      .json<{ items: { workItemId: string | null }[] }>()
+      .items.some((item) => item.workItemId === dependent.id),
+    true,
+  );
+
+  const completedPrerequisiteResponse = await app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${prerequisite.id}`,
+    payload: { expectedVersion: prerequisite.version, status: "done" },
+  });
+  assert.equal(completedPrerequisiteResponse.statusCode, 200, completedPrerequisiteResponse.body);
+  assert.equal(completedPrerequisiteResponse.json<{ status: string }>().status, "done");
+  const satisfiedDependencyPlanResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans/2026-07-19/regenerations`,
+    headers: { "idempotency-key": "dependency-satisfied-regeneration" },
+    payload: {
+      expectedPlanId: blockedDependencyPlan.id,
+      expectedHeadVersion: blockedDependencyPlan.headVersion,
+      request: {
+        timeZone: "UTC",
+        availableWindows: dependencyPlanRequest.availableWindows,
+        targetMinutes: 20,
+        targetTaskCount: 1,
+        availableContexts: [],
+        seed: "dependency-satisfied-regeneration-v5",
+      },
+    },
+  });
+  assert.equal(
+    satisfiedDependencyPlanResponse.statusCode,
+    200,
+    satisfiedDependencyPlanResponse.body,
+  );
+  const satisfiedDependencyPlan = satisfiedDependencyPlanResponse.json<{
+    readonly id: string;
+    readonly headVersion: number;
+    readonly items: readonly { readonly workItemId: string | null }[];
+  }>();
+  assert.equal(satisfiedDependencyPlan.headVersion, 3);
+  assert.equal(
+    satisfiedDependencyPlan.items.some((item) => item.workItemId === dependent.id),
+    true,
+    "a done direct prerequisite must make the dependent selectable again",
+  );
+
+  for (const [dependentWorkItemId, prerequisiteWorkItemId] of [
+    [dependent.id, prerequisite.id],
+    [prerequisite.id, tail.id],
+  ] as const) {
+    const removalResponse: { readonly statusCode: number; readonly body: string } =
+      await app.inject({
+        method: "DELETE",
+        url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${dependentWorkItemId}/prerequisites/${prerequisiteWorkItemId}`,
+      });
+    assert.equal(removalResponse.statusCode, 204, removalResponse.body);
+  }
+  const replayedRemovalResponse = await app.inject({
+    method: "DELETE",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${dependent.id}/prerequisites/${prerequisite.id}`,
+  });
+  assert.equal(replayedRemovalResponse.statusCode, 204, replayedRemovalResponse.body);
+  assert.deepEqual(await listDependencies(isolatedWorkspaceId), {
+    items: [],
+    page: { limit: 200, offset: 0 },
+  });
+  assert.deepEqual(await dependencyAuditActions(), [
+    "work_item_dependency.added",
+    "work_item_dependency.added",
+    "work_item_dependency.removed",
+    "work_item_dependency.removed",
+  ]);
+  const planAfterDependencyRemovalResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/plans/2026-07-19/current`,
+  });
+  assert.equal(
+    planAfterDependencyRemovalResponse.statusCode,
+    200,
+    planAfterDependencyRemovalResponse.body,
+  );
+  assert.equal(
+    planAfterDependencyRemovalResponse.json<{ id: string; headVersion: number }>().id,
+    satisfiedDependencyPlan.id,
+  );
+  assert.equal(
+    planAfterDependencyRemovalResponse.json<{ id: string; headVersion: number }>().headVersion,
+    3,
+    "removing edges must not mutate the current Today head",
+  );
+
+  const reciprocalLeftResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items`,
+    payload: {
+      title: "Reciprocal dependency left",
+      status: "backlog",
+      priority: "medium",
+    },
+  });
+  const reciprocalRightResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items`,
+    payload: {
+      title: "Reciprocal dependency right",
+      status: "backlog",
+      priority: "medium",
+    },
+  });
+  assert.equal(reciprocalLeftResponse.statusCode, 201, reciprocalLeftResponse.body);
+  assert.equal(reciprocalRightResponse.statusCode, 201, reciprocalRightResponse.body);
+  const reciprocalLeft = reciprocalLeftResponse.json<{ id: string }>();
+  const reciprocalRight = reciprocalRightResponse.json<{ id: string }>();
+  const mixedCaseSelfDependencyResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${reciprocalLeft.id}/prerequisites`,
+    payload: { prerequisiteWorkItemId: reciprocalLeft.id.toUpperCase() },
+  });
+  assert.equal(
+    mixedCaseSelfDependencyResponse.statusCode,
+    422,
+    mixedCaseSelfDependencyResponse.body,
+  );
+  assert.equal(
+    mixedCaseSelfDependencyResponse.json<{ error: { code: string } }>().error.code,
+    "work_item_dependency.self_reference_invalid",
+  );
+  assert.deepEqual(await listDependencies(isolatedWorkspaceId), {
+    items: [],
+    page: { limit: 200, offset: 0 },
+  });
+  const reciprocalResponses = await Promise.all([
+    app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${reciprocalRight.id}/prerequisites`,
+      payload: { prerequisiteWorkItemId: reciprocalLeft.id },
+    }),
+    app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${isolatedWorkspaceId.toUpperCase()}/work-items/${reciprocalLeft.id.toUpperCase()}/prerequisites`,
+      payload: { prerequisiteWorkItemId: reciprocalRight.id.toUpperCase() },
+    }),
+  ]);
+  assert.deepEqual(
+    reciprocalResponses.map((response) => response.statusCode).sort(),
+    [201, 409],
+    "concurrent reciprocal additions must serialize so exactly one edge wins",
+  );
+  const reciprocalWinner = reciprocalResponses.find((response) => response.statusCode === 201);
+  const reciprocalLoser = reciprocalResponses.find((response) => response.statusCode === 409);
+  assert.ok(reciprocalWinner !== undefined);
+  assert.ok(reciprocalLoser !== undefined);
+  assert.equal(
+    reciprocalLoser.json<{ error: { code: string } }>().error.code,
+    "work_item_dependency.cycle_conflict",
+  );
+  const winningDependency = reciprocalWinner.json<DependencyDto>();
+  assert.deepEqual(dependencyPairs(await listDependencies(isolatedWorkspaceId)), [
+    `${winningDependency.dependentWorkItemId}:${winningDependency.prerequisiteWorkItemId}`,
+  ]);
+  const reciprocalRemovalResponse = await app.inject({
+    method: "DELETE",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${winningDependency.dependentWorkItemId}/prerequisites/${winningDependency.prerequisiteWorkItemId}`,
+  });
+  assert.equal(reciprocalRemovalResponse.statusCode, 204, reciprocalRemovalResponse.body);
+  assert.deepEqual(await listDependencies(isolatedWorkspaceId), {
+    items: [],
+    page: { limit: 200, offset: 0 },
+  });
+  assert.deepEqual(await dependencyAuditActions(), [
+    "work_item_dependency.added",
+    "work_item_dependency.added",
+    "work_item_dependency.added",
+    "work_item_dependency.removed",
+    "work_item_dependency.removed",
+    "work_item_dependency.removed",
+  ]);
+
   const crossWorkspaceWorkItemRead = await app.inject({
     method: "GET",
     url: `/v1/workspaces/${isolatedWorkspaceId}/work-items/${createdWorkItem.id}`,

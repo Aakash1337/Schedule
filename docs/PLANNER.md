@@ -1,4 +1,4 @@
-# Deterministic Planner v4
+# Deterministic Planner v5
 
 This document describes the first implemented planner contract. The broader product intent remains in [PRODUCT.md](./PRODUCT.md).
 
@@ -8,6 +8,7 @@ The following Phase 1 capabilities exist in code:
 
 - Reusable routines with structured priority, effort, energy, preference, context, category, and free-form tags
 - Explicitly opted-in one-time work items with a positive planning duration, priority, and optional local due date
+- Directed same-workspace work-item prerequisites with done-only satisfaction
 - Validated duration ranges, optional split sessions, minimum useful session length, and overhead
 - Daily, weekly, monthly, and rolling-day cadence policies
 - Minimum, target, and maximum completions; spacing; preferred and excluded weekdays; and lifecycle dates
@@ -43,8 +44,8 @@ The planner is implemented as a pure domain operation in `packages/domain/src/da
 
 ## Planning process
 
-1. Canonically sort routines, opted-in work items, activity events, and the latest applicable routine-feedback event per routine.
-2. Apply routine exclusions for temporary feedback, lifecycle, dates, weekdays, context, cadence maximum, spacing, consecutive-day prohibition, and minimum duration fit. Apply work-item exclusions when its planning duration is absent, its status is not `backlog`, `planned`, or `in_progress`, or its full duration cannot fit a window. A due date never bypasses these exclusions.
+1. Canonically sort routines, opted-in work items, work-item dependency projections, activity events, and the latest applicable routine-feedback event per routine.
+2. Apply routine exclusions for temporary feedback, lifecycle, dates, weekdays, context, cadence maximum, spacing, consecutive-day prohibition, and minimum duration fit. Apply work-item exclusions when its planning duration is absent, its status is not `backlog`, `planned`, or `in_progress`, any direct prerequisite status is not `done`, or its full duration cannot fit a window. A due date never bypasses these exclusions.
 3. Score eligible routines with integer components for priority, cadence deficit, minimum urgency, neglect, preferred weekday, energy/context fit, preference, recent frequency, consecutive-day repetition, and skip fatigue. Score eligible one-time work from explicit priority plus deadline pressure. The default 14-day horizon gives future work a linearly increasing increment as its local due date approaches, gives work due today the `workItemDeadlineDueToday` increment, and gives overdue work a capped increment. A due date outside the horizon adds an explicit zero-pressure explanation. One-time work has no cadence or activity-history score.
 4. Convert the scores to integer selection weights with a nonzero exploration floor.
 5. Generate deterministic weighted permutations using the versioned Mulberry32 implementation.
@@ -77,7 +78,7 @@ remain independent reservations rather than planner candidates or automatic plac
 
 ## Determinism contract
 
-For the same canonical input snapshot, request revision, seed, algorithm version, configuration version, and PRNG version, the planner returns the same item selection and explanations regardless of input array order. Planner v4 and `default-weights-v3` include each work item's nullable `dueOn` value and deadline configuration in the canonical snapshot and input hash. Planner v4 also includes the latest applicable routine-feedback event per routine; an expired suppression or latest reset remains visible for replay but produces no active exclusion.
+For the same canonical input snapshot, request revision, seed, algorithm version, configuration version, and PRNG version, the planner returns the same item selection and explanations regardless of input array order. Planner algorithm v5 owns the canonical dependency projection and its snapshot and hash semantics. Each projection carries the workspace, prerequisite and dependent identities, edge creation time, and current prerequisite status. The unchanged `default-weights-v3` configuration continues to own deadline scoring; every work item's nullable `dueOn` value and the deadline configuration remain part of the canonical snapshot and hash. Planner v5 also includes the latest applicable routine-feedback event per routine; an expired suppression or latest reset remains visible for replay but produces no active exclusion.
 
 The generated plan ID and generation timestamp are supplied by the caller when strict byte-for-byte replay is required. The persisted input hash intentionally changes when any input fact changes, even if the final selected items remain the same.
 
@@ -91,12 +92,13 @@ The database migration adds:
 - `daily_plan_items`
 - `daily_plan_heads`
 - `daily_plan_item_states`
+- `work_item_dependencies`
 - `plan_interaction_events`
 - `plan_mutations`
 - `routine_duration_insight_feedback_events`
 - `routine_planning_feedback_events`
 
-All planner relationships carry `workspace_id` in their foreign keys. Activity idempotency is unique within a workspace. Daily plan revisions are unique by workspace and local date. A plan item carries exactly one typed source (`routine` or `work_item`), and a plan cannot repeat the same source or position within one revision. A work item has no global one-plan claim: while eligible, it can appear in later revisions, dates, or sessions until completed, cancelled, or opted out. The unified-candidate migration backfills every legacy plan item and activity as a routine source and rewrites legacy exclusion entries to the same explicit type before typed-source constraints are enforced.
+All planner relationships carry `workspace_id` in their foreign keys. A dependency row has a natural composite key over its workspace, prerequisite, and dependent; tenant-scoped foreign keys on both endpoints cascade when either work item is removed, and a database check rejects self-edges. Activity idempotency is unique within a workspace. Daily plan revisions are unique by workspace and local date. A plan item carries exactly one typed source (`routine` or `work_item`), and a plan cannot repeat the same source or position within one revision. A work item has no global one-plan claim: while eligible, it can appear in later revisions, dates, or sessions until completed, cancelled, or opted out. The unified-candidate migration backfills every legacy plan item and activity as a routine source and rewrites legacy exclusion entries to the same explicit type before typed-source constraints are enforced.
 
 The application port `DailyPlanRepository.insertForRevision` must atomically insert a plan or return the plan already stored for that revision. The use case rejects an existing revision whose input hash differs, preventing a stale request from being mistaken for an idempotent retry.
 
@@ -107,10 +109,40 @@ bounded exponential backoff. Operations that first wait on an advisory lock and 
 prior lock holder's commit explicitly use read committed; this includes routine policy updates,
 duration-insight approval and feedback, and routine-planning-feedback mutation. Routine saves include
 the expected version in the atomic update predicate.
+
+Dependency edits take a workspace-scoped advisory lock before reading the current graph. Addition
+validates both same-tenant endpoints and uses a recursive reachability query to reject direct and
+transitive cycles before inserting. Existing-edge addition and absent-edge removal are set-idempotent;
+only real changes append `work_item_dependency.added` or `work_item_dependency.removed` audit events.
+The graph does not change either work item or its workflow status. Product UUIDs and the workspace
+component of the advisory-lock key use canonical lowercase spelling, so equivalent mixed-case UUIDs
+cannot split one logical graph or evade self-reference checks.
+
+Generation and regeneration do not take the dependency graph write lock. They retain serializable
+isolation and consume one consistent MVCC snapshot of work candidates, prerequisite statuses, edges,
+activity, and feedback. A concurrent graph edit therefore linearizes before or after that planning
+snapshot like a concurrent work-item edit; an edit whose response completed before planning began is
+visible. Planning never combines a new edge with a stale prerequisite status from another snapshot.
+
+The PostgreSQL adapter loads active opted-in work candidates and their relevant dependency and
+prerequisite-status rows in one bounded, ordered SQL statement. Feedback and feedback-reset
+mutations reuse this correlated loader while retaining their required read-committed transaction, so
+candidate eligibility from one statement snapshot cannot be paired with a dependency projection
+from another.
+
+The combined loader validates tagged row shape, identities, statuses, dates, self-reference, and
+deterministic group/order before returning domain input. Malformed or unordered stored rows fail
+closed as `planning.work_item_graph_corrupt`; the product error boundary redacts the message and graph
+contents behind `500 internal.unexpected_error` while logging only the stable invariant code.
+
 Local-mode planning reads are bounded to 500 routines, the latest feedback event for at most 500
-routines, and 5,000 activity events so plan generation cannot hold a database connection over an
-unbounded in-memory snapshot. Inactive routines remain in the planner input long enough to produce
-explicit paused or archived exclusions.
+routines, 5,000 activity events, and 2,000 dependency rows whose dependents are active opted-in
+planning candidates, so plan generation cannot hold a database connection over an unbounded in-memory
+snapshot. The application requests 2,001 relevant dependencies and fails closed with
+`planning.work_item_dependency_pool_too_large` rather than planning from a truncated graph. Edges for
+noncandidate dependents remain manageable through the graph API but do not enter the planner
+projection. Inactive routines remain in the planner input long enough to produce explicit paused or
+archived exclusions.
 
 Each activity append receives a monotonic ingestion sequence after taking a per-source transaction lock, so the application write path cannot commit a lower sequence after a higher one. Existing rows are backfilled deterministically by recording time and ID when this column is introduced. Routine-history pages use the sequence as a newest-first keyset and preserve the first page's high-water mark in an integrity-protected, route-bound cursor, preventing later appends from shifting the remaining traversal. Public activity representations omit idempotency keys.
 
@@ -130,7 +162,7 @@ enabled.
 
 The highest generated revision becomes the authoritative per-day head. Plan items expose stable UUIDs, while mutable interaction state is stored separately from immutable plan snapshots. Lock and unlock commands use the current plan ID, an optimistic head version, and a workspace-scoped idempotency key. Each command appends an immutable interaction event; the item-state projection and head version support fast Today reads and stale-client rejection.
 
-Regeneration and replacement take the per-day transaction lock, resolve command idempotency before checking the head, and allocate `current revision + 1` on the server. Retained non-terminal items preserve position, window, duration, lock state, and typed source identity. Their occupied time and source identities are removed from the residual planner input. Replacement anchors every sibling and excludes the target source. Terminal plan items are excluded from replanning. The resulting snapshot hashes the source plan, anchors, exclusions, and residual planner input; the source revision is never mutated.
+Regeneration and replacement take the per-day transaction lock, resolve command idempotency before checking the head, and allocate `current revision + 1` on the server. Retained non-terminal items normally preserve position, window, duration, lock state, and typed source identity. On regeneration, an unlocked work item with a currently unmet prerequisite is removed from retention and excluded from residual selection. A locked nonterminal item remains anchored under the existing user-authority rules; terminal items remain excluded under the existing replan rules. Retained items' occupied time and source identities are removed from the residual planner input. Replacement anchors every sibling and excludes the target source. The resulting snapshot hashes the source plan, anchors, exclusions, canonical dependency projections, and residual planner input; the source revision is never mutated. Adding or removing an edge alone never changes the current revision or Today head.
 
 Temporary routine feedback uses the same per-day transaction lock, optimistic plan/head identity,
 workspace-and-date-scoped idempotency ledger, and immutable revision path. Applying feedback is limited to an
@@ -200,15 +232,18 @@ selection, cadence, or activity history.
 The optional local-model advisor reviews a completed current-plan projection; it is not a planner
 stage and does not receive or produce planner input. Its provider-neutral application port receives
 no repositories, unit of work, plan commands, or mutation service. The supplied context contains a
-bounded sanitized view of the current plan plus eligible backlog candidates, not routine history,
-the persisted planner input snapshot, random seed, calendar blocks, or a dedicated/free-form model
-instruction. User-authored titles are included only as bounded untrusted data.
+bounded sanitized view of the current plan plus active opted-in backlog candidates whose direct
+prerequisites are all `done`, not routine history, the persisted planner input snapshot, random seed,
+calendar blocks, or a dedicated/free-form model instruction. Candidate work, dependency edges, and
+prerequisite statuses use the same bounded statement projection. User-authored titles are included
+only as bounded untrusted data.
 
 Schedule builds the initial context in a short read-only unit of work and closes it before invoking
 the provider. The Ollama adapter performs one bounded direct loopback request. If output passes its
 versioned schema, canonical-text, target-membership, and duplicate checks, the application opens a
-second short read-only unit of work and rebuilds the exact same context. A plan-head change or any
-other plan/backlog difference produces `advisor.snapshot_conflict`; no stale advice is returned.
+second short read-only unit of work and rebuilds the exact same context and dependency fingerprint. A
+plan-head, backlog, dependency, or prerequisite-status change produces `advisor.snapshot_conflict`,
+including a dependency change that leaves visible membership unchanged; no stale advice is returned.
 
 Advice can refer only to supplied plan items, supplied backlog items, or the plan as a whole. It
 cannot change hard constraints, eligibility, scoring, selection, fit, capacity, cadence, feedback,
@@ -228,7 +263,6 @@ pnpm verify:planner-db
 - Authentication, authorization, and public network exposure
 - Exact start-time placement within a selected window
 - Alternative-plan branching and multi-step undo workflows
-- Work-item dependency integration
 - Learned cadence, preference, energy, and overload adjustments
 - Automatic duration-insight application and historical insight comparison
 - User-editable scoring profiles

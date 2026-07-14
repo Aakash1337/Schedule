@@ -61,6 +61,9 @@ describe("work item management", () => {
         },
       },
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
+      workItemDependencies: {
+        loadPlanningGraph: async () => ({ workItems: [], dependencies: [] }),
+      } as TransactionContext["workItemDependencies"],
       auditEvents: {} as TransactionContext["auditEvents"],
       routines: {} as TransactionContext["routines"],
       activityEvents: {} as TransactionContext["activityEvents"],

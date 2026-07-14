@@ -14,4 +14,5 @@ export * from "./plan-item-activity.js";
 export * from "./schedule-block.js";
 export * from "./structured-tags.js";
 export * from "./work-item.js";
+export * from "./work-item-dependency.js";
 export * from "./workspace.js";

@@ -8,14 +8,17 @@ import {
   createRoutinePlanningFeedback,
   createStructuredTags,
   createWorkItem,
+  createWorkItemDependency,
   createWorkspace,
   dailyPlanId,
   generateDailyPlan,
   planItemId,
   routineId,
   routinePlanningFeedbackId,
+  workItemId,
   workspaceId,
   type DailyPlan,
+  type PlanningWorkItemDependency,
   type Routine,
   type RoutinePlanningFeedback,
   type WorkItem,
@@ -61,6 +64,7 @@ describe("MutateDailyPlan", () => {
     options: {
       readonly routineCandidates?: readonly Routine[];
       readonly workItemCandidates?: readonly WorkItem[];
+      readonly workItemDependencies?: readonly PlanningWorkItemDependency[];
     } = {},
   ) {
     const generated = generateDailyPlan({
@@ -76,6 +80,8 @@ describe("MutateDailyPlan", () => {
     };
     let headVersion = 2;
     let feedbackLockCount = 0;
+    let dependencyLockCount = 0;
+    const planningGraphLoads: Array<{ workItemLimit: number; dependencyLimit: number }> = [];
     const mutations: PlanMutationRecord[] = [];
     const routineFeedback: RoutinePlanningFeedback[] = [];
     let unitOfWorkOptions: UnitOfWorkOptions | undefined;
@@ -140,8 +146,25 @@ describe("MutateDailyPlan", () => {
         },
       },
       workItems: {
-        listPlanningCandidates: async () => options.workItemCandidates ?? [],
+        listPlanningCandidates: async () => {
+          throw new Error("separate work-item candidate reads are forbidden");
+        },
       } as TransactionContext["workItems"],
+      workItemDependencies: {
+        lockWorkspace: async () => {
+          dependencyLockCount += 1;
+        },
+        listForPlanning: async () => {
+          throw new Error("separate dependency planning reads are forbidden");
+        },
+        loadPlanningGraph: async (_workspaceId, workItemLimit, dependencyLimit) => {
+          planningGraphLoads.push({ workItemLimit, dependencyLimit });
+          return {
+            workItems: options.workItemCandidates ?? [],
+            dependencies: options.workItemDependencies ?? [],
+          };
+        },
+      } as TransactionContext["workItemDependencies"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
       auditEvents: {} as TransactionContext["auditEvents"],
     } satisfies TransactionContext;
@@ -172,6 +195,8 @@ describe("MutateDailyPlan", () => {
       mutations: () => mutations,
       routineFeedback: () => routineFeedback,
       feedbackLockCount: () => feedbackLockCount,
+      dependencyLockCount: () => dependencyLockCount,
+      planningGraphLoads,
       unitOfWorkOptions: () => unitOfWorkOptions,
     };
   }
@@ -196,6 +221,80 @@ describe("MutateDailyPlan", () => {
     expect(first.plan.items.some((item) => item.locked)).toBe(true);
     expect(retry).toEqual(first);
     expect(test.unitOfWorkOptions()).toBeUndefined();
+  });
+
+  it("loads dependencies during regeneration and excludes an unmet unlocked dependent", async () => {
+    const dependent = createWorkItem({
+      id: workItemId("mutation-dependent-work"),
+      workspaceId: workspace,
+      title: "Publish after approval",
+      planningDurationMinutes: 30,
+    });
+    const dependency = {
+      ...createWorkItemDependency({
+        workspaceId: workspace,
+        prerequisiteWorkItemId: workItemId("mutation-prerequisite-work"),
+        dependentWorkItemId: dependent.id,
+        createdAt: new Date("2026-07-14T12:00:00.000Z"),
+      }),
+      prerequisiteStatus: "in_progress" as const,
+    };
+    const test = harness({
+      routineCandidates: routines.slice(0, 2),
+      workItemCandidates: [dependent],
+      workItemDependencies: [dependency],
+    });
+
+    const result = await test.useCase.regenerate({
+      workspaceId: workspace,
+      expectedPlanId: test.source.id,
+      expectedHeadVersion: 2,
+      request: { ...request, seed: "dependency-regeneration" },
+      idempotencyKey: "dependency-regeneration",
+    });
+
+    expect(result.plan.items.some((item) => item.workItemId === dependent.id)).toBe(false);
+    expect(result.plan.exclusions).toContainEqual(
+      expect.objectContaining({
+        workItemId: dependent.id,
+        codes: ["work_item_dependency_unsatisfied"],
+      }),
+    );
+    expect(test.dependencyLockCount()).toBe(0);
+    expect(test.planningGraphLoads).toEqual([{ workItemLimit: 501, dependencyLimit: 2_001 }]);
+  });
+
+  it("fails closed when regeneration dependency data exceeds 2,000 relevant rows", async () => {
+    const dependent = createWorkItem({
+      id: workItemId("mutation-bounded-dependent"),
+      workspaceId: workspace,
+      title: "Bounded dependency work",
+      planningDurationMinutes: 30,
+    });
+    const dependency = {
+      ...createWorkItemDependency({
+        workspaceId: workspace,
+        prerequisiteWorkItemId: workItemId("mutation-bounded-prerequisite"),
+        dependentWorkItemId: dependent.id,
+        createdAt: new Date("2026-07-14T12:00:00.000Z"),
+      }),
+      prerequisiteStatus: "backlog" as const,
+    };
+    const test = harness({
+      workItemCandidates: [dependent],
+      workItemDependencies: Array.from({ length: 2_001 }, () => dependency),
+    });
+
+    await expect(
+      test.useCase.regenerate({
+        workspaceId: workspace,
+        expectedPlanId: test.source.id,
+        expectedHeadVersion: 2,
+        request: { ...request, seed: "bounded-dependency-regeneration" },
+        idempotencyKey: "bounded-dependency-regeneration",
+      }),
+    ).rejects.toMatchObject({ code: "planning.work_item_dependency_pool_too_large" });
+    expect(test.mutations()).toEqual([]);
   });
 
   it("replaces one unlocked item, preserves its sibling, and replays the allocated revision", async () => {
@@ -270,6 +369,50 @@ describe("MutateDailyPlan", () => {
     expect(test.unitOfWorkOptions()).toEqual({ isolationLevel: "read_committed" });
   });
 
+  it("uses one combined graph during feedback and keeps an unmet dependent out of freed capacity", async () => {
+    const dependent = createWorkItem({
+      id: workItemId("feedback-dependent-work"),
+      workspaceId: workspace,
+      title: "Publish after prerequisite",
+      planningDurationMinutes: 30,
+    });
+    const dependency = {
+      ...createWorkItemDependency({
+        workspaceId: workspace,
+        prerequisiteWorkItemId: workItemId("feedback-prerequisite-work"),
+        dependentWorkItemId: dependent.id,
+        createdAt: new Date("2026-07-14T12:00:00.000Z"),
+      }),
+      prerequisiteStatus: "in_progress" as const,
+    };
+    const test = harness({
+      routineCandidates: routines.slice(0, 2),
+      workItemCandidates: [dependent],
+      workItemDependencies: [dependency],
+    });
+    const target = test.source.items.find((item) => !item.locked)!;
+
+    const result = await test.useCase.applyRoutineFeedback({
+      workspaceId: workspace,
+      expectedPlanId: test.source.id,
+      expectedHeadVersion: 2,
+      targetItemId: target.id,
+      kind: "not_today",
+      request: { ...request, seed: "dependency-feedback" },
+      idempotencyKey: "dependency-feedback",
+    });
+
+    expect(result.plan.items.some((item) => item.workItemId === dependent.id)).toBe(false);
+    expect(result.plan.exclusions).toContainEqual(
+      expect.objectContaining({
+        workItemId: dependent.id,
+        codes: ["work_item_dependency_unsatisfied"],
+      }),
+    );
+    expect(test.planningGraphLoads).toEqual([{ workItemLimit: 501, dependencyLimit: 2_001 }]);
+    expect(test.unitOfWorkOptions()).toEqual({ isolationLevel: "read_committed" });
+  });
+
   it("appends a reset and replans without resurrecting the prior suppression", async () => {
     const test = harness();
     const target = test.source.items.find((item) => !item.locked)!;
@@ -302,6 +445,59 @@ describe("MutateDailyPlan", () => {
     ).toBe(false);
     expect(test.routineFeedback().map((entry) => entry.kind)).toEqual(["not_today", "reset"]);
     expect(test.routineFeedback()[1]).toMatchObject({ sourcePlanItemId: null });
+  });
+
+  it("uses one combined graph during feedback reset and still excludes an unmet dependent", async () => {
+    const dependent = createWorkItem({
+      id: workItemId("feedback-reset-dependent-work"),
+      workspaceId: workspace,
+      title: "Ship after prerequisite",
+      planningDurationMinutes: 30,
+    });
+    const dependency = {
+      ...createWorkItemDependency({
+        workspaceId: workspace,
+        prerequisiteWorkItemId: workItemId("feedback-reset-prerequisite-work"),
+        dependentWorkItemId: dependent.id,
+        createdAt: new Date("2026-07-14T12:00:00.000Z"),
+      }),
+      prerequisiteStatus: "backlog" as const,
+    };
+    const test = harness({
+      routineCandidates: routines.slice(0, 2),
+      workItemCandidates: [dependent],
+      workItemDependencies: [dependency],
+    });
+    const target = test.source.items.find((item) => !item.locked)!;
+    const suppressed = await test.useCase.applyRoutineFeedback({
+      workspaceId: workspace,
+      expectedPlanId: test.source.id,
+      expectedHeadVersion: 2,
+      targetItemId: target.id,
+      kind: "not_today",
+      request: { ...request, seed: "dependency-feedback-reset-source" },
+      idempotencyKey: "dependency-feedback-reset-source",
+    });
+    test.planningGraphLoads.length = 0;
+
+    const reset = await test.useCase.resetRoutineFeedback({
+      workspaceId: workspace,
+      expectedPlanId: suppressed.plan.id,
+      expectedHeadVersion: suppressed.headVersion,
+      routineId: target.routineId!,
+      request: { ...request, seed: "dependency-feedback-reset" },
+      idempotencyKey: "dependency-feedback-reset",
+    });
+
+    expect(reset.plan.items.some((item) => item.workItemId === dependent.id)).toBe(false);
+    expect(reset.plan.exclusions).toContainEqual(
+      expect.objectContaining({
+        workItemId: dependent.id,
+        codes: ["work_item_dependency_unsatisfied"],
+      }),
+    );
+    expect(test.planningGraphLoads).toEqual([{ workItemLimit: 501, dependencyLimit: 2_001 }]);
+    expect(test.unitOfWorkOptions()).toEqual({ isolationLevel: "read_committed" });
   });
 
   it("rejects routine feedback from a plan that observed an older cross-date feedback head", async () => {

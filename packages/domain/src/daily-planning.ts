@@ -28,9 +28,13 @@ import {
   canonicalRoutinePlanningFeedback,
   type RoutinePlanningFeedback,
 } from "./routine-planning-feedback.js";
-import type { WorkItem } from "./work-item.js";
+import { workItemStatuses, type WorkItem } from "./work-item.js";
+import {
+  createWorkItemDependency,
+  type PlanningWorkItemDependency,
+} from "./work-item-dependency.js";
 
-export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v4";
+export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v5";
 export const PLANNER_CONFIG_VERSION = "default-weights-v3";
 export const PLANNER_PRNG_VERSION = "mulberry32-v1";
 const MAXIMUM_PLANNER_SCORE_COMPONENT = 1_000_000;
@@ -166,7 +170,8 @@ export type EligibilityCode =
   | "consecutive_day_prohibited"
   | "duration_does_not_fit"
   | "work_item_not_plannable"
-  | "work_item_status_ineligible";
+  | "work_item_status_ineligible"
+  | "work_item_dependency_unsatisfied";
 
 export const planSourceTypes = ["routine", "work_item"] as const;
 export type PlanSourceType = (typeof planSourceTypes)[number];
@@ -261,6 +266,7 @@ export interface GenerateDailyPlanInput {
   readonly request: DailyPlanningRequest;
   readonly routines: readonly Routine[];
   readonly workItems?: readonly WorkItem[];
+  readonly workItemDependencies?: readonly PlanningWorkItemDependency[];
   readonly events: readonly ActivityEvent[];
   readonly routineFeedback?: readonly RoutinePlanningFeedback[];
   readonly config?: PlannerConfig;
@@ -741,6 +747,7 @@ export function evaluateWorkItemForPlan(
   workItem: WorkItem,
   request: DailyPlanningRequest,
   config: PlannerConfig = DEFAULT_PLANNER_CONFIG,
+  dependencies: readonly PlanningWorkItemDependency[] = [],
 ): WorkItemEvaluation {
   const exclusions: EligibilityCode[] = [];
   const duration = workItem.planningDurationMinutes;
@@ -748,6 +755,13 @@ export function evaluateWorkItemForPlan(
   if (duration === null) exclusions.push("work_item_not_plannable");
   if (!["backlog", "planned", "in_progress"].includes(workItem.status)) {
     exclusions.push("work_item_status_ineligible");
+  }
+  const unsatisfiedPrerequisites = dependencies.filter(
+    (dependency) =>
+      dependency.dependentWorkItemId === workItem.id && dependency.prerequisiteStatus !== "done",
+  );
+  if (unsatisfiedPrerequisites.length > 0) {
+    exclusions.push("work_item_dependency_unsatisfied");
   }
   if (
     duration !== null &&
@@ -772,6 +786,11 @@ export function evaluateWorkItemForPlan(
         deadlinePressure,
         config.workItemDeadlineHorizonDays,
       ),
+    );
+  }
+  if (unsatisfiedPrerequisites.length > 0) {
+    reasons.push(
+      `Blocked by ${unsatisfiedPrerequisites.length} unfinished work item prerequisite(s).`,
     );
   }
   reasons.push("One-time work items do not use cadence or activity-history scoring.");
@@ -1034,10 +1053,98 @@ function toJsonValue(value: unknown): JsonValue {
   return result;
 }
 
+/**
+ * Validates one self-contained dependency projection and returns a stable copy.
+ * Prerequisites may be absent from the candidate list because their joined status
+ * is carried by the projection; every dependent must be a same-tenant candidate.
+ */
+export function canonicalPlanningWorkItemDependencies(
+  dependencies: readonly PlanningWorkItemDependency[],
+  workspaceId: WorkspaceId,
+  workItems: readonly WorkItem[],
+): readonly PlanningWorkItemDependency[] {
+  const workItemsById = new Map(workItems.map((workItem) => [workItem.id, workItem]));
+  const seenPrerequisitesByDependent = new Map<WorkItemId, Set<WorkItemId>>();
+  const canonical: PlanningWorkItemDependency[] = [];
+
+  for (const candidate of dependencies as readonly unknown[]) {
+    invariant(
+      typeof candidate === "object" && candidate !== null && !Array.isArray(candidate),
+      "planning.work_item_dependency_invalid",
+      "Planner work item dependencies must be structured records.",
+    );
+    const dependency = candidate as Record<string, unknown>;
+    invariant(
+      typeof dependency.workspaceId === "string" &&
+        typeof dependency.prerequisiteWorkItemId === "string" &&
+        dependency.prerequisiteWorkItemId.trim().length > 0 &&
+        typeof dependency.dependentWorkItemId === "string" &&
+        dependency.dependentWorkItemId.trim().length > 0,
+      "planning.work_item_dependency_invalid",
+      "Planner work item dependencies require tenant, prerequisite, and dependent identifiers.",
+    );
+    invariant(
+      dependency.workspaceId === workspaceId,
+      "planning.work_item_dependency_workspace_mismatch",
+      "A planner work item dependency must belong to the requested workspace.",
+    );
+    invariant(
+      workItemStatuses.some((status) => status === dependency.prerequisiteStatus),
+      "planning.work_item_dependency_status_invalid",
+      "A planner work item dependency requires a valid prerequisite status.",
+    );
+
+    const edge = createWorkItemDependency({
+      workspaceId: dependency.workspaceId as WorkspaceId,
+      prerequisiteWorkItemId: dependency.prerequisiteWorkItemId as WorkItemId,
+      dependentWorkItemId: dependency.dependentWorkItemId as WorkItemId,
+      createdAt: dependency.createdAt as Date,
+    });
+    const dependent = workItemsById.get(edge.dependentWorkItemId);
+    invariant(
+      dependent !== undefined && dependent.workspaceId === workspaceId,
+      "planning.work_item_dependency_reference_invalid",
+      "A planner dependency must reference a same-tenant dependent work item candidate.",
+    );
+    const prerequisite = workItemsById.get(edge.prerequisiteWorkItemId);
+    invariant(
+      prerequisite === undefined || prerequisite.workspaceId === workspaceId,
+      "planning.work_item_dependency_reference_invalid",
+      "A planner dependency cannot reference a cross-tenant prerequisite candidate.",
+    );
+    invariant(
+      prerequisite === undefined || prerequisite.status === dependency.prerequisiteStatus,
+      "planning.work_item_dependency_status_conflict",
+      "A prerequisite candidate and its dependency projection must have the same status.",
+    );
+
+    const seenPrerequisites =
+      seenPrerequisitesByDependent.get(edge.dependentWorkItemId) ?? new Set<WorkItemId>();
+    invariant(
+      !seenPrerequisites.has(edge.prerequisiteWorkItemId),
+      "planning.duplicate_work_item_dependency",
+      "A work item dependency appears more than once in the planner input.",
+    );
+    seenPrerequisites.add(edge.prerequisiteWorkItemId);
+    seenPrerequisitesByDependent.set(edge.dependentWorkItemId, seenPrerequisites);
+    canonical.push({
+      ...edge,
+      prerequisiteStatus: dependency.prerequisiteStatus as WorkItem["status"],
+    });
+  }
+
+  return canonical.sort(
+    (left, right) =>
+      left.dependentWorkItemId.localeCompare(right.dependentWorkItemId, "en") ||
+      left.prerequisiteWorkItemId.localeCompare(right.prerequisiteWorkItemId, "en"),
+  );
+}
+
 function createInputSnapshot(
   request: DailyPlanningRequest,
   routines: readonly Routine[],
   workItems: readonly WorkItem[],
+  workItemDependencies: readonly PlanningWorkItemDependency[],
   events: readonly ActivityEvent[],
   routineFeedback: readonly RoutinePlanningFeedback[],
   config: PlannerConfig,
@@ -1055,6 +1162,7 @@ function createInputSnapshot(
     request,
     routineFeedback,
     routines: canonicalRoutines,
+    workItemDependencies,
     workItems: canonicalWorkItems,
   });
 }
@@ -1205,6 +1313,17 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
     input.request.workspaceId,
     input.request.date,
   );
+  const canonicalWorkItemDependencies = canonicalPlanningWorkItemDependencies(
+    input.workItemDependencies ?? [],
+    input.request.workspaceId,
+    input.workItems ?? [],
+  );
+  const dependenciesByDependent = new Map<WorkItemId, PlanningWorkItemDependency[]>();
+  for (const dependency of canonicalWorkItemDependencies) {
+    const current = dependenciesByDependent.get(dependency.dependentWorkItemId) ?? [];
+    current.push(dependency);
+    dependenciesByDependent.set(dependency.dependentWorkItemId, current);
+  }
   const routineEvaluations = input.routines
     .slice()
     .sort((left, right) => left.id.localeCompare(right.id, "en"))
@@ -1227,7 +1346,12 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
       routine: null,
       workItem,
       source: { sourceType: "work_item" as const, routineId: null, workItemId: workItem.id },
-      evaluation: evaluateWorkItemForPlan(workItem, input.request, config),
+      evaluation: evaluateWorkItemForPlan(
+        workItem,
+        input.request,
+        config,
+        dependenciesByDependent.get(workItem.id) ?? [],
+      ),
     }));
   const evaluations = [...routineEvaluations, ...workItemEvaluations];
   const exclusions = evaluations
@@ -1300,6 +1424,7 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
     input.request,
     input.routines,
     input.workItems ?? [],
+    canonicalWorkItemDependencies,
     input.events,
     canonicalFeedback,
     config,

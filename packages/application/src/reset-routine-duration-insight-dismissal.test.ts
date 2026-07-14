@@ -160,6 +160,9 @@ function harness(
       },
     },
     workItems: {} as TransactionContext["workItems"],
+    workItemDependencies: {
+      loadPlanningGraph: async () => ({ workItems: [], dependencies: [] }),
+    } as TransactionContext["workItemDependencies"],
     scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
     dailyPlans: {} as TransactionContext["dailyPlans"],
     auditEvents: {} as TransactionContext["auditEvents"],

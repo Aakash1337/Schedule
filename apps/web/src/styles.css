@@ -593,6 +593,10 @@ textarea:focus {
   width: 180px;
 }
 
+.work-board-refresh {
+  align-self: flex-end;
+}
+
 .work-composer {
   margin-bottom: 32px;
   padding: 22px 0 24px;
@@ -871,6 +875,196 @@ textarea:focus {
   line-height: 1.45;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+}
+
+.work-dependencies {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+}
+
+.work-dependencies-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.work-dependencies-heading h4 {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 740;
+}
+
+.work-dependencies-heading > span {
+  color: var(--ink-soft);
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.work-dependencies-empty,
+.work-dependencies-hint,
+.work-dependency-announcement,
+.work-dependency-pending {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+.work-dependencies-hint {
+  color: var(--ink-soft);
+}
+
+.work-dependency-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.work-dependency-list li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.work-dependency-list li:first-child {
+  padding-top: 1px;
+}
+
+.work-dependency-summary {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
+
+.work-dependency-summary strong {
+  min-width: 0;
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.work-dependency-status {
+  flex: none;
+  padding: 2px 5px;
+  color: var(--ink-soft);
+  background: var(--paper-muted);
+  border-radius: 999px;
+  font-size: 0.59rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.work-dependency-status-blocked {
+  color: oklch(0.47 0.11 72);
+  background: var(--warning-soft);
+}
+
+.work-dependency-status-done {
+  color: oklch(0.4 0.08 148);
+  background: var(--success-soft);
+}
+
+.work-dependency-status-cancelled {
+  color: var(--ink-soft);
+}
+
+.work-dependency-remove.button {
+  flex: none;
+  min-height: 26px;
+  padding: 3px 5px;
+  font-size: 0.65rem;
+}
+
+.work-dependencies .notice {
+  margin: 2px 0 0;
+  padding: 7px 8px;
+  font-size: 0.7rem;
+}
+
+.work-dependency-announcement {
+  color: oklch(0.4 0.08 148);
+}
+
+.work-dependency-editor {
+  margin-top: 1px;
+}
+
+.work-dependency-editor summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  min-height: 24px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 680;
+  list-style: none;
+}
+
+.work-dependency-editor summary::-webkit-details-marker {
+  display: none;
+}
+
+.work-dependency-chevron {
+  flex: none;
+  transition: transform 150ms ease;
+}
+
+.work-dependency-chevron[data-state="open"] {
+  transform: rotate(180deg);
+}
+
+.work-dependency-editor summary:focus-visible {
+  border-radius: 3px;
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.work-dependency-editor form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.work-dependency-editor label {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.work-dependency-editor label > span {
+  color: var(--ink-soft);
+  font-size: 0.65rem;
+  font-weight: 660;
+  text-transform: uppercase;
+}
+
+.work-dependency-editor select {
+  min-width: 0;
+  min-height: 31px;
+  padding: 4px 6px;
+  font-size: 0.72rem;
+}
+
+.work-dependency-editor .button {
+  min-height: 31px;
+  padding: 4px 7px;
+  font-size: 0.7rem;
 }
 
 .work-card-editor {
@@ -2588,6 +2782,25 @@ textarea:focus {
 
   .work-board {
     grid-auto-columns: minmax(260px, 82vw);
+  }
+
+  .work-dependency-editor form {
+    grid-template-columns: 1fr;
+  }
+
+  .work-dependency-editor .button {
+    width: 100%;
+  }
+
+  .work-dependency-remove.button,
+  .work-dependency-editor select,
+  .work-dependency-editor .button,
+  .work-dependency-editor summary {
+    min-height: 44px;
+  }
+
+  .work-dependency-list li {
+    align-items: flex-start;
   }
 
   .today-form-row,

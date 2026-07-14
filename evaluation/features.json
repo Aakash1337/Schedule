@@ -148,7 +148,9 @@
           "command": "unit",
           "anchors": [
             "records routine-only weekly feedback, replans immediately, and replays idempotently",
+            "uses one combined graph during feedback and keeps an unmet dependent out of freed capacity",
             "appends a reset and replans without resurrecting the prior suppression",
+            "uses one combined graph during feedback reset and still excludes an unmet dependent",
             "rejects routine feedback from a plan that observed an older cross-date feedback head",
             "compares the complete canonical feedback head when ingestion sequences tie",
             "replays an accepted feedback command after the routine feedback head advances",
@@ -389,6 +391,165 @@
           "anchors": [
             "persists work-item due dates and exposes deadline pressure through the live planning flow"
           ]
+        }
+      ]
+    },
+    {
+      "id": "work-item-dependencies",
+      "status": "implemented",
+      "risk": "high",
+      "contract": {
+        "file": "docs/PRODUCT.md",
+        "anchor": "### 3.1.1 Work-item prerequisite"
+      },
+      "limitations": [
+        "Only direct work-item prerequisites are modeled; projects, milestones, subtasks, and checklist relationships remain deferred.",
+        "Dependency editing is not exposed through the authenticated integration gateway."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/work-item-dependency.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates a tenant-scoped directed edge and copies its timestamp",
+            "rejects self references and invalid timestamps with stable errors",
+            "rejects mixed-case spellings of one PostgreSQL UUID without folding arbitrary IDs",
+            "treats prerequisite status %s as satisfied=%s",
+            "requires every direct prerequisite to be done",
+            "allows prerequisite rows outside the candidate list and snapshots them canonically",
+            "rejects malformed %s dependency state",
+            "rejects duplicate edges and contradictory candidate status snapshots",
+            "passes dependency state through replanning while retaining anchored items"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/work-item-dependencies.test.ts",
+          "command": "unit",
+          "anchors": [
+            "adds a dependency after locking and verifying both tenant-scoped work items",
+            "returns the exact stored dependency on duplicate add without another change",
+            "rejects a transitive cycle without writing or auditing",
+            "rejects a missing or cross-tenant endpoint after taking the graph lock",
+            "rejects a mixed-case add self-reference before opening a transaction",
+            "removes an existing dependency once and audits only the real change",
+            "rejects a mixed-case remove self-reference before opening a transaction",
+            "does not audit when a locked delete loses an already-absent edge",
+            "lists a workspace-scoped dependency page from one read-only snapshot",
+            "validates dependency page bounds before opening a transaction"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/generate-daily-plan.test.ts",
+          "command": "unit",
+          "anchors": [
+            "loads a bounded dependency projection and excludes an unmet dependent",
+            "fails closed when dependency planning data exceeds 2,000 rows",
+            "fails closed if the combined graph contains a noncandidate dependent edge"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/mutate-daily-plan.test.ts",
+          "command": "unit",
+          "anchors": [
+            "loads dependencies during regeneration and excludes an unmet unlocked dependent",
+            "uses one combined graph during feedback and keeps an unmet dependent out of freed capacity",
+            "uses one combined graph during feedback reset and still excludes an unmet dependent"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/get-scheduling-advice.test.ts",
+          "command": "unit",
+          "anchors": [
+            "omits unmet dependents from provider membership and rejects a suggestion targeting one",
+            "rejects advice when the dependency-status graph changes without changing membership",
+            "rejects oversized planning graphs before dispatching the provider"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": [
+            "stores tenant-bound directed work-item dependency edges",
+            "migrates dependency edges with tenant isolation and cascading cleanup"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/repositories.test.ts",
+          "command": "unit",
+          "anchors": [
+            "uses one workspace-scoped advisory key for graph mutations",
+            "paginates dependency edges in stable timestamp and identity order",
+            "joins prerequisite status and excludes ineligible dependent work from the planner bound",
+            "loads candidates and relevant dependencies with one bounded ordered statement",
+            "fails closed when a one-statement graph projection is malformed or unordered",
+            "does not mask database failures while loading a planning graph",
+            "uses a tenant-scoped recursive query for transitive cycle detection",
+            "rejects a self-cycle without querying the graph"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates, replays, lists, and idempotently removes work-item dependencies",
+            "strictly validates dependency identifiers, bodies, and pagination",
+            "canonicalizes uppercase dependency UUID params and bodies before dispatch",
+            "canonicalizes mixed-case self dependencies before domain validation",
+            "maps dependency self-reference, cycle, and missing-item errors",
+            "redacts and code-only logs corrupt planning work-item graphs"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-services.test.ts",
+          "command": "unit",
+          "anchors": ["delegates dependency creation, replay, listing, and idempotent removal"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/api.test.ts",
+          "command": "unit",
+          "anchors": [
+            "aggregates offset-paginated work-item dependency edges",
+            "posts an exact prerequisite replay without inventing an idempotency header",
+            "removes a prerequisite through the replay-safe delete route"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/WorkView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "loads prerequisite titles and statuses with a correctly bounded candidate list",
+            "adds a prerequisite inline, exposes an unsuppressed live pending state, and never changes status",
+            "removes a prerequisite inline and restores focus to the progressive editor",
+            "keeps a selected candidate and current status when the server rejects a cycle",
+            "resolves prerequisite titles outside the active priority filter",
+            "merges fresh filtered records into cached prerequisite status data",
+            "revalidates the workspace catalog and dependency graph on explicit refresh",
+            "retries a failed explicit refresh with workspace revalidation",
+            "ignores late dependency data from a previous workspace"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/planning-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": ["manages prerequisites accessibly through the live 320px work-board flow"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-product-api.ts",
+          "command": "product-api",
+          "anchors": ["work-item-dependencies-product-api"]
         }
       ]
     },
@@ -1199,6 +1360,9 @@
             "builds a sanitized, minimal snapshot and calls the provider outside both transactions",
             "discards advice when the current plan changes during inference",
             "detects eligible-backlog changes even when plan identity stays unchanged",
+            "omits unmet dependents from provider membership and rejects a suggestion targeting one",
+            "rejects advice when the dependency-status graph changes without changing membership",
+            "rejects oversized planning graphs before dispatching the provider",
             "fails closed when the bounded aggregate context still exceeds 64 KiB",
             "restricts version 1 to combined plan-and-backlog review",
             "preserves exact request correlation and passes cancellation to the provider"

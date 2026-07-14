@@ -3,6 +3,7 @@ import {
   isValidLocalDate,
   type DailyPlanId,
   type LocalDate,
+  type PlanningWorkItemDependency,
   type PlanItemActivityState,
   type WorkItemPriority,
   type WorkItemStatus,
@@ -10,6 +11,12 @@ import {
 } from "@schedule/domain";
 
 import type { Clock, TransactionContext, UnitOfWork } from "./ports.js";
+import {
+  assertPlanningCandidatePoolSize,
+  assertPlanningWorkItemDependencyPoolSize,
+  maximumPlanningCandidatePool,
+  maximumPlanningWorkItemDependencies,
+} from "./planning-candidates.js";
 
 export const SCHEDULING_ADVICE_VERSION = "schedule.advisor/v1" as const;
 export const SCHEDULING_ADVISOR_CONTEXT_VERSION = "schedule.advisor-context/v1" as const;
@@ -315,11 +322,35 @@ function snapshotConflict(): never {
   );
 }
 
+interface PreparedSchedulingAdvisorContext {
+  readonly context: SchedulingAdvisorContext;
+  readonly dependencyFingerprint: string;
+}
+
+function dependencyFingerprint(dependencies: readonly PlanningWorkItemDependency[]): string {
+  return JSON.stringify(
+    [...dependencies]
+      .sort(
+        (left, right) =>
+          left.dependentWorkItemId.localeCompare(right.dependentWorkItemId) ||
+          left.prerequisiteWorkItemId.localeCompare(right.prerequisiteWorkItemId) ||
+          left.createdAt.getTime() - right.createdAt.getTime() ||
+          left.prerequisiteStatus.localeCompare(right.prerequisiteStatus),
+      )
+      .map((dependency) => ({
+        prerequisiteWorkItemId: dependency.prerequisiteWorkItemId,
+        dependentWorkItemId: dependency.dependentWorkItemId,
+        prerequisiteStatus: dependency.prerequisiteStatus,
+        createdAt: dependency.createdAt.toISOString(),
+      })),
+  );
+}
+
 async function buildContext(
   transaction: TransactionContext,
   command: GetSchedulingAdviceCommand,
   verifying: boolean,
-): Promise<SchedulingAdvisorContext> {
+): Promise<PreparedSchedulingAdvisorContext> {
   const workspace = await transaction.workspaces.findById(command.workspaceId);
   if (workspace === null) {
     if (verifying) snapshotConflict();
@@ -357,8 +388,21 @@ async function buildContext(
   const selectedWorkItemIds = new Set(
     current.plan.items.flatMap((item) => (item.workItemId === null ? [] : [item.workItemId])),
   );
-  const candidates = (await transaction.workItems.listPlanningCandidates(command.workspaceId))
+  const planningGraph = await transaction.workItemDependencies.loadPlanningGraph(
+    command.workspaceId,
+    maximumPlanningCandidatePool + 1,
+    maximumPlanningWorkItemDependencies + 1,
+  );
+  assertPlanningCandidatePoolSize(0, planningGraph.workItems.length);
+  assertPlanningWorkItemDependencyPoolSize(planningGraph.dependencies.length);
+  const blockedDependentIds = new Set(
+    planningGraph.dependencies
+      .filter((dependency) => dependency.prerequisiteStatus !== "done")
+      .map((dependency) => dependency.dependentWorkItemId),
+  );
+  const candidates = planningGraph.workItems
     .filter((item) => item.workspaceId === command.workspaceId && !selectedWorkItemIds.has(item.id))
+    .filter((item) => !blockedDependentIds.has(item.id))
     .map((item): SchedulingAdvisorBacklogItemContext => ({
       id: safeIdentifier(item.id),
       version: finiteWholeNumber(item.version, "work-item version", 1),
@@ -402,7 +446,10 @@ async function buildContext(
       "The scheduling-advice context exceeds the safe input limit.",
     );
   }
-  return context;
+  return {
+    context,
+    dependencyFingerprint: dependencyFingerprint(planningGraph.dependencies),
+  };
 }
 
 function normalizeProviderIdentity(advisor: SchedulingAdvisor): {
@@ -583,11 +630,12 @@ export class GetSchedulingAdvice {
     signal?: AbortSignal,
   ): Promise<SchedulingAdviceResult> {
     validateCommand(command);
-    const initial = await this.unitOfWork.run((transaction) =>
+    const preparedInitial = await this.unitOfWork.run((transaction) =>
       buildContext(transaction, command, false),
     );
+    const initial = preparedInitial.context;
     deepFreeze(initial);
-    const canonicalInitial = JSON.stringify(initial);
+    const canonicalInitial = JSON.stringify(preparedInitial);
     const identity = normalizeProviderIdentity(this.advisor);
     const requestedAt = validClockInstant(this.clock);
     let rawResult: unknown;
