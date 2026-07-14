@@ -176,6 +176,76 @@ describe("web API client", () => {
     );
   });
 
+  it("creates, lists, reparents, and detaches subtasks through hierarchy routes", async () => {
+    const child = { id: "child-1", parentWorkItemId: "parent/1" };
+    let requestNumber = 0;
+    const fetchMock = vi.fn(async () => {
+      const response =
+        requestNumber === 1
+          ? pageResponse([child], 0)
+          : new Response(JSON.stringify(child), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+      requestNumber += 1;
+      return response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.createSubtask("workspace-1", "parent/1", {
+      title: "Write notes",
+      description: null,
+      status: "backlog",
+      priority: "none",
+      dueOn: null,
+      planningDurationMinutes: 30,
+    });
+    await api.listWorkItemChildren("workspace-1", "parent/1");
+    await api.updateWorkItem("workspace-1", "child-1", {
+      expectedVersion: 1,
+      parentWorkItemId: "parent-2",
+    });
+    await api.updateWorkItem("workspace-1", "child-1", {
+      expectedVersion: 2,
+      parentWorkItemId: null,
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/v1/workspaces/workspace-1/work-items/parent%2F1/subtasks",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          title: "Write notes",
+          description: null,
+          status: "backlog",
+          priority: "none",
+          dueOn: null,
+          planningDurationMinutes: 30,
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/v1/workspaces/workspace-1/work-items/parent%2F1/subtasks?limit=200&offset=0",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/v1/workspaces/workspace-1/work-items/child-1",
+      expect.objectContaining({
+        body: JSON.stringify({ expectedVersion: 1, parentWorkItemId: "parent-2" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/v1/workspaces/workspace-1/work-items/child-1",
+      expect.objectContaining({
+        body: JSON.stringify({ expectedVersion: 2, parentWorkItemId: null }),
+      }),
+    );
+  });
+
   it("aggregates offset-paginated work-item dependency edges", async () => {
     const firstPage = Array.from({ length: 200 }, (_, index) => ({
       workspaceId: "workspace-1",

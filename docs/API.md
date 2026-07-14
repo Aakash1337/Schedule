@@ -35,6 +35,8 @@ not authorize these product routes.
 | `GET`    | `/v1/workspaces/{workspaceId}/work-items`                                                      | List a bounded work-item page                          |
 | `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Retrieve one work item                                 |
 | `PATCH`  | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Version-checked work-item update                       |
+| `POST`   | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/subtasks`                                | Create a direct child (`201`)                          |
+| `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/subtasks`                                | List a bounded direct-child page                       |
 | `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals`                                      | Prepare one review-only backlog-title proposal         |
 | `PATCH`  | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}`                         | Version-checked proposal-title edit                    |
 | `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}/cancellations`           | Cancel a pending proposal without creating work        |
@@ -84,7 +86,33 @@ not authorize these product routes.
 
 Activity requests require an `Idempotency-Key` header containing 1–160 characters. Reusing a key with identical event content returns the original event. Reusing it for different content returns `409 activity.idempotency_conflict`. Public event responses omit the key because the caller already owns it and it is retry metadata, not activity history.
 
-Work items provide the initial backlog and status-column Kanban model through `backlog`, `planned`, `in_progress`, `blocked`, `done`, and `cancelled`. `planningDurationMinutes` is nullable: `null` keeps normal work out of Today, while a positive value (up to 43,200) opts it into the planner. `dueOn` is independently nullable and, when present, must be a strict real Gregorian `YYYY-MM-DD` local date. Create may omit it or send `null`; update omission preserves it, while update `null` clears it. Only opted-in `backlog`, `planned`, and `in_progress` work is eligible, and a due date never overrides status, duration, window, time-budget, or task-count constraints. List requests accept optional `status` and `priority` filters plus `limit` from 1–200 and `offset` from 0–1,000,000. Ordering is stable by creation time and ID. Updates require `expectedVersion`, increment exactly once for a real semantic change, and preserve the version for a normalized no-op. Work-item hard deletion and manual card ranking are not part of this MVP surface; cancellation is the removal workflow, and clients group items by status. A completion from a stale plan never auto-transitions `blocked` or `cancelled` work to `done`.
+Work items provide the initial backlog and status-column Kanban model through `backlog`, `planned`,
+`in_progress`, `blocked`, `done`, and `cancelled`. Every response includes nullable
+`parentWorkItemId`; `null` is a top-level item. `planningDurationMinutes` is nullable: `null` keeps
+normal work out of Today, while a positive value up to 43,200 opts a leaf item into the planner.
+`dueOn` is independently nullable and, when present, must be a strict real Gregorian `YYYY-MM-DD`
+local date. Create may omit either nullable field or send `null`; update omission preserves it, while
+update `null` clears it. Only opted-in `backlog`, `planned`, and `in_progress` leaf work is eligible.
+A parent with children is excluded even when it retains a positive duration, and becomes eligible
+again only after every child is detached. A due date never overrides status, duration, hierarchy,
+window, time-budget, or task-count constraints.
+
+The root create route accepts optional `parentWorkItemId`. The nested `POST .../{parentId}/subtasks`
+route derives the parent from its path and rejects a conflicting body field. Its `GET` companion
+returns only direct children as `{items,page:{limit,offset}}`, with `limit` from 1–200 and `offset`
+from 0–1,000,000. Hierarchy supports arbitrary depth, remains same-workspace and acyclic, and never
+cascades status. `PATCH` may set `parentWorkItemId` to another work-item UUID or `null` to detach.
+The child's current `expectedVersion` is required; a real move increments only the child. A missing
+or cross-workspace parent returns `404 work_item.not_found`, self-parenting returns
+`422 work_item_hierarchy.self_reference_invalid`, and a direct or transitive cycle returns
+`409 work_item_hierarchy.cycle_conflict`. Concurrent graph changes share one workspace lock.
+
+General list requests accept optional `status` and `priority` filters plus the same pagination
+bounds. Ordering is stable by creation time and ID. Updates increment exactly once for a real
+semantic change and preserve the version for a normalized no-op. Work-item hard deletion and manual
+card ranking are not part of this MVP surface; cancellation is the removal workflow, and clients
+group items by status. The parent foreign key restricts deletion while children remain. A completion
+from a stale plan never auto-transitions `blocked` or `cancelled` work to `done`.
 
 Work-item prerequisites are directed same-workspace edges. The `POST .../work-items/{dependentWorkItemId}/prerequisites` route accepts the strict body
 `{"prerequisiteWorkItemId":"<uuid>"}`. A new edge returns `201`; an exact existing edge returns the

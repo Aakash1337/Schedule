@@ -13,6 +13,7 @@ export * from "./create-routine.js";
 export * from "./create-work-item.js";
 export * from "./get-work-item.js";
 export * from "./list-work-items.js";
+export * from "./list-work-item-children.js";
 export * from "./list-work-item-dependencies.js";
 export * from "./update-work-item.js";
 export * from "./webhook-security.js";

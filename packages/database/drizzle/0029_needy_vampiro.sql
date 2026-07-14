@@ -1,0 +1,4 @@
+ALTER TABLE "work_items" ADD COLUMN "parent_work_item_id" uuid;--> statement-breakpoint
+ALTER TABLE "work_items" ADD CONSTRAINT "work_items_parent_tenant_fk" FOREIGN KEY ("workspace_id","parent_work_item_id") REFERENCES "public"."work_items"("workspace_id","id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "work_items_workspace_parent_created_id_idx" ON "work_items" USING btree ("workspace_id","parent_work_item_id","created_at","id");--> statement-breakpoint
+ALTER TABLE "work_items" ADD CONSTRAINT "work_items_parent_not_self" CHECK ("work_items"."parent_work_item_id" IS NULL OR "work_items"."parent_work_item_id" <> "work_items"."id");

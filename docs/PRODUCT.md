@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-14
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items with direct prerequisites, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v5 selects both reusable routines and explicitly opted-in one-time work items, applies temporary routine feedback, and hard-excludes work with unmet prerequisites from new selection and unlocked regeneration retention. A locked nonterminal item remains anchored under the existing user-authority rules. The planner also adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent, read-only routine-duration insight, explicit approval, and reversible dismissal of one exact evidence-backed recommendation; broader learned preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. The Work interface may separately prepare one expiring, editable backlog-title proposal from free-form text; no work exists until explicit, audited, exactly-once confirmation. A provider-neutral authenticated gateway provides Today reads, credential-scoped backlog/Kanban work-item discovery, confirmed structured mutations, and least-privilege reminder delivery claims/receipts for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. A deterministic reminder-policy core stores versioned profiles and rules, explicit one-offs, concurrency-safe immutable intents, and a provider-neutral fenced delivery lifecycle without performing provider transport. See [API.md](./API.md), [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md), [REMINDERS.md](./REMINDERS.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language routine creation, task breakdown, multi-command capture, automatic advisor application or calibration, hosted model providers, alternative-plan comparison, generalized undo, recurrence authoring, periodic reminder execution and phone delivery, a Hermes/WhatsApp transport, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items with direct prerequisites and arbitrary-depth subtasks, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v5 selects both reusable routines and explicitly opted-in one-time leaf work items, applies temporary routine feedback, and hard-excludes parent containers and work with unmet prerequisites from new selection and unlocked regeneration retention. A locked nonterminal item remains anchored under the existing user-authority rules. The planner also adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent, read-only routine-duration insight, explicit approval, and reversible dismissal of one exact evidence-backed recommendation; broader learned preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. The Work interface may separately prepare one expiring, editable backlog-title proposal from free-form text; no work exists until explicit, audited, exactly-once confirmation. A provider-neutral authenticated gateway provides Today reads, credential-scoped work-item discovery including hierarchy, reviewed create/reparent/detach mutations, and least-privilege reminder delivery claims/receipts for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. A deterministic reminder-policy core stores versioned profiles and rules, explicit one-offs, concurrency-safe immutable intents, and a provider-neutral fenced delivery lifecycle without performing provider transport. See [API.md](./API.md), [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md), [REMINDERS.md](./REMINDERS.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language routine creation, model-driven task breakdown, multi-command capture, automatic advisor application or calibration, hosted model providers, alternative-plan comparison, generalized undo, recurrence authoring, periodic reminder execution and phone delivery, a Hermes/WhatsApp transport, and public hosting remain deferred.
 
 The local reminder interface now configures profiles, rules, and one-offs; explicitly materializes
 intents; and presents separate planned and product-safe execution histories. It does not imply that
@@ -51,6 +51,28 @@ mutation so concurrent additions cannot jointly create a cycle. Product UUIDs ar
 lowercase before dispatch and lock-key derivation, while the domain also treats mixed-case spellings
 of one persisted PostgreSQL UUID as the same identity. Casing therefore cannot bypass self-edge or
 cycle protection.
+
+### 3.1.2 Work-item hierarchy
+
+Every work item has a nullable `parentWorkItemId`. `null` means top-level; a non-null value creates
+one same-workspace parent edge. The adjacency model supports arbitrary depth, while every direct
+child listing is bounded and stable. Parent and child workflow statuses, priorities, deadlines,
+planning durations, and optimistic versions remain independent. Creating, moving, or detaching a
+child never completes, reopens, reprioritizes, or increments either parent.
+
+The hierarchy rejects self-parenting and direct or transitive cycles. It uses the same
+workspace-scoped graph lock as prerequisite mutations, then walks the proposed parent chain inside
+the transaction. The database also enforces tenant-bound parent references, rejects a physical
+self-edge, restricts deletion of a referenced parent, and indexes direct-child reads. Reparent and
+detach require the child's current `expectedVersion`; each real edge change increments only that
+child and appends an immutable hierarchy audit event.
+
+Only leaf work items are automatic planning candidates. A parent may retain a saved positive
+planning duration, but that preference is dormant while it has children and becomes eligible again
+only after every direct child is detached. Parent status never cascades to descendants. The local
+API, Work board, and authenticated integration gateway can create a child, list direct children,
+discover `parentWorkItemId`, and reparent or detach a child. Projects, milestones, and checklist
+items remain separate future concepts rather than aliases for this hierarchy.
 
 ### 3.2 Routine
 
@@ -427,7 +449,7 @@ remain deferred:
 
 - Converting natural-language requests into routines, multiple tasks, or task breakdowns
 - Suggesting or writing tags, duration policies, cadence, energy, or context
-- Breaking work into newly persisted sessions or subtasks
+- Automatically breaking work into newly persisted sessions or subtasks
 - Interpreting free-form daily context
 - Applying recommendations, calibrating user values, or changing planner policy
 - Local OpenAI-compatible endpoints and hosted providers
@@ -474,7 +496,7 @@ The adaptive planner complements, rather than replaces:
 - Calendar day, week, and month views
 - One-time and recurring work
 - Direct work-item prerequisites are implemented; project and milestone blockers remain targets
-- Subtasks and checklists
+- Arbitrary-depth work-item subtasks are implemented; checklist rows remain a target
 - Work-item due dates plus deterministic reminder policy, intent materialization, and a fenced
   provider-neutral delivery gateway; periodic execution and provider transport remain deferred
 - Search, filters, saved views, and bulk editing

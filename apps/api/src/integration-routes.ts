@@ -81,6 +81,7 @@ const workItemPriority = z.enum(["none", "low", "medium", "high", "urgent"]);
 const createWorkItemCommand = z.strictObject({
   type: z.literal("work_item.create"),
   title: z.string().trim().min(1).max(240),
+  parentWorkItemId: uuid.nullable().optional(),
   description: z.string().max(4_000).nullable().optional(),
   status: workItemStatus.optional(),
   priority: workItemPriority.optional(),
@@ -93,6 +94,7 @@ const updateWorkItemCommand = z
     type: z.literal("work_item.update"),
     workItemId: uuid,
     expectedVersion,
+    parentWorkItemId: uuid.nullable().optional(),
     title: z.string().trim().min(1).max(240).optional(),
     description: z.string().max(4_000).nullable().optional(),
     status: workItemStatus.optional(),
@@ -103,6 +105,7 @@ const updateWorkItemCommand = z
   .refine(
     (command) =>
       command.title !== undefined ||
+      command.parentWorkItemId !== undefined ||
       command.description !== undefined ||
       command.status !== undefined ||
       command.priority !== undefined ||

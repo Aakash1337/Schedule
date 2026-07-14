@@ -85,6 +85,34 @@ describe("database schema", () => {
     expect(getTableName(webhookEventSubscriptions)).toBe("webhook_event_subscriptions");
   });
 
+  it("enforces a tenant-scoped, non-cascading work-item hierarchy", () => {
+    const workItem = getTableConfig(workItems);
+
+    expect(workItem.foreignKeys.map((constraint) => constraint.getName())).toContain(
+      "work_items_parent_tenant_fk",
+    );
+    expect(workItem.checks.map((constraint) => constraint.name)).toContain(
+      "work_items_parent_not_self",
+    );
+    expect(workItem.indexes.map((constraint) => constraint.config.name)).toContain(
+      "work_items_workspace_parent_created_id_idx",
+    );
+  });
+
+  it("migrates existing work items into the hierarchy as roots", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0029_needy_vampiro.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain('ADD COLUMN "parent_work_item_id" uuid');
+    expect(migration).toContain('CONSTRAINT "work_items_parent_tenant_fk"');
+    expect(migration).toContain("ON DELETE restrict");
+    expect(migration).toContain('CREATE INDEX "work_items_workspace_parent_created_id_idx"');
+    expect(migration).toContain('CONSTRAINT "work_items_parent_not_self"');
+    expect(migration).not.toContain('UPDATE "work_items"');
+  });
+
   it("fences provider-neutral notification delivery and exact request replay", () => {
     expect(notificationDeliveryStatus.enumValues).toEqual([
       "pending",

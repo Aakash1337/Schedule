@@ -14,13 +14,15 @@ export type WorkItemPriority = "none" | "low" | "medium" | "high" | "urgent";
 export interface WorkItem {
   readonly id: string;
   readonly workspaceId: string;
+  /** Null marks a root item; otherwise this is a direct subtask of the referenced work item. */
+  readonly parentWorkItemId: string | null;
   readonly title: string;
   readonly description: string | null;
   readonly status: WorkItemStatus;
   readonly priority: WorkItemPriority;
   /** Local calendar date in YYYY-MM-DD form, when the work has a deadline. */
   readonly dueOn: string | null;
-  /** A null duration keeps this one-time item out of automatic daily plans. */
+  /** A null duration keeps this one-time item out of automatic daily plans. Parents are containers. */
   readonly planningDurationMinutes: number | null;
   readonly version: number;
   readonly createdAt: string;

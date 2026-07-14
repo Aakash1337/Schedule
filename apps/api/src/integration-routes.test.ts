@@ -94,7 +94,7 @@ function integrationServices(): IntegrationServices {
     confirmCommand: vi.fn(
       async () =>
         ({
-          receiptVersion: 1,
+          receiptVersion: 2,
           confirmationId: CONFIRMATION_ID,
           operation: "work_item.create",
           commandHash: "a".repeat(64),
@@ -672,11 +672,17 @@ describe("integration gateway routes", () => {
   });
 
   it.each([
-    { type: "work_item.create", title: "Call the dentist", dueOn: "2028-02-29" },
+    {
+      type: "work_item.create",
+      title: "Call the dentist",
+      parentWorkItemId: RESOURCE_ID,
+      dueOn: "2028-02-29",
+    },
     {
       type: "work_item.update",
       workItemId: RESOURCE_ID,
       expectedVersion: 2,
+      parentWorkItemId: null,
       priority: "high",
       dueOn: null,
     },
@@ -769,6 +775,11 @@ describe("integration gateway routes", () => {
         command: { type: "work_item.create", title: "Task" },
       },
       preparePayload({ type: "work_item.update", workItemId: RESOURCE_ID, expectedVersion: 1 }),
+      preparePayload({
+        type: "work_item.create",
+        title: "Task",
+        parentWorkItemId: "not-a-uuid",
+      }),
       preparePayload({ type: "work_item.create", title: "Task", dueOn: "2027-02-29" }),
       preparePayload({
         type: "work_item.update",
@@ -844,7 +855,7 @@ describe("integration gateway routes", () => {
       version: INTEGRATION_API_VERSION,
       requestId: CONFIRMATION_ID,
       data: {
-        receiptVersion: 1,
+        receiptVersion: 2,
         confirmationId: CONFIRMATION_ID,
         operation: "work_item.create",
       },

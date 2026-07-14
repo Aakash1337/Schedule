@@ -40,6 +40,7 @@ describe("work item domain model", () => {
     expect(item).toMatchObject({
       title: "Ship scheduling MVP",
       description: null,
+      parentWorkItemId: null,
       status: "backlog",
       priority: "none",
       dueOn: null,
@@ -57,6 +58,48 @@ describe("work item domain model", () => {
         expect(create({ status, priority })).toMatchObject({ status, priority });
       }
     }
+  });
+
+  it("creates, preserves, reparents, and detaches a subtask with version semantics", () => {
+    const parent = workItemId("parent-work-item");
+    const nextParent = workItemId("next-parent-work-item");
+    const original = create({ parentWorkItemId: parent });
+    const preserved = updateWorkItem(original, {
+      title: "Renamed subtask",
+      now: new Date("2026-07-02T00:00:00.000Z"),
+    });
+    const reparented = updateWorkItem(preserved, {
+      parentWorkItemId: nextParent,
+      now: new Date("2026-07-03T00:00:00.000Z"),
+    });
+    const detached = updateWorkItem(reparented, {
+      parentWorkItemId: null,
+      now: new Date("2026-07-04T00:00:00.000Z"),
+    });
+
+    expect(original.parentWorkItemId).toBe(parent);
+    expect(preserved).toMatchObject({ parentWorkItemId: parent, version: 2 });
+    expect(reparented).toMatchObject({ parentWorkItemId: nextParent, version: 3 });
+    expect(detached).toMatchObject({ parentWorkItemId: null, version: 4 });
+    expect(
+      updateWorkItem(detached, {
+        parentWorkItemId: null,
+        now: new Date("2026-07-05T00:00:00.000Z"),
+      }),
+    ).toBe(detached);
+  });
+
+  it("rejects self-parenting with canonical persisted identity", () => {
+    const id = workItemId("AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA");
+    expect(() => create({ id, parentWorkItemId: workItemId(id.toLowerCase()) })).toThrowError(
+      expect.objectContaining({ code: "work_item_hierarchy.self_reference_invalid" }),
+    );
+    expect(() =>
+      updateWorkItem(create({ id }), {
+        parentWorkItemId: workItemId(id.toLowerCase()),
+        now: new Date("2026-07-02T00:00:00.000Z"),
+      }),
+    ).toThrowError(expect.objectContaining({ code: "work_item_hierarchy.self_reference_invalid" }));
   });
 
   it.each([

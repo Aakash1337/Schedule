@@ -28,6 +28,7 @@ import {
   ListRoutines,
   ListScheduleBlocks,
   ListWorkItemDependencies,
+  ListWorkItemChildren,
   ListWorkItems,
   ListWorkspaces,
   MutateDailyPlan,
@@ -81,6 +82,7 @@ export function createProductServices(
   const createWorkItem = new CreateWorkItem(unitOfWork, clock);
   const getWorkItem = new GetWorkItem(unitOfWork);
   const listWorkItems = new ListWorkItems(unitOfWork);
+  const listWorkItemChildren = new ListWorkItemChildren(unitOfWork);
   const updateWorkItem = new UpdateWorkItem(unitOfWork, clock);
   const createScheduleBlock = new CreateScheduleBlock(unitOfWork, clock);
   const getScheduleBlock = new GetScheduleBlock(unitOfWork);
@@ -156,6 +158,7 @@ export function createProductServices(
     createWorkItem: (command) => createWorkItem.execute(command),
     getWorkItem: (query) => getWorkItem.execute(query),
     listWorkItems: (query) => listWorkItems.execute(query),
+    listWorkItemChildren: (query) => listWorkItemChildren.execute(query),
     updateWorkItem: (command) => updateWorkItem.execute(command),
     createScheduleBlock: (command) => createScheduleBlock.execute(command),
     getScheduleBlock: (query) => getScheduleBlock.execute(query),

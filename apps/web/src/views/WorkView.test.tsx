@@ -16,6 +16,7 @@ const apiMocks = vi.hoisted(() => ({
   addWorkItemPrerequisite: vi.fn(),
   cancelNaturalLanguageProposal: vi.fn(),
   confirmNaturalLanguageProposal: vi.fn(),
+  createSubtask: vi.fn(),
   createWorkItem: vi.fn(),
   generateNaturalLanguageProposal: vi.fn(),
   listWorkItemDependencies: vi.fn(),
@@ -40,6 +41,7 @@ const workspace: Workspace = {
 const item: WorkItem = {
   id: "item-1",
   workspaceId: workspace.id,
+  parentWorkItemId: null,
   title: "Draft release notes",
   description: "Summarize the MVP.",
   status: "planned",
@@ -499,6 +501,292 @@ describe("work board", () => {
     expect(await screen.findByLabelText("Due 2026-07-20")).toHaveTextContent("Due Jul 20, 2026");
   });
 
+  it("shows hierarchy context and creates a subtask under the selected parent", async () => {
+    const user = userEvent.setup();
+    const parent: WorkItem = {
+      ...item,
+      id: "parent-1",
+      title: "Ship the release",
+      planningDurationMinutes: 90,
+    };
+    const completedChild: WorkItem = {
+      ...item,
+      id: "child-1",
+      parentWorkItemId: parent.id,
+      title: "Draft screenshots",
+      status: "done",
+      version: 1,
+    };
+    const createdChild: WorkItem = {
+      ...item,
+      id: "child-2",
+      parentWorkItemId: parent.id,
+      title: "Check release links",
+      description: null,
+      status: "backlog",
+      priority: "none",
+      planningDurationMinutes: null,
+      version: 1,
+    };
+    apiMocks.listWorkItems.mockResolvedValue({
+      items: [parent, completedChild],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.createSubtask.mockResolvedValue(createdChild);
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const parentHeading = await screen.findByRole("heading", { name: parent.title });
+    const parentCard = parentHeading.closest("article");
+    if (parentCard === null) throw new Error("Parent work card was not rendered.");
+    expect(within(parentCard).getByLabelText(/Parent container/)).toHaveTextContent(
+      "Parent · not in Today",
+    );
+    expect(within(parentCard).getByText("1/1 subtasks done")).toBeInTheDocument();
+    expect(
+      within(parentCard).getByRole("button", { name: /^Draft screenshots/ }),
+    ).toHaveTextContent("Done");
+    await user.click(
+      within(parentCard).getByRole("button", { name: `Edit details for ${parent.title}` }),
+    );
+    expect(
+      within(parentCard).getByRole("checkbox", { name: "Eligible for Today when leaf" }),
+    ).toBeDisabled();
+    expect(
+      within(parentCard).getByRole("spinbutton", { name: "Plan duration (minutes)" }),
+    ).toBeDisabled();
+    expect(within(parentCard).getByText(/Saved at 90 minutes, but dormant/)).toBeInTheDocument();
+    await user.click(within(parentCard).getByRole("button", { name: "Cancel" }));
+
+    const childHeading = screen.getByRole("heading", { name: completedChild.title });
+    const childCard = childHeading.closest("article");
+    if (childCard === null) throw new Error("Child work card was not rendered.");
+    expect(within(childCard).getByText(/Subtask of/)).toHaveTextContent(parent.title);
+
+    await user.click(
+      within(parentCard).getByRole("button", { name: `Add subtask to ${parent.title}` }),
+    );
+    expect(screen.getByRole("heading", { name: "Add a subtask" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(`Subtask of ${parent.title}`);
+    await user.type(screen.getByRole("textbox", { name: "Title" }), createdChild.title);
+    await user.click(screen.getByRole("button", { name: "Add subtask" }));
+
+    await waitFor(() =>
+      expect(apiMocks.createSubtask).toHaveBeenCalledWith(workspace.id, parent.id, {
+        title: createdChild.title,
+        description: null,
+        status: "backlog",
+        priority: "none",
+        dueOn: null,
+        planningDurationMinutes: null,
+      }),
+    );
+    expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
+    expect(await screen.findByRole("heading", { name: createdChild.title })).toBeInTheDocument();
+    expect(within(parentCard).getByText("1/2 subtasks done")).toBeInTheDocument();
+  });
+
+  it("detaches and reparents a subtask without changing either parent's version", async () => {
+    const user = userEvent.setup();
+    const firstParent: WorkItem = { ...item, id: "parent-1", title: "First parent", version: 5 };
+    const secondParent: WorkItem = { ...item, id: "parent-2", title: "Second parent", version: 8 };
+    const child: WorkItem = {
+      ...item,
+      id: "child-1",
+      parentWorkItemId: firstParent.id,
+      title: "Movable child",
+      version: 2,
+    };
+    const detached: WorkItem = { ...child, parentWorkItemId: null, version: 3 };
+    const reparented: WorkItem = { ...detached, parentWorkItemId: secondParent.id, version: 4 };
+    apiMocks.listWorkItems.mockResolvedValue({
+      items: [firstParent, secondParent, child],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.updateWorkItem.mockResolvedValueOnce(detached).mockResolvedValueOnce(reparented);
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const childHeading = await screen.findByRole("heading", { name: child.title });
+    const childCard = childHeading.closest("article");
+    if (childCard === null) throw new Error("Child work card was not rendered.");
+    await user.click(
+      within(childCard).getByRole("button", { name: `Edit details for ${child.title}` }),
+    );
+    await user.selectOptions(within(childCard).getByRole("combobox", { name: /Parent item/ }), "");
+    await user.click(within(childCard).getByRole("button", { name: "Save details" }));
+
+    await waitFor(() =>
+      expect(apiMocks.updateWorkItem).toHaveBeenNthCalledWith(1, workspace.id, child.id, {
+        expectedVersion: child.version,
+        parentWorkItemId: null,
+        title: child.title,
+        description: child.description,
+        dueOn: null,
+        planningDurationMinutes: null,
+      }),
+    );
+    expect(within(childCard).getByText("Top-level item")).toBeInTheDocument();
+
+    await user.click(
+      within(childCard).getByRole("button", { name: `Edit details for ${child.title}` }),
+    );
+    await user.selectOptions(
+      within(childCard).getByRole("combobox", { name: /Parent item/ }),
+      secondParent.id,
+    );
+    await user.click(within(childCard).getByRole("button", { name: "Save details" }));
+
+    await waitFor(() =>
+      expect(apiMocks.updateWorkItem).toHaveBeenNthCalledWith(2, workspace.id, child.id, {
+        expectedVersion: detached.version,
+        parentWorkItemId: secondParent.id,
+        title: child.title,
+        description: child.description,
+        dueOn: null,
+        planningDurationMinutes: null,
+      }),
+    );
+    expect(within(childCard).getByText(/Subtask of/)).toHaveTextContent(secondParent.title);
+    expect(firstParent.version).toBe(5);
+    expect(secondParent.version).toBe(8);
+  });
+
+  it("keeps the hierarchy draft open when the server rejects a cycle", async () => {
+    const user = userEvent.setup();
+    const parent: WorkItem = { ...item, id: "parent-1", title: "Parent" };
+    const child: WorkItem = {
+      ...item,
+      id: "child-1",
+      parentWorkItemId: parent.id,
+      title: "Child",
+      version: 1,
+    };
+    const staleCandidate: WorkItem = {
+      ...item,
+      id: "candidate-1",
+      title: "Candidate with a stale relationship",
+      version: 1,
+    };
+    apiMocks.listWorkItems.mockResolvedValue({
+      items: [parent, child, staleCandidate],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.updateWorkItem.mockRejectedValue(
+      new ApiError(
+        409,
+        "work_item_hierarchy.cycle_conflict",
+        "The proposed parent would create a cycle.",
+        null,
+      ),
+    );
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const parentHeading = await screen.findByRole("heading", { name: parent.title });
+    const parentCard = parentHeading.closest("article");
+    if (parentCard === null) throw new Error("Parent work card was not rendered.");
+    const loadCount = apiMocks.listWorkItems.mock.calls.length;
+    await user.click(
+      within(parentCard).getByRole("button", { name: `Edit details for ${parent.title}` }),
+    );
+    await user.selectOptions(
+      within(parentCard).getByRole("combobox", { name: /Parent item/ }),
+      staleCandidate.id,
+    );
+    await user.click(within(parentCard).getByRole("button", { name: "Save details" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "That parent would create a cycle. Choose an item outside this subtask branch.",
+    );
+    expect(within(parentCard).getByRole("combobox", { name: /Parent item/ })).toHaveValue(
+      staleCandidate.id,
+    );
+    expect(apiMocks.listWorkItems).toHaveBeenCalledTimes(loadCount);
+  });
+
+  it("removes every descendant from the parent selector at arbitrary depth", async () => {
+    const user = userEvent.setup();
+    const parent: WorkItem = { ...item, id: "parent-1", title: "Parent" };
+    const child: WorkItem = {
+      ...item,
+      id: "child-1",
+      parentWorkItemId: parent.id,
+      title: "Child",
+    };
+    const grandchild: WorkItem = {
+      ...item,
+      id: "grandchild-1",
+      parentWorkItemId: child.id,
+      title: "Grandchild",
+    };
+    const validParent: WorkItem = { ...item, id: "valid-1", title: "Separate branch" };
+    apiMocks.listWorkItems.mockResolvedValue({
+      items: [parent, child, grandchild, validParent],
+      page: { limit: 200, offset: 0 },
+    });
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const parentHeading = await screen.findByRole("heading", { name: parent.title });
+    const parentCard = parentHeading.closest("article");
+    if (parentCard === null) throw new Error("Parent work card was not rendered.");
+    await user.click(
+      within(parentCard).getByRole("button", { name: `Edit details for ${parent.title}` }),
+    );
+    const select = within(parentCard).getByRole("combobox", { name: /Parent item/ });
+    const options = Array.from((select as HTMLSelectElement).options).map((option) => option.value);
+    expect(options).toContain(validParent.id);
+    expect(options).not.toContain(child.id);
+    expect(options).not.toContain(grandchild.id);
+  });
+
+  it("reveals every overflow subtask after clearing an active priority filter", async () => {
+    const user = userEvent.setup();
+    const parent: WorkItem = {
+      ...item,
+      id: "parent-1",
+      title: "Urgent parent",
+      priority: "urgent",
+    };
+    const children = Array.from({ length: 4 }, (_, index): WorkItem => ({
+      ...item,
+      id: `child-${index + 1}`,
+      parentWorkItemId: parent.id,
+      title: `Low priority child ${index + 1}`,
+      priority: "low",
+      version: 1,
+    }));
+    const overflowChild = children[3];
+    if (overflowChild === undefined) throw new Error("Overflow child fixture is missing.");
+    const allItems = [parent, ...children];
+    apiMocks.listWorkItems.mockImplementation(
+      async (_workspaceId: string, filters: { priority?: string }) => ({
+        items: filters.priority === "urgent" ? [parent] : allItems,
+        page: { limit: 200, offset: 0 },
+      }),
+    );
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await screen.findByRole("heading", { name: parent.title });
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Filter by priority" }),
+      "urgent",
+    );
+    const parentCard = screen.getByRole("heading", { name: parent.title }).closest("article");
+    if (parentCard === null) throw new Error("Parent work card was not rendered.");
+    expect(screen.queryByRole("heading", { name: overflowChild.title })).not.toBeInTheDocument();
+    await user.click(within(parentCard).getByText("Show 1 more subtask"));
+    await user.click(within(parentCard).getByRole("button", { name: /^Low priority child 4/ }));
+
+    const revealedHeading = await screen.findByRole("heading", { name: overflowChild.title });
+    const revealedCard = revealedHeading.closest("article");
+    if (revealedCard === null) throw new Error("Revealed child work card was not rendered.");
+    await waitFor(() => expect(revealedCard).toHaveFocus());
+    expect(screen.getByRole("combobox", { name: "Filter by priority" })).toHaveValue("");
+  });
+
   it("can remove an item from Today's candidate pool while editing details", async () => {
     const user = userEvent.setup();
     const plannable = { ...item, planningDurationMinutes: 45 };
@@ -534,6 +822,7 @@ describe("work board", () => {
     await waitFor(() =>
       expect(apiMocks.updateWorkItem).toHaveBeenCalledWith(workspace.id, plannable.id, {
         expectedVersion: plannable.version,
+        parentWorkItemId: null,
         title: plannable.title,
         description: plannable.description,
         dueOn: null,
@@ -571,6 +860,7 @@ describe("work board", () => {
     await waitFor(() =>
       expect(apiMocks.updateWorkItem).toHaveBeenCalledWith(workspace.id, item.id, {
         expectedVersion: item.version,
+        parentWorkItemId: null,
         title: updated.title,
         description: updated.description,
         dueOn: null,
@@ -605,6 +895,7 @@ describe("work board", () => {
     await waitFor(() =>
       expect(apiMocks.updateWorkItem).toHaveBeenCalledWith(workspace.id, dated.id, {
         expectedVersion: dated.version,
+        parentWorkItemId: null,
         title: dated.title,
         description: dated.description,
         dueOn: null,

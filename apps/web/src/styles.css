@@ -972,6 +972,37 @@ textarea:focus {
   white-space: nowrap;
 }
 
+.work-plan-badge-container {
+  color: var(--ink-soft);
+  background: var(--paper-muted);
+}
+
+.work-subtask-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 9px 10px 9px 12px;
+  color: var(--ink-soft);
+  background: var(--paper-muted);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.work-subtask-context strong {
+  color: var(--ink);
+}
+
+.work-subtask-context .button {
+  flex: none;
+  min-height: 28px;
+  padding: 0 7px;
+  font-size: 0.7rem;
+}
+
 .work-priority-high,
 .work-priority-urgent {
   color: oklch(0.44 0.15 24);
@@ -992,6 +1023,159 @@ textarea:focus {
   line-height: 1.45;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+}
+
+.work-hierarchy {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+}
+
+.work-hierarchy-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 8px;
+  min-width: 0;
+}
+
+.work-hierarchy-level,
+.work-hierarchy-parent,
+.work-hierarchy-progress {
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.work-hierarchy-level {
+  font-weight: 690;
+}
+
+.work-hierarchy-parent {
+  min-width: 0;
+}
+
+.work-hierarchy-parent button,
+.work-subtask-list button {
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+  font: inherit;
+  text-align: left;
+}
+
+.work-hierarchy-parent button {
+  max-width: 100%;
+  padding: 0;
+  font-weight: 690;
+  overflow-wrap: anywhere;
+}
+
+.work-hierarchy-parent button:hover:not(:disabled),
+.work-subtask-list button:hover:not(:disabled) span {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.work-hierarchy-parent button:focus-visible,
+.work-subtask-list button:focus-visible {
+  border-radius: 3px;
+  outline: 3px solid var(--accent-soft);
+  outline-offset: 2px;
+}
+
+.work-hierarchy-progress {
+  font-variant-numeric: tabular-nums;
+}
+
+.work-add-subtask.button {
+  min-height: 26px;
+  margin-left: auto;
+  padding: 0 5px;
+  font-size: 0.67rem;
+}
+
+.work-subtask-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.work-subtask-list li {
+  min-width: 0;
+}
+
+.work-subtask-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  width: 100%;
+  min-width: 0;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.work-subtask-list button span {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 0.7rem;
+  font-weight: 620;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.work-subtask-list button small {
+  color: var(--ink-faint);
+  font-size: 0.61rem;
+  font-weight: 680;
+  text-transform: uppercase;
+}
+
+.work-hierarchy > p {
+  color: var(--ink-faint);
+  font-size: 0.65rem;
+  line-height: 1.4;
+}
+
+.work-subtask-overflow {
+  padding-top: 3px;
+}
+
+.work-subtask-overflow details,
+.work-subtask-overflow ul {
+  margin: 0;
+  padding: 0;
+}
+
+.work-subtask-overflow ul {
+  display: grid;
+  list-style: none;
+}
+
+.work-subtask-overflow summary {
+  width: fit-content;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 0.65rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.work-subtask-overflow summary:hover {
+  color: var(--ink-soft);
+}
+
+.work-subtask-overflow summary:focus-visible {
+  border-radius: 3px;
+  outline: 3px solid var(--accent-soft);
+  outline-offset: 2px;
+}
+
+.work-hierarchy > p {
+  margin: 0;
 }
 
 .work-dependencies {
@@ -3525,6 +3709,16 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
+  .work-subtask-context {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .work-subtask-context .button {
+    align-self: flex-start;
+    min-height: 44px;
+  }
+
   .work-composer-title-field,
   .work-composer-description-field,
   .work-composer-status-field,
@@ -3536,6 +3730,22 @@ textarea:focus {
 
   .work-board {
     grid-auto-columns: minmax(260px, 82vw);
+  }
+
+  .work-hierarchy-summary {
+    align-items: flex-start;
+  }
+
+  .work-hierarchy-parent button,
+  .work-subtask-list button,
+  .work-subtask-overflow summary,
+  .work-add-subtask.button {
+    min-height: 44px;
+  }
+
+  .work-add-subtask.button {
+    width: 100%;
+    margin-left: 0;
   }
 
   .work-dependency-editor form {

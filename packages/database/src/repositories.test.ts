@@ -203,6 +203,7 @@ describe("PostgresUnitOfWork", () => {
     const item = {
       id: workItemId("50000000-0000-4000-8000-000000000005"),
       workspaceId: requestIdentity.workspaceId,
+      parentWorkItemId: null,
       title: "Submit the report",
       description: null,
       status: "backlog",
@@ -222,8 +223,12 @@ describe("PostgresUnitOfWork", () => {
       );
     });
 
-    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ dueOn: "2026-07-20" }));
-    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ dueOn: "2026-07-20" }));
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ dueOn: "2026-07-20", parentWorkItemId: null }),
+    );
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ dueOn: "2026-07-20", parentWorkItemId: null }),
+    );
   });
 
   it("maps nullable due dates from work item rows", async () => {
@@ -233,6 +238,7 @@ describe("PostgresUnitOfWork", () => {
         {
           id: "50000000-0000-4000-8000-000000000005",
           workspaceId: requestIdentity.workspaceId,
+          parentWorkItemId: "50000000-0000-4000-8000-000000000004",
           title: "Submit the report",
           description: null,
           status: "backlog",
@@ -248,6 +254,7 @@ describe("PostgresUnitOfWork", () => {
         {
           id: "50000000-0000-4000-8000-000000000005",
           workspaceId: requestIdentity.workspaceId,
+          parentWorkItemId: null,
           title: "Submit the report",
           description: null,
           status: "backlog",
@@ -271,7 +278,10 @@ describe("PostgresUnitOfWork", () => {
 
     await expect(
       unitOfWork.run(({ workItems }) => workItems.findById(requestIdentity.workspaceId, item)),
-    ).resolves.toMatchObject({ dueOn: "2026-07-20" });
+    ).resolves.toMatchObject({
+      dueOn: "2026-07-20",
+      parentWorkItemId: "50000000-0000-4000-8000-000000000004",
+    });
     await expect(
       unitOfWork.run(({ workItems }) => workItems.findById(requestIdentity.workspaceId, item)),
     ).resolves.toMatchObject({ dueOn: null });
@@ -409,6 +419,7 @@ describe("PostgresWorkItemDependencyRepository", () => {
         payload: {
           id: dependencyDependent,
           workspaceId: dependencyWorkspace,
+          parentWorkItemId: null,
           title: "Publish release notes",
           description: null,
           status: "backlog",
@@ -442,6 +453,7 @@ describe("PostgresWorkItemDependencyRepository", () => {
     expect(graph.workItems).toEqual([
       expect.objectContaining({
         id: dependencyDependent,
+        parentWorkItemId: null,
         planningDurationMinutes: 30,
         dueOn: "2026-07-20",
         createdAt: new Date("2026-07-14T11:00:00.000Z"),
@@ -462,6 +474,7 @@ describe("PostgresWorkItemDependencyRepository", () => {
     expect(compiled.sql).toContain(
       "\"work_items\".\"status\" in ('backlog', 'planned', 'in_progress')",
     );
+    expect(compiled.sql).toContain('from "work_items" as planning_child_work_items');
     expect(compiled.sql).toContain("inner join candidate_work_items");
     expect(compiled.sql).toContain('inner join "work_items" as prerequisite_work_items');
     expect(compiled.sql).toContain('order by "rowGroup", "rowPosition"');
@@ -472,6 +485,7 @@ describe("PostgresWorkItemDependencyRepository", () => {
     const validWorkItemPayload = {
       id: dependencyDependent,
       workspaceId: dependencyWorkspace,
+      parentWorkItemId: null,
       title: "Publish release notes",
       description: null,
       status: "backlog",
@@ -663,6 +677,7 @@ describe("PostgresIntegrationUnitOfWork", () => {
       "notifications",
       "requests",
       "scheduleBlocks",
+      "workItemDependencies",
       "workItems",
       "workspaces",
     ]);

@@ -99,6 +99,7 @@ describe("createProductServices", () => {
       "listRoutineActivity",
       "listRoutines",
       "listScheduleBlocks",
+      "listWorkItemChildren",
       "listWorkItemDependencies",
       "listWorkItems",
       "listWorkspaces",

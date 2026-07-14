@@ -48,8 +48,8 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 77 test files and 1,124 runtime test cases. Three
-additional Playwright specifications contain six live Chromium integration scenarios. Parameterized
+The package and script runners currently execute 78 test files and 1,142 runtime test cases. Three
+additional Playwright specifications contain seven live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
 
@@ -57,11 +57,11 @@ an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      30 / 30 |
-| Critical implemented features with CI-registered integration or drills |      17 / 17 |
+| Implemented features with CI-registered evidence                       |      31 / 31 |
+| Critical implemented features with CI-registered integration or drills |      18 / 18 |
 | Partial features with an explicit limitation                           |        2 / 2 |
 | Deferred features explicitly tracked as not passing                    |        1 / 1 |
-| CI-registered evidence items                                           |          146 |
+| CI-registered evidence items                                           |          156 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -72,21 +72,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.82% |   71.42% |    67.60% | 60.13% |
+| Whole repository, measured |     58.57% |   70.03% |    66.60% | 58.99% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |     96.31% |   92.32% |    96.81% | 97.30% |
+| Domain, measured           |     96.34% |   92.40% |    96.83% | 97.33% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     90.84% |   84.11% |    99.69% | 91.61% |
+| Application, measured      |     90.50% |   84.37% |    99.22% | 91.22% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     87.55% |   78.52% |    77.25% | 88.72% |
+| API, measured              |     86.49% |   75.97% |    76.13% | 87.90% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.26% |   89.18% |    91.11% | 95.14% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     86.39% |   75.00% |    76.85% | 87.03% |
+| Web, measured              |     84.49% |   73.40% |    72.44% | 84.93% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 6,921 of 11,569 statements, 5,113 of 7,159 branches,
-1,544 of 2,284 functions, and 6,514 of 10,833 lines.
+The whole-repository totals are 7,989 of 13,638 statements, 5,899 of 8,423 branches,
+1,785 of 2,680 functions, and 7,544 of 12,787 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -395,9 +395,10 @@ The audit deliberately leaves these visible instead of turning them into false g
   product-safe execution-history projection that omits claim, lease, credential, and provider data.
   It has no periodic materializer, external provider/account binding, shared adapter dedupe store,
   or dead-letter redrive control;
-- six live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
+- seven live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
-  a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, plus
+  a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a
+  320px subtask create/complete/reload/detach/reparent/overflow flow with leaf-only planning, plus
   explicit reminder setup, rule/one-off changes, materialization, safe execution history, and
   a 320px reminder layout, plus local proposal review/edit/confirm/replay/cancel/reload behavior
   against a strict loopback model double. They do not cover every browser, every responsive breakpoint, every
@@ -405,6 +406,11 @@ The audit deliberately leaves these visible instead of turning them into false g
 - work-item dependencies have domain, application, repository, API, component, and real PostgreSQL
   evidence, including a two-request reciprocal-add concurrency drill and the 320px live browser flow;
   dependency management is not exposed through the authenticated integration gateway;
+- work-item hierarchy has domain, application, schema, API, component, authenticated Hermes,
+  PostgreSQL concurrency, and 320px live-browser evidence. The database drill forces product and
+  Hermes reciprocal writes to queue on the same graph lock and proves post-lock validation rejects
+  the second edge without consuming its confirmation. Projects, milestones, checklist rows, roll-up
+  status, and cascading completion remain distinct deferred concepts;
 - duration calibration has domain, component, API, repository, and real PostgreSQL evidence, and
   exact-key dismissal/reset now preserves reversible rejection memory. It still has no production
   outcome data, learned cadence/energy/preference model, automatic application, historical insight

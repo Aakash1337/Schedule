@@ -711,3 +711,217 @@ test("manages prerequisites accessibly through the live 320px work-board flow", 
   expect(requestFailures).toEqual([]);
   expect(unexpectedHttpResponses).toEqual([]);
 });
+
+test("persists subtasks and keeps parent containers out of Today in the live 320px flow", async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  const requestFailures: string[] = [];
+  const unexpectedHttpResponses: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("requestfailed", (request) => {
+    requestFailures.push(`${request.method()} ${new URL(request.url()).pathname}`);
+  });
+  page.on("response", (response) => {
+    if (response.status() < 400) return;
+    const request = response.request();
+    const pathname = new URL(response.url()).pathname;
+    const expectedMissingCurrentPlan =
+      response.status() === 404 &&
+      request.method() === "GET" &&
+      /^\/v1\/workspaces\/[^/]+\/plans\/[^/]+\/current$/.test(pathname);
+    if (!expectedMissingCurrentPlan) {
+      unexpectedHttpResponses.push(`${response.status()} ${request.method()} ${pathname}`);
+    }
+  });
+
+  await page.clock.install({ time: new Date("2026-07-16T12:00:00.000Z") });
+  const workspaceResponse = await page.request.post("/v1/workspaces", {
+    data: { name: "Mobile subtask E2E workspace" },
+  });
+  expect(workspaceResponse.status()).toBe(201);
+  const workspace = (await workspaceResponse.json()) as { readonly id: string };
+  await page.addInitScript((workspaceId) => {
+    localStorage.setItem("schedule.selectedWorkspace", workspaceId);
+  }, workspace.id);
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto("/#work");
+  const expectedOrigin = new URL(page.url()).origin;
+  const main = page.getByRole("main", { name: "Work view" });
+  await expect(main).toBeVisible();
+
+  const parentTitle = "Coordinate the launch";
+  await page.getByRole("textbox", { name: "Title" }).fill(parentTitle);
+  await page.getByRole("checkbox", { name: "Include in Today" }).click();
+  await page.getByRole("spinbutton", { name: "Plan duration (minutes)" }).fill("60");
+  const parentResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) => /^\/v1\/workspaces\/[^/]+\/work-items$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Add item" }).click();
+  const parentResponse = await parentResponsePromise;
+  expect(parentResponse.status()).toBe(201);
+  const parent = (await parentResponse.json()) as { readonly id: string };
+
+  const parentCard = page.locator("article").filter({
+    has: page.getByRole("heading", { name: parentTitle, exact: true }),
+  });
+  const addSubtask = parentCard.getByRole("button", { name: `Add subtask to ${parentTitle}` });
+  await expect(addSubtask).toBeVisible();
+  const addSubtaskBounds = await addSubtask.boundingBox();
+  expect(addSubtaskBounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+  await addSubtask.click();
+  await expect(page.getByRole("heading", { name: "Add a subtask" })).toBeVisible();
+  await expect(page.getByRole("status")).toContainText(`Subtask of ${parentTitle}`);
+
+  const childTitle = "Verify launch links";
+  await page.getByRole("textbox", { name: "Title" }).fill(childTitle);
+  await page.getByRole("checkbox", { name: "Include in Today" }).click();
+  await page.getByRole("spinbutton", { name: "Plan duration (minutes)" }).fill("30");
+  const childResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) => pathname === `/v1/workspaces/${workspace.id}/work-items/${parent.id}/subtasks`,
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Add subtask", exact: true }).click();
+  const childResponse = await childResponsePromise;
+  expect(childResponse.status()).toBe(201);
+  const child = (await childResponse.json()) as { readonly id: string };
+
+  const childCard = page.locator("article").filter({
+    has: page.getByRole("heading", { name: childTitle, exact: true }),
+  });
+  await expect(parentCard.getByLabel(/Parent container/)).toHaveText("Parent · not in Today");
+  await expect(parentCard.getByText("0/1 subtasks done", { exact: true })).toBeVisible();
+  await expect(childCard.getByText(/Subtask of/)).toContainText(parentTitle);
+
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+  await expect(page.getByRole("main", { name: "Today view" })).toBeVisible();
+  const generatePlan = page.getByRole("button", { name: "Generate today's plan" });
+  const planResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) => /^\/v1\/workspaces\/[^/]+\/plans$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await generatePlan.click();
+  expect((await planResponsePromise).status()).toBe(200);
+  const plannedItems = page.getByRole("list", { name: "Today's planned items" });
+  await expect(plannedItems.getByRole("article", { name: childTitle })).toBeVisible();
+  await expect(plannedItems.getByRole("article", { name: parentTitle })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Work", exact: true }).click();
+  await expect(main).toBeVisible();
+  const childStatus = childCard.getByRole("combobox", { name: `Status for ${childTitle}` });
+  const completionResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "PATCH",
+      (pathname) => pathname.endsWith(`/work-items/${child.id}`),
+      expectedOrigin,
+    ),
+  );
+  await childStatus.selectOption("done");
+  expect((await completionResponsePromise).status()).toBe(200);
+  await expect(parentCard.getByText("1/1 subtasks done", { exact: true })).toBeVisible();
+
+  await page.reload();
+  await expect(main).toBeVisible();
+  await expect(childCard.getByText(/Subtask of/)).toContainText(parentTitle);
+  await expect(childStatus).toHaveValue("done");
+  await expect(parentCard.getByText("1/1 subtasks done", { exact: true })).toBeVisible();
+
+  await childCard.getByRole("button", { name: `Edit details for ${childTitle}` }).click();
+  const parentSelect = childCard.getByRole("combobox", { name: /Parent item/ });
+  await expect(parentSelect).toHaveValue(parent.id);
+  await parentSelect.selectOption("");
+  const detachResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "PATCH",
+      (pathname) => pathname.endsWith(`/work-items/${child.id}`),
+      expectedOrigin,
+    ),
+  );
+  await childCard.getByRole("button", { name: "Save details" }).click();
+  expect((await detachResponsePromise).status()).toBe(200);
+  await expect(childCard.getByText("Top-level item", { exact: true })).toBeVisible();
+  await expect(parentCard.getByText(/subtasks done/)).toHaveCount(0);
+
+  await childCard.getByRole("button", { name: `Edit details for ${childTitle}` }).click();
+  await childCard.getByRole("combobox", { name: /Parent item/ }).selectOption(parent.id);
+  const reparentResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "PATCH",
+      (pathname) => pathname.endsWith(`/work-items/${child.id}`),
+      expectedOrigin,
+    ),
+  );
+  await childCard.getByRole("button", { name: "Save details" }).click();
+  expect((await reparentResponsePromise).status()).toBe(200);
+  await expect(childCard.getByText(/Subtask of/)).toContainText(parentTitle);
+  await expect(parentCard.getByText("1/1 subtasks done", { exact: true })).toBeVisible();
+
+  for (const suffix of ["A", "B", "C"]) {
+    const overflowChildResponse = await page.request.post(
+      `/v1/workspaces/${workspace.id}/work-items/${parent.id}/subtasks`,
+      {
+        data: {
+          title: `Additional launch child ${suffix}`,
+          status: "backlog",
+          priority: "none",
+          planningDurationMinutes: null,
+        },
+      },
+    );
+    expect(overflowChildResponse.status()).toBe(201);
+  }
+  await page.reload();
+  await expect(main).toBeVisible();
+  await expect(parentCard.getByText("1/4 subtasks done", { exact: true })).toBeVisible();
+  const overflowSummary = parentCard.getByText("Show 1 more subtask", { exact: true });
+  await expect(overflowSummary).toBeVisible();
+  const overflowSummaryBounds = await overflowSummary.boundingBox();
+  expect(overflowSummaryBounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+  await overflowSummary.click();
+  const overflowChild = parentCard.getByRole("button", { name: /^Verify launch links/ });
+  await expect(overflowChild).toBeVisible();
+  const overflowChildBounds = await overflowChild.boundingBox();
+  expect(overflowChildBounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+
+  const relationshipTargets = await page
+    .locator(".work-hierarchy button:visible")
+    .evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().height));
+  expect(relationshipTargets.length).toBeGreaterThan(0);
+  expect(relationshipTargets.every((height) => height >= 44)).toBe(true);
+  const overflow = await page.evaluate(() => {
+    const browserGlobal = globalThis as unknown as {
+      readonly document: {
+        readonly documentElement: { readonly scrollWidth: number; readonly clientWidth: number };
+        readonly body: { readonly scrollWidth: number; readonly clientWidth: number };
+      };
+    };
+    return {
+      document:
+        browserGlobal.document.documentElement.scrollWidth -
+        browserGlobal.document.documentElement.clientWidth,
+      body: browserGlobal.document.body.scrollWidth - browserGlobal.document.body.clientWidth,
+    };
+  });
+  expect(overflow.document).toBeLessThanOrEqual(1);
+  expect(overflow.body).toBeLessThanOrEqual(1);
+
+  expect(pageErrors).toEqual([]);
+  expect(requestFailures).toEqual([]);
+  expect(unexpectedHttpResponses).toEqual([]);
+});

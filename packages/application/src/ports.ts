@@ -104,6 +104,8 @@ export interface WorkItemRepository {
     priority: WorkItemPriority | undefined,
     limit: number,
     offset: number,
+    /** When supplied, returns direct children of this parent only. */
+    parentWorkItemId?: WorkItemId,
   ): Promise<readonly WorkItem[]>;
   /** Returns only work items that may be considered by the daily planner. */
   listPlanningCandidates(workspaceId: WorkspaceId): Promise<readonly WorkItem[]>;
@@ -118,7 +120,7 @@ export interface PlanningWorkItemGraph {
 }
 
 export interface WorkItemDependencyRepository {
-  /** Serializes workspace-wide DAG mutations and their validation reads. */
+  /** Serializes workspace-wide work-item graph mutations and their validation reads. */
   lockWorkspace(workspaceId: WorkspaceId): Promise<void>;
   find(
     workspaceId: WorkspaceId,
@@ -397,8 +399,8 @@ export interface TransactionContext {
 
 export interface UnitOfWorkOptions {
   /**
-   * Serializable remains the default. Read committed is reserved for operations that first
-   * acquire an advisory lock and must observe commits made by an earlier lock holder.
+   * Serializable remains the default. Read committed is reserved for operations that wait on an
+   * advisory lock and must observe commits made by the preceding lock holder afterward.
    */
   readonly isolationLevel?: "serializable" | "read_committed";
 }
@@ -460,6 +462,8 @@ export type IntegrationCommand =
   | {
       readonly type: "work_item.create";
       readonly title: string;
+      /** Undefined or null creates a top-level item. */
+      readonly parentWorkItemId?: string | null;
       readonly description?: string | null;
       readonly status?: WorkItemStatus;
       readonly priority?: WorkItemPriority;
@@ -471,6 +475,8 @@ export type IntegrationCommand =
       readonly type: "work_item.update";
       readonly workItemId: string;
       readonly expectedVersion: number;
+      /** Undefined preserves the parent; null makes the item top-level. */
+      readonly parentWorkItemId?: string | null;
       readonly title?: string;
       readonly description?: string | null;
       readonly status?: WorkItemStatus;
@@ -570,6 +576,8 @@ export type IntegrationCommandOutcome =
 export interface IntegrationWorkItemDto {
   readonly id: string;
   readonly workspaceId: string;
+  /** Omitted only when replaying a receipt written before hierarchy support. */
+  readonly parentWorkItemId?: string | null;
   readonly title: string;
   readonly description: string | null;
   readonly status: WorkItemStatus;
@@ -623,8 +631,8 @@ export interface IntegrationPlanItemActivityDto {
 }
 
 export interface ConfirmedIntegrationCommandResult {
-  /** Present on all newly written receipts; omitted only by legacy durable replays. */
-  readonly receiptVersion?: 1;
+  /** Version 2 adds work-item hierarchy fields; omitted only by legacy durable replays. */
+  readonly receiptVersion?: 1 | 2;
   readonly confirmationId: string;
   readonly operation: IntegrationCommand["type"];
   readonly commandHash: string;
@@ -803,6 +811,7 @@ export interface IntegrationTransactionContext {
   readonly notificationDeliveryRequests: NotificationDeliveryRequestRepository;
   readonly workspaces: WorkspaceRepository;
   readonly workItems: WorkItemRepository;
+  readonly workItemDependencies: WorkItemDependencyRepository;
   readonly scheduleBlocks: ScheduleBlockRepository;
   readonly auditEvents: AuditEventRepository;
   readonly dailyPlans: DailyPlanRepository;

@@ -46,6 +46,7 @@ import type {
   SecretVerifier,
 } from "./ports.js";
 import { invalidatePlanItemActivityIntents } from "./invalidate-plan-item-activity-intents.js";
+import { assertValidWorkItemParent } from "./work-item-hierarchy.js";
 
 const GENERIC_AUTHENTICATION_MESSAGE = "The integration credential could not be authenticated.";
 const DUMMY_SECRET_HASH = "0".repeat(64);
@@ -656,10 +657,22 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
     case "work_item.create": {
       assertCommandObject(
         command,
-        ["type", "title", "description", "status", "priority", "planningDurationMinutes", "dueOn"],
+        [
+          "type",
+          "title",
+          "parentWorkItemId",
+          "description",
+          "status",
+          "priority",
+          "planningDurationMinutes",
+          "dueOn",
+        ],
         ["type", "title"],
       );
       requireTextBounds(command.title, "title", 1, 240, true);
+      if (hasOwn(command, "parentWorkItemId") && command.parentWorkItemId !== null) {
+        normalizeUuid(command.parentWorkItemId, "parent_work_item_id");
+      }
       requireOptionalText(command, "description", true);
       if (typeof command.description === "string" && command.description.length > 4_000) {
         throw new DomainError(
@@ -686,6 +699,7 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
           "type",
           "workItemId",
           "expectedVersion",
+          "parentWorkItemId",
           "title",
           "description",
           "status",
@@ -698,14 +712,23 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
       normalizeUuid(command.workItemId, "work_item_id");
       requireInteger(command.expectedVersion, "expectedVersion");
       if (
-        !["title", "description", "status", "priority", "planningDurationMinutes", "dueOn"].some(
-          (field) => hasOwn(command, field),
-        )
+        ![
+          "parentWorkItemId",
+          "title",
+          "description",
+          "status",
+          "priority",
+          "planningDurationMinutes",
+          "dueOn",
+        ].some((field) => hasOwn(command, field))
       ) {
         throw new DomainError(
           "integration.command_invalid",
           "A work item update must contain at least one change.",
         );
+      }
+      if (hasOwn(command, "parentWorkItemId") && command.parentWorkItemId !== null) {
+        normalizeUuid(command.parentWorkItemId, "parent_work_item_id");
       }
       requireOptionalText(command, "title");
       requireOptionalText(command, "description", true);
@@ -984,6 +1007,9 @@ function rawCommandSummary(command: IntegrationCommand): string {
   switch (command.type) {
     case "work_item.create": {
       const details = [
+        command.parentWorkItemId === undefined || command.parentWorkItemId === null
+          ? "top-level"
+          : `under parent ${command.parentWorkItemId}`,
         `status ${command.status ?? "backlog"}`,
         `priority ${command.priority ?? "none"}`,
         command.planningDurationMinutes === undefined || command.planningDurationMinutes === null
@@ -1000,6 +1026,13 @@ function rawCommandSummary(command: IntegrationCommand): string {
     }
     case "work_item.update": {
       const changes: string[] = [];
+      if (command.parentWorkItemId !== undefined) {
+        changes.push(
+          command.parentWorkItemId === null
+            ? "make top-level"
+            : `set parent to ${command.parentWorkItemId}`,
+        );
+      }
       if (command.title !== undefined) changes.push(`set title to ${quoted(command.title)}`);
       if (command.description !== undefined) {
         changes.push(`description: ${nullableText(command.description)}`);
@@ -1202,6 +1235,7 @@ function toWorkItemDto(item: WorkItem): IntegrationWorkItemDto {
     ...item,
     workspaceId: item.workspaceId,
     id: item.id,
+    parentWorkItemId: item.parentWorkItemId,
     createdAt: item.createdAt.toISOString(),
     updatedAt: item.updatedAt.toISOString(),
     dueOn: item.dueOn,
@@ -1275,6 +1309,12 @@ async function dispatchCommand(
       const item = createWorkItem({
         workspaceId: credential.workspaceId,
         title: command.title,
+        ...(command.parentWorkItemId === undefined
+          ? {}
+          : {
+              parentWorkItemId:
+                command.parentWorkItemId === null ? null : workItemId(command.parentWorkItemId),
+            }),
         ...(command.description === undefined ? {} : { description: command.description }),
         ...(command.status === undefined ? {} : { status: command.status }),
         ...(command.priority === undefined ? {} : { priority: command.priority }),
@@ -1286,7 +1326,25 @@ async function dispatchCommand(
           : { dueOn: command.dueOn === null ? null : localDate(command.dueOn) }),
         now,
       });
+      if (item.parentWorkItemId !== null) {
+        await assertValidWorkItemParent(
+          context.workItems,
+          credential.workspaceId,
+          item.id,
+          item.parentWorkItemId,
+        );
+      }
       await context.workItems.insert(item);
+      if (item.parentWorkItemId !== null) {
+        await context.auditEvents.append({
+          workspaceId: credential.workspaceId,
+          action: "work_item_hierarchy.parent_assigned",
+          entityType: "work_item",
+          entityId: item.id,
+          data: { parentWorkItemId: item.parentWorkItemId, source: "integration" },
+          occurredAt: item.createdAt,
+        });
+      }
       return { type: "work_item.created", workItem: toWorkItemDto(item) };
     }
     case "work_item.update": {
@@ -1297,7 +1355,25 @@ async function dispatchCommand(
           "The work item changed before this update could be applied.",
         );
       }
+      if (
+        command.parentWorkItemId !== undefined &&
+        command.parentWorkItemId !== null &&
+        command.parentWorkItemId !== current.parentWorkItemId
+      ) {
+        await assertValidWorkItemParent(
+          context.workItems,
+          credential.workspaceId,
+          current.id,
+          workItemId(command.parentWorkItemId),
+        );
+      }
       const updated = updateWorkItem(current, {
+        ...(command.parentWorkItemId === undefined
+          ? {}
+          : {
+              parentWorkItemId:
+                command.parentWorkItemId === null ? null : workItemId(command.parentWorkItemId),
+            }),
         ...(command.title === undefined ? {} : { title: command.title }),
         ...(command.description === undefined ? {} : { description: command.description }),
         ...(command.status === undefined ? {} : { status: command.status }),
@@ -1317,6 +1393,23 @@ async function dispatchCommand(
           "work_item",
           updated.id,
         );
+        if (updated.parentWorkItemId !== current.parentWorkItemId) {
+          await context.auditEvents.append({
+            workspaceId: credential.workspaceId,
+            action:
+              updated.parentWorkItemId === null
+                ? "work_item_hierarchy.parent_removed"
+                : "work_item_hierarchy.parent_changed",
+            entityType: "work_item",
+            entityId: updated.id,
+            data: {
+              previousParentWorkItemId: current.parentWorkItemId,
+              parentWorkItemId: updated.parentWorkItemId,
+              source: "integration",
+            },
+            occurredAt: updated.updatedAt,
+          });
+        }
       }
       return { type: "work_item.updated", workItem: toWorkItemDto(updated) };
     }
@@ -1444,7 +1537,8 @@ function receiptResult(
   },
 ): ConfirmedIntegrationCommandResult {
   const result = request.result;
-  const legacyReceipt = result?.receiptVersion === undefined;
+  const receiptVersion = result?.receiptVersion;
+  const legacyReceipt = receiptVersion === undefined;
   if (
     request.state !== "succeeded" ||
     result === null ||
@@ -1463,7 +1557,7 @@ function receiptResult(
           "commandHash",
           "outcome",
         ])
-      : result.receiptVersion !== 1 ||
+      : (receiptVersion !== 1 && receiptVersion !== 2) ||
         !exactKeys(result as unknown as Record<string, unknown>, [
           "receiptVersion",
           "confirmationId",
@@ -1475,7 +1569,7 @@ function receiptResult(
       result.outcome,
       confirmation.command,
       confirmation.workspaceId,
-      legacyReceipt,
+      receiptVersion,
     )
   ) {
     throw new DomainError(
@@ -1549,11 +1643,13 @@ function validReceiptOutcome(
   value: unknown,
   command: IntegrationCommand,
   workspaceIdValue: WorkspaceId,
-  legacyReceipt: boolean,
+  receiptVersion: 1 | 2 | undefined,
 ): boolean {
   const outcome = objectValue(value);
   if (outcome === null || typeof outcome.type !== "string") return false;
   if (command.type === "work_item.create" || command.type === "work_item.update") {
+    const legacyReceipt = receiptVersion === undefined;
+    const hierarchyReceipt = receiptVersion === 2;
     const expectedType =
       command.type === "work_item.create" ? "work_item.created" : "work_item.updated";
     const item = objectValue(outcome.workItem);
@@ -1563,22 +1659,11 @@ function validReceiptOutcome(
       item !== null &&
       exactKeys(
         item,
-        legacyReceipt
+        hierarchyReceipt
           ? [
               "id",
               "workspaceId",
-              "title",
-              "description",
-              "status",
-              "priority",
-              "planningDurationMinutes",
-              "version",
-              "createdAt",
-              "updatedAt",
-            ]
-          : [
-              "id",
-              "workspaceId",
+              "parentWorkItemId",
               "title",
               "description",
               "status",
@@ -1588,10 +1673,43 @@ function validReceiptOutcome(
               "version",
               "createdAt",
               "updatedAt",
-            ],
+            ]
+          : legacyReceipt
+            ? [
+                "id",
+                "workspaceId",
+                "title",
+                "description",
+                "status",
+                "priority",
+                "planningDurationMinutes",
+                "version",
+                "createdAt",
+                "updatedAt",
+              ]
+            : [
+                "id",
+                "workspaceId",
+                "title",
+                "description",
+                "status",
+                "priority",
+                "planningDurationMinutes",
+                "dueOn",
+                "version",
+                "createdAt",
+                "updatedAt",
+              ],
       ) &&
       item.workspaceId === workspaceIdValue &&
       isUuidText(item.id) &&
+      (hierarchyReceipt
+        ? (item.parentWorkItemId === null || isUuidText(item.parentWorkItemId)) &&
+          (command.type === "work_item.create"
+            ? item.parentWorkItemId === (command.parentWorkItemId ?? null)
+            : command.parentWorkItemId === undefined ||
+              item.parentWorkItemId === command.parentWorkItemId)
+        : command.parentWorkItemId === undefined && !hasOwn(item, "parentWorkItemId")) &&
       typeof item.title === "string" &&
       item.title.trim().length > 0 &&
       item.title.length <= 240 &&
@@ -1721,90 +1839,106 @@ export class ConfirmIntegrationCommand {
     const now = validIntegrationNow(this.clock);
     const confirmationId = normalizeUuid(input.confirmationId, "confirmation_id");
     const idempotencyKey = normalizeBounded(input.idempotencyKey, "idempotency_key", 160);
-    return this.unitOfWork.run(async (context) => {
-      const credential = await revalidateIntegrationCredential(
-        context.credentials,
-        input.principal,
-        "schedule:write",
-        now,
-      );
-      const confirmation = await context.confirmations.findByIdForUpdate(
-        credential.id,
-        confirmationId,
-      );
-      if (confirmation === null) {
-        throw new DomainError(
-          "integration.confirmation_not_found",
-          "The integration confirmation does not exist.",
+    return this.unitOfWork.run(
+      async (context) => {
+        const credential = await revalidateIntegrationCredential(
+          context.credentials,
+          input.principal,
+          "schedule:write",
+          now,
         );
-      }
-      if (!confirmationMatchesCredential(confirmation, credential)) {
-        throw new DomainError(
-          "integration.confirmation_corrupt",
-          "The stored integration confirmation has invalid ownership or timestamps.",
+        const confirmation = await context.confirmations.findByIdForUpdate(
+          credential.id,
+          confirmationId,
         );
-      }
-      const storedCommand = exactStoredCommand(confirmation.command, confirmation.commandHash);
-      const verifiedConfirmation = { ...confirmation, command: storedCommand };
-      const reservation = await context.requests.reserve({
-        id: randomUUID(),
-        credentialId: credential.id,
-        workspaceId: credential.workspaceId,
-        idempotencyKey,
-        confirmationId,
-        operation: storedCommand.type,
-        commandHash: confirmation.commandHash,
-        createdAt: now,
-      });
-      if (reservation.kind === "replay") {
-        return receiptResult(reservation.request, verifiedConfirmation);
-      }
-      if (confirmation.consumedAt !== null) {
-        throw new DomainError(
-          "integration.confirmation_consumed",
-          "The integration confirmation has already been consumed.",
-        );
-      }
-      if (confirmation.expiresAt.getTime() <= now.getTime()) {
-        throw new DomainError(
-          "integration.confirmation_expired",
-          "The integration confirmation has expired.",
-        );
-      }
-      await context.notifications.lockWorkspace(credential.workspaceId);
-      if (!(await context.confirmations.consume(credential.id, confirmation.id, now))) {
-        throw new DomainError(
-          "integration.confirmation_consumed",
-          "The integration confirmation is no longer available.",
-        );
-      }
-      const outcome = await dispatchCommand(context, credential, verifiedConfirmation, now);
-      const result: ConfirmedIntegrationCommandResult = {
-        receiptVersion: 1,
-        confirmationId: confirmation.id,
-        operation: storedCommand.type,
-        commandHash: confirmation.commandHash,
-        outcome,
-      };
-      const entity = outcomeEntity(outcome);
-      await context.auditEvents.append({
-        workspaceId: credential.workspaceId,
-        action: "integration.command_confirmed",
-        entityType: entity.entityType,
-        entityId: entity.entityId,
-        data: {
+        if (confirmation === null) {
+          throw new DomainError(
+            "integration.confirmation_not_found",
+            "The integration confirmation does not exist.",
+          );
+        }
+        if (!confirmationMatchesCredential(confirmation, credential)) {
+          throw new DomainError(
+            "integration.confirmation_corrupt",
+            "The stored integration confirmation has invalid ownership or timestamps.",
+          );
+        }
+        const storedCommand = exactStoredCommand(confirmation.command, confirmation.commandHash);
+        const verifiedConfirmation = { ...confirmation, command: storedCommand };
+        const reservation = await context.requests.reserve({
+          id: randomUUID(),
           credentialId: credential.id,
-          confirmationId: confirmation.id,
-          requestId: confirmation.requestId,
+          workspaceId: credential.workspaceId,
           idempotencyKey,
-          commandHash: confirmation.commandHash,
+          confirmationId,
           operation: storedCommand.type,
-          outcome: outcome.type,
-        },
-        occurredAt: now,
-      });
-      const completed = await context.requests.succeed(reservation.request.id, result, now);
-      return receiptResult(completed, verifiedConfirmation);
-    });
+          commandHash: confirmation.commandHash,
+          createdAt: now,
+        });
+        if (reservation.kind === "replay") {
+          return receiptResult(reservation.request, verifiedConfirmation);
+        }
+        if (confirmation.consumedAt !== null) {
+          throw new DomainError(
+            "integration.confirmation_consumed",
+            "The integration confirmation has already been consumed.",
+          );
+        }
+        if (confirmation.expiresAt.getTime() <= now.getTime()) {
+          throw new DomainError(
+            "integration.confirmation_expired",
+            "The integration confirmation has expired.",
+          );
+        }
+        const mutatesWorkItemHierarchy =
+          (storedCommand.type === "work_item.create" &&
+            storedCommand.parentWorkItemId !== undefined &&
+            storedCommand.parentWorkItemId !== null) ||
+          (storedCommand.type === "work_item.update" &&
+            storedCommand.parentWorkItemId !== undefined);
+        if (mutatesWorkItemHierarchy) {
+          // Match the product update path: graph lock first, notification lock second. Keeping one
+          // workspace-wide order prevents product and integration mutations from deadlocking.
+          await context.workItemDependencies.lockWorkspace(credential.workspaceId);
+        }
+        await context.notifications.lockWorkspace(credential.workspaceId);
+        if (!(await context.confirmations.consume(credential.id, confirmation.id, now))) {
+          throw new DomainError(
+            "integration.confirmation_consumed",
+            "The integration confirmation is no longer available.",
+          );
+        }
+        const outcome = await dispatchCommand(context, credential, verifiedConfirmation, now);
+        const result: ConfirmedIntegrationCommandResult = {
+          receiptVersion: 2,
+          confirmationId: confirmation.id,
+          operation: storedCommand.type,
+          commandHash: confirmation.commandHash,
+          outcome,
+        };
+        const entity = outcomeEntity(outcome);
+        await context.auditEvents.append({
+          workspaceId: credential.workspaceId,
+          action: "integration.command_confirmed",
+          entityType: entity.entityType,
+          entityId: entity.entityId,
+          data: {
+            credentialId: credential.id,
+            confirmationId: confirmation.id,
+            requestId: confirmation.requestId,
+            idempotencyKey,
+            commandHash: confirmation.commandHash,
+            operation: storedCommand.type,
+            outcome: outcome.type,
+          },
+          occurredAt: now,
+        });
+        const completed = await context.requests.succeed(reservation.request.id, result, now);
+        return receiptResult(completed, verifiedConfirmation);
+      },
+      // Confirmation reads its immutable command before it can choose the graph lock. A fresh
+      // snapshot after that lock wait is required to see a preceding hierarchy writer's commit.
+      { isolationLevel: "read_committed" },
+    );
   }
 }

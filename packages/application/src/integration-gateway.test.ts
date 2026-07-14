@@ -88,7 +88,10 @@ function createHarness() {
   const audits: AuditEventRecord[] = [];
   const activityInputs: RecordPlanItemActivityInput[] = [];
   const invalidatedTargets: string[] = [];
+  const lockOrder: string[] = [];
+  const unitOfWorkIsolationLevels: ("serializable" | "read_committed")[] = [];
   let notificationLocks = 0;
+  let hierarchyLocks = 0;
   const workItemListCalls: {
     workspaceId: string;
     status: string | undefined;
@@ -258,6 +261,12 @@ function createHarness() {
         workItems[index] = item;
       },
     },
+    workItemDependencies: {
+      lockWorkspace: async () => {
+        hierarchyLocks += 1;
+        lockOrder.push("graph");
+      },
+    } as IntegrationTransactionContext["workItemDependencies"],
     scheduleBlocks: {
       findById: async (workspaceIdValue, id) =>
         scheduleBlocks.find((item) => item.workspaceId === workspaceIdValue && item.id === id) ??
@@ -333,6 +342,7 @@ function createHarness() {
     notifications: {
       lockWorkspace: async () => {
         notificationLocks += 1;
+        lockOrder.push("notification");
       },
       deleteIntentsForTarget: async (_workspaceId, targetType, targetId, kind) => {
         invalidatedTargets.push(`${targetType}:${targetId}:${kind ?? "all"}`);
@@ -342,8 +352,9 @@ function createHarness() {
   };
 
   const unitOfWork: IntegrationUnitOfWork = {
-    run: async (operation) => {
+    run: async (operation, options) => {
       unitOfWorkRuns += 1;
+      unitOfWorkIsolationLevels.push(options?.isolationLevel ?? "serializable");
       const snapshot = {
         credentials: copy(credentials),
         confirmations: copy(confirmations),
@@ -353,7 +364,9 @@ function createHarness() {
         audits: copy(audits),
         activityInputs: copy(activityInputs),
         invalidatedTargets: copy(invalidatedTargets),
+        lockOrder: copy(lockOrder),
         notificationLocks,
+        hierarchyLocks,
       };
       try {
         return await operation(context);
@@ -366,7 +379,9 @@ function createHarness() {
         replace(audits, snapshot.audits);
         replace(activityInputs, snapshot.activityInputs);
         replace(invalidatedTargets, snapshot.invalidatedTargets);
+        replace(lockOrder, snapshot.lockOrder);
         notificationLocks = snapshot.notificationLocks;
+        hierarchyLocks = snapshot.hierarchyLocks;
         throw error;
       }
     },
@@ -397,8 +412,13 @@ function createHarness() {
     audits,
     activityInputs,
     invalidatedTargets,
+    lockOrder,
+    unitOfWorkIsolationLevels,
     getNotificationLocks() {
       return notificationLocks;
+    },
+    getHierarchyLocks() {
+      return hierarchyLocks;
     },
     workItemListCalls,
     getUnitOfWorkRuns() {
@@ -765,7 +785,7 @@ describe("integration Today and preparation", () => {
           description: "Read the release notes",
         },
         summary:
-          "Create work item “Task” (status backlog, priority none, not included in daily planning, no due date, description “Read the release notes”).",
+          "Create work item “Task” (top-level, status backlog, priority none, not included in daily planning, no due date, description “Read the release notes”).",
       },
       {
         command: {
@@ -894,9 +914,16 @@ describe("integration Today and preparation", () => {
       { type: "work_item.create", title: "Task", workspaceId: WORKSPACE_ID },
       { type: "work_item.create", title: "   " },
       { type: "work_item.create", title: "Task", description: "x".repeat(4_001) },
+      { type: "work_item.create", title: "Task", parentWorkItemId: "not-a-uuid" },
       { type: "work_item.create", title: "Task", dueOn: "2026-02-29" },
       { type: "work_item.create", title: "Task", dueOn: "2026-07-32" },
       { type: "work_item.update", workItemId: SOURCE_WORK_ITEM_ID, expectedVersion: 1, dueOn: 1 },
+      {
+        type: "work_item.update",
+        workItemId: SOURCE_WORK_ITEM_ID,
+        expectedVersion: 1,
+        parentWorkItemId: "not-a-uuid",
+      },
       { type: "work_item.update", workItemId: SOURCE_WORK_ITEM_ID, expectedVersion: 1 },
       {
         type: "schedule_block.update",
@@ -947,7 +974,13 @@ describe("integration Today and preparation", () => {
           requestId: `invalid-${index}`,
           command: command as IntegrationCommand,
         }),
-      ).toThrow(expect.objectContaining({ code: "integration.command_invalid" }));
+      ).toThrow(
+        expect.objectContaining({
+          code: expect.stringMatching(
+            /^integration\.(?:command_invalid|parent_work_item_id_invalid)$/,
+          ),
+        }),
+      );
     }
     expect(test.confirmations).toHaveLength(0);
   });
@@ -990,7 +1023,7 @@ describe("integration confirmation execution", () => {
       idempotencyKey: "due-date-create",
     });
     if (created.outcome.type !== "work_item.created") throw new Error("unexpected outcome");
-    expect(created.receiptVersion).toBe(1);
+    expect(created.receiptVersion).toBe(2);
     expect(created.outcome.workItem.dueOn).toBe("2026-07-31");
 
     const clear = await prepareAndConfirm(test, "due-date-clear", {
@@ -1049,19 +1082,41 @@ describe("integration confirmation execution", () => {
       idempotencyKey: "due-date-legacy-replay",
     });
     if (legacySource.outcome.type !== "work_item.created") throw new Error("unexpected outcome");
-    expect(legacySource.receiptVersion).toBe(1);
+    expect(legacySource.receiptVersion).toBe(2);
     expect(legacySource.outcome.workItem.dueOn).toBeNull();
-    const { receiptVersion: _receiptVersion, ...legacyEnvelope } = legacySource;
-    const { dueOn: _legacyDueOn, ...legacyWorkItem } = legacySource.outcome.workItem;
+    const { parentWorkItemId: _versionTwoParentWorkItemId, ...versionOneWorkItem } =
+      legacySource.outcome.workItem;
+    void _versionTwoParentWorkItemId;
+    const versionOneResult = {
+      ...legacySource,
+      receiptVersion: 1 as const,
+      outcome: { ...legacySource.outcome, workItem: versionOneWorkItem },
+    };
+    const legacyRequestIndex = test.requests.findIndex(
+      (request) => request.idempotencyKey === "due-date-legacy-replay",
+    );
+    test.requests[legacyRequestIndex] = {
+      ...test.requests[legacyRequestIndex]!,
+      result: versionOneResult,
+    };
+    const versionOneReplay = await test.services.confirm.execute({
+      principal: test.principal,
+      confirmationId: withoutDueDate.confirmationId,
+      idempotencyKey: "due-date-legacy-replay",
+    });
+    expect(versionOneReplay).toEqual(versionOneResult);
+
+    const { receiptVersion: _receiptVersion, ...legacyEnvelope } = versionOneReplay;
+    if (versionOneReplay.outcome.type !== "work_item.created") {
+      throw new Error("unexpected outcome");
+    }
+    const { dueOn: _legacyDueOn, ...legacyWorkItem } = versionOneReplay.outcome.workItem;
     void _receiptVersion;
     void _legacyDueOn;
     const legacyResult = {
       ...legacyEnvelope,
-      outcome: { ...legacySource.outcome, workItem: legacyWorkItem },
-    } as typeof legacySource;
-    const legacyRequestIndex = test.requests.findIndex(
-      (request) => request.idempotencyKey === "due-date-legacy-replay",
-    );
+      outcome: { ...versionOneReplay.outcome, workItem: legacyWorkItem },
+    } as typeof versionOneReplay;
     test.requests[legacyRequestIndex] = {
       ...test.requests[legacyRequestIndex]!,
       result: legacyResult,
@@ -1072,6 +1127,117 @@ describe("integration confirmation execution", () => {
       idempotencyKey: "due-date-legacy-replay",
     });
     expect(legacyReplay).toEqual(legacyResult);
+  });
+
+  it("creates, discovers, detaches, and reparents subtasks through confirmed Hermes commands", async () => {
+    const test = createHarness();
+    const firstParent = await prepareAndConfirm(test, "hierarchy-parent-a", {
+      type: "work_item.create",
+      title: "Launch",
+    });
+    const secondParent = await prepareAndConfirm(test, "hierarchy-parent-b", {
+      type: "work_item.create",
+      title: "Follow-up",
+    });
+    if (
+      firstParent.outcome.type !== "work_item.created" ||
+      secondParent.outcome.type !== "work_item.created"
+    ) {
+      throw new Error("unexpected outcome");
+    }
+
+    const childPreparation = await test.services.prepare.execute({
+      principal: test.principal,
+      requestId: "hierarchy-child",
+      command: {
+        type: "work_item.create",
+        title: "Verify links",
+        parentWorkItemId: firstParent.outcome.workItem.id,
+      },
+    });
+    expect(childPreparation.commandDisplay).toContain(
+      `"parentWorkItemId":"${firstParent.outcome.workItem.id}"`,
+    );
+    expect(childPreparation.summary).toContain(`under parent ${firstParent.outcome.workItem.id}`);
+    const child = await test.services.confirm.execute({
+      principal: test.principal,
+      confirmationId: childPreparation.confirmationId,
+      idempotencyKey: "confirm-hierarchy-child",
+    });
+    if (child.outcome.type !== "work_item.created") throw new Error("unexpected outcome");
+    expect(child).toMatchObject({
+      receiptVersion: 2,
+      outcome: {
+        workItem: { parentWorkItemId: firstParent.outcome.workItem.id, version: 1 },
+      },
+    });
+
+    const discovered = await test.services.listWorkItems.execute({ principal: test.principal });
+    expect(discovered.items.find((item) => item.id === child.outcome.workItem.id)).toMatchObject({
+      parentWorkItemId: firstParent.outcome.workItem.id,
+    });
+
+    const cycle = await test.services.prepare.execute({
+      principal: test.principal,
+      requestId: "hierarchy-cycle",
+      command: {
+        type: "work_item.update",
+        workItemId: firstParent.outcome.workItem.id,
+        expectedVersion: 1,
+        parentWorkItemId: child.outcome.workItem.id,
+      },
+    });
+    await expect(
+      test.services.confirm.execute({
+        principal: test.principal,
+        confirmationId: cycle.confirmationId,
+        idempotencyKey: "confirm-hierarchy-cycle",
+      }),
+    ).rejects.toMatchObject({ code: "work_item_hierarchy.cycle_conflict" });
+    expect(
+      test.workItems.find((item) => item.id === firstParent.outcome.workItem.id)?.parentWorkItemId,
+    ).toBeNull();
+
+    const detached = await prepareAndConfirm(test, "hierarchy-detach", {
+      type: "work_item.update",
+      workItemId: child.outcome.workItem.id,
+      expectedVersion: 1,
+      parentWorkItemId: null,
+    });
+    expect(detached.outcome).toMatchObject({
+      type: "work_item.updated",
+      workItem: { parentWorkItemId: null, version: 2 },
+    });
+
+    const reparented = await prepareAndConfirm(test, "hierarchy-reparent", {
+      type: "work_item.update",
+      workItemId: child.outcome.workItem.id,
+      expectedVersion: 2,
+      parentWorkItemId: secondParent.outcome.workItem.id,
+    });
+    expect(reparented.outcome).toMatchObject({
+      type: "work_item.updated",
+      workItem: { parentWorkItemId: secondParent.outcome.workItem.id, version: 3 },
+    });
+    expect(test.getHierarchyLocks()).toBe(3);
+    expect(test.unitOfWorkIsolationLevels.at(-1)).toBe("read_committed");
+    expect(test.lockOrder.slice(-6)).toEqual([
+      "graph",
+      "notification",
+      "graph",
+      "notification",
+      "graph",
+      "notification",
+    ]);
+    expect(
+      test.audits
+        .filter((event) => event.action.startsWith("work_item_hierarchy."))
+        .map((event) => event.action),
+    ).toEqual([
+      "work_item_hierarchy.parent_assigned",
+      "work_item_hierarchy.parent_removed",
+      "work_item_hierarchy.parent_changed",
+    ]);
   });
 
   it("expires and consumes confirmations once while replaying the same receipt exactly", async () => {

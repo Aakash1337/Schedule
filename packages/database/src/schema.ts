@@ -419,6 +419,7 @@ export const workItems = pgTable(
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
+    parentWorkItemId: uuid("parent_work_item_id"),
     title: varchar("title", { length: 240 }).notNull(),
     description: text("description"),
     status: workItemStatus("status").notNull().default("backlog"),
@@ -431,6 +432,12 @@ export const workItems = pgTable(
   },
   (table) => [
     unique("work_items_workspace_id_id_uq").on(table.workspaceId, table.id),
+    index("work_items_workspace_parent_created_id_idx").on(
+      table.workspaceId,
+      table.parentWorkItemId,
+      table.createdAt,
+      table.id,
+    ),
     index("work_items_workspace_status_idx").on(table.workspaceId, table.status),
     index("work_items_workspace_created_id_idx").on(table.workspaceId, table.createdAt, table.id),
     index("work_items_workspace_due_id_idx").on(table.workspaceId, table.dueOn, table.id),
@@ -440,6 +447,15 @@ export const workItems = pgTable(
       table.priority,
       table.createdAt,
       table.id,
+    ),
+    foreignKey({
+      name: "work_items_parent_tenant_fk",
+      columns: [table.workspaceId, table.parentWorkItemId],
+      foreignColumns: [table.workspaceId, table.id],
+    }).onDelete("restrict"),
+    check(
+      "work_items_parent_not_self",
+      sql`${table.parentWorkItemId} IS NULL OR ${table.parentWorkItemId} <> ${table.id}`,
     ),
     check("work_items_version_positive", sql`${table.version} > 0`),
     check(

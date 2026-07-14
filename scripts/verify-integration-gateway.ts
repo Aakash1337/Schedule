@@ -117,11 +117,12 @@ interface ErrorEnvelope {
 interface IntegrationWorkItem {
   readonly id: string;
   readonly workspaceId: string;
+  readonly parentWorkItemId: string | null;
   readonly title: string;
   readonly description: string | null;
   readonly status: string;
   readonly priority: string;
-  readonly planningDurationMinutes: number;
+  readonly planningDurationMinutes: number | null;
   readonly dueOn: string | null;
   readonly version: number;
   readonly createdAt: string;
@@ -462,6 +463,7 @@ try {
     assert.deepEqual(replayedCreate.response.data, confirmedCreate.response.data);
   }
   assert.equal(confirmedCreate.response.data.outcome.type, "work_item.created");
+  assert.equal(confirmedCreate.response.data.receiptVersion, 2);
   const createdWorkItem = confirmedCreate.response.data.outcome.workItem as {
     readonly id: string;
     readonly version: number;
@@ -1164,6 +1166,279 @@ try {
   assert.equal(activity.headVersion, 2);
   assert.equal(activity.activityState, "completed");
 
+  // EVIDENCE: integration-gateway-work-item-hierarchy
+  // Hermes can discover and safely mutate hierarchy edges through reviewed, durable commands.
+  const hierarchyParent = await prepare(primaryCredential.token, randomUUID(), {
+    type: "work_item.create",
+    title: "Gateway hierarchy alternate parent",
+  });
+  const confirmedHierarchyParent = await confirm(
+    primaryCredential.token,
+    hierarchyParent.response.data.confirmationId,
+    "verify-hierarchy-parent",
+  );
+  assert.equal(confirmedHierarchyParent.response.data.outcome.type, "work_item.created");
+  const alternateParentId = confirmedHierarchyParent.response.data.outcome.workItem.id;
+
+  const hierarchyChild = await prepare(primaryCredential.token, randomUUID(), {
+    type: "work_item.create",
+    title: "Gateway hierarchy child",
+    parentWorkItemId: createdWorkItem.id,
+  });
+  assert.equal(hierarchyChild.response.data.command.type, "work_item.create");
+  if (hierarchyChild.response.data.command.type !== "work_item.create") {
+    throw new Error("unexpected prepared hierarchy command");
+  }
+  assert.equal(hierarchyChild.response.data.command.parentWorkItemId, createdWorkItem.id);
+  const confirmedHierarchyChild = await confirm(
+    primaryCredential.token,
+    hierarchyChild.response.data.confirmationId,
+    "verify-hierarchy-child",
+  );
+  assert.equal(confirmedHierarchyChild.response.data.outcome.type, "work_item.created");
+  const hierarchyChildItem = confirmedHierarchyChild.response.data.outcome.workItem;
+  assert.equal(hierarchyChildItem.parentWorkItemId, createdWorkItem.id);
+
+  const hierarchyDiscovery = await listIntegrationWorkItems(primaryCredential.token);
+  assert.equal(
+    hierarchyDiscovery.response.data.items.find((item) => item.id === hierarchyChildItem.id)
+      ?.parentWorkItemId,
+    createdWorkItem.id,
+  );
+
+  const hierarchyCycle = await prepare(primaryCredential.token, randomUUID(), {
+    type: "work_item.update",
+    workItemId: createdWorkItem.id,
+    expectedVersion: 4,
+    parentWorkItemId: hierarchyChildItem.id,
+  });
+  const rejectedHierarchyCycle = await app.inject({
+    method: "POST",
+    url: "/v1/integrations/commands/confirm",
+    headers: {
+      ...authorization(primaryCredential.token),
+      "idempotency-key": "verify-hierarchy-cycle",
+    },
+    payload: {
+      version: VERSION,
+      confirmationId: hierarchyCycle.response.data.confirmationId,
+    },
+  });
+  assertError(rejectedHierarchyCycle, 409, "work_item_hierarchy.cycle_conflict");
+
+  const hierarchyDetach = await prepare(primaryCredential.token, randomUUID(), {
+    type: "work_item.update",
+    workItemId: hierarchyChildItem.id,
+    expectedVersion: 1,
+    parentWorkItemId: null,
+  });
+  const confirmedHierarchyDetach = await confirm(
+    primaryCredential.token,
+    hierarchyDetach.response.data.confirmationId,
+    "verify-hierarchy-detach",
+  );
+  assert.equal(confirmedHierarchyDetach.response.data.outcome.type, "work_item.updated");
+  assert.equal(confirmedHierarchyDetach.response.data.outcome.workItem.parentWorkItemId, null);
+  assert.equal(confirmedHierarchyDetach.response.data.outcome.workItem.version, 2);
+
+  const hierarchyReparent = await prepare(primaryCredential.token, randomUUID(), {
+    type: "work_item.update",
+    workItemId: hierarchyChildItem.id,
+    expectedVersion: 2,
+    parentWorkItemId: alternateParentId,
+  });
+  const confirmedHierarchyReparent = await confirm(
+    primaryCredential.token,
+    hierarchyReparent.response.data.confirmationId,
+    "verify-hierarchy-reparent",
+  );
+  assert.equal(confirmedHierarchyReparent.response.data.outcome.type, "work_item.updated");
+  assert.equal(
+    confirmedHierarchyReparent.response.data.outcome.workItem.parentWorkItemId,
+    alternateParentId,
+  );
+  assert.equal(confirmedHierarchyReparent.response.data.outcome.workItem.version, 3);
+
+  const createConcurrentRoot = async (title: string): Promise<{ id: string; version: number }> => {
+    const response = await app!.inject({
+      method: "POST",
+      url: `/v1/workspaces/${primaryWorkspaceId}/work-items`,
+      payload: { title },
+    });
+    assert.equal(response.statusCode, 201, response.body);
+    return response.json<{ id: string; version: number }>();
+  };
+  const productConcurrentChild = await createConcurrentRoot("Product concurrent hierarchy child");
+  const integrationConcurrentChild = await createConcurrentRoot(
+    "Integration concurrent hierarchy child",
+  );
+  const concurrentIntegrationReparent = await prepare(primaryCredential.token, randomUUID(), {
+    type: "work_item.update",
+    workItemId: integrationConcurrentChild.id,
+    expectedVersion: integrationConcurrentChild.version,
+    parentWorkItemId: alternateParentId,
+  });
+  // EVIDENCE: integration-gateway-hierarchy-cross-surface-lock-order
+  // Product and Hermes hierarchy writes take graph then notification locks, so neither can deadlock.
+  const [concurrentProductResponse, concurrentIntegrationResponse] = await Promise.all([
+    app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${primaryWorkspaceId}/work-items/${productConcurrentChild.id}`,
+      payload: {
+        expectedVersion: productConcurrentChild.version,
+        parentWorkItemId: createdWorkItem.id,
+      },
+    }),
+    confirm(
+      primaryCredential.token,
+      concurrentIntegrationReparent.response.data.confirmationId,
+      "verify-hierarchy-cross-surface-lock-order",
+    ),
+  ]);
+  assert.equal(concurrentProductResponse.statusCode, 200, concurrentProductResponse.body);
+  assert.equal(concurrentIntegrationResponse.response.data.outcome.type, "work_item.updated");
+  assert.equal(
+    concurrentIntegrationResponse.response.data.outcome.workItem.parentWorkItemId,
+    alternateParentId,
+  );
+
+  const reciprocalProductItem = await createConcurrentRoot("Reciprocal product hierarchy item");
+  const reciprocalIntegrationItem = await createConcurrentRoot(
+    "Reciprocal integration hierarchy item",
+  );
+  const reciprocalIntegrationUpdate = await prepare(primaryCredential.token, randomUUID(), {
+    type: "work_item.update",
+    workItemId: reciprocalIntegrationItem.id,
+    expectedVersion: reciprocalIntegrationItem.version,
+    parentWorkItemId: reciprocalProductItem.id,
+  });
+  let releaseGraphGuard: () => void = () => undefined;
+  let markGraphGuardAcquired: () => void = () => undefined;
+  const graphGuardAcquired = new Promise<void>((resolve) => {
+    markGraphGuardAcquired = resolve;
+  });
+  const graphGuardRelease = new Promise<void>((resolve) => {
+    releaseGraphGuard = resolve;
+  });
+  const graphLockKey = `${primaryWorkspaceId.toLowerCase()}:work-item-dependencies`;
+  const graphGuard = connection.sql.begin(async (transaction) => {
+    await transaction`select pg_advisory_xact_lock(hashtextextended(${graphLockKey}, 0))`;
+    markGraphGuardAcquired();
+    await graphGuardRelease;
+  });
+  await graphGuardAcquired;
+
+  const waitForBlockedGraphWriters = async (minimum: number): Promise<void> => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const [waiters] = await connection!.sql<{ value: number }[]>`
+        select count(*)::int as value
+        from pg_locks
+        where locktype = 'advisory' and not granted
+      `;
+      if ((waiters?.value ?? 0) >= minimum) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`Timed out waiting for ${String(minimum)} blocked hierarchy writers.`);
+  };
+
+  const reciprocalProductResponsePromise = app.inject({
+    method: "PATCH",
+    url: `/v1/workspaces/${primaryWorkspaceId}/work-items/${reciprocalProductItem.id}`,
+    payload: {
+      expectedVersion: reciprocalProductItem.version,
+      parentWorkItemId: reciprocalIntegrationItem.id,
+    },
+  });
+  try {
+    await waitForBlockedGraphWriters(1);
+    const reciprocalIntegrationResponsePromise = app.inject({
+      method: "POST",
+      url: "/v1/integrations/commands/confirm",
+      headers: {
+        ...authorization(primaryCredential.token),
+        "idempotency-key": "verify-hierarchy-reciprocal-snapshot",
+      },
+      payload: {
+        version: VERSION,
+        confirmationId: reciprocalIntegrationUpdate.response.data.confirmationId,
+      },
+    });
+    await waitForBlockedGraphWriters(2);
+    const blockedGraphLocks = await connection.sql<
+      { classid: number; objid: number; objsubid: number; waiter_count: number }[]
+    >`
+      select classid::int, objid::int, objsubid::int, count(*)::int as waiter_count
+      from pg_locks
+      where locktype = 'advisory' and not granted
+      group by classid, objid, objsubid
+    `;
+    assert.deepEqual(
+      blockedGraphLocks.map((lock) => lock.waiter_count),
+      [2],
+      `product and integration writers did not queue on the same graph lock: ${JSON.stringify(blockedGraphLocks)}`,
+    );
+    releaseGraphGuard();
+    await graphGuard;
+    const [reciprocalProductResponse, reciprocalIntegrationResponse] = await Promise.all([
+      reciprocalProductResponsePromise,
+      reciprocalIntegrationResponsePromise,
+    ]);
+    // EVIDENCE: integration-gateway-hierarchy-snapshot-race
+    // The product writer commits first. Hermes must validate from a post-lock read-committed
+    // snapshot, reject the reciprocal edge, and leave the confirmation reusable instead of
+    // creating a cycle.
+    assert.equal(reciprocalProductResponse.statusCode, 200, reciprocalProductResponse.body);
+    assertError(reciprocalIntegrationResponse, 409, "work_item_hierarchy.cycle_conflict");
+    const [reciprocalEvidence] = await connection.sql<
+      {
+        product_parent_id: string | null;
+        integration_parent_id: string | null;
+        confirmation_available: boolean;
+        request_count: number;
+      }[]
+    >`
+      select
+        (select parent_work_item_id::text from work_items where id = ${reciprocalProductItem.id})
+          as product_parent_id,
+        (select parent_work_item_id::text from work_items where id = ${reciprocalIntegrationItem.id})
+          as integration_parent_id,
+        (
+          select consumed_at is null
+          from integration_confirmations
+          where id = ${reciprocalIntegrationUpdate.response.data.confirmationId}
+        ) as confirmation_available,
+        (
+          select count(*)::int
+          from integration_requests
+          where idempotency_key = 'verify-hierarchy-reciprocal-snapshot'
+        ) as request_count
+    `;
+    assert.equal(reciprocalEvidence?.product_parent_id, reciprocalIntegrationItem.id);
+    assert.equal(reciprocalEvidence?.integration_parent_id, null);
+    assert.equal(reciprocalEvidence?.confirmation_available, true);
+    assert.equal(reciprocalEvidence?.request_count, 0);
+  } finally {
+    releaseGraphGuard();
+    await graphGuard;
+  }
+  const [hierarchyEvidence] = await connection.sql<
+    { hierarchy_audit_count: number; rejected_request_count: number }[]
+  >`
+    select
+      (
+        select count(*)::int from audit_events
+        where workspace_id = ${primaryWorkspaceId}
+          and action like 'work_item_hierarchy.%'
+          and data ->> 'source' = 'integration'
+      ) as hierarchy_audit_count,
+      (
+        select count(*)::int from integration_requests
+        where idempotency_key = 'verify-hierarchy-cycle'
+      ) as rejected_request_count
+  `;
+  assert.equal(hierarchyEvidence?.hierarchy_audit_count, 4);
+  assert.equal(hierarchyEvidence?.rejected_request_count, 0);
+
   // EVIDENCE: integration-gateway-five-command-postgres-e2e
   // All five v1 command types are confirmed through Fastify and persisted by PostgreSQL adapters.
   const [evidence] = await connection.sql<
@@ -1211,9 +1486,9 @@ try {
         where workspace_id = ${primaryWorkspaceId}
       ) as serialized_receipts
   `;
-  assert.equal(evidence?.receipt_count, 6);
-  assert.equal(evidence?.confirmed_audit_count, 6);
-  assert.ok((evidence?.prepared_audit_count ?? 0) >= 7);
+  assert.equal(evidence?.receipt_count, 11);
+  assert.equal(evidence?.confirmed_audit_count, 11);
+  assert.ok((evidence?.prepared_audit_count ?? 0) >= 13);
   assert.equal(evidence?.completed_plan_item_count, 1);
   for (const secret of [
     primaryCredential.secret,

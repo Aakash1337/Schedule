@@ -35,6 +35,7 @@ import type {
   MaterializeNotificationIntentsResult,
   ListScheduleBlocksQuery,
   ListWorkItemDependenciesQuery,
+  ListWorkItemChildrenQuery,
   ListWorkItemsQuery,
   ListWorkspacesQuery,
   PlanItemLockResult,
@@ -64,6 +65,7 @@ import type {
   ScheduleBlockPage,
   SchedulingAdviceResult,
   WorkItemPage,
+  WorkItemChildrenPage,
   WorkItemDependencyPage,
   WorkspacePage,
 } from "@schedule/application";
@@ -125,6 +127,7 @@ export interface ProductServices {
   createWorkItem(command: CreateWorkItemCommand): Promise<WorkItem>;
   getWorkItem(query: GetWorkItemQuery): Promise<WorkItem>;
   listWorkItems(query: ListWorkItemsQuery): Promise<WorkItemPage>;
+  listWorkItemChildren(query: ListWorkItemChildrenQuery): Promise<WorkItemChildrenPage>;
   listWorkItemDependencies(query: ListWorkItemDependenciesQuery): Promise<WorkItemDependencyPage>;
   removeWorkItemDependency(command: RemoveWorkItemDependencyCommand): Promise<void>;
   updateWorkItem(command: UpdateWorkItemCommand): Promise<WorkItem>;
@@ -286,6 +289,7 @@ const workItemStatus = z.enum([
 ]);
 const workItemPriority = z.enum(["none", "low", "medium", "high", "urgent"]);
 const workItemBody = z.strictObject({
+  parentWorkItemId: uuid.nullable().default(null),
   title: z.string().trim().min(1).max(240),
   description: z.string().max(4_000).nullable().default(null),
   status: workItemStatus.default("backlog"),
@@ -293,6 +297,7 @@ const workItemBody = z.strictObject({
   dueOn: localDateText.nullable().default(null),
   planningDurationMinutes: z.number().int().positive().max(43_200).nullable().default(null),
 });
+const subtaskBody = workItemBody.omit({ parentWorkItemId: true });
 const workItemQuery = z.strictObject({
   status: workItemStatus.optional(),
   priority: workItemPriority.optional(),
@@ -307,6 +312,7 @@ const workItemDependencyBody = z.strictObject({ prerequisiteWorkItemId: uuid });
 const updateWorkItemBody = z
   .strictObject({
     expectedVersion: z.number().int().positive().max(2_147_483_647),
+    parentWorkItemId: uuid.nullable().optional(),
     title: z.string().trim().min(1).max(240).optional(),
     description: z.string().max(4_000).nullable().optional(),
     status: workItemStatus.optional(),
@@ -316,6 +322,7 @@ const updateWorkItemBody = z
   })
   .refine(
     (body) =>
+      body.parentWorkItemId !== undefined ||
       body.title !== undefined ||
       body.description !== undefined ||
       body.status !== undefined ||
@@ -921,6 +928,7 @@ export async function registerProductRoutes(
     const body = parseRequest(workItemBody, request.body);
     const created = await services.createWorkItem({
       workspaceId: workspaceId(params.workspaceId),
+      parentWorkItemId: body.parentWorkItemId === null ? null : workItemId(body.parentWorkItemId),
       title: body.title,
       description: body.description,
       status: body.status,
@@ -938,6 +946,37 @@ export async function registerProductRoutes(
       workspaceId: workspaceId(params.workspaceId),
       ...(query.status === undefined ? {} : { status: query.status }),
       ...(query.priority === undefined ? {} : { priority: query.priority }),
+      limit: query.limit,
+      offset: query.offset,
+    });
+    return { items: page.items, page: { limit: page.limit, offset: page.offset } };
+  });
+
+  app.post(
+    "/v1/workspaces/:workspaceId/work-items/:workItemId/subtasks",
+    async (request, reply) => {
+      const params = parseRequest(workItemParams, request.params);
+      const body = parseRequest(subtaskBody, request.body);
+      const created = await services.createWorkItem({
+        workspaceId: workspaceId(params.workspaceId),
+        parentWorkItemId: workItemId(params.workItemId),
+        title: body.title,
+        description: body.description,
+        status: body.status,
+        priority: body.priority,
+        dueOn: body.dueOn === null ? null : localDate(body.dueOn),
+        planningDurationMinutes: body.planningDurationMinutes,
+      });
+      return reply.code(201).send(created);
+    },
+  );
+
+  app.get("/v1/workspaces/:workspaceId/work-items/:workItemId/subtasks", async (request) => {
+    const params = parseRequest(workItemParams, request.params);
+    const query = parseRequest(workItemDependencyQuery, request.query);
+    const page = await services.listWorkItemChildren({
+      workspaceId: workspaceId(params.workspaceId),
+      parentWorkItemId: workItemId(params.workItemId),
       limit: query.limit,
       offset: query.offset,
     });
@@ -997,6 +1036,12 @@ export async function registerProductRoutes(
       workspaceId: workspaceId(params.workspaceId),
       workItemId: workItemId(params.workItemId),
       expectedVersion: body.expectedVersion,
+      ...(body.parentWorkItemId === undefined
+        ? {}
+        : {
+            parentWorkItemId:
+              body.parentWorkItemId === null ? null : workItemId(body.parentWorkItemId),
+          }),
       ...(body.title === undefined ? {} : { title: body.title }),
       ...(body.description === undefined ? {} : { description: body.description }),
       ...(body.status === undefined ? {} : { status: body.status }),

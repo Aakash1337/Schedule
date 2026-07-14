@@ -42,7 +42,7 @@ The application uses a persistent desktop rail and a compact mobile navigation b
    form and can be cleared. Only opted-in `backlog`, `planned`, and `in_progress` work may become a
    Today candidate; the card shows its selected duration and due date when present. A due date adds
    visible planner pressure but cannot make ineligible or over-capacity work appear in Today. Each
-   card also lists its direct prerequisites, their workflow statuses, and how many are done.
+   card also lists its parent, direct subtasks, completion progress, and direct prerequisites.
 3. **Routines** manages the reusable activity pool, including structured tags, duration policy,
    cadence, status, activity history, and transparent duration calibration. The selected routine
    reports whether it needs more completed sessions, supports the current estimate, has a material
@@ -74,6 +74,25 @@ exhaustion and, when more than one page is involved, accepted only after two ide
 A collection that changes during traversal asks the user to refresh instead of silently presenting a
 partial list. Initial loading uses announced skeleton states, and mutations keep existing data
 visible while disabling only the submitted control.
+
+## Work-item hierarchy
+
+The board remains organized by the six workflow columns instead of nesting cards. Each card shows
+whether it is top-level or links back to its parent, reports direct-child completion, and offers a
+contextual **Add subtask** action. The composer then names the selected parent and creates through
+the nested child route. The first three children are directly navigable; a keyboard-operable
+disclosure keeps every additional child reachable without making the card permanently tall.
+
+The details editor can detach or move an item. It excludes the item and its complete descendant set
+from parent choices, while the server still revalidates the graph for concurrent changes. A rejected
+cycle keeps the draft and explains the conflict. Parent/child links clear an active priority filter
+when necessary and move focus to the revealed card. Parent and child statuses remain independent.
+
+Only leaf work items enter Today. A card with children uses a **Parent · not in Today** badge. If it
+already has a saved duration, the editor shows that value as dormant and disables the planning
+toggle until every child is detached; the preference is preserved rather than silently discarded.
+Mobile hierarchy controls and disclosures are at least 44px high, and direct-child overflow does not
+expand the page width.
 
 ## Work-item prerequisites
 
@@ -256,11 +275,14 @@ date and exposes its deadline pressure through live planning. A third creates co
 dismisses and reloads an exact duration insight, resets it, dismisses it again, then appends changed
 evidence and expects the new key to resurface as available. The fourth runs the Work board at 320px,
 keyboard-adds a done prerequisite, reloads it, removes it, reloads its absence, and asserts focus,
-44px targets, horizontal fit, unchanged workflow status, and clean page/network results. Duration-
+44px targets, horizontal fit, unchanged workflow status, and clean page/network results. A fifth
+mobile Work scenario creates, completes, reloads, detaches, and reparents a subtask; proves the
+parent is excluded while the leaf enters Today; expands overflow children; and verifies 44px targets
+and horizontal fit. Duration-
 calibration approval has component and API/PostgreSQL evidence but is not yet part of a browser
-scenario. A fifth creates reminder policy, edits a rule, creates a one-off, explicitly materializes
+scenario. A sixth creates reminder policy, edits a rule, creates a one-off, explicitly materializes
 intents, inserts an execution fixture through the isolated PostgreSQL test boundary, and verifies the
-real product-safe history route and UI at desktop and 320px without request interception. A sixth
+real product-safe history route and UI at desktop and 320px without request interception. A seventh
 prepares one title through a strict loopback Ollama double, proves no card exists before confirmation,
 edits and confirms through the real API, verifies focus, and reloads the persisted backlog item.
 
@@ -283,7 +305,7 @@ a dedicated Chromium job and retains traces, screenshots, and video when it fail
 ## Deliberately deferred
 
 - Public hosting and production static serving until authentication and authorization exist
-- Drag ranking, bulk editing, projects, subtasks, attachments, and saved searches
+- Drag ranking, bulk editing, projects, checklists, attachments, and saved searches
 - Recurrence authoring, calendar conflict detection, and automatic placement
 - Alternative-plan comparison and generalized plan undo
 - Learned cadence, energy, preference, overload, and adaptive-selection settings

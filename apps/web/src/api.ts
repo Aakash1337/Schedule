@@ -228,6 +228,7 @@ export const api = {
     workspaceId: string,
     input: {
       title: string;
+      parentWorkItemId?: string | null;
       description: string | null;
       status: WorkItemStatus;
       priority: WorkItemPriority;
@@ -239,6 +240,30 @@ export const api = {
       method: "POST",
       json: input,
     }),
+
+  createSubtask: (
+    workspaceId: string,
+    parentWorkItemId: string,
+    input: {
+      title: string;
+      description: string | null;
+      status: WorkItemStatus;
+      priority: WorkItemPriority;
+      dueOn: string | null;
+      planningDurationMinutes: number | null;
+    },
+  ) =>
+    request<WorkItem>(
+      workspacePath(workspaceId, `/work-items/${encodeURIComponent(parentWorkItemId)}/subtasks`),
+      { method: "POST", json: input },
+    ),
+
+  listWorkItemChildren: (workspaceId: string, parentWorkItemId: string, signal?: AbortSignal) =>
+    listAllOffsetPages<WorkItem>(
+      workspacePath(workspaceId, `/work-items/${encodeURIComponent(parentWorkItemId)}/subtasks`),
+      {},
+      signal,
+    ),
 
   generateNaturalLanguageProposal: async (
     workspaceId: string,
@@ -322,6 +347,7 @@ export const api = {
     itemId: string,
     input: {
       expectedVersion: number;
+      parentWorkItemId?: string | null;
       title?: string;
       description?: string | null;
       status?: WorkItemStatus;

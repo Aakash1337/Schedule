@@ -579,6 +579,7 @@ function mapWorkItem(row: WorkItemRow): WorkItem {
   return {
     id: workItemId(row.id),
     workspaceId: workspaceId(row.workspaceId),
+    parentWorkItemId: row.parentWorkItemId === null ? null : workItemId(row.parentWorkItemId),
     title: row.title,
     description: row.description,
     status: row.status,
@@ -628,6 +629,7 @@ function mapPlanningGraphWorkItem(payload: unknown): WorkItem {
     value.id.length === 0 ||
     typeof value.workspaceId !== "string" ||
     value.workspaceId.length === 0 ||
+    !(value.parentWorkItemId === null || typeof value.parentWorkItemId === "string") ||
     typeof value.title !== "string" ||
     !(value.description === null || typeof value.description === "string") ||
     !workItemStatuses.some((status) => status === value.status) ||
@@ -643,6 +645,8 @@ function mapPlanningGraphWorkItem(payload: unknown): WorkItem {
   return {
     id: workItemId(value.id),
     workspaceId: workspaceId(value.workspaceId),
+    parentWorkItemId:
+      value.parentWorkItemId === null ? null : workItemId(value.parentWorkItemId as string),
     title: value.title,
     description: value.description,
     status: value.status as WorkItemStatus,
@@ -923,6 +927,7 @@ class PostgresWorkItemRepository implements WorkItemRepository {
     await this.database.insert(workItems).values({
       id: item.id,
       workspaceId: item.workspaceId,
+      parentWorkItemId: item.parentWorkItemId,
       title: item.title,
       description: item.description,
       status: item.status,
@@ -941,6 +946,7 @@ class PostgresWorkItemRepository implements WorkItemRepository {
     priority: WorkItemPriority | undefined,
     limit: number,
     offset: number,
+    parentWorkItemId?: WorkItemId,
   ): Promise<readonly WorkItem[]> {
     const rows = await this.database
       .select()
@@ -950,6 +956,9 @@ class PostgresWorkItemRepository implements WorkItemRepository {
           eq(workItems.workspaceId, workspace),
           status === undefined ? undefined : eq(workItems.status, status),
           priority === undefined ? undefined : eq(workItems.priority, priority),
+          parentWorkItemId === undefined
+            ? undefined
+            : eq(workItems.parentWorkItemId, parentWorkItemId),
         ),
       )
       .orderBy(asc(workItems.createdAt), asc(workItems.id))
@@ -959,6 +968,7 @@ class PostgresWorkItemRepository implements WorkItemRepository {
   }
 
   async listPlanningCandidates(workspace: WorkspaceId): Promise<readonly WorkItem[]> {
+    const childWorkItems = alias(workItems, "planning_child_work_items");
     const rows = await this.database
       .select()
       .from(workItems)
@@ -967,6 +977,17 @@ class PostgresWorkItemRepository implements WorkItemRepository {
           eq(workItems.workspaceId, workspace),
           isNotNull(workItems.planningDurationMinutes),
           inArray(workItems.status, ["backlog", "planned", "in_progress"]),
+          notExists(
+            this.database
+              .select({ id: childWorkItems.id })
+              .from(childWorkItems)
+              .where(
+                and(
+                  eq(childWorkItems.workspaceId, workItems.workspaceId),
+                  eq(childWorkItems.parentWorkItemId, workItems.id),
+                ),
+              ),
+          ),
         ),
       )
       .orderBy(asc(workItems.id))
@@ -978,6 +999,7 @@ class PostgresWorkItemRepository implements WorkItemRepository {
     const updated = await this.database
       .update(workItems)
       .set({
+        parentWorkItemId: item.parentWorkItemId,
         title: item.title,
         description: item.description,
         status: item.status,
@@ -1109,6 +1131,7 @@ export class PostgresWorkItemDependencyRepository implements WorkItemDependencyR
           select
             ${workItems.id},
             ${workItems.workspaceId},
+            ${workItems.parentWorkItemId},
             ${workItems.title},
             ${workItems.description},
             ${workItems.status},
@@ -1123,6 +1146,12 @@ export class PostgresWorkItemDependencyRepository implements WorkItemDependencyR
           where ${workItems.workspaceId} = ${workspace}
             and ${workItems.planningDurationMinutes} is not null
             and ${workItems.status} in ('backlog', 'planned', 'in_progress')
+            and not exists (
+              select 1
+              from ${workItems} as planning_child_work_items
+              where planning_child_work_items.workspace_id = ${workItems.workspaceId}
+                and planning_child_work_items.parent_work_item_id = ${workItems.id}
+            )
           order by ${workItems.id}
           limit ${workItemLimit}
         ),
@@ -1160,6 +1189,7 @@ export class PostgresWorkItemDependencyRepository implements WorkItemDependencyR
           jsonb_build_object(
             'id', candidate_work_items.id,
             'workspaceId', candidate_work_items.workspace_id,
+            'parentWorkItemId', candidate_work_items.parent_work_item_id,
             'title', candidate_work_items.title,
             'description', candidate_work_items.description,
             'status', candidate_work_items.status,
@@ -4247,6 +4277,7 @@ function createIntegrationTransactionContext(
     notificationDeliveryRequests: new PostgresNotificationDeliveryRequestRepository(database),
     workspaces: new PostgresWorkspaceRepository(database),
     workItems: new PostgresWorkItemRepository(database),
+    workItemDependencies: new PostgresWorkItemDependencyRepository(database),
     scheduleBlocks: new PostgresScheduleBlockRepository(database),
     auditEvents: new PostgresAuditEventRepository(database),
     dailyPlans: new PostgresDailyPlanRepository(database),

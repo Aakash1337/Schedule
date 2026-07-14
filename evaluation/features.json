@@ -6,6 +6,7 @@
     "coverage": { "command": "pnpm test:coverage", "ci": true },
     "planner-db": { "command": "pnpm verify:database", "ci": true },
     "product-api": { "command": "pnpm verify:database", "ci": true },
+    "work-item-hierarchy": { "command": "pnpm verify:database", "ci": true },
     "natural-language-proposals": { "command": "pnpm verify:database", "ci": true },
     "integration-gateway": { "command": "pnpm verify:database", "ci": true },
     "webhook-delivery": { "command": "pnpm verify:database", "ci": true },
@@ -407,7 +408,7 @@
         "anchor": "### 3.1.1 Work-item prerequisite"
       },
       "limitations": [
-        "Only direct work-item prerequisites are modeled; projects, milestones, subtasks, and checklist relationships remain deferred.",
+        "Only direct work-item prerequisites are modeled; projects, milestones, and checklist relationships remain deferred.",
         "Dependency editing is not exposed through the authenticated integration gateway."
       ],
       "evidence": [
@@ -554,6 +555,104 @@
           "file": "scripts/verify-product-api.ts",
           "command": "product-api",
           "anchors": ["work-item-dependencies-product-api"]
+        }
+      ]
+    },
+    {
+      "id": "work-item-hierarchy",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/PRODUCT.md",
+        "anchor": "### 3.1.2 Work-item hierarchy"
+      },
+      "limitations": [
+        "Projects, milestones, checklist rows, roll-up status, and cascading completion are separate deferred concepts.",
+        "The collection endpoint lists direct children; clients traverse arbitrary depth one bounded level at a time."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/work-item.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates, preserves, reparents, and detaches a subtask with version semantics",
+            "rejects self-parenting with canonical persisted identity"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/work-item-management.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates and lists direct subtasks with a tenant-scoped parent audit",
+            "reparents and detaches a subtask without changing either parent's version",
+            "rejects missing parents, self-parenting, and descendant cycles"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/integration-gateway.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates, discovers, detaches, and reparents subtasks through confirmed Hermes commands"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": [
+            "enforces a tenant-scoped, non-cascading work-item hierarchy",
+            "migrates existing work items into the hierarchy as roots"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": ["creates, lists, reparents, and detaches direct subtasks"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/api.test.ts",
+          "command": "unit",
+          "anchors": ["creates, lists, reparents, and detaches subtasks through hierarchy routes"]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/WorkView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "shows hierarchy context and creates a subtask under the selected parent",
+            "detaches and reparents a subtask without changing either parent's version",
+            "removes every descendant from the parent selector at arbitrary depth",
+            "reveals every overflow subtask after clearing an active priority filter"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-work-item-hierarchy.ts",
+          "command": "work-item-hierarchy",
+          "anchors": ["work-item hierarchy verification passed"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-integration-gateway.ts",
+          "command": "integration-gateway",
+          "anchors": [
+            "integration-gateway-work-item-hierarchy",
+            "integration-gateway-hierarchy-cross-surface-lock-order",
+            "integration-gateway-hierarchy-snapshot-race"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/planning-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": [
+            "persists subtasks and keeps parent containers out of Today in the live 320px flow"
+          ]
         }
       ]
     },

@@ -13,6 +13,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -241,7 +242,7 @@ function ProfileForm({
   );
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setEnabled(profile?.enabled ?? true);
     setTimeZone(profile?.timeZone ?? deviceTimeZone());
     setQuietHoursEnabled(

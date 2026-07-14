@@ -10,8 +10,9 @@ import {
 
 import { CreateWorkItem } from "./create-work-item.js";
 import { GetWorkItem } from "./get-work-item.js";
+import { ListWorkItemChildren } from "./list-work-item-children.js";
 import { ListWorkItems } from "./list-work-items.js";
-import type { TransactionContext, UnitOfWork } from "./ports.js";
+import type { AuditEventRecord, TransactionContext, UnitOfWork } from "./ports.js";
 import { UpdateWorkItem } from "./update-work-item.js";
 
 describe("work item management", () => {
@@ -26,6 +27,7 @@ describe("work item management", () => {
     const items: WorkItem[] = [];
     let saves = 0;
     const invalidatedTargets: string[] = [];
+    const auditEvents: AuditEventRecord[] = [];
     const context = {
       workspaces: {
         findById: async () => (options.workspaceExists === false ? null : workspace),
@@ -34,12 +36,14 @@ describe("work item management", () => {
       },
       workItems: {
         findById: async (_workspace, id) => items.find((item) => item.id === id) ?? null,
-        list: async (_workspace, status, priority, limit, offset) =>
+        list: async (_workspace, status, priority, limit, offset, parentWorkItemId) =>
           items
             .filter(
               (item) =>
+                item.workspaceId === _workspace &&
                 (status === undefined || item.status === status) &&
-                (priority === undefined || item.priority === priority),
+                (priority === undefined || item.priority === priority) &&
+                (parentWorkItemId === undefined || item.parentWorkItemId === parentWorkItemId),
             )
             .slice(offset, offset + limit),
         listPlanningCandidates: async (_workspace) =>
@@ -70,9 +74,14 @@ describe("work item management", () => {
       } as TransactionContext["notifications"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
       workItemDependencies: {
+        lockWorkspace: async () => undefined,
         loadPlanningGraph: async () => ({ workItems: [], dependencies: [] }),
       } as TransactionContext["workItemDependencies"],
-      auditEvents: {} as TransactionContext["auditEvents"],
+      auditEvents: {
+        append: async (event) => {
+          auditEvents.push(event);
+        },
+      },
       routines: {} as TransactionContext["routines"],
       activityEvents: {} as TransactionContext["activityEvents"],
       dailyPlans: {} as TransactionContext["dailyPlans"],
@@ -83,10 +92,12 @@ describe("work item management", () => {
       create: new CreateWorkItem(unitOfWork, clock),
       get: new GetWorkItem(unitOfWork),
       list: new ListWorkItems(unitOfWork),
+      listChildren: new ListWorkItemChildren(unitOfWork),
       update: new UpdateWorkItem(unitOfWork, clock),
       items,
       saves: () => saves,
       invalidatedTargets,
+      auditEvents,
     };
   }
 
@@ -170,6 +181,119 @@ describe("work item management", () => {
 
     expect(item.dueOn).toBe("2026-07-31");
     expect(cleared).toMatchObject({ dueOn: null, version: 2 });
+  });
+
+  it("creates and lists direct subtasks with a tenant-scoped parent audit", async () => {
+    const test = harness();
+    const parent = await test.create.execute({ workspaceId: workspace.id, title: "Release" });
+    const child = await test.create.execute({
+      workspaceId: workspace.id,
+      parentWorkItemId: parent.id,
+      title: "Write notes",
+    });
+    const grandchild = await test.create.execute({
+      workspaceId: workspace.id,
+      parentWorkItemId: child.id,
+      title: "Proofread notes",
+    });
+
+    await expect(
+      test.listChildren.execute({
+        workspaceId: workspace.id,
+        parentWorkItemId: parent.id,
+      }),
+    ).resolves.toMatchObject({ items: [child], limit: 100, offset: 0 });
+    expect(grandchild.parentWorkItemId).toBe(child.id);
+    expect(test.auditEvents).toMatchObject([
+      {
+        action: "work_item_hierarchy.parent_assigned",
+        entityId: child.id,
+        data: { parentWorkItemId: parent.id },
+      },
+      {
+        action: "work_item_hierarchy.parent_assigned",
+        entityId: grandchild.id,
+        data: { parentWorkItemId: child.id },
+      },
+    ]);
+  });
+
+  it("reparents and detaches a subtask without changing either parent's version", async () => {
+    const test = harness();
+    const firstParent = await test.create.execute({
+      workspaceId: workspace.id,
+      title: "First parent",
+    });
+    const nextParent = await test.create.execute({
+      workspaceId: workspace.id,
+      title: "Next parent",
+    });
+    const child = await test.create.execute({
+      workspaceId: workspace.id,
+      parentWorkItemId: firstParent.id,
+      title: "Child",
+    });
+    const reparented = await test.update.execute({
+      workspaceId: workspace.id,
+      workItemId: child.id,
+      expectedVersion: child.version,
+      parentWorkItemId: nextParent.id,
+    });
+    const detached = await test.update.execute({
+      workspaceId: workspace.id,
+      workItemId: child.id,
+      expectedVersion: reparented.version,
+      parentWorkItemId: null,
+    });
+
+    expect(reparented).toMatchObject({ parentWorkItemId: nextParent.id, version: 2 });
+    expect(detached).toMatchObject({ parentWorkItemId: null, version: 3 });
+    expect(firstParent.version).toBe(1);
+    expect(nextParent.version).toBe(1);
+    expect(test.auditEvents.slice(-2).map((event) => event.action)).toEqual([
+      "work_item_hierarchy.parent_changed",
+      "work_item_hierarchy.parent_removed",
+    ]);
+  });
+
+  it("rejects missing parents, self-parenting, and descendant cycles", async () => {
+    const test = harness();
+    await expect(
+      test.create.execute({
+        workspaceId: workspace.id,
+        parentWorkItemId: workItemId("missing-parent"),
+        title: "Orphan",
+      }),
+    ).rejects.toMatchObject({ code: "work_item.not_found" });
+
+    const root = await test.create.execute({ workspaceId: workspace.id, title: "Root" });
+    const child = await test.create.execute({
+      workspaceId: workspace.id,
+      parentWorkItemId: root.id,
+      title: "Child",
+    });
+    const grandchild = await test.create.execute({
+      workspaceId: workspace.id,
+      parentWorkItemId: child.id,
+      title: "Grandchild",
+    });
+
+    await expect(
+      test.update.execute({
+        workspaceId: workspace.id,
+        workItemId: root.id,
+        expectedVersion: root.version,
+        parentWorkItemId: grandchild.id,
+      }),
+    ).rejects.toMatchObject({ code: "work_item_hierarchy.cycle_conflict" });
+    await expect(
+      test.update.execute({
+        workspaceId: workspace.id,
+        workItemId: child.id,
+        expectedVersion: child.version,
+        parentWorkItemId: workItemId(child.id.toUpperCase()),
+      }),
+    ).rejects.toMatchObject({ code: "work_item_hierarchy.self_reference_invalid" });
   });
 
   it("rejects a missing workspace before persistence", async () => {

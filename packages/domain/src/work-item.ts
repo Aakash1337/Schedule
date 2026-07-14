@@ -19,6 +19,8 @@ export const maximumWorkItemVersion = 2_147_483_647;
 export interface WorkItem {
   readonly id: WorkItemId;
   readonly workspaceId: WorkspaceId;
+  /** Null marks a root item; otherwise this item is a direct subtask of the referenced item. */
+  readonly parentWorkItemId: WorkItemId | null;
   readonly title: string;
   readonly description: string | null;
   readonly status: WorkItemStatus;
@@ -34,6 +36,7 @@ export interface WorkItem {
 export interface CreateWorkItemInput {
   readonly id?: WorkItemId;
   readonly workspaceId: WorkspaceId;
+  readonly parentWorkItemId?: WorkItemId | null;
   readonly title: string;
   readonly description?: string | null;
   readonly status?: WorkItemStatus;
@@ -44,6 +47,7 @@ export interface CreateWorkItemInput {
 }
 
 export interface UpdateWorkItemInput {
+  readonly parentWorkItemId?: WorkItemId | null;
   readonly title?: string;
   readonly description?: string | null;
   readonly status?: WorkItemStatus;
@@ -124,7 +128,28 @@ function validateTimestamp(value: unknown): asserts value is Date {
   );
 }
 
+function samePersistedWorkItemIdentity(left: WorkItemId, right: WorkItemId): boolean {
+  return left === right || left.toLowerCase() === right.toLowerCase();
+}
+
+function validateParentWorkItemId(
+  itemId: WorkItemId,
+  value: unknown,
+): asserts value is WorkItemId | null {
+  invariant(
+    value === null || (typeof value === "string" && value.trim().length > 0),
+    "work_item_hierarchy.parent_invalid",
+    "A parent work item ID must be a non-empty work item ID or null.",
+  );
+  invariant(
+    value === null || !samePersistedWorkItemIdentity(itemId, value as WorkItemId),
+    "work_item_hierarchy.self_reference_invalid",
+    "A work item cannot be its own parent.",
+  );
+}
+
 function validateExistingWorkItem(item: WorkItem): void {
+  validateParentWorkItemId(item.id, item.parentWorkItemId);
   validateStatus(item.status);
   validatePriority(item.priority);
   validateDueOn(item.dueOn);
@@ -137,6 +162,9 @@ function validateExistingWorkItem(item: WorkItem): void {
 }
 
 export function createWorkItem(input: CreateWorkItemInput): WorkItem {
+  const id = input.id ?? workItemId();
+  const parentWorkItemId = input.parentWorkItemId ?? null;
+  validateParentWorkItemId(id, parentWorkItemId);
   const title = normalizeTitle(input.title);
   const description = normalizeDescription(input.description ?? null);
   const status = input.status === undefined ? "backlog" : input.status;
@@ -151,8 +179,9 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
   validateTimestamp(now);
 
   return {
-    id: input.id ?? workItemId(),
+    id,
     workspaceId: input.workspaceId,
+    parentWorkItemId,
     title,
     description,
     status,
@@ -178,6 +207,9 @@ export function updateWorkItem(item: WorkItem, input: UpdateWorkItemInput): Work
   validateTimestamp(input.now);
 
   const title = input.title === undefined ? item.title : normalizeTitle(input.title);
+  const parentWorkItemId =
+    input.parentWorkItemId === undefined ? item.parentWorkItemId : input.parentWorkItemId;
+  validateParentWorkItemId(item.id, parentWorkItemId);
   const description =
     input.description === undefined ? item.description : normalizeDescription(input.description);
   const status = input.status === undefined ? item.status : input.status;
@@ -193,6 +225,7 @@ export function updateWorkItem(item: WorkItem, input: UpdateWorkItemInput): Work
   validatePlanningDuration(planningDurationMinutes);
 
   if (
+    parentWorkItemId === item.parentWorkItemId &&
     title === item.title &&
     description === item.description &&
     status === item.status &&
@@ -211,6 +244,7 @@ export function updateWorkItem(item: WorkItem, input: UpdateWorkItemInput): Work
 
   return {
     ...item,
+    parentWorkItemId,
     title,
     description,
     status,

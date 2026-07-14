@@ -167,6 +167,11 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       limit: query.limit ?? 100,
       offset: query.offset ?? 0,
     }),
+    listWorkItemChildren: async (query) => ({
+      items: storedWorkItem?.parentWorkItemId === query.parentWorkItemId ? [storedWorkItem] : [],
+      limit: query.limit ?? 100,
+      offset: query.offset ?? 0,
+    }),
     listWorkItemDependencies: async (query) => ({
       items: storedDependency === null ? [] : [storedDependency],
       limit: query.limit ?? 100,
@@ -178,6 +183,9 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
     updateWorkItem: async (command) => {
       if (storedWorkItem === null) throw new DomainError("work_item.not_found", "Missing.");
       storedWorkItem = applyWorkItemUpdate(storedWorkItem, {
+        ...(command.parentWorkItemId === undefined
+          ? {}
+          : { parentWorkItemId: command.parentWorkItemId }),
         ...(command.title === undefined ? {} : { title: command.title }),
         ...(command.description === undefined ? {} : { description: command.description }),
         ...(command.status === undefined ? {} : { status: command.status }),
@@ -481,6 +489,7 @@ describe("local product API", () => {
     expect(created.statusCode).toBe(201);
     expect(created.json()).toMatchObject({
       id: workItemUuid,
+      parentWorkItemId: null,
       title: "Ship the MVP",
       status: "planned",
       priority: "urgent",
@@ -500,6 +509,92 @@ describe("local product API", () => {
       version: 2,
     });
     expect(retrieved.json()).toEqual(updated.json());
+  });
+
+  it("creates, lists, reparents, and detaches direct subtasks", async () => {
+    const parentId = workItemId(prerequisiteWorkItemUuid);
+    const nextParentId = workItemId(canonicalPrerequisiteWorkItemUuid);
+    const childId = workItemId(workItemUuid);
+    const createCommands: unknown[] = [];
+    const listQueries: unknown[] = [];
+    let currentChild = createWorkItem({
+      id: childId,
+      workspaceId: workspace.id,
+      parentWorkItemId: parentId,
+      title: "Write release notes",
+      now: new Date("2026-07-15T12:00:00.000Z"),
+    });
+    const harness = createHarness();
+    const app = await appWith({
+      ...harness.services,
+      createWorkItem: async (command) => {
+        createCommands.push(command);
+        return currentChild;
+      },
+      listWorkItemChildren: async (query) => {
+        listQueries.push(query);
+        return { items: [currentChild], limit: query.limit ?? 100, offset: query.offset ?? 0 };
+      },
+      updateWorkItem: async (command) => {
+        currentChild = applyWorkItemUpdate(currentChild, {
+          ...(command.parentWorkItemId === undefined
+            ? {}
+            : { parentWorkItemId: command.parentWorkItemId }),
+          now: new Date("2026-07-15T12:01:00.000Z"),
+        });
+        return currentChild;
+      },
+    });
+    const path = `/v1/workspaces/${workspaceUuid}/work-items/${prerequisiteWorkItemUuid.toUpperCase()}/subtasks`;
+
+    const created = await app.inject({
+      method: "POST",
+      url: path,
+      payload: { title: currentChild.title },
+    });
+    const listed = await app.inject({ method: "GET", url: `${path}?limit=20&offset=0` });
+    const reparented = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+      payload: { expectedVersion: 1, parentWorkItemId: nextParentId },
+    });
+    const detached = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+      payload: { expectedVersion: 2, parentWorkItemId: null },
+    });
+    const conflictingBodyParent = await app.inject({
+      method: "POST",
+      url: path,
+      payload: { title: "Invalid nested request", parentWorkItemId: nextParentId },
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      id: childId,
+      parentWorkItemId: parentId,
+      title: currentChild.title,
+    });
+    expect(createCommands).toEqual([
+      expect.objectContaining({
+        workspaceId: workspace.id,
+        parentWorkItemId: parentId,
+        title: "Write release notes",
+      }),
+    ]);
+    expect(listed.json()).toMatchObject({
+      items: [{ id: childId, parentWorkItemId: parentId }],
+      page: { limit: 20, offset: 0 },
+    });
+    expect(listQueries).toEqual([
+      expect.objectContaining({ parentWorkItemId: parentId, limit: 20, offset: 0 }),
+    ]);
+    expect(reparented.json()).toMatchObject({ parentWorkItemId: nextParentId, version: 2 });
+    expect(detached.json()).toMatchObject({ parentWorkItemId: null, version: 3 });
+    expect(conflictingBodyParent.statusCode).toBe(400);
+    expect(conflictingBodyParent.json()).toMatchObject({
+      error: { code: "request.validation_failed" },
+    });
   });
 
   it("enforces planning-duration bounds for work-item create and update", async () => {

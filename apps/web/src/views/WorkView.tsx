@@ -46,6 +46,7 @@ interface WorkspaceDependencyData {
 
 interface WorkEditDraft {
   readonly id: string;
+  readonly parentWorkItemId: string;
   readonly title: string;
   readonly description: string;
   readonly dueOn: string;
@@ -73,6 +74,21 @@ function mergeWorkItems(
       .filter((item) => !currentIds.has(item.id))
       .map((item) => mergedById.get(item.id) ?? item),
   ];
+}
+
+function descendantWorkItemIds(
+  rootId: string,
+  childrenByParentId: ReadonlyMap<string, readonly WorkItem[]>,
+): ReadonlySet<string> {
+  const descendants = new Set<string>();
+  const pending = [...(childrenByParentId.get(rootId) ?? [])];
+  while (pending.length > 0) {
+    const child = pending.pop();
+    if (child === undefined || descendants.has(child.id)) continue;
+    descendants.add(child.id);
+    pending.push(...(childrenByParentId.get(child.id) ?? []));
+  }
+  return descendants;
 }
 
 function messageFor(error: unknown): string {
@@ -110,6 +126,19 @@ function dependencyMessageFor(error: unknown): string {
   return messageFor(error);
 }
 
+function workItemMessageFor(error: unknown): string {
+  if (error instanceof ApiError && error.code === "work_item_hierarchy.cycle_conflict") {
+    return "That parent would create a cycle. Choose an item outside this subtask branch.";
+  }
+  if (error instanceof ApiError && error.code === "work_item_hierarchy.self_reference_invalid") {
+    return "A work item cannot be its own parent.";
+  }
+  if (error instanceof ApiError && error.code === "work_item.not_found") {
+    return "That parent is no longer available. Refresh the board and choose another item.";
+  }
+  return messageFor(error);
+}
+
 function isPlanningDurationValid(value: string, included: boolean): boolean {
   if (!included) return true;
   const duration = Number(value);
@@ -138,6 +167,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const [newStatus, setNewStatus] = useState<WorkItemStatus>("backlog");
   const [newPriority, setNewPriority] = useState<WorkItemPriority>("none");
   const [newDueOn, setNewDueOn] = useState("");
+  const [newParentWorkItemId, setNewParentWorkItemId] = useState<string | null>(null);
   const [includeInDailyPlan, setIncludeInDailyPlan] = useState(false);
   const [planningDurationMinutes, setPlanningDurationMinutes] = useState("30");
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -269,6 +299,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     setProposalError(null);
     setProposalAnnouncement(null);
     setRecentlyCreatedItemId(null);
+    setNewParentWorkItemId(null);
     return () => {
       proposalAbortRef.current?.abort();
       proposalOperationRef.current += 1;
@@ -313,6 +344,19 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     () => new Map((allItems ?? []).map((item) => [item.id, item] as const)),
     [allItems],
   );
+  const childrenByParentId = useMemo(() => {
+    const grouped = new Map<string, WorkItem[]>();
+    for (const candidate of allItems ?? []) {
+      if (candidate.parentWorkItemId === null) continue;
+      const current = grouped.get(candidate.parentWorkItemId) ?? [];
+      current.push(candidate);
+      grouped.set(candidate.parentWorkItemId, current);
+    }
+    for (const children of grouped.values()) {
+      children.sort((left, right) => left.title.localeCompare(right.title));
+    }
+    return grouped;
+  }, [allItems]);
   const dependenciesByDependentId = useMemo(() => {
     const grouped = new Map<string, WorkItemDependency[]>();
     for (const dependency of dependencies ?? []) {
@@ -336,6 +380,8 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     planningDurationMinutes,
     includeInDailyPlan,
   );
+  const selectedComposerParent =
+    newParentWorkItemId === null ? null : (allItemsById.get(newParentWorkItemId) ?? null);
 
   function updateWorkspaceDependencyData(
     workspaceId: string,
@@ -361,14 +407,19 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     setCreating(true);
     setCreateError(null);
     try {
-      const created = await api.createWorkItem(requestWorkspaceId, {
+      const input = {
         title: normalizedTitle,
         description: description.trim().length === 0 ? null : description.trim(),
         status: newStatus,
         priority: newPriority,
         dueOn: newDueOn || null,
         planningDurationMinutes: parsedPlanningDuration,
-      });
+      };
+      const requestedParentWorkItemId = newParentWorkItemId;
+      const created =
+        requestedParentWorkItemId === null
+          ? await api.createWorkItem(requestWorkspaceId, input)
+          : await api.createSubtask(requestWorkspaceId, requestedParentWorkItemId, input);
       if (activeQueryKeyRef.current === requestKey) {
         updateWorkspaceDependencyData(requestWorkspaceId, (current) => ({
           ...current,
@@ -393,9 +444,14 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       setNewStatus("backlog");
       setNewPriority("none");
       setNewDueOn("");
+      setNewParentWorkItemId(null);
       setIncludeInDailyPlan(false);
       setPlanningDurationMinutes("30");
-      titleInputRef.current?.focus();
+      if (requestedParentWorkItemId === null) {
+        titleInputRef.current?.focus();
+      } else if (priorityFilter === "" || created.priority === priorityFilter) {
+        setRecentlyCreatedItemId(created.id);
+      }
     } catch (error) {
       if (activeQueryKeyRef.current === requestKey) setCreateError(messageFor(error));
     } finally {
@@ -408,6 +464,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setEditDraft({
       id: item.id,
+      parentWorkItemId: item.parentWorkItemId ?? "",
       title: item.title,
       description: item.description ?? "",
       dueOn: item.dueOn ?? "",
@@ -473,6 +530,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     item: WorkItem,
     changes: {
       readonly title?: string;
+      readonly parentWorkItemId?: string | null;
       readonly description?: string | null;
       readonly status?: WorkItemStatus;
       readonly priority?: WorkItemPriority;
@@ -520,10 +578,10 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       return true;
     } catch (error) {
       if (activeQueryKeyRef.current !== requestKey) return false;
-      if (error instanceof ApiError && error.status === 409) {
+      if (error instanceof ApiError && error.code === "work_item.version_conflict") {
         await refreshAfterConflict(requestKey, requestWorkspaceId, item.id);
       } else {
-        setActionError(messageFor(error));
+        setActionError(workItemMessageFor(error));
       }
       return false;
     } finally {
@@ -548,12 +606,33 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     );
     if (normalizedTitle.length === 0 || !planningDurationIsValid) return;
     const saved = await updateItem(item, {
+      parentWorkItemId: editDraft.parentWorkItemId || null,
       title: normalizedTitle,
       description: editDraft.description.trim() || null,
       dueOn: editDraft.dueOn || null,
       planningDurationMinutes: parsedPlanningDuration,
     });
     if (saved) closeEdit();
+  }
+
+  function beginSubtask(parent: WorkItem): void {
+    setNewParentWorkItemId(parent.id);
+    setCreateError(null);
+    window.setTimeout(() => {
+      titleInputRef.current?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+      titleInputRef.current?.focus();
+    });
+  }
+
+  function revealWorkItem(itemId: string): void {
+    if (items?.some((candidate) => candidate.id === itemId) === true) {
+      const card = document.getElementById(`work-item-${itemId}`);
+      card?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+      card?.focus();
+      return;
+    }
+    setPriorityFilter("");
+    setRecentlyCreatedItemId(itemId);
   }
 
   function beginDependencyMutation(itemId: string, requestKey: string): string | null {
@@ -1003,10 +1082,16 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         <div className="work-composer-heading">
           <div>
             <p className="eyebrow">Quick capture</p>
-            <h2 id="work-composer-title">Add a work item</h2>
+            <h2 id="work-composer-title">
+              {newParentWorkItemId === null ? "Add a work item" : "Add a subtask"}
+            </h2>
           </div>
           <div className="work-composer-heading-actions">
-            <p>Start it in any status. Opt in only the one-time work that belongs in Today.</p>
+            <p>
+              {newParentWorkItemId === null
+                ? "Start it in any status. Opt in only the one-time work that belongs in Today."
+                : `This item will sit under ${selectedComposerParent?.title ?? "the selected parent"} and keep its own status.`}
+            </p>
             {!proposalOpen ? (
               <Button
                 type="button"
@@ -1165,6 +1250,21 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         {createError === null ? null : (
           <ErrorNotice message={createError} onDismiss={() => setCreateError(null)} />
         )}
+        {newParentWorkItemId === null ? null : (
+          <div className="work-subtask-context" role="status" aria-live="polite">
+            <span>
+              <strong>Subtask of</strong> {selectedComposerParent?.title ?? "Unavailable item"}
+            </span>
+            <Button
+              type="button"
+              variant="quiet"
+              disabled={creating}
+              onClick={() => setNewParentWorkItemId(null)}
+            >
+              Clear parent
+            </Button>
+          </div>
+        )}
         <form className="work-composer-form" onSubmit={(event) => void createItem(event)}>
           <Field label="Title" className="work-composer-title-field">
             <input
@@ -1265,7 +1365,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
             disabled={title.trim().length === 0 || !newPlanningDurationIsValid}
           >
             <Plus size={16} aria-hidden="true" />
-            Add item
+            {newParentWorkItemId === null ? "Add item" : "Add subtask"}
           </Button>
         </form>
       </section>
@@ -1377,6 +1477,15 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                       const dependencyHeadingId = `work-dependencies-${item.id}`;
                       const dependencyError = dependencyErrors[item.id] ?? null;
                       const dependencyAnnouncement = dependencyAnnouncements[item.id] ?? null;
+                      const parentItem =
+                        item.parentWorkItemId === null
+                          ? null
+                          : (allItemsById.get(item.parentWorkItemId) ?? null);
+                      const childItems = childrenByParentId.get(item.id) ?? [];
+                      const descendantItemIds = descendantWorkItemIds(item.id, childrenByParentId);
+                      const completedChildren = childItems.filter(
+                        (child) => child.status === "done",
+                      ).length;
                       return (
                         <article
                           id={`work-item-${item.id}`}
@@ -1388,7 +1497,14 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                           <header className="work-card-header">
                             <h3>{item.title}</h3>
                             <span className="work-card-header-actions">
-                              {item.planningDurationMinutes === null ? null : (
+                              {childItems.length > 0 ? (
+                                <span
+                                  className="work-plan-badge work-plan-badge-container"
+                                  aria-label="Parent container; leaf subtasks are considered for Today"
+                                >
+                                  Parent · not in Today
+                                </span>
+                              ) : item.planningDurationMinutes === null ? null : (
                                 <span
                                   className="work-plan-badge"
                                   aria-label="Included in daily plan"
@@ -1451,6 +1567,37 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                 />
                               </Field>
                               <Field
+                                label="Parent item (optional)"
+                                hint="Choose No parent to make this a top-level item. Cycles are rejected."
+                              >
+                                <select
+                                  value={editDraft.parentWorkItemId}
+                                  disabled={cardPending}
+                                  onChange={(event) => {
+                                    const value = event.currentTarget.value;
+                                    setEditDraft((current) =>
+                                      current === null
+                                        ? null
+                                        : { ...current, parentWorkItemId: value },
+                                    );
+                                  }}
+                                >
+                                  <option value="">No parent</option>
+                                  {[...(allItems ?? [])]
+                                    .filter(
+                                      (candidate) =>
+                                        candidate.id !== item.id &&
+                                        !descendantItemIds.has(candidate.id),
+                                    )
+                                    .sort((left, right) => left.title.localeCompare(right.title))
+                                    .map((candidate) => (
+                                      <option value={candidate.id} key={candidate.id}>
+                                        {candidate.title} ({statusLabel(candidate.status)})
+                                      </option>
+                                    ))}
+                                </select>
+                              </Field>
+                              <Field
                                 label="Due date (optional)"
                                 hint="Leave blank when this work has no deadline."
                               >
@@ -1472,7 +1619,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                   <input
                                     type="checkbox"
                                     checked={editDraft.includeInDailyPlan}
-                                    disabled={cardPending}
+                                    disabled={cardPending || childItems.length > 0}
                                     onChange={(event) => {
                                       const checked = event.currentTarget.checked;
                                       setEditDraft((current) =>
@@ -1482,7 +1629,11 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                       );
                                     }}
                                   />
-                                  <span>Include in Today</span>
+                                  <span>
+                                    {childItems.length > 0
+                                      ? "Eligible for Today when leaf"
+                                      : "Include in Today"}
+                                  </span>
                                 </label>
                                 {editDraft.includeInDailyPlan ? (
                                   <Field label="Plan duration (minutes)">
@@ -1493,7 +1644,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                       step={1}
                                       inputMode="numeric"
                                       value={editDraft.planningDurationMinutes}
-                                      disabled={cardPending}
+                                      disabled={cardPending || childItems.length > 0}
                                       aria-invalid={
                                         !isPlanningDurationValid(
                                           editDraft.planningDurationMinutes,
@@ -1516,9 +1667,13 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                   id={`work-card-planning-duration-${item.id}-hint`}
                                   className="work-planning-hint"
                                 >
-                                  {editDraft.includeInDailyPlan
-                                    ? "The planner reserves this many minutes. Work items remain one-time candidates."
-                                    : "This item will not be selected for Today."}
+                                  {childItems.length > 0
+                                    ? editDraft.includeInDailyPlan
+                                      ? `Saved at ${editDraft.planningDurationMinutes} minutes, but dormant while this item has subtasks. Detach every child to make it eligible again.`
+                                      : "Parents stay out of Today. Detach every child before opting this item into the plan."
+                                    : editDraft.includeInDailyPlan
+                                      ? "The planner reserves this many minutes. Work items remain one-time candidates."
+                                      : "This item will not be selected for Today."}
                                 </p>
                               </fieldset>
                               <div className="work-card-editor-actions">
@@ -1545,6 +1700,87 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                           ) : item.description === null ? null : (
                             <p className="work-card-description">{item.description}</p>
                           )}
+                          <section
+                            className="work-hierarchy"
+                            aria-label={`Subtask relationships for ${item.title}`}
+                          >
+                            <div className="work-hierarchy-summary">
+                              {parentItem === null ? (
+                                <span className="work-hierarchy-level">Top-level item</span>
+                              ) : (
+                                <span className="work-hierarchy-parent">
+                                  Subtask of{" "}
+                                  <button
+                                    type="button"
+                                    disabled={cardPending}
+                                    onClick={() => revealWorkItem(parentItem.id)}
+                                  >
+                                    {parentItem.title}
+                                  </button>
+                                </span>
+                              )}
+                              {childItems.length === 0 ? null : (
+                                <span className="work-hierarchy-progress">
+                                  {completedChildren}/{childItems.length} subtasks done
+                                </span>
+                              )}
+                              <Button
+                                type="button"
+                                variant="quiet"
+                                className="work-add-subtask"
+                                disabled={cardPending}
+                                aria-label={`Add subtask to ${item.title}`}
+                                onClick={() => beginSubtask(item)}
+                              >
+                                <Plus size={13} aria-hidden="true" />
+                                Add subtask
+                              </Button>
+                            </div>
+                            {childItems.length === 0 ? null : (
+                              <ul className="work-subtask-list">
+                                {childItems.slice(0, 3).map((child) => (
+                                  <li key={child.id}>
+                                    <button
+                                      type="button"
+                                      disabled={cardPending}
+                                      onClick={() => revealWorkItem(child.id)}
+                                    >
+                                      <span>{child.title}</span>
+                                      <small>{statusLabel(child.status)}</small>
+                                    </button>
+                                  </li>
+                                ))}
+                                {childItems.length <= 3 ? null : (
+                                  <li className="work-subtask-overflow">
+                                    <details>
+                                      <summary>
+                                        Show {childItems.length - 3} more{" "}
+                                        {childItems.length - 3 === 1 ? "subtask" : "subtasks"}
+                                      </summary>
+                                      <ul>
+                                        {childItems.slice(3).map((child) => (
+                                          <li key={child.id}>
+                                            <button
+                                              type="button"
+                                              disabled={cardPending}
+                                              onClick={() => revealWorkItem(child.id)}
+                                            >
+                                              <span>{child.title}</span>
+                                              <small>{statusLabel(child.status)}</small>
+                                            </button>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </details>
+                                  </li>
+                                )}
+                              </ul>
+                            )}
+                            <p>
+                              Parent and subtask statuses stay independent. Only leaf items can
+                              enter Today.
+                            </p>
+                          </section>
                           <section
                             className="work-dependencies"
                             aria-labelledby={dependencyHeadingId}
