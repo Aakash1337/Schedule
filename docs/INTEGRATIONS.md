@@ -1,13 +1,14 @@
 # Inbound integration gateway
 
 The integration gateway is the authenticated, provider-neutral boundary for trusted automation such
-as a future Hermes agent. Schedule remains the source of truth: an adapter reads Schedule through
+as the opt-in local Hermes Schedule plugin. Schedule remains the source of truth: an adapter reads Schedule through
 this API and submits structured commands through the same application rules used by the local
 product. An adapter must never write Schedule's PostgreSQL tables directly.
 
-This first gateway is deliberately inbound only. It accepts a small versioned command vocabulary;
-it does not receive raw WhatsApp messages, interpret natural language, or push reminders. A Hermes
-adapter can be added as a separate process once its callable interface is known.
+This gateway is deliberately inbound only. It accepts a small versioned command vocabulary; it does
+not receive raw WhatsApp messages, interpret natural language, or push reminders. The repository's
+[Hermes plugin](./HERMES.md) is a separate local adapter: Hermes interprets the conversation, while
+the plugin calls this gateway and enforces a later-turn sender/session/platform-bound confirmation.
 
 ## Safety model
 
@@ -419,6 +420,17 @@ pnpm verify:integration-gateway
 
 This verifier is also included in `pnpm verify:database` and its CI job.
 
+The separate Hermes adapter verifier exercises the native plugin boundary plus a disposable
+PostgreSQL and real Fastify prepare/confirm flow:
+
+```powershell
+pnpm verify:hermes-adapter
+```
+
+It proves local/stdout behavior and no mutation before explicit confirmation. It does not contact
+WhatsApp; see [HERMES.md](./HERMES.md#verification-and-safe-rollout) for the operator-run delivery
+smoke.
+
 ## Retention and cleanup
 
 Successful request receipts are the durable replay cache for `Idempotency-Key`. They are retained for
@@ -481,19 +493,24 @@ security-sensitive recovery.
 
 ## Current limitations
 
-- There is no Hermes runtime or WhatsApp transport in this repository. No endpoint accepts a chat
-  message, audio, image, or natural-language instruction.
-- Work-item discovery makes a future Hermes-style adapter capable of finding credential-scoped
-  backlog/Kanban IDs and versions. It does not implement provider delivery, message ingestion,
-  intent parsing, human/account binding, or phone alerts.
+- The Hermes runtime and WhatsApp transport remain external dependencies. No Schedule endpoint
+  accepts a chat message, audio, image, or natural-language instruction. The repository-owned local
+  plugin uses Hermes's native hooks and tools instead.
+- The local plugin can find credential-scoped Today and backlog/Kanban data, prepare strict
+  structured commands, and require a separate HMAC-bound confirmation turn. Hermes still owns
+  message ingestion and intent interpretation, while its platform connector supplies sender,
+  session, and platform identity.
 - A disabled-by-default [outbound webhook substrate](./WEBHOOKS.md) can send operator-queued signed
   test events and explicitly subscribed `schedule.changed.v1` invalidations. It cannot send schedule
   contents, push-notification requests, reminders, or end-to-end phone delivery receipts. An adapter
   must still read and poll Today for authoritative schedule data.
+- The plugin's deterministic reminder helper emits one bounded Today summary to standard output.
+  It is not a Schedule-side reminder policy or delivery-receipt engine. WhatsApp is not complete
+  until the Hermes operator configures `WHATSAPP_HOME_CHANNEL` and verifies a private self-chat.
 - Version 1 does not create workspaces, routines, plans, or credentials over HTTP; delete commands
   are intentionally absent.
 - The integration API is machine-to-machine authentication for one workspace, not hosted end-user
   authentication or multi-device synchronization.
-- Confirmation proves possession of a Schedule credential. Human identity, conversational consent,
-  WhatsApp account binding, and replay prevention at the messaging layer remain the adapter's
-  responsibility.
+- Schedule confirmation proves possession of a Schedule credential. The local plugin adds one-use
+  sender/session/platform-bound conversational consent, but platform account authenticity and
+  WhatsApp home-channel ownership remain Hermes operator responsibilities.

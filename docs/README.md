@@ -6,7 +6,9 @@ Durable product and engineering specifications live here so the repository root 
 - [Deterministic planner](./PLANNER.md): implemented planning rules, determinism, persistence, and concurrency contracts.
 - [Local product API](./API.md): local-only HTTP safety boundary, routes, errors, and example usage.
 - [Inbound integration gateway](./INTEGRATIONS.md): authenticated automation credentials, versioned
-  commands, confirmation, idempotency, and the future Hermes boundary.
+  commands, confirmation, idempotency, and the external-adapter boundary.
+- [Hermes Schedule plugin](./HERMES.md): local plugin installation, sender-bound confirmation,
+  deterministic reminders, WhatsApp prerequisites, privacy, and safe rollout.
 - [Outbound webhook delivery](./WEBHOOKS.md): encrypted endpoint secrets, signed delivery, opt-in
   privacy-thin Today-change invalidations, subscriptions, network policy, rotation, retries, and
   dead-letter operations.
