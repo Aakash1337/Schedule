@@ -51,7 +51,12 @@ describe("work item management", () => {
             (item) =>
               item.workspaceId === _workspace &&
               item.planningDurationMinutes !== null &&
-              !["done", "cancelled"].includes(item.status),
+              !["done", "cancelled"].includes(item.status) &&
+              !items.some(
+                (candidate) =>
+                  candidate.workspaceId === item.workspaceId &&
+                  candidate.parentWorkItemId === item.id,
+              ),
           ),
         insert: async (item: WorkItem) => {
           items.push(item);
@@ -248,12 +253,35 @@ describe("work item management", () => {
 
     expect(reparented).toMatchObject({ parentWorkItemId: nextParent.id, version: 2 });
     expect(detached).toMatchObject({ parentWorkItemId: null, version: 3 });
-    expect(firstParent.version).toBe(1);
-    expect(nextParent.version).toBe(1);
+    expect(test.items.find((item) => item.id === firstParent.id)?.version).toBe(1);
+    expect(test.items.find((item) => item.id === nextParent.id)?.version).toBe(1);
     expect(test.auditEvents.slice(-2).map((event) => event.action)).toEqual([
       "work_item_hierarchy.parent_changed",
       "work_item_hierarchy.parent_removed",
     ]);
+  });
+
+  it("treats a case-equivalent persisted parent as a hierarchy no-op", async () => {
+    const test = harness();
+    const parent = await test.create.execute({ workspaceId: workspace.id, title: "Parent" });
+    const child = await test.create.execute({
+      workspaceId: workspace.id,
+      parentWorkItemId: parent.id,
+      title: "Child",
+    });
+    const auditCount = test.auditEvents.length;
+
+    const unchanged = await test.update.execute({
+      workspaceId: workspace.id,
+      workItemId: child.id,
+      expectedVersion: child.version,
+      parentWorkItemId: workItemId(parent.id.toUpperCase()),
+    });
+
+    expect(unchanged).toBe(child);
+    expect(test.saves()).toBe(0);
+    expect(test.invalidatedTargets).toEqual([]);
+    expect(test.auditEvents).toHaveLength(auditCount);
   });
 
   it("rejects missing parents, self-parenting, and descendant cycles", async () => {

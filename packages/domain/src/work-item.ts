@@ -128,8 +128,11 @@ function validateTimestamp(value: unknown): asserts value is Date {
   );
 }
 
-function samePersistedWorkItemIdentity(left: WorkItemId, right: WorkItemId): boolean {
-  return left === right || left.toLowerCase() === right.toLowerCase();
+export function sameWorkItemIdentity(left: WorkItemId | null, right: WorkItemId | null): boolean {
+  return (
+    left === right ||
+    (left !== null && right !== null && left.toLowerCase() === right.toLowerCase())
+  );
 }
 
 function validateParentWorkItemId(
@@ -142,7 +145,7 @@ function validateParentWorkItemId(
     "A parent work item ID must be a non-empty work item ID or null.",
   );
   invariant(
-    value === null || !samePersistedWorkItemIdentity(itemId, value as WorkItemId),
+    value === null || !sameWorkItemIdentity(itemId, value as WorkItemId),
     "work_item_hierarchy.self_reference_invalid",
     "A work item cannot be its own parent.",
   );
@@ -207,8 +210,11 @@ export function updateWorkItem(item: WorkItem, input: UpdateWorkItemInput): Work
   validateTimestamp(input.now);
 
   const title = input.title === undefined ? item.title : normalizeTitle(input.title);
-  const parentWorkItemId =
+  const requestedParentWorkItemId =
     input.parentWorkItemId === undefined ? item.parentWorkItemId : input.parentWorkItemId;
+  const parentWorkItemId = sameWorkItemIdentity(requestedParentWorkItemId, item.parentWorkItemId)
+    ? item.parentWorkItemId
+    : requestedParentWorkItemId;
   validateParentWorkItemId(item.id, parentWorkItemId);
   const description =
     input.description === undefined ? item.description : normalizeDescription(input.description);

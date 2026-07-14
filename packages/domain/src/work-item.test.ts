@@ -87,6 +87,23 @@ describe("work item domain model", () => {
         now: new Date("2026-07-05T00:00:00.000Z"),
       }),
     ).toBe(detached);
+
+    const equivalentParent = updateWorkItem(original, {
+      parentWorkItemId: workItemId(parent.toUpperCase()),
+      now: new Date("2026-07-05T00:00:00.000Z"),
+    });
+    expect(equivalentParent).toBe(original);
+
+    const renamedWithEquivalentParent = updateWorkItem(original, {
+      parentWorkItemId: workItemId(parent.toUpperCase()),
+      title: "Renamed child",
+      now: new Date("2026-07-06T00:00:00.000Z"),
+    });
+    expect(renamedWithEquivalentParent).toMatchObject({
+      parentWorkItemId: parent,
+      title: "Renamed child",
+      version: 2,
+    });
   });
 
   it("rejects self-parenting with canonical persisted identity", () => {

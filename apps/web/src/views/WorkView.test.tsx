@@ -549,9 +549,14 @@ describe("work board", () => {
     await user.click(
       within(parentCard).getByRole("button", { name: `Edit details for ${parent.title}` }),
     );
-    expect(
-      within(parentCard).getByRole("checkbox", { name: "Eligible for Today when leaf" }),
-    ).toBeDisabled();
+    const parentPlanningCheckbox = within(parentCard).getByRole("checkbox", {
+      name: "Eligible for Today when leaf",
+    });
+    expect(parentPlanningCheckbox).toBeDisabled();
+    expect(parentPlanningCheckbox).toHaveAttribute(
+      "aria-describedby",
+      `work-card-planning-duration-${parent.id}-hint`,
+    );
     expect(
       within(parentCard).getByRole("spinbutton", { name: "Plan duration (minutes)" }),
     ).toBeDisabled();

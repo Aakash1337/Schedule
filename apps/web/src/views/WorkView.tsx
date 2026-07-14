@@ -91,6 +91,8 @@ function descendantWorkItemIds(
   return descendants;
 }
 
+const emptyDescendantWorkItemIds: ReadonlySet<string> = new Set();
+
 function messageFor(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
@@ -357,6 +359,14 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     }
     return grouped;
   }, [allItems]);
+  const editedWorkItemId = editDraft?.id ?? null;
+  const editedDescendantWorkItemIds = useMemo(
+    () =>
+      editedWorkItemId === null
+        ? emptyDescendantWorkItemIds
+        : descendantWorkItemIds(editedWorkItemId, childrenByParentId),
+    [childrenByParentId, editedWorkItemId],
+  );
   const dependenciesByDependentId = useMemo(() => {
     const grouped = new Map<string, WorkItemDependency[]>();
     for (const dependency of dependencies ?? []) {
@@ -1482,7 +1492,6 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                           ? null
                           : (allItemsById.get(item.parentWorkItemId) ?? null);
                       const childItems = childrenByParentId.get(item.id) ?? [];
-                      const descendantItemIds = descendantWorkItemIds(item.id, childrenByParentId);
                       const completedChildren = childItems.filter(
                         (child) => child.status === "done",
                       ).length;
@@ -1587,7 +1596,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                     .filter(
                                       (candidate) =>
                                         candidate.id !== item.id &&
-                                        !descendantItemIds.has(candidate.id),
+                                        !editedDescendantWorkItemIds.has(candidate.id),
                                     )
                                     .sort((left, right) => left.title.localeCompare(right.title))
                                     .map((candidate) => (
@@ -1620,6 +1629,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                     type="checkbox"
                                     checked={editDraft.includeInDailyPlan}
                                     disabled={cardPending || childItems.length > 0}
+                                    aria-describedby={`work-card-planning-duration-${item.id}-hint`}
                                     onChange={(event) => {
                                       const checked = event.currentTarget.checked;
                                       setEditDraft((current) =>

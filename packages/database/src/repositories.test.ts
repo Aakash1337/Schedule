@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { sql } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 
@@ -285,6 +286,61 @@ describe("PostgresUnitOfWork", () => {
     await expect(
       unitOfWork.run(({ workItems }) => workItems.findById(requestIdentity.workspaceId, item)),
     ).resolves.toMatchObject({ dueOn: null });
+  });
+
+  it("directly excludes parent work items from planning candidates", async () => {
+    const parentId = workItemId("50000000-0000-4000-8000-000000000010");
+    const childId = workItemId("50000000-0000-4000-8000-000000000011");
+    const unrelatedLeafId = workItemId("50000000-0000-4000-8000-000000000012");
+    const candidateRow = (id: string, parentWorkItemId: string | null, title: string) => ({
+      id,
+      workspaceId: requestIdentity.workspaceId,
+      parentWorkItemId,
+      title,
+      description: null,
+      status: "backlog" as const,
+      priority: "medium" as const,
+      planningDurationMinutes: 30,
+      dueOn: null,
+      version: 1,
+      createdAt: new Date("2026-07-13T02:00:01.000Z"),
+      updatedAt: new Date("2026-07-13T02:00:01.000Z"),
+    });
+    const limit = vi
+      .fn()
+      .mockResolvedValue([
+        candidateRow(childId, parentId, "Child leaf"),
+        candidateRow(unrelatedLeafId, null, "Unrelated leaf"),
+      ]);
+    const orderBy = vi.fn().mockReturnValue({ limit });
+    const outerWhere = vi.fn().mockReturnValue({ orderBy });
+    const outerFrom = vi.fn().mockReturnValue({ where: outerWhere });
+    const childWhere = vi.fn().mockReturnValue({ getSQL: () => sql`select 1` });
+    const childFrom = vi.fn().mockReturnValue({ where: childWhere });
+    const select = vi
+      .fn()
+      .mockReturnValueOnce({ from: outerFrom })
+      .mockReturnValueOnce({ from: childFrom });
+    const transaction = vi.fn(async (operation: (database: unknown) => Promise<unknown>) =>
+      operation({ select }),
+    );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+
+    const candidates = await new PostgresUnitOfWork(connection).run(({ workItems }) =>
+      workItems.listPlanningCandidates(requestIdentity.workspaceId),
+    );
+
+    expect(candidates.map((candidate) => candidate.id)).toEqual([childId, unrelatedLeafId]);
+    expect(candidates).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: parentId })]),
+    );
+    expect(select).toHaveBeenCalledTimes(2);
+    expect(limit).toHaveBeenCalledWith(501);
+    const outerPredicate = new PgDialect().sqlToQuery(outerWhere.mock.calls[0]?.[0]);
+    const childPredicate = new PgDialect().sqlToQuery(childWhere.mock.calls[0]?.[0]);
+    expect(outerPredicate.sql).toContain("not exists (select 1)");
+    expect(childPredicate.sql).toContain('"planning_child_work_items"."parent_work_item_id"');
+    expect(childPredicate.sql).toContain('"work_items"."id"');
   });
 });
 

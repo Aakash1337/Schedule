@@ -1,5 +1,6 @@
 import {
   DomainError,
+  sameWorkItemIdentity,
   updateWorkItem,
   type WorkItem,
   type LocalDate,
@@ -60,7 +61,7 @@ export class UpdateWorkItem {
         if (
           command.parentWorkItemId !== undefined &&
           command.parentWorkItemId !== null &&
-          command.parentWorkItemId !== current.parentWorkItemId
+          !sameWorkItemIdentity(command.parentWorkItemId, current.parentWorkItemId)
         ) {
           await assertValidWorkItemParent(
             workItems,
@@ -86,7 +87,7 @@ export class UpdateWorkItem {
         if (updated !== current) {
           await workItems.save(updated, command.expectedVersion);
           await notifications.deleteIntentsForTarget(command.workspaceId, "work_item", updated.id);
-          if (updated.parentWorkItemId !== current.parentWorkItemId) {
+          if (!sameWorkItemIdentity(updated.parentWorkItemId, current.parentWorkItemId)) {
             await auditEvents.append({
               workspaceId: command.workspaceId,
               action:
