@@ -870,6 +870,23 @@ function latestFeedbackQueryDatabase(rows: readonly Readonly<Record<string, unkn
 }
 
 describe("PostgresDailyPlanRepository current-plan batches", () => {
+  it("rejects more than 366 distinct dates before querying", async () => {
+    const select = vi.fn();
+    const repository = new PostgresDailyPlanRepository({
+      select,
+    } as unknown as DatabaseConnection["db"]);
+    const dates = Array.from({ length: 367 }, (_, offset) =>
+      localDate(new Date(Date.UTC(2026, 0, offset + 1)).toISOString().slice(0, 10)),
+    );
+
+    await expect(
+      repository.findCurrentForDates(workspaceId("batch-plan-workspace"), dates),
+    ).rejects.toMatchObject({
+      code: "planning.current_plan_date_range_too_large",
+    });
+    expect(select).not.toHaveBeenCalled();
+  });
+
   it("loads multiple dates in four bounded query stages and omits missing dates", async () => {
     const workspace = workspaceId("batch-plan-workspace");
     const firstDate = localDate("2026-07-14");

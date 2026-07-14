@@ -2071,6 +2071,8 @@ export class PostgresRoutineDurationInsightFeedbackRepository implements Routine
   }
 }
 
+const MAXIMUM_CURRENT_PLAN_BATCH_DATES = 366;
+
 export class PostgresDailyPlanRepository implements DailyPlanRepository {
   constructor(private readonly database: DatabaseExecutor) {}
 
@@ -2336,6 +2338,12 @@ export class PostgresDailyPlanRepository implements DailyPlanRepository {
   ): Promise<ReadonlyMap<LocalDate, CurrentDailyPlan>> {
     const uniqueDates = [...new Set(dates)];
     if (uniqueDates.length === 0) return new Map();
+    if (uniqueDates.length > MAXIMUM_CURRENT_PLAN_BATCH_DATES) {
+      throw new DomainError(
+        "planning.current_plan_date_range_too_large",
+        `A batched current-plan lookup cannot span more than ${MAXIMUM_CURRENT_PLAN_BATCH_DATES} distinct dates.`,
+      );
+    }
 
     const heads = await this.database
       .select()
