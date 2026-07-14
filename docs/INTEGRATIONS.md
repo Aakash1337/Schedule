@@ -1,21 +1,24 @@
-# Inbound integration gateway
+# Integration gateway
 
 The integration gateway is the authenticated, provider-neutral boundary for trusted automation such
 as a future Hermes agent. Schedule remains the source of truth: an adapter reads Schedule through
 this API and submits structured commands through the same application rules used by the local
 product. An adapter must never write Schedule's PostgreSQL tables directly.
 
-This first gateway is deliberately inbound only. It accepts a small versioned command vocabulary;
-it does not receive raw WhatsApp messages, interpret natural language, or push reminders. A Hermes
-adapter can be added as a separate process once its callable interface is known.
+The gateway accepts a small versioned command vocabulary and exposes a separate least-privilege
+pull boundary for Schedule-owned reminder delivery. It does not receive raw WhatsApp messages,
+interpret natural language, bind human accounts, or call a messaging provider. A Hermes adapter
+belongs in a separate process that translates confirmed human intent into structured commands and
+deduplicates provider side effects before acknowledging reminder claims.
 
 ## Safety model
 
 - The gateway is disabled unless `INTEGRATION_API_MODE=enabled`.
 - Every credential belongs to exactly one workspace. The server derives the workspace from the
   authenticated credential; no integration request accepts a caller-selected workspace ID.
-- Credentials carry explicit `schedule:read` and/or `schedule:write` scopes. A credential cannot use an
-  endpoint outside its stored scopes.
+- Credentials carry explicit `schedule:read`, `schedule:write`, and/or `schedule:delivery` scopes. A
+  credential cannot use an endpoint outside its stored scopes. Delivery is never granted by the
+  CLI's default read/write set and must be requested explicitly.
 - Every mutation uses a two-step prepare/confirm flow. Preparing validates and durably records an
   exact structured command but does not execute it. The prepare response returns that stored command
   for review; confirming executes that exact command once.
@@ -65,6 +68,13 @@ pnpm integration:credentials -- create --workspace 11111111-1111-4111-8111-11111
   --name "Hermes phone assistant" --scopes schedule:read,schedule:write
 ```
 
+Use a separate least-privilege credential for a delivery worker whenever practical:
+
+```powershell
+pnpm integration:credentials -- create --workspace 11111111-1111-4111-8111-111111111111 `
+  --name "Hermes reminder delivery" --scopes schedule:delivery
+```
+
 The command prints a bearer token in this form exactly once:
 
 ```text
@@ -106,12 +116,14 @@ Today uses the server's HTTP request ID. The command-specific value is always in
 
 The version 1 routes are:
 
-| Method | Route                                                          | Scope            | Behavior                                                      |
-| ------ | -------------------------------------------------------------- | ---------------- | ------------------------------------------------------------- |
-| `GET`  | `/v1/integrations/today?date=DATE`                             | `schedule:read`  | Read the credential workspace's current plan                  |
-| `GET`  | `/v1/integrations/work-items?status=&priority=&limit=&offset=` | `schedule:read`  | Discover the credential workspace's backlog/Kanban work items |
-| `POST` | `/v1/integrations/commands/prepare`                            | `schedule:write` | Validate and prepare one exact mutation                       |
-| `POST` | `/v1/integrations/commands/confirm`                            | `schedule:write` | Execute one prepared mutation idempotently                    |
+| Method | Route                                                          | Scope               | Behavior                                                      |
+| ------ | -------------------------------------------------------------- | ------------------- | ------------------------------------------------------------- |
+| `GET`  | `/v1/integrations/today?date=DATE`                             | `schedule:read`     | Read the credential workspace's current plan                  |
+| `GET`  | `/v1/integrations/work-items?status=&priority=&limit=&offset=` | `schedule:read`     | Discover the credential workspace's backlog/Kanban work items |
+| `POST` | `/v1/integrations/commands/prepare`                            | `schedule:write`    | Validate and prepare one exact mutation                       |
+| `POST` | `/v1/integrations/commands/confirm`                            | `schedule:write`    | Execute one prepared mutation idempotently                    |
+| `POST` | `/v1/integrations/reminder-deliveries/claim`                   | `schedule:delivery` | Claim at most one due Schedule reminder                       |
+| `POST` | `/v1/integrations/reminder-deliveries/receipt`                 | `schedule:delivery` | Record one fenced, bounded delivery outcome                   |
 
 `DATE` is a real Gregorian local date in `YYYY-MM-DD` form. Today obtains the workspace exclusively
 from the credential and never creates a missing plan. Its response `data` is
@@ -152,6 +164,80 @@ duplicate or skipped item between pages, and re-read a selected work item from a
 response before it prepares `work_item.update`. The latest returned `version` must be supplied as
 `expectedVersion`; a conflict is a signal to re-read and ask again, never to overwrite the newer
 state.
+
+### Reminder delivery
+
+Reminder delivery is a pull protocol for a trusted adapter, not a webhook. Both mutations require
+`Content-Type: application/json`, a fresh `Idempotency-Key` of 1–160 characters, and a credential
+with the explicit `schedule:delivery` scope. A read/write credential without that scope is denied.
+
+Claim at most one due reminder:
+
+```http
+POST /v1/integrations/reminder-deliveries/claim
+Idempotency-Key: claim-worker-2026-07-14T12:00:00Z
+Content-Type: application/json
+
+{"version":"schedule.integration/v1"}
+```
+
+The response envelope's `data.command` is `null` when no work is available. Otherwise it is:
+
+```json
+{
+  "deliveryId": "44444444-4444-4444-8444-444444444444",
+  "intentId": "44444444-4444-4444-8444-444444444444",
+  "dedupeKey": "44444444-4444-4444-8444-444444444444",
+  "kind": "work_item_due",
+  "targetType": "work_item",
+  "title": "Renew passport",
+  "scheduledFor": "2026-07-14T12:00:00.000Z",
+  "localDate": "2026-07-14",
+  "priority": 80,
+  "attempt": 1,
+  "claimToken": "55555555-5555-4555-8555-555555555555",
+  "leaseExpiresAt": "2026-07-14T12:05:00.000Z"
+}
+```
+
+`deliveryId`, `intentId`, and `dedupeKey` are the same stable Schedule identity. The claim token is
+new for each attempt and fences stale workers. The adapter must commit its own durable
+`dedupeKey` record around the provider side effect; a later lease recovery can return the same
+dedupe key with a different claim token and attempt number. The command deliberately excludes
+provider, destination, account, channel, conversation, credential, and arbitrary payload fields.
+
+Report one outcome before the lease expires:
+
+```http
+POST /v1/integrations/reminder-deliveries/receipt
+Idempotency-Key: receipt-44444444-attempt-1
+Content-Type: application/json
+
+{
+  "version": "schedule.integration/v1",
+  "deliveryId": "44444444-4444-4444-8444-444444444444",
+  "claimToken": "55555555-5555-4555-8555-555555555555",
+  "outcome": "retryable_failure",
+  "failureCode": "provider_unavailable",
+  "retryAfterSeconds": 30
+}
+```
+
+The only outcomes are `delivered`, `retryable_failure`, and `permanent_failure`. Failure codes are
+lowercase machine identifiers of at most 80 characters. `retryAfterSeconds` is required only for a
+retryable failure and is an integer from 0 through 60. A delivered outcome accepts neither field; a
+permanent failure accepts `failureCode` but no retry hint. Free-form exceptions, provider response
+bodies, message IDs, destinations, and unknown fields fail validation. The response status is one
+of `delivered`, `retry_scheduled`, `dead_lettered`, or `invalidated`.
+
+Exact claim and receipt retries replay their stored result. Reusing a key for a different operation
+or receipt body is a conflict. The final credential check takes a row lock after the workspace lock;
+a concurrent revocation that acquires the credential lock first makes the request fail before it
+reserves an idempotency receipt or changes delivery state. An expired or superseded claim token is
+rejected even before another worker reclaims the command. Source invalidation prevents future
+claims; if it races with an already leased external side effect, the receipt may record the attempt
+while the command remains `invalidated`. See [REMINDERS.md](./REMINDERS.md#delivery-lifecycle) for the
+complete state machine.
 
 ### Prepare envelope
 
@@ -399,8 +485,8 @@ also be globally disabled, delayed, dead-lettered, or interrupted during key rot
 webhook refreshes should enter the same idempotent reconciliation path. Neither path authorizes a
 phone notification. Schedule now owns deterministic reminder policy and insert-only intent
 materialization, but the adapter still owns authenticated human/account binding and WhatsApp
-transport; downstream delivery resolution and receipts must cross a separate intent-ID-bound
-contract that is not implemented yet.
+transport. The separate `schedule:delivery` routes expose intent-ID-bound claims and receipts; they
+do not choose a provider, destination, or human account.
 
 ## Verification
 
@@ -420,6 +506,17 @@ pnpm verify:integration-gateway
 ```
 
 This verifier is also included in `pnpm verify:database` and its CI job.
+
+The delivery lifecycle has its own disposable PostgreSQL/API verifier:
+
+```powershell
+pnpm verify:notification-delivery
+```
+
+It proves least-privilege scope denial, exact claim/receipt replay, fresh database-clock leases after
+lock waits, row-locked revocation linearization, concurrent exclusion, retry and dead-letter
+transitions, stale-token fencing, indexed expiry recovery, source invalidation, tenant isolation,
+privacy-field exclusion, and empty-claim replay.
 
 ## Retention and cleanup
 
@@ -486,15 +583,16 @@ security-sensitive recovery.
 - There is no Hermes runtime or WhatsApp transport in this repository. No endpoint accepts a chat
   message, audio, image, or natural-language instruction.
 - Work-item discovery makes a future Hermes-style adapter capable of finding credential-scoped
-  backlog/Kanban IDs and versions. It does not implement provider delivery, message ingestion,
+  backlog/Kanban IDs and versions. It does not implement provider transport, message ingestion,
   intent parsing, human/account binding, or phone alerts.
 - A disabled-by-default [outbound webhook substrate](./WEBHOOKS.md) can send operator-queued signed
   test events and explicitly subscribed `schedule.changed.v1` invalidations. It cannot send schedule
   contents, push-notification requests, reminders, or end-to-end phone delivery receipts. An adapter
   must still read and poll Today for authoritative schedule data.
 - The [deterministic reminder core](./REMINDERS.md) stores Schedule-owned policy and insert-only intents.
-  It does not expose those intents through this machine gateway or authorize an adapter to deliver
-  them yet.
+  Its delivery-only gateway exposes one due command at a time and accepts fenced bounded receipts.
+  It does not know which provider or human account should receive that command, and it cannot prove
+  an external phone notification occurred.
 - Version 1 does not create workspaces, routines, plans, or credentials over HTTP; delete commands
   are intentionally absent.
 - The integration API is machine-to-machine authentication for one workspace, not hosted end-user

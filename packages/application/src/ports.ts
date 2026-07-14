@@ -384,7 +384,11 @@ export interface Clock {
   now(): Date;
 }
 
-export const integrationCredentialScopes = ["schedule:read", "schedule:write"] as const;
+export const integrationCredentialScopes = [
+  "schedule:read",
+  "schedule:write",
+  "schedule:delivery",
+] as const;
 export type IntegrationCredentialScope = (typeof integrationCredentialScopes)[number];
 
 export interface IntegrationCredential {
@@ -415,6 +419,8 @@ export interface SecretVerifier {
 
 export interface IntegrationCredentialRepository {
   findById(id: string): Promise<IntegrationCredential | null>;
+  /** Locks the credential row until the surrounding transaction completes. */
+  findByIdForUpdate(id: string): Promise<IntegrationCredential | null>;
   list(workspaceId: WorkspaceId): Promise<readonly IntegrationCredential[]>;
   insert(credential: IntegrationCredential): Promise<void>;
   save(credential: IntegrationCredential, expectedVersion: number): Promise<void>;
@@ -636,6 +642,125 @@ export interface IntegrationRequestRepository {
   ): Promise<IntegrationRequestRecord>;
 }
 
+export type NotificationDeliveryStatus =
+  "pending" | "processing" | "delivered" | "dead_letter" | "invalidated";
+
+export type NotificationDeliveryAttemptOutcome =
+  "delivered" | "retryable_failure" | "permanent_failure" | "lease_expired";
+
+export interface ClaimedNotificationDelivery {
+  readonly deliveryId: string;
+  readonly intentId: string;
+  readonly kind: NotificationKind;
+  readonly targetType: NotificationTargetType;
+  readonly title: string | null;
+  readonly scheduledFor: Date;
+  readonly localDate: LocalDate;
+  readonly priority: number;
+  readonly attempt: number;
+  readonly claimToken: string;
+  readonly leaseExpiresAt: Date;
+}
+
+/** JSON-safe command returned to and durably replayed for one adapter claim. */
+export interface NotificationDeliveryCommandData {
+  readonly deliveryId: string;
+  readonly intentId: string;
+  readonly dedupeKey: string;
+  readonly kind: NotificationKind;
+  readonly targetType: NotificationTargetType;
+  readonly title: string | null;
+  readonly scheduledFor: string;
+  readonly localDate: string;
+  readonly priority: number;
+  readonly attempt: number;
+  readonly claimToken: string;
+  readonly leaseExpiresAt: string;
+}
+
+export interface ClaimNotificationDeliveryInput {
+  readonly workspaceId: WorkspaceId;
+  readonly credentialId: string;
+  readonly leaseDurationMilliseconds: number;
+  readonly maxAttempts: number;
+}
+
+export type NotificationDeliveryReceiptOutcome = Exclude<
+  NotificationDeliveryAttemptOutcome,
+  "lease_expired"
+>;
+
+export interface SettleNotificationDeliveryInput {
+  readonly workspaceId: WorkspaceId;
+  readonly credentialId: string;
+  readonly deliveryId: string;
+  readonly claimToken: string;
+  readonly outcome: NotificationDeliveryReceiptOutcome;
+  readonly failureCode: string | null;
+  readonly retryAfterSeconds: number | null;
+  readonly maxAttempts: number;
+}
+
+export interface NotificationDeliveryReceiptResult {
+  readonly deliveryId: string;
+  readonly status: "delivered" | "retry_scheduled" | "dead_lettered" | "invalidated";
+}
+
+export interface NotificationDeliveryRepository {
+  /** PostgreSQL is the authoritative clock for cross-process lease coordination. */
+  currentTime(): Promise<Date>;
+  /** Claims one due command under a workspace notification lock. */
+  claimNext(input: ClaimNotificationDeliveryInput): Promise<ClaimedNotificationDelivery | null>;
+  /** Applies one fenced, provider-neutral outcome or rejects a stale claim token. */
+  settle(input: SettleNotificationDeliveryInput): Promise<NotificationDeliveryReceiptResult>;
+}
+
+export type NotificationDeliveryRequestOperation = "claim" | "receipt";
+export type NotificationDeliveryRequestResult =
+  | {
+      readonly operation: "claim";
+      readonly command: NotificationDeliveryCommandData | null;
+    }
+  | {
+      readonly operation: "receipt";
+      readonly receipt: NotificationDeliveryReceiptResult;
+    };
+
+export interface NotificationDeliveryRequestRecord {
+  readonly id: string;
+  readonly credentialId: string;
+  readonly workspaceId: WorkspaceId;
+  readonly idempotencyKey: string;
+  readonly operation: NotificationDeliveryRequestOperation;
+  readonly requestHash: string;
+  readonly state: "processing" | "succeeded";
+  readonly result: NotificationDeliveryRequestResult | null;
+  readonly createdAt: Date;
+  readonly completedAt: Date | null;
+}
+
+export interface NotificationDeliveryRequestReservationInput {
+  readonly id: string;
+  readonly credentialId: string;
+  readonly workspaceId: WorkspaceId;
+  readonly idempotencyKey: string;
+  readonly operation: NotificationDeliveryRequestOperation;
+  readonly requestHash: string;
+  readonly createdAt: Date;
+}
+
+export interface NotificationDeliveryRequestRepository {
+  reserve(input: NotificationDeliveryRequestReservationInput): Promise<{
+    readonly kind: "reserved" | "replay";
+    readonly request: NotificationDeliveryRequestRecord;
+  }>;
+  succeed(
+    id: string,
+    result: NotificationDeliveryRequestResult,
+    completedAt: Date,
+  ): Promise<NotificationDeliveryRequestRecord>;
+}
+
 /**
  * The integration transaction is intentionally separate so adding gateway persistence never
  * widens every existing application test mock. All fields share one atomic transaction.
@@ -644,6 +769,8 @@ export interface IntegrationTransactionContext {
   readonly credentials: IntegrationCredentialRepository;
   readonly confirmations: IntegrationConfirmationRepository;
   readonly requests: IntegrationRequestRepository;
+  readonly notificationDeliveries: NotificationDeliveryRepository;
+  readonly notificationDeliveryRequests: NotificationDeliveryRequestRepository;
   readonly workspaces: WorkspaceRepository;
   readonly workItems: WorkItemRepository;
   readonly scheduleBlocks: ScheduleBlockRepository;
@@ -655,5 +782,6 @@ export interface IntegrationTransactionContext {
 export interface IntegrationUnitOfWork {
   run<Result>(
     operation: (context: IntegrationTransactionContext) => Promise<Result>,
+    options?: UnitOfWorkOptions,
   ): Promise<Result>;
 }

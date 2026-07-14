@@ -147,6 +147,23 @@ export const notificationLocalTimeResolution = pgEnum("notification_local_time_r
   "gap_later",
   "overlap_earlier",
 ]);
+export const notificationDeliveryStatus = pgEnum("notification_delivery_status", [
+  "pending",
+  "processing",
+  "delivered",
+  "dead_letter",
+  "invalidated",
+]);
+export const notificationDeliveryAttemptOutcome = pgEnum("notification_delivery_attempt_outcome", [
+  "delivered",
+  "retryable_failure",
+  "permanent_failure",
+  "lease_expired",
+]);
+export const notificationDeliveryRequestOperation = pgEnum(
+  "notification_delivery_request_operation",
+  ["claim", "receipt"],
+);
 
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -198,11 +215,11 @@ export const integrationCredentials = pgTable(
     check("integration_credentials_scopes_nonempty", sql`cardinality(${table.scopes}) > 0`),
     check(
       "integration_credentials_scopes_allowed",
-      sql`${table.scopes} <@ ARRAY['schedule:read', 'schedule:write']::text[]`,
+      sql`${table.scopes} <@ ARRAY['schedule:read', 'schedule:write', 'schedule:delivery']::text[]`,
     ),
     check(
       "integration_credentials_scopes_unique",
-      sql`cardinality(${table.scopes}) = (CASE WHEN 'schedule:read' = ANY(${table.scopes}) THEN 1 ELSE 0 END + CASE WHEN 'schedule:write' = ANY(${table.scopes}) THEN 1 ELSE 0 END)`,
+      sql`cardinality(${table.scopes}) = (CASE WHEN 'schedule:read' = ANY(${table.scopes}) THEN 1 ELSE 0 END + CASE WHEN 'schedule:write' = ANY(${table.scopes}) THEN 1 ELSE 0 END + CASE WHEN 'schedule:delivery' = ANY(${table.scopes}) THEN 1 ELSE 0 END)`,
     ),
     check(
       "integration_credentials_scopes_one_dimensional",
@@ -927,6 +944,218 @@ export const notificationIntents = pgTable(
     check(
       "notification_intents_policy_snapshot_valid",
       sql`jsonb_typeof(${table.policySnapshot}) = 'object' AND octet_length(${table.policySnapshot}::text) <= 4096`,
+    ),
+  ],
+);
+
+/**
+ * Provider-neutral delivery commands created lazily from due notification intents.
+ *
+ * The source intent ID and occurrence key are durable snapshots rather than foreign
+ * keys: policy or target invalidation may delete the mutable pending intent while
+ * this command remains as the exact-once delivery and audit boundary.
+ */
+export const notificationDeliveryCommands = pgTable(
+  "notification_delivery_commands",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    intentId: uuid("intent_id").notNull(),
+    occurrenceKey: varchar("occurrence_key", { length: 200 }).notNull(),
+    kind: notificationKind("kind").notNull(),
+    targetType: notificationTargetType("target_type").notNull(),
+    titleSnapshot: varchar("title_snapshot", { length: 240 }),
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    localDate: date("local_date").notNull(),
+    priority: integer("priority").notNull(),
+    status: notificationDeliveryStatus("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    availableAt: timestamp("available_at", { withTimezone: true }).notNull(),
+    currentClaimToken: uuid("current_claim_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    lastFailureCode: varchar("last_failure_code", { length: 80 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("notification_delivery_commands_workspace_id_id_uq").on(table.workspaceId, table.id),
+    unique("notification_delivery_commands_workspace_intent_uq").on(
+      table.workspaceId,
+      table.intentId,
+    ),
+    unique("notification_delivery_commands_workspace_occurrence_uq").on(
+      table.workspaceId,
+      table.occurrenceKey,
+    ),
+    index("notification_delivery_commands_claim_idx").on(
+      table.workspaceId,
+      table.status,
+      table.availableAt,
+      table.scheduledFor,
+    ),
+    index("notification_delivery_commands_recovery_idx")
+      .on(table.workspaceId, table.leaseExpiresAt, table.id)
+      .where(
+        sql`${table.status} IN ('processing', 'invalidated') AND ${table.leaseExpiresAt} IS NOT NULL`,
+      ),
+    check(
+      "notification_delivery_commands_occurrence_nonempty",
+      sql`char_length(btrim(${table.occurrenceKey})) > 0`,
+    ),
+    check(
+      "notification_delivery_commands_priority_range",
+      sql`${table.priority} BETWEEN 0 AND 100`,
+    ),
+    check("notification_delivery_commands_attempts_nonnegative", sql`${table.attempts} >= 0`),
+    check(
+      "notification_delivery_commands_failure_code_valid",
+      sql`${table.lastFailureCode} IS NULL OR ${table.lastFailureCode} ~ '^[a-z0-9][a-z0-9._-]{0,79}$'`,
+    ),
+    check(
+      "notification_delivery_commands_state_valid",
+      sql`(
+        (${table.status} = 'pending' AND ${table.currentClaimToken} IS NULL AND ${table.leaseExpiresAt} IS NULL AND ${table.completedAt} IS NULL)
+        OR
+        (${table.status} = 'processing' AND ${table.currentClaimToken} IS NOT NULL AND ${table.leaseExpiresAt} IS NOT NULL AND ${table.completedAt} IS NULL)
+        OR
+        (${table.status} IN ('delivered', 'dead_letter') AND ${table.currentClaimToken} IS NULL AND ${table.leaseExpiresAt} IS NULL AND ${table.completedAt} IS NOT NULL)
+        OR
+        (${table.status} = 'invalidated' AND ${table.completedAt} IS NOT NULL AND ((${table.currentClaimToken} IS NULL AND ${table.leaseExpiresAt} IS NULL) OR (${table.currentClaimToken} IS NOT NULL AND ${table.leaseExpiresAt} IS NOT NULL)))
+      )`,
+    ),
+    check(
+      "notification_delivery_commands_timestamps_valid",
+      sql`${table.updatedAt} >= ${table.createdAt} AND (${table.completedAt} IS NULL OR ${table.completedAt} >= ${table.createdAt})`,
+    ),
+  ],
+);
+
+/** Immutable claim attempts and bounded provider-neutral outcomes. */
+export const notificationDeliveryAttempts = pgTable(
+  "notification_delivery_attempts",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    deliveryId: uuid("delivery_id").notNull(),
+    credentialId: uuid("credential_id").notNull(),
+    attemptNumber: integer("attempt_number").notNull(),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull(),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(),
+    outcome: notificationDeliveryAttemptOutcome("outcome"),
+    failureCode: varchar("failure_code", { length: 80 }),
+    retryAfterSeconds: integer("retry_after_seconds"),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("notification_delivery_attempts_workspace_delivery_number_uq").on(
+      table.workspaceId,
+      table.deliveryId,
+      table.attemptNumber,
+    ),
+    index("notification_delivery_attempts_workspace_claimed_idx").on(
+      table.workspaceId,
+      table.claimedAt,
+      table.id,
+    ),
+    foreignKey({
+      name: "notification_delivery_attempts_command_tenant_fk",
+      columns: [table.workspaceId, table.deliveryId],
+      foreignColumns: [notificationDeliveryCommands.workspaceId, notificationDeliveryCommands.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "notification_delivery_attempts_credential_tenant_fk",
+      columns: [table.workspaceId, table.credentialId],
+      foreignColumns: [integrationCredentials.workspaceId, integrationCredentials.id],
+    }).onDelete("restrict"),
+    check("notification_delivery_attempts_number_positive", sql`${table.attemptNumber} > 0`),
+    check(
+      "notification_delivery_attempts_lease_after_claim",
+      sql`${table.leaseExpiresAt} > ${table.claimedAt}`,
+    ),
+    check(
+      "notification_delivery_attempts_failure_code_valid",
+      sql`${table.failureCode} IS NULL OR ${table.failureCode} ~ '^[a-z0-9][a-z0-9._-]{0,79}$'`,
+    ),
+    check(
+      "notification_delivery_attempts_outcome_valid",
+      sql`(
+        (${table.outcome} IS NULL AND ${table.failureCode} IS NULL AND ${table.retryAfterSeconds} IS NULL AND ${table.completedAt} IS NULL)
+        OR
+        (${table.outcome} IN ('delivered', 'lease_expired') AND ${table.failureCode} IS NULL AND ${table.retryAfterSeconds} IS NULL AND ${table.completedAt} IS NOT NULL)
+        OR
+        (${table.outcome} = 'retryable_failure' AND ${table.failureCode} IS NOT NULL AND ${table.retryAfterSeconds} BETWEEN 0 AND 60 AND ${table.completedAt} IS NOT NULL)
+        OR
+        (${table.outcome} = 'permanent_failure' AND ${table.failureCode} IS NOT NULL AND ${table.retryAfterSeconds} IS NULL AND ${table.completedAt} IS NOT NULL)
+      )`,
+    ),
+    check(
+      "notification_delivery_attempts_completion_after_claim",
+      sql`${table.completedAt} IS NULL OR ${table.completedAt} >= ${table.claimedAt}`,
+    ),
+  ],
+);
+
+/** Durable exact-replay records for delivery claim and receipt requests. */
+export const notificationDeliveryRequests = pgTable(
+  "notification_delivery_requests",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    credentialId: uuid("credential_id").notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    operation: notificationDeliveryRequestOperation("operation").notNull(),
+    requestHash: varchar("request_hash", { length: 64 }).notNull(),
+    status: integrationRequestStatus("status").notNull().default("processing"),
+    result: jsonb("result").$type<Record<string, unknown>>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("notification_delivery_requests_credential_key_uq").on(
+      table.credentialId,
+      table.idempotencyKey,
+    ),
+    index("notification_delivery_requests_workspace_created_idx").on(
+      table.workspaceId,
+      table.createdAt,
+      table.id,
+    ),
+    foreignKey({
+      name: "notification_delivery_requests_credential_tenant_fk",
+      columns: [table.workspaceId, table.credentialId],
+      foreignColumns: [integrationCredentials.workspaceId, integrationCredentials.id],
+    }).onDelete("cascade"),
+    check(
+      "notification_delivery_requests_key_nonempty",
+      sql`char_length(btrim(${table.idempotencyKey})) > 0`,
+    ),
+    check(
+      "notification_delivery_requests_hash_valid",
+      sql`${table.requestHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "notification_delivery_requests_result_bounded",
+      sql`${table.result} IS NULL OR (jsonb_typeof(${table.result}) = 'object' AND octet_length(${table.result}::text) <= 16384)`,
+    ),
+    check(
+      "notification_delivery_requests_state_valid",
+      sql`(
+        (${table.status} = 'processing' AND ${table.result} IS NULL AND ${table.completedAt} IS NULL)
+        OR
+        (${table.status} = 'succeeded' AND ${table.result} IS NOT NULL AND ${table.completedAt} IS NOT NULL)
+      )`,
+    ),
+    check(
+      "notification_delivery_requests_timestamps_valid",
+      sql`${table.updatedAt} >= ${table.createdAt} AND (${table.completedAt} IS NULL OR ${table.completedAt} >= ${table.createdAt})`,
     ),
   ],
 );

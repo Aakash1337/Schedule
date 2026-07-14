@@ -33,7 +33,8 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:database`                | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
 | `pnpm verify:webhook-delivery`        | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback     | Yes, disposable only            |
 | `pnpm verify:notification-core`       | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
-| `pnpm verify:notification-migrations` | Upgrade populated pre-0024 state and validate reminder constraints          | Yes, disposable only            |
+| `pnpm verify:notification-delivery`   | Verify fenced claims/receipts, retries, expiry, and invalidation            | Yes, disposable only            |
+| `pnpm verify:notification-migrations` | Upgrade populated pre-0024 state through reminder migrations 0024-0026      | Yes, disposable only            |
 | `pnpm verify:local-model-advisor`     | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
 | `pnpm verify:backup-restore`          | Verify archive/schema/content/sequence fidelity                             | Yes                             |
 | `pnpm verify:recovery-state-machine`  | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
@@ -351,14 +352,18 @@ The audit deliberately leaves these visible instead of turning them into false g
   fan-out, deterministic event identity, immutable delivery/outbox linkage, dead-letter metadata,
   redrive identity, revocation, audits, and rollback. DNS, pinned-address HTTPS, TLS, and the external
   receiver are unit-faked, so there is no live-network delivery claim. The automatic event is only an
-  invalidation; it does not transport the now-implemented reminder intents, and phone notifications,
-  Hermes/WhatsApp transport, and downstream delivery receipts remain deferred;
+  invalidation; it does not transport reminder commands. Phone notifications and Hermes/WhatsApp
+  transport remain deferred; claims and receipts use the separate authenticated pull gateway;
 - the deterministic reminder core has domain/application/API/schema evidence, a populated migration
   upgrade, real PostgreSQL coverage for all six source kinds, two-request advisory-lock concurrency,
   policy/target/terminal invalidation, tenant and duplicate-key constraints, backup/restore
-  inclusion, and a no-outbox-side-effect check.
-  It has no periodic materializer, delivery claim/revalidation state, external provider transport,
-  acknowledgement/receipt path, or web settings/history interface yet;
+  inclusion, and a no-outbox-side-effect check. Its delivery verifier exercises the real Fastify
+  gateway and PostgreSQL lifecycle for least-privilege scope denial, exact claim and empty-claim
+  replay, fresh database-clock leases after lock waits, row-locked revocation linearization,
+  concurrent exclusion, retry/dead-letter, indexed expiry fencing/recovery, source invalidation,
+  bounded receipts, audits, occurrence uniqueness, and cross-tenant rejection. It has no periodic
+  materializer, external provider/account binding,
+  shared adapter dedupe store, or web settings/history interface yet;
 - four live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions. They do

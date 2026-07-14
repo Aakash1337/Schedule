@@ -127,7 +127,7 @@ export interface ConfirmIntegrationCommandInput {
   readonly idempotencyKey: string;
 }
 
-function validNow(clock: Clock): Date {
+export function validIntegrationNow(clock: Clock): Date {
   const now = clock.now();
   if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
     throw new DomainError(
@@ -163,7 +163,7 @@ function normalizeUuid(value: unknown, field: string): string {
 }
 
 function isScope(value: unknown): value is IntegrationCredentialScope {
-  return value === "schedule:read" || value === "schedule:write";
+  return value === "schedule:read" || value === "schedule:write" || value === "schedule:delivery";
 }
 
 function credentialIsUsable(credential: IntegrationCredential, now: Date): boolean {
@@ -186,19 +186,23 @@ function requireScope(
   }
 }
 
-async function revalidateCredential(
+export async function revalidateIntegrationCredential(
   credentials: IntegrationCredentialRepository,
   principal: IntegrationPrincipal,
   requiredScope: IntegrationCredentialScope,
   now: Date,
+  options: { readonly lockForUpdate?: boolean } = {},
 ): Promise<IntegrationCredential> {
-  const credential =
+  const validCredentialId =
     typeof principal.credentialId === "string" &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       principal.credentialId,
-    )
-      ? await credentials.findById(principal.credentialId)
-      : null;
+    );
+  const credential = validCredentialId
+    ? options.lockForUpdate === true
+      ? await credentials.findByIdForUpdate(principal.credentialId)
+      : await credentials.findById(principal.credentialId)
+    : null;
   if (credential === null || !credentialIsUsable(credential, now)) {
     throw new DomainError("integration.authentication_failed", GENERIC_AUTHENTICATION_MESSAGE);
   }
@@ -229,7 +233,7 @@ export class AuthenticateIntegrationCredential {
   ) {}
 
   async execute(command: AuthenticateIntegrationCredentialCommand): Promise<IntegrationPrincipal> {
-    const now = validNow(this.clock);
+    const now = validIntegrationNow(this.clock);
     const credentialId =
       typeof command.credentialId === "string" ? command.credentialId.trim() : "";
     const credential =
@@ -272,7 +276,7 @@ export class ProvisionIntegrationCredential {
   ) {}
 
   execute(command: ProvisionIntegrationCredentialCommand): Promise<IntegrationCredentialDto> {
-    const now = validNow(this.clock);
+    const now = validIntegrationNow(this.clock);
     const id = command.id === undefined ? randomUUID() : normalizeUuid(command.id, "credential_id");
     const name = normalizeBounded(command.name, "credential_name", 120);
     const secretHash = normalizeBounded(command.secretHash, "secret_hash", 64);
@@ -347,10 +351,10 @@ export class RevokeIntegrationCredential {
   ) {}
 
   execute(command: RevokeIntegrationCredentialCommand): Promise<IntegrationCredentialDto> {
-    const now = validNow(this.clock);
+    const now = validIntegrationNow(this.clock);
     const id = normalizeUuid(command.credentialId, "credential_id");
     return this.unitOfWork.run(async ({ credentials, auditEvents }) => {
-      const current = await credentials.findById(id);
+      const current = await credentials.findByIdForUpdate(id);
       if (current === null) {
         throw new DomainError(
           "integration.credential_not_found",
@@ -423,10 +427,10 @@ export class GetIntegrationToday {
   ) {}
 
   execute(query: GetIntegrationTodayQuery): Promise<IntegrationTodayResult> {
-    const now = validNow(this.clock);
+    const now = validIntegrationNow(this.clock);
     const date = localDate(query.date);
     return this.unitOfWork.run(async ({ credentials, dailyPlans }) => {
-      const credential = await revalidateCredential(
+      const credential = await revalidateIntegrationCredential(
         credentials,
         query.principal,
         "schedule:read",
@@ -497,13 +501,13 @@ export class ListIntegrationWorkItems {
   ) {}
 
   execute(query: ListIntegrationWorkItemsQuery): Promise<IntegrationWorkItemPageResult> {
-    const now = validNow(this.clock);
+    const now = validIntegrationNow(this.clock);
     const status = optionalWorkItemStatus(query.status);
     const priority = optionalWorkItemPriority(query.priority);
     const limit = boundedIntegrationPageValue(query.limit, "limit", 100, 1, 200);
     const offset = boundedIntegrationPageValue(query.offset, "offset", 0, 0, 1_000_000);
     return this.unitOfWork.run(async ({ credentials, workspaces, workItems }) => {
-      const credential = await revalidateCredential(
+      const credential = await revalidateIntegrationCredential(
         credentials,
         query.principal,
         "schedule:read",
@@ -1117,7 +1121,7 @@ export class PrepareIntegrationCommand {
   }
 
   execute(input: PrepareIntegrationCommandInput): Promise<PreparedIntegrationCommand> {
-    const now = validNow(this.clock);
+    const now = validIntegrationNow(this.clock);
     const requestId = normalizeBounded(input.requestId, "request_id", 160);
     const validatedCommand = validateIntegrationCommand(input.command);
     const canonicalCommand = canonicalize(validatedCommand);
@@ -1125,7 +1129,7 @@ export class PrepareIntegrationCommand {
     const hash = createHash("sha256").update(canonicalCommand).digest("hex");
     const summary = commandSummary(command);
     return this.unitOfWork.run(async ({ credentials, confirmations, auditEvents }) => {
-      const credential = await revalidateCredential(
+      const credential = await revalidateIntegrationCredential(
         credentials,
         input.principal,
         "schedule:write",
@@ -1714,11 +1718,11 @@ export class ConfirmIntegrationCommand {
   ) {}
 
   execute(input: ConfirmIntegrationCommandInput): Promise<ConfirmedIntegrationCommandResult> {
-    const now = validNow(this.clock);
+    const now = validIntegrationNow(this.clock);
     const confirmationId = normalizeUuid(input.confirmationId, "confirmation_id");
     const idempotencyKey = normalizeBounded(input.idempotencyKey, "idempotency_key", 160);
     return this.unitOfWork.run(async (context) => {
-      const credential = await revalidateCredential(
+      const credential = await revalidateIntegrationCredential(
         context.credentials,
         input.principal,
         "schedule:write",

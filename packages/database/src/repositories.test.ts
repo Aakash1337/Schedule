@@ -624,6 +624,8 @@ describe("PostgresIntegrationUnitOfWork", () => {
       "confirmations",
       "credentials",
       "dailyPlans",
+      "notificationDeliveries",
+      "notificationDeliveryRequests",
       "notifications",
       "requests",
       "scheduleBlocks",
@@ -635,6 +637,22 @@ describe("PostgresIntegrationUnitOfWork", () => {
       isolationLevel: "serializable",
     });
     random.mockRestore();
+  });
+
+  it("uses a fresh statement snapshot after a delivery workspace lock", async () => {
+    const transaction = vi.fn(async (operation: (transaction: unknown) => Promise<unknown>) =>
+      operation({}),
+    );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+
+    await expect(
+      new PostgresIntegrationUnitOfWork(connection).run(async () => "committed", {
+        isolationLevel: "read_committed",
+      }),
+    ).resolves.toBe("committed");
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "read committed",
+    });
   });
 });
 

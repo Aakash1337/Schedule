@@ -12,6 +12,7 @@
     "plan-state-migrations": { "command": "pnpm verify:database", "ci": true },
     "weekday-migrations": { "command": "pnpm verify:database", "ci": true },
     "notification-core": { "command": "pnpm verify:database", "ci": true },
+    "notification-delivery": { "command": "pnpm verify:database", "ci": true },
     "notification-migrations": { "command": "pnpm verify:database", "ci": true },
     "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
     "recovery-state": {
@@ -1435,8 +1436,8 @@
         "anchor": "# Deterministic reminder policy core"
       },
       "limitations": [
-        "Materialization is an explicit local API command; no periodic worker, delivery claim/revalidation state, provider transport, acknowledgement, or receipt exists yet.",
-        "The web application has no reminder settings or intent-history interface, and the authenticated machine gateway does not expose intent delivery authorization."
+        "Materialization is an explicit local API command; no periodic worker invokes it yet.",
+        "The web application has no reminder settings or intent-history interface; provider transport and human/account binding remain external."
       ],
       "evidence": [
         {
@@ -1508,6 +1509,80 @@
           "file": "scripts/verify-notification-migrations.ts",
           "command": "notification-migrations",
           "anchors": ["Notification migration verification passed"]
+        }
+      ]
+    },
+    {
+      "id": "provider-neutral-notification-delivery",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/REMINDERS.md",
+        "anchor": "## Delivery lifecycle"
+      },
+      "limitations": [
+        "Schedule exposes fenced pull claims and bounded receipts but has no Hermes/WhatsApp, email, push, or other provider transport and stores no human/account binding.",
+        "Periodic intent materialization and adapter polling are not implemented; multiple adapter instances require their own shared durable dedupe store.",
+        "Dead-letter redrive and reminder delivery/settings history UI are not implemented in this slice."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/notification-delivery.test.ts",
+          "command": "unit",
+          "anchors": [
+            "claims one bounded command and exactly replays an idempotent request",
+            "revalidates the delivery-only scope inside the transaction",
+            "rejects a credential revoked after the outer authentication step",
+            "normalizes retry receipts and exactly replays the stored result",
+            "rejects free-form or contradictory receipt fields before persistence"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/integration-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "claims one provider-neutral reminder with the delivery-only scope",
+            "records bounded delivery receipts and rejects provider payloads",
+            "requires JSON and an idempotency key for delivery mutations"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": [
+            "fences provider-neutral notification delivery and exact request replay",
+            "migrates the least-privilege delivery scope and lifecycle tables"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/integration-credentials.test.ts",
+          "command": "unit",
+          "anchors": ["requires the delivery side-effect scope to be granted explicitly"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-notification-delivery.ts",
+          "command": "notification-delivery",
+          "anchors": [
+            "notification-delivery-claim-idempotency-and-fresh-lease",
+            "notification-delivery-revocation-linearization",
+            "notification-delivery-lease-recovery",
+            "notification-delivery-invalidation-cutoff",
+            "notification-delivery-null-claim-replay",
+            "notification delivery verification passed"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-notification-migrations.ts",
+          "command": "notification-migrations",
+          "anchors": [
+            "Notification migration verification passed with populated policy and delivery upgrades"
+          ]
         }
       ]
     },

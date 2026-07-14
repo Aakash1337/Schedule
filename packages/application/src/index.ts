@@ -21,6 +21,7 @@ export * from "./get-workspace.js";
 export * from "./list-workspaces.js";
 export * from "./materialize-notification-intents.js";
 export * from "./notification-management.js";
+export * from "./notification-delivery.js";
 export * from "./generate-daily-plan.js";
 export * from "./get-daily-plan.js";
 export * from "./get-current-daily-plan.js";

@@ -1,14 +1,15 @@
 # Deterministic reminder policy core
 
 Schedule owns reminder decisions. The current implementation stores workspace policy, reusable
-rules, explicit one-off reminders, and insert-only notification intents. It does **not** send a phone,
-WhatsApp, email, webhook, or push notification. Delivery, acknowledgements, and provider receipts
-remain a separate later layer so an adapter cannot reinterpret scheduling policy or silently mutate
-work.
+rules, explicit one-off reminders, insert-only notification intents, and a provider-neutral delivery
+gateway. Schedule still does **not** connect to WhatsApp, email, push, or a phone account. Instead, a
+separately authenticated adapter claims Schedule-owned commands and reports bounded outcomes without
+being allowed to reinterpret policy or mutate scheduled work.
 
 The core is available through the local product API. Materialization is currently an explicit
 command; no periodic production worker invokes it yet. This boundary is intentional for the first
-slice: policy and concurrency behavior can be verified before any external side effect exists.
+slice: policy evaluation is explicit, while the delivery boundary can be verified independently of
+any particular messaging provider.
 
 ## Stored resources
 
@@ -45,8 +46,9 @@ An intent is an insert-only result of one accepted occurrence. It snapshots only
 target metadata needed to explain and later deliver that decision: source IDs, kind, stable
 occurrence key, target type/ID, bounded title snapshot, scheduled instant/local date, priority,
 profile/rule/target versions, local-time resolution, quiet-hours adjustment, and catch-up status.
-No provider, channel, recipient, conversation, raw message, credential, or delivery result belongs
-in this table. Rule provenance is constrained by workspace, rule ID, and rule kind. Target-bearing
+No provider, channel, recipient, conversation, raw provider response, credential, or delivery result
+belongs in this table. Those values are also absent from provider-neutral delivery commands. Rule
+provenance is constrained by workspace, rule ID, and rule kind. Target-bearing
 intents use separate tenant-scoped foreign keys for daily plans, schedule blocks, and work items;
 deleting one of those targets cascades its still-pending intent instead of leaving a deliverable
 dangling reference.
@@ -104,9 +106,54 @@ holder's committed intents. Two concurrent materializers therefore produce one n
 the other receives the existing records. The repository still uses `ON CONFLICT DO NOTHING` and
 reloads the winner as a final idempotency boundary.
 
-The core never enqueues an outbox event. A future delivery layer must revalidate current source state
-before delivery, write separate resolution/receipt records, and deduplicate every external side
-effect by intent ID.
+The core never enqueues a generic outbox event. Delivery uses a dedicated lifecycle because a
+credential-scoped pull adapter must not be able to lease unrelated outbox topics.
+
+## Delivery lifecycle
+
+A `schedule:delivery` credential may claim at most one due command at a time. Delivery permission is
+never included in the credential CLI's default read/write scopes; it must be explicitly granted. A
+claim runs under the same workspace notification lock as materialization and source invalidation,
+then re-fetches and row-locks the credential after the workspace lock. Credential revocation takes
+the same row lock, so a revocation that wins that lock is observed before any claim or receipt write.
+PostgreSQL's clock is authoritative for due checks, leases, retry availability, and receipts.
+
+The command is created lazily from a still-present due intent. Its `deliveryId`, `intentId`, and
+`dedupeKey` are the same stable UUID. It contains only the reminder kind, target class, bounded title,
+scheduled instant/local date, priority, attempt number, claim token, and lease expiry. It never
+contains an account, destination, provider, channel, conversation, credential, or provider payload.
+
+The default lease is five minutes and the default maximum is five attempts. Each claim appends an
+immutable attempt with a new UUID fencing token. The adapter must durably deduplicate the external
+side effect by `dedupeKey` before reporting a receipt. If it sends successfully and stops before the
+receipt commits, a later claim exposes the same delivery/dedupe ID with a new token; the adapter must
+recognize its earlier side effect and acknowledge it without sending again. Multiple adapter
+instances for one workspace therefore require a shared deduplication store.
+Expired processing and invalidated leases are swept through a partial workspace/expiry index, so
+bounded recovery does not degrade into a full delivery-command scan.
+
+| Current state    | Accepted action                                     | Result                        |
+| ---------------- | --------------------------------------------------- | ----------------------------- |
+| due intent       | claim                                               | `processing`                  |
+| `processing`     | `delivered` receipt before lease expiry             | `delivered`                   |
+| `processing`     | retryable failure before the attempt limit          | delayed `pending`             |
+| `processing`     | permanent failure or retryable failure at the limit | `dead_letter`                 |
+| `processing`     | lease expires                                       | same command may be reclaimed |
+| any open command | source/policy invalidation                          | `invalidated`                 |
+
+Receipts accept only `delivered`, `retryable_failure`, or `permanent_failure`. Failures carry a
+lowercase machine code of at most 80 characters; retry hints are integers from 0 through 60 seconds.
+Free-form exception text and provider receipts are rejected. A receipt must present the current
+claim token and arrive before its lease expires. Exact request replay is durable for both command and
+empty claims as well as successful receipts; reusing a key for a different operation or payload is a
+conflict.
+
+Source changes before claim prevent command creation. Source changes after claim mark the command
+invalidated and prevent it from being reclaimed, but Schedule cannot retract a side effect already
+in flight outside its transaction. A receipt arriving before that claim's lease ends records the
+attempt outcome while the command remains `invalidated`; an abandoned invalidated attempt is closed
+as `lease_expired` after the lease. This claim-commit boundary is the documented unavoidable race.
+The adapter should minimize work between claim and its deduplicated side effect.
 
 ## Local API
 
@@ -119,6 +166,10 @@ the complete route table and payloads. The main flow is:
 3. Explicitly materialize a bounded window with
    `POST .../notification-intents/materializations`.
 4. Inspect immutable results with `GET .../notification-intents?from=...&to=...`.
+5. From an explicitly delivery-scoped integration credential, claim with
+   `POST /v1/integrations/reminder-deliveries/claim` and a unique `Idempotency-Key`.
+6. Report the fenced outcome with `POST /v1/integrations/reminder-deliveries/receipt` and a new
+   `Idempotency-Key`.
 
 The materialization window must be increasing and no longer than 31 days. One-off list requests are
 also limited to 31 days and fail closed above 500 returned rows. Materialization source queries fetch
@@ -135,24 +186,28 @@ With PostgreSQL running:
 
 ```powershell
 pnpm verify:notification-core
+pnpm verify:notification-delivery
 pnpm verify:notification-migrations
 pnpm verify:backup-restore
 ```
 
-The core verifier uses the real API and PostgreSQL repositories, creates all six source kinds, runs
+The policy verifier uses the real API and PostgreSQL repositories, creates all six source kinds, runs
 two materializers concurrently, proves exact-once occurrence persistence, rejects cross-workspace
 source and target references, rejects rule-kind mismatches and duplicate keys, proves policy and
 target edits invalidate pending intents, proves terminal activity performs selective cleanup, proves
 target deletion cascades, and confirms the outbox count does not change. The migration verifier
-upgrades a populated pre-0024 database in isolation, checks the due-work scan index and new tenant
-constraints, and proves legacy data remains intact.
-Backup/restore verification includes all four reminder tables.
+upgrades populated pre-0024, pre-0025, and pre-0026 databases in isolation, checks the due-work and
+delivery-recovery indexes and new tenant constraints, and proves legacy data remains intact. The
+delivery verifier uses a nonce database and the real HTTP gateway to prove concurrent claim replay,
+post-lock lease freshness, revocation linearization, cross-tenant rejection, retry, dead-lettering,
+expiry fencing/recovery, source invalidation, empty claim replay, bounded receipts, audit records,
+and occurrence uniqueness.
+Backup/restore verification includes all seven reminder and delivery tables.
 
 Not yet implemented in this slice:
 
 - automatic periodic materialization;
-- intent claim/revalidation/resolution state;
-- external delivery, retries, acknowledgement, or receipts;
-- Hermes/WhatsApp, email, push, or webhook notification transport;
+- a Hermes/WhatsApp, email, push, or other provider transport and human/account binding;
+- automatic worker polling of the delivery gateway;
 - reminder settings or intent-history screens in the web application;
 - hosted-user authorization for these local product routes.
