@@ -6,6 +6,7 @@ export * from "./daily-plan-fit-insight.js";
 export * from "./daily-plan-fit-insight-feedback.js";
 export * from "./duration.js";
 export * from "./errors.js";
+export * from "./hosted-identity.js";
 export * from "./ids.js";
 export * from "./notification-policy.js";
 export * from "./routine.js";

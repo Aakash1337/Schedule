@@ -11,11 +11,13 @@ export const composeDatabaseUser = "schedule";
 export const expectedScheduleTables = [
   "activity_events",
   "audit_events",
+  "browser_sessions",
   "daily_plan_fit_insight_feedback_events",
   "daily_plan_heads",
   "daily_plan_item_states",
   "daily_plan_items",
   "daily_plans",
+  "external_identities",
   "integration_confirmations",
   "integration_credentials",
   "integration_requests",
@@ -41,7 +43,9 @@ export const expectedScheduleTables = [
   "webhook_event_subscriptions",
   "work_item_dependencies",
   "work_items",
+  "workspace_memberships",
   "workspaces",
+  "users",
 ] as const;
 export const expectedScheduleSequences = [
   { schema: "drizzle", name: "__drizzle_migrations_id_seq" },

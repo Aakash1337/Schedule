@@ -77,6 +77,16 @@ describe("API infrastructure", () => {
     expect(integrationResponse.statusCode).toBe(404);
   });
 
+  it("keeps the dormant hosted identity foundation unreachable over HTTP", async () => {
+    const app = await buildApp();
+    apps.push(app);
+
+    for (const url of ["/v1/auth/login", "/v1/auth/callback", "/v1/auth/session"]) {
+      const response = await app.inject({ method: "GET", url });
+      expect(response.statusCode, url).toBe(404);
+    }
+  });
+
   it("keeps health endpoints independent from the product Host guard", async () => {
     const app = await buildApp();
     apps.push(app);

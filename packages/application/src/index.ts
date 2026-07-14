@@ -19,6 +19,7 @@ export * from "./update-work-item.js";
 export * from "./webhook-security.js";
 export * from "./create-workspace.js";
 export * from "./get-workspace.js";
+export * from "./hosted-identity.js";
 export * from "./list-workspaces.js";
 export * from "./list-notification-deliveries.js";
 export * from "./local-natural-language-proposal.js";

@@ -650,6 +650,10 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   materialization, an opt-in bounded local materialization worker, and provider-neutral claim/receipt
   state; provider transport and human/account binding remain follow-on work, while local settings and
   bounded planned/execution history are implemented
+- Implemented foundation: dormant provider-neutral users, exact issuer/subject bindings,
+  digest-only revocable browser sessions, and binary workspace memberships with deletion-safe
+  workspace preservation; no browser route, cookie, provider, or hosted authorization seam is
+  exposed yet
 - Authentication and secure workspace isolation
 - Cloud deployment selected from measured operational needs
 - Offline-capable synchronization and conflict handling, if required

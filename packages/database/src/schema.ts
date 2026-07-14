@@ -173,6 +173,17 @@ export const naturalLanguageProposalStatus = pgEnum("natural_language_proposal_s
   "confirmed",
   "cancelled",
 ]);
+export const hostedUserStatus = pgEnum("hosted_user_status", ["active", "disabled"]);
+export const browserSessionRevocationReason = pgEnum("browser_session_revocation_reason", [
+  "signed_out",
+  "rotated",
+  "user_disabled",
+  "administrative",
+]);
+export const workspaceMembershipStatus = pgEnum("workspace_membership_status", [
+  "active",
+  "revoked",
+]);
 
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -180,6 +191,147 @@ export const workspaces = pgTable("workspaces", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/** Provider-neutral hosted principals. No profile or provider claims are persisted here. */
+export const hostedUsers = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    status: hostedUserStatus("status").notNull().default("active"),
+    disabledAt: timestamp("disabled_at", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("users_status_idx").on(table.status, table.id),
+    check(
+      "users_lifecycle_valid",
+      sql`(
+        (${table.status} = 'active' and ${table.disabledAt} is null)
+        or (${table.status} = 'disabled' and ${table.disabledAt} is not null)
+      )`,
+    ),
+    check(
+      "users_timestamps_valid",
+      sql`${table.updatedAt} >= ${table.createdAt}
+        and (${table.disabledAt} is null or ${table.disabledAt} >= ${table.createdAt})`,
+    ),
+    check("users_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
+/** Exact issuer/subject bindings. Email, display claims, and provider tokens are excluded. */
+export const externalIdentities = pgTable(
+  "external_identities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => hostedUsers.id, { onDelete: "cascade" }),
+    issuer: varchar("issuer", { length: 2_048 }).notNull(),
+    subject: varchar("subject", { length: 512 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("external_identities_exact_binding_uq").on(
+      sql`${table.issuer} collate "C"`,
+      sql`${table.subject} collate "C"`,
+    ),
+    index("external_identities_user_idx").on(table.userId, table.id),
+    check("external_identities_issuer_nonempty", sql`char_length(${table.issuer}) > 0`),
+    check("external_identities_subject_nonempty", sql`char_length(${table.subject}) > 0`),
+  ],
+);
+
+/** Browser sessions persist only a selector and peppered HMAC digest, never a bearer secret. */
+export const browserSessions = pgTable(
+  "browser_sessions",
+  {
+    id: uuid("id").primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => hostedUsers.id, { onDelete: "cascade" }),
+    secretDigest: varchar("secret_digest", { length: 64 }).notNull(),
+    idleTimeoutSeconds: integer("idle_timeout_seconds").notNull(),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull(),
+    idleExpiresAt: timestamp("idle_expires_at", { withTimezone: true }).notNull(),
+    absoluteExpiresAt: timestamp("absolute_expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revocationReason: browserSessionRevocationReason("revocation_reason"),
+    version: integer("version").notNull().default(1),
+  },
+  (table) => [
+    unique("browser_sessions_secret_digest_uq").on(table.secretDigest),
+    index("browser_sessions_user_active_idx").on(
+      table.userId,
+      table.revokedAt,
+      table.idleExpiresAt,
+      table.absoluteExpiresAt,
+    ),
+    check("browser_sessions_digest_valid", sql`${table.secretDigest} ~ '^[0-9a-f]{64}$'`),
+    check(
+      "browser_sessions_idle_timeout_valid",
+      sql`${table.idleTimeoutSeconds} between 60 and 2592000`,
+    ),
+    check(
+      "browser_sessions_expiry_valid",
+      sql`${table.issuedAt} <= ${table.lastSeenAt}
+        and ${table.lastSeenAt} < ${table.idleExpiresAt}
+        and ${table.idleExpiresAt} <= ${table.absoluteExpiresAt}`,
+    ),
+    check(
+      "browser_sessions_revocation_valid",
+      sql`(
+        ${table.revokedAt} is null and ${table.revocationReason} is null
+      ) or (
+        ${table.revokedAt} is not null and ${table.revocationReason} is not null
+        and ${table.revokedAt} >= ${table.issuedAt}
+      )`,
+    ),
+    check("browser_sessions_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
+/** Binary hosted authorization boundary; roles remain deliberately out of scope. */
+export const workspaceMemberships = pgTable(
+  "workspace_memberships",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => hostedUsers.id, { onDelete: "cascade" }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    status: workspaceMembershipStatus("status").notNull().default("active"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ name: "workspace_memberships_pk", columns: [table.userId, table.workspaceId] }),
+    index("workspace_memberships_workspace_status_idx").on(
+      table.workspaceId,
+      table.status,
+      table.userId,
+    ),
+    check(
+      "workspace_memberships_lifecycle_valid",
+      sql`(
+        (${table.status} = 'active' and ${table.revokedAt} is null)
+        or (${table.status} = 'revoked' and ${table.revokedAt} is not null)
+      )`,
+    ),
+    check(
+      "workspace_memberships_timestamps_valid",
+      sql`${table.updatedAt} >= ${table.createdAt}
+        and (${table.revokedAt} is null or ${table.revokedAt} >= ${table.createdAt})`,
+    ),
+    check("workspace_memberships_version_positive", sql`${table.version} > 0`),
+  ],
+);
 
 /**
  * Provider-neutral credentials for trusted automation clients.

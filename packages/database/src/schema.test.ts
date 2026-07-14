@@ -6,12 +6,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   activityEvents,
+  browserSessionRevocationReason,
+  browserSessions,
   dailyPlanFitInsightFeedbackEvents,
   dailyPlanFitInsightFeedbackKind,
   dailyPlanHeads,
   dailyPlanItemStates,
   dailyPlanItems,
   dailyPlans,
+  externalIdentities,
+  hostedUsers,
+  hostedUserStatus,
   integrationConfirmations,
   integrationCredentials,
   integrationRequests,
@@ -45,6 +50,8 @@ import {
   workItemDependencies,
   workItems,
   workspaces,
+  workspaceMemberships,
+  workspaceMembershipStatus,
   webhookDeliveries,
   webhookEndpointSecrets,
   webhookEndpoints,
@@ -88,6 +95,75 @@ describe("database schema", () => {
     expect(getTableName(webhookEndpointSecrets)).toBe("webhook_endpoint_secrets");
     expect(getTableName(webhookDeliveries)).toBe("webhook_deliveries");
     expect(getTableName(webhookEventSubscriptions)).toBe("webhook_event_subscriptions");
+    expect(getTableName(hostedUsers)).toBe("users");
+    expect(getTableName(externalIdentities)).toBe("external_identities");
+    expect(getTableName(browserSessions)).toBe("browser_sessions");
+    expect(getTableName(workspaceMemberships)).toBe("workspace_memberships");
+  });
+
+  it("persists a provider-neutral hosted identity and binary membership boundary", () => {
+    expect(hostedUserStatus.enumValues).toEqual(["active", "disabled"]);
+    expect(browserSessionRevocationReason.enumValues).toEqual([
+      "signed_out",
+      "rotated",
+      "user_disabled",
+      "administrative",
+    ]);
+    expect(workspaceMembershipStatus.enumValues).toEqual(["active", "revoked"]);
+
+    const users = getTableConfig(hostedUsers);
+    expect(users.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "users_lifecycle_valid",
+        "users_timestamps_valid",
+        "users_version_positive",
+      ]),
+    );
+
+    const identities = getTableConfig(externalIdentities);
+    expect(identities.indexes.map((constraint) => constraint.config.name)).toEqual(
+      expect.arrayContaining([
+        "external_identities_exact_binding_uq",
+        "external_identities_user_idx",
+      ]),
+    );
+
+    const sessions = getTableConfig(browserSessions);
+    expect(sessions.uniqueConstraints.map((constraint) => constraint.getName())).toContain(
+      "browser_sessions_secret_digest_uq",
+    );
+    expect(sessions.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "browser_sessions_digest_valid",
+        "browser_sessions_idle_timeout_valid",
+        "browser_sessions_expiry_valid",
+        "browser_sessions_revocation_valid",
+        "browser_sessions_version_positive",
+      ]),
+    );
+
+    const memberships = getTableConfig(workspaceMemberships);
+    expect(memberships.primaryKeys.map((constraint) => constraint.getName())).toContain(
+      "workspace_memberships_pk",
+    );
+    expect(memberships.checks.map((constraint) => constraint.name)).toContain(
+      "workspace_memberships_lifecycle_valid",
+    );
+  });
+
+  it("migrates hosted identity without attaching ownership to workspace data", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0031_daffy_bloodstrike.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain('CREATE TABLE "users"');
+    expect(migration).toContain('CREATE TABLE "external_identities"');
+    expect(migration).toContain('CREATE TABLE "browser_sessions"');
+    expect(migration).toContain('CREATE TABLE "workspace_memberships"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "external_identities_exact_binding_uq"');
+    expect(migration).toContain('"issuer" collate "C"');
+    expect(migration).not.toContain('ALTER TABLE "workspaces" ADD COLUMN "user_id"');
   });
 
   it("enforces a tenant-scoped, non-cascading work-item hierarchy", () => {
