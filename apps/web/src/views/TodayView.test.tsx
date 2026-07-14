@@ -3,9 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api";
-import { todayKey } from "../date";
+import { localDateTimeToIso, todayKey } from "../date";
 import type {
   CurrentDailyPlan,
+  ScheduleBlock,
   SchedulingAdviceResult,
   SchedulingAdviceUnavailableReason,
   Workspace,
@@ -17,6 +18,7 @@ const apiMocks = vi.hoisted(() => ({
   generatePlan: vi.fn(),
   getCurrentPlan: vi.fn(),
   getSchedulingAdvice: vi.fn(),
+  listScheduleBlocks: vi.fn(),
   recordPlanItemActivity: vi.fn(),
   regeneratePlan: vi.fn(),
   replacePlanItem: vi.fn(),
@@ -35,6 +37,21 @@ const workspace: Workspace = {
   createdAt: "2026-07-12T09:00:00.000Z",
   updatedAt: "2026-07-12T09:00:00.000Z",
 };
+
+function scheduleBlock(id: string, startsAt: string, endsAt: string, version = 1): ScheduleBlock {
+  return {
+    id,
+    workspaceId: workspace.id,
+    workItemId: null,
+    title: "Reserved",
+    startsAt: localDateTimeToIso(todayKey(), startsAt),
+    endsAt: localDateTimeToIso(todayKey(), endsAt),
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    version,
+    createdAt: "2026-07-12T09:00:00.000Z",
+    updatedAt: "2026-07-12T09:00:00.000Z",
+  };
+}
 
 const plan: CurrentDailyPlan = {
   id: "plan-1",
@@ -177,6 +194,10 @@ function planWithTemporaryFeedback(kind: "not_today" | "not_this_week"): Current
 beforeEach(() => {
   vi.resetAllMocks();
   apiMocks.getCurrentPlan.mockResolvedValue(plan);
+  apiMocks.listScheduleBlocks.mockResolvedValue({
+    items: [],
+    page: { limit: 200, offset: 0 },
+  });
 });
 
 afterEach(cleanup);
@@ -334,6 +355,261 @@ describe("Today commands", () => {
       ),
     );
     expect(await screen.findByText("Practice Spanish")).toBeInTheDocument();
+  });
+
+  it("subtracts calendar blocks into explicit free windows before generating", async () => {
+    const user = userEvent.setup();
+    const reserved = scheduleBlock("block-lunch", "11:00", "12:00");
+    apiMocks.getCurrentPlan
+      .mockRejectedValueOnce(new ApiError(404, "daily_plan.not_found", "No plan exists.", null))
+      .mockResolvedValueOnce(plan);
+    apiMocks.listScheduleBlocks.mockResolvedValue({
+      items: [reserved],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.generatePlan.mockResolvedValue(plan);
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await user.click(await screen.findByRole("checkbox", { name: "Exclude calendar blocks" }));
+    expect(await screen.findByText(/7h free/)).toBeVisible();
+    expect(screen.getByRole("list", { name: "Free planning windows" })).toBeVisible();
+    expect(
+      screen.getByRole("checkbox", { name: "Exclude calendar blocks" }),
+    ).toHaveAccessibleDescription(
+      "Treat reservations inside this range as unavailable planning time.",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Generate today's plan" }));
+
+    await waitFor(() => expect(apiMocks.generatePlan).toHaveBeenCalledOnce());
+    expect(apiMocks.listScheduleBlocks).toHaveBeenCalledTimes(2);
+    expect(apiMocks.generatePlan).toHaveBeenCalledWith(
+      workspace.id,
+      expect.objectContaining({
+        availableWindows: [
+          {
+            startsAt: localDateTimeToIso(todayKey(), "09:00"),
+            endsAt: localDateTimeToIso(todayKey(), "11:00"),
+          },
+          {
+            startsAt: localDateTimeToIso(todayKey(), "12:00"),
+            endsAt: localDateTimeToIso(todayKey(), "17:00"),
+          },
+        ],
+        seed: expect.stringContaining("calendar-aware"),
+      }),
+    );
+  });
+
+  it("stops a stale calendar submission and succeeds after the user reviews the update", async () => {
+    const user = userEvent.setup();
+    const original = scheduleBlock("block-lunch", "11:00", "12:00");
+    const changed = scheduleBlock("block-lunch", "10:00", "12:00", 2);
+    const page = (items: readonly ScheduleBlock[]) => ({
+      items,
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.getCurrentPlan
+      .mockRejectedValueOnce(new ApiError(404, "daily_plan.not_found", "No plan exists.", null))
+      .mockResolvedValueOnce(plan);
+    apiMocks.listScheduleBlocks
+      .mockResolvedValueOnce(page([original]))
+      .mockResolvedValueOnce(page([changed]))
+      .mockResolvedValueOnce(page([changed]));
+    apiMocks.generatePlan.mockResolvedValue(plan);
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("checkbox", { name: "Exclude calendar blocks" }));
+    expect(await screen.findByText(/7h free/)).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Generate today's plan" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Your calendar changed. Review the updated free windows",
+    );
+    expect(apiMocks.generatePlan).not.toHaveBeenCalled();
+    expect(await screen.findByText(/6h free/)).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Generate today's plan" }));
+    await waitFor(() => expect(apiMocks.generatePlan).toHaveBeenCalledOnce());
+    expect(apiMocks.generatePlan).toHaveBeenCalledWith(
+      workspace.id,
+      expect.objectContaining({
+        availableWindows: [
+          {
+            startsAt: localDateTimeToIso(todayKey(), "09:00"),
+            endsAt: localDateTimeToIso(todayKey(), "10:00"),
+          },
+          {
+            startsAt: localDateTimeToIso(todayKey(), "12:00"),
+            endsAt: localDateTimeToIso(todayKey(), "17:00"),
+          },
+        ],
+      }),
+    );
+  });
+
+  it("prevents generation when calendar blocks consume the selected range", async () => {
+    const user = userEvent.setup();
+    apiMocks.getCurrentPlan.mockRejectedValueOnce(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
+    apiMocks.listScheduleBlocks.mockResolvedValue({
+      items: [scheduleBlock("block-all-day", "08:00", "18:00")],
+      page: { limit: 200, offset: 0 },
+    });
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("checkbox", { name: "Exclude calendar blocks" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Calendar blocks fill this entire range",
+    );
+    expect(screen.getByRole("button", { name: "Generate today's plan" })).toBeDisabled();
+    expect(apiMocks.generatePlan).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on a calendar load error while preserving the manual range escape hatch", async () => {
+    const user = userEvent.setup();
+    apiMocks.getCurrentPlan
+      .mockRejectedValueOnce(new ApiError(404, "daily_plan.not_found", "No plan exists.", null))
+      .mockResolvedValueOnce(plan);
+    apiMocks.listScheduleBlocks.mockRejectedValueOnce(new Error("Calendar is offline."));
+    apiMocks.generatePlan.mockResolvedValue(plan);
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    const toggle = await screen.findByRole("checkbox", { name: "Exclude calendar blocks" });
+    await user.click(toggle);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Calendar is offline");
+    expect(screen.getByRole("button", { name: "Generate today's plan" })).toBeDisabled();
+
+    await user.click(toggle);
+    expect(screen.getByRole("button", { name: "Generate today's plan" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Generate today's plan" }));
+
+    await waitFor(() => expect(apiMocks.generatePlan).toHaveBeenCalledOnce());
+    expect(apiMocks.generatePlan).toHaveBeenCalledWith(
+      workspace.id,
+      expect.objectContaining({
+        availableWindows: [
+          {
+            startsAt: localDateTimeToIso(todayKey(), "09:00"),
+            endsAt: localDateTimeToIso(todayKey(), "17:00"),
+          },
+        ],
+        seed: expect.stringContaining("manual"),
+      }),
+    );
+  });
+
+  it("fails closed when a successful calendar response contains malformed block data", async () => {
+    const user = userEvent.setup();
+    apiMocks.getCurrentPlan.mockRejectedValueOnce(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
+    apiMocks.listScheduleBlocks.mockResolvedValue({
+      items: [scheduleBlock("invalid-version", "11:00", "12:00", 0)],
+      page: { limit: 200, offset: 0 },
+    });
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    const toggle = await screen.findByRole("checkbox", { name: "Exclude calendar blocks" });
+    await user.click(toggle);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("must have a positive version");
+    expect(screen.getByRole("button", { name: "Generate today's plan" })).toBeDisabled();
+    expect(apiMocks.generatePlan).not.toHaveBeenCalled();
+
+    await user.click(toggle);
+    expect(screen.getByRole("button", { name: "Generate today's plan" })).toBeEnabled();
+  });
+
+  it("aborts and ignores calendar availability returned for a previous workspace", async () => {
+    const user = userEvent.setup();
+    const firstRequest = deferred<{
+      readonly items: readonly ScheduleBlock[];
+      readonly page: { readonly limit: number; readonly offset: number };
+    }>();
+    const secondRequest = deferred<{
+      readonly items: readonly ScheduleBlock[];
+      readonly page: { readonly limit: number; readonly offset: number };
+    }>();
+    const secondWorkspace = { ...workspace, id: "workspace-2", name: "Shared" };
+    apiMocks.getCurrentPlan.mockRejectedValue(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
+    apiMocks.listScheduleBlocks
+      .mockReturnValueOnce(firstRequest.promise)
+      .mockReturnValueOnce(secondRequest.promise);
+
+    const { rerender } = render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("checkbox", { name: "Exclude calendar blocks" }));
+    await waitFor(() => expect(apiMocks.listScheduleBlocks).toHaveBeenCalledOnce());
+    const firstSignal = apiMocks.listScheduleBlocks.mock.calls[0]?.[3] as AbortSignal;
+
+    rerender(<TodayView workspace={secondWorkspace} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(apiMocks.listScheduleBlocks).toHaveBeenCalledTimes(2));
+    expect(firstSignal.aborted).toBe(true);
+
+    await act(async () => {
+      secondRequest.resolve({
+        items: [scheduleBlock("shared-reservation", "13:00", "14:00")],
+        page: { limit: 200, offset: 0 },
+      });
+      await secondRequest.promise;
+    });
+    expect(await screen.findByText(/7h free/)).toBeVisible();
+
+    await act(async () => {
+      firstRequest.resolve({
+        items: [scheduleBlock("old-all-day", "08:00", "18:00")],
+        page: { limit: 200, offset: 0 },
+      });
+      await firstRequest.promise;
+    });
+    expect(screen.getByText(/7h free/)).toBeVisible();
+    expect(screen.queryByText(/fill this entire range/)).not.toBeInTheDocument();
+  });
+
+  it("cancels an old submit-time calendar read across an A to B to A workspace switch", async () => {
+    const user = userEvent.setup();
+    const pendingFreshness = deferred<{
+      readonly items: readonly ScheduleBlock[];
+      readonly page: { readonly limit: number; readonly offset: number };
+    }>();
+    const emptyPage = { items: [], page: { limit: 200, offset: 0 } };
+    const secondWorkspace = { ...workspace, id: "workspace-2", name: "Shared" };
+    apiMocks.getCurrentPlan.mockRejectedValue(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
+    apiMocks.listScheduleBlocks
+      .mockResolvedValueOnce(emptyPage)
+      .mockReturnValueOnce(pendingFreshness.promise)
+      .mockResolvedValueOnce(emptyPage)
+      .mockResolvedValueOnce(emptyPage);
+
+    const { rerender } = render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("checkbox", { name: "Exclude calendar blocks" }));
+    expect(await screen.findByText(/8h free/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Generate today's plan" }));
+    await waitFor(() => expect(apiMocks.listScheduleBlocks).toHaveBeenCalledTimes(2));
+    const freshnessSignal = apiMocks.listScheduleBlocks.mock.calls[1]?.[3] as AbortSignal;
+
+    rerender(<TodayView workspace={secondWorkspace} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(apiMocks.listScheduleBlocks).toHaveBeenCalledTimes(3));
+    expect(freshnessSignal.aborted).toBe(true);
+
+    rerender(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(apiMocks.listScheduleBlocks).toHaveBeenCalledTimes(4));
+
+    await act(async () => {
+      pendingFreshness.resolve(emptyPage);
+      await pendingFreshness.promise;
+    });
+    await waitFor(() => expect(apiMocks.generatePlan).not.toHaveBeenCalled());
+    expect(screen.queryByText("Today's plan is ready.")).not.toBeInTheDocument();
   });
 
   it("applies a lock mutation response without a second plan read", async () => {

@@ -44,7 +44,7 @@ project.
 
 ## Current scorecard
 
-The current audited unit/component suite contains 65 test files and 896 runtime test cases, plus three
+The current audited unit/component suite contains 66 test files and 913 runtime test cases, plus three
 live Chromium integration scenarios. Parameterized state matrices expand into many cases, so this
 number must not be compared as though every case were an independent product feature.
 
@@ -52,10 +52,10 @@ number must not be compared as though every case were an independent product fea
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      24 / 24 |
+| Implemented features with CI-registered evidence                       |      25 / 25 |
 | Critical implemented features with CI-registered integration or drills |      14 / 14 |
 | Partial features with an explicit limitation                           |        2 / 2 |
-| CI-registered evidence items                                           |          105 |
+| CI-registered evidence items                                           |          107 |
 | Deferred features incorrectly counted as passing                       |            0 |
 | Missing or stale evidence anchors                                      |            0 |
 
@@ -67,21 +67,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     58.85% |    70.2% |    66.99% |  59.1% |
+| Whole repository, measured |     59.31% |   70.42% |    67.42% | 59.58% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     95.49% |   90.58% |    96.15% | 96.59% |
 | Domain, required           |        91% |      82% |       92% |    93% |
 | Application, measured      |     89.43% |   84.04% |      100% | 90.29% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     87.14% |   79.38% |    79.21% | 88.46% |
+| API, measured              |     87.17% |   79.47% |    79.21% | 88.49% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.26% |   89.18% |    91.11% | 95.14% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     84.27% |    72.6% |    72.22% | 84.88% |
-| Web, required              |        75% |      63% |       70% |    79% |
+| Web, measured              |     86.41% |   74.09% |    75.72% | 87.02% |
+| Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 5,752 of 9,773 statements, 4,305 of 6,132 branches,
-1,283 of 1,915 functions, and 5,386 of 9,113 lines.
+The whole-repository totals are 5,899 of 9,946 statements, 4,406 of 6,256 branches,
+1,310 of 1,943 functions, and 5,524 of 9,271 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -253,6 +253,23 @@ model reload in about 12.9 seconds; an earlier first-ever cold load exceeded the
 limit. That host-specific observation motivated the bounded 60-second default, but it is neither a
 benchmark nor a claim that every cold load behaves like the controlled reload. Operators may need a
 different bounded timeout for another allowlisted model or machine.
+
+### Calendar-aware Today availability evidence
+
+Pure web units exercise the interval contract independently of React: no-overlap retention,
+half-open edge behavior, clipping, deterministic sorting, overlapping and adjacent block merging,
+complete coverage, combined free-minute calculation, a 25-hour civil day expressed as absolute
+instants, order-independent freshness keys, relevant revision/timing sensitivity, irrelevant-block
+stability, and fail-closed malformed intervals or versions.
+
+Today component units observe the user-facing behavior and submitted request. They require a labelled
+native opt-in control with descriptive help, a visible free-window list, exact multi-window
+generation after subtraction, a second calendar read before submission, changed-calendar rejection
+followed by successful reviewed retry, disabled generation for a fully consumed range, fail-closed
+load errors or malformed successful responses with an explicit manual-range escape hatch, and
+abort/ignore behavior for a prior workspace response. The feature remains client-owned: these checks
+do not claim a server-side block lock or automatic calendar placement, and the accepted explicit
+windows remain the replay contract.
 
 ## Known evidence gaps
 

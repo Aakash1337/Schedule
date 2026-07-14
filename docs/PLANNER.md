@@ -56,6 +56,25 @@ The planner is implemented as a pure domain operation in `packages/domain/src/da
 The default search is bounded at 128 eligible candidates and 32 randomized iterations. Applying the candidate limit emits a warning rather than silently presenting the result as exhaustive.
 Custom deadline configuration must use a non-negative safe-integer horizon, and its horizon multiplied by the future-per-day weight cannot exceed the planner's 1,000,000-point component bound. This keeps every derived deadline score finite and safely comparable.
 
+## Client-derived calendar availability
+
+`availableWindows` is an explicit caller-owned planning input. The planner never queries schedule
+blocks or silently changes the supplied windows. The local Today client offers an opt-in convenience
+for the first plan: it subtracts browser-local schedule blocks from one outer range, using half-open
+instant intervals, deterministic sorting, clipping, and overlap/adjacency merging. The resulting
+non-empty free windows are submitted through the existing multi-window request contract.
+
+Today rereads the relevant calendar day immediately before submission. If the identity, version, or
+clipped timing of an affecting block changed, it refreshes the preview and requires a new explicit
+submission. Load or validation failure stops generation; turning the option off deliberately returns
+to the unchanged manual range. This check reduces stale-calendar mistakes but is not a server lock:
+the exact submitted windows remain authoritative if a block changes after the final read.
+
+The accepted request, including its exact derived windows, participates in the canonical snapshot,
+input hash, persistence, and replay contract. Replay, regeneration, and replacement do not rederive
+availability from later calendar state or mutate an earlier revision. Schedule blocks therefore
+remain independent reservations rather than planner candidates or automatic placements.
+
 ## Determinism contract
 
 For the same canonical input snapshot, request revision, seed, algorithm version, configuration version, and PRNG version, the planner returns the same item selection and explanations regardless of input array order. Planner v4 and `default-weights-v3` include each work item's nullable `dueOn` value and deadline configuration in the canonical snapshot and input hash. Planner v4 also includes the latest applicable routine-feedback event per routine; an expired suppression or latest reset remains visible for replay but produces no active exclusion.
