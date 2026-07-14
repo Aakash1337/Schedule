@@ -310,7 +310,8 @@ For a delivery incident:
    print endpoint URLs, request or response bodies, signatures, DNS answers, key material, or raw
    network exceptions in worker failures.
 3. Correct the receiver, DNS, certificate, or key configuration. Do not bypass the public-HTTPS DNS
-   policy to reach a private Hermes process; that requires a separate authenticated transport.
+   policy to reach a private Hermes process. The local Hermes plugin is not a webhook receiver; it
+   calls Schedule's authenticated loopback integration gateway when invoked.
 4. Redrive the existing delivery. Redrive preserves the delivery ID, exact body, destination, and
    secret version, so the receiver must deduplicate it.
 5. Revoke the endpoint if its destination or receiver secret may be compromised. Create a replacement
@@ -325,9 +326,12 @@ pnpm verify:webhook-delivery
 The verifier covers workspace isolation, encrypted-envelope constraints, rotation, subscription
 replacement, privacy-thin automatic event fan-out, immutable body and outbox linkage, audit records,
 dead-letter redrive, revocation, and transactional rollback. It is also part of
-`pnpm verify:database` and the PostgreSQL CI job. `schedule.changed.v1` is only an invalidation; the
-Hermes/WhatsApp adapter, reminder decisions, phone transport, and end-to-end receipts remain
-deferred. A successful test or invalidation delivery does not imply those systems exist.
+`pnpm verify:database` and the PostgreSQL CI job. `schedule.changed.v1` is only an invalidation; a
+successful test or invalidation delivery does not verify the separate local Hermes plugin or imply
+that a reminder reached a phone. Verify the plugin's local/stdout and real integration-gateway
+boundary with `pnpm verify:hermes-adapter`. Live WhatsApp transport, Schedule-side reminder policy,
+and end-to-end provider/phone receipts remain deferred until the operator configures
+`WHATSAPP_HOME_CHANNEL` and completes the smoke described in [HERMES.md](./HERMES.md).
 
 ## Routine verification
 
