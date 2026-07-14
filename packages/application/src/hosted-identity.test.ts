@@ -15,6 +15,7 @@ import {
 
 import {
   DisableHostedUser,
+  AuthorizeHostedWorkspace,
   FindOrProvisionHostedUser,
   HmacBrowserSessionTokenCodec,
   IssueBrowserSession,
@@ -92,6 +93,8 @@ function createHarness() {
       },
     },
     memberships: {
+      findByUserAndWorkspace: async (id, workspace) =>
+        memberships.get(`${workspace}:${id}`) ?? null,
       findByUserAndWorkspaceForUpdate: async (id, workspace) =>
         memberships.get(`${workspace}:${id}`) ?? null,
       insert: async (membership) => {
@@ -179,6 +182,35 @@ describe("hosted identity application foundation", () => {
     expect(result.membership).toMatchObject({ status: "active", userId: user.id });
     expect(harness.workspaces.has(result.workspace.id)).toBe(true);
     expect(harness.memberships.has(`${result.workspace.id}:${user.id}`)).toBe(true);
+  });
+
+  it("authorizes only active exact memberships and returns an immutable scoped context", async () => {
+    const harness = createHarness();
+    const user = createHostedUser({ id: userId("authorized-user"), now: initialNow });
+    harness.users.set(user.id, user);
+    const provisioned = await new ProvisionHostedWorkspace(harness.unitOfWork).execute({
+      userId: user.id,
+      name: "Authorized workspace",
+    });
+    const principal = {
+      userId: user.id,
+      sessionId: browserSessionId("00000000-0000-4000-8000-000000000123"),
+    };
+    const service = new AuthorizeHostedWorkspace(harness.unitOfWork);
+
+    const authorized = await service.execute(principal, provisioned.workspace.id);
+    expect(authorized).toEqual({ ...principal, workspaceId: provisioned.workspace.id });
+    expect(Object.isFrozen(authorized)).toBe(true);
+    await expect(
+      service.execute(principal, workspaceId("00000000-0000-4000-8000-000000000999")),
+    ).resolves.toBeNull();
+
+    await new RevokeWorkspaceMembership(harness.unitOfWork).execute(
+      user.id,
+      provisioned.workspace.id,
+    );
+    await expect(service.execute(principal, provisioned.workspace.id)).resolves.toBeNull();
+    expect(harness.isolationLevels.at(-1)).toBe("read_committed");
   });
 
   it("issues digest-only persistence and resolves a session with a bounded idle touch", async () => {

@@ -62,6 +62,10 @@ export interface BrowserSessionRepository {
 }
 
 export interface WorkspaceMembershipRepository {
+  findByUserAndWorkspace(
+    userId: UserId,
+    workspaceId: WorkspaceId,
+  ): Promise<WorkspaceMembership | null>;
   findByUserAndWorkspaceForUpdate(
     userId: UserId,
     workspaceId: WorkspaceId,
@@ -302,6 +306,40 @@ export interface BrowserSessionPrincipal {
   readonly sessionId: BrowserSessionId;
   readonly idleExpiresAt: Date;
   readonly absoluteExpiresAt: Date;
+}
+
+export interface HostedWorkspaceAuthorization {
+  readonly userId: UserId;
+  readonly sessionId: BrowserSessionId;
+  readonly workspaceId: WorkspaceId;
+}
+
+/**
+ * Performs the read-side workspace membership check for an already authenticated request.
+ * Revocation fences subsequent requests; it cannot retract a request that has already crossed
+ * this boundary. Hosted mutations that require a stronger fence must reauthorize in their own
+ * product transaction instead of treating this preflight decision as transaction authority.
+ */
+export class AuthorizeHostedWorkspace {
+  constructor(private readonly unitOfWork: IdentityUnitOfWork) {}
+
+  execute(
+    principal: Pick<BrowserSessionPrincipal, "userId" | "sessionId">,
+    workspaceId: WorkspaceId,
+  ): Promise<HostedWorkspaceAuthorization | null> {
+    return this.unitOfWork.run(
+      async ({ memberships }) => {
+        const membership = await memberships.findByUserAndWorkspace(principal.userId, workspaceId);
+        if (membership?.status !== "active") return null;
+        return Object.freeze({
+          userId: principal.userId,
+          sessionId: principal.sessionId,
+          workspaceId: membership.workspaceId,
+        });
+      },
+      { isolationLevel: "read_committed" },
+    );
+  }
 }
 
 async function lockPresentedSession(

@@ -443,8 +443,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   disposable-PostgreSQL evidence for exact concurrent issuer/subject provisioning, digest-only
   sessions, rotation replay resistance, user-disable revocation, binary membership isolation,
   hosted workspace provisioning beyond the local cap, and user-deletion preservation of workspace
-  product data. It remains dormant: there is no browser route, provider verification, cookie/CSRF
-  policy, centralized workspace-authorization seam, public deployment, or synchronization;
+  product data. A centralized hosted request boundary additionally has unit and disposable-
+  PostgreSQL evidence for request isolation, single authentication, spoof resistance,
+  enumeration-resistant membership denial, redacted failures, immutable workspace contexts, and
+  post-revocation fencing. Both remain dormant: there is no browser route, provider
+  verification, cookie/CSRF policy, transaction-coupled product mutation authorization, public
+  deployment, or synchronization;
 - eight live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a

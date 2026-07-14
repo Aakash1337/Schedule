@@ -81,7 +81,13 @@ describe("API infrastructure", () => {
     const app = await buildApp();
     apps.push(app);
 
-    for (const url of ["/v1/auth/login", "/v1/auth/callback", "/v1/auth/session"]) {
+    for (const url of [
+      "/v1/auth/login",
+      "/v1/auth/callback",
+      "/v1/auth/session",
+      "/v1/auth/logout",
+      "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/probe",
+    ]) {
       const response = await app.inject({ method: "GET", url });
       expect(response.statusCode, url).toBe(404);
     }

@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  AuthorizeHostedWorkspace,
   DisableHostedUser,
   FindOrProvisionHostedUser,
   HmacBrowserSessionTokenCodec,
@@ -189,14 +190,37 @@ try {
 
   const revokeMembership = new RevokeWorkspaceMembership(unitOfWork);
   const reactivateMembership = new ReactivateWorkspaceMembership(unitOfWork);
+  const authorizeWorkspace = new AuthorizeHostedWorkspace(unitOfWork);
+  const activePrincipal = await resolveSession.execute(replacement.token);
+  assert.ok(activePrincipal);
+  assert.deepEqual(await authorizeWorkspace.execute(activePrincipal, firstWorkspace.workspace.id), {
+    userId: primaryUser.id,
+    sessionId: activePrincipal.sessionId,
+    workspaceId: firstWorkspace.workspace.id,
+  });
+  const [authorizationRacingRevocation, revokedMembership] = await Promise.all([
+    authorizeWorkspace.execute(activePrincipal, firstWorkspace.workspace.id),
+    revokeMembership.execute(primaryUser.id, firstWorkspace.workspace.id),
+  ]);
+  assert.equal(revokedMembership.status, "revoked");
+  assert.ok(
+    authorizationRacingRevocation === null ||
+      (authorizationRacingRevocation.userId === primaryUser.id &&
+        authorizationRacingRevocation.sessionId === activePrincipal.sessionId &&
+        authorizationRacingRevocation.workspaceId === firstWorkspace.workspace.id),
+  );
   assert.equal(
-    (await revokeMembership.execute(primaryUser.id, firstWorkspace.workspace.id)).status,
-    "revoked",
+    await authorizeWorkspace.execute(activePrincipal, firstWorkspace.workspace.id),
+    null,
   );
   assert.equal((await resolveSession.execute(replacement.token))?.userId, primaryUser.id);
   assert.equal(
     (await reactivateMembership.execute(primaryUser.id, firstWorkspace.workspace.id)).status,
     "active",
+  );
+  assert.equal(
+    (await authorizeWorkspace.execute(activePrincipal, firstWorkspace.workspace.id))?.workspaceId,
+    firstWorkspace.workspace.id,
   );
 
   const raceUser = await findOrProvision.execute({
@@ -255,7 +279,7 @@ try {
   });
 
   console.log(
-    `Hosted identity verification passed exact concurrent provisioning, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership isolation, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation in ${verificationDatabase}`,
+    `Hosted identity verification passed exact concurrent provisioning, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation in ${verificationDatabase}`,
   );
 } finally {
   await connection?.close().catch(() => undefined);

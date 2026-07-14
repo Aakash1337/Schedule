@@ -229,6 +229,20 @@ class PostgresBrowserSessionRepository implements BrowserSessionRepository {
 class PostgresWorkspaceMembershipRepository implements WorkspaceMembershipRepository {
   constructor(private readonly database: DatabaseExecutor) {}
 
+  async findByUserAndWorkspace(
+    id: UserId,
+    workspace: WorkspaceId,
+  ): Promise<WorkspaceMembership | null> {
+    const [row] = await this.database
+      .select()
+      .from(workspaceMemberships)
+      .where(
+        and(eq(workspaceMemberships.userId, id), eq(workspaceMemberships.workspaceId, workspace)),
+      )
+      .limit(1);
+    return row === undefined ? null : mapWorkspaceMembership(row);
+  }
+
   async findByUserAndWorkspaceForUpdate(
     id: UserId,
     workspace: WorkspaceId,

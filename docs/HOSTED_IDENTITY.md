@@ -68,9 +68,10 @@ cookie, CSRF, browser principal, or public membership route. It does not read id
 WhatsApp account, replace integration credentials, or enable synchronization. No environment flag
 can accidentally expose it.
 
-The next hosted slice should add a centralized request-authentication and workspace-authorization
-seam while keeping all production product routes closed by default. Provider and browser-session
-transport should follow only after that seam has negative isolation tests.
+The centralized request-authentication and workspace-authorization seam now exists but is not wired
+into `buildApp`; see [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md). Provider and
+browser-session transport should follow behind that seam while production product routes remain
+closed by default.
 
 ## Verification
 

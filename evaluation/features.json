@@ -2031,7 +2031,7 @@
         "anchor": "# Hosted identity persistence foundation"
       },
       "limitations": [
-        "The foundation is dormant: no browser route, cookie, identity provider, CSRF policy, centralized workspace authorization seam, or deployment flag exposes it.",
+        "The foundation is dormant: no browser route, cookie, identity provider, CSRF policy, or deployment flag exposes it.",
         "Public hosted authentication and synchronization remain deferred, and machine integration credentials remain a separate trust boundary."
       ],
       "evidence": [
@@ -2041,6 +2041,7 @@
           "command": "unit",
           "anchors": [
             "preserves exact issuer and subject bytes without claim-based normalization",
+            "caps the combined UTF-8 identity key below PostgreSQL's B-tree entry limit",
             "fails session availability at idle, absolute, and revocation boundaries",
             "retains a binary membership lifecycle without introducing roles"
           ]
@@ -2085,7 +2086,7 @@
           "file": "scripts/verify-hosted-identity.ts",
           "command": "hosted-identity",
           "anchors": [
-            "Hosted identity verification passed exact concurrent provisioning, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership isolation, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
+            "Hosted identity verification passed exact concurrent provisioning, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
           ]
         },
         {
@@ -2100,16 +2101,52 @@
     },
     {
       "id": "hosted-authentication-and-sync",
-      "status": "deferred",
+      "status": "partial",
       "risk": "critical",
       "contract": {
-        "file": "docs/PRODUCT.md",
-        "anchor": "### Phase 5 — Hosting and synchronization"
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "# Dormant hosted request authorization seam"
       },
       "limitations": [
-        "Public end-user authentication, workspace isolation across users, and synchronization are not implemented; integration machine credentials do not authenticate browser users."
+        "The seam is not registered in buildApp: provider verification, browser cookie and CSRF transport, public end-user routes, transaction-coupled product mutations, and synchronization remain unimplemented.",
+        "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
-      "evidence": []
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/hosted-identity.test.ts",
+          "command": "unit",
+          "anchors": [
+            "authorizes only active exact memberships and returns an immutable scoped context"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-auth-boundary.test.ts",
+          "command": "unit",
+          "anchors": [
+            "authenticates once and exposes only an immutable authorized context",
+            "makes malformed and all denied workspace access indistinguishable",
+            "redacts internal %s failures behind one temporary-unavailability response",
+            "keeps concurrent request principals isolated",
+            "refuses to register an unscoped route inside the hosted workspace boundary"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-identity.ts",
+          "command": "hosted-identity",
+          "anchors": [
+            "Hosted identity verification passed exact concurrent provisioning, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
+          ]
+        }
+      ]
     }
   ]
 }

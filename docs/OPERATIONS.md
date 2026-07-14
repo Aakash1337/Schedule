@@ -487,11 +487,12 @@ pnpm verify:backup-restore
 ```
 
 `verify:database` includes the dormant hosted-identity persistence and populated migration drills.
-They prove exact concurrent identity provisioning, digest-only session storage, rotation and
-revocation boundaries, binary membership isolation, hosted workspace provisioning beyond the local
-worker cap, and preservation of workspace/product data when a user is deleted. These checks do not
-enable hosted authentication or change the local API boundary; see
-[HOSTED_IDENTITY.md](./HOSTED_IDENTITY.md).
+They prove exact concurrent identity provisioning, bounded exact identity keys, digest-only session
+storage, rotation and revocation boundaries, binary membership authorization including
+post-revocation fencing, hosted workspace provisioning beyond the local worker cap, and
+preservation of workspace/product data when a user is deleted. These checks do not enable hosted
+authentication or change the local API boundary; see [HOSTED_IDENTITY.md](./HOSTED_IDENTITY.md) and
+[HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md).
 
 Run the separately guarded `pnpm verify:recovery-state-machine` command from the preceding section
 when testing against a disposable PostgreSQL instance.
