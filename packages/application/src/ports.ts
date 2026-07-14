@@ -273,6 +273,14 @@ export interface NotificationRepository {
     limit: number,
     offset: number,
   ): Promise<readonly NotificationIntent[]>;
+  /** Lists the safe, provider-neutral delivery projection for product history screens. */
+  listDeliveryHistory(
+    workspaceId: WorkspaceId,
+    fromInclusive: Date,
+    throughExclusive: Date,
+    limit: number,
+    offset: number,
+  ): Promise<readonly NotificationDeliveryHistoryItem[]>;
   /** Inserts the immutable intent, or returns the existing natural-key winner. */
   insertIntent(intent: NotificationIntent): Promise<NotificationIntent>;
   /** Invalidates all not-yet-delivered intents after a workspace policy change. */
@@ -293,6 +301,28 @@ export interface NotificationRepository {
     workspaceId: WorkspaceId,
     targetType: Extract<NotificationTargetType, "daily_plan" | "schedule_block" | "work_item">,
   ): Promise<number>;
+}
+
+/**
+ * Product-safe delivery history. Claim fencing, leases, credentials, provider payloads, and
+ * recipients deliberately do not cross this boundary.
+ */
+export interface NotificationDeliveryHistoryItem {
+  readonly deliveryId: string;
+  readonly intentId: string;
+  readonly kind: NotificationKind;
+  readonly targetType: NotificationTargetType;
+  readonly title: string | null;
+  readonly scheduledFor: Date;
+  readonly localDate: LocalDate;
+  readonly priority: number;
+  readonly status: NotificationDeliveryStatus;
+  readonly attempts: number;
+  readonly availableAt: Date;
+  readonly completedAt: Date | null;
+  readonly lastFailureCode: string | null;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
 }
 
 /** Immutable user dispositions for one exact, evidence-derived duration insight. */

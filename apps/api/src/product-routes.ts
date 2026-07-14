@@ -28,6 +28,8 @@ import type {
   ListRoutineActivityQuery,
   ListRoutinesQuery,
   ListNotificationIntentsQuery,
+  ListNotificationDeliveriesQuery,
+  NotificationDeliveryHistoryItem,
   ListOneOffRemindersQuery,
   MaterializeNotificationIntentsCommand,
   MaterializeNotificationIntentsResult,
@@ -160,6 +162,9 @@ export interface ProductServices {
   listNotificationIntents(
     query: ListNotificationIntentsQuery,
   ): Promise<readonly NotificationIntent[]>;
+  listNotificationDeliveries(
+    query: ListNotificationDeliveriesQuery,
+  ): Promise<readonly NotificationDeliveryHistoryItem[]>;
   materializeNotificationIntents(
     command: MaterializeNotificationIntentsCommand,
   ): Promise<MaterializeNotificationIntentsResult>;
@@ -395,6 +400,10 @@ const notificationRangeQuery = z.strictObject({
   to: instant,
 });
 const notificationIntentQuery = notificationRangeQuery.extend({
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
+const notificationDeliveryQuery = notificationRangeQuery.extend({
   limit: z.coerce.number().int().min(1).max(500).default(100),
   offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
 });
@@ -1067,6 +1076,19 @@ export async function registerProductRoutes(
     const params = parseRequest(workspaceParams, request.params);
     const query = parseRequest(notificationIntentQuery, request.query);
     const items = await services.listNotificationIntents({
+      workspaceId: workspaceId(params.workspaceId),
+      fromInclusive: new Date(query.from),
+      throughExclusive: new Date(query.to),
+      limit: query.limit,
+      offset: query.offset,
+    });
+    return { items, page: { limit: query.limit, offset: query.offset } };
+  });
+
+  app.get("/v1/workspaces/:workspaceId/notification-deliveries", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(notificationDeliveryQuery, request.query);
+    const items = await services.listNotificationDeliveries({
       workspaceId: workspaceId(params.workspaceId),
       fromInclusive: new Date(query.from),
       throughExclusive: new Date(query.to),

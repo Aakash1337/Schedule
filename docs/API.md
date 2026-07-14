@@ -51,6 +51,7 @@ not authorize these product routes.
 | `POST`   | `/v1/workspaces/{workspaceId}/one-off-reminders/{oneOffReminderId}/cancellations`              | Cancel an explicit reminder                            |
 | `GET`    | `/v1/workspaces/{workspaceId}/notification-intents?from={instant}&to={instant}`                | List insert-only materialized intents                  |
 | `POST`   | `/v1/workspaces/{workspaceId}/notification-intents/materializations`                           | Materialize a bounded policy window                    |
+| `GET`    | `/v1/workspaces/{workspaceId}/notification-deliveries?from={instant}&to={instant}`             | List product-safe delivery execution history           |
 | `POST`   | `/v1/integrations/reminder-deliveries/claim`                                                   | Claim one due reminder with `schedule:delivery`        |
 | `POST`   | `/v1/integrations/reminder-deliveries/receipt`                                                 | Record one fenced, bounded delivery outcome            |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines`                                                        | Create a routine (`201`)                               |
@@ -160,6 +161,15 @@ semantics. Profile changes invalidate all pending intents; rule and one-off chan
 their own. Schedule-block/work-item edits, plan replacement, and terminal item activity invalidate
 the affected pending target intents transactionally. No mutation rewrites a previously accepted
 intent in place.
+
+Delivery-history reads use the same maximum 31-day range, `limit` 1–500, and a nonnegative bounded
+`offset`. They are workspace-scoped and ordered by scheduled instant then delivery ID. The response
+contains only product-facing lifecycle facts: delivery and intent IDs, reminder kind and target
+class, bounded title, schedule/local date/priority, status, attempt count, availability and
+completion instants, a bounded last-failure code, and record timestamps. It never returns claim
+tokens, lease details, credentials, dedupe internals, destinations, providers, channels, recipients,
+or provider payloads. A `processing` command means Schedule has granted a fenced claim; it is not
+proof that any external message was sent.
 
 The two `/v1/integrations/reminder-deliveries/*` routes are not local product routes. They require
 the integration bearer-token boundary, the explicit `schedule:delivery` scope, JSON, and an

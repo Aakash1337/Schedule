@@ -19,6 +19,7 @@ export * from "./webhook-security.js";
 export * from "./create-workspace.js";
 export * from "./get-workspace.js";
 export * from "./list-workspaces.js";
+export * from "./list-notification-deliveries.js";
 export * from "./materialize-notification-intents.js";
 export * from "./notification-management.js";
 export * from "./notification-delivery.js";

@@ -1,4 +1,4 @@
-export type AppSection = "today" | "work" | "routines" | "calendar";
+export type AppSection = "today" | "work" | "routines" | "calendar" | "reminders";
 
 export interface Workspace {
   readonly id: string;
@@ -295,6 +295,110 @@ export interface SchedulingAdviceResult {
       readonly backlog: boolean;
     };
   };
+}
+
+export type QuietHoursPolicy = "skip" | "next_allowed";
+export type NotificationRuleKind =
+  "daily_digest" | "daily_follow_up" | "plan_window_open" | "schedule_block_lead" | "work_item_due";
+export type NotificationKind = NotificationRuleKind | "one_off";
+export type NotificationTargetType =
+  "workspace" | "daily_plan" | "schedule_block" | "work_item" | "one_off";
+
+export interface NotificationProfile {
+  readonly workspaceId: string;
+  readonly enabled: boolean;
+  readonly timeZone: string;
+  readonly quietHoursStartMinute: number | null;
+  readonly quietHoursEndMinute: number | null;
+  readonly quietHoursPolicy: QuietHoursPolicy;
+  readonly catchUpWindowMinutes: number;
+  readonly dailyIntentLimit: number;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface NotificationRule {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly kind: NotificationRuleKind;
+  readonly enabled: boolean;
+  readonly localMinute: number | null;
+  readonly leadMinutes: number | null;
+  readonly cooldownMinutes: number;
+  readonly priority: number;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface OneOffReminder {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly title: string;
+  readonly scheduledFor: string;
+  readonly cancelledAt: string | null;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface NotificationIntent {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly ruleId: string | null;
+  readonly oneOffReminderId: string | null;
+  readonly kind: NotificationKind;
+  readonly occurrenceKey: string;
+  readonly targetType: NotificationTargetType;
+  readonly targetId: string | null;
+  readonly titleSnapshot: string | null;
+  readonly scheduledFor: string;
+  readonly localDate: string;
+  readonly priority: number;
+  readonly policySnapshot: Readonly<Record<string, string | number | boolean | null>>;
+  readonly localTimeResolution: "exact" | "gap_later" | "overlap_earlier";
+  readonly adjustedForQuietHours: boolean;
+  readonly caughtUp: boolean;
+  readonly createdAt: string;
+}
+
+export type NotificationSuppressionReason =
+  | "profile_disabled"
+  | "quiet_hours"
+  | "outside_catch_up"
+  | "outside_window"
+  | "cooldown"
+  | "daily_limit";
+
+export interface NotificationMaterializationResult {
+  readonly created: readonly NotificationIntent[];
+  readonly existing: readonly NotificationIntent[];
+  readonly suppressed: readonly {
+    readonly occurrenceKey: string;
+    readonly reason: NotificationSuppressionReason;
+  }[];
+}
+
+export type NotificationDeliveryStatus =
+  "pending" | "processing" | "delivered" | "dead_letter" | "invalidated";
+
+export interface NotificationDeliveryHistoryItem {
+  readonly deliveryId: string;
+  readonly intentId: string;
+  readonly kind: NotificationKind;
+  readonly targetType: NotificationTargetType;
+  readonly title: string | null;
+  readonly scheduledFor: string;
+  readonly localDate: string;
+  readonly priority: number;
+  readonly status: NotificationDeliveryStatus;
+  readonly attempts: number;
+  readonly availableAt: string;
+  readonly completedAt: string | null;
+  readonly lastFailureCode: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
 }
 
 export interface Page<T> {

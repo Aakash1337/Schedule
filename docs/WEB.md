@@ -50,6 +50,10 @@ The application uses a persistent desktop rail and a compact mobile navigation b
 4. **Calendar** presents one-time schedule blocks in a week-first agenda. Blocks may link to a work
    item, but remain independently editable. Date and time fields use the browser's IANA time zone so
    the displayed wall time and persisted instant cannot disagree.
+5. **Reminders** manages the versioned notification profile, reusable rules, and explicit one-offs.
+   Separate **Planned** and **Execution** tabs distinguish immutable policy decisions from the
+   product-safe delivery lifecycle. Intent materialization is always an explicit button action, and
+   the interface never claims that a currently claimed command proves an external send.
 
 Workspace creation is the first-run path. Returning sessions restore the last selected workspace and
 open Today.
@@ -108,6 +112,25 @@ date has changed the routine-global feedback head, the older plan remains unchan
 directs the user to the newer plan rather than claiming the unchanged older revision is authoritative.
 After a successful suppression removes the initiating control, keyboard focus moves to the newly
 rendered Undo action; reloads and ordinary plan changes do not steal focus.
+
+## Reminder interaction
+
+A workspace without a notification profile opens an explicit setup form. The browser may prefill its
+own IANA time zone, but it does not create or update policy until the user submits. Existing profile,
+rule, and one-off mutations retain and send server versions; a `409` reloads authoritative state and
+requires a new decision instead of overwriting concurrent work. Rule kind is immutable, and a
+cancelled one-off remains terminal.
+
+The **Planned** tab reads insert-only notification intents and exposes **Refresh planned reminders**
+as the only materialization trigger. The **Execution** tab reads a separate product route whose DTO
+omits claim fencing, leases, credentials, destinations, providers, channels, recipients, dedupe
+internals, and provider payloads. Both histories use bounded pages and an explicit load-more control.
+The three tabs support Arrow Left/Right, Home, and End and use roving keyboard focus.
+
+Every reminder surface repeats the operational boundary: no periodic materializer, adapter polling,
+or WhatsApp/email/push/phone provider is connected. `processing` is described as a Schedule claim,
+not an external-send acknowledgement. At 320px, the navigation, tabs, forms, and status cards remain
+inside the viewport and interactive targets retain the 44px minimum used by the rest of the product.
 
 ## Calendar-aware Today availability
 
@@ -210,7 +233,9 @@ evidence and expects the new key to resurface as available. The fourth runs the 
 keyboard-adds a done prerequisite, reloads it, removes it, reloads its absence, and asserts focus,
 44px targets, horizontal fit, unchanged workflow status, and clean page/network results. Duration-
 calibration approval has component and API/PostgreSQL evidence but is not yet part of a browser
-scenario.
+scenario. A fifth creates reminder policy, edits a rule, creates a one-off, explicitly materializes
+intents, inserts an execution fixture through the isolated PostgreSQL test boundary, and verifies the
+real product-safe history route and UI at desktop and 320px without request interception.
 
 Install the local browser binary once, then run the bounded verifier:
 
@@ -237,4 +262,4 @@ a dedicated Chromium job and retains traces, screenshots, and video when it fail
 - Learned cadence, energy, preference, overload, and adaptive-selection settings
 - Automatic duration-insight application and historical insight-comparison controls
 - Natural-language task/routine creation, model-driven plan application, and hosted advisor controls
-- Collaboration, sync, reminder settings and intent history, Hermes/WhatsApp transport, and cloud deployment
+- Collaboration, sync, automatic reminder execution, Hermes/WhatsApp transport, and cloud deployment

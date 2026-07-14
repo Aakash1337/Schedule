@@ -34,7 +34,7 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:webhook-delivery`        | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback     | Yes, disposable only            |
 | `pnpm verify:notification-core`       | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
 | `pnpm verify:notification-delivery`   | Verify fenced claims/receipts, retries, expiry, and invalidation            | Yes, disposable only            |
-| `pnpm verify:notification-migrations` | Upgrade populated pre-0024 state through reminder migrations 0024-0026      | Yes, disposable only            |
+| `pnpm verify:notification-migrations` | Upgrade populated reminder/delivery state through migration 0027            | Yes, disposable only            |
 | `pnpm verify:local-model-advisor`     | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
 | `pnpm verify:backup-restore`          | Verify archive/schema/content/sequence fidelity                             | Yes                             |
 | `pnpm verify:recovery-state-machine`  | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
@@ -47,20 +47,20 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 72 test files and 1,034 runtime test cases. The 73rd
-test file is the Playwright specification, which contains four live Chromium integration scenarios.
-Parameterized state matrices expand into many cases, so this number must not be compared as though
-every case were an independent product feature.
+The package and script runners currently execute 76 test files and 1,078 runtime test cases. Two
+additional Playwright specifications contain five live Chromium integration scenarios. Parameterized
+state matrices expand into many cases, so this number must not be compared as though every case were
+an independent product feature.
 
 ### Feature evidence
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      27 / 27 |
-| Critical implemented features with CI-registered integration or drills |      15 / 15 |
+| Implemented features with CI-registered evidence                       |      29 / 29 |
+| Critical implemented features with CI-registered integration or drills |      16 / 16 |
 | Partial features with an explicit limitation                           |        2 / 2 |
 | Deferred features explicitly tracked as not passing                    |        1 / 1 |
-| CI-registered evidence items                                           |          128 |
+| CI-registered evidence items                                           |          138 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -361,14 +361,16 @@ The audit deliberately leaves these visible instead of turning them into false g
   gateway and PostgreSQL lifecycle for least-privilege scope denial, exact claim and empty-claim
   replay, fresh database-clock leases after lock waits, row-locked revocation linearization,
   concurrent exclusion, retry/dead-letter, indexed expiry fencing/recovery, source invalidation,
-  bounded receipts, audits, occurrence uniqueness, and cross-tenant rejection. It has no periodic
-  materializer, external provider/account binding,
-  shared adapter dedupe store, or web settings/history interface yet;
-- four live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
+  bounded receipts, audits, occurrence uniqueness, cross-tenant rejection, and a workspace-scoped,
+  product-safe execution-history projection that omits claim, lease, credential, and provider data.
+  It has no periodic materializer, external provider/account binding, shared adapter dedupe store,
+  or dead-letter redrive control;
+- five live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
-  a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions. They do
-  not cover every browser, every responsive breakpoint, every validation branch, Calendar interaction,
-  or the duration-calibration approval flow;
+  a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, plus
+  explicit reminder setup, rule/one-off changes, materialization, safe execution history, and
+  a 320px reminder layout. They do not cover every browser, every responsive breakpoint, every
+  validation branch, Calendar interaction, or the duration-calibration approval flow;
 - work-item dependencies have domain, application, repository, API, component, and real PostgreSQL
   evidence, including a two-request reciprocal-add concurrency drill and the 320px live browser flow;
   dependency management is not exposed through the authenticated integration gateway;

@@ -166,9 +166,11 @@ the complete route table and payloads. The main flow is:
 3. Explicitly materialize a bounded window with
    `POST .../notification-intents/materializations`.
 4. Inspect immutable results with `GET .../notification-intents?from=...&to=...`.
-5. From an explicitly delivery-scoped integration credential, claim with
+5. Inspect the product-safe execution state with
+   `GET .../notification-deliveries?from=...&to=...`.
+6. From an explicitly delivery-scoped integration credential, claim with
    `POST /v1/integrations/reminder-deliveries/claim` and a unique `Idempotency-Key`.
-6. Report the fenced outcome with `POST /v1/integrations/reminder-deliveries/receipt` and a new
+7. Report the fenced outcome with `POST /v1/integrations/reminder-deliveries/receipt` and a new
    `Idempotency-Key`.
 
 The materialization window must be increasing and no longer than 31 days. One-off list requests are
@@ -179,6 +181,28 @@ instead of silently omitting window reminders. One plan snapshot may contribute 
 and one invocation may produce at most 10,000 aggregate candidates; both limits fail closed. The
 31-day request plus the maximum seven-day catch-up horizon is fully included in the bounded
 local-date scan.
+
+## Web interface
+
+The local **Reminders** view exposes three explicit surfaces:
+
+- **Policy** creates or version-updates the workspace profile, manages independently enabled rules,
+  and creates, edits, or cancels one-off reminders. A missing profile is a setup state; the browser
+  never silently saves a guessed default. The device time zone is only a prefilled suggestion until
+  the user saves it. Rule kind is immutable after creation, and cancelled one-offs cannot be revived.
+- **Planned** lists immutable intents and provides the only materialization action. Refreshing this
+  view does not materialize automatically. The action reports created, existing, and suppressed
+  results before reloading the list.
+- **Execution** lists the product-safe delivery projection. Status copy distinguishes an
+  acknowledged Schedule result from a currently claimed command and explicitly says that a claim is
+  not proof of an external send. Claim tokens, leases, credentials, provider/channel/destination
+  fields, and provider payloads never cross this product route.
+
+The browser reads recent and upcoming activity through bounded 31-day, 50-row pages and offers an
+explicit **Show 50 more** action. A version conflict reloads authoritative policy before asking the
+user to retry. The view states that periodic materialization, adapter polling, and
+WhatsApp/email/push/phone transport are not connected, so the interface cannot be mistaken for a
+production notification provider.
 
 ## Verification and operational boundary
 
@@ -196,9 +220,10 @@ two materializers concurrently, proves exact-once occurrence persistence, reject
 source and target references, rejects rule-kind mismatches and duplicate keys, proves policy and
 target edits invalidate pending intents, proves terminal activity performs selective cleanup, proves
 target deletion cascades, and confirms the outbox count does not change. The migration verifier
-upgrades populated pre-0024, pre-0025, and pre-0026 databases in isolation, checks the due-work and
-delivery-recovery indexes and new tenant constraints, and proves legacy data remains intact. The
-delivery verifier uses a nonce database and the real HTTP gateway to prove concurrent claim replay,
+upgrades populated pre-0024, pre-0025, pre-0026, and pre-0027 databases in isolation, checks the
+due-work, delivery-recovery, and workspace/schedule/id history indexes plus tenant constraints, and
+proves legacy command, credential, and message data remains intact. The delivery verifier uses a
+nonce database and the real HTTP gateway to prove the product-safe history projection as well as concurrent claim replay,
 post-lock lease freshness, revocation linearization, cross-tenant rejection, retry, dead-lettering,
 expiry fencing/recovery, source invalidation, empty claim replay, bounded receipts, audit records,
 and occurrence uniqueness.
@@ -209,5 +234,5 @@ Not yet implemented in this slice:
 - automatic periodic materialization;
 - a Hermes/WhatsApp, email, push, or other provider transport and human/account binding;
 - automatic worker polling of the delivery gateway;
-- reminder settings or intent-history screens in the web application;
+- dead-letter redrive controls;
 - hosted-user authorization for these local product routes.

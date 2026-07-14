@@ -1437,7 +1437,7 @@
       },
       "limitations": [
         "Materialization is an explicit local API command; no periodic worker invokes it yet.",
-        "The web application has no reminder settings or intent-history interface; provider transport and human/account binding remain external."
+        "Provider transport and human/account binding remain external; the web interface is a local policy and history surface only."
       ],
       "evidence": [
         {
@@ -1494,7 +1494,7 @@
           "file": "apps/api/src/notification-routes.test.ts",
           "command": "unit",
           "anchors": [
-            "wires profile, rules, one-offs, materialization, and intent reads",
+            "wires profile, rules, one-offs, materialization, intent reads, and safe delivery history",
             "rejects unpaired quiet hours, mismatched rule configuration, and empty patches"
           ]
         },
@@ -1523,9 +1523,19 @@
       "limitations": [
         "Schedule exposes fenced pull claims and bounded receipts but has no Hermes/WhatsApp, email, push, or other provider transport and stores no human/account binding.",
         "Periodic intent materialization and adapter polling are not implemented; multiple adapter instances require their own shared durable dedupe store.",
-        "Dead-letter redrive and reminder delivery/settings history UI are not implemented in this slice."
+        "Dead-letter redrive is not implemented in this slice."
       ],
       "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/list-notification-deliveries.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns the bounded product-safe delivery projection",
+            "rejects an invalid bounded query",
+            "rejects a missing workspace before reading history"
+          ]
+        },
         {
           "level": "unit",
           "file": "packages/application/src/notification-delivery.test.ts",
@@ -1582,6 +1592,54 @@
           "command": "notification-migrations",
           "anchors": [
             "Notification migration verification passed with populated policy and delivery upgrades"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reminder-settings-and-history-ui",
+      "status": "implemented",
+      "risk": "high",
+      "contract": {
+        "file": "docs/WEB.md",
+        "anchor": "## Reminder interaction"
+      },
+      "limitations": [
+        "The interface requires explicit materialization and does not connect periodic execution, provider transport, or human/account destinations.",
+        "A claimed execution is presented as Schedule state, not proof of an external send."
+      ],
+      "evidence": [
+        {
+          "level": "component",
+          "file": "apps/web/src/views/RemindersView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "requires an explicit policy save and never silently creates a default profile",
+            "edits a versioned rule and reloads after the mutation",
+            "creates and cancels one-off reminders through explicit versioned commands",
+            "materializes explicitly, reports the result, and opens planned intent history",
+            "separates claimed execution from proof of an external send",
+            "reloads a concurrent version conflict before asking the user to retry",
+            "keeps a failed one-off edit open with its unsaved values",
+            "serializes reminder mutations and disables competing commands",
+            "rejects blank numeric policy fields before an API request"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/api.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates or updates reminder policy through the versioned PUT boundary",
+            "keeps delivery history on the product-safe paginated read route"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/reminders-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": [
+            "configures, materializes, audits, and responsively renders reminders through the live product"
           ]
         }
       ]

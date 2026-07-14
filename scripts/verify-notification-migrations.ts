@@ -53,6 +53,10 @@ try {
   if (deliveryMigration === undefined) {
     throw new Error("Notification delivery migration 0026 is missing from the journal.");
   }
+  const deliveryHistoryMigration = entries.find((entry) => entry.idx === 27);
+  if (deliveryHistoryMigration === undefined) {
+    throw new Error("Notification delivery-history migration 0027 is missing from the journal.");
+  }
   for (const migration of entries.filter((entry) => entry.idx < 24)) {
     await applyMigration(verification, migration.tag);
   }
@@ -550,8 +554,43 @@ try {
     "notification_delivery_commands_workspace_occurrence_uq",
   );
 
+  const [beforeHistoryIndex] = await verification.sql<{ index_name: string | null }[]>`
+    select to_regclass('public.notification_delivery_commands_workspace_schedule_idx')::text as index_name
+  `;
+  assert.equal(
+    beforeHistoryIndex?.index_name,
+    null,
+    "the product history index must remain a separately deployable post-0026 migration",
+  );
+  await applyMigration(verification, deliveryHistoryMigration.tag);
+  const [historyUpgrade] = await verification.sql<
+    { indexdef: string; commands: number; legacy_credentials: number }[]
+  >`
+    select
+      indexdef,
+      (select count(*)::integer from notification_delivery_commands where id = ${intent.id}) as commands,
+      (select count(*)::integer from integration_credentials where id = ${legacyCredentialId}) as legacy_credentials
+    from pg_indexes
+    where schemaname = 'public'
+      and indexname = 'notification_delivery_commands_workspace_schedule_idx'
+  `;
+  assert.ok(historyUpgrade !== undefined, "delivery history index must be installed");
+  assert.ok(
+    historyUpgrade.indexdef
+      .toLowerCase()
+      .replaceAll('"', "")
+      .includes("using btree (workspace_id, scheduled_for, id)"),
+    "delivery history index must preserve workspace/schedule/id key order",
+  );
+  assert.equal(historyUpgrade.commands, 1, "the delivery command must survive the index upgrade");
+  assert.equal(
+    historyUpgrade.legacy_credentials,
+    1,
+    "legacy credentials must survive the history index upgrade",
+  );
+
   console.log(
-    "Notification migration verification passed with populated policy and delivery upgrades through 0026, target indexes, legacy preservation, and exhaustive tenant constraints.",
+    "Notification migration verification passed with populated policy and delivery upgrades through 0027, target indexes, legacy preservation, and exhaustive tenant constraints.",
   );
 } finally {
   await verification?.close();

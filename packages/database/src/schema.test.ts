@@ -116,6 +116,7 @@ describe("database schema", () => {
       expect.arrayContaining([
         "notification_delivery_commands_claim_idx",
         "notification_delivery_commands_recovery_idx",
+        "notification_delivery_commands_workspace_schedule_idx",
       ]),
     );
 

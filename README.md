@@ -21,7 +21,7 @@ This repository starts as a TypeScript modular monolith:
 - `packages/config`: validated runtime configuration.
 - `packages/database`: PostgreSQL schema, migrations, and adapters.
 - `apps/api`: HTTP transport and health endpoints.
-- `apps/web`: local React interface for Today, routines, work, and calendar blocks.
+- `apps/web`: local React interface for Today, routines, work, calendar blocks, and reminders.
 - `apps/worker`: database-backed outbox processing.
 
 Outbox delivery is at least once. Every handler that produces an external or otherwise durable side
@@ -55,8 +55,10 @@ Schedule now also owns a deterministic reminder-policy core: versioned workspace
 explicit one-off reminders, DST/quiet-hours/catch-up evaluation, and concurrency-safe insert-only
 pending-intent materialization with transactional invalidation when policy or targets change. The
 provider-neutral integration gateway can lease one due intent with a fenced claim and record a
-bounded delivery outcome. Schedule still performs no provider transport and never stores provider,
-recipient, account, conversation, or raw receipt data.
+bounded delivery outcome. The web interface configures that policy, explicitly materializes
+intents, and separates planned reminder history from a product-safe execution history. Schedule
+still performs no provider transport and never stores provider, recipient, account, conversation,
+or raw receipt data.
 
 `WorkItem` represents intent and workflow state. `ScheduleBlock` represents reserved time and may
 optionally reference a work item. Their lifecycles remain independent.
@@ -114,8 +116,9 @@ gaps.
 
 After installing Chromium once with `pnpm exec playwright install chromium`, run
 `pnpm verify:web-e2e` to exercise the built web application, live API, fresh migrations, and an
-isolated PostgreSQL database through four live flows: routine/Today activity and feedback, work-item
-deadline pressure, duration-insight dismissal/reset, and accessible 320px prerequisite editing.
+isolated PostgreSQL database through five live flows: routine/Today activity and feedback, work-item
+deadline pressure, duration-insight dismissal/reset, accessible 320px prerequisite editing, and
+reminder policy/materialization/history with responsive checks.
 
 With PostgreSQL running, verify backlog/Kanban, work-item prerequisites, and calendar management,
 routine creation and optimistic updates, duration calibration and approval, stable activity-history pagination,
@@ -129,12 +132,14 @@ pnpm verify:database
 The database gate includes `verify:notification-core`, `verify:notification-delivery`, and
 `verify:notification-migrations`, covering all six deterministic occurrence sources, concurrent
 exact-once materialization, source/target invalidation, fenced claim/receipt recovery, tenant
-constraints, and populated pre-0024/pre-0025/pre-0026 upgrades.
+constraints, and populated pre-0024/pre-0025/pre-0026/pre-0027 upgrades. The notification migration
+verifier checks the
+workspace/schedule/id execution-history index without changing delivery or credential data.
 
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh
 PostgreSQL 17 Compose project. It also verifies a complete archive round trip, the real disposable
-restore/promote/rollback/cleanup state machine, and the four live Chromium product flows in a
+restore/promote/rollback/cleanup state machine, and the five live Chromium product flows in a
 separate disposable database.
 
 ## Local data protection

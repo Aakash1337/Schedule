@@ -3,6 +3,13 @@ import type {
   CurrentDailyPlan,
   DailyPlan,
   GeneratePlanInput,
+  NotificationDeliveryHistoryItem,
+  NotificationIntent,
+  NotificationMaterializationResult,
+  NotificationProfile,
+  NotificationRule,
+  NotificationRuleKind,
+  OneOffReminder,
   Page,
   PlanItemActivityState,
   PlanSettings,
@@ -21,7 +28,7 @@ import type {
 } from "./types";
 
 interface RequestOptions {
-  readonly method?: "GET" | "POST" | "PATCH" | "DELETE";
+  readonly method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly json?: unknown;
   readonly idempotencyKey?: string;
   readonly signal?: AbortSignal;
@@ -429,6 +436,133 @@ export const api = {
       method: "DELETE",
       json: { expectedVersion },
     }),
+
+  getNotificationProfile: (workspaceId: string, signal?: AbortSignal) =>
+    request<NotificationProfile>(
+      workspacePath(workspaceId, "/notification-profile"),
+      signal === undefined ? {} : { signal },
+    ),
+
+  configureNotificationProfile: (
+    workspaceId: string,
+    input: {
+      expectedVersion: number | null;
+      enabled: boolean;
+      timeZone: string;
+      quietHoursStartMinute: number | null;
+      quietHoursEndMinute: number | null;
+      quietHoursPolicy: "skip" | "next_allowed";
+      catchUpWindowMinutes: number;
+      dailyIntentLimit: number;
+    },
+  ) =>
+    request<NotificationProfile>(workspacePath(workspaceId, "/notification-profile"), {
+      method: "PUT",
+      json: input,
+    }),
+
+  listNotificationRules: (workspaceId: string, signal?: AbortSignal) =>
+    request<{ readonly items: readonly NotificationRule[] }>(
+      workspacePath(workspaceId, "/notification-rules"),
+      signal === undefined ? {} : { signal },
+    ),
+
+  createNotificationRule: (
+    workspaceId: string,
+    input: {
+      kind: NotificationRuleKind;
+      enabled: boolean;
+      localMinute: number | null;
+      leadMinutes: number | null;
+      cooldownMinutes: number;
+      priority: number;
+    },
+  ) =>
+    request<NotificationRule>(workspacePath(workspaceId, "/notification-rules"), {
+      method: "POST",
+      json: input,
+    }),
+
+  updateNotificationRule: (
+    workspaceId: string,
+    ruleId: string,
+    input: {
+      expectedVersion: number;
+      enabled?: boolean;
+      localMinute?: number | null;
+      leadMinutes?: number | null;
+      cooldownMinutes?: number;
+      priority?: number;
+    },
+  ) =>
+    request<NotificationRule>(
+      workspacePath(workspaceId, `/notification-rules/${encodeURIComponent(ruleId)}`),
+      { method: "PATCH", json: input },
+    ),
+
+  listOneOffReminders: (workspaceId: string, from: string, to: string, signal?: AbortSignal) =>
+    request<{ readonly items: readonly OneOffReminder[] }>(
+      queryPath(workspacePath(workspaceId, "/one-off-reminders"), { from, to }),
+      signal === undefined ? {} : { signal },
+    ),
+
+  createOneOffReminder: (
+    workspaceId: string,
+    input: { readonly title: string; readonly scheduledFor: string },
+  ) =>
+    request<OneOffReminder>(workspacePath(workspaceId, "/one-off-reminders"), {
+      method: "POST",
+      json: input,
+    }),
+
+  updateOneOffReminder: (
+    workspaceId: string,
+    reminderId: string,
+    input: {
+      readonly expectedVersion: number;
+      readonly title?: string;
+      readonly scheduledFor?: string;
+    },
+  ) =>
+    request<OneOffReminder>(
+      workspacePath(workspaceId, `/one-off-reminders/${encodeURIComponent(reminderId)}`),
+      { method: "PATCH", json: input },
+    ),
+
+  cancelOneOffReminder: (workspaceId: string, reminderId: string, expectedVersion: number) =>
+    request<OneOffReminder>(
+      workspacePath(
+        workspaceId,
+        `/one-off-reminders/${encodeURIComponent(reminderId)}/cancellations`,
+      ),
+      { method: "POST", json: { expectedVersion } },
+    ),
+
+  listNotificationIntents: (workspaceId: string, from: string, to: string, signal?: AbortSignal) =>
+    listAllOffsetPages<NotificationIntent>(
+      workspacePath(workspaceId, "/notification-intents"),
+      { from, to },
+      signal,
+    ),
+
+  materializeNotificationIntents: (workspaceId: string, from: string, through: string) =>
+    request<NotificationMaterializationResult>(
+      workspacePath(workspaceId, "/notification-intents/materializations"),
+      { method: "POST", json: { from, through } },
+    ),
+
+  listNotificationDeliveries: (
+    workspaceId: string,
+    from: string,
+    to: string,
+    signal?: AbortSignal,
+  ) =>
+    listAllOffsetPagesBy<NotificationDeliveryHistoryItem>(
+      workspacePath(workspaceId, "/notification-deliveries"),
+      { from, to },
+      (item) => item.deliveryId,
+      signal,
+    ),
 
   getCurrentPlan: (workspaceId: string, date: string, signal?: AbortSignal) =>
     request<CurrentDailyPlan>(

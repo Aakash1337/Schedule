@@ -14,6 +14,69 @@ function pageResponse(items: readonly unknown[], offset: number): Response {
 }
 
 describe("web API client", () => {
+  it("creates or updates reminder policy through the versioned PUT boundary", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ workspaceId: "workspace-1", version: 2 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const input = {
+      expectedVersion: 1,
+      enabled: true,
+      timeZone: "America/La_Paz",
+      quietHoursStartMinute: 1_320,
+      quietHoursEndMinute: 420,
+      quietHoursPolicy: "next_allowed" as const,
+      catchUpWindowMinutes: 90,
+      dailyIntentLimit: 20,
+    };
+    await api.configureNotificationProfile("workspace-1", input);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/notification-profile",
+      expect.objectContaining({ method: "PUT", body: JSON.stringify(input) }),
+    );
+  });
+
+  it("keeps delivery history on the product-safe paginated read route", async () => {
+    const firstPage = Array.from({ length: 200 }, (_, index) => ({
+      deliveryId: `delivery-${index}`,
+    }));
+    let requestNumber = 0;
+    const fetchMock = vi.fn(async () => {
+      const response =
+        requestNumber % 2 === 0
+          ? pageResponse(firstPage, 0)
+          : pageResponse([{ deliveryId: "delivery-200" }], 200);
+      requestNumber += 1;
+      return response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.listNotificationDeliveries(
+      "workspace-1",
+      "2026-07-01T00:00:00.000Z",
+      "2026-07-15T00:00:00.000Z",
+    );
+
+    expect(result.items).toHaveLength(201);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/v1/workspaces/workspace-1/notification-deliveries?from=2026-07-01T00%3A00%3A00.000Z&to=2026-07-15T00%3A00%3A00.000Z&limit=200&offset=0",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/v1/workspaces/workspace-1/notification-deliveries?from=2026-07-01T00%3A00%3A00.000Z&to=2026-07-15T00%3A00%3A00.000Z&limit=200&offset=200",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
   it("uses the same-origin workspace endpoint", async () => {
     const fetchMock = vi.fn(
       async () =>

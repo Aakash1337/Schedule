@@ -45,6 +45,7 @@ import type {
   IntegrationUnitOfWork,
   NotificationRepository,
   NotificationDeliveryRepository,
+  NotificationDeliveryHistoryItem,
   NotificationDeliveryReceiptResult,
   NotificationDeliveryRequestRecord,
   NotificationDeliveryRequestRepository,
@@ -180,6 +181,7 @@ type NotificationProfileRow = typeof notificationProfiles.$inferSelect;
 type NotificationRuleRow = typeof notificationRules.$inferSelect;
 type OneOffReminderRow = typeof oneOffReminders.$inferSelect;
 type NotificationIntentRow = typeof notificationIntents.$inferSelect;
+type NotificationDeliveryCommandRow = typeof notificationDeliveryCommands.$inferSelect;
 
 interface PlanningGraphDatabaseRow {
   readonly rowGroup: number;
@@ -271,6 +273,28 @@ function mapNotificationIntent(row: NotificationIntentRow): NotificationIntent {
     adjustedForQuietHours: row.adjustedForQuietHours,
     caughtUp: row.caughtUp,
     createdAt: new Date(row.createdAt),
+  };
+}
+
+function mapNotificationDeliveryHistory(
+  row: NotificationDeliveryCommandRow,
+): NotificationDeliveryHistoryItem {
+  return {
+    deliveryId: row.id,
+    intentId: row.intentId,
+    kind: row.kind as NotificationKind,
+    targetType: row.targetType as NotificationTargetType,
+    title: row.titleSnapshot,
+    scheduledFor: new Date(row.scheduledFor),
+    localDate: localDate(row.localDate),
+    priority: row.priority,
+    status: row.status,
+    attempts: row.attempts,
+    availableAt: new Date(row.availableAt),
+    completedAt: row.completedAt === null ? null : new Date(row.completedAt),
+    lastFailureCode: row.lastFailureCode,
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
   };
 }
 
@@ -1571,6 +1595,29 @@ export class PostgresNotificationRepository implements NotificationRepository {
       .limit(limit)
       .offset(offset);
     return rows.map(mapNotificationIntent);
+  }
+
+  async listDeliveryHistory(
+    workspace: WorkspaceId,
+    fromInclusive: Date,
+    throughExclusive: Date,
+    limit: number,
+    offset: number,
+  ): Promise<readonly NotificationDeliveryHistoryItem[]> {
+    const rows = await this.database
+      .select()
+      .from(notificationDeliveryCommands)
+      .where(
+        and(
+          eq(notificationDeliveryCommands.workspaceId, workspace),
+          gte(notificationDeliveryCommands.scheduledFor, fromInclusive),
+          lt(notificationDeliveryCommands.scheduledFor, throughExclusive),
+        ),
+      )
+      .orderBy(asc(notificationDeliveryCommands.scheduledFor), asc(notificationDeliveryCommands.id))
+      .limit(limit)
+      .offset(offset);
+    return rows.map(mapNotificationDeliveryHistory);
   }
 
   async insertIntent(intent: NotificationIntent): Promise<NotificationIntent> {

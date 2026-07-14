@@ -1,0 +1,1 @@
+CREATE INDEX "notification_delivery_commands_workspace_schedule_idx" ON "notification_delivery_commands" USING btree ("workspace_id","scheduled_for","id");

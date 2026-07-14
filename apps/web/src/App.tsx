@@ -1,5 +1,6 @@
 import {
   CalendarDays,
+  BellRing,
   CheckCircle2,
   ChevronDown,
   CircleDotDashed,
@@ -14,6 +15,7 @@ import { Button, ErrorNotice, PageSkeleton } from "./components/ui";
 import type { AppSection, Workspace } from "./types";
 import { CalendarView } from "./views/CalendarView";
 import { RoutinesView } from "./views/RoutinesView";
+import { RemindersView } from "./views/RemindersView";
 import { TodayView } from "./views/TodayView";
 import { WorkView } from "./views/WorkView";
 
@@ -24,6 +26,7 @@ const navigation = [
   { id: "work", label: "Work", icon: Columns3 },
   { id: "routines", label: "Routines", icon: Repeat2 },
   { id: "calendar", label: "Calendar", icon: CalendarDays },
+  { id: "reminders", label: "Reminders", icon: BellRing },
 ] as const;
 
 function sectionFromHash(): AppSection {
@@ -337,6 +340,9 @@ export function App() {
         ) : null}
         {section === "calendar" ? (
           <CalendarView key={`calendar-${selectedWorkspace.id}`} {...viewProps} />
+        ) : null}
+        {section === "reminders" ? (
+          <RemindersView key={`reminders-${selectedWorkspace.id}`} {...viewProps} />
         ) : null}
       </main>
 

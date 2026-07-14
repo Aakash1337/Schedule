@@ -20,6 +20,7 @@ import {
   GetWorkspace,
   ListRoutineActivity,
   ListNotificationIntents,
+  ListNotificationDeliveries,
   ListNotificationRules,
   ListOneOffReminders,
   ListRoutines,
@@ -100,6 +101,7 @@ export function createProductServices(
   const cancelOneOffReminder = new CancelOneOffReminder(unitOfWork, clock);
   const listOneOffReminders = new ListOneOffReminders(unitOfWork);
   const listNotificationIntents = new ListNotificationIntents(unitOfWork);
+  const listNotificationDeliveries = new ListNotificationDeliveries(unitOfWork);
   const materializeNotificationIntents = new MaterializeNotificationIntents(unitOfWork, clock);
 
   return {
@@ -149,6 +151,7 @@ export function createProductServices(
     cancelOneOffReminder: (command) => cancelOneOffReminder.execute(command),
     listOneOffReminders: (query) => listOneOffReminders.execute(query),
     listNotificationIntents: (query) => listNotificationIntents.execute(query),
+    listNotificationDeliveries: (query) => listNotificationDeliveries.execute(query),
     materializeNotificationIntents: (command) => materializeNotificationIntents.execute(command),
   };
 }

@@ -89,6 +89,7 @@ describe("createProductServices", () => {
       "getSchedulingAdvice",
       "getWorkItem",
       "getWorkspace",
+      "listNotificationDeliveries",
       "listNotificationIntents",
       "listNotificationRules",
       "listOneOffReminders",

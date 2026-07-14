@@ -179,6 +179,10 @@ class MemoryNotificationRepository implements NotificationRepository {
       .slice(offset, offset + limit);
   }
 
+  async listDeliveryHistory(): Promise<readonly never[]> {
+    return [];
+  }
+
   async insertIntent(intent: NotificationIntent): Promise<NotificationIntent> {
     const existing = this.intents.get(intent.occurrenceKey);
     if (existing !== undefined) return existing;

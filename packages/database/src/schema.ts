@@ -996,6 +996,11 @@ export const notificationDeliveryCommands = pgTable(
       table.availableAt,
       table.scheduledFor,
     ),
+    index("notification_delivery_commands_workspace_schedule_idx").on(
+      table.workspaceId,
+      table.scheduledFor,
+      table.id,
+    ),
     index("notification_delivery_commands_recovery_idx")
       .on(table.workspaceId, table.leaseExpiresAt, table.id)
       .where(
