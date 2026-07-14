@@ -227,6 +227,68 @@ export interface CurrentDailyPlan extends DailyPlan {
   readonly headVersion: number;
 }
 
+export type SchedulingAdviceUnavailableReason =
+  | "disabled"
+  | "busy"
+  | "timeout"
+  | "unreachable"
+  | "provider_rejected"
+  | "response_too_large"
+  | "malformed_response"
+  | "invalid_advice";
+
+export type SchedulingAdviceSuggestionKind =
+  "focus" | "sequence" | "consider_backlog" | "plan_observation";
+
+export interface SchedulingAdviceRequest {
+  readonly version: "schedule.advisor/v1";
+  readonly requestId: string;
+  readonly date: string;
+  readonly focus: "both";
+  readonly expectedPlanId: string;
+  readonly expectedHeadVersion: number;
+}
+
+export interface SchedulingAdviceSuggestion {
+  readonly id: string;
+  readonly kind: SchedulingAdviceSuggestionKind;
+  readonly targetType: "plan_item" | "work_item" | null;
+  readonly targetId: string | null;
+  readonly title: string;
+  readonly rationale: string;
+  readonly confidence: "low" | "medium";
+}
+
+/** Read-only model output. This result never represents a scheduling command. */
+export interface SchedulingAdviceResult {
+  readonly version: "schedule.advisor/v1";
+  readonly requestId: string;
+  readonly status: "available" | "unavailable";
+  readonly reason: SchedulingAdviceUnavailableReason | null;
+  readonly snapshot: {
+    readonly date: string;
+    readonly planId: string;
+    readonly headVersion: number;
+  };
+  readonly provenance: {
+    readonly provider: "disabled" | "ollama" | "unknown";
+    readonly model: string | null;
+    readonly requestedAt: string;
+    readonly completedAt: string;
+    readonly latencyMs: number;
+  };
+  readonly summary: string | null;
+  readonly suggestions: readonly SchedulingAdviceSuggestion[];
+  readonly input: {
+    readonly planItemCount: number;
+    readonly backlogCount: number;
+    readonly truncated: {
+      readonly planItems: boolean;
+      readonly backlog: boolean;
+    };
+  };
+}
+
 export interface Page<T> {
   readonly items: readonly T[];
   readonly page: { readonly limit: number; readonly offset: number };

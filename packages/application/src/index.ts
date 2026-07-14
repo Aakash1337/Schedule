@@ -23,6 +23,7 @@ export * from "./get-current-daily-plan.js";
 export * from "./integration-gateway.js";
 export * from "./get-routine.js";
 export * from "./get-routine-duration-insight.js";
+export * from "./get-scheduling-advice.js";
 export * from "./list-routine-activity.js";
 export * from "./list-routines.js";
 export * from "./mutate-daily-plan.js";

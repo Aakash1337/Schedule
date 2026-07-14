@@ -8,6 +8,7 @@ import {
 
 import { buildApp } from "./app.js";
 import { createIntegrationServices } from "./integration-services.js";
+import { DisabledSchedulingAdvisor, OllamaSchedulingAdvisor } from "./local-model-advisor.js";
 import { createProductServices } from "./product-services.js";
 
 const config = loadApiConfig();
@@ -15,7 +16,18 @@ const database = createDatabase(config.DATABASE_URL);
 const unitOfWork = new PostgresUnitOfWork(database);
 const integrationUnitOfWork = new PostgresIntegrationUnitOfWork(database);
 const clock = { now: () => new Date() };
-const productServices = createProductServices(unitOfWork, clock);
+const schedulingAdvisor =
+  config.LOCAL_MODEL_ADVISOR_MODE === "ollama"
+    ? new OllamaSchedulingAdvisor({
+        baseUrl: config.LOCAL_MODEL_ADVISOR_URL,
+        model: config.LOCAL_MODEL_ADVISOR_MODEL,
+        connectTimeoutMs: config.LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS,
+        requestTimeoutMs: config.LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS,
+        maxResponseBytes: config.LOCAL_MODEL_ADVISOR_MAX_RESPONSE_BYTES,
+        maxConcurrent: config.LOCAL_MODEL_ADVISOR_MAX_CONCURRENT,
+      })
+    : new DisabledSchedulingAdvisor();
+const productServices = createProductServices(unitOfWork, clock, schedulingAdvisor);
 const integrationPepper = config.INTEGRATION_API_PEPPER;
 let integrationServices: ReturnType<typeof createIntegrationServices> | undefined;
 if (config.INTEGRATION_API_MODE === "enabled") {

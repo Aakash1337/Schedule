@@ -176,6 +176,28 @@ they do not save the routine, approve or change a duration, mutate an existing p
 generate a plan revision, or enter the planner snapshot. They cannot affect eligibility, scoring,
 selection, cadence, or activity history.
 
+## Local-advisor boundary
+
+The optional local-model advisor reviews a completed current-plan projection; it is not a planner
+stage and does not receive or produce planner input. Its provider-neutral application port receives
+no repositories, unit of work, plan commands, or mutation service. The supplied context contains a
+bounded sanitized view of the current plan plus eligible backlog candidates, not routine history,
+the persisted planner input snapshot, random seed, calendar blocks, or a dedicated/free-form model
+instruction. User-authored titles are included only as bounded untrusted data.
+
+Schedule builds the initial context in a short read-only unit of work and closes it before invoking
+the provider. The Ollama adapter performs one bounded direct loopback request. If output passes its
+versioned schema, canonical-text, target-membership, and duplicate checks, the application opens a
+second short read-only unit of work and rebuilds the exact same context. A plan-head change or any
+other plan/backlog difference produces `advisor.snapshot_conflict`; no stale advice is returned.
+
+Advice can refer only to supplied plan items, supplied backlog items, or the plan as a whole. It
+cannot change hard constraints, eligibility, scoring, selection, fit, capacity, cadence, feedback,
+duration policy, activity history, random seed, or the authoritative head. It creates no plan
+revision or persistent event and exposes no Apply operation. Disabled or failed inference returns an
+unavailable review state while the deterministic plan remains fully usable and unchanged. Duration
+calibration never calls the advisor.
+
 Run the database-backed vertical-slice verification while PostgreSQL is available:
 
 ```powershell
@@ -191,7 +213,7 @@ pnpm verify:planner-db
 - Learned cadence, preference, energy, and overload adjustments
 - Automatic duration-insight application and historical insight comparison
 - User-editable scoring profiles
-- Local Gemma/Ollama or hosted model advisors
+- Natural-language creation, model-driven calibration or plan application, and hosted model advisors
 - Cross-device synchronization
 
 These are later layers over the deterministic contract and should not weaken its hard constraints or offline fallback.

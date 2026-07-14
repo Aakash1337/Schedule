@@ -12,6 +12,7 @@ import type {
   CurrentDailyPlan,
   DismissRoutineDurationInsightCommand,
   GenerateDailyPlanCommand,
+  GetSchedulingAdviceCommand,
   GetCurrentDailyPlanQuery,
   GetDailyPlanQuery,
   GetRoutineQuery,
@@ -38,6 +39,7 @@ import type {
   UpdateWorkItemCommand,
   DeleteScheduleBlockCommand,
   ScheduleBlockPage,
+  SchedulingAdviceResult,
   WorkItemPage,
   WorkspacePage,
 } from "@schedule/application";
@@ -113,6 +115,10 @@ export interface ProductServices {
   applyRoutineFeedback(command: ApplyRoutinePlanningFeedbackCommand): Promise<CurrentDailyPlan>;
   resetRoutineFeedback(command: ResetRoutinePlanningFeedbackCommand): Promise<CurrentDailyPlan>;
   getDailyPlan(query: GetDailyPlanQuery): Promise<DailyPlan | null>;
+  getSchedulingAdvice(
+    command: GetSchedulingAdviceCommand,
+    signal?: AbortSignal,
+  ): Promise<SchedulingAdviceResult>;
 }
 
 export interface ProductApiLimits {
@@ -124,6 +130,8 @@ const DEFAULT_PRODUCT_API_LIMITS: ProductApiLimits = {
   requestsPerMinute: 240,
   maxConcurrentPlans: 2,
 };
+
+export const SCHEDULING_ADVICE_ROUTE = "/v1/workspaces/:workspaceId/advisor/advice";
 
 function installRateLimit(app: FastifyInstance, requestsPerMinute: number): void {
   const buckets = new Map<string, { startedAt: number; count: number }>();
@@ -453,6 +461,14 @@ const planItemActivityBody = z.strictObject({
     .default({}),
 });
 const planMutationRequestBody = planBody.omit({ date: true, requestRevision: true });
+const schedulingAdviceBody = z.strictObject({
+  version: z.literal("schedule.advisor/v1"),
+  requestId: uuid,
+  date: localDateText,
+  focus: z.literal("both"),
+  expectedPlanId: uuid,
+  expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
+});
 const planMutationBody = z.strictObject({
   expectedPlanId: uuid,
   expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
@@ -563,6 +579,11 @@ export async function registerProductRoutes(
   services: ProductServices,
   limits: ProductApiLimits = DEFAULT_PRODUCT_API_LIMITS,
 ): Promise<void> {
+  app.addHook("onRequest", async (request, reply) => {
+    if (request.routeOptions.url === SCHEDULING_ADVICE_ROUTE) {
+      reply.header("cache-control", "no-store");
+    }
+  });
   installRateLimit(app, limits.requestsPerMinute);
   const cursorSigningKey = randomBytes(32);
   let concurrentPlans = 0;
@@ -594,6 +615,36 @@ export async function registerProductRoutes(
   app.get("/v1/workspaces/:workspaceId", async (request) => {
     const params = parseRequest(workspaceParams, request.params);
     return services.getWorkspace({ workspaceId: workspaceId(params.workspaceId) });
+  });
+
+  app.post(SCHEDULING_ADVICE_ROUTE, async (request, reply) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const body = parseRequest(schedulingAdviceBody, request.body);
+    const cancellation = new AbortController();
+    const abort = () => cancellation.abort();
+    const abortOnPrematureResponseClose = () => {
+      if (!reply.raw.writableEnded) abort();
+    };
+    request.raw.once("aborted", abort);
+    reply.raw.once("close", abortOnPrematureResponseClose);
+    if (request.raw.aborted || reply.raw.destroyed) abort();
+    try {
+      return await services.getSchedulingAdvice(
+        {
+          version: body.version,
+          requestId: body.requestId,
+          workspaceId: workspaceId(params.workspaceId),
+          date: localDate(body.date),
+          focus: body.focus,
+          expectedPlanId: dailyPlanId(body.expectedPlanId),
+          expectedHeadVersion: body.expectedHeadVersion,
+        },
+        cancellation.signal,
+      );
+    } finally {
+      request.raw.off("aborted", abort);
+      reply.raw.off("close", abortOnPrematureResponseClose);
+    }
   });
 
   app.post("/v1/workspaces/:workspaceId/work-items", async (request, reply) => {

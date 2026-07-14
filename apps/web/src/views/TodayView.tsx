@@ -1,4 +1,14 @@
-import { Check, Clock3, Lock, Play, RefreshCw, RotateCcw, Shuffle, Unlock } from "lucide-react";
+import {
+  Check,
+  Clock3,
+  Lock,
+  MessageSquareText,
+  Play,
+  RefreshCw,
+  RotateCcw,
+  Shuffle,
+  Unlock,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { api, ApiError, newIdempotencyKey } from "../api";
@@ -21,6 +31,8 @@ import type {
   PlanSettings,
   PlanningFitPreference,
   RoutinePlanningFeedbackSuppressionKind,
+  SchedulingAdviceResult,
+  SchedulingAdviceUnavailableReason,
   WorkspaceViewProps,
 } from "../types";
 
@@ -42,8 +54,26 @@ interface CommandSuccess {
   readonly undo?: ActiveRoutineFeedback;
 }
 
+type AdvisorPhase = "idle" | "loading";
+
+const ADVISOR_UNAVAILABLE_MESSAGES: Readonly<Record<SchedulingAdviceUnavailableReason, string>> = {
+  disabled: "Local advice is turned off in the server configuration.",
+  busy: "The local advisor is already reviewing another request. Wait a moment and ask again.",
+  timeout: "The local advisor took too long to respond. Your plan was not changed.",
+  unreachable:
+    "The local advisor could not be reached. Check that the configured model is running.",
+  provider_rejected: "The local model could not complete this review. Your plan was not changed.",
+  response_too_large: "The local model returned more advice than the app can safely display.",
+  malformed_response: "The local model returned advice that did not pass validation.",
+  invalid_advice: "The local model returned advice that did not match this plan.",
+};
+
 function planQueryKey(workspaceId: string, date: string): string {
   return JSON.stringify([workspaceId, date]);
+}
+
+function planSnapshotKey(plan: CurrentDailyPlan): string {
+  return JSON.stringify([plan.workspaceId, plan.date, plan.id, plan.headVersion]);
 }
 
 function messageForError(error: unknown): string {
@@ -88,6 +118,110 @@ function activeFeedbackFromExclusion(exclusion: PlanExclusion): ActiveRoutineFee
 
 function feedbackTimeframe(kind: RoutinePlanningFeedbackSuppressionKind): string {
   return kind === "not_today" ? "Hidden today" : "Hidden through the end of this week";
+}
+
+function advisorUnavailableMessage(reason: SchedulingAdviceUnavailableReason | null): string {
+  return reason === null
+    ? "Local advice is unavailable right now. Your plan was not changed."
+    : ADVISOR_UNAVAILABLE_MESSAGES[reason];
+}
+
+function advisorCompletedTime(value: string): string {
+  return Number.isFinite(new Date(value).getTime()) ? formatTime(value) : "an unknown time";
+}
+
+function SchedulingAdvisorPanel({
+  phase,
+  result,
+  error,
+}: {
+  readonly phase: AdvisorPhase;
+  readonly result: SchedulingAdviceResult | null;
+  readonly error: string | null;
+}) {
+  const available = result?.status === "available" ? result : null;
+  const unavailable = result?.status === "unavailable" ? result : null;
+
+  return (
+    <section id="today-advisor" className="today-advisor" aria-labelledby="today-advisor-heading">
+      <div className="today-advisor-heading">
+        <div>
+          <p className="eyebrow">Optional local model</p>
+          <h2 id="today-advisor-heading">Local advisor</h2>
+        </div>
+        <p id="today-advisor-safety">Advice only. It cannot change your schedule.</p>
+      </div>
+
+      {phase === "loading" ? (
+        <p className="today-advisor-state" role="status" aria-live="polite">
+          Reviewing this plan and its eligible backlog.
+        </p>
+      ) : null}
+
+      {phase === "idle" && result === null && error === null ? (
+        <p className="today-advisor-intro">
+          Ask for a short, read-only review based on the current plan snapshot.
+        </p>
+      ) : null}
+
+      {error === null ? null : (
+        <p className="today-advisor-state today-advisor-state-error" role="alert">
+          {error}
+        </p>
+      )}
+
+      {unavailable === null ? null : (
+        <p className="today-advisor-state today-advisor-state-unavailable" role="alert">
+          {advisorUnavailableMessage(unavailable.reason)}
+        </p>
+      )}
+
+      {available === null ? null : (
+        <div className="today-advisor-result">
+          <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+            Local advisor review ready.
+          </p>
+          {available.summary === null ? null : (
+            <p className="today-advisor-summary">{available.summary}</p>
+          )}
+          {available.suggestions.length === 0 ? (
+            <p className="today-advisor-empty">No additional suggestions for this snapshot.</p>
+          ) : (
+            <ol className="today-advisor-suggestions" aria-label="Local advisor suggestions">
+              {available.suggestions.map((suggestion, index) => (
+                <li key={suggestion.id}>
+                  <span className="today-advisor-suggestion-number" aria-hidden="true">
+                    {index + 1}
+                  </span>
+                  <div>
+                    <div className="today-advisor-suggestion-heading">
+                      <h3>{suggestion.title}</h3>
+                      <span>{displayCode(suggestion.kind)}</span>
+                    </div>
+                    <p>{suggestion.rationale}</p>
+                    <span className="today-advisor-confidence">
+                      {displayCode(suggestion.confidence)} confidence
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+          <p className="today-advisor-provenance">
+            Generated with {available.provenance.model ?? "the local advisor"} at{" "}
+            {advisorCompletedTime(available.provenance.completedAt)}, based on plan head{" "}
+            {available.snapshot.headVersion}. Reviewed {available.input.planItemCount} plan{" "}
+            {available.input.planItemCount === 1 ? "item" : "items"} and{" "}
+            {available.input.backlogCount} backlog{" "}
+            {available.input.backlogCount === 1 ? "item" : "items"}.
+            {available.input.truncated.planItems || available.input.truncated.backlog
+              ? " A bounded subset was used."
+              : ""}
+          </p>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function retainedSettings(plan: CurrentDailyPlan): PlanSettings | null {
@@ -231,6 +365,9 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const [commandError, setCommandError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<CommandSuccess | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [advisorPhase, setAdvisorPhase] = useState<AdvisorPhase>("idle");
+  const [advisorResult, setAdvisorResult] = useState<SchedulingAdviceResult | null>(null);
+  const [advisorError, setAdvisorError] = useState<string | null>(null);
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("17:00");
   const [targetMinutes, setTargetMinutes] = useState("180");
@@ -242,9 +379,16 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const pendingCommandsRef = useRef(new Map<string, PendingIdempotentCommand>());
   const recentFeedbackRef = useRef<HTMLDivElement>(null);
   const shouldFocusRecentFeedbackUndoRef = useRef(false);
+  const todayViewRef = useRef<HTMLElement>(null);
+  const advisorControllerRef = useRef<AbortController | null>(null);
+  const advisorEpochRef = useRef(0);
+  const shouldRestoreAdvisorFocusRef = useRef(false);
   const activeQueryKey = planQueryKey(workspace.id, date);
   const activeQueryKeyRef = useRef(activeQueryKey);
   activeQueryKeyRef.current = activeQueryKey;
+  const renderedPlanSnapshotKey = plan === null ? null : planSnapshotKey(plan);
+  const planSnapshotKeyRef = useRef<string | null>(renderedPlanSnapshotKey);
+  planSnapshotKeyRef.current = renderedPlanSnapshotKey;
 
   const dayLabel = useMemo(
     () =>
@@ -256,6 +400,26 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     [date],
   );
 
+  const invalidateAdvisor = useCallback(() => {
+    advisorEpochRef.current += 1;
+    advisorControllerRef.current?.abort();
+    advisorControllerRef.current = null;
+    shouldRestoreAdvisorFocusRef.current = false;
+    setAdvisorPhase("idle");
+    setAdvisorResult(null);
+    setAdvisorError(null);
+  }, []);
+
+  const acceptLoadedPlan = useCallback(
+    (current: CurrentDailyPlan | null) => {
+      const nextSnapshotKey = current === null ? null : planSnapshotKey(current);
+      if (planSnapshotKeyRef.current !== nextSnapshotKey) invalidateAdvisor();
+      planSnapshotKeyRef.current = nextSnapshotKey;
+      setPlan(current);
+    },
+    [invalidateAdvisor],
+  );
+
   const loadCurrentPlan = useCallback(
     async (signal?: AbortSignal) => {
       const requestKey = planQueryKey(workspace.id, date);
@@ -265,11 +429,11 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
       setLoadError(null);
       try {
         const current = await api.getCurrentPlan(workspace.id, date, signal);
-        if (requestIsActive()) setPlan(current);
+        if (requestIsActive()) acceptLoadedPlan(current);
       } catch (error) {
         if (!requestIsActive()) return;
         if (error instanceof ApiError && error.status === 404) {
-          setPlan(null);
+          acceptLoadedPlan(null);
         } else {
           setLoadError(messageForError(error));
         }
@@ -277,11 +441,13 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
         if (requestIsActive()) setLoading(false);
       }
     },
-    [date, workspace.id],
+    [acceptLoadedPlan, date, workspace.id],
   );
 
   useEffect(() => {
     const controller = new AbortController();
+    invalidateAdvisor();
+    planSnapshotKeyRef.current = null;
     setPlan(null);
     setCommandError(null);
     setFeedback(null);
@@ -289,8 +455,11 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     shouldFocusRecentFeedbackUndoRef.current = false;
     pendingCommandsRef.current.clear();
     void loadCurrentPlan(controller.signal);
-    return () => controller.abort();
-  }, [loadCurrentPlan]);
+    return () => {
+      controller.abort();
+      advisorControllerRef.current?.abort();
+    };
+  }, [invalidateAdvisor, loadCurrentPlan]);
 
   useEffect(() => {
     if (plan === null) {
@@ -306,7 +475,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     if (activeQueryKeyRef.current !== requestKey) return false;
     const current = await api.getCurrentPlan(workspace.id, date);
     if (activeQueryKeyRef.current !== requestKey) return false;
-    setPlan(current);
+    acceptLoadedPlan(current);
     return true;
   }
 
@@ -340,6 +509,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     retryIdentity?: string,
   ): Promise<void> {
     const requestKey = activeQueryKey;
+    invalidateAdvisor();
     setBusyAction(key);
     setCommandError(null);
     setFeedback(null);
@@ -662,6 +832,90 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     );
   }
 
+  async function askLocalAdvisor(): Promise<void> {
+    if (plan === null) return;
+
+    invalidateAdvisor();
+    const requestKey = activeQueryKey;
+    const requestedPlan = plan;
+    const requestedSnapshotKey = planSnapshotKey(requestedPlan);
+    const requestEpoch = advisorEpochRef.current;
+    const controller = new AbortController();
+    advisorControllerRef.current = controller;
+    shouldRestoreAdvisorFocusRef.current = true;
+    setAdvisorPhase("loading");
+
+    const requestEpochIsActive = () =>
+      !controller.signal.aborted &&
+      advisorEpochRef.current === requestEpoch &&
+      activeQueryKeyRef.current === requestKey;
+    const requestSnapshotIsActive = () =>
+      requestEpochIsActive() && planSnapshotKeyRef.current === requestedSnapshotKey;
+
+    const recoverFromSnapshotConflict = async () => {
+      try {
+        const current = await api.getCurrentPlan(workspace.id, date, controller.signal);
+        if (!requestEpochIsActive()) return;
+        planSnapshotKeyRef.current = planSnapshotKey(current);
+        setPlan(current);
+        setAdvisorResult(null);
+        setAdvisorError(
+          "The plan changed while the advisor was working. Review the current plan and ask again.",
+        );
+      } catch {
+        if (!requestEpochIsActive()) return;
+        setAdvisorResult(null);
+        setAdvisorError(
+          "The plan changed while the advisor was working, and the current plan could not be refreshed. Refresh Today before asking again.",
+        );
+      }
+    };
+
+    try {
+      const result = await api.getSchedulingAdvice(
+        workspace.id,
+        {
+          date,
+          expectedPlanId: requestedPlan.id,
+          expectedHeadVersion: requestedPlan.headVersion,
+        },
+        controller.signal,
+      );
+      if (!requestSnapshotIsActive()) return;
+      if (
+        result.snapshot.date !== date ||
+        result.snapshot.planId !== requestedPlan.id ||
+        result.snapshot.headVersion !== requestedPlan.headVersion
+      ) {
+        await recoverFromSnapshotConflict();
+        return;
+      }
+      setAdvisorError(null);
+      setAdvisorResult(result);
+    } catch (error) {
+      if (!requestEpochIsActive()) return;
+      if (
+        error instanceof ApiError &&
+        error.status === 409 &&
+        error.code === "advisor.snapshot_conflict"
+      ) {
+        await recoverFromSnapshotConflict();
+      } else {
+        setAdvisorResult(null);
+        setAdvisorError("Local advice could not be loaded. Your plan was not changed.");
+      }
+    } finally {
+      if (
+        advisorEpochRef.current === requestEpoch &&
+        activeQueryKeyRef.current === requestKey &&
+        advisorControllerRef.current === controller
+      ) {
+        advisorControllerRef.current = null;
+        setAdvisorPhase("idle");
+      }
+    }
+  }
+
   const sortedItems = useMemo(
     () => plan?.items.slice().sort((left, right) => left.position - right.position) ?? [],
     [plan],
@@ -698,23 +952,48 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     undo.focus();
   }, [commandInProgress, feedback]);
 
+  useEffect(() => {
+    if (advisorPhase === "loading" || !shouldRestoreAdvisorFocusRef.current) return;
+    const trigger = todayViewRef.current?.querySelector<HTMLButtonElement>(
+      "[data-local-advisor-trigger]",
+    );
+    if (trigger === undefined || trigger === null || trigger.disabled) return;
+    shouldRestoreAdvisorFocusRef.current = false;
+    trigger.focus();
+  }, [advisorError, advisorPhase, advisorResult]);
+
   return (
-    <section className="today-view" aria-label="Today">
+    <section ref={todayViewRef} className="today-view" aria-label="Today">
       <PageHeader
         eyebrow={dayLabel}
         title="Today"
         description="Build a realistic plan from routines and selected work, then adjust it without losing control."
         actions={
           plan === null ? undefined : (
-            <Button
-              type="button"
-              busy={busyAction === "regenerate"}
-              disabled={commandInProgress || plan.request === null}
-              onClick={() => void regenerate()}
-            >
-              <RefreshCw size={15} aria-hidden="true" />
-              Regenerate unlocked
-            </Button>
+            <>
+              <Button
+                type="button"
+                variant="quiet"
+                busy={advisorPhase === "loading"}
+                disabled={commandInProgress || advisorPhase === "loading"}
+                aria-controls="today-advisor"
+                aria-describedby="today-advisor-safety"
+                data-local-advisor-trigger
+                onClick={() => void askLocalAdvisor()}
+              >
+                <MessageSquareText size={15} aria-hidden="true" />
+                Ask local advisor
+              </Button>
+              <Button
+                type="button"
+                busy={busyAction === "regenerate"}
+                disabled={commandInProgress || plan.request === null}
+                onClick={() => void regenerate()}
+              >
+                <RefreshCw size={15} aria-hidden="true" />
+                Regenerate unlocked
+              </Button>
+            </>
           )
         }
       />
@@ -903,6 +1182,12 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
               </div>
             </dl>
           </section>
+
+          <SchedulingAdvisorPanel
+            phase={advisorPhase}
+            result={advisorResult}
+            error={advisorError}
+          />
 
           {plan.warnings.length === 0 ? null : (
             <section className="today-warnings" aria-labelledby="today-warnings-heading">

@@ -1,14 +1,24 @@
 import { describe, expect, it } from "vitest";
 
-import type { TransactionContext, UnitOfWork, Workspace } from "@schedule/application";
+import type {
+  SchedulingAdvisor,
+  SchedulingAdvisorContext,
+  TransactionContext,
+  UnitOfWork,
+  Workspace,
+} from "@schedule/application";
 import {
   activityEventId,
   calculateRoutineDurationInsight,
   createCadencePolicy,
+  createDailyPlanningRequest,
   createDurationRange,
   createRoutine,
   createStructuredTags,
   createWorkspace,
+  dailyPlanId,
+  generateDailyPlan,
+  localDate,
   recordActivityEvent,
   routineId,
   scheduleBlockId,
@@ -53,6 +63,7 @@ describe("createProductServices", () => {
       "getRoutine",
       "getRoutineDurationInsight",
       "getScheduleBlock",
+      "getSchedulingAdvice",
       "getWorkItem",
       "getWorkspace",
       "listRoutineActivity",
@@ -241,5 +252,166 @@ describe("createProductServices", () => {
     expect(dismissed).toMatchObject({ kind: "dismissed", ingestedSequence: 1 });
     expect(reset).toMatchObject({ kind: "reset", ingestedSequence: 2 });
     expect(feedback).toEqual([dismissed, reset]);
+  });
+
+  it("defaults to disabled, read-only advice without provider or verification work", async () => {
+    const now = new Date("2026-07-15T12:00:00.000Z");
+    const workspace = createWorkspace({
+      id: workspaceId("11111111-1111-4111-8111-111111111111"),
+      name: "Advisor service",
+      now,
+    });
+    const routine = createRoutine({
+      id: routineId("22222222-2222-4222-8222-222222222222"),
+      workspaceId: workspace.id,
+      title: "Practice",
+      tags: createStructuredTags(),
+      duration: createDurationRange({ expectedMinutes: 30 }),
+      cadence: createCadencePolicy({ period: "day", targetCompletions: 1 }),
+      now,
+    });
+    const request = createDailyPlanningRequest({
+      workspaceId: workspace.id,
+      date: "2026-07-15",
+      timeZone: "UTC",
+      availableWindows: [
+        {
+          startsAt: new Date("2026-07-15T13:00:00.000Z"),
+          endsAt: new Date("2026-07-15T14:00:00.000Z"),
+        },
+      ],
+      targetMinutes: 30,
+      targetTaskCount: 1,
+      seed: "advisor-service-disabled",
+    });
+    const plan = generateDailyPlan({
+      id: dailyPlanId("44444444-4444-4444-8444-444444444444"),
+      request,
+      routines: [routine],
+      events: [],
+      generatedAt: now,
+    });
+    const context = {
+      workspaces: { findById: async () => workspace },
+      dailyPlans: { findCurrent: async () => ({ plan, headVersion: 4 }) },
+      workItems: { listPlanningCandidates: async () => [] },
+    } as TransactionContext;
+    let unitOfWorkRuns = 0;
+    const unitOfWork: UnitOfWork = {
+      run: async (operation) => {
+        unitOfWorkRuns += 1;
+        return operation(context);
+      },
+    };
+    const services = createProductServices(unitOfWork, { now: () => now });
+
+    const result = await services.getSchedulingAdvice({
+      version: "schedule.advisor/v1",
+      requestId: "88888888-8888-4888-8888-888888888888",
+      workspaceId: workspace.id,
+      date: localDate("2026-07-15"),
+      focus: "both",
+      expectedPlanId: plan.id,
+      expectedHeadVersion: 4,
+    });
+
+    expect(result).toMatchObject({
+      status: "unavailable",
+      reason: "disabled",
+      provenance: { provider: "disabled", model: null, latencyMs: 0 },
+      summary: null,
+      suggestions: [],
+    });
+    expect(unitOfWorkRuns).toBe(1);
+  });
+
+  it("delegates advice to the supplied provider and verifies the unchanged snapshot", async () => {
+    const now = new Date("2026-07-15T12:00:00.000Z");
+    const workspace = createWorkspace({
+      id: workspaceId("11111111-1111-4111-8111-111111111111"),
+      name: "Advisor service",
+      now,
+    });
+    const request = createDailyPlanningRequest({
+      workspaceId: workspace.id,
+      date: "2026-07-15",
+      timeZone: "UTC",
+      availableWindows: [],
+      targetMinutes: 30,
+      targetTaskCount: 1,
+      seed: "advisor-service-provider",
+    });
+    const plan = generateDailyPlan({
+      id: dailyPlanId("44444444-4444-4444-8444-444444444444"),
+      request,
+      routines: [],
+      events: [],
+      generatedAt: now,
+    });
+    const context = {
+      workspaces: { findById: async () => workspace },
+      dailyPlans: { findCurrent: async () => ({ plan, headVersion: 2 }) },
+      workItems: { listPlanningCandidates: async () => [] },
+    } as TransactionContext;
+    let unitOfWorkRuns = 0;
+    let received: SchedulingAdvisorContext | null = null;
+    const advisor: SchedulingAdvisor = {
+      provider: "ollama",
+      model: "fixture-v1",
+      advise: async (advisorContext) => {
+        received = advisorContext;
+        return {
+          status: "available",
+          output: {
+            version: "schedule.advisor-output/v1",
+            summary: "Keep the day intentional.",
+            suggestions: [
+              {
+                kind: "plan_observation",
+                targetType: null,
+                targetId: null,
+                title: "Review the open plan",
+                rationale: "The plan has room for an intentional choice.",
+                confidence: "medium",
+              },
+            ],
+          },
+        };
+      },
+    };
+    const unitOfWork: UnitOfWork = {
+      run: async (operation) => {
+        unitOfWorkRuns += 1;
+        return operation(context);
+      },
+    };
+    const services = createProductServices(unitOfWork, { now: () => now }, advisor);
+
+    const result = await services.getSchedulingAdvice({
+      version: "schedule.advisor/v1",
+      requestId: "88888888-8888-4888-8888-888888888888",
+      workspaceId: workspace.id,
+      date: localDate("2026-07-15"),
+      focus: "both",
+      expectedPlanId: plan.id,
+      expectedHeadVersion: 2,
+    });
+
+    expect(received).toMatchObject({
+      version: "schedule.advisor-context/v1",
+      requestId: "88888888-8888-4888-8888-888888888888",
+      date: "2026-07-15",
+      focus: "both",
+      plan: { id: plan.id, headVersion: 2 },
+      backlog: [],
+    });
+    expect(result).toMatchObject({
+      status: "available",
+      reason: null,
+      provenance: { provider: "ollama", model: "fixture-v1" },
+      summary: "Keep the day intentional.",
+      suggestions: [{ id: "advice-1", kind: "plan_observation" }],
+    });
+    expect(unitOfWorkRuns).toBe(2);
   });
 });

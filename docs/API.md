@@ -14,44 +14,48 @@ not authorize these product routes.
 - CORS is disabled, JSON bodies are limited to 256 KiB, request objects reject unknown fields, and error responses do not include stack traces.
 - Product routes reject missing, malformed, or non-loopback `Host` authorities before routing. This protects the unauthenticated loopback service from browser DNS-rebinding attacks; `localhost`, IPv4 `127.0.0.0/8`, and IPv6 loopback (`[::1]`) are accepted with an optional valid port. Health and system-information endpoints remain outside this product-route guard for local process and container diagnostics.
 - Product routes are limited to 240 requests per minute per source address and two concurrent plan generations per API process.
+- The optional advisor is independently disabled by default. When enabled, its adapter accepts only
+  one exact raw `http://127.0.0.1:<port>` Ollama origin and an allowlisted local Gemma model; it does
+  not use DNS, redirects, proxies, tools, or credentials.
 - Local mode caps an installation at 20 workspaces; each workspace is capped at 500 routines, 5,000 activity events, 2,000 plan revisions, and 50 revisions for one date.
 - Plan responses expose the original planning request, input hash, and algorithm versions, but not routine snapshots or activity history from the complete persisted input snapshot.
 
 ## Routes
 
-| Method   | Route                                                                                          | Result                                           |
-| -------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `POST`   | `/v1/workspaces`                                                                               | Create a workspace (`201`)                       |
-| `GET`    | `/v1/workspaces`                                                                               | List local workspaces                            |
-| `GET`    | `/v1/workspaces/{workspaceId}`                                                                 | Retrieve one workspace                           |
-| `POST`   | `/v1/workspaces/{workspaceId}/work-items`                                                      | Create a backlog/Kanban item (`201`)             |
-| `GET`    | `/v1/workspaces/{workspaceId}/work-items`                                                      | List a bounded work-item page                    |
-| `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Retrieve one work item                           |
-| `PATCH`  | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Version-checked work-item update                 |
-| `POST`   | `/v1/workspaces/{workspaceId}/schedule-blocks`                                                 | Create a calendar block (`201`)                  |
-| `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks?from={instant}&to={instant}`                     | List blocks overlapping a bounded range          |
-| `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Retrieve one calendar block                      |
-| `PATCH`  | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Version-checked calendar-block update            |
-| `DELETE` | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Version-checked audited deletion (`204`)         |
-| `POST`   | `/v1/workspaces/{workspaceId}/routines`                                                        | Create a routine (`201`)                         |
-| `GET`    | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`                       | List a bounded routine page (`200`)              |
-| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Retrieve one routine (`200` or `404`)            |
-| `PATCH`  | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Version-checked partial update (`200` or `409`)  |
-| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight`                           | Derive a read-only insight (`200` or `404`)      |
-| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/approve`                   | Atomically approve an insight (`200` or `409`)   |
-| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissals`                | Dismiss one exact insight (`200` or `409`)       |
-| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissal-resets`          | Restore one exact insight (`200` or `409`)       |
-| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | List stable, cursor-paginated history (`200`)    |
-| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | Idempotently record activity (`200`)             |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans`                                                           | Create revision 1 or retry an exact revision     |
-| `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}?revision=1`                                   | Retrieve an exact revision (`200` or `404`)      |
-| `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/current`                                      | Retrieve the current Today plan and head version |
-| `PATCH`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/lock`                          | Idempotently lock or unlock a current plan item  |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/activity-events`               | Record a current item action                     |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/regenerations`                                | Regenerate around locked items                   |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/replacement`                   | Replace one unlocked item                        |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/routine-feedback`              | Suppress one pending routine and replan          |
-| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/routines/{routineId}/routine-feedback-resets` | Reset routine feedback and replan                |
+| Method   | Route                                                                                          | Result                                            |
+| -------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `POST`   | `/v1/workspaces`                                                                               | Create a workspace (`201`)                        |
+| `GET`    | `/v1/workspaces`                                                                               | List local workspaces                             |
+| `GET`    | `/v1/workspaces/{workspaceId}`                                                                 | Retrieve one workspace                            |
+| `POST`   | `/v1/workspaces/{workspaceId}/work-items`                                                      | Create a backlog/Kanban item (`201`)              |
+| `GET`    | `/v1/workspaces/{workspaceId}/work-items`                                                      | List a bounded work-item page                     |
+| `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Retrieve one work item                            |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Version-checked work-item update                  |
+| `POST`   | `/v1/workspaces/{workspaceId}/schedule-blocks`                                                 | Create a calendar block (`201`)                   |
+| `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks?from={instant}&to={instant}`                     | List blocks overlapping a bounded range           |
+| `GET`    | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Retrieve one calendar block                       |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Version-checked calendar-block update             |
+| `DELETE` | `/v1/workspaces/{workspaceId}/schedule-blocks/{scheduleBlockId}`                               | Version-checked audited deletion (`204`)          |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines`                                                        | Create a routine (`201`)                          |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`                       | List a bounded routine page (`200`)               |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Retrieve one routine (`200` or `404`)             |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Version-checked partial update (`200` or `409`)   |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight`                           | Derive a read-only insight (`200` or `404`)       |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/approve`                   | Atomically approve an insight (`200` or `409`)    |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissals`                | Dismiss one exact insight (`200` or `409`)        |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissal-resets`          | Restore one exact insight (`200` or `409`)        |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | List stable, cursor-paginated history (`200`)     |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | Idempotently record activity (`200`)              |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans`                                                           | Create revision 1 or retry an exact revision      |
+| `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}?revision=1`                                   | Retrieve an exact revision (`200` or `404`)       |
+| `GET`    | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/current`                                      | Retrieve the current Today plan and head version  |
+| `POST`   | `/v1/workspaces/{workspaceId}/advisor/advice`                                                  | Request read-only local advice for a current plan |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/lock`                          | Idempotently lock or unlock a current plan item   |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/activity-events`               | Record a current item action                      |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/regenerations`                                | Regenerate around locked items                    |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/replacement`                   | Replace one unlocked item                         |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/routine-feedback`              | Suppress one pending routine and replan           |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/routines/{routineId}/routine-feedback-resets` | Reset routine feedback and replan                 |
 
 Activity requests require an `Idempotency-Key` header containing 1–160 characters. Reusing a key with identical event content returns the original event. Reusing it for different content returns `409 activity.idempotency_conflict`. Public event responses omit the key because the caller already owns it and it is retry metadata, not activity history.
 
@@ -169,6 +173,92 @@ Every plan item has a stable UUID, a typed source identity (`sourceType` plus ex
 Current plan items also expose `activityState`, `lastActivityEventId`, and `activityUpdatedAt`. An item activity request uses the same optimistic identity and idempotency requirements as locking, and supports `started`, `completed`, `skipped`, `deferred`, `dismissed`, or `completion_reversed`. A pending item may enter any direct action state; a started item may enter any terminal state. Terminal states cannot transition again, except that reversing a completion reopens it as pending. Only completion may include an actual `durationMinutes`. The resulting activity event records the plan, plan item, and typed source identity, advances the Today head once, and feeds later planner history. Completing a work-derived item marks its source work item `done` only from an active work status. Its reversal restores the saved prior status only if no later accepted completion or work-item edit has advanced the completion ownership version; otherwise the newer state wins unchanged. Lock state remains independent, and an action does not automatically regenerate the plan.
 
 Generic routine activity may still be recorded outside a plan. Item completion reversal uses the item endpoint so its append-only event, Today projection, conditional work-status restoration, and head version change atomically; generic reversal remains appropriate for routine activity recorded outside a plan.
+
+The advisor route is an explicit read operation with no automatic retry. It requires
+a current plan and accepts this complete strict body; unknown fields, including `prompt`, `model`,
+`url`, `options`, `tools`, `think`, and `stream`, return `400` before provider dispatch:
+
+```json
+{
+  "version": "schedule.advisor/v1",
+  "requestId": "11111111-1111-4111-8111-111111111111",
+  "date": "2026-07-15",
+  "focus": "both",
+  "expectedPlanId": "22222222-2222-4222-8222-222222222222",
+  "expectedHeadVersion": 3
+}
+```
+
+Version 1 requires the literal `both` focus and rejects narrower values until their projection and
+output semantics are defined. The server, not the caller, constructs an immutable
+`schedule.advisor-context/v1` projection. It contains a maximum of
+50 sorted current-plan items and 50 deterministically ordered eligible backlog items, selected
+scheduling fields, bounded reasons and warnings, and explicit truncation flags. It excludes
+descriptions, workspace names, calendar blocks, activity history, full planner snapshots, secrets,
+and any dedicated or free-form model-instruction field. Titles and other stored text may be
+user-authored, so the fixed provider prompt treats every supplied string as untrusted data. Stored
+text is normalized and sanitized, individual fields are bounded, and the complete JSON context
+cannot exceed 64 KiB.
+
+An available `200` response has the following versioned shape. The request ID is echoed exactly,
+timestamps are ISO instants, and all provider text has passed strict shape, length, canonical-text,
+target-membership, and duplicate validation:
+
+```json
+{
+  "version": "schedule.advisor/v1",
+  "requestId": "11111111-1111-4111-8111-111111111111",
+  "status": "available",
+  "reason": null,
+  "snapshot": {
+    "date": "2026-07-15",
+    "planId": "22222222-2222-4222-8222-222222222222",
+    "headVersion": 3
+  },
+  "input": {
+    "planItemCount": 4,
+    "backlogCount": 8,
+    "truncated": { "planItems": false, "backlog": false }
+  },
+  "provenance": {
+    "provider": "ollama",
+    "model": "gemma4:e4b",
+    "requestedAt": "2026-07-15T12:00:00.000Z",
+    "completedAt": "2026-07-15T12:00:01.250Z",
+    "latencyMs": 1250
+  },
+  "summary": "Protect the first focused block and keep the later work flexible.",
+  "suggestions": [
+    {
+      "id": "advice-1",
+      "kind": "focus",
+      "targetType": "plan_item",
+      "targetId": "33333333-3333-4333-8333-333333333333",
+      "title": "Start with the focused block",
+      "rationale": "It is already selected and has the clearest priority signal.",
+      "confidence": "medium"
+    }
+  ]
+}
+```
+
+Suggestion kinds are `focus` or `sequence` targeting a supplied `plan_item`, `consider_backlog`
+targeting a supplied `work_item`, and untargeted `plan_observation`. Confidence is only `low` or
+`medium`, and no response contains an executable action. A disabled or recoverably unavailable
+advisor also returns `200` with the same snapshot, input, and provenance envelope, but with
+`status: "unavailable"`, `summary: null`, an empty suggestion array, and one of `disabled`, `busy`,
+`timeout`, `unreachable`, `provider_rejected`, `response_too_large`, `malformed_response`, or
+`invalid_advice` as `reason`.
+
+The initial context read closes before the model call. Valid advice is returned only after a second
+short unit of work rebuilds and exactly compares the sanitized plan-and-backlog context. A stale
+expected identity or any plan/backlog change during inference returns
+`409 advisor.snapshot_conflict`; the model output is discarded. Missing workspaces or current plans
+return `404`; invalid context or policy data returns `422`. Every advisor response, including route
+validation, body-limit, rate-limit, and conflict errors, carries `Cache-Control: no-store`. If the
+caller disconnects while inference is pending, cancellation reaches the provider adapter, destroys
+the loopback request, and releases its bounded concurrency permit. The route performs no database
+write, audit append, plan regeneration, or readiness check against Ollama.
 
 Regeneration and replacement require the same optimistic identity and idempotency header plus a complete planning request with a new seed. The server allocates the next revision. Regeneration carries locked non-terminal items exactly and plans only residual capacity. Replacement anchors every sibling, rejects a locked target, excludes the removed typed source, and fills the released capacity. Terminal sources are not replanned. Prior revisions remain immutable and mutation provenance is retained for replay. A retry resolves to the same immutable plan revision and recorded head version; its projected lock and activity fields reflect the latest state for that revision.
 

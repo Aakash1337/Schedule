@@ -1137,11 +1137,92 @@
     },
     {
       "id": "local-model-advisor",
-      "status": "deferred",
+      "status": "partial",
       "risk": "normal",
       "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 4 — Local-model advisor" },
-      "limitations": ["No Gemma or other advisor provider is integrated."],
-      "evidence": []
+      "limitations": [
+        "Only explicit read-only review of a bounded current plan and eligible backlog through local Ollama is implemented; natural-language creation and task breakdown, automatic application or calibration, hosted providers, and Hermes/WhatsApp/reminder behavior remain deferred.",
+        "The real Ollama/Gemma smoke command is operator-run and not a CI gate; CI validates the provider boundary with deterministic loopback fakes and does not establish model quality."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/config/src/config.test.ts",
+          "command": "unit",
+          "anchors": [
+            "provides safe local defaults",
+            "loads an explicitly enabled local Ollama advisor with bounded controls",
+            "rejects non-canonical local-model advisor URL"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/get-scheduling-advice.test.ts",
+          "command": "unit",
+          "anchors": [
+            "builds a sanitized, minimal snapshot and calls the provider outside both transactions",
+            "discards advice when the current plan changes during inference",
+            "detects eligible-backlog changes even when plan identity stays unchanged",
+            "fails closed when the bounded aggregate context still exceeds 64 KiB",
+            "restricts version 1 to combined plan-and-backlog review",
+            "preserves exact request correlation and passes cancellation to the provider"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/local-model-advisor.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns disabled without opening a network connection",
+            "sends one fixed, schema-constrained, tool-free request to the immutable path",
+            "enforces an end-to-end timeout without retrying",
+            "returns only the validated contract and discards outer metadata",
+            "returns busy without opening another request and releases its permit in finally",
+            "aborts an in-flight request and releases the default concurrency permit"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "rejects DNS-rebinding and hostname-suffix tricks before product routing",
+            "returns read-only scheduling advice with exact dispatch and no-store caching",
+            "rejects scheduling-advice control fields and malformed scope before dispatch",
+            "maps scheduling snapshot conflicts to 409 without caching the error",
+            "sets no-store before advisor parsing, body limits, and rate limiting",
+            "aborts advisor work when the client closes the response early"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/TodayView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "keeps the plan visible while loading and restores focus after rendering advice",
+            "renders hostile model text literally and never creates model-supplied elements",
+            "refreshes the plan and discards advice after an advisor snapshot conflict",
+            "aborts and ignores late advice when a scheduling command changes the head"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/components/ui.test.tsx",
+          "command": "unit",
+          "anchors": ["remains disabled while busy even when disabled is explicitly false"]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/verify-local-model-advisor.test.ts",
+          "command": "unit",
+          "anchors": [
+            "requires explicit Ollama mode before constructing a live adapter",
+            "rejects unavailable, oversized, duplicate, and extended output",
+            "formats only the allowed safe diagnostics",
+            "runs the production adapter against a deterministic loopback Ollama response"
+          ]
+        }
+      ]
     },
     {
       "id": "hosted-authentication-and-sync",

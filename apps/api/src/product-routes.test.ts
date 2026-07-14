@@ -37,6 +37,7 @@ const planUuid = "44444444-4444-4444-8444-444444444444";
 const workItemUuid = "55555555-5555-4555-8555-555555555555";
 const scheduleBlockUuid = "66666666-6666-4666-8666-666666666666";
 const durationFeedbackUuid = "77777777-7777-4777-8777-777777777777";
+const adviceRequestUuid = "88888888-8888-4888-8888-888888888888";
 const durationInsightKey = "a".repeat(64);
 const workspace = createWorkspace({
   id: workspaceId(workspaceUuid),
@@ -301,6 +302,31 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
     },
     getDailyPlan: async (query) =>
       storedPlan?.requestRevision === query.requestRevision ? storedPlan : null,
+    getSchedulingAdvice: async (command) => ({
+      version: "schedule.advisor/v1",
+      requestId: command.requestId,
+      status: "unavailable",
+      reason: "disabled",
+      snapshot: {
+        date: command.date,
+        planId: command.expectedPlanId,
+        headVersion: command.expectedHeadVersion,
+      },
+      input: {
+        planItemCount: 0,
+        backlogCount: 0,
+        truncated: { planItems: false, backlog: false },
+      },
+      provenance: {
+        provider: "disabled",
+        model: null,
+        requestedAt: new Date("2026-07-15T12:00:00.000Z"),
+        completedAt: new Date("2026-07-15T12:00:00.000Z"),
+        latencyMs: 0,
+      },
+      summary: null,
+      suggestions: [],
+    }),
     ...overrides,
   };
   return { services };
@@ -334,6 +360,15 @@ describe("local product API", () => {
         error: { code: "request.host_not_allowed" },
       });
     }
+
+    const rejectedAdvisor = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/advisor/advice`,
+      headers: { host: "attacker.example" },
+      payload: {},
+    });
+    expect(rejectedAdvisor.statusCode).toBe(403);
+    expect(rejectedAdvisor.headers["cache-control"]).toBe("no-store");
 
     const health = await app.inject({
       method: "GET",
@@ -1487,6 +1522,376 @@ describe("local product API", () => {
     expect(absent.json()).toMatchObject({ error: { code: "plan.not_found" } });
     expect(conflict.statusCode).toBe(409);
     expect(conflict.json()).toMatchObject({ error: { code: "activity.idempotency_conflict" } });
+  });
+
+  it("returns read-only scheduling advice with exact dispatch and no-store caching", async () => {
+    const dispatched: unknown[] = [];
+    let dispatchedSignal: AbortSignal | undefined;
+    const app = await appWith(
+      createHarness({
+        getSchedulingAdvice: async (command, signal) => {
+          dispatched.push(command);
+          dispatchedSignal = signal;
+          return {
+            version: "schedule.advisor/v1",
+            requestId: command.requestId,
+            status: "available",
+            reason: null,
+            snapshot: {
+              date: command.date,
+              planId: command.expectedPlanId,
+              headVersion: command.expectedHeadVersion,
+            },
+            input: {
+              planItemCount: 1,
+              backlogCount: 2,
+              truncated: { planItems: false, backlog: false },
+            },
+            provenance: {
+              provider: "ollama",
+              model: "gemma4:e4b",
+              requestedAt: new Date("2026-07-15T12:00:00.000Z"),
+              completedAt: new Date("2026-07-15T12:00:00.250Z"),
+              latencyMs: 250,
+            },
+            summary: "Keep the first block focused.",
+            suggestions: [
+              {
+                id: "advice-1",
+                kind: "plan_observation",
+                targetType: null,
+                targetId: null,
+                title: "Protect the first block",
+                rationale: "It is the clearest uninterrupted window.",
+                confidence: "medium",
+              },
+            ],
+          };
+        },
+      }).services,
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/advisor/advice`,
+      payload: {
+        version: "schedule.advisor/v1",
+        requestId: adviceRequestUuid,
+        date: "2026-07-15",
+        focus: "both",
+        expectedPlanId: planUuid,
+        expectedHeadVersion: 3,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toMatchObject({
+      version: "schedule.advisor/v1",
+      requestId: adviceRequestUuid,
+      status: "available",
+      reason: null,
+      snapshot: { date: "2026-07-15", planId: planUuid, headVersion: 3 },
+      provenance: {
+        provider: "ollama",
+        model: "gemma4:e4b",
+        requestedAt: "2026-07-15T12:00:00.000Z",
+        completedAt: "2026-07-15T12:00:00.250Z",
+      },
+      suggestions: [{ kind: "plan_observation", targetType: null, targetId: null }],
+    });
+    expect(dispatched).toEqual([
+      {
+        version: "schedule.advisor/v1",
+        requestId: adviceRequestUuid,
+        workspaceId: workspaceUuid,
+        date: "2026-07-15",
+        focus: "both",
+        expectedPlanId: planUuid,
+        expectedHeadVersion: 3,
+      },
+    ]);
+    expect(dispatchedSignal).toBeInstanceOf(AbortSignal);
+    expect(dispatchedSignal?.aborted).toBe(false);
+  });
+
+  it("returns deterministic unavailable advice without caching it", async () => {
+    const app = await appWith(createHarness().services);
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/advisor/advice`,
+      payload: {
+        version: "schedule.advisor/v1",
+        requestId: adviceRequestUuid,
+        date: "2026-07-15",
+        focus: "both",
+        expectedPlanId: planUuid,
+        expectedHeadVersion: 1,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toMatchObject({
+      status: "unavailable",
+      reason: "disabled",
+      provenance: { provider: "disabled", model: null },
+      summary: null,
+      suggestions: [],
+    });
+  });
+
+  it("rejects scheduling-advice control fields and malformed scope before dispatch", async () => {
+    let calls = 0;
+    const app = await appWith(
+      createHarness({
+        getSchedulingAdvice: async () => {
+          calls += 1;
+          throw new Error("invalid requests must not reach the advisor service");
+        },
+      }).services,
+    );
+    const validPayload = {
+      version: "schedule.advisor/v1",
+      requestId: adviceRequestUuid,
+      date: "2026-07-15",
+      focus: "both",
+      expectedPlanId: planUuid,
+      expectedHeadVersion: 1,
+    };
+    const invalidRequests = [
+      { url: `/v1/workspaces/not-a-uuid/advisor/advice`, payload: validPayload },
+      {
+        url: `/v1/workspaces/${workspaceUuid}/advisor/advice`,
+        payload: { ...validPayload, requestId: "not-a-uuid" },
+      },
+      {
+        url: `/v1/workspaces/${workspaceUuid}/advisor/advice`,
+        payload: { ...validPayload, expectedPlanId: "not-a-uuid" },
+      },
+      {
+        url: `/v1/workspaces/${workspaceUuid}/advisor/advice`,
+        payload: { ...validPayload, date: "2026-02-30" },
+      },
+      {
+        url: `/v1/workspaces/${workspaceUuid}/advisor/advice`,
+        payload: { ...validPayload, expectedHeadVersion: 0 },
+      },
+      {
+        url: `/v1/workspaces/${workspaceUuid}/advisor/advice`,
+        payload: { ...validPayload, expectedHeadVersion: 2_147_483_648 },
+      },
+      {
+        url: `/v1/workspaces/${workspaceUuid}/advisor/advice`,
+        payload: { ...validPayload, version: "schedule.advisor/v2" },
+      },
+      {
+        url: `/v1/workspaces/${workspaceUuid}/advisor/advice`,
+        payload: { ...validPayload, focus: "everything" },
+      },
+      {
+        url: `/v1/workspaces/${workspaceUuid}/advisor/advice`,
+        payload: { ...validPayload, focus: "today" },
+      },
+      {
+        url: `/v1/workspaces/${workspaceUuid}/advisor/advice`,
+        payload: { ...validPayload, focus: "backlog" },
+      },
+    ];
+    for (const field of [
+      "prompt",
+      "model",
+      "url",
+      "options",
+      "tools",
+      "think",
+      "stream",
+      "extra",
+    ] as const) {
+      invalidRequests.push({
+        url: `/v1/workspaces/${workspaceUuid}/advisor/advice`,
+        payload: {
+          ...validPayload,
+          [field]:
+            field === "tools" ? [] : field === "think" || field === "stream" ? true : "untrusted",
+        },
+      });
+    }
+
+    for (const invalid of invalidRequests) {
+      const response = await app.inject({ method: "POST", ...invalid });
+      expect(response.statusCode).toBe(400);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.json()).toMatchObject({ error: { code: "request.validation_failed" } });
+    }
+    expect(calls).toBe(0);
+  });
+
+  it("maps scheduling snapshot conflicts to 409 without caching the error", async () => {
+    const app = await appWith(
+      createHarness({
+        getSchedulingAdvice: async () => {
+          throw new DomainError(
+            "advisor.snapshot_conflict",
+            "The scheduling context changed while advice was being prepared.",
+          );
+        },
+      }).services,
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/advisor/advice`,
+      payload: {
+        version: "schedule.advisor/v1",
+        requestId: adviceRequestUuid,
+        date: "2026-07-15",
+        focus: "both",
+        expectedPlanId: planUuid,
+        expectedHeadVersion: 2,
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toMatchObject({ error: { code: "advisor.snapshot_conflict" } });
+  });
+
+  it("sets no-store before advisor parsing, body limits, and rate limiting", async () => {
+    const validPayload = {
+      version: "schedule.advisor/v1",
+      requestId: adviceRequestUuid,
+      date: "2026-07-15",
+      focus: "both",
+      expectedPlanId: planUuid,
+      expectedHeadVersion: 1,
+    };
+    const rateLimitedApp = await buildApp({
+      productServices: createHarness().services,
+      productApiLimits: { requestsPerMinute: 1, maxConcurrentPlans: 1 },
+    });
+    apps.push(rateLimitedApp);
+    const advisorUrl = `/v1/workspaces/${workspaceUuid}/advisor/advice`;
+
+    const first = await rateLimitedApp.inject({
+      method: "POST",
+      url: advisorUrl,
+      payload: validPayload,
+    });
+    const throttled = await rateLimitedApp.inject({
+      method: "POST",
+      url: advisorUrl,
+      payload: validPayload,
+    });
+    expect(first.statusCode).toBe(200);
+    expect(throttled.statusCode).toBe(429);
+    expect(throttled.headers["cache-control"]).toBe("no-store");
+
+    const parsingApp = await appWith(createHarness().services);
+    const malformed = await parsingApp.inject({
+      method: "POST",
+      url: advisorUrl,
+      headers: { "content-type": "application/json" },
+      payload: "{",
+    });
+    expect(malformed.statusCode).toBe(400);
+    expect(malformed.headers["cache-control"]).toBe("no-store");
+
+    const oversized = await parsingApp.inject({
+      method: "POST",
+      url: advisorUrl,
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ ...validPayload, prompt: "x".repeat(300_000) }),
+    });
+    expect(oversized.statusCode).toBe(413);
+    expect(oversized.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("aborts advisor work when the client closes the response early", async () => {
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let markAborted: (() => void) | undefined;
+    const aborted = new Promise<void>((resolve) => {
+      markAborted = resolve;
+    });
+    const app = await appWith(
+      createHarness({
+        getSchedulingAdvice: async (command, signal) => {
+          markStarted?.();
+          await new Promise<void>((resolve, reject) => {
+            if (signal?.aborted === true) {
+              markAborted?.();
+              resolve();
+              return;
+            }
+            const timeout = setTimeout(
+              () => reject(new Error("The advisor request signal was not aborted.")),
+              2_000,
+            );
+            timeout.unref();
+            signal?.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timeout);
+                markAborted?.();
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          return {
+            version: "schedule.advisor/v1",
+            requestId: command.requestId,
+            status: "unavailable",
+            reason: "unreachable",
+            snapshot: {
+              date: command.date,
+              planId: command.expectedPlanId,
+              headVersion: command.expectedHeadVersion,
+            },
+            input: {
+              planItemCount: 0,
+              backlogCount: 0,
+              truncated: { planItems: false, backlog: false },
+            },
+            provenance: {
+              provider: "ollama",
+              model: "gemma4:e4b",
+              requestedAt: new Date("2026-07-15T12:00:00.000Z"),
+              completedAt: new Date("2026-07-15T12:00:00.001Z"),
+              latencyMs: 1,
+            },
+            summary: null,
+            suggestions: [],
+          };
+        },
+      }).services,
+    );
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (address === null || typeof address === "string") throw new Error("Expected a TCP address.");
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${String(address.port)}/v1/workspaces/${workspaceUuid}/advisor/advice`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          version: "schedule.advisor/v1",
+          requestId: adviceRequestUuid,
+          date: "2026-07-15",
+          focus: "both",
+          expectedPlanId: planUuid,
+          expectedHeadVersion: 1,
+        }),
+        signal: controller.signal,
+      },
+    ).catch(() => undefined);
+
+    await started;
+    controller.abort();
+    await request;
+    await aborted;
   });
 
   it("bounds local request volume and body size without affecting health routes", async () => {

@@ -185,6 +185,82 @@ incomplete, the error preserves the original failure, every compensation failure
 connection-enable commands. Do not drop any named database in that state; stop clients, inspect
 `pg_database`, and follow the printed commands in order.
 
+## Optional local-model advisor
+
+The advisor is disabled by default and is not required for planning, application startup, health, or
+readiness. Enabling it permits one explicit Today action to send a bounded plan-and-backlog snapshot
+to a local Ollama process. Keep Ollama bound to loopback: its local API has no Schedule credential or
+authentication layer, and this integration is not designed for a container hostname, LAN address,
+remote tunnel, or hosted endpoint.
+
+Install Ollama separately, make one allowlisted model available, and test it with Ollama's own CLI.
+The supported model names are exactly `gemma4:e2b`, `gemma4:e4b`, `gemma4:26b`, and `gemma4:31b`;
+the Schedule default is `gemma4:e4b`. Then set the API process environment and restart it:
+
+```dotenv
+LOCAL_MODEL_ADVISOR_MODE=ollama
+LOCAL_MODEL_ADVISOR_URL=http://127.0.0.1:11434
+LOCAL_MODEL_ADVISOR_MODEL=gemma4:e4b
+LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS=2000
+LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS=60000
+LOCAL_MODEL_ADVISOR_MAX_RESPONSE_BYTES=32768
+LOCAL_MODEL_ADVISOR_MAX_CONCURRENT=1
+```
+
+The URL is deliberately stricter than an ordinary URL field. Its raw value must be exactly
+`http://127.0.0.1:<port>` with a decimal port from 1 through 65,535: no trailing slash, DNS name,
+alternate numeric address, IPv6 literal, credentials, path, query, fragment, or HTTPS endpoint is
+accepted. Connection timeout is 100–10,000 ms; request timeout is 1,000–120,000 ms and must be at
+least the connection timeout; response capacity is 1,024–65,536 bytes; and concurrency is 1–4.
+A first cold model load can take materially longer than a warm request on the same machine. If an
+otherwise healthy local model exceeds the 60-second default, verify it directly with Ollama and then
+raise the request timeout only within the 120-second bound; do not remove the timeout or assume one
+observed load time applies to every model or host.
+
+Schedule makes one direct `/api/chat` request per explicit click and never follows redirects, uses a
+proxy, supplies tools, or retries automatically. It sends only the sanitized bounded context
+documented in [PRODUCT.md](./PRODUCT.md), requests structured output with thinking disabled, and
+discards raw provider envelopes and metadata. Schedule does not persist model prompts, responses, or
+advice. The visible advice remains browser-session state and has no Apply path. Model availability
+therefore must never be used as a durability, authentication, or planner-correctness dependency.
+
+With Ollama running and the configured model present, run the opt-in real-provider smoke check:
+
+```powershell
+$env:LOCAL_MODEL_ADVISOR_MODE = "ollama"
+$env:LOCAL_MODEL_ADVISOR_URL = "http://127.0.0.1:11434"
+$env:LOCAL_MODEL_ADVISOR_MODEL = "gemma4:e4b"
+pnpm verify:local-model-advisor
+```
+
+The verifier uses the production adapter with one deterministic synthetic plan item and one backlog
+item, checks that the adapter did not mutate its input, revalidates the strict output relationships,
+and, on success, prints only provider, model, latency, and suggestion count. A failed provider call
+prints only one fixed allowlisted unavailable reason; it never prints schedule or model-generated
+content. This manual command is separate from normal CI and must not be interpreted as a model-quality
+benchmark or a database/API end-to-end test. The CI suite uses deterministic loopback fakes to test
+the verifier, transport, and validation boundaries; it does not download, start, or invoke Ollama.
+
+Troubleshooting is intentionally fail-closed:
+
+- `disabled`: set `LOCAL_MODEL_ADVISOR_MODE=ollama` and restart the API only if local advice is
+  desired.
+- `unreachable`: confirm Ollama is listening on the exact configured loopback port and the model is
+  present; do not weaken the origin validation.
+- `timeout`: verify the model can answer locally, then adjust the bounded request timeout if the
+  machine needs more inference time. Schedule does not retry the request.
+- `busy`: wait for the active local review to finish or, after measuring host capacity, raise the
+  concurrency limit within its bound.
+- `provider_rejected`, `response_too_large`, `malformed_response`, or `invalid_advice`: inspect the
+  local Ollama service independently. Schedule deliberately exposes no raw response body or hidden
+  reasoning.
+- `409 advisor.snapshot_conflict`: the plan or eligible backlog changed during inference. Review the
+  refreshed Today state and click again only if another review is useful.
+
+Set `LOCAL_MODEL_ADVISOR_MODE=disabled` and restart the API for the kill switch. The advisor route
+then returns a safe unavailable result without opening a network connection; the rest of Schedule is
+unchanged.
+
 ## Outbound webhook operations
 
 Outbound webhook delivery is disabled by default. Provision its external encryption keyring and

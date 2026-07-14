@@ -13,6 +13,30 @@ const apiSchema = baseSchema.extend({
   API_PORT: z.coerce.number().int().min(1).max(65_535).default(4_000),
   API_TRUSTED_PROXIES: z.string().max(16_384).default(""),
   PRODUCT_API_MODE: z.enum(["disabled", "local_unauthenticated"]).optional(),
+  LOCAL_MODEL_ADVISOR_MODE: z.enum(["disabled", "ollama"]).default("disabled"),
+  LOCAL_MODEL_ADVISOR_URL: z.string().default("http://127.0.0.1:11434"),
+  LOCAL_MODEL_ADVISOR_MODEL: z
+    .enum(["gemma4:e2b", "gemma4:e4b", "gemma4:26b", "gemma4:31b"])
+    .default("gemma4:e4b"),
+  LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(10_000)
+    .default(2_000),
+  LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(120_000)
+    .default(60_000),
+  LOCAL_MODEL_ADVISOR_MAX_RESPONSE_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1_024)
+    .max(65_536)
+    .default(32_768),
+  LOCAL_MODEL_ADVISOR_MAX_CONCURRENT: z.coerce.number().int().min(1).max(4).default(1),
   INTEGRATION_API_MODE: z.enum(["disabled", "enabled"]).default("disabled"),
   INTEGRATION_API_PEPPER: z.string().optional(),
   INTEGRATION_CONFIRMATION_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(600),
@@ -194,11 +218,23 @@ function parseTrustedProxies(value: string): string[] {
   return normalized;
 }
 
+function parseLocalModelAdvisorUrl(value: string): string {
+  // Require one unambiguous, direct IPv4 loopback origin. In particular, do not
+  // allow DNS, URL credentials, redirects encoded as paths, or alternate IP forms.
+  const match = /^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})$/.exec(value);
+  const port = match?.[1] === undefined ? Number.NaN : Number(match[1]);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("LOCAL_MODEL_ADVISOR_URL must be a canonical http://127.0.0.1:<port> origin.");
+  }
+  return value;
+}
+
 export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): ApiConfig => {
   const parsed = apiSchema.parse(environment);
   const config: ApiConfig = {
     ...parsed,
     API_TRUSTED_PROXIES: parseTrustedProxies(parsed.API_TRUSTED_PROXIES),
+    LOCAL_MODEL_ADVISOR_URL: parseLocalModelAdvisorUrl(parsed.LOCAL_MODEL_ADVISOR_URL),
     PRODUCT_API_MODE:
       parsed.PRODUCT_API_MODE ??
       (parsed.NODE_ENV === "production" ? "disabled" : "local_unauthenticated"),
@@ -218,6 +254,13 @@ export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): Api
   ) {
     throw new Error(
       "INTEGRATION_API_PEPPER must contain at least 32 characters when the integration API is enabled.",
+    );
+  }
+  if (
+    config.LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS < config.LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS
+  ) {
+    throw new Error(
+      "LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS must be at least LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS.",
     );
   }
   return config;
