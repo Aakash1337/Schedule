@@ -6,6 +6,7 @@ import {
   createNotificationMaterializationDependencies,
   runNotificationMaterializationWorker,
 } from "./notification-materializer.js";
+import { runWorkerObservabilityServer, WorkerTelemetry } from "./observability.js";
 import { runWorkerRuntime, runWorkerServices, type WorkerService } from "./runtime.js";
 import {
   createDatabaseWebhookDeliveryHandler,
@@ -33,6 +34,7 @@ const dispatcher = new OutboxDispatcher(
     : new Map(),
 );
 const controller = new AbortController();
+const telemetry = new WorkerTelemetry();
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => controller.abort(signal));
@@ -42,6 +44,7 @@ const services: WorkerService[] = [
   (signal) =>
     runOutboxWorker(config, database, dispatcher, signal, {
       excludedTopics: config.WEBHOOK_DELIVERY_MODE === "disabled" ? [WEBHOOK_DELIVERY_TOPIC] : [],
+      telemetry,
     }),
 ];
 
@@ -49,7 +52,18 @@ if (config.NOTIFICATION_MATERIALIZATION_MODE === "enabled") {
   const dependencies = createNotificationMaterializationDependencies(
     new PostgresUnitOfWork(database),
   );
-  services.push((signal) => runNotificationMaterializationWorker(config, dependencies, signal));
+  services.push((signal) =>
+    runNotificationMaterializationWorker(config, dependencies, signal, undefined, telemetry),
+  );
+}
+
+if (config.WORKER_OBSERVABILITY_MODE === "loopback") {
+  services.push((signal) =>
+    runWorkerObservabilityServer(
+      { port: config.WORKER_OBSERVABILITY_PORT, database, telemetry },
+      signal,
+    ),
+  );
 }
 
 await runWorkerRuntime({

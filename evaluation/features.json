@@ -15,6 +15,7 @@
     "weekday-migrations": { "command": "pnpm verify:database", "ci": true },
     "notification-core": { "command": "pnpm verify:database", "ci": true },
     "notification-materializer": { "command": "pnpm verify:database", "ci": true },
+    "worker-observability": { "command": "pnpm verify:database", "ci": true },
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
     "notification-migrations": { "command": "pnpm verify:database", "ci": true },
     "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
@@ -1966,6 +1967,56 @@
           "command": "browser-e2e",
           "anchors": [
             "configures, materializes, audits, and responsively renders reminders through the live product"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "worker-operational-observability",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/OBSERVABILITY.md",
+        "anchor": "## Metric contract"
+      },
+      "limitations": [
+        "The listener is loopback-only and disabled by default; no scraper, time-series retention, hosted dashboard, or alert-delivery service is installed.",
+        "Process counters reset on worker restart, and this slice does not monitor future browser authentication or provider-specific transport."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/config/src/config.test.ts",
+          "command": "unit",
+          "anchors": ["enables only a bounded loopback worker observability port"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/observability.test.ts",
+          "command": "unit",
+          "anchors": [
+            "records fixed-cardinality counters and failure-free materialization timestamps",
+            "uses fixed metric names and no identifiers or labels",
+            "binds to loopback and serves bounded health, metrics, and method responses",
+            "keeps liveness up while readiness and database metrics fail safely"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/worker.test.ts",
+          "command": "unit",
+          "anchors": [
+            "claims one event immediately before dispatch and acknowledges its fencing token",
+            "retries a handler failure without acknowledging the event",
+            "logs a structured error when delivery reaches the dead letter state"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-worker-observability.ts",
+          "command": "worker-observability",
+          "anchors": [
+            "Worker observability verification passed loopback binding, health semantics, database queue gauges, retention-aware attempt gauges, fixed-cardinality metrics, redaction, database-failure signaling, and shutdown"
           ]
         }
       ]

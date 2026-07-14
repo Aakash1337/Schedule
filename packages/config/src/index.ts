@@ -50,6 +50,8 @@ const workerSchema = baseSchema.extend({
   OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
   OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(25),
   OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(8),
+  WORKER_OBSERVABILITY_MODE: z.enum(["disabled", "loopback"]).default("disabled"),
+  WORKER_OBSERVABILITY_PORT: z.coerce.number().int().min(1).max(65_535).default(9_464),
   NOTIFICATION_MATERIALIZATION_MODE: z.enum(["disabled", "enabled"]).default("disabled"),
   NOTIFICATION_MATERIALIZATION_INTERVAL_MS: z.coerce
     .number()

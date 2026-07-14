@@ -8,6 +8,8 @@ import {
 import type { WorkerConfig } from "@schedule/config";
 import { DomainError, type WorkspaceId } from "@schedule/domain";
 
+import type { NotificationMaterializationTelemetry } from "./observability.js";
+
 export const MAXIMUM_AUTOMATIC_MATERIALIZATION_WORKSPACES = 20;
 
 type NotificationMaterializationConfig = Pick<
@@ -51,6 +53,10 @@ export interface NotificationMaterializationCycleSummary {
 const defaultLogger: NotificationMaterializationLogger = {
   info: (entry) => console.info(JSON.stringify({ level: "info", ...entry })),
   error: (entry) => console.error(JSON.stringify({ level: "error", ...entry })),
+};
+
+const noOpTelemetry: NotificationMaterializationTelemetry = {
+  recordNotificationMaterializationCycle: () => undefined,
 };
 
 const sleep = (milliseconds: number, signal: AbortSignal): Promise<void> =>
@@ -115,9 +121,14 @@ export async function runNotificationMaterializationCycle(
   dependencies: NotificationMaterializationDependencies,
   signal: AbortSignal,
   logger: NotificationMaterializationLogger = defaultLogger,
+  telemetry: NotificationMaterializationTelemetry = noOpTelemetry,
 ): Promise<NotificationMaterializationCycleSummary> {
   if (config.NOTIFICATION_MATERIALIZATION_MODE === "disabled" || signal.aborted) {
-    return { ...initialSummary(), aborted: signal.aborted };
+    const summary = { ...initialSummary(), aborted: signal.aborted };
+    if (config.NOTIFICATION_MATERIALIZATION_MODE === "enabled") {
+      telemetry.recordNotificationMaterializationCycle(summary);
+    }
+    return summary;
   }
 
   const tickNow = validTickInstant(dependencies.clock);
@@ -136,6 +147,7 @@ export async function runNotificationMaterializationCycle(
       event: "notification_materialization_workspace_list_failed",
       failureClass: "workspace_list_error",
     });
+    telemetry.recordNotificationMaterializationCycle(summary);
     return summary;
   }
 
@@ -146,6 +158,7 @@ export async function runNotificationMaterializationCycle(
       failureClass: "local_installation_limit_violation",
       maximumWorkspaces: MAXIMUM_AUTOMATIC_MATERIALIZATION_WORKSPACES,
     });
+    telemetry.recordNotificationMaterializationCycle(summary);
     return summary;
   }
 
@@ -196,6 +209,7 @@ export async function runNotificationMaterializationCycle(
     suppressedCandidates: summary.suppressedCandidates,
     aborted: summary.aborted,
   });
+  telemetry.recordNotificationMaterializationCycle(summary);
   return summary;
 }
 
@@ -204,11 +218,12 @@ export async function runNotificationMaterializationWorker(
   dependencies: NotificationMaterializationDependencies,
   signal: AbortSignal,
   logger: NotificationMaterializationLogger = defaultLogger,
+  telemetry: NotificationMaterializationTelemetry = noOpTelemetry,
 ): Promise<void> {
   if (config.NOTIFICATION_MATERIALIZATION_MODE === "disabled") return;
 
   while (!signal.aborted) {
-    await runNotificationMaterializationCycle(config, dependencies, signal, logger);
+    await runNotificationMaterializationCycle(config, dependencies, signal, logger, telemetry);
     if (!signal.aborted) {
       await sleep(config.NOTIFICATION_MATERIALIZATION_INTERVAL_MS, signal);
     }

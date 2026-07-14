@@ -236,6 +236,11 @@ proves bounded workspace discovery, catch-up acceptance and suppression boundari
 unconfigured-workspace skip, concurrent exact-once materialization, a recreated-pool restart replay,
 safe count-only logs, and no outbox or delivery-command side effect.
 
+Optional worker health and fixed-cardinality reminder/outbox metrics are documented in
+[Worker observability](./OBSERVABILITY.md). They aggregate current intent/command state and durable
+receipt classifications without titles, occurrence keys, workspace IDs, or provider data. They do
+not deliver a reminder or prove that an adapter reached a phone.
+
 ## Automatic local materialization
 
 The worker controls are independent of webhook transport:

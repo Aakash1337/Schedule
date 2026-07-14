@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
     OUTBOX_POLL_INTERVAL_MS: 1_000,
     OUTBOX_BATCH_SIZE: 25,
     OUTBOX_MAX_ATTEMPTS: 3,
+    WORKER_OBSERVABILITY_MODE: "disabled" as "disabled" | "loopback",
+    WORKER_OBSERVABILITY_PORT: 9_464,
     NOTIFICATION_MATERIALIZATION_MODE: "disabled" as "disabled" | "enabled",
     NOTIFICATION_MATERIALIZATION_INTERVAL_MS: 60_000,
     NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS: 300_000,
@@ -27,6 +29,11 @@ const mocks = vi.hoisted(() => ({
   notificationDependencies: {},
   createNotificationMaterializationDependencies: vi.fn(() => mocks.notificationDependencies),
   runNotificationMaterializationWorker: vi.fn(async () => undefined),
+  telemetry: {},
+  WorkerTelemetry: vi.fn(function () {
+    return mocks.telemetry;
+  }),
+  runWorkerObservabilityServer: vi.fn(async () => undefined),
   runOutboxWorker: vi.fn(async () => undefined),
   runWorkerServices: vi.fn(
     async (services: readonly ((signal: AbortSignal) => Promise<void>)[]) => {
@@ -52,6 +59,10 @@ vi.mock("./notification-materializer.js", () => ({
     mocks.createNotificationMaterializationDependencies,
   runNotificationMaterializationWorker: mocks.runNotificationMaterializationWorker,
 }));
+vi.mock("./observability.js", () => ({
+  WorkerTelemetry: mocks.WorkerTelemetry,
+  runWorkerObservabilityServer: mocks.runWorkerObservabilityServer,
+}));
 vi.mock("./runtime.js", () => ({
   runWorkerRuntime: mocks.runWorkerRuntime,
   runWorkerServices: mocks.runWorkerServices,
@@ -65,6 +76,7 @@ describe("worker entrypoint", () => {
     vi.resetModules();
     mocks.config.WEBHOOK_DELIVERY_MODE = "disabled";
     mocks.config.NOTIFICATION_MATERIALIZATION_MODE = "disabled";
+    mocks.config.WORKER_OBSERVABILITY_MODE = "disabled";
   });
 
   it("wires signals, runs the worker, and closes its database", async () => {
@@ -82,10 +94,12 @@ describe("worker entrypoint", () => {
     expect(dispatcher.handlers.has("webhook.delivery.v1")).toBe(false);
     expect(mocks.runOutboxWorker.mock.calls[0]?.[4]).toEqual({
       excludedTopics: ["webhook.delivery.v1"],
+      telemetry: mocks.telemetry,
     });
     expect(mocks.database.close).toHaveBeenCalledTimes(1);
     expect(mocks.createNotificationMaterializationDependencies).not.toHaveBeenCalled();
     expect(mocks.runNotificationMaterializationWorker).not.toHaveBeenCalled();
+    expect(mocks.runWorkerObservabilityServer).not.toHaveBeenCalled();
   });
 
   it("starts automatic materialization only when explicitly enabled", async () => {
@@ -101,6 +115,8 @@ describe("worker entrypoint", () => {
       mocks.config,
       mocks.notificationDependencies,
       expect.any(AbortSignal),
+      undefined,
+      mocks.telemetry,
     );
     expect(mocks.runOutboxWorker).toHaveBeenCalledTimes(1);
     expect(mocks.database.close).toHaveBeenCalledTimes(1);
@@ -116,6 +132,21 @@ describe("worker entrypoint", () => {
       handlers: ReadonlyMap<string, unknown>;
     };
     expect(dispatcher.handlers.has("webhook.delivery.v1")).toBe(true);
-    expect(mocks.runOutboxWorker.mock.calls.at(-1)?.[4]).toEqual({ excludedTopics: [] });
+    expect(mocks.runOutboxWorker.mock.calls.at(-1)?.[4]).toEqual({
+      excludedTopics: [],
+      telemetry: mocks.telemetry,
+    });
+  });
+
+  it("starts loopback observability only when explicitly enabled", async () => {
+    mocks.config.WORKER_OBSERVABILITY_MODE = "loopback";
+    mocks.config.WORKER_OBSERVABILITY_PORT = 10_001;
+
+    await import("./index.js");
+
+    expect(mocks.runWorkerObservabilityServer).toHaveBeenCalledWith(
+      { port: 10_001, database: mocks.database, telemetry: mocks.telemetry },
+      expect.any(AbortSignal),
+    );
   });
 });

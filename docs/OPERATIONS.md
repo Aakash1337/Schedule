@@ -378,6 +378,11 @@ deferred. A successful webhook test or invalidation delivery does not imply thos
 
 ## Deterministic reminder operations
 
+Worker liveness, readiness, aggregate queue gauges, materialization counters, and initial alert
+guidance are specified in [Worker observability](./OBSERVABILITY.md). The surface is disabled by
+default, binds only to `127.0.0.1`, and deliberately exposes no workspace, content, destination, or
+provider labels.
+
 Migration `0024` adds `notification_profiles`, `notification_rules`, `one_off_reminders`, and
 `notification_intents`. The delivery migration adds `notification_delivery_commands`,
 `notification_delivery_attempts`, and `notification_delivery_requests`. All seven tables are part

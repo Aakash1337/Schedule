@@ -9,6 +9,8 @@ authenticated automation boundary is in
 the [integration gateway guide](./docs/INTEGRATIONS.md). Local data protection and recovery
 procedures are in the [operations guide](./docs/OPERATIONS.md). Behavioral confidence and known test
 limitations are tracked in the [evaluation guide](./docs/EVALUATION.md).
+The optional loopback worker health and metrics contract is in
+[docs/OBSERVABILITY.md](./docs/OBSERVABILITY.md).
 The local model's explicit, review-before-write capture contract is documented in
 [docs/NATURAL_LANGUAGE.md](./docs/NATURAL_LANGUAGE.md).
 
@@ -74,6 +76,10 @@ local worker can also materialize intents periodically with bounded catch-up and
 Schedule still performs no provider transport and never stores provider, recipient, account,
 conversation, or raw receipt data.
 
+The worker can optionally expose loopback-only liveness, database readiness, and fixed-cardinality
+Prometheus text metrics for outbox, reminder materialization, and provider-neutral delivery queues.
+The surface is disabled by default and contains no task/reminder content or dynamic identifiers.
+
 `WorkItem` represents intent and workflow state. `ScheduleBlock` represents reserved time and may
 optionally reference a work item. Their lifecycles remain independent.
 
@@ -116,6 +122,8 @@ provider/account binding, and the Hermes/WhatsApp transport are not part of this
 local intent materialization is available but disabled by default; set
 `NOTIFICATION_MATERIALIZATION_MODE=enabled` only after reminder policy is configured. This does not
 enable delivery. The least-privilege claim/receipt gateway is implemented for an external adapter.
+Set `WORKER_OBSERVABILITY_MODE=loopback` to expose worker diagnostics only on `127.0.0.1:9464`;
+this is independent from both materialization and delivery enablement.
 
 ## Verification
 

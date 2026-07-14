@@ -434,6 +434,11 @@ The audit deliberately leaves these visible instead of turning them into false g
   graceful shutdown waits for that transaction because the use case has no cancellation signal. It
   also has no external provider/account binding, shared adapter dedupe store, or dead-letter redrive
   control;
+- worker observability has unit and disposable-PostgreSQL evidence for loopback-only binding,
+  liveness/readiness separation, fixed-cardinality Prometheus text, live outbox/reminder queue
+  aggregates, materialization/outbox instrumentation, private-data exclusion, database-failure
+  `NaN` semantics, and graceful shutdown. It does not install a scraper, persist time-series data,
+  deliver alerts, expose a hosted dashboard, or monitor future browser authentication;
 - eight live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a

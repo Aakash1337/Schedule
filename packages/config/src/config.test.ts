@@ -174,6 +174,8 @@ describe("runtime configuration", () => {
 
   it("keeps outbound webhook delivery disabled with an immutable empty keyring by default", () => {
     const config = loadWorkerConfig({});
+    expect(config.WORKER_OBSERVABILITY_MODE).toBe("disabled");
+    expect(config.WORKER_OBSERVABILITY_PORT).toBe(9_464);
     expect(config.NOTIFICATION_MATERIALIZATION_MODE).toBe("disabled");
     expect(config.NOTIFICATION_MATERIALIZATION_INTERVAL_MS).toBe(60_000);
     expect(config.NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS).toBe(300_000);
@@ -188,6 +190,18 @@ describe("runtime configuration", () => {
     expect(config.WEBHOOK_MAX_DELIVERY_AGE_MS).toBe(604_800_000);
     expect(Object.isFrozen(config.WEBHOOK_MASTER_KEYS)).toBe(true);
     expect(Object.isFrozen(config.WEBHOOK_MASTER_KEYS_BY_ID)).toBe(true);
+  });
+
+  it("enables only a bounded loopback worker observability port", () => {
+    const config = loadWorkerConfig({
+      WORKER_OBSERVABILITY_MODE: "loopback",
+      WORKER_OBSERVABILITY_PORT: "10001",
+    });
+    expect(config.WORKER_OBSERVABILITY_MODE).toBe("loopback");
+    expect(config.WORKER_OBSERVABILITY_PORT).toBe(10_001);
+    expect(() => loadWorkerConfig({ WORKER_OBSERVABILITY_PORT: "0" })).toThrow();
+    expect(() => loadWorkerConfig({ WORKER_OBSERVABILITY_PORT: "65536" })).toThrow();
+    expect(() => loadWorkerConfig({ WORKER_OBSERVABILITY_MODE: "public" })).toThrow();
   });
 
   it("coerces bounded automatic notification materialization controls", () => {

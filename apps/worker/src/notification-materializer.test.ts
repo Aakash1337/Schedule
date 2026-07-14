@@ -186,12 +186,14 @@ describe("automatic notification materialization", () => {
       return emptyResult;
     });
     const logs = loggerHarness();
+    const telemetry = { recordNotificationMaterializationCycle: vi.fn() };
 
     const summary = await runNotificationMaterializationCycle(
       enabledConfig,
       dependencies({ listWorkspaces, materialize }),
       new AbortController().signal,
       logs.logger,
+      telemetry,
     );
 
     expect(materialize).toHaveBeenCalledTimes(20);
@@ -217,6 +219,7 @@ describe("automatic notification materialization", () => {
         selectedWorkspaces: 20,
       }),
     ]);
+    expect(telemetry.recordNotificationMaterializationCycle).toHaveBeenCalledWith(summary);
   });
 
   it("fails a tick closed when persisted workspaces violate the local installation limit", async () => {

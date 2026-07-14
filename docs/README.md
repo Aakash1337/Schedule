@@ -18,6 +18,8 @@ Durable product and engineering specifications live here so the repository root 
 - [Local web application](./WEB.md): interface architecture, local runtime, reminder management,
   and interaction contract.
 - [Local operations](./OPERATIONS.md): verified backup, staged restore, automated recovery state-machine checks, and database maintenance.
+- [Worker observability](./OBSERVABILITY.md): loopback health, fixed-cardinality metrics, privacy
+  boundaries, queue signals, alert guidance, and verification.
 - [Evaluation and test evidence](./EVALUATION.md): feature traceability, behavioral gates, coverage floors, planner metrics, and known evidence gaps.
 
 The root [README](../README.md) remains the installation and repository entry point.

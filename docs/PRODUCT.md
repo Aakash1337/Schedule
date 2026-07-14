@@ -555,6 +555,11 @@ Current executable evidence, coverage floors, planner contract metrics, and know
 maintained in [EVALUATION.md](./EVALUATION.md). Feature evidence is CI-gated; production outcome
 metrics remain non-gating until real local usage provides a defined denominator and sufficient sample.
 
+Separately, the local worker has an opt-in loopback operational surface for liveness, database
+readiness, outbox/reminder queue age and state, and fixed-cardinality failure counters. It contains
+no task content or tenant/provider labels and does not treat operational throughput as productivity.
+See [Worker observability](./OBSERVABILITY.md).
+
 Success is not simply "more tasks completed." Useful measures include realistic plans, sustainable cadence attainment, low duration error, fewer unwanted regenerations, and continued user control.
 
 ## 15. Important edge cases
