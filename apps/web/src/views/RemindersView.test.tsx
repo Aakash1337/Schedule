@@ -339,12 +339,12 @@ describe("RemindersView", () => {
   });
 
   it("rejects blank enabled quiet-hour times before an API request", async () => {
-    const user = userEvent.setup();
     render(<RemindersView workspace={workspace} onNavigate={vi.fn()} />);
 
     await screen.findByRole("heading", { name: "Policy and quiet hours" });
     const quietStart = screen.getByLabelText("Quiet hours start");
-    await user.clear(quietStart);
+    fireEvent.change(quietStart, { target: { value: "" } });
+    await waitFor(() => expect(quietStart).toHaveAttribute("aria-invalid", "true"));
     const form = quietStart.closest("form");
     if (form === null) throw new Error("Profile form was not rendered.");
     fireEvent.submit(form);
