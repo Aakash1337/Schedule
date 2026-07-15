@@ -89,6 +89,9 @@ describe("DailyPlanAlternatives", () => {
       activityEvents: {
         listForPlanning: async () => [],
       } as TransactionContext["activityEvents"],
+      routineSelectionPreferenceFeedback: {
+        listForPlanning: async () => [],
+      } as TransactionContext["routineSelectionPreferenceFeedback"],
       dailyPlans: {
         lockDay: async () => undefined,
         findCurrent: async () => ({ plan: current, headVersion }),

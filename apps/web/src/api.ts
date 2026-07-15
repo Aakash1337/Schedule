@@ -23,6 +23,8 @@ import type {
   RoutineDurationInsight,
   RoutineDurationInsightFeedback,
   RoutinePlanningFeedbackSuppressionKind,
+  RoutineSelectionPreferenceKind,
+  RoutineSelectionPreferenceState,
   RoutineStatus,
   ScheduleBlock,
   SchedulingAdviceResult,
@@ -413,6 +415,46 @@ export const api = {
     request<Routine>(
       workspacePath(workspaceId, `/routines/${encodeURIComponent(routineId)}`),
       signal === undefined ? {} : { signal },
+    ),
+
+  getRoutineSelectionPreference: (
+    workspaceId: string,
+    routineId: string,
+    timeZone: string,
+    signal?: AbortSignal,
+  ) =>
+    request<RoutineSelectionPreferenceState>(
+      queryPath(
+        workspacePath(
+          workspaceId,
+          `/routines/${encodeURIComponent(routineId)}/selection-preference`,
+        ),
+        { timeZone },
+      ),
+      signal === undefined ? {} : { signal },
+    ),
+
+  recordRoutineSelectionPreference: (
+    workspaceId: string,
+    routineId: string,
+    input: {
+      readonly kind: RoutineSelectionPreferenceKind;
+      readonly expectedFeedbackVersion: number;
+      readonly timeZone: string;
+      readonly sourcePlanId?: string | null;
+      readonly sourcePlanItemId?: string | null;
+    },
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ) =>
+    request<RoutineSelectionPreferenceState>(
+      workspacePath(workspaceId, `/routines/${encodeURIComponent(routineId)}/selection-preference`),
+      {
+        method: "POST",
+        json: input,
+        idempotencyKey,
+        ...(signal === undefined ? {} : { signal }),
+      },
     ),
 
   getDailyPlanFitInsight: (workspaceId: string, forDate: string, signal?: AbortSignal) =>

@@ -17,6 +17,7 @@ import type {
   RoutineDurationInsightFeedback,
   RoutineId,
   RoutinePlanningFeedback,
+  RoutineSelectionPreferenceFeedback,
   RoutineStatus,
   PlanItemId,
   PlanItemActivityState,
@@ -361,6 +362,54 @@ export interface DailyPlanFitInsightFeedbackRepository {
   append(feedback: DailyPlanFitInsightFeedback): Promise<DailyPlanFitInsightFeedback>;
 }
 
+/**
+ * Append-only routine ranking preferences. The routine-local version is a
+ * separate fence so preference commands never mutate routine policy or a
+ * current daily plan.
+ */
+export interface RoutineSelectionPreferenceFeedbackReceipt {
+  readonly feedback: RoutineSelectionPreferenceFeedback;
+  readonly feedbackVersion: number;
+}
+
+export interface RoutineSelectionPreferenceFeedbackState {
+  readonly feedbackVersion: number;
+  readonly updatedAt: Date | null;
+}
+
+export interface RoutineSelectionPreferenceFeedbackRepository {
+  /** Serializes one workspace-scoped idempotency identity across routine streams. */
+  lockIdempotencyKey(workspaceId: WorkspaceId, idempotencyKey: string): Promise<void>;
+  findCurrentState(
+    workspaceId: WorkspaceId,
+    routineId: RoutineId,
+  ): Promise<RoutineSelectionPreferenceFeedbackState | null>;
+  findByIdempotencyKey(
+    workspaceId: WorkspaceId,
+    idempotencyKey: string,
+  ): Promise<RoutineSelectionPreferenceFeedbackReceipt | null>;
+  /** Takes the routine-local preference lock and returns its current version. */
+  lockAndGetCurrentVersion(workspaceId: WorkspaceId, routineId: RoutineId): Promise<number>;
+  /** Loads the bounded canonical event input for the provided planner candidates. */
+  listForPlanning(
+    workspaceId: WorkspaceId,
+    routineIds: readonly RoutineId[],
+    throughDate: LocalDate,
+  ): Promise<readonly RoutineSelectionPreferenceFeedback[]>;
+  /** Reconstructs the bounded stream exactly as it stood at an accepted mutation version. */
+  listForPlanningThroughVersion(
+    workspaceId: WorkspaceId,
+    routineId: RoutineId,
+    throughDate: LocalDate,
+    throughFeedbackVersion: number,
+  ): Promise<readonly RoutineSelectionPreferenceFeedback[]>;
+  /** Appends exactly one event and advances the routine-local version atomically. */
+  appendAndAdvance(
+    feedback: RoutineSelectionPreferenceFeedback,
+    expectedFeedbackVersion: number,
+  ): Promise<RoutineSelectionPreferenceFeedbackReceipt>;
+}
+
 export interface DailyPlanRepository {
   findById(workspaceId: WorkspaceId, id: DailyPlan["id"]): Promise<DailyPlan | null>;
   findByRevision(
@@ -418,6 +467,7 @@ export interface TransactionContext {
   readonly activityEvents: ActivityEventRepository;
   readonly routineDurationInsightFeedback: RoutineDurationInsightFeedbackRepository;
   readonly dailyPlanFitInsightFeedback: DailyPlanFitInsightFeedbackRepository;
+  readonly routineSelectionPreferenceFeedback: RoutineSelectionPreferenceFeedbackRepository;
   readonly dailyPlans: DailyPlanRepository;
   readonly notifications: NotificationRepository;
 }

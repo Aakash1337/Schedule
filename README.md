@@ -40,6 +40,11 @@ without writing anything. Choosing one is explicit, optimistic, and idempotent: 
 the opaque candidate under the day lock, preserves locked nonterminal work, rejects stale choices,
 and stores one immutable next revision.
 
+Routines also have explicit **More often**, **Less often**, and **Reset preference** controls. Each
+choice appends a reversible, version-fenced ranking event for future plans. The bounded score is
+visible in planner explanations; it never changes cadence, eligibility, duration, activity history,
+or the current Today plan.
+
 Routine details also expose a transparent duration-calibration insight. After three completed
 sessions in the trailing 90 days, Schedule compares the routine's configured estimate with the
 observed median, applies recorded corrections, excludes reversed completions, and offers a

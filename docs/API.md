@@ -14,7 +14,7 @@ not authorize these product routes.
 - CORS is disabled, JSON bodies are limited to 256 KiB, request objects reject unknown fields, and error responses do not include stack traces.
 - Product routes reject missing, malformed, or non-loopback `Host` authorities before routing. This protects the unauthenticated loopback service from browser DNS-rebinding attacks; `localhost`, IPv4 `127.0.0.0/8`, and IPv6 loopback (`[::1]`) are accepted with an optional valid port. Health and system-information endpoints remain outside this product-route guard for local process and container diagnostics.
 - Accepted UUID values in product-route paths and bodies are canonicalized to lowercase before service dispatch and identity comparison; responses therefore use the canonical spelling.
-- Product routes are limited to 240 requests per minute per source address and two concurrent plan generations per API process.
+- Product routes are limited to `PRODUCT_RATE_LIMIT_PER_MINUTE` requests per minute per source address (240 by default; bounded from 1 through 10,000) and two concurrent plan generations per API process.
 - The optional advisor is independently disabled by default. When enabled, its adapter accepts only
   one exact raw `http://127.0.0.1:<port>` Ollama origin and an allowlisted local Gemma model; it does
   not use DNS, redirects, proxies, tools, or credentials.
@@ -67,6 +67,8 @@ not authorize these product routes.
 | `GET`    | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`                       | List a bounded routine page (`200`)                    |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Retrieve one routine (`200` or `404`)                  |
 | `PATCH`  | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Version-checked partial update (`200` or `409`)        |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/selection-preference?timeZone={iana}`       | Read explicit future-plan preference state             |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/selection-preference`                       | Append a versioned future-plan preference              |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight`                           | Derive a read-only insight (`200` or `404`)            |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/approve`                   | Atomically approve an insight (`200` or `409`)         |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissals`                | Dismiss one exact insight (`200` or `409`)             |
@@ -218,6 +220,23 @@ the integration bearer-token boundary, the explicit `schedule:delivery` scope, J
 [INTEGRATIONS.md](./INTEGRATIONS.md#reminder-delivery) for the wire contract and adapter obligations.
 
 Routine updates require `expectedVersion`. Scalar fields are partial; if `tags`, `duration`, or `cadence` is supplied, that nested object is a complete replacement. A real change increments the routine version once. A semantic no-op returns the current routine without writing or incrementing its version. A stale version returns `409 routine.version_conflict`. The update takes the same per-routine advisory lock used by activity and duration-insight commands, then reloads and saves under read committed so a manual edit cannot race an approval, dismissal, reset, or evidence append. This generic `PATCH` is still the manual editing path; it does not assert that a duration-insight suggestion is current.
+
+Routine selection preference is a separate append-only stream. `GET .../selection-preference`
+requires an explicit IANA `timeZone` and returns only `routineId`, `feedbackVersion`,
+`activeEventCount`, bounded `score`, human-readable `reason`, and nullable `updatedAt`. The active
+count distinguishes a quiet untouched/reset state from directional events that currently cancel to
+a zero score. Version 0 has count and score 0, no reason, and no update time.
+
+`POST .../selection-preference` requires an `Idempotency-Key` header and a strict body containing
+`kind` (`more_often`, `less_often`, or `reset`), non-negative `expectedFeedbackVersion`, and
+`timeZone`. Optional nullable `sourcePlanId` and `sourcePlanItemId` preserve Today provenance; a
+source item requires its source plan, and reset cannot identify an item. Success returns the same
+public projection accepted by that mutation; a concurrent later instruction cannot change its
+response. Exact retries replay that projection without advancing. Source provenance is validated
+against the same workspace and routine. Semantic key reuse or a stale preference version returns
+`409`; nonexistent provenance returns `404`. Each routine has a finite 1,000-event append-only
+history, after which new instructions return `422`. The command never edits the routine or current
+plan. A later explicit generation or regeneration is a new planning run and may consume the signal.
 
 The routine `duration-insight` route is a read-only calculation over same-workspace, same-routine
 activity. It considers completed sessions whose occurrence lies in the inclusive interval from

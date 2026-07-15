@@ -151,7 +151,7 @@ interface behavior. Domain tests cover tenant-scoped edge construction, self-ref
 validation, mixed-case equality for persisted PostgreSQL UUIDs without folding arbitrary domain IDs,
 done-only satisfaction across every direct prerequisite, canonical ordering and snapshot hashing,
 prerequisite projections outside the candidate list, malformed and duplicate input, and dependency-
-aware replanning with explicit nonterminal anchors. Planner v5 reports
+aware replanning with explicit nonterminal anchors. Planner v6 reports
 `work_item_dependency_unsatisfied` without changing work-item status or deadline scoring.
 
 Application tests cover graph-lock call ordering, same-tenant endpoint validation, exact duplicate-add
@@ -225,6 +225,34 @@ proves the routine row
 and activity count do not change and PostgreSQL rejects direct feedback updates or deletes. The live
 Chromium flow applies **Not today**, verifies the hidden state survives reload, resets it, observes
 the routine return pending, and then continues through persisted activity and reversal behavior.
+
+### Explicit routine-selection-preference evidence
+
+This ranking signal has independent domain, command, persistence, transport, and planner oracles.
+Domain tests cover optional but internally consistent provenance, tenant and future filtering, the
+inclusive 90-local-day boundary, latest-reset behavior, the eight-event cap, input-order invariance,
+score clamping, duplicate-ID rejection, and canonical snapshot/hash neutrality for discarded
+history. Planner tests require the score to affect only its target routine, preserve eligibility,
+cadence, duration, and work-item scoring, and survive residual replanning.
+
+Application tests cover the independent version-0 state, one-step advancement, exact historical
+projection replay after newer events, semantic idempotency conflicts, stale versions, source-plan
+validation, the finite 1,000-event routine capacity, and the post-lock replay check. A workspace/key
+advisory lock closes the concurrent same-key race even when callers target different routines.
+Repository loading ranks and bounds rows per routine rather than applying one workspace-wide limit.
+The migration enforces tenant-bound optional plan/item provenance, unique routine versions,
+workspace-scoped idempotency, non-negative routine heads, a deliberately short sequence name, and
+an append-only update/delete trigger. The backup/restore verifier requires that table and sequence
+in a complete round trip.
+
+API tests require strict GET and POST objects, an explicit IANA time-zone input, a bounded
+`Idempotency-Key`, public-state-only causally stable mutation responses, and `409` conflict mapping.
+The fresh-PostgreSQL planner verifier applies every migration, proves exact replay, bad-provenance
+rollback, and stale rejection, checks that the current plan identity/hash/item state remains
+unchanged, observes the visible score in a later plan, and verifies that direct event updates fail
+with SQLSTATE `55000`. Live Chromium records more and less feedback, preserves the net-zero stream's
+clear action, resets and reloads it, checks 44px controls and 320px overflow, and proves no Today plan
+was created by the preference commands.
 
 ### Duration-calibration evidence
 

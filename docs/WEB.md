@@ -145,6 +145,26 @@ directs the user to the newer plan rather than claiming the unchanged older revi
 After a successful suppression removes the initiating control, keyboard focus moves to the newly
 rendered Undo action; reloads and ordinary plan changes do not steal focus.
 
+## Explicit future-plan preference
+
+The selected routine detail exposes a separate **Future selection** control with **More often**,
+**Less often**, and **Clear preference** actions. This surface is intentionally in Routines rather
+than Today: Today already owns temporary **Not today** and **Not this week** instructions, and mixing
+future ranking into those item actions would blur two different intents.
+
+The browser loads the routine's independent preference version in its explicit IANA time zone. Each
+directional action appends one bounded score step and announces: “Saved for future plans. Today’s
+plan was not changed.” A directional score and server explanation remain visible. An untouched or
+reset state stays quiet. When recent directional events cancel to zero, the UI shows **Neutral · 0**
+and retains **Clear preference**, because later event expiry could otherwise make that history
+directional again. The API's `activeEventCount` distinguishes this state from a true reset.
+
+Only this control group is busy during a write. Ambiguous transport retry reuses the exact command
+identity. A `409` discards that identity, reloads authoritative state, requires a fresh choice, and
+restores focus to the section heading. Workspace/routine changes abort or ignore stale reads and
+writes. At 320px actions stack with 44px minimum targets; routine titles and server reasons render as
+literal text.
+
 ## Reminder interaction
 
 A workspace without a notification profile opens an explicit setup form. The browser may prefill its
@@ -310,23 +330,27 @@ plan; apply **Not today**, verify the separate hidden state survives reload, res
 routine returns pending; then complete and reverse work, complete the routine, reload, and confirm
 that activity persists. It asserts successful feedback and reset HTTP responses and does not
 intercept network requests or replace the API with mocks. A second scenario persists a work-item due
-date and exposes its deadline pressure through live planning. A third creates completion evidence,
+date and exposes its deadline pressure through live planning. A dedicated 320px preference scenario
+records **More often**, reloads, records **Less often**, preserves the net-zero clear action, resets
+and reloads it, verifies 44px targets and horizontal fit, and proves no Today plan was created.
+Another scenario creates completion evidence,
 dismisses and reloads an exact duration insight, resets it, dismisses it again, then appends changed
-evidence and expects the new key to resurface as available. The fourth runs the Work board at 320px,
+evidence and expects the new key to resurface as available. A scenario runs the Work board at 320px,
 keyboard-adds a done prerequisite, reloads it, removes it, reloads its absence, and asserts focus,
-44px targets, horizontal fit, unchanged workflow status, and clean page/network results. A fifth
+44px targets, horizontal fit, unchanged workflow status, and clean page/network results. Another
 mobile Work scenario creates, completes, reloads, detaches, and reparents a subtask; proves the
 parent is excluded while the leaf enters Today; expands overflow children; and verifies 44px targets
 and horizontal fit. Duration-
 calibration approval has component and API/PostgreSQL evidence but is not yet part of a browser
-scenario. A sixth creates reminder policy, edits a rule, creates a one-off, explicitly materializes
+scenario. A reminder scenario creates policy, edits a rule, creates a one-off, explicitly materializes
 intents, inserts an execution fixture through the isolated PostgreSQL test boundary, and verifies the
-real product-safe history route and UI at desktop and 320px without request interception. A seventh
+real product-safe history route and UI at desktop and 320px without request interception. Another
 prepares one title through a strict loopback Ollama double, proves no card exists before confirmation,
-edits and confirms through the real API, verifies focus, and reloads the persisted backlog item. An
-eighth creates three fully resolved historical plans, observes a joint 90-minute/two-task suggestion,
+edits and confirms through the real API, verifies focus, and reloads the persisted backlog item. A
+Daily Plan Fit scenario creates three fully resolved historical plans, observes a joint 90-minute/two-task suggestion,
 dismisses and restores its exact key, copies both targets without creating a plan, and then generates
-only through the explicit form submission.
+only through the explicit form submission. The alternatives scenario compares deterministic choices,
+selects one exactly once, reloads it, and rejects a stale selection.
 
 Install the local browser binary once, then run the bounded verifier:
 

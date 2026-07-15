@@ -45,6 +45,8 @@ import {
   routineDurationInsightFeedbackKind,
   routinePlanningFeedbackEvents,
   routinePlanningFeedbackKind,
+  routineSelectionPreferenceFeedbackEvents,
+  routineSelectionPreferenceFeedbackKind,
   routines,
   scheduleBlocks,
   workItemDependencies,
@@ -80,6 +82,9 @@ describe("database schema", () => {
       "routine_duration_insight_feedback_events",
     );
     expect(getTableName(routinePlanningFeedbackEvents)).toBe("routine_planning_feedback_events");
+    expect(getTableName(routineSelectionPreferenceFeedbackEvents)).toBe(
+      "routine_selection_preference_feedback_events",
+    );
     expect(getTableName(integrationCredentials)).toBe("integration_credentials");
     expect(getTableName(integrationConfirmations)).toBe("integration_confirmations");
     expect(getTableName(integrationRequests)).toBe("integration_requests");
@@ -721,6 +726,49 @@ describe("database schema", () => {
     );
     expect(migration).toContain(
       'FOREIGN KEY ("workspace_id","source_plan_id","source_plan_item_id","routine_id") REFERENCES "public"."daily_plan_items"("workspace_id","plan_id","id","routine_id")',
+    );
+  });
+
+  it("stores append-only routine selection preferences behind an independent version fence", () => {
+    const config = getTableConfig(routineSelectionPreferenceFeedbackEvents);
+    expect(routineSelectionPreferenceFeedbackKind.enumValues).toEqual([
+      "more_often",
+      "less_often",
+      "reset",
+    ]);
+    expect(config.foreignKeys.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "routine_select_pref_events_workspace_fk",
+        "routine_select_pref_events_routine_fk",
+        "routine_select_pref_events_plan_fk",
+        "routine_select_pref_events_source_item_fk",
+      ]),
+    );
+    expect(config.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "routine_select_pref_events_source_valid",
+        "routine_select_pref_events_reset_item_null",
+        "routine_select_pref_events_version_positive",
+      ]),
+    );
+    expect(config.indexes.map((constraint) => constraint.config.name)).toContain(
+      "routine_select_pref_events_planning_idx",
+    );
+    const migration = readFileSync(
+      new URL("../drizzle/0034_majestic_maverick.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain(
+      'ADD COLUMN "selection_preference_version" integer DEFAULT 0 NOT NULL',
+    );
+    expect(migration).toContain(
+      'CREATE TRIGGER "routine_selection_preference_feedback_events_prevent_change"',
+    );
+    expect(migration).toContain(
+      'ALTER SEQUENCE "routine_selection_preference_feedback_eve_ingested_sequence_seq" RENAME TO "routine_select_pref_events_ingested_sequence_seq"',
+    );
+    expect(migration).toContain(
+      'BEFORE UPDATE OR DELETE ON "routine_selection_preference_feedback_events"',
     );
   });
 

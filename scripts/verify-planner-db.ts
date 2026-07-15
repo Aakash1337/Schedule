@@ -9,10 +9,12 @@ import {
   GenerateDailyPlan,
   GetDailyPlanFitInsight,
   GetDailyPlan,
+  GetRoutineSelectionPreferenceState,
   GetRoutineDurationInsight,
   ListRoutines,
   RecordActivityEvent,
   RecordPlanItemActivity,
+  RecordRoutineSelectionPreferenceFeedback,
   ResetDailyPlanFitInsightDismissal,
   ResetRoutineDurationInsightDismissal,
   UpdateRoutine,
@@ -82,6 +84,7 @@ async function removeVerificationWorkspace(): Promise<void> {
     await sql`select set_config('schedule.allow_plan_interaction_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_routine_duration_insight_feedback_event_change', 'on', true)`;
     await sql`select set_config('schedule.allow_daily_plan_fit_insight_feedback_event_change', 'on', true)`;
+    await sql`select set_config('schedule.allow_routine_selection_preference_feedback_event_change', 'on', true)`;
     for (const targetWorkspace of workspaces) {
       await sql`delete from workspaces where id = ${targetWorkspace}`;
     }
@@ -144,6 +147,127 @@ try {
     [routine.id],
   );
   assert.equal(firstPlan.items[0]?.routineId, routine.id);
+
+  const preferenceReader = new GetRoutineSelectionPreferenceState(unitOfWork, clock);
+  const preferenceRecorder = new RecordRoutineSelectionPreferenceFeedback(unitOfWork, clock);
+  assert.deepEqual(
+    await preferenceReader.execute({
+      workspaceId: workspace,
+      routineId: routine.id,
+      timeZone: "UTC",
+    }),
+    {
+      routineId: routine.id,
+      feedbackVersion: 0,
+      activeEventCount: 0,
+      score: 0,
+      reason: null,
+      updatedAt: null,
+    },
+  );
+  const preferenceCommand = {
+    workspaceId: workspace,
+    routineId: routine.id,
+    expectedFeedbackVersion: 0,
+    kind: "more_often" as const,
+    timeZone: "UTC",
+    sourcePlanId: firstPlan.id,
+    sourcePlanItemId: firstPlan.items[0]!.id,
+    idempotencyKey: "database-verification-selection-preference",
+  };
+  const acceptedPreferenceState = await preferenceRecorder.execute(preferenceCommand);
+  assert.equal(acceptedPreferenceState.feedbackVersion, 1);
+  assert.deepEqual(
+    await preferenceRecorder.execute(preferenceCommand),
+    acceptedPreferenceState,
+    "an exact replay must return the causally accepted projection",
+  );
+  assert.deepEqual(
+    await preferenceReader.execute({
+      workspaceId: workspace,
+      routineId: routine.id,
+      timeZone: "UTC",
+    }),
+    {
+      routineId: routine.id,
+      feedbackVersion: 1,
+      activeEventCount: 1,
+      score: 100,
+      reason: "You asked to see this routine more often (+100).",
+      updatedAt: clock.now(),
+    },
+  );
+  await assert.rejects(
+    preferenceRecorder.execute({
+      ...preferenceCommand,
+      expectedFeedbackVersion: 1,
+      sourcePlanId: "00000000-0000-4000-8000-000000000777" as DailyPlanId,
+      sourcePlanItemId: null,
+      idempotencyKey: "database-verification-selection-preference-missing-source",
+    }),
+    (error: unknown) => {
+      assert.equal(
+        typeof error === "object" && error !== null && "code" in error
+          ? (error as { code: unknown }).code
+          : undefined,
+        "planning.selection_preference_source_not_found",
+      );
+      return true;
+    },
+  );
+  await assert.rejects(
+    preferenceRecorder.execute({
+      ...preferenceCommand,
+      idempotencyKey: "database-verification-selection-preference-stale",
+    }),
+    (error: unknown) => {
+      assert.equal(
+        typeof error === "object" && error !== null && "code" in error
+          ? (error as { code: unknown }).code
+          : undefined,
+        "planning.selection_preference_version_conflict",
+      );
+      return true;
+    },
+  );
+  const currentPlanAfterPreference = await new GetDailyPlan(unitOfWork).execute({
+    workspaceId: workspace,
+    date: request.date,
+    requestRevision: request.requestRevision,
+  });
+  assert.equal(currentPlanAfterPreference?.id, firstPlan.id);
+  assert.equal(currentPlanAfterPreference?.inputHash, firstPlan.inputHash);
+  assert.deepEqual(
+    currentPlanAfterPreference?.items.map((item) => ({
+      id: item.id,
+      activityState: item.activityState,
+      locked: item.locked,
+    })),
+    firstPlan.items.map((item) => ({
+      id: item.id,
+      activityState: item.activityState,
+      locked: item.locked,
+    })),
+    "selection preference feedback must not mutate the current plan",
+  );
+  await assert.rejects(
+    (async () => {
+      const [event] = await connection.sql<{ id: string }[]>`
+        select id::text
+        from routine_selection_preference_feedback_events
+        where workspace_id = ${workspace}
+          and routine_id = ${routine.id}
+          and feedback_version = 1
+      `;
+      assert.notEqual(event, undefined);
+      await connection.sql`
+        update routine_selection_preference_feedback_events
+        set kind = 'less_often'
+        where id = ${event!.id}
+      `;
+    })(),
+    assertDatabaseErrorCode("55000"),
+  );
 
   const recorder = new RecordActivityEvent(unitOfWork, clock);
   const completion = await recorder.execute({
@@ -241,6 +365,12 @@ try {
     requestRevision: 1,
   });
   const unifiedPlan = await generator.execute({ request: unifiedRequest });
+  assert.equal(
+    unifiedPlan.items.find((item) => item.routineId === routine.id)?.scoreComponents
+      .selectionPreferenceFeedback,
+    100,
+    "future plans must consume explicit routine selection preference feedback",
+  );
   assert.equal(unifiedPlan.items.length, 2, "combined task-count budget must be honored");
   assert.equal(
     unifiedPlan.items.reduce((total, item) => total + item.scheduledMinutes, 0),

@@ -1285,12 +1285,121 @@
       ]
     },
     {
+      "id": "explicit-routine-selection-preference",
+      "status": "implemented",
+      "risk": "high",
+      "contract": {
+        "file": "docs/PRODUCT.md",
+        "anchor": "### 3.7 Routine selection preference"
+      },
+      "limitations": [
+        "This is a direct user-authored routine ranking signal, not inferred learning, and it never changes cadence, eligibility, duration, activity, or the current plan.",
+        "The v1 policy uses the latest eight directional events after reset within 90 local days, fixed 100-point steps, and a [-400, 400] clamp; editable weights and generalized adaptation remain deferred."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/routine-selection-preference-feedback.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates immutable routine feedback with optional, internally consistent provenance",
+            "uses the last eight non-reset events after the latest reset, independent of input order",
+            "uses an inclusive local 90-day window and clamps a directional score to [-400, 400]"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/domain/src/daily-planning.test.ts",
+          "command": "unit",
+          "anchors": [
+            "adds only an explicit routine selection preference score and snapshots it canonically",
+            "excludes future, out-of-window, and reset preference history from the plan snapshot",
+            "rejects duplicate routine selection preference event IDs",
+            "propagates routine-only selection preference feedback through residual replanning"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/routine-selection-preference-feedback.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns a zero-version read projection without mutating a routine or plan",
+            "records an append-only preference and projects its new version and score",
+            "rechecks the receipt after the routine lock so an ordered duplicate does not advance twice",
+            "replays the exact accepted projection after newer preference events",
+            "rejects new events at the finite routine history capacity",
+            "rejects nonexistent source-plan provenance before appending",
+            "returns the accepted projection that becomes visible only after waiting for the feedback lock"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": [
+            "stores append-only routine selection preferences behind an independent version fence"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns the initial routine selection preference state for an explicit time zone",
+            "records a future-planning routine preference and returns only authoritative public state",
+            "replays an identical routine preference idempotently without advancing twice",
+            "strictly validates routine preference reads and writes before invoking services",
+            "requires a routine preference idempotency key and maps stale versions to conflict"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/api.test.ts",
+          "command": "unit",
+          "anchors": [
+            "retrieves a routine selection preference in the browser's explicit time zone",
+            "records an idempotent routine selection preference with its optimistic version"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/RoutinesView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "loads a quiet initial future-plan preference with accessible routine-specific controls",
+            "progresses optimistic preference versions through more, less, and reset commands",
+            "refreshes authoritative preference state after a version conflict without replaying",
+            "retries an ambiguous preference failure with the exact same idempotency key",
+            "ignores a late preference response after the workspace changes",
+            "renders hostile routine and reason strings literally while keeping labels accessible"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-planner-db.ts",
+          "command": "planner-db",
+          "anchors": [
+            "selection preference feedback must not mutate the current plan",
+            "future plans must consume explicit routine selection preference feedback"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/planning-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": [
+            "persists explicit future-plan preference without changing Today in the live 320px flow"
+          ]
+        }
+      ]
+    },
+    {
       "id": "transparent-adaptation",
       "status": "partial",
       "risk": "normal",
       "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 3 — Transparent adaptation" },
       "limitations": [
-        "Routine-duration calibration, Daily Plan Fit guidance, and reversible exact-key dismissal/reset are implemented; learned cadence, day/time, energy, preference, and category-balance signals remain deferred.",
+        "Routine-duration calibration, Daily Plan Fit guidance, explicit routine ranking preferences, and reversible exact-key dismissal/reset are implemented; inferred cadence, day/time, energy, preference, and category-balance signals remain deferred.",
         "Suggestions are never applied automatically, and adaptive probabilistic selection beyond the deterministic planner, upward Plan Fit expansion, and historical insight comparison remain deferred.",
         "The statistical thresholds have contract evidence but no production outcome data, and no local or hosted model participates."
       ],

@@ -27,7 +27,14 @@ export class GenerateDailyPlan {
 
   async execute(command: GenerateDailyPlanCommand): Promise<DailyPlan> {
     return this.unitOfWork.run(
-      async ({ workspaces, routines, workItemDependencies, activityEvents, dailyPlans }) => {
+      async ({
+        workspaces,
+        routines,
+        workItemDependencies,
+        activityEvents,
+        dailyPlans,
+        routineSelectionPreferenceFeedback,
+      }) => {
         if ((await workspaces.findById(command.request.workspaceId)) === null) {
           throw new DomainError("workspace.not_found", "The workspace does not exist.");
         }
@@ -49,9 +56,12 @@ export class GenerateDailyPlan {
             );
           }
         }
-        const [routineCandidates, planningWorkItemGraph, events, routineFeedback] =
+        const routineCandidates = await routines.listPlanningCandidates(
+          command.request.workspaceId,
+          command.request.date,
+        );
+        const [planningWorkItemGraph, events, routineFeedback, selectionPreferenceFeedback] =
           await Promise.all([
-            routines.listPlanningCandidates(command.request.workspaceId, command.request.date),
             workItemDependencies.loadPlanningGraph(
               command.request.workspaceId,
               maximumPlanningCandidatePool + 1,
@@ -60,6 +70,11 @@ export class GenerateDailyPlan {
             activityEvents.listForPlanning(command.request.workspaceId, command.request.date),
             dailyPlans.listRoutineFeedbackForPlanning(
               command.request.workspaceId,
+              command.request.date,
+            ),
+            routineSelectionPreferenceFeedback.listForPlanning(
+              command.request.workspaceId,
+              routineCandidates.map((routine) => routine.id),
               command.request.date,
             ),
           ]);
@@ -75,6 +90,7 @@ export class GenerateDailyPlan {
           workItemDependencies: planningWorkItemGraph.dependencies,
           events,
           routineFeedback,
+          routineSelectionPreferenceFeedback: selectionPreferenceFeedback,
           generatedAt: this.clock.now(),
           ...(command.config === undefined ? {} : { config: command.config }),
         });

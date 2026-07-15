@@ -18,6 +18,7 @@ import {
   GetDailyPlanFitInsight,
   GetSchedulingAdvice,
   GetRoutine,
+  GetRoutineSelectionPreferenceState,
   GetNotificationProfile,
   GetRoutineDurationInsight,
   GetScheduleBlock,
@@ -40,6 +41,7 @@ import {
   CancelOneOffReminder,
   RecordActivityEvent,
   RecordPlanItemActivity,
+  RecordRoutineSelectionPreferenceFeedback,
   RemoveWorkItemDependency,
   ResetDailyPlanFitInsightDismissal,
   ResetRoutineDurationInsightDismissal,
@@ -96,12 +98,20 @@ export function createProductServices(
   const updateScheduleBlock = new UpdateScheduleBlock(unitOfWork, clock);
   const deleteScheduleBlock = new DeleteScheduleBlock(unitOfWork, clock);
   const getRoutine = new GetRoutine(unitOfWork);
+  const getRoutineSelectionPreferenceState = new GetRoutineSelectionPreferenceState(
+    unitOfWork,
+    clock,
+  );
   const getRoutineDurationInsight = new GetRoutineDurationInsight(unitOfWork, clock);
   const updateRoutine = new UpdateRoutine(unitOfWork, clock);
   const listRoutines = new ListRoutines(unitOfWork);
   const listRoutineActivity = new ListRoutineActivity(unitOfWork);
   const recordActivityEvent = new RecordActivityEvent(unitOfWork, clock);
   const recordPlanItemActivity = new RecordPlanItemActivity(unitOfWork, clock);
+  const recordRoutineSelectionPreferenceFeedback = new RecordRoutineSelectionPreferenceFeedback(
+    unitOfWork,
+    clock,
+  );
   const removeWorkItemDependency = new RemoveWorkItemDependency(unitOfWork, clock);
   const resetRoutineDurationInsightDismissal = new ResetRoutineDurationInsightDismissal(
     unitOfWork,
@@ -179,12 +189,16 @@ export function createProductServices(
     updateScheduleBlock: (command) => updateScheduleBlock.execute(command),
     deleteScheduleBlock: (command) => deleteScheduleBlock.execute(command),
     getRoutine: (query) => getRoutine.execute(query),
+    getRoutineSelectionPreferenceState: (query) =>
+      getRoutineSelectionPreferenceState.execute(query),
     getRoutineDurationInsight: (query) => getRoutineDurationInsight.execute(query),
     updateRoutine: (command) => updateRoutine.execute(command),
     listRoutines: (query) => listRoutines.execute(query),
     listRoutineActivity: (query) => listRoutineActivity.execute(query),
     recordActivityEvent: (command) => recordActivityEvent.execute(command),
     recordPlanItemActivity: (command) => recordPlanItemActivity.execute(command),
+    recordRoutineSelectionPreferenceFeedback: (command) =>
+      recordRoutineSelectionPreferenceFeedback.execute(command),
     removeWorkItemDependency: (command) => removeWorkItemDependency.execute(command),
     resetRoutineDurationInsightDismissal: (command) =>
       resetRoutineDurationInsightDismissal.execute(command),

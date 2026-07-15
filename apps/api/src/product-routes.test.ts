@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import type {
+  RecordRoutineSelectionPreferenceFeedbackCommand,
+  RoutineSelectionPreferenceStateView,
+} from "@schedule/application";
 import { DomainError } from "@schedule/domain";
 import {
   activityEventId,
@@ -14,6 +18,7 @@ import {
   dailyPlanFitInsightFeedbackId,
   generateDailyPlan,
   localDate,
+  planItemId,
   recordActivityEvent,
   routineId,
   routineDurationInsightFeedbackId,
@@ -153,6 +158,24 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
   let storedWorkItem: ReturnType<typeof createWorkItem> | null = null;
   let storedDependency: WorkItemDependency | null = null;
   let storedScheduleBlock: ReturnType<typeof createScheduleBlock> | null = null;
+  let selectionPreferenceState: RoutineSelectionPreferenceStateView = {
+    routineId: routine.id,
+    feedbackVersion: 0,
+    activeEventCount: 0,
+    score: 0,
+    reason: null,
+    updatedAt: null,
+  };
+  let selectionPreferenceMutationCount = 0;
+  const selectionPreferenceReceipts = new Map<
+    string,
+    {
+      readonly signature: string;
+      readonly receipt: Awaited<
+        ReturnType<ProductServices["recordRoutineSelectionPreferenceFeedback"]>
+      >;
+    }
+  >();
   const activity = recordActivityEvent({
     id: activityEventId(eventUuid),
     workspaceId: workspace.id,
@@ -288,6 +311,65 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       storedScheduleBlock = null;
     },
     getRoutine: async () => routine,
+    getRoutineSelectionPreferenceState: async () => selectionPreferenceState,
+    recordRoutineSelectionPreferenceFeedback: async (command) => {
+      const signature = JSON.stringify({
+        workspaceId: command.workspaceId,
+        routineId: command.routineId,
+        expectedFeedbackVersion: command.expectedFeedbackVersion,
+        kind: command.kind,
+        timeZone: command.timeZone,
+        sourcePlanId: command.sourcePlanId ?? null,
+        sourcePlanItemId: command.sourcePlanItemId ?? null,
+      });
+      const replay = selectionPreferenceReceipts.get(command.idempotencyKey);
+      if (replay !== undefined) {
+        if (replay.signature !== signature) {
+          throw new DomainError(
+            "planning.selection_preference_idempotency_conflict",
+            "This key belongs to another command.",
+          );
+        }
+        return replay.receipt;
+      }
+      if (command.expectedFeedbackVersion !== selectionPreferenceState.feedbackVersion) {
+        throw new DomainError(
+          "planning.selection_preference_version_conflict",
+          "Selection preference feedback changed.",
+        );
+      }
+      selectionPreferenceMutationCount += 1;
+      const recordedAt = new Date("2026-07-15T12:04:00.000Z");
+      const score =
+        command.kind === "reset"
+          ? 0
+          : Math.max(
+              -400,
+              Math.min(
+                400,
+                selectionPreferenceState.score + (command.kind === "more_often" ? 100 : -100),
+              ),
+            );
+      selectionPreferenceState = {
+        routineId: command.routineId,
+        feedbackVersion: selectionPreferenceState.feedbackVersion + 1,
+        activeEventCount:
+          command.kind === "reset" ? 0 : Math.min(selectionPreferenceState.activeEventCount + 1, 8),
+        score,
+        reason:
+          score > 0
+            ? `You asked to see this routine more often (+${score}).`
+            : score < 0
+              ? `You asked to see this routine less often (${score}).`
+              : null,
+        updatedAt: recordedAt,
+      };
+      selectionPreferenceReceipts.set(command.idempotencyKey, {
+        signature,
+        receipt: selectionPreferenceState,
+      });
+      return selectionPreferenceState;
+    },
     getRoutineDurationInsight: async () => durationInsight,
     getDailyPlanFitInsight: async () => planFitInsight,
     resetDailyPlanFitInsightDismissal: async () => ({
@@ -422,7 +504,12 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
     }),
     ...overrides,
   };
-  return { services };
+  return {
+    services,
+    get selectionPreferenceMutationCount() {
+      return selectionPreferenceMutationCount;
+    },
+  };
 }
 
 async function appWith(services: ProductServices) {
@@ -1188,6 +1275,210 @@ describe("local product API", () => {
     expect(empty.statusCode).toBe(400);
     expect(stale.statusCode).toBe(409);
     expect(stale.json()).toMatchObject({ error: { code: "routine.version_conflict" } });
+  });
+
+  it("returns the initial routine selection preference state for an explicit time zone", async () => {
+    const queries: unknown[] = [];
+    const app = await appWith(
+      createHarness({
+        getRoutineSelectionPreferenceState: async (query) => {
+          queries.push(query);
+          return {
+            routineId: query.routineId,
+            feedbackVersion: 0,
+            activeEventCount: 0,
+            score: 0,
+            reason: null,
+            updatedAt: null,
+          };
+        },
+      }).services,
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/selection-preference?timeZone=America%2FLa_Paz`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      routineId: routineUuid,
+      feedbackVersion: 0,
+      activeEventCount: 0,
+      score: 0,
+      reason: null,
+      updatedAt: null,
+    });
+    expect(queries).toEqual([
+      {
+        workspaceId: workspace.id,
+        routineId: routine.id,
+        timeZone: "America/La_Paz",
+      },
+    ]);
+  });
+
+  it("records a future-planning routine preference and returns only authoritative public state", async () => {
+    const harness = createHarness();
+    const commands: RecordRoutineSelectionPreferenceFeedbackCommand[] = [];
+    const record = harness.services.recordRoutineSelectionPreferenceFeedback;
+    harness.services.getRoutineSelectionPreferenceState = async () => {
+      throw new Error("POST must return its causally accepted state without a second read");
+    };
+    harness.services.recordRoutineSelectionPreferenceFeedback = async (command) => {
+      commands.push(command);
+      return record(command);
+    };
+    const app = await appWith(harness.services);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/selection-preference`,
+      headers: { "idempotency-key": "prefer-spanish-route" },
+      payload: {
+        kind: "more_often",
+        expectedFeedbackVersion: 0,
+        timeZone: "America/La_Paz",
+        sourcePlanId: planUuid,
+        sourcePlanItemId: eventUuid,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      routineId: routineUuid,
+      feedbackVersion: 1,
+      activeEventCount: 1,
+      score: 100,
+      reason: "You asked to see this routine more often (+100).",
+      updatedAt: "2026-07-15T12:04:00.000Z",
+    });
+    expect(response.body).not.toContain("prefer-spanish-route");
+    expect(response.body).not.toContain("idempotencyKey");
+    expect(commands).toEqual([
+      {
+        workspaceId: workspace.id,
+        routineId: routine.id,
+        kind: "more_often",
+        expectedFeedbackVersion: 0,
+        timeZone: "America/La_Paz",
+        sourcePlanId: dailyPlanId(planUuid),
+        sourcePlanItemId: planItemId(eventUuid),
+        idempotencyKey: "prefer-spanish-route",
+      },
+    ]);
+  });
+
+  it("replays an identical routine preference idempotently without advancing twice", async () => {
+    const harness = createHarness();
+    const app = await appWith(harness.services);
+    const request = {
+      method: "POST" as const,
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/selection-preference`,
+      headers: { "idempotency-key": "less-spanish-route" },
+      payload: {
+        kind: "less_often",
+        expectedFeedbackVersion: 0,
+        timeZone: "UTC",
+      },
+    };
+
+    const first = await app.inject(request);
+    const replay = await app.inject(request);
+
+    expect(first.statusCode).toBe(200);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toEqual(first.json());
+    expect(replay.json()).toMatchObject({ feedbackVersion: 1, score: -100 });
+    expect(harness.selectionPreferenceMutationCount).toBe(1);
+  });
+
+  it("strictly validates routine preference reads and writes before invoking services", async () => {
+    const app = await appWith(createHarness().services);
+    const path = `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/selection-preference`;
+    const invalidRequests = [
+      { method: "GET" as const, url: path },
+      { method: "GET" as const, url: `${path}?timeZone=UTC&extra=true` },
+      {
+        method: "POST" as const,
+        url: path,
+        headers: { "idempotency-key": "invalid-kind" },
+        payload: { kind: "sometimes", expectedFeedbackVersion: 0, timeZone: "UTC" },
+      },
+      {
+        method: "POST" as const,
+        url: path,
+        headers: { "idempotency-key": "negative-version" },
+        payload: { kind: "reset", expectedFeedbackVersion: -1, timeZone: "UTC" },
+      },
+      {
+        method: "POST" as const,
+        url: path,
+        headers: { "idempotency-key": "unknown-field" },
+        payload: {
+          kind: "reset",
+          expectedFeedbackVersion: 0,
+          timeZone: "UTC",
+          unexpected: true,
+        },
+      },
+      {
+        method: "POST" as const,
+        url: path,
+        headers: { "idempotency-key": "invalid-plan" },
+        payload: {
+          kind: "more_often",
+          expectedFeedbackVersion: 0,
+          timeZone: "UTC",
+          sourcePlanId: "not-a-uuid",
+        },
+      },
+    ];
+
+    for (const request of invalidRequests) {
+      const response = await app.inject(request);
+      expect(response.statusCode, `${request.method} ${request.url}`).toBe(400);
+      expect(response.json()).toMatchObject({ error: { code: "request.validation_failed" } });
+    }
+  });
+
+  it("requires a routine preference idempotency key and maps stale versions to conflict", async () => {
+    const harness = createHarness();
+    const app = await appWith(harness.services);
+    const path = `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/selection-preference`;
+    const payload = { kind: "reset", expectedFeedbackVersion: 0, timeZone: "UTC" };
+
+    const missingKey = await app.inject({ method: "POST", url: path, payload });
+    const accepted = await app.inject({
+      method: "POST",
+      url: path,
+      headers: { "idempotency-key": "first-reset" },
+      payload,
+    });
+    const stale = await app.inject({
+      method: "POST",
+      url: path,
+      headers: { "idempotency-key": "stale-reset" },
+      payload,
+    });
+    const reusedKey = await app.inject({
+      method: "POST",
+      url: path,
+      headers: { "idempotency-key": "first-reset" },
+      payload: { kind: "more_often", expectedFeedbackVersion: 0, timeZone: "UTC" },
+    });
+
+    expect(missingKey.statusCode).toBe(400);
+    expect(missingKey.json()).toMatchObject({ error: { code: "request.validation_failed" } });
+    expect(accepted.statusCode).toBe(200);
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toMatchObject({
+      error: { code: "planning.selection_preference_version_conflict" },
+    });
+    expect(reusedKey.statusCode).toBe(409);
+    expect(reusedKey.json()).toMatchObject({
+      error: { code: "planning.selection_preference_idempotency_conflict" },
+    });
   });
 
   it("serves and records exact-key Daily Plan Fit guidance for an explicit local date", async () => {

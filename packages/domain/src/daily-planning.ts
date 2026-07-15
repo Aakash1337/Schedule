@@ -28,14 +28,20 @@ import {
   canonicalRoutinePlanningFeedback,
   type RoutinePlanningFeedback,
 } from "./routine-planning-feedback.js";
+import {
+  canonicalRoutineSelectionPreferenceFeedback,
+  routineSelectionPreferenceReason,
+  routineSelectionPreferenceScore,
+  type RoutineSelectionPreferenceFeedback,
+} from "./routine-selection-preference-feedback.js";
 import { workItemStatuses, type WorkItem } from "./work-item.js";
 import {
   createWorkItemDependency,
   type PlanningWorkItemDependency,
 } from "./work-item-dependency.js";
 
-export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v5";
-export const PLANNER_CONFIG_VERSION = "default-weights-v3";
+export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v6";
+export const PLANNER_CONFIG_VERSION = "default-weights-v4";
 export const PLANNER_PRNG_VERSION = "mulberry32-v1";
 const MAXIMUM_PLANNER_SCORE_COMPONENT = 1_000_000;
 
@@ -306,6 +312,8 @@ export interface GenerateDailyPlanInput {
   readonly workItemDependencies?: readonly PlanningWorkItemDependency[];
   readonly events: readonly ActivityEvent[];
   readonly routineFeedback?: readonly RoutinePlanningFeedback[];
+  /** Explicit user ranking signals. These never affect cadence or eligibility. */
+  readonly routineSelectionPreferenceFeedback?: readonly RoutineSelectionPreferenceFeedback[];
   readonly config?: PlannerConfig;
   readonly generatedAt?: Date;
 }
@@ -599,6 +607,7 @@ export function evaluateRoutineForPlan(
   request: DailyPlanningRequest,
   config: PlannerConfig = DEFAULT_PLANNER_CONFIG,
   routineFeedback: readonly RoutinePlanningFeedback[] = [],
+  selectionPreferenceFeedback: readonly RoutineSelectionPreferenceFeedback[] = [],
 ): RoutineEvaluation {
   const events = canonicalEvents(allEvents, request);
   const completions = activeCompletions(events, routine);
@@ -734,6 +743,15 @@ export function evaluateRoutineForPlan(
     return distance >= 0 && distance < 7;
   }).length;
   scoreComponents.skipFatigue = Math.min(recentSkips, 4) * config.score.skipFatigue;
+  const selectionPreferenceScore = routineSelectionPreferenceScore(
+    selectionPreferenceFeedback,
+    request.workspaceId,
+    routine.id,
+    request.date,
+  );
+  if (selectionPreferenceFeedback.some((feedback) => feedback.routineId === routine.id)) {
+    scoreComponents.selectionPreferenceFeedback = selectionPreferenceScore;
+  }
   const score = Object.values(scoreComponents).reduce((total, component) => total + component, 0);
 
   const reasons = [
@@ -757,6 +775,10 @@ export function evaluateRoutineForPlan(
   }
   if (activeFeedback?.kind === "not_this_week") {
     reasons.push("You asked not to see this routine again this week.");
+  }
+  const selectionPreferenceReason = routineSelectionPreferenceReason(selectionPreferenceScore);
+  if (selectionPreferenceFeedback.length > 0 && selectionPreferenceReason !== null) {
+    reasons.push(selectionPreferenceReason);
   }
 
   return {
@@ -1225,6 +1247,7 @@ function createInputSnapshot(
   workItemDependencies: readonly PlanningWorkItemDependency[],
   events: readonly ActivityEvent[],
   routineFeedback: readonly RoutinePlanningFeedback[],
+  routineSelectionPreferenceFeedback: readonly RoutineSelectionPreferenceFeedback[],
   config: PlannerConfig,
 ): JsonValue {
   const canonicalRoutines = [...routines].sort((left, right) =>
@@ -1239,6 +1262,9 @@ function createInputSnapshot(
     events: canonicalActivity,
     request,
     routineFeedback,
+    ...(routineSelectionPreferenceFeedback.length === 0
+      ? {}
+      : { routineSelectionPreferenceFeedback }),
     routines: canonicalRoutines,
     workItemDependencies,
     workItems: canonicalWorkItems,
@@ -1382,6 +1408,15 @@ function planDailyAlternatives(
     );
     feedbackIds.add(feedback.id);
   }
+  const selectionPreferenceFeedbackIds = new Set<string>();
+  for (const feedback of input.routineSelectionPreferenceFeedback ?? []) {
+    invariant(
+      !selectionPreferenceFeedbackIds.has(feedback.id),
+      "planning.duplicate_routine_selection_preference_feedback",
+      `Routine selection preference feedback ${feedback.id} appears more than once in the planner input.`,
+    );
+    selectionPreferenceFeedbackIds.add(feedback.id);
+  }
   const generatedAt = input.generatedAt ?? new Date();
   invariant(
     Number.isFinite(generatedAt.getTime()),
@@ -1391,6 +1426,11 @@ function planDailyAlternatives(
 
   const canonicalFeedback = canonicalRoutinePlanningFeedback(
     input.routineFeedback ?? [],
+    input.request.workspaceId,
+    input.request.date,
+  );
+  const canonicalSelectionPreferenceFeedback = canonicalRoutineSelectionPreferenceFeedback(
+    input.routineSelectionPreferenceFeedback ?? [],
     input.request.workspaceId,
     input.request.date,
   );
@@ -1418,6 +1458,7 @@ function planDailyAlternatives(
         input.request,
         config,
         canonicalFeedback,
+        canonicalSelectionPreferenceFeedback,
       ),
     }));
   const workItemEvaluations = (input.workItems ?? [])
@@ -1497,6 +1538,7 @@ function planDailyAlternatives(
     canonicalWorkItemDependencies,
     input.events,
     canonicalFeedback,
+    canonicalSelectionPreferenceFeedback,
     config,
   );
   const baseInputHash = createHash("sha256").update(JSON.stringify(inputSnapshot)).digest("hex");

@@ -11,6 +11,7 @@ describe("runtime configuration", () => {
     expect(config.API_PORT).toBe(4_000);
     expect(config.API_TRUSTED_PROXIES).toEqual([]);
     expect(config.PRODUCT_API_MODE).toBe("local_unauthenticated");
+    expect(config.PRODUCT_RATE_LIMIT_PER_MINUTE).toBe(240);
     expect(config.LOCAL_MODEL_ADVISOR_MODE).toBe("disabled");
     expect(config.LOCAL_MODEL_PROPOSAL_MODE).toBe("disabled");
     expect(config.LOCAL_MODEL_PROPOSAL_HMAC_KEY).toBeUndefined();
@@ -389,5 +390,13 @@ describe("runtime configuration", () => {
     expect(() => loadApiConfig({ INTEGRATION_CONFIRMATION_TTL_SECONDS: "3601" })).toThrow();
     expect(() => loadApiConfig({ INTEGRATION_RATE_LIMIT_PER_MINUTE: "0" })).toThrow();
     expect(() => loadApiConfig({ INTEGRATION_RATE_LIMIT_PER_MINUTE: "1001" })).toThrow();
+  });
+
+  it("coerces the bounded local product rate limit from an environment string", () => {
+    expect(
+      loadApiConfig({ PRODUCT_RATE_LIMIT_PER_MINUTE: "1000" }).PRODUCT_RATE_LIMIT_PER_MINUTE,
+    ).toBe(1_000);
+    expect(() => loadApiConfig({ PRODUCT_RATE_LIMIT_PER_MINUTE: "0" })).toThrow();
+    expect(() => loadApiConfig({ PRODUCT_RATE_LIMIT_PER_MINUTE: "10001" })).toThrow();
   });
 });

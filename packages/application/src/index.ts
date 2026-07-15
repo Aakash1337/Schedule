@@ -43,6 +43,7 @@ export * from "./integration-gateway.js";
 export * from "./invalidate-plan-item-activity-intents.js";
 export * from "./get-routine.js";
 export * from "./get-routine-duration-insight.js";
+export * from "./get-routine-selection-preference-state.js";
 export * from "./get-scheduling-advice.js";
 export * from "./list-routine-activity.js";
 export * from "./list-routines.js";
@@ -51,6 +52,7 @@ export * from "./planning-candidates.js";
 export * from "./ports.js";
 export * from "./record-activity-event.js";
 export * from "./record-plan-item-activity.js";
+export * from "./record-routine-selection-preference-feedback.js";
 export * from "./remove-work-item-dependency.js";
 export {
   ResetRoutineDurationInsightDismissal,

@@ -13,6 +13,7 @@ const apiSchema = baseSchema.extend({
   API_PORT: z.coerce.number().int().min(1).max(65_535).default(4_000),
   API_TRUSTED_PROXIES: z.string().max(16_384).default(""),
   PRODUCT_API_MODE: z.enum(["disabled", "local_unauthenticated"]).optional(),
+  PRODUCT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(240),
   LOCAL_MODEL_ADVISOR_MODE: z.enum(["disabled", "ollama"]).default("disabled"),
   LOCAL_MODEL_PROPOSAL_MODE: z.enum(["disabled", "ollama"]).default("disabled"),
   LOCAL_MODEL_PROPOSAL_HMAC_KEY: z.string().optional(),

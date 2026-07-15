@@ -1,4 +1,4 @@
-# Deterministic Planner v5
+# Deterministic Planner v6
 
 This document describes the first implemented planner contract. The broader product intent remains in [PRODUCT.md](./PRODUCT.md).
 
@@ -25,6 +25,7 @@ The following Phase 1 capabilities exist in code:
 - Immutable regeneration and replacement revisions with exact anchored-item carry-forward
 - Plan-item-scoped start, completion, skip, defer, and dismiss actions with projected Today state
 - Append-only **Not today** and **Not this week** routine feedback with reset and immediate replanning
+- Append-only, resettable explicit routine selection preferences with a bounded future-plan score
 - Read-only Daily Plan Fit guidance from fully resolved prior plans, with exact-key dismissal and reset
 
 The planner is implemented as a pure domain operation in `packages/domain/src/daily-planning.ts`. It does not require PostgreSQL, a network connection, or a language model.
@@ -45,9 +46,9 @@ The planner is implemented as a pure domain operation in `packages/domain/src/da
 
 ## Planning process
 
-1. Canonically sort routines, opted-in work items, work-item dependency projections, activity events, and the latest applicable routine-feedback event per routine.
+1. Canonically sort routines, opted-in work items, work-item dependency projections, activity events, the latest applicable routine-feedback event per routine, and bounded explicit routine selection preference events.
 2. Apply routine exclusions for temporary feedback, lifecycle, dates, weekdays, context, cadence maximum, spacing, consecutive-day prohibition, and minimum duration fit. Apply work-item exclusions when its planning duration is absent, its status is not `backlog`, `planned`, or `in_progress`, any direct prerequisite status is not `done`, or its full duration cannot fit a window. A due date never bypasses these exclusions.
-3. Score eligible routines with integer components for priority, cadence deficit, minimum urgency, neglect, preferred weekday, energy/context fit, preference, recent frequency, consecutive-day repetition, and skip fatigue. Score eligible one-time work from explicit priority plus deadline pressure. The default 14-day horizon gives future work a linearly increasing increment as its local due date approaches, gives work due today the `workItemDeadlineDueToday` increment, and gives overdue work a capped increment. A due date outside the horizon adds an explicit zero-pressure explanation. One-time work has no cadence or activity-history score.
+3. Score eligible routines with integer components for priority, cadence deficit, minimum urgency, neglect, preferred weekday, energy/context fit, preference, recent frequency, consecutive-day repetition, skip fatigue, and explicit selection preference. The selection preference uses the latest eight directional events after the latest reset inside the inclusive prior 90 local days, at 100 points per event and clamped to `[-400, 400]`. Score eligible one-time work from explicit priority plus deadline pressure. The default 14-day horizon gives future work a linearly increasing increment as its local due date approaches, gives work due today the `workItemDeadlineDueToday` increment, and gives overdue work a capped increment. A due date outside the horizon adds an explicit zero-pressure explanation. One-time work has no cadence, activity-history, or routine-preference score.
 4. Convert the scores to integer selection weights with a nonzero exploration floor.
 5. Generate deterministic weighted permutations using the versioned Mulberry32 implementation.
 6. Fit each permutation into the available windows without exceeding maximum minutes or task count. Splittable routines may use a shorter session, but never less than their configured minimum; work items use their full planning duration.
@@ -79,7 +80,7 @@ remain independent reservations rather than planner candidates or automatic plac
 
 ## Determinism contract
 
-For the same canonical input snapshot, request revision, seed, algorithm version, configuration version, and PRNG version, the planner returns the same item selection and explanations regardless of input array order. Planner algorithm v5 owns the canonical dependency projection and its snapshot and hash semantics. Each projection carries the workspace, prerequisite and dependent identities, edge creation time, and current prerequisite status. The unchanged `default-weights-v3` configuration continues to own deadline scoring; every work item's nullable `dueOn` value and the deadline configuration remain part of the canonical snapshot and hash. Planner v5 also includes the latest applicable routine-feedback event per routine; an expired suppression or latest reset remains visible for replay but produces no active exclusion.
+For the same canonical input snapshot, request revision, seed, algorithm version, configuration version, and PRNG version, the planner returns the same item selection and explanations regardless of input array order. Planner algorithm v6 owns the canonical dependency and routine-selection-preference projections and their snapshot and hash semantics. Preference events are tenant/date filtered, ordered by routine then ingestion sequence and ID, reset-trimmed, and bounded before snapshotting. Expired, future, and reset-discarded preference history is hash-neutral. The `default-weights-v4` configuration owns the resulting visible score component.
 
 The generated plan ID and generation timestamp are supplied by the caller when strict byte-for-byte replay is required. The persisted input hash intentionally changes when any input fact changes, even if the final selected items remain the same.
 
@@ -99,12 +100,21 @@ The database migration adds:
 - `daily_plan_fit_insight_feedback_events`
 - `routine_duration_insight_feedback_events`
 - `routine_planning_feedback_events`
+- `routine_selection_preference_feedback_events`
 
 All planner relationships carry `workspace_id` in their foreign keys. A dependency row has a natural composite key over its workspace, prerequisite, and dependent; tenant-scoped foreign keys on both endpoints cascade when either work item is removed, and a database check rejects self-edges. Activity idempotency is unique within a workspace. Daily plan revisions are unique by workspace and local date. A plan item carries exactly one typed source (`routine` or `work_item`), and a plan cannot repeat the same source or position within one revision. A work item has no global one-plan claim: while eligible, it can appear in later revisions, dates, or sessions until completed, cancelled, or opted out. The unified-candidate migration backfills every legacy plan item and activity as a routine source and rewrites legacy exclusion entries to the same explicit type before typed-source constraints are enforced.
 
 The application port `DailyPlanRepository.insertForRevision` must atomically insert a plan or return the plan already stored for that revision. The use case rejects an existing revision whose input hash differs, preventing a stale request from being mistaken for an idempotent retry.
 
 The PostgreSQL adapter implements this contract with a unique workspace/date/revision constraint and `INSERT ... ON CONFLICT DO NOTHING` inside the unit-of-work transaction. Activity append uses the same pattern with the workspace-scoped idempotency key and rejects reuse of a key for different event content.
+
+Routine selection preference has its own non-negative version head on the routine row, independent
+from routine policy version. A workspace/key advisory lock serializes the idempotency identity, then
+a routine-row lock fences the expected preference version. The command rechecks for a committed
+receipt after any wait before rejecting a stale version. Exact retries therefore return the original
+event version without advancing, while semantic key reuse conflicts. Each successful unique append
+advances the preference head exactly once in the same transaction. Planner reads use a per-routine
+window rank so one noisy routine cannot consume another candidate's bounded event allowance.
 
 PostgreSQL units of work default to serializable isolation and retry serialization failures with
 bounded exponential backoff. Operations that first wait on an advisory lock and must observe the

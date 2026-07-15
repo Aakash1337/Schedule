@@ -251,6 +251,151 @@ test("persists temporary routine feedback and activity through the live Today pl
   expect(unexpectedHttpResponses).toEqual([]);
 });
 
+test("persists explicit future-plan preference without changing Today in the live 320px flow", async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  const requestFailures: string[] = [];
+  const unexpectedHttpResponses: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("requestfailed", (request) => {
+    requestFailures.push(`${request.method()} ${new URL(request.url()).pathname}`);
+  });
+  page.on("response", (response) => {
+    if (response.status() < 400) return;
+    unexpectedHttpResponses.push(
+      `${response.status()} ${response.request().method()} ${new URL(response.url()).pathname}`,
+    );
+  });
+
+  const workspaceResponse = await page.request.post("/v1/workspaces", {
+    data: { name: "Future preference E2E workspace" },
+  });
+  expect(workspaceResponse.status()).toBe(201);
+  const workspace = (await workspaceResponse.json()) as { readonly id: string };
+  await page.addInitScript((workspaceId) => {
+    localStorage.setItem("schedule.selectedWorkspace", workspaceId);
+  }, workspace.id);
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto("/#routines");
+  const expectedOrigin = new URL(page.url()).origin;
+  const main = page.getByRole("main", { name: "Routines view" });
+  await expect(main).toBeVisible();
+
+  await page.getByRole("button", { name: "New routine" }).click();
+  const routineTitle = "Practice the piano";
+  await page.getByRole("textbox", { name: "Title" }).fill(routineTitle);
+  const routineResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) => /^\/v1\/workspaces\/[^/]+\/routines$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Create routine" }).click();
+  const routineResponse = await routineResponsePromise;
+  expect(routineResponse.status()).toBe(201);
+  const routine = (await routineResponse.json()) as { readonly id: string };
+
+  const preferenceGroup = page.getByRole("group", {
+    name: `Future plan preference for ${routineTitle}`,
+  });
+  const moreOften = preferenceGroup.getByRole("button", {
+    name: `Choose ${routineTitle} more often in future plans`,
+  });
+  const lessOften = preferenceGroup.getByRole("button", {
+    name: `Choose ${routineTitle} less often in future plans`,
+  });
+  await expect(moreOften).toBeEnabled();
+  await expect(lessOften).toBeEnabled();
+
+  for (const target of [moreOften, lessOften]) {
+    await target.scrollIntoViewIfNeeded();
+    const bounds = await target.boundingBox();
+    expect(bounds).not.toBeNull();
+    expectMobileTargetHeight(
+      bounds?.height ?? 0,
+      (await target.getAttribute("aria-label")) ?? undefined,
+    );
+  }
+  const horizontalOverflow = await main.evaluate(
+    (element) => element.scrollWidth - element.clientWidth,
+  );
+  expect(horizontalOverflow).toBeLessThanOrEqual(CSS_PIXEL_MEASUREMENT_TOLERANCE);
+
+  const currentPlanPath = `/v1/workspaces/${workspace.id}/plans/2026-07-14/current`;
+  expect((await page.request.get(currentPlanPath)).status()).toBe(404);
+
+  const moreOftenResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) =>
+        pathname === `/v1/workspaces/${workspace.id}/routines/${routine.id}/selection-preference`,
+      expectedOrigin,
+    ),
+  );
+  await moreOften.click();
+  expect((await moreOftenResponsePromise).status()).toBe(200);
+  await expect(page.getByLabel("More often, preference score +100")).toBeVisible();
+  await expect(
+    page.getByText("Saved for future plans. Today’s plan was not changed."),
+  ).toBeVisible();
+  await expect(
+    preferenceGroup.getByRole("button", {
+      name: `Clear the future plan preference for ${routineTitle}`,
+    }),
+  ).toBeVisible();
+  expect((await page.request.get(currentPlanPath)).status()).toBe(404);
+
+  await page.reload();
+  await expect(main).toBeVisible();
+  await page.getByRole("button", { name: new RegExp(`^${routineTitle}`) }).click();
+  await expect(page.getByLabel("More often, preference score +100")).toBeVisible();
+
+  const lessOftenResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) =>
+        pathname === `/v1/workspaces/${workspace.id}/routines/${routine.id}/selection-preference`,
+      expectedOrigin,
+    ),
+  );
+  await lessOften.click();
+  expect((await lessOftenResponsePromise).status()).toBe(200);
+  await expect(page.getByLabel("Neutral, preference score 0")).toBeVisible();
+  const clearPreference = preferenceGroup.getByRole("button", {
+    name: `Clear the future plan preference for ${routineTitle}`,
+  });
+  await expect(clearPreference).toBeVisible();
+
+  const resetResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) =>
+        pathname === `/v1/workspaces/${workspace.id}/routines/${routine.id}/selection-preference`,
+      expectedOrigin,
+    ),
+  );
+  await clearPreference.click();
+  expect((await resetResponsePromise).status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "Future selection" })).toBeFocused();
+  await expect(page.getByLabel("Neutral, preference score 0")).toHaveCount(0);
+  await expect(clearPreference).toHaveCount(0);
+
+  await page.reload();
+  await expect(main).toBeVisible();
+  await page.getByRole("button", { name: new RegExp(`^${routineTitle}`) }).click();
+  await expect(page.getByLabel("Neutral, preference score 0")).toHaveCount(0);
+  await expect(clearPreference).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+  expect(requestFailures).toEqual([]);
+  expect(unexpectedHttpResponses).toEqual([]);
+});
+
 test("persists work-item due dates and exposes deadline pressure through the live planning flow", async ({
   page,
 }) => {

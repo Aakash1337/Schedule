@@ -24,6 +24,7 @@ import type {
   GetDailyPlanQuery,
   GetDailyPlanFitInsightQuery,
   GetRoutineQuery,
+  GetRoutineSelectionPreferenceStateQuery,
   GetRoutineDurationInsightQuery,
   GetScheduleBlockQuery,
   GetWorkItemQuery,
@@ -45,6 +46,7 @@ import type {
   PlanItemActivityResult,
   RecordActivityEventCommand,
   RecordPlanItemActivityCommand,
+  RecordRoutineSelectionPreferenceFeedbackCommand,
   RegenerateDailyPlanCommand,
   PreviewDailyPlanAlternativesCommand,
   ReplacePlanItemCommand,
@@ -70,6 +72,7 @@ import type {
   DeleteScheduleBlockCommand,
   ScheduleBlockPage,
   SchedulingAdviceResult,
+  RoutineSelectionPreferenceStateView,
   WorkItemPage,
   WorkItemChildrenPage,
   WorkItemDependencyPage,
@@ -149,6 +152,12 @@ export interface ProductServices {
   updateScheduleBlock(command: UpdateScheduleBlockCommand): Promise<ScheduleBlock>;
   deleteScheduleBlock(command: DeleteScheduleBlockCommand): Promise<void>;
   getRoutine(query: GetRoutineQuery): Promise<Routine>;
+  getRoutineSelectionPreferenceState(
+    query: GetRoutineSelectionPreferenceStateQuery,
+  ): Promise<RoutineSelectionPreferenceStateView>;
+  recordRoutineSelectionPreferenceFeedback(
+    command: RecordRoutineSelectionPreferenceFeedbackCommand,
+  ): Promise<RoutineSelectionPreferenceStateView>;
   getRoutineDurationInsight(query: GetRoutineDurationInsightQuery): Promise<RoutineDurationInsight>;
   getDailyPlanFitInsight(query: GetDailyPlanFitInsightQuery): Promise<DailyPlanFitInsight>;
   resetDailyPlanFitInsightDismissal(
@@ -530,6 +539,16 @@ const routineQuery = z.strictObject({
   status: z.enum(["active", "paused", "archived"]).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(100),
   offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
+const routineSelectionPreferenceQuery = z.strictObject({
+  timeZone: z.string().trim().min(1).max(80),
+});
+const routineSelectionPreferenceBody = z.strictObject({
+  kind: z.enum(["more_often", "less_often", "reset"]),
+  expectedFeedbackVersion: z.number().int().nonnegative().max(2_147_483_647),
+  timeZone: z.string().trim().min(1).max(80),
+  sourcePlanId: uuid.nullable().optional(),
+  sourcePlanItemId: uuid.nullable().optional(),
 });
 
 const replacementTagsBody = z.strictObject({
@@ -1357,6 +1376,46 @@ export async function registerProductRoutes(
       routineId: routineId(params.routineId),
     });
   });
+
+  app.get(
+    "/v1/workspaces/:workspaceId/routines/:routineId/selection-preference",
+    async (request) => {
+      const params = parseRequest(routineParams, request.params);
+      const query = parseRequest(routineSelectionPreferenceQuery, request.query);
+      return services.getRoutineSelectionPreferenceState({
+        workspaceId: workspaceId(params.workspaceId),
+        routineId: routineId(params.routineId),
+        timeZone: query.timeZone,
+      });
+    },
+  );
+
+  app.post(
+    "/v1/workspaces/:workspaceId/routines/:routineId/selection-preference",
+    async (request) => {
+      const params = parseRequest(routineParams, request.params);
+      const body = parseRequest(routineSelectionPreferenceBody, request.body);
+      const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+      const command: RecordRoutineSelectionPreferenceFeedbackCommand = {
+        workspaceId: workspaceId(params.workspaceId),
+        routineId: routineId(params.routineId),
+        kind: body.kind,
+        expectedFeedbackVersion: body.expectedFeedbackVersion,
+        timeZone: body.timeZone,
+        idempotencyKey: key,
+        ...(body.sourcePlanId === undefined
+          ? {}
+          : { sourcePlanId: body.sourcePlanId === null ? null : dailyPlanId(body.sourcePlanId) }),
+        ...(body.sourcePlanItemId === undefined
+          ? {}
+          : {
+              sourcePlanItemId:
+                body.sourcePlanItemId === null ? null : planItemId(body.sourcePlanItemId),
+            }),
+      };
+      return services.recordRoutineSelectionPreferenceFeedback(command);
+    },
+  );
 
   app.get("/v1/workspaces/:workspaceId/routines/:routineId/duration-insight", async (request) => {
     const params = parseRequest(routineParams, request.params);

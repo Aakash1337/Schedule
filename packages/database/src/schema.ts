@@ -96,6 +96,10 @@ export const routinePlanningFeedbackKind = pgEnum("routine_planning_feedback_kin
   "not_this_week",
   "reset",
 ]);
+export const routineSelectionPreferenceFeedbackKind = pgEnum(
+  "routine_selection_preference_feedback_kind",
+  ["more_often", "less_often", "reset"],
+);
 export const routineDurationInsightFeedbackKind = pgEnum("routine_duration_insight_feedback_kind", [
   "dismissed",
   "reset",
@@ -1001,6 +1005,8 @@ export const routines = pgTable(
     pausedUntil: date("paused_until"),
     endsOn: date("ends_on"),
     version: integer("version").notNull().default(1),
+    /** Independent optimistic-concurrency head for append-only selection preference feedback. */
+    selectionPreferenceVersion: integer("selection_preference_version").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1026,6 +1032,10 @@ export const routines = pgTable(
       sql`(${table.cadencePeriod} = 'rolling_days' AND ${table.rollingIntervalDays} IS NOT NULL AND ${table.rollingIntervalDays} > 0) OR (${table.cadencePeriod} <> 'rolling_days' AND ${table.rollingIntervalDays} IS NULL)`,
     ),
     check("routines_spacing_nonnegative", sql`${table.minimumSpacingDays} >= 0`),
+    check(
+      "routines_selection_preference_version_nonnegative",
+      sql`${table.selectionPreferenceVersion} >= 0`,
+    ),
     check(
       "routines_preferred_weekdays_valid",
       sql`${table.preferredWeekdays} <@ ARRAY[0, 1, 2, 3, 4, 5, 6]::integer[]`,
@@ -1717,6 +1727,93 @@ export const routinePlanningFeedbackEvents = pgTable(
       sql`char_length(btrim(${table.idempotencyKey})) > 0`,
     ),
     check("routine_planning_feedback_events_sequence_positive", sql`${table.ingestedSequence} > 0`),
+  ],
+);
+
+/**
+ * Immutable, user-authored ranking feedback for future routine selection.
+ *
+ * The routine-held selection-preference version is the optimistic fence for
+ * this event stream. Provenance is deliberately optional: this preference can
+ * be recorded directly from the routine catalogue without a current plan.
+ */
+export const routineSelectionPreferenceFeedbackEvents = pgTable(
+  "routine_selection_preference_feedback_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ingestedSequence: bigserial("ingested_sequence", { mode: "number" }).notNull(),
+    workspaceId: uuid("workspace_id").notNull(),
+    routineId: uuid("routine_id").notNull(),
+    feedbackVersion: integer("feedback_version").notNull(),
+    kind: routineSelectionPreferenceFeedbackKind("kind").notNull(),
+    effectiveOn: date("effective_on").notNull(),
+    timeZone: varchar("time_zone", { length: 80 }).notNull(),
+    sourcePlanId: uuid("source_plan_id"),
+    sourcePlanItemId: uuid("source_plan_item_id"),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("routine_select_pref_events_workspace_id_uq").on(table.workspaceId, table.id),
+    unique("routine_select_pref_events_workspace_key_uq").on(
+      table.workspaceId,
+      table.idempotencyKey,
+    ),
+    unique("routine_select_pref_events_routine_version_uq").on(
+      table.workspaceId,
+      table.routineId,
+      table.feedbackVersion,
+    ),
+    index("routine_select_pref_events_planning_idx").on(
+      table.workspaceId,
+      table.routineId,
+      table.effectiveOn,
+      table.ingestedSequence.desc(),
+      table.id.desc(),
+    ),
+    foreignKey({
+      name: "routine_select_pref_events_workspace_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaces.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "routine_select_pref_events_routine_fk",
+      columns: [table.workspaceId, table.routineId],
+      foreignColumns: [routines.workspaceId, routines.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "routine_select_pref_events_plan_fk",
+      columns: [table.workspaceId, table.sourcePlanId],
+      foreignColumns: [dailyPlans.workspaceId, dailyPlans.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "routine_select_pref_events_source_item_fk",
+      columns: [table.workspaceId, table.sourcePlanId, table.sourcePlanItemId, table.routineId],
+      foreignColumns: [
+        dailyPlanItems.workspaceId,
+        dailyPlanItems.planId,
+        dailyPlanItems.id,
+        dailyPlanItems.routineId,
+      ],
+    }).onDelete("restrict"),
+    check(
+      "routine_select_pref_events_source_valid",
+      sql`${table.sourcePlanItemId} IS NULL OR ${table.sourcePlanId} IS NOT NULL`,
+    ),
+    check(
+      "routine_select_pref_events_reset_item_null",
+      sql`${table.kind} <> 'reset' OR ${table.sourcePlanItemId} IS NULL`,
+    ),
+    check(
+      "routine_select_pref_events_timezone_nonempty",
+      sql`char_length(btrim(${table.timeZone})) > 0`,
+    ),
+    check(
+      "routine_select_pref_events_key_nonempty",
+      sql`char_length(btrim(${table.idempotencyKey})) > 0`,
+    ),
+    check("routine_select_pref_events_sequence_positive", sql`${table.ingestedSequence} > 0`),
+    check("routine_select_pref_events_version_positive", sql`${table.feedbackVersion} > 0`),
   ],
 );
 

@@ -264,6 +264,9 @@ export function buildTestEnvironment(
     NODE_ENV: "test",
     LOG_LEVEL: "warn",
     PRODUCT_API_MODE: "local_unauthenticated",
+    // The sequential browser suite shares one loopback source address. Keep the product default
+    // exercised by API tests while preventing unrelated E2E scenarios from exhausting one bucket.
+    PRODUCT_RATE_LIMIT_PER_MINUTE: "1000",
     API_HOST: "127.0.0.1",
     API_PORT: String(ports.api),
     DATABASE_URL: `postgres://schedule:schedule@127.0.0.1:${ports.postgres}/schedule`,

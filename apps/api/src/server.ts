@@ -69,7 +69,15 @@ const app = await buildApp({
         }
       : { level: config.LOG_LEVEL },
   readinessCheck: () => healthCheckDatabase(database),
-  ...(config.PRODUCT_API_MODE === "local_unauthenticated" ? { productServices } : {}),
+  ...(config.PRODUCT_API_MODE === "local_unauthenticated"
+    ? {
+        productServices,
+        productApiLimits: {
+          requestsPerMinute: config.PRODUCT_RATE_LIMIT_PER_MINUTE,
+          maxConcurrentPlans: 2,
+        },
+      }
+    : {}),
   ...(integrationServices === undefined
     ? {}
     : {

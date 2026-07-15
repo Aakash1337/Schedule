@@ -192,7 +192,14 @@ export class MutateDailyPlan {
     const hash = payloadHash(kind, command, details);
     const now = this.clock.now();
     return this.unitOfWork.run(
-      async ({ routines, workItemDependencies, activityEvents, dailyPlans, notifications }) => {
+      async ({
+        routines,
+        workItemDependencies,
+        activityEvents,
+        dailyPlans,
+        notifications,
+        routineSelectionPreferenceFeedback,
+      }) => {
         await notifications.lockWorkspace(command.workspaceId);
         await dailyPlans.lockDay(command.workspaceId, command.request.date);
         const prior = await dailyPlans.findMutation(
@@ -321,9 +328,12 @@ export class MutateDailyPlan {
           ...command.request,
           requestRevision: current.plan.requestRevision + 1,
         };
-        const [routineCandidates, planningWorkItemGraph, events, priorFeedback] = await Promise.all(
-          [
-            routines.listPlanningCandidates(command.workspaceId, request.date),
+        const routineCandidates = await routines.listPlanningCandidates(
+          command.workspaceId,
+          request.date,
+        );
+        const [planningWorkItemGraph, events, priorFeedback, selectionPreferenceFeedback] =
+          await Promise.all([
             workItemDependencies.loadPlanningGraph(
               command.workspaceId,
               maximumPlanningCandidatePool + 1,
@@ -331,8 +341,12 @@ export class MutateDailyPlan {
             ),
             activityEvents.listForPlanning(command.workspaceId, request.date),
             dailyPlans.listRoutineFeedbackForPlanning(command.workspaceId, request.date),
-          ],
-        );
+            routineSelectionPreferenceFeedback.listForPlanning(
+              command.workspaceId,
+              routineCandidates.map((routine) => routine.id),
+              request.date,
+            ),
+          ]);
         assertPlanningCandidatePoolSize(
           routineCandidates.length,
           planningWorkItemGraph.workItems.length,
@@ -383,6 +397,7 @@ export class MutateDailyPlan {
           workItemDependencies: planningWorkItemGraph.dependencies,
           events,
           routineFeedback,
+          routineSelectionPreferenceFeedback: selectionPreferenceFeedback,
           anchoredItems: anchors,
           excludedRoutineIds,
           excludedWorkItemIds,

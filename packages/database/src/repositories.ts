@@ -64,6 +64,7 @@ import type {
   PlanningWorkItemGraph,
   RecordPlanItemActivityInput,
   RoutineDurationInsightFeedbackRepository,
+  RoutineSelectionPreferenceFeedbackRepository,
   RoutineRepository,
   ScheduleBlockRepository,
   SetPlanItemLockInput,
@@ -77,6 +78,7 @@ import type {
 import {
   DomainError,
   activityEventId,
+  addLocalDays,
   createCadencePolicy,
   createDurationRange,
   createRoutine,
@@ -97,6 +99,9 @@ import {
   routineId,
   routineDurationInsightFeedbackId,
   routinePlanningFeedbackId,
+  routineSelectionPreferenceFeedbackId,
+  ROUTINE_SELECTION_PREFERENCE_EVENT_LIMIT,
+  ROUTINE_SELECTION_PREFERENCE_LOOKBACK_DAYS,
   scheduleBlockId,
   transitionPlanItemActivity,
   workItemId,
@@ -124,8 +129,10 @@ import {
   type PlanWarning,
   type PlanningWorkItemDependency,
   type Routine,
+  type RoutineId,
   type RoutineDurationInsightFeedback,
   type RoutinePlanningFeedback,
+  type RoutineSelectionPreferenceFeedback,
   type RoutineStatus,
   type ScheduleBlock,
   type ScheduleBlockId,
@@ -163,6 +170,7 @@ import {
   planMutations,
   routineDurationInsightFeedbackEvents,
   routinePlanningFeedbackEvents,
+  routineSelectionPreferenceFeedbackEvents,
   routines,
   scheduleBlocks,
   workItemDependencies,
@@ -184,6 +192,8 @@ type RoutineDurationInsightFeedbackEventRow =
   typeof routineDurationInsightFeedbackEvents.$inferSelect;
 type DailyPlanFitInsightFeedbackEventRow = typeof dailyPlanFitInsightFeedbackEvents.$inferSelect;
 type RoutinePlanningFeedbackEventRow = typeof routinePlanningFeedbackEvents.$inferSelect;
+type RoutineSelectionPreferenceFeedbackEventRow =
+  typeof routineSelectionPreferenceFeedbackEvents.$inferSelect;
 type DailyPlanRow = typeof dailyPlans.$inferSelect;
 type DailyPlanItemRow = typeof dailyPlanItems.$inferSelect;
 type DailyPlanItemStateRow = typeof dailyPlanItemStates.$inferSelect;
@@ -835,6 +845,24 @@ function mapRoutinePlanningFeedback(row: RoutinePlanningFeedbackEventRow): Routi
     effectiveThrough: row.effectiveThrough === null ? null : localDate(row.effectiveThrough),
     timeZone: row.timeZone,
     sourcePlanId: dailyPlanId(row.sourcePlanId),
+    sourcePlanItemId: row.sourcePlanItemId === null ? null : planItemId(row.sourcePlanItemId),
+    idempotencyKey: row.idempotencyKey,
+    recordedAt: new Date(row.recordedAt),
+  };
+}
+
+function mapRoutineSelectionPreferenceFeedback(
+  row: RoutineSelectionPreferenceFeedbackEventRow,
+): RoutineSelectionPreferenceFeedback {
+  return {
+    id: routineSelectionPreferenceFeedbackId(row.id),
+    ingestedSequence: row.ingestedSequence,
+    workspaceId: workspaceId(row.workspaceId),
+    routineId: routineId(row.routineId),
+    kind: row.kind,
+    effectiveOn: localDate(row.effectiveOn),
+    timeZone: row.timeZone,
+    sourcePlanId: row.sourcePlanId === null ? null : dailyPlanId(row.sourcePlanId),
     sourcePlanItemId: row.sourcePlanItemId === null ? null : planItemId(row.sourcePlanItemId),
     idempotencyKey: row.idempotencyKey,
     recordedAt: new Date(row.recordedAt),
@@ -3070,6 +3098,209 @@ export class PostgresDailyPlanFitInsightFeedbackRepository implements DailyPlanF
 
 const MAXIMUM_CURRENT_PLAN_BATCH_DATES = 366;
 
+export class PostgresRoutineSelectionPreferenceFeedbackRepository implements RoutineSelectionPreferenceFeedbackRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async lockIdempotencyKey(workspace: WorkspaceId, idempotencyKey: string): Promise<void> {
+    await this.database.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`${workspace}:routine-selection-preference:${idempotencyKey}`}, 0))`,
+    );
+  }
+
+  async findCurrentState(
+    workspace: WorkspaceId,
+    routine: RoutineId,
+  ): Promise<{ readonly feedbackVersion: number; readonly updatedAt: Date | null } | null> {
+    const [routineRow] = await this.database
+      .select({ version: routines.selectionPreferenceVersion })
+      .from(routines)
+      .where(and(eq(routines.workspaceId, workspace), eq(routines.id, routine)))
+      .limit(1);
+    if (routineRow === undefined) return null;
+    if (routineRow.version === 0) return { feedbackVersion: 0, updatedAt: null };
+    const [event] = await this.database
+      .select({ recordedAt: routineSelectionPreferenceFeedbackEvents.recordedAt })
+      .from(routineSelectionPreferenceFeedbackEvents)
+      .where(
+        and(
+          eq(routineSelectionPreferenceFeedbackEvents.workspaceId, workspace),
+          eq(routineSelectionPreferenceFeedbackEvents.routineId, routine),
+          eq(routineSelectionPreferenceFeedbackEvents.feedbackVersion, routineRow.version),
+        ),
+      )
+      .limit(1);
+    if (event === undefined) {
+      throw new DomainError(
+        "planning.selection_preference_state_invalid",
+        "Routine selection preference state is missing its current event.",
+      );
+    }
+    return { feedbackVersion: routineRow.version, updatedAt: new Date(event.recordedAt) };
+  }
+
+  async findByIdempotencyKey(
+    workspace: WorkspaceId,
+    idempotencyKey: string,
+  ): Promise<{
+    readonly feedback: RoutineSelectionPreferenceFeedback;
+    readonly feedbackVersion: number;
+  } | null> {
+    const [row] = await this.database
+      .select()
+      .from(routineSelectionPreferenceFeedbackEvents)
+      .where(
+        and(
+          eq(routineSelectionPreferenceFeedbackEvents.workspaceId, workspace),
+          eq(routineSelectionPreferenceFeedbackEvents.idempotencyKey, idempotencyKey),
+        ),
+      )
+      .limit(1);
+    return row === undefined
+      ? null
+      : {
+          feedback: mapRoutineSelectionPreferenceFeedback(row),
+          feedbackVersion: row.feedbackVersion,
+        };
+  }
+
+  async lockAndGetCurrentVersion(workspace: WorkspaceId, routine: RoutineId): Promise<number> {
+    const [row] = await this.database
+      .select({ version: routines.selectionPreferenceVersion })
+      .from(routines)
+      .where(and(eq(routines.workspaceId, workspace), eq(routines.id, routine)))
+      .limit(1)
+      .for("update");
+    if (row === undefined) {
+      throw new DomainError("routine.not_found", "The routine does not exist.");
+    }
+    return row.version;
+  }
+
+  async listForPlanning(
+    workspace: WorkspaceId,
+    routineIds: readonly RoutineId[],
+    throughDate: LocalDate,
+  ): Promise<readonly RoutineSelectionPreferenceFeedback[]> {
+    if (routineIds.length === 0) return [];
+    const earliest = addLocalDays(throughDate, -(ROUTINE_SELECTION_PREFERENCE_LOOKBACK_DAYS - 1));
+    // Rank before bounding so one heavily-used routine cannot consume a
+    // workspace-wide LIMIT and hide another candidate's preference history.
+    // Nine newest rows/routine preserves the latest reset plus the eight
+    // directional rows that can affect the domain's canonical projection.
+    const rankedFeedback = this.database
+      .select({
+        ...getTableColumns(routineSelectionPreferenceFeedbackEvents),
+        preferenceRank: sql<number>`row_number() over (
+          partition by ${routineSelectionPreferenceFeedbackEvents.routineId}
+          order by
+            ${routineSelectionPreferenceFeedbackEvents.ingestedSequence} desc,
+            ${routineSelectionPreferenceFeedbackEvents.id} desc
+        )::integer`.as("preference_rank"),
+      })
+      .from(routineSelectionPreferenceFeedbackEvents)
+      .where(
+        and(
+          eq(routineSelectionPreferenceFeedbackEvents.workspaceId, workspace),
+          inArray(routineSelectionPreferenceFeedbackEvents.routineId, [...routineIds]),
+          gte(routineSelectionPreferenceFeedbackEvents.effectiveOn, earliest),
+          lte(routineSelectionPreferenceFeedbackEvents.effectiveOn, throughDate),
+        ),
+      )
+      .as("ranked_routine_selection_preference_feedback");
+    const rows = await this.database
+      .select()
+      .from(rankedFeedback)
+      .where(lte(rankedFeedback.preferenceRank, ROUTINE_SELECTION_PREFERENCE_EVENT_LIMIT + 1))
+      .orderBy(
+        asc(rankedFeedback.routineId),
+        desc(rankedFeedback.ingestedSequence),
+        desc(rankedFeedback.id),
+      );
+
+    return rows.map(mapRoutineSelectionPreferenceFeedback);
+  }
+
+  async listForPlanningThroughVersion(
+    workspace: WorkspaceId,
+    routine: RoutineId,
+    throughDate: LocalDate,
+    throughFeedbackVersion: number,
+  ): Promise<readonly RoutineSelectionPreferenceFeedback[]> {
+    const earliest = addLocalDays(throughDate, -(ROUTINE_SELECTION_PREFERENCE_LOOKBACK_DAYS - 1));
+    const rows = await this.database
+      .select()
+      .from(routineSelectionPreferenceFeedbackEvents)
+      .where(
+        and(
+          eq(routineSelectionPreferenceFeedbackEvents.workspaceId, workspace),
+          eq(routineSelectionPreferenceFeedbackEvents.routineId, routine),
+          lte(routineSelectionPreferenceFeedbackEvents.feedbackVersion, throughFeedbackVersion),
+          gte(routineSelectionPreferenceFeedbackEvents.effectiveOn, earliest),
+          lte(routineSelectionPreferenceFeedbackEvents.effectiveOn, throughDate),
+        ),
+      )
+      .orderBy(
+        desc(routineSelectionPreferenceFeedbackEvents.ingestedSequence),
+        desc(routineSelectionPreferenceFeedbackEvents.id),
+      )
+      // The latest reset plus eight directional events completely determine the projection.
+      .limit(ROUTINE_SELECTION_PREFERENCE_EVENT_LIMIT + 1);
+    return rows.map(mapRoutineSelectionPreferenceFeedback);
+  }
+
+  async appendAndAdvance(
+    feedback: RoutineSelectionPreferenceFeedback,
+    expectedFeedbackVersion: number,
+  ): Promise<{
+    readonly feedback: RoutineSelectionPreferenceFeedback;
+    readonly feedbackVersion: number;
+  }> {
+    const [advanced] = await this.database
+      .update(routines)
+      .set({ selectionPreferenceVersion: expectedFeedbackVersion + 1 })
+      .where(
+        and(
+          eq(routines.workspaceId, feedback.workspaceId),
+          eq(routines.id, feedback.routineId),
+          eq(routines.selectionPreferenceVersion, expectedFeedbackVersion),
+        ),
+      )
+      .returning({ version: routines.selectionPreferenceVersion });
+    if (advanced === undefined) {
+      throw new DomainError(
+        "planning.selection_preference_version_conflict",
+        "Routine selection preference feedback changed before this instruction was recorded.",
+      );
+    }
+    const [inserted] = await this.database
+      .insert(routineSelectionPreferenceFeedbackEvents)
+      .values({
+        id: feedback.id,
+        workspaceId: feedback.workspaceId,
+        routineId: feedback.routineId,
+        feedbackVersion: advanced.version,
+        kind: feedback.kind,
+        effectiveOn: feedback.effectiveOn,
+        timeZone: feedback.timeZone,
+        sourcePlanId: feedback.sourcePlanId,
+        sourcePlanItemId: feedback.sourcePlanItemId,
+        idempotencyKey: feedback.idempotencyKey,
+        recordedAt: feedback.recordedAt,
+      })
+      .returning();
+    if (inserted === undefined) {
+      throw new DomainError(
+        "planning.selection_preference_write_conflict",
+        "The selection preference event could not be appended.",
+      );
+    }
+    return {
+      feedback: mapRoutineSelectionPreferenceFeedback(inserted),
+      feedbackVersion: advanced.version,
+    };
+  }
+}
+
 export class PostgresDailyPlanRepository implements DailyPlanRepository {
   constructor(private readonly database: DatabaseExecutor) {}
 
@@ -4600,6 +4831,9 @@ function createTransactionContext(database: DatabaseExecutor): TransactionContex
     activityEvents: new PostgresActivityEventRepository(database),
     routineDurationInsightFeedback: new PostgresRoutineDurationInsightFeedbackRepository(database),
     dailyPlanFitInsightFeedback: new PostgresDailyPlanFitInsightFeedbackRepository(database),
+    routineSelectionPreferenceFeedback: new PostgresRoutineSelectionPreferenceFeedbackRepository(
+      database,
+    ),
     dailyPlans: new PostgresDailyPlanRepository(database),
     notifications: new PostgresNotificationRepository(database),
   };

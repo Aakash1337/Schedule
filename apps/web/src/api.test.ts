@@ -588,6 +588,82 @@ describe("web API client", () => {
     );
   });
 
+  it("retrieves a routine selection preference in the browser's explicit time zone", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            routineId: "routine-1",
+            feedbackVersion: 0,
+            activeEventCount: 0,
+            score: 0,
+            reason: null,
+            updatedAt: null,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await api.getRoutineSelectionPreference(
+      "workspace-1",
+      "routine-1",
+      "America/La_Paz",
+      controller.signal,
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/routines/routine-1/selection-preference?timeZone=America%2FLa_Paz",
+      expect.objectContaining({ method: "GET", signal: controller.signal }),
+    );
+  });
+
+  it("records an idempotent routine selection preference with its optimistic version", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _options?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+            routineId: "routine-1",
+            feedbackVersion: 4,
+            activeEventCount: 1,
+            score: -100,
+            reason: "You asked to see this routine less often (-100).",
+            updatedAt: "2026-07-14T10:00:00.000Z",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const input = {
+      kind: "less_often" as const,
+      expectedFeedbackVersion: 3,
+      timeZone: "America/La_Paz",
+      sourcePlanId: "plan-1",
+      sourcePlanItemId: "plan-item-1",
+    };
+
+    await api.recordRoutineSelectionPreference(
+      "workspace-1",
+      "routine-1",
+      input,
+      "selection-preference-attempt-1",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/routines/routine-1/selection-preference",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: expect.any(Headers),
+      }),
+    );
+    const options = fetchMock.mock.calls[0]?.[1];
+    expect((options?.headers as Headers).get("Idempotency-Key")).toBe(
+      "selection-preference-attempt-1",
+    );
+  });
+
   it("approves a routine duration insight through its atomic command endpoint", async () => {
     const fetchMock = vi.fn(
       async () =>

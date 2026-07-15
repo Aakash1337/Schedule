@@ -13,6 +13,7 @@ export * from "./routine.js";
 export * from "./routine-duration-insight.js";
 export * from "./routine-duration-insight-feedback.js";
 export * from "./routine-planning-feedback.js";
+export * from "./routine-selection-preference-feedback.js";
 export * from "./plan-regeneration.js";
 export * from "./plan-item-activity.js";
 export * from "./schedule-block.js";

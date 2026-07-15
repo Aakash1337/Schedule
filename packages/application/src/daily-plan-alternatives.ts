@@ -86,8 +86,8 @@ async function loadPlanningInputs(
     ...command.request,
     requestRevision: current.plan.requestRevision + 1,
   };
-  const [routines, graph, events, routineFeedback] = await Promise.all([
-    context.routines.listPlanningCandidates(command.workspaceId, request.date),
+  const routines = await context.routines.listPlanningCandidates(command.workspaceId, request.date);
+  const [graph, events, routineFeedback, selectionPreferenceFeedback] = await Promise.all([
     context.workItemDependencies.loadPlanningGraph(
       command.workspaceId,
       maximumPlanningCandidatePool + 1,
@@ -95,6 +95,11 @@ async function loadPlanningInputs(
     ),
     context.activityEvents.listForPlanning(command.workspaceId, request.date),
     context.dailyPlans.listRoutineFeedbackForPlanning(command.workspaceId, request.date),
+    context.routineSelectionPreferenceFeedback.listForPlanning(
+      command.workspaceId,
+      routines.map((routine) => routine.id),
+      request.date,
+    ),
   ]);
   assertPlanningCandidatePoolSize(routines.length, graph.workItems.length);
   assertPlanningWorkItemDependencyPoolSize(graph.dependencies.length);
@@ -106,6 +111,7 @@ async function loadPlanningInputs(
     workItemDependencies: graph.dependencies,
     events,
     routineFeedback,
+    routineSelectionPreferenceFeedback: selectionPreferenceFeedback,
     anchoredItems: current.plan.items.filter(
       (item) => item.locked && !isTerminalPlanItemActivityState(item.activityState),
     ),

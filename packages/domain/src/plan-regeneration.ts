@@ -31,6 +31,7 @@ export interface ReplanDailyPlanInput extends Pick<
   | "routines"
   | "events"
   | "routineFeedback"
+  | "routineSelectionPreferenceFeedback"
   | "workItemDependencies"
   | "config"
   | "generatedAt"
@@ -228,6 +229,9 @@ function replanDailyPlanInternal(
     workItemDependencies: residualWorkItemDependencies,
     events: input.events,
     ...(input.routineFeedback === undefined ? {} : { routineFeedback: input.routineFeedback }),
+    ...(input.routineSelectionPreferenceFeedback === undefined
+      ? {}
+      : { routineSelectionPreferenceFeedback: input.routineSelectionPreferenceFeedback }),
     ...(input.config === undefined ? {} : { config: input.config }),
     ...(input.generatedAt === undefined ? {} : { generatedAt: input.generatedAt }),
   };

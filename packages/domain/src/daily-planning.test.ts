@@ -9,6 +9,7 @@ import {
   createDurationRange,
   createRoutine,
   createRoutinePlanningFeedback,
+  createRoutineSelectionPreferenceFeedback,
   createStructuredTags,
   dailyPlanId,
   evaluateRoutineForPlan,
@@ -19,6 +20,7 @@ import {
   replanDailyPlan,
   routineId,
   routinePlanningFeedbackId,
+  routineSelectionPreferenceFeedbackId,
   selectDailyPlanAlternative,
   workspaceId,
   type ActivityEvent,
@@ -258,6 +260,155 @@ describe("deterministic daily planning", () => {
     expect(suppressed.reasons).toContain("You asked not to see this routine again this week.");
   });
 
+  it("adds only an explicit routine selection preference score and snapshots it canonically", () => {
+    const candidate = routine("selection-preference-candidate", { priority: "high" });
+    const unrelated = routine("selection-preference-unrelated", { priority: "high" });
+    const baseline = evaluateRoutineForPlan(candidate, [], request());
+    const more = createRoutineSelectionPreferenceFeedback({
+      id: routineSelectionPreferenceFeedbackId("selection-preference-more"),
+      ingestedSequence: 2,
+      workspaceId: workspace,
+      routineId: candidate.id,
+      kind: "more_often",
+      effectiveOn: "2026-07-15",
+      timeZone: "UTC",
+      sourcePlanId: dailyPlanId("selection-preference-source"),
+      sourcePlanItemId: planItemId("selection-preference-source-item"),
+      idempotencyKey: "selection-preference-more",
+      recordedAt: generatedAt,
+    });
+    const less = createRoutineSelectionPreferenceFeedback({
+      ...more,
+      id: routineSelectionPreferenceFeedbackId("selection-preference-less"),
+      ingestedSequence: 1,
+      kind: "less_often",
+      sourcePlanItemId: planItemId("selection-preference-less-item"),
+      idempotencyKey: "selection-preference-less",
+    });
+    const adjusted = evaluateRoutineForPlan(
+      candidate,
+      [],
+      request(),
+      DEFAULT_PLANNER_CONFIG,
+      [],
+      [more],
+    );
+    const first = generateDailyPlan({
+      id: dailyPlanId("selection-preference-plan"),
+      request: request("selection-preference-seed"),
+      routines: [candidate],
+      events: [],
+      routineSelectionPreferenceFeedback: [more, less],
+      generatedAt,
+    });
+    const second = generateDailyPlan({
+      id: dailyPlanId("selection-preference-plan"),
+      request: request("selection-preference-seed"),
+      routines: [candidate],
+      events: [],
+      routineSelectionPreferenceFeedback: [less, more],
+      generatedAt,
+    });
+
+    expect(adjusted).toMatchObject({
+      eligible: baseline.eligible,
+      exclusionCodes: baseline.exclusionCodes,
+      periodCompletions: baseline.periodCompletions,
+      minimumScheduledMinutes: baseline.minimumScheduledMinutes,
+      desiredScheduledMinutes: baseline.desiredScheduledMinutes,
+      score: baseline.score + 100,
+      scoreComponents: { selectionPreferenceFeedback: 100 },
+    });
+    expect(adjusted.reasons).toContain("You asked to see this routine more often (+100).");
+    expect(
+      evaluateRoutineForPlan(unrelated, [], request(), DEFAULT_PLANNER_CONFIG, [], [more])
+        .scoreComponents,
+    ).not.toHaveProperty("selectionPreferenceFeedback");
+    expect(second).toEqual(first);
+    expect(first.inputSnapshot).toMatchObject({
+      routineSelectionPreferenceFeedback: [
+        { id: less.id, kind: "less_often" },
+        { id: more.id, kind: "more_often" },
+      ],
+    });
+  });
+
+  it("excludes future, out-of-window, and reset preference history from the plan snapshot", () => {
+    const candidate = routine("selection-preference-canonical-boundary");
+    const makePreference = (
+      id: string,
+      kind: "more_often" | "less_often" | "reset",
+      sequence: number,
+      effectiveOn: string,
+    ) =>
+      createRoutineSelectionPreferenceFeedback({
+        id: routineSelectionPreferenceFeedbackId(id),
+        ingestedSequence: sequence,
+        workspaceId: workspace,
+        routineId: candidate.id,
+        kind,
+        effectiveOn,
+        timeZone: "UTC",
+        sourcePlanId: null,
+        sourcePlanItemId: null,
+        idempotencyKey: id,
+        recordedAt: generatedAt,
+      });
+    const baseline = generateDailyPlan({
+      id: dailyPlanId("selection-preference-canonical-plan"),
+      request: request("selection-preference-canonical-seed"),
+      routines: [candidate],
+      events: [],
+      generatedAt,
+    });
+    const withIrrelevantHistory = generateDailyPlan({
+      id: dailyPlanId("selection-preference-canonical-plan"),
+      request: request("selection-preference-canonical-seed"),
+      routines: [candidate],
+      events: [],
+      routineSelectionPreferenceFeedback: [
+        makePreference("selection-preference-old", "more_often", 1, "2026-04-16"),
+        makePreference("selection-preference-before-reset", "less_often", 2, "2026-07-15"),
+        makePreference("selection-preference-reset", "reset", 3, "2026-07-15"),
+        makePreference("selection-preference-future", "more_often", 4, "2026-07-16"),
+      ],
+      generatedAt,
+    });
+
+    expect(withIrrelevantHistory).toEqual(baseline);
+  });
+
+  it("rejects duplicate routine selection preference event IDs", () => {
+    const candidate = routine("selection-preference-duplicate");
+    const preference = createRoutineSelectionPreferenceFeedback({
+      id: routineSelectionPreferenceFeedbackId("selection-preference-duplicate-event"),
+      ingestedSequence: 1,
+      workspaceId: workspace,
+      routineId: candidate.id,
+      kind: "more_often",
+      effectiveOn: "2026-07-15",
+      timeZone: "UTC",
+      sourcePlanId: null,
+      sourcePlanItemId: null,
+      idempotencyKey: "selection-preference-duplicate-event",
+      recordedAt: generatedAt,
+    });
+
+    expect(() =>
+      generateDailyPlan({
+        request: request("selection-preference-duplicate-seed"),
+        routines: [candidate],
+        events: [],
+        routineSelectionPreferenceFeedback: [preference, preference],
+        generatedAt,
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "planning.duplicate_routine_selection_preference_feedback",
+      }),
+    );
+  });
+
   it("snapshots only canonical latest feedback and remains deterministic across feedback order", () => {
     const candidate = routine("feedback-order");
     const sourcePlanId = dailyPlanId("feedback-order-source");
@@ -456,6 +607,54 @@ describe("deterministic daily planning", () => {
     expect(replanned.inputSnapshot).toMatchObject({
       kind: "feedback",
       plannerInput: { routineFeedback: [{ id: feedback.id }] },
+    });
+  });
+
+  it("propagates routine-only selection preference feedback through residual replanning", () => {
+    const candidates = [routine("selection-replan-target"), routine("selection-replan-sibling")];
+    const source = generateDailyPlan({
+      id: dailyPlanId("selection-replan-source"),
+      request: request("selection-replan-source", { targetMinutes: 60, targetTaskCount: 2 }),
+      routines: candidates,
+      events: [],
+      generatedAt,
+    });
+    const target = source.items[0]!;
+    const sibling = source.items[1]!;
+    const preference = createRoutineSelectionPreferenceFeedback({
+      id: routineSelectionPreferenceFeedbackId("selection-replan-more"),
+      ingestedSequence: 1,
+      workspaceId: workspace,
+      routineId: target.routineId!,
+      kind: "more_often",
+      effectiveOn: "2026-07-15",
+      timeZone: "UTC",
+      sourcePlanId: source.id,
+      sourcePlanItemId: target.id,
+      idempotencyKey: "selection-replan-more",
+      recordedAt: generatedAt,
+    });
+    const replanned = replanDailyPlan({
+      id: dailyPlanId("selection-replan-result"),
+      sourcePlan: source,
+      request: request("selection-replan-result", {
+        targetMinutes: 60,
+        targetTaskCount: 2,
+        requestRevision: 2,
+      }),
+      routines: candidates,
+      events: [],
+      routineSelectionPreferenceFeedback: [preference],
+      anchoredItems: [sibling],
+      kind: "regenerate",
+      generatedAt,
+    });
+
+    expect(replanned.items.find((item) => item.routineId === target.routineId)).toMatchObject({
+      scoreComponents: { selectionPreferenceFeedback: 100 },
+    });
+    expect(replanned.inputSnapshot).toMatchObject({
+      plannerInput: { routineSelectionPreferenceFeedback: [{ id: preference.id }] },
     });
   });
 

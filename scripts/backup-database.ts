@@ -35,6 +35,7 @@ export const expectedScheduleTables = [
   "recurrence_series",
   "routine_duration_insight_feedback_events",
   "routine_planning_feedback_events",
+  "routine_selection_preference_feedback_events",
   "routines",
   "schedule_blocks",
   "webhook_deliveries",
@@ -62,6 +63,10 @@ export const expectedScheduleSequences = [
   {
     schema: "public",
     name: "routine_planning_feedback_events_ingested_sequence_seq",
+  },
+  {
+    schema: "public",
+    name: "routine_select_pref_events_ingested_sequence_seq",
   },
 ] as const;
 

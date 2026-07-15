@@ -158,6 +158,18 @@ export interface Routine {
   readonly updatedAt: string;
 }
 
+export type RoutineSelectionPreferenceKind = "more_often" | "less_often" | "reset";
+
+/** Explicit, reversible influence on this routine's selection in future plans. */
+export interface RoutineSelectionPreferenceState {
+  readonly routineId: string;
+  readonly feedbackVersion: number;
+  readonly activeEventCount: number;
+  readonly score: number;
+  readonly reason: string | null;
+  readonly updatedAt: string | null;
+}
+
 export type RoutineDurationInsightStatus =
   "insufficient_history" | "aligned" | "suggested" | "review_range";
 export type RoutineDurationInsightDisposition = "available" | "dismissed";
