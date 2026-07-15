@@ -3803,6 +3803,14 @@ textarea:focus {
 }
 
 @media (max-width: 1180px) {
+  .work-filter-controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .work-search-filter {
+    grid-column: 1 / -1;
+  }
+
   .work-composer-form {
     grid-template-columns: repeat(7, minmax(0, 1fr));
   }
@@ -4118,6 +4126,10 @@ textarea:focus {
 
   .work-filter-controls {
     grid-template-columns: 1fr;
+  }
+
+  .work-search-filter {
+    grid-column: auto;
   }
 
   .work-filter-meta {

@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-test("discovers active and terminal work through accessible mobile filters", async ({ page }) => {
+test("keeps tablet filters reachable and discovers work through accessible mobile filters", async ({
+  page,
+}) => {
   const pageErrors: string[] = [];
   const requestFailures: string[] = [];
   const unexpectedHttpResponses: string[] = [];
@@ -69,7 +71,7 @@ test("discovers active and terminal work through accessible mobile filters", asy
   await page.addInitScript((workspaceId) => {
     localStorage.setItem("schedule.selectedWorkspace", workspaceId);
   }, workspace.id);
-  await page.setViewportSize({ width: 320, height: 800 });
+  await page.setViewportSize({ width: 920, height: 800 });
   await page.goto("/#work");
 
   const main = page.getByRole("main", { name: "Work view" });
@@ -82,6 +84,17 @@ test("discovers active and terminal work through accessible mobile filters", asy
   const heading = (title: string) => main.getByRole("heading", { name: title, exact: true });
 
   await expect(main).toBeVisible();
+  for (const width of [920, 761]) {
+    await page.setViewportSize({ width, height: 800 });
+    for (const control of [search, status, dueDate, priority]) {
+      const bounds = await control.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(bounds?.x ?? -1).toBeGreaterThanOrEqual(0);
+      expect((bounds?.x ?? 0) + (bounds?.width ?? 0)).toBeLessThanOrEqual(width);
+    }
+  }
+
+  await page.setViewportSize({ width: 320, height: 800 });
   await expect(status).toHaveValue("active");
   await expect(heading(workItems[0].title)).toBeVisible();
   await expect(heading(workItems[1].title)).toBeVisible();
