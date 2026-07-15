@@ -14,9 +14,11 @@ const sourceDatabaseUrl =
 const nonce = randomUUID().replaceAll("-", "");
 const verificationDatabase = `schedule_hermes_dedupe_verify_${nonce}`;
 const runtimeRole = `hermes_verify_${nonce}`;
+const auxiliaryRole = `hermes_aux_${nonce}`;
 const runtimePassword = randomUUID();
 const verificationDatabasePattern = /^schedule_hermes_dedupe_verify_[a-f0-9]{32}$/u;
 const runtimeRolePattern = /^hermes_verify_[a-f0-9]{32}$/u;
+const auxiliaryRolePattern = /^hermes_aux_[a-f0-9]{32}$/u;
 const runtimePasswordPattern = /^[0-9a-f-]{36}$/u;
 const commandHash = createHash("sha256").update("command-one", "utf8").digest("hex");
 const conflictingCommandHash = createHash("sha256")
@@ -50,6 +52,13 @@ function quotedRuntimeRole(): string {
   return `"${runtimeRole}"`;
 }
 
+function quotedAuxiliaryRole(): string {
+  if (!auxiliaryRolePattern.test(auxiliaryRole)) {
+    throw new Error("Unsafe Hermes dedupe auxiliary role identifier.");
+  }
+  return `"${auxiliaryRole}"`;
+}
+
 function expiry(milliseconds = 5 * 60 * 1_000): Date {
   return new Date(Date.now() + milliseconds);
 }
@@ -81,6 +90,7 @@ const adminConnection = createDatabase(databaseUrlFor("postgres"), 1);
 const disposableDatabaseUrl = databaseUrlFor(verificationDatabase);
 let databaseCreated = false;
 let roleCreated = false;
+let auxiliaryRoleCreated = false;
 let connection: DatabaseConnection | null = null;
 let runtimeConnection: DatabaseConnection | null = null;
 let verificationFailed = false;
@@ -98,6 +108,8 @@ try {
     `create role ${quotedRuntimeRole()} login password '${runtimePassword}' noinherit`,
   );
   roleCreated = true;
+  await adminConnection.sql.unsafe(`create role ${quotedAuxiliaryRole()} noinherit`);
+  auxiliaryRoleCreated = true;
 
   connection = createDatabase(disposableDatabaseUrl, 16, {
     applicationName: "schedule-hermes-dedupe-verifier-owner",
@@ -106,12 +118,15 @@ try {
   await migratePostgresDeliveryDedupeStore(connection.sql);
   await migratePostgresDeliveryDedupeStore(connection.sql);
 
-  const [migration] = await connection.sql<{ checksum: string; version: number }[]>`
-    select version, checksum
+  const [migration] = await connection.sql<
+    { checksum: string; ownerOid: string; version: number }[]
+  >`
+    select version, checksum, owner_oid::text as "ownerOid"
     from hermes_adapter.schema_migrations
   `;
   assert.equal(migration?.version, 1);
   assert.match(migration?.checksum ?? "", /^[0-9a-f]{64}$/u);
+  assert.match(migration?.ownerOid ?? "", /^[1-9][0-9]*$/u);
 
   await connection.sql`
     update hermes_adapter.schema_migrations
@@ -125,6 +140,20 @@ try {
   await connection.sql`
     update hermes_adapter.schema_migrations
     set checksum = ${migration!.checksum}
+    where version = 1
+  `;
+  await connection.sql`
+    update hermes_adapter.schema_migrations
+    set owner_oid = ${auxiliaryRole}::regrole::oid
+    where version = 1
+  `;
+  await assert.rejects(
+    migratePostgresDeliveryDedupeStore(connection.sql),
+    errorCode("unsupported_schema"),
+  );
+  await connection.sql`
+    update hermes_adapter.schema_migrations
+    set owner_oid = current_user::regrole::oid
     where version = 1
   `;
 
@@ -202,16 +231,109 @@ try {
   await migratePostgresDeliveryDedupeStore(connection.sql);
 
   await connection.sql.unsafe(`alter schema hermes_adapter owner to ${quotedRuntimeRole()}`);
-  await assert.rejects(
-    grantPostgresDeliveryDedupeRuntimeRole(connection.sql, runtimeRole),
-    errorCode("invalid_input"),
-  );
-  await connection.sql`alter schema hermes_adapter owner to current_user`;
+  try {
+    await assert.rejects(
+      grantPostgresDeliveryDedupeRuntimeRole(connection.sql, runtimeRole),
+      errorCode("unsupported_schema"),
+    );
+  } finally {
+    await connection.sql`alter schema hermes_adapter owner to current_user`;
+  }
   await grantPostgresDeliveryDedupeRuntimeRole(connection.sql, runtimeRole);
+  await adminConnection.sql.unsafe(
+    `alter role ${quotedRuntimeRole()} set search_path = hermes_adapter, public`,
+  );
   runtimeConnection = createDatabase(runtimeDatabaseUrl(), 16, {
     applicationName: "schedule-hermes-dedupe-verifier-runtime",
     statementTimeoutMs: 10_000,
   });
+  const [runtimeSearchPath] = await runtimeConnection.sql<{ searchPath: string }[]>`
+    select current_setting('search_path') as "searchPath"
+  `;
+  assert.equal(runtimeSearchPath?.searchPath, "hermes_adapter, public");
+
+  await connection.sql.unsafe(`alter schema hermes_adapter owner to ${quotedAuxiliaryRole()}`);
+  try {
+    await assert.rejects(
+      store(runtimeConnection, randomUUID()).reserve({
+        dedupeKey: randomUUID(),
+        commandHash,
+        claimToken: randomUUID(),
+        reservationExpiresAt: expiry(),
+        minimumRemainingMilliseconds: 1_000,
+      }),
+      errorCode("unsupported_schema"),
+    );
+  } finally {
+    await connection.sql`alter schema hermes_adapter owner to current_user`;
+  }
+  await connection.sql.unsafe(
+    `alter table hermes_adapter.delivery_dedupe owner to ${quotedAuxiliaryRole()}`,
+  );
+  try {
+    await assert.rejects(
+      store(runtimeConnection, randomUUID()).reserve({
+        dedupeKey: randomUUID(),
+        commandHash,
+        claimToken: randomUUID(),
+        reservationExpiresAt: expiry(),
+        minimumRemainingMilliseconds: 1_000,
+      }),
+      errorCode("unsupported_schema"),
+    );
+  } finally {
+    await connection.sql`alter table hermes_adapter.delivery_dedupe owner to current_user`;
+  }
+  await connection.sql.unsafe(
+    `alter function hermes_adapter.mark_delivery_dedupe(uuid, text) owner to ${quotedAuxiliaryRole()}`,
+  );
+  try {
+    await assert.rejects(
+      store(runtimeConnection, randomUUID()).reserve({
+        dedupeKey: randomUUID(),
+        commandHash,
+        claimToken: randomUUID(),
+        reservationExpiresAt: expiry(),
+        minimumRemainingMilliseconds: 1_000,
+      }),
+      errorCode("unsupported_schema"),
+    );
+  } finally {
+    await connection.sql`
+      alter function hermes_adapter.mark_delivery_dedupe(uuid, text) owner to current_user
+    `;
+  }
+
+  await adminConnection.sql.unsafe(`grant ${quotedAuxiliaryRole()} to ${quotedRuntimeRole()}`);
+  try {
+    await assert.rejects(
+      store(runtimeConnection, randomUUID()).reserve({
+        dedupeKey: randomUUID(),
+        commandHash,
+        claimToken: randomUUID(),
+        reservationExpiresAt: expiry(),
+        minimumRemainingMilliseconds: 1_000,
+      }),
+      errorCode("unsupported_schema"),
+    );
+  } finally {
+    await adminConnection.sql.unsafe(`revoke ${quotedAuxiliaryRole()} from ${quotedRuntimeRole()}`);
+  }
+  await adminConnection.sql.unsafe(`grant ${quotedRuntimeRole()} to ${quotedAuxiliaryRole()}`);
+  try {
+    await assert.rejects(
+      store(runtimeConnection, randomUUID()).reserve({
+        dedupeKey: randomUUID(),
+        commandHash,
+        claimToken: randomUUID(),
+        reservationExpiresAt: expiry(),
+        minimumRemainingMilliseconds: 1_000,
+      }),
+      errorCode("unsupported_schema"),
+    );
+  } finally {
+    await adminConnection.sql.unsafe(`revoke ${quotedRuntimeRole()} from ${quotedAuxiliaryRole()}`);
+  }
 
   await connection.sql`
     alter table hermes_adapter.delivery_dedupe
@@ -514,13 +636,16 @@ try {
   const replacementToken = randomUUID();
   const expiredOwner = store(runtimeConnection, expiredToken);
   const replacementOwner = store(runtimeConnection, replacementToken);
-  await expiredOwner.reserve({
-    dedupeKey: expiredKey,
-    commandHash,
-    claimToken: randomUUID(),
-    reservationExpiresAt: expiry(300),
-    minimumRemainingMilliseconds: 0,
-  });
+  assert.deepEqual(
+    await expiredOwner.reserve({
+      dedupeKey: expiredKey,
+      commandHash,
+      claimToken: randomUUID(),
+      reservationExpiresAt: expiry(300),
+      minimumRemainingMilliseconds: 0,
+    }),
+    { state: "acquired", reservationToken: expiredToken },
+  );
   await new Promise((resolve) => setTimeout(resolve, 400));
   await assert.rejects(
     connection.sql`
@@ -679,7 +804,7 @@ try {
     { state: "delivered" },
   );
 
-  successMessage = `Hermes delivery dedupe verification passed atomic concurrency, payload binding, digest-only fencing, delivered replay, release and expiry takeover, database-clock budget rechecks, bounded lock waits, migration attestation, least-privilege runtime access, and restart durability in ${verificationDatabase}`;
+  successMessage = `Hermes delivery dedupe verification passed atomic concurrency, payload binding, digest-only fencing, delivered replay, release and expiry takeover, database-clock budget rechecks, bounded lock waits, search-path-stable owner attestation, bidirectional role isolation, least-privilege runtime access, and restart durability in ${verificationDatabase}`;
 } catch (error) {
   verificationFailed = true;
   verificationError = error;
@@ -713,6 +838,13 @@ try {
   if (roleCreated) {
     try {
       await adminConnection.sql.unsafe(`drop role if exists ${quotedRuntimeRole()}`);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (auxiliaryRoleCreated) {
+    try {
+      await adminConnection.sql.unsafe(`drop role if exists ${quotedAuxiliaryRole()}`);
     } catch (error) {
       cleanupErrors.push(error);
     }

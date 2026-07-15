@@ -9,6 +9,8 @@ const SHA_256 = /^[0-9a-f]{64}$/u;
 const DATABASE_ROLE = /^[a-z_][a-z0-9_]{0,62}$/u;
 const DEFAULT_MAXIMUM_RESERVATION_HORIZON_MILLISECONDS = 15 * 60 * 1_000;
 const DEFAULT_STATEMENT_TIMEOUT_MILLISECONDS = 2_000;
+const RESERVATION_BUDGET_ERROR =
+  "reservationExpiresAt must preserve the required budget inside the database-clock horizon.";
 const MIGRATION_LOCK = "schedule.hermes-reminder.delivery-dedupe/v1";
 const MIGRATION_CHECKSUM_V1 = createHash("sha256")
   .update(
@@ -23,6 +25,7 @@ const MIGRATION_CHECKSUM_V1 = createHash("sha256")
       "immutable-delivered",
       "security-definer-operation-functions",
       "logged-relations",
+      "migration-owner-oid",
     ].join("|"),
     "utf8",
   )
@@ -40,6 +43,7 @@ const EXPECTED_COLUMNS = [
 const EXPECTED_MIGRATION_COLUMNS = [
   "version|int4|NO|<none>||",
   "checksum|text|NO|<none>||",
+  "owner_oid|oid|NO|<none>||",
   "applied_at|timestamptz|NO|clock_timestamp()||",
 ] as const;
 const EXPECTED_CONSTRAINTS = [
@@ -51,6 +55,7 @@ const EXPECTED_CONSTRAINTS = [
 ] as const;
 const EXPECTED_MIGRATION_CONSTRAINTS = [
   "c|hermes_schema_migration_checksum_valid|CHECK (checksum ~ '^[0-9a-f]{64}$'::text)",
+  "c|hermes_schema_migration_owner_valid|CHECK (owner_oid <> 0::oid)",
   "p|schema_migrations_pkey|PRIMARY KEY (version)",
 ] as const;
 const EXPECTED_INDEXES = [
@@ -89,6 +94,7 @@ interface ReserveFunctionRow {
 interface MigrationRow {
   readonly version: number;
   readonly checksum: string;
+  readonly ownerOid: string;
 }
 
 interface RuntimeRoleRow {
@@ -125,6 +131,10 @@ interface SchemaShapeRow {
   readonly triggers: string[];
   readonly functions: string[];
   readonly functionSources: string[];
+  readonly functionOwnerOids: string[];
+  readonly migrationOwnerOid: string | null;
+  readonly relationOwnerOids: string[];
+  readonly schemaOwnerOid: string | null;
   readonly publicSchemaUsage: boolean;
   readonly publicTablePrivilege: boolean;
   readonly publicFunctionExecute: boolean;
@@ -234,6 +244,7 @@ function arraysEqual(left: readonly string[], right: readonly string[]): boolean
 }
 
 async function assertSchemaShape(transaction: TransactionSql): Promise<void> {
+  await transaction`select set_config('search_path', 'pg_catalog', true)`;
   const rows = await transaction<SchemaShapeRow[]>`
     select
       array(
@@ -351,6 +362,30 @@ async function assertSchemaShape(transaction: TransactionSql): Promise<void> {
         where namespace_record.nspname = 'hermes_adapter'
         order by procedure_record.proname, procedure_record.oid
       ) as "functionSources",
+      array(
+        select procedure_record.proowner::text
+        from pg_proc as procedure_record
+        join pg_namespace as namespace_record on namespace_record.oid = procedure_record.pronamespace
+        where namespace_record.nspname = 'hermes_adapter'
+        order by procedure_record.proname, procedure_record.oid
+      ) as "functionOwnerOids",
+      (
+        select owner_oid::text
+        from hermes_adapter.schema_migrations
+        where version = 1
+      ) as "migrationOwnerOid",
+      array(
+        select relation_record.relowner::text
+        from pg_class as relation_record
+        join pg_namespace as namespace_record on namespace_record.oid = relation_record.relnamespace
+        where namespace_record.nspname = 'hermes_adapter'
+        order by relation_record.relname
+      ) as "relationOwnerOids",
+      (
+        select namespace_record.nspowner::text
+        from pg_namespace as namespace_record
+        where namespace_record.nspname = 'hermes_adapter'
+      ) as "schemaOwnerOid",
       has_schema_privilege('public', 'hermes_adapter', 'USAGE') as "publicSchemaUsage",
       (
         has_table_privilege('public', 'hermes_adapter.delivery_dedupe', 'SELECT')
@@ -384,12 +419,20 @@ async function assertSchemaShape(transaction: TransactionSql): Promise<void> {
       ), false) as "publicFunctionExecute"
   `;
   const shape = rows[0];
+  const migrationOwnerOid = shape?.migrationOwnerOid;
   const functionSourceHashes =
     shape?.functionSources.map((source) =>
       createHash("sha256").update(source, "utf8").digest("hex"),
     ) ?? [];
   if (
     shape === undefined ||
+    typeof migrationOwnerOid !== "string" ||
+    !/^[1-9][0-9]*$/u.test(migrationOwnerOid) ||
+    shape.schemaOwnerOid !== migrationOwnerOid ||
+    shape.relationOwnerOids.length !== EXPECTED_RELATIONS.length ||
+    shape.relationOwnerOids.some((ownerOid) => ownerOid !== migrationOwnerOid) ||
+    shape.functionOwnerOids.length !== EXPECTED_FUNCTIONS.length ||
+    shape.functionOwnerOids.some((ownerOid) => ownerOid !== migrationOwnerOid) ||
     !arraysEqual(shape.columns, EXPECTED_COLUMNS) ||
     !arraysEqual(shape.migrationColumns, EXPECTED_MIGRATION_COLUMNS) ||
     !arraysEqual(shape.constraints, EXPECTED_CONSTRAINTS) ||
@@ -412,14 +455,15 @@ async function assertSchemaShape(transaction: TransactionSql): Promise<void> {
 
 async function assertMigrationIdentity(transaction: TransactionSql): Promise<void> {
   const migrations = await transaction<MigrationRow[]>`
-    select version, checksum
+    select version, checksum, owner_oid::text as "ownerOid"
     from hermes_adapter.schema_migrations
     order by version
   `;
   if (
     migrations.length !== 1 ||
     migrations[0]?.version !== 1 ||
-    migrations[0]?.checksum !== MIGRATION_CHECKSUM_V1
+    migrations[0]?.checksum !== MIGRATION_CHECKSUM_V1 ||
+    !/^[1-9][0-9]*$/u.test(migrations[0]?.ownerOid ?? "")
   ) {
     throw new PostgresDeliveryDedupeStoreError(
       "unsupported_schema",
@@ -438,7 +482,9 @@ async function assertRuntimeBoundary(transaction: TransactionSql): Promise<void>
       role_record.rolinherit as inherits,
       not exists (
         select 1 from pg_auth_members as membership_record
-        where membership_record.member = role_record.oid
+        where
+          membership_record.member = role_record.oid
+          or membership_record.roleid = role_record.oid
       ) as isolated,
       exists (
         select 1
@@ -570,13 +616,16 @@ export async function migratePostgresDeliveryDedupeStore(sql: Sql): Promise<void
       create table if not exists hermes_adapter.schema_migrations (
         version integer primary key,
         checksum text not null,
+        owner_oid oid not null,
         applied_at timestamptz not null default clock_timestamp(),
         constraint hermes_schema_migration_checksum_valid
-          check (checksum ~ '^[0-9a-f]{64}$')
+          check (checksum ~ '^[0-9a-f]{64}$'),
+        constraint hermes_schema_migration_owner_valid
+          check (owner_oid <> 0::oid)
       )
     `;
     const migrations = await transaction<MigrationRow[]>`
-      select version, checksum
+      select version, checksum, owner_oid::text as "ownerOid"
       from hermes_adapter.schema_migrations
       order by version
     `;
@@ -900,8 +949,8 @@ export async function migratePostgresDeliveryDedupeStore(sql: Sql): Promise<void
         $function$
       `;
       await transaction`
-        insert into hermes_adapter.schema_migrations (version, checksum)
-        values (1, ${MIGRATION_CHECKSUM_V1})
+        insert into hermes_adapter.schema_migrations (version, checksum, owner_oid)
+        values (1, ${MIGRATION_CHECKSUM_V1}, current_user::regrole::oid)
       `;
     }
     await transaction`revoke all on schema hermes_adapter from public`;
@@ -931,7 +980,9 @@ export async function grantPostgresDeliveryDedupeRuntimeRole(
         role_record.rolinherit as inherits,
         not exists (
           select 1 from pg_auth_members as membership_record
-          where membership_record.member = role_record.oid
+          where
+            membership_record.member = role_record.oid
+            or membership_record.roleid = role_record.oid
         ) as isolated,
         exists (
           select 1
@@ -1113,6 +1164,13 @@ export class PostgresDeliveryDedupeStore implements DeliveryDedupeStore {
           return { state: "acquired", reservationToken };
         }
         if (
+          row.outcome === "acquired" &&
+          row.storedCommandHash === commandHash &&
+          row.budgetValid === false
+        ) {
+          invalid(RESERVATION_BUDGET_ERROR);
+        }
+        if (
           row.outcome === "payload_conflict" &&
           typeof row.storedCommandHash === "string" &&
           SHA_256.test(row.storedCommandHash) &&
@@ -1127,9 +1185,7 @@ export class PostgresDeliveryDedupeStore implements DeliveryDedupeStore {
           return { state: row.outcome };
         }
         if (row.outcome === "invalid" && row.storedCommandHash === null) {
-          invalid(
-            "reservationExpiresAt must preserve the required budget inside the database-clock horizon.",
-          );
+          invalid(RESERVATION_BUDGET_ERROR);
         }
         throw new PostgresDeliveryDedupeStoreError(
           "store_inconsistent",
@@ -1156,25 +1212,35 @@ export class PostgresDeliveryDedupeStore implements DeliveryDedupeStore {
     const dedupeKey = normalizeUuid(input.dedupeKey, "dedupeKey");
     const reservationTokenHash = digest(normalizeUuid(input.reservationToken, "reservationToken"));
 
-    await this.transaction(async (transaction) => {
-      const rows = await transaction<{ outcome: string }[]>`
-        select hermes_adapter.mark_delivery_dedupe(
-          ${dedupeKey}::uuid,
-          ${reservationTokenHash}
-        ) as outcome
-      `;
-      if (rows.length === 1 && rows[0]?.outcome === "delivered") return;
-      if (rows.length !== 1 || rows[0]?.outcome !== "fenced") {
+    try {
+      await this.transaction(async (transaction) => {
+        const rows = await transaction<{ outcome: string }[]>`
+          select hermes_adapter.mark_delivery_dedupe(
+            ${dedupeKey}::uuid,
+            ${reservationTokenHash}
+          ) as outcome
+        `;
+        if (rows.length === 1 && rows[0]?.outcome === "delivered") return;
+        if (rows.length !== 1 || rows[0]?.outcome !== "fenced") {
+          throw new PostgresDeliveryDedupeStoreError(
+            "store_inconsistent",
+            "The durable delivery dedupe record is missing or invalid.",
+          );
+        }
         throw new PostgresDeliveryDedupeStoreError(
-          "store_inconsistent",
-          "The durable delivery dedupe record is missing or invalid.",
+          "reservation_fenced",
+          "The delivery dedupe reservation is no longer owned by this token.",
+        );
+      });
+    } catch (error) {
+      if (isTransitionViolation(error)) {
+        throw new PostgresDeliveryDedupeStoreError(
+          "reservation_fenced",
+          "The delivery dedupe reservation expired before delivery could be recorded.",
         );
       }
-      throw new PostgresDeliveryDedupeStoreError(
-        "reservation_fenced",
-        "The delivery dedupe reservation is no longer owned by this token.",
-      );
-    });
+      throw error;
+    }
   }
 
   async release(input: {

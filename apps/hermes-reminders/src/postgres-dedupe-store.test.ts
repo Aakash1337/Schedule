@@ -1,4 +1,4 @@
-import type { Sql } from "postgres";
+import type { Sql, TransactionSql } from "postgres";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -27,6 +27,20 @@ function validReservation() {
     reservationExpiresAt: new Date(Date.now() + 60_000),
     minimumRemainingMilliseconds: 1_000,
   };
+}
+
+function useOperationRows(instance: PostgresDeliveryDedupeStore, rows: readonly unknown[]) {
+  const transaction = (async () => rows) as unknown as TransactionSql;
+  Object.defineProperty(instance, "transaction", {
+    value: async (operation: (transaction: TransactionSql) => Promise<unknown>) =>
+      operation(transaction),
+  });
+}
+
+function failTransaction(instance: PostgresDeliveryDedupeStore, error: unknown) {
+  Object.defineProperty(instance, "transaction", {
+    value: async () => Promise.reject(error),
+  });
 }
 
 describe("PostgresDeliveryDedupeStore guards", () => {
@@ -70,5 +84,40 @@ describe("PostgresDeliveryDedupeStore guards", () => {
 
     expect(error).toBeInstanceOf(PostgresDeliveryDedupeStoreError);
     expect(String(error)).not.toContain(unsafeToken);
+  });
+});
+
+describe("PostgresDeliveryDedupeStore result mapping", () => {
+  it("rejects an acquired reservation whose database-clock budget has elapsed", async () => {
+    const instance = store();
+    useOperationRows(instance, [
+      { outcome: "acquired", storedCommandHash: commandHash, budgetValid: false },
+    ]);
+
+    await expect(instance.reserve(validReservation())).rejects.toMatchObject({
+      code: "invalid_input",
+      message: expect.stringContaining("required budget"),
+    });
+  });
+
+  it("maps the mark-delivered expiry-boundary transition to a fenced reservation", async () => {
+    const instance = store();
+    failTransaction(instance, {
+      code: "23514",
+      constraint_name: "hermes_delivery_dedupe_transition_valid",
+    });
+
+    await expect(instance.markDelivered({ dedupeKey, reservationToken })).rejects.toMatchObject({
+      code: "reservation_fenced",
+      message: expect.stringContaining("expired"),
+    });
+  });
+
+  it("preserves unrelated database errors while marking delivery", async () => {
+    const unrelated = { code: "23514", constraint_name: "different_constraint" };
+    const instance = store();
+    failTransaction(instance, unrelated);
+
+    await expect(instance.markDelivered({ dedupeKey, reservationToken })).rejects.toBe(unrelated);
   });
 });

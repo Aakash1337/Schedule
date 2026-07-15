@@ -2065,7 +2065,7 @@
           "file": "scripts/verify-hermes-dedupe-store.ts",
           "command": "hermes-dedupe-store",
           "anchors": [
-            "Hermes delivery dedupe verification passed atomic concurrency, payload binding, digest-only fencing, delivered replay, release and expiry takeover, database-clock budget rechecks, bounded lock waits, migration attestation, least-privilege runtime access, and restart durability"
+            "Hermes delivery dedupe verification passed atomic concurrency, payload binding, digest-only fencing, delivered replay, release and expiry takeover, database-clock budget rechecks, bounded lock waits, search-path-stable owner attestation, bidirectional role isolation, least-privilege runtime access, and restart durability"
           ]
         },
         {

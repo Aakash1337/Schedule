@@ -42,12 +42,15 @@ operations. The role receives no read or DML privilege on the dedupe table and n
 transition trigger function. The three operations are fixed, `STRICT`, security-definer functions
 owned by the migration role with a `pg_catalog`-only search path; each checks the opaque token inside
 the database. Construct the runtime store with a client for that role, not the migration owner.
-Migration v1 is serialized with a transaction advisory lock, records a fixed checksum in
-`hermes_adapter.schema_migrations`, and attests logged-table durability, exact columns/defaults,
-constraint definitions, every relation and function in the schema, operation and transition function
-sources, the enabled trigger, and public-access revocations. Migration also revokes PUBLIC execution
-from future functions by default. Every runtime operation repeats the catalog and execute-only role
-attestation and fails closed when the identity, permissions, ownership, or catalog shape does not
+Migration v1 is serialized with a transaction advisory lock and records both a fixed checksum and
+the migration owner's PostgreSQL OID in `hermes_adapter.schema_migrations`. Catalog attestation pins
+the schema, every relation/index, and every function to that owner while also checking logged-table
+durability, exact columns/defaults, constraint definitions, operation and transition function
+sources, the enabled trigger, and public-access revocations. It normalizes catalog deparsing under a
+`pg_catalog`-only local search path, so a runtime role's configured search path cannot create false
+mismatches. Migration also revokes PUBLIC execution from future functions by default. Every runtime
+operation repeats the catalog and execute-only role attestation, rejects role memberships in either
+direction, and fails closed when the identity, permissions, ownership, or catalog shape does not
 match.
 
 The table persists only the stable Schedule dedupe UUID, the command digest, a SHA-256 digest of the
@@ -126,8 +129,8 @@ network. `pnpm verify:hermes-dedupe-store` additionally creates a nonce PostgreS
 atomic multi-replica exclusion, payload binding before and after delivery, digest-only token storage,
 idempotent delivery and release, expired-reservation takeover, stale-owner fencing, database-clock
 budget and horizon rejection, bounded row-lock waits, checksum/catalog migration attestation,
-same-name definition, function-source, trigger-enable, and logged-table tamper detection, rejection of
-database/adapter-object ownership, default-private future functions, rejection of unexpected schema
-helpers and privilege drift, successful operation through execute-only security-definer functions,
-denial of runtime table reads/DML and DDL, restart durability, and exact cleanup of the nonce database
-and role.
+search-path-stable deparsing, schema/relation/function owner drift, same-name definition,
+function-source, trigger-enable, and logged-table tamper detection, bidirectional role-membership
+rejection, default-private future functions, rejection of unexpected schema helpers and privilege
+drift, successful operation through execute-only security-definer functions, denial of runtime table
+reads/DML and DDL, restart durability, and exact cleanup of the nonce database and roles.
