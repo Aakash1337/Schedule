@@ -58,16 +58,25 @@ async function createBoundaryApp(
     app,
     { authenticator, authorizer },
     async (hosted, access) => {
-      hosted.get("/v1/hosted/workspaces/:workspaceId/probe", async (request, reply) => {
-        reply.header("cache-control", "public, max-age=3600");
-        const authorization = access.authorization(request);
-        return {
-          userId: authorization.userId,
-          sessionId: authorization.sessionId,
-          workspaceId: authorization.workspaceId,
-          frozen: Object.isFrozen(authorization),
-        };
-      });
+      hosted.get(
+        "/v1/hosted/workspaces/:workspaceId/probe",
+        {
+          onSend: async (_request, reply, payload) => {
+            reply.header("cache-control", "public, max-age=3600");
+            return payload;
+          },
+        },
+        async (request, reply) => {
+          reply.header("cache-control", "public, max-age=3600");
+          const authorization = access.authorization(request);
+          return {
+            userId: authorization.userId,
+            sessionId: authorization.sessionId,
+            workspaceId: authorization.workspaceId,
+            frozen: Object.isFrozen(authorization),
+          };
+        },
+      );
     },
   );
   await app.ready();

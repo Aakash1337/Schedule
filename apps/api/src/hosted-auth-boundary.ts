@@ -3,10 +3,14 @@ import {
   type HostedWorkspaceAuthorization,
 } from "@schedule/application";
 import { workspaceId, type WorkspaceId } from "@schedule/domain";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyRequest, onSendHookHandler } from "fastify";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const WORKSPACE_PARAMETER_SEGMENT = /(?:^|\/):workspaceId(?:\/|$)/u;
+const enforcePrivateCaching: onSendHookHandler = (_request, reply, payload, done) => {
+  reply.header("cache-control", "no-store");
+  done(null, payload);
+};
 
 export interface HostedRequestAuthenticator {
   /** Transport parsing and session resolution stay behind this port. */
@@ -110,6 +114,13 @@ export async function registerHostedWorkspaceBoundary(
       if (!WORKSPACE_PARAMETER_SEGMENT.test(route.url)) {
         throw new Error("Every hosted workspace route must include a :workspaceId parameter.");
       }
+      const existing = route.onSend;
+      route.onSend =
+        existing === undefined
+          ? enforcePrivateCaching
+          : Array.isArray(existing)
+            ? [...existing, enforcePrivateCaching]
+            : [existing, enforcePrivateCaching];
     });
 
     hostedApp.addHook("onRequest", async (request, reply) => {
@@ -159,12 +170,6 @@ export async function registerHostedWorkspaceBoundary(
         request.log.error("hosted workspace authorization failed internally");
         return reply.code(503).send(publicFailure(request, 503));
       }
-    });
-
-    hostedApp.addHook("onSend", async (_request, reply, payload) => {
-      // A route or later hook must not weaken the private-response cache policy.
-      reply.header("cache-control", "no-store");
-      return payload;
     });
 
     await registerRoutes(hostedApp, access);
