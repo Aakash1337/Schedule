@@ -35,7 +35,8 @@ The application uses a persistent desktop rail and a compact mobile navigation b
    instructions appear in a separate **Temporarily hidden** list with an Undo control. When a plan
    exists, **Ask local advisor** can request an optional, read-only review of that exact plan and its
    eligible backlog. Before generation, **Deterministic Plan Fit** explains whether enough resolved
-   history exists, whether recent targets fit, or whether a smaller joint time/task target may help.
+   history exists, whether recent targets fit, or whether a smaller joint time/task target may help;
+   explicit uses later appear in a read-only outcome history.
 2. **Work** groups one-time work items into the six supported status columns. Status changes use
    explicit controls because manual card ranking is not part of the API contract. Titles,
    descriptions, priority, status, optional local **Due date**, and an explicit **Include in Today**
@@ -217,9 +218,18 @@ scheduled duration of completed items. A plan counts only after every item is te
 
 **Use _n_ minutes and _n_ tasks** only copies both suggested values into the editable fields, moves
 focus to the first target, and announces the result. It never submits the form. The user can review
-or change either field and must still choose **Generate today's plan**. The generated request and its
-persisted immutable snapshot therefore contain the values the user explicitly submitted, not a
-background recommendation.
+or change either field and must still choose **Generate today's plan**. Prefilling creates no history
+entry. The later generated request carries the selected evidence key plus the values the user
+explicitly submitted. If that evidence changed, the browser clears the selection, reloads current
+guidance, and leaves the date without a plan; it never silently generates from the stale choice.
+
+**After using Plan Fit** is a bounded read-only history below the guidance. It distinguishes the
+original suggestion from the final edited targets, labels a use as waiting until every current-plan
+item is terminal, then shows completed scheduled workload for a resolved day. If the day was later
+regenerated or otherwise revised, the row says so and evaluates the current head while preserving the
+original source plan. Missing or empty current plans are labelled not evaluable. Loading, retry,
+empty, and error states are independent of the guidance read, and fetching history cannot submit the
+form or mutate planner state.
 
 **Not now** appends feedback for the exact evidence key and refetches the panel. A paused suggestion
 keeps its evidence visible and offers **Show again**. Ambiguous retry retains the same idempotency
@@ -347,10 +357,13 @@ intents, inserts an execution fixture through the isolated PostgreSQL test bound
 real product-safe history route and UI at desktop and 320px without request interception. Another
 prepares one title through a strict loopback Ollama double, proves no card exists before confirmation,
 edits and confirms through the real API, verifies focus, and reloads the persisted backlog item. A
-Daily Plan Fit scenario creates three fully resolved historical plans, observes a joint 90-minute/two-task suggestion,
-dismisses and restores its exact key, copies both targets without creating a plan, and then generates
-only through the explicit form submission. The alternatives scenario compares deterministic choices,
-selects one exactly once, reloads it, and rejects a stale selection.
+Daily Plan Fit scenario creates three fully resolved historical plans, observes a joint
+90-minute/two-task suggestion, dismisses and restores its exact key, rejects a stale selected key
+without creating a plan or receipt, and proves that copying both targets still writes no history. It
+edits the targets, generates explicitly, replays the request without duplicating usage, resolves the
+plan, renders the outcome on the next no-plan day, revises the original day, and renders the revision
+notice. The alternatives scenario compares deterministic choices, selects one exactly once, reloads
+it, and rejects a stale selection.
 
 Install the local browser binary once, then run the bounded verifier:
 

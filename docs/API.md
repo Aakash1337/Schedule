@@ -74,6 +74,7 @@ not authorize these product routes.
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissals`                | Dismiss one exact insight (`200` or `409`)             |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissal-resets`          | Restore one exact insight (`200` or `409`)             |
 | `GET`    | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight?forDate={YYYY-MM-DD}`                     | Derive read-only joint target guidance                 |
+| `GET`    | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/usages?limit=5`                           | List bounded explicit-use outcomes                     |
 | `POST`   | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/dismissals`                               | Dismiss one exact target suggestion                    |
 | `POST`   | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/dismissal-resets`                         | Restore one exact target suggestion                    |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | List stable, cursor-paginated history (`200`)          |
@@ -382,9 +383,25 @@ returns the original event. Semantic key reuse returns
 `409 daily_plan_fit_insight.disposition_conflict`. A changed evidence snapshot has a different key,
 so it can surface as available despite an older dismissal.
 
-Neither the read nor feedback routes edit planning targets, create a plan revision, mutate a Today
-head, or affect planner input and scoring. Copying a suggestion into editable target fields is a
-client action; the ordinary explicit plan-generation request remains the only creation step.
+Copying a suggestion into editable target fields is a client action and performs no API mutation.
+When the user subsequently submits ordinary revision-1 generation, the otherwise strict plan body
+may include nullable `planFitInsightKey`. The server locks the date and workspace feedback stream,
+recomputes current evidence, and requires that exact key to remain an available suggestion. A stale
+key returns `409 daily_plan_fit_insight.evidence_conflict` without creating a plan or event.
+Successful generation stores the plan and one immutable `used` receipt in the same transaction. The
+receipt preserves the exact evidence and suggested pair, generated plan ID, and final user-edited
+targets. Exact plan retry requires the matching receipt and cannot duplicate it; mismatched provenance
+returns `409 daily_plan_fit_insight.usage_replay_conflict`. Mutation endpoints intentionally reject
+the provenance key because later revisions are reported against the original explicit use.
+
+`GET .../daily-plan-fit-insight/usages` accepts `limit` 1–28, defaults to 5, and returns newest uses
+only for the requested workspace. Each item contains the usage ID, date, evidence key and timestamp,
+source plan ID, nullable current-plan identity/revision/head version, `revisedSinceUsage`, suggested
+and applied targets, `usedExactSuggestion`, and nullable planned/completed minute and task totals.
+`status` is `pending` until every item in the current plan is terminal, `resolved` after that point,
+or `not_evaluable` when there is no nonempty current plan. Partial completion totals are deliberately
+withheld. Reads never append feedback, move a head, regenerate, or alter planner scoring; the endpoint
+is descriptive history, not an effectiveness score or learned policy.
 
 Routine activity history is ordered by newest ingestion first and accepts `limit` from 1–200 (default 50) plus an opaque, integrity-protected `cursor`. The cursor is bound to its workspace and routine. The first page captures a high-water mark, so later appends do not shift subsequent pages. A non-null `page.nextCursor` retrieves the next page. Local cursor signing keys are process-bound, so clients should restart pagination after an API restart.
 

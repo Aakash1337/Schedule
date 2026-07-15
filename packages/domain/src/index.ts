@@ -4,6 +4,7 @@ export * from "./calendar.js";
 export * from "./daily-planning.js";
 export * from "./daily-plan-fit-insight.js";
 export * from "./daily-plan-fit-insight-feedback.js";
+export * from "./daily-plan-fit-usage-outcome.js";
 export * from "./duration.js";
 export * from "./errors.js";
 export * from "./hosted-identity.js";

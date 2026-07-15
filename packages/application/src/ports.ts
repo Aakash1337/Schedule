@@ -349,7 +349,7 @@ export interface RoutineDurationInsightFeedbackRepository {
 
 /** Immutable exact-key feedback for workspace-level Daily Plan Fit guidance. */
 export interface DailyPlanFitInsightFeedbackRepository {
-  /** Serializes dismiss/reset commands without coupling history writers to presentation feedback. */
+  /** Serializes dismiss/reset/use and forces serializable waiters to refresh a stale snapshot. */
   lockWorkspace(workspaceId: WorkspaceId): Promise<void>;
   findLatestForKey(
     workspaceId: WorkspaceId,
@@ -359,6 +359,11 @@ export interface DailyPlanFitInsightFeedbackRepository {
     workspaceId: WorkspaceId,
     idempotencyKey: string,
   ): Promise<DailyPlanFitInsightFeedback | null>;
+  /** Returns recent explicit uses in reverse ingestion order. */
+  listUsed(
+    workspaceId: WorkspaceId,
+    limit: number,
+  ): Promise<readonly DailyPlanFitInsightFeedback[]>;
   append(feedback: DailyPlanFitInsightFeedback): Promise<DailyPlanFitInsightFeedback>;
 }
 

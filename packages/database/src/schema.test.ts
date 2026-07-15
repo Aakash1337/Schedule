@@ -852,7 +852,7 @@ describe("database schema", () => {
 
   it("stores and migrates append-only Daily Plan Fit feedback", () => {
     const config = getTableConfig(dailyPlanFitInsightFeedbackEvents);
-    expect(dailyPlanFitInsightFeedbackKind.enumValues).toEqual(["dismissed", "reset"]);
+    expect(dailyPlanFitInsightFeedbackKind.enumValues).toEqual(["dismissed", "reset", "used"]);
     expect(
       config.uniqueConstraints
         .find(
@@ -867,6 +867,9 @@ describe("database schema", () => {
         "daily_plan_fit_feedback_sample_positive",
         "daily_plan_fit_feedback_completed_minutes_nonnegative",
         "daily_plan_fit_feedback_completed_tasks_nonnegative",
+        "daily_plan_fit_feedback_usage_shape_valid",
+        "daily_plan_fit_feedback_applied_minutes_positive",
+        "daily_plan_fit_feedback_applied_tasks_positive",
         "daily_plan_fit_feedback_idempotency_canonical",
         "daily_plan_fit_feedback_sequence_positive",
       ]),
@@ -887,6 +890,22 @@ describe("database schema", () => {
     );
     expect(migration).toContain(
       'BEFORE UPDATE OR DELETE ON "daily_plan_fit_insight_feedback_events"',
+    );
+
+    const usageMigration = readFileSync(
+      new URL("../drizzle/0035_zippy_stone_men.sql", import.meta.url),
+      "utf8",
+    );
+    expect(usageMigration).toContain(
+      'ALTER TYPE "public"."daily_plan_fit_insight_feedback_kind" ADD VALUE \'used\'',
+    );
+    expect(usageMigration).toContain(
+      'CONSTRAINT "daily_plan_fit_feedback_plan_tenant_fk" FOREIGN KEY ("workspace_id","plan_id")',
+    );
+    expect(usageMigration).toContain('CREATE UNIQUE INDEX "daily_plan_fit_feedback_used_plan_uq"');
+    expect(usageMigration).toContain('CREATE INDEX "daily_plan_fit_feedback_kind_sequence_idx"');
+    expect(usageMigration).toContain(
+      '"daily_plan_fit_insight_feedback_events"."kind"::text = \'used\'',
     );
   });
 

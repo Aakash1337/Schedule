@@ -45,6 +45,7 @@ import type {
   DailyPlanAlternative,
   DailyPlanAlternativesResult,
   DailyPlanFitInsight,
+  DailyPlanFitUsageOutcome,
   EnergyLevel,
   PlanExclusion,
   PlanItem,
@@ -92,15 +93,24 @@ interface DailyPlanFitPanelProps {
   readonly feedbackError: string | null;
   readonly feedbackAction: PlanFitFeedbackAction;
   readonly announcement: string | null;
+  readonly selectionActive: boolean;
+  readonly outcomes: readonly DailyPlanFitUsageOutcome[];
+  readonly historyLoading: boolean;
+  readonly historyError: string | null;
   readonly headingRef: RefObject<HTMLHeadingElement | null>;
   readonly onRetry: () => void;
   readonly onApply: () => void;
   readonly onDismiss: () => void;
   readonly onRestore: () => void;
+  readonly onHistoryRetry: () => void;
 }
 
 function planCountLabel(count: number): string {
   return `${count} resolved ${count === 1 ? "plan" : "plans"}`;
+}
+
+function taskCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "task" : "tasks"}`;
 }
 
 function DailyPlanFitPanel({
@@ -110,11 +120,16 @@ function DailyPlanFitPanel({
   feedbackError,
   feedbackAction,
   announcement,
+  selectionActive,
+  outcomes,
+  historyLoading,
+  historyError,
   headingRef,
   onRetry,
   onApply,
   onDismiss,
   onRestore,
+  onHistoryRetry,
 }: DailyPlanFitPanelProps) {
   if (loading && insight === null) {
     return (
@@ -169,7 +184,7 @@ function DailyPlanFitPanel({
         ? "Your recent targets fit"
         : insight.disposition === "dismissed"
           ? "Plan Fit suggestion paused"
-          : `Try ${insight.suggestedTargetMinutes} minutes and ${insight.suggestedTargetTaskCount} tasks`;
+          : `Try ${insight.suggestedTargetMinutes} minutes and ${taskCountLabel(insight.suggestedTargetTaskCount!)}`;
 
   return (
     <section className="today-plan-fit" aria-labelledby="today-plan-fit-heading">
@@ -248,11 +263,12 @@ function DailyPlanFitPanel({
               <Button
                 type="button"
                 variant="quiet"
-                disabled={feedbackAction !== null}
+                disabled={feedbackAction !== null || selectionActive}
+                aria-pressed={selectionActive}
                 onClick={onApply}
               >
-                Use {insight.suggestedTargetMinutes} minutes and {insight.suggestedTargetTaskCount}{" "}
-                tasks
+                Use {insight.suggestedTargetMinutes} minutes and{" "}
+                {taskCountLabel(insight.suggestedTargetTaskCount)}
               </Button>
               <Button
                 type="button"
@@ -277,6 +293,80 @@ function DailyPlanFitPanel({
           )}
         </div>
       ) : null}
+
+      <div className="today-plan-fit-history" aria-labelledby="today-plan-fit-history-heading">
+        <div className="today-plan-fit-history-heading">
+          <h4 id="today-plan-fit-history-heading">After using Plan Fit</h4>
+          <span>Read-only</span>
+        </div>
+        {historyLoading && outcomes.length === 0 ? (
+          <p role="status" aria-live="polite">
+            Loading explicit Plan Fit outcomes…
+          </p>
+        ) : historyError !== null ? (
+          <ErrorNotice
+            message={historyError}
+            action={
+              <Button type="button" variant="quiet" onClick={onHistoryRetry}>
+                Retry history
+              </Button>
+            }
+          />
+        ) : outcomes.length === 0 ? (
+          <p>
+            No generated plan has used a Plan Fit suggestion yet. Prefilling alone creates no
+            history.
+          </p>
+        ) : (
+          <ul className="today-plan-fit-history-list">
+            {outcomes.map((outcome) => (
+              <li key={outcome.usageId}>
+                <div>
+                  <strong>
+                    {formatDay(new Date(`${outcome.forDate}T12:00:00`), {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                    })}
+                  </strong>
+                  <span>
+                    {outcome.status === "resolved"
+                      ? "Resolved"
+                      : outcome.status === "pending"
+                        ? "Waiting for final outcomes"
+                        : "Not evaluable"}
+                  </span>
+                </div>
+                <p>
+                  Suggested {formatMinutes(outcome.suggestedTargetMinutes)} and{" "}
+                  {taskCountLabel(outcome.suggestedTargetTaskCount)}; generated with{" "}
+                  {formatMinutes(outcome.appliedTargetMinutes)} and{" "}
+                  {taskCountLabel(outcome.appliedTargetTaskCount)}.
+                </p>
+                {outcome.status === "resolved" &&
+                outcome.completedMinutes !== null &&
+                outcome.completedTaskCount !== null &&
+                outcome.plannedMinutes !== null &&
+                outcome.plannedTaskCount !== null ? (
+                  <p>
+                    Completed {formatMinutes(outcome.completedMinutes)} and{" "}
+                    {taskCountLabel(outcome.completedTaskCount)} from{" "}
+                    {formatMinutes(outcome.plannedMinutes)} across{" "}
+                    {taskCountLabel(outcome.plannedTaskCount)}.
+                  </p>
+                ) : outcome.status === "pending" ? (
+                  <p>Every item in the current plan must resolve before completion is compared.</p>
+                ) : (
+                  <p>The current plan has no evaluable items for this comparison.</p>
+                )}
+                {outcome.revisedSinceUsage ? (
+                  <p>The day was revised after Plan Fit was used.</p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </section>
   );
 }
@@ -731,6 +821,12 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const [planFitFeedbackError, setPlanFitFeedbackError] = useState<string | null>(null);
   const [planFitFeedbackAction, setPlanFitFeedbackAction] = useState<PlanFitFeedbackAction>(null);
   const [planFitAnnouncement, setPlanFitAnnouncement] = useState<string | null>(null);
+  const [planFitSelectedInsightKey, setPlanFitSelectedInsightKey] = useState<string | null>(null);
+  const [planFitUsageOutcomes, setPlanFitUsageOutcomes] = useState<
+    readonly DailyPlanFitUsageOutcome[]
+  >([]);
+  const [planFitHistoryLoading, setPlanFitHistoryLoading] = useState(true);
+  const [planFitHistoryError, setPlanFitHistoryError] = useState<string | null>(null);
   const [planFitFocusPending, setPlanFitFocusPending] = useState(false);
   const [planFitTargetFocusPending, setPlanFitTargetFocusPending] = useState(false);
   const [fitPreference, setFitPreference] = useState<PlanningFitPreference>("balanced");
@@ -750,6 +846,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const calendarControllerRef = useRef<AbortController | null>(null);
   const generationControllerRef = useRef<AbortController | null>(null);
   const planFitControllerRef = useRef<AbortController | null>(null);
+  const planFitHistoryControllerRef = useRef<AbortController | null>(null);
   const planFitFeedbackControllerRef = useRef<AbortController | null>(null);
   const planFitFeedbackCommandsRef = useRef(new Map<string, string>());
   const planFitHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -876,13 +973,44 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     setPlanFitLoadError(null);
     try {
       const insight = await api.getDailyPlanFitInsight(workspace.id, date, controller.signal);
-      if (requestIsActive()) setPlanFitInsight(insight);
+      if (requestIsActive()) {
+        setPlanFitInsight(insight);
+        setPlanFitSelectedInsightKey((current) =>
+          current === null || current === insight.insightKey ? current : null,
+        );
+      }
     } catch (error) {
       if (!requestIsActive() || isAbortError(error)) return;
       setPlanFitLoadError(messageForError(error));
     } finally {
       if (requestIsActive()) setPlanFitLoading(false);
       if (planFitControllerRef.current === controller) planFitControllerRef.current = null;
+    }
+  }, [date, workspace.id]);
+
+  const loadPlanFitUsageOutcomes = useCallback(async () => {
+    planFitHistoryControllerRef.current?.abort();
+    const controller = new AbortController();
+    planFitHistoryControllerRef.current = controller;
+    const requestKey = planQueryKey(workspace.id, date);
+    const requestIsActive = () =>
+      !controller.signal.aborted &&
+      planFitHistoryControllerRef.current === controller &&
+      activeQueryKeyRef.current === requestKey;
+
+    setPlanFitHistoryLoading(true);
+    setPlanFitHistoryError(null);
+    try {
+      const page = await api.listDailyPlanFitUsageOutcomes(workspace.id, 5, controller.signal);
+      if (requestIsActive()) setPlanFitUsageOutcomes(page.items);
+    } catch (error) {
+      if (!requestIsActive() || isAbortError(error)) return;
+      setPlanFitHistoryError(messageForError(error));
+    } finally {
+      if (requestIsActive()) setPlanFitHistoryLoading(false);
+      if (planFitHistoryControllerRef.current === controller) {
+        planFitHistoryControllerRef.current = null;
+      }
     }
   }, [date, workspace.id]);
 
@@ -959,21 +1087,28 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
 
   useEffect(() => {
     planFitControllerRef.current?.abort();
+    planFitHistoryControllerRef.current?.abort();
     planFitFeedbackControllerRef.current?.abort();
     setPlanFitInsight(null);
     setPlanFitLoadError(null);
     setPlanFitFeedbackError(null);
     setPlanFitFeedbackAction(null);
     setPlanFitAnnouncement(null);
+    setPlanFitSelectedInsightKey(null);
+    setPlanFitUsageOutcomes([]);
+    setPlanFitHistoryError(null);
+    setPlanFitHistoryLoading(true);
     setPlanFitFocusPending(false);
     setPlanFitTargetFocusPending(false);
     planFitFeedbackCommandsRef.current.clear();
     void loadPlanFitInsight();
+    void loadPlanFitUsageOutcomes();
     return () => {
       planFitControllerRef.current?.abort();
+      planFitHistoryControllerRef.current?.abort();
       planFitFeedbackControllerRef.current?.abort();
     };
-  }, [loadPlanFitInsight]);
+  }, [loadPlanFitInsight, loadPlanFitUsageOutcomes]);
 
   useEffect(() => {
     if (!planFitFocusPending || planFitLoading || planFitInsight === null) return;
@@ -1083,6 +1218,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
       insight === null ||
       insight.status !== "suggested" ||
       insight.disposition !== "available" ||
+      insight.insightKey === null ||
       insight.suggestedTargetMinutes === null ||
       insight.suggestedTargetTaskCount === null
     ) {
@@ -1090,6 +1226,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     }
     setTargetMinutes(String(insight.suggestedTargetMinutes));
     setTargetTaskCount(String(insight.suggestedTargetTaskCount));
+    setPlanFitSelectedInsightKey(insight.insightKey);
     setPlanFitAnnouncement(
       `Prefilled ${insight.suggestedTargetMinutes} minutes and ${insight.suggestedTargetTaskCount} tasks. Review both targets, then generate when you are ready.`,
     );
@@ -1143,6 +1280,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
       }
       if (!requestIsActive()) return;
       planFitFeedbackCommandsRef.current.delete(identity);
+      if (kind === "dismissed") setPlanFitSelectedInsightKey(null);
       setPlanFitAnnouncement(
         kind === "dismissed"
           ? "This exact Plan Fit suggestion is hidden. New evidence can still produce a new suggestion."
@@ -1301,6 +1439,9 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
               availableContexts,
               seed,
               requestRevision: 1,
+              ...(planFitSelectedInsightKey === null
+                ? {}
+                : { planFitInsightKey: planFitSelectedInsightKey }),
             });
             if (!generationIsActive(requestKey)) return false;
             const current = await api.getCurrentPlan(
@@ -1310,8 +1451,20 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
             );
             if (!generationIsActive(requestKey)) return false;
             acceptLoadedPlan(current);
+            setPlanFitSelectedInsightKey(null);
+            await loadPlanFitUsageOutcomes();
           } catch (error) {
             if (!generationIsActive(requestKey) || isAbortError(error)) return false;
+            if (
+              error instanceof ApiError &&
+              error.code === "daily_plan_fit_insight.evidence_conflict"
+            ) {
+              setPlanFitSelectedInsightKey(null);
+              setPlanFitAnnouncement(
+                "Resolved-plan evidence changed before generation. Review the current Plan Fit suggestion; no old selection was recorded.",
+              );
+              await loadPlanFitInsight();
+            }
             throw error;
           }
         },
@@ -1357,6 +1510,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
                 ),
               },
         );
+        await loadPlanFitUsageOutcomes();
       },
       item.locked ? `${item.title} is unlocked.` : `${item.title} is locked.`,
       retryIdentity,
@@ -1409,6 +1563,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
                 ),
               },
         );
+        await loadPlanFitUsageOutcomes();
       },
       success,
       retryIdentity,
@@ -1917,6 +2072,14 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
               onApply={applyPlanFitSuggestion}
               onDismiss={() => void mutatePlanFitFeedback("dismissed")}
               onRestore={() => void mutatePlanFitFeedback("reset")}
+              selectionActive={
+                planFitInsight?.insightKey !== null &&
+                planFitInsight?.insightKey === planFitSelectedInsightKey
+              }
+              outcomes={planFitUsageOutcomes}
+              historyLoading={planFitHistoryLoading}
+              historyError={planFitHistoryError}
+              onHistoryRetry={() => void loadPlanFitUsageOutcomes()}
             />
 
             <fieldset className="today-form-group">

@@ -311,28 +311,39 @@ order and evaluation time. Domain and repository bounds fail closed above 512 it
 candidate-derived total row ceiling. The calculation units verify half-up medians, the
 30-minute/20% and one-task/25%
 materiality thresholds, safe 30-minute/one-task floors, downward-only joint suggestions, canonical
-SHA-256 keys, and exact-key dismissal/reset resolution.
+SHA-256 keys, exact-key dismissal/reset resolution, and a separate pure outcome projection. Outcome
+units require a canonical `used` event, preserve suggested-versus-applied targets, withhold partial
+completion, distinguish pending/resolved/not-evaluable plans, and identify a later current revision.
 
 Application units require tenant-first lookup, the bounded 90-day/90-candidate repository request,
-lowercase-canonical workspace locking, read-committed feedback transactions, evidence revalidation before append, exact
-idempotent replay before recalculation, semantic-key conflict rejection, and valid disposition
-transitions. Repository and schema tests cover one bounded current-head projection, malformed target
-exclusion, deterministic item grouping, tenant-bound append-only feedback, database-allocated
-ingestion order, and workspace-scoped idempotency. API units cover explicit local-date validation,
-strict lowercase SHA-256 feedback payloads, required idempotency, service delegation, and `409`
-mapping for stale evidence. Web API and Today component units cover all visible states, retry,
-stale-response protection, exact-key hide/restore, accessible focus and announcements, and the
-central authority rule: using a suggestion only prefills both fields and cannot generate a plan.
+lowercase-canonical workspace locking, a physical SSI guard for serializable waiters, read-committed
+disposition transactions, serializable atomic generation receipts, evidence revalidation before append, exact idempotent replay before
+recalculation, semantic-key conflict rejection, and valid disposition transitions. Usage-list units
+require a bounded tenant read and one bulk current-head lookup. Repository and schema tests cover one
+bounded current-head projection, malformed target exclusion, deterministic item grouping,
+tenant-bound append-only feedback, the used-event shape and plan foreign key, database-allocated
+ingestion order, bounded reverse usage order, and workspace-scoped idempotency. API units cover
+explicit local-date validation, strict lowercase SHA-256 feedback and generation provenance,
+required idempotency, bounded history delegation, and `409` mapping for stale evidence. Web API and
+Today component units cover all visible states, retry, stale-response protection, exact-key
+hide/restore, accessible focus and announcements, suggested-versus-applied outcome rendering, and
+the central authority rule: selecting a suggestion only prefills both fields and records nothing
+until explicit generation.
 
 The PostgreSQL verifier creates four real routines and three resolved current heads, derives the
 expected 90-minute/two-task suggestion from 180-minute/four-task plans, exercises dismiss/reset and
 exact replay, rejects semantic idempotency reuse and direct feedback UPDATE/DELETE, proves feedback
 does not mutate plan heads, proves mixed-case UUID spelling queues behind the same real PostgreSQL
-advisory lock, and changes terminal evidence so the old dismissal cannot hide the new key. The live
-Chromium flow repeats the visible lifecycle through built processes, real routes,
-migrations, and a disposable database, and confirms that plan creation occurs only after the user
-submits the prefilled form. These checks establish the implementation contract, not that its
-thresholds improve completion or wellbeing for a particular user.
+advisory lock, proves a queued dismissal forces selected generation to retry and reject without a
+write, and changes terminal evidence so the old dismissal cannot hide the new key. The live
+PostgreSQL path then rejects stale selected evidence before any write, atomically stores one use with
+edited targets, deduplicates exact generation retry, proves tenant isolation and read-only history,
+advances pending to resolved only after every item is terminal, flags a later revision, and rejects
+direct mutation of the used receipt. The live Chromium flow repeats that lifecycle through built
+processes, real routes, migrations, and a disposable database: prefill leaves history empty, stale
+generation fails closed, exact retry stays singular, resolved history renders, and a later revision
+is disclosed. These checks establish the implementation contract, not that its thresholds or
+suggestions improve completion or wellbeing for a particular user.
 
 ### Daily-plan alternative evidence
 
@@ -550,10 +561,11 @@ The audit deliberately leaves these visible instead of turning them into false g
   exact-key dismissal/reset now preserves reversible rejection memory. It still has no production
   outcome data, learned cadence/energy/preference model, automatic application, historical insight
   comparison, or local-model participation; and
-- Daily Plan Fit has deterministic cross-layer and live-browser evidence but no production outcome
-  data for its 90-day window, minimum sample, medians, thresholds, or acceptance rate. It does not
-  recommend increases, learn a per-user policy, apply automatically, compare historical suggestion
-  outcomes, or use a model; and
+- Daily Plan Fit has deterministic cross-layer and live-browser evidence plus local descriptive use
+  receipts and pending/resolved/revised outcome history, but no production evidence for its 90-day
+  window, minimum sample, medians, thresholds, acceptance rate, or causal effect. It does not
+  recommend increases, aggregate or infer effectiveness, learn a per-user policy, apply
+  automatically, feed outcomes into scoring, or use a model; and
 - the local-model advisor has CI unit/component evidence for its configuration, application,
   transport, API, and UI boundaries, while a real Ollama/Gemma call remains an operator-run smoke
   check. The separate Work capture supports one reviewed backlog title with CI and PostgreSQL/browser

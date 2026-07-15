@@ -1514,9 +1514,9 @@
       "risk": "normal",
       "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 3 — Transparent adaptation" },
       "limitations": [
-        "Routine-duration calibration, Daily Plan Fit guidance, explicit routine ranking preferences, and reversible exact-key dismissal/reset are implemented; inferred cadence, day/time, energy, preference, and category-balance signals remain deferred.",
-        "Suggestions are never applied automatically, and adaptive probabilistic selection beyond the deterministic planner, upward Plan Fit expansion, and historical insight comparison remain deferred.",
-        "The statistical thresholds have contract evidence but no production outcome data, and no local or hosted model participates."
+        "Routine-duration calibration, Daily Plan Fit guidance with explicit use receipts and descriptive outcome history, explicit routine ranking preferences, and reversible exact-key dismissal/reset are implemented; inferred cadence, day/time, energy, preference, and category-balance signals remain deferred.",
+        "Suggestions are never applied automatically, and adaptive probabilistic selection beyond the deterministic planner, upward Plan Fit expansion, aggregate effectiveness analysis, and outcome-driven learning remain deferred.",
+        "The statistical thresholds and lifecycle have contract evidence but no production effectiveness data or causal validation, and no local or hosted model participates."
       ],
       "evidence": [
         {
@@ -1703,7 +1703,7 @@
       },
       "limitations": [
         "Version 1 is downward-only and uses a fixed 90-day, three-to-28-sample median policy; it does not learn or recommend target increases.",
-        "Using a suggestion only prefills editable fields, and there is no automatic generation, historical outcome comparison, or model participation."
+        "Selecting a suggestion only prefills editable fields; explicit generation records an immutable receipt and descriptive pending/resolved/revised history, but there is no automatic generation, aggregate effectiveness inference, outcome-driven scoring, or model participation."
       ],
       "evidence": [
         {
@@ -1719,7 +1719,19 @@
             "rejects cross-workspace and duplicate evidence",
             "fails closed when one evidence plan exceeds the item bound",
             "resolves the latest exact-key dismissal and reset",
+            "keeps a used event separate from exact-key dismissal state",
             "normalizes idempotency and validates nonnegative completed medians"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/domain/src/daily-plan-fit-usage-outcome.test.ts",
+          "command": "unit",
+          "anchors": [
+            "reports only terminal completed workload and preserves edited-target provenance",
+            "withholds partial outcomes and identifies a later current revision",
+            "marks missing or empty current plans as not evaluable",
+            "rejects non-usage events and cross-date evidence"
           ]
         },
         {
@@ -1738,14 +1750,33 @@
         },
         {
           "level": "unit",
+          "file": "packages/application/src/generate-daily-plan.test.ts",
+          "command": "unit",
+          "anchors": [
+            "atomically records an exact Plan Fit use and replays one receipt",
+            "rejects stale Plan Fit evidence before creating a plan or usage event"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/list-daily-plan-fit-usage-outcomes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns bounded explicit uses joined to current resolved plans",
+            "rejects invalid bounds and missing workspaces"
+          ]
+        },
+        {
+          "level": "unit",
           "file": "packages/database/src/repositories.test.ts",
           "command": "unit",
           "anchors": [
             "rejects unbounded history requests before querying",
             "maps one bounded current-head query and skips malformed target snapshots",
             "fails closed when one current plan exceeds the item projection bound",
-            "uses one canonical workspace advisory lock across UUID casing",
+            "uses one canonical workspace lock and a physical SSI guard across UUID casing",
             "loads the latest exact key and bounded idempotency receipt",
+            "lists only bounded used events in reverse ingestion order",
             "lets PostgreSQL allocate the sequence and targets workspace idempotency",
             "replays equivalent feedback but rejects changed semantics"
           ]
@@ -1762,7 +1793,8 @@
           "command": "unit",
           "anchors": [
             "serves and records exact-key Daily Plan Fit guidance for an explicit local date",
-            "validates Plan Fit payloads and maps stale evidence to conflict"
+            "validates Plan Fit payloads and maps stale evidence to conflict",
+            "generates and retrieves an exact plan revision without exposing its input snapshot"
           ]
         },
         {
@@ -1771,6 +1803,7 @@
           "command": "unit",
           "anchors": [
             "retrieves a Daily Plan Fit insight for an explicit local date",
+            "retrieves bounded Plan Fit usage outcomes",
             "records an idempotent Plan Fit %s"
           ]
         },
@@ -1780,6 +1813,7 @@
           "command": "unit",
           "anchors": [
             "prefills both Plan Fit targets without generating until the user submits",
+            "shows bounded read-only outcomes for explicitly generated Plan Fit choices",
             "announces Plan Fit loading without changing either target",
             "aborts and ignores Plan Fit results from the previous workspace",
             "dismisses and restores only the exact Plan Fit evidence key",
@@ -1790,7 +1824,15 @@
           "level": "integration",
           "file": "scripts/verify-planner-db.ts",
           "command": "planner-db",
-          "anchors": ["daily-plan-fit-insight-postgres"]
+          "anchors": [
+            "daily-plan-fit-insight-postgres",
+            "stale Plan Fit evidence must not create a plan revision",
+            "reading or prefilling a Plan Fit suggestion must not record usage",
+            "a queued Plan Fit dismissal must win before selected generation without a write",
+            "outcome history reads must not mutate planner heads",
+            "Plan Fit usage history must remain tenant-scoped",
+            "retries, outcome reads, activity, and revision must not duplicate the immutable use event"
+          ]
         },
         {
           "level": "integration",

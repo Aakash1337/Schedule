@@ -11,7 +11,9 @@ import {
   GetDailyPlan,
   GetRoutineSelectionPreferenceState,
   GetRoutineDurationInsight,
+  ListDailyPlanFitUsageOutcomes,
   ListRoutines,
+  MutateDailyPlan,
   RecordActivityEvent,
   RecordPlanItemActivity,
   RecordRoutineSelectionPreferenceFeedback,
@@ -81,6 +83,7 @@ async function removeVerificationWorkspace(): Promise<void> {
   await connection.sql.begin(async (sql) => {
     await sql`select set_config('schedule.allow_activity_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_audit_event_mutation', 'on', true)`;
+    await sql`select set_config('schedule.allow_plan_mutation_change', 'on', true)`;
     await sql`select set_config('schedule.allow_plan_interaction_event_mutation', 'on', true)`;
     await sql`select set_config('schedule.allow_routine_duration_insight_feedback_event_change', 'on', true)`;
     await sql`select set_config('schedule.allow_daily_plan_fit_insight_feedback_event_change', 'on', true)`;
@@ -1107,6 +1110,304 @@ try {
   assert.equal(changedFitInsight.status, "suggested");
   assert.equal(changedFitInsight.disposition, "available");
   assert.notEqual(changedFitInsight.insightKey, initialFitInsight.insightKey);
+  assert.ok(changedFitInsight.insightKey);
+
+  const fitUsageRequestBase = {
+    workspaceId: fitWorkspace,
+    date: fitForDate,
+    timeZone: "UTC",
+    availableWindows: [
+      {
+        startsAt: new Date("2026-07-14T08:00:00.000Z"),
+        endsAt: new Date("2026-07-14T12:30:00.000Z"),
+      },
+    ],
+    targetMinutes: 105,
+    targetTaskCount: 3,
+    availableContexts: ["computer"],
+    seed: "daily-plan-fit-explicit-use",
+    requestRevision: 1,
+  } as const;
+  await assert.rejects(
+    fitGenerator.execute({
+      request: createDailyPlanningRequest({
+        ...fitUsageRequestBase,
+        planFitInsightKey: initialFitInsight.insightKey,
+      }),
+    }),
+    (error: unknown) => {
+      assert.equal(
+        typeof error === "object" && error !== null && "code" in error
+          ? (error as { code: unknown }).code
+          : undefined,
+        "daily_plan_fit_insight.evidence_conflict",
+      );
+      return true;
+    },
+  );
+  assert.equal(
+    await new GetDailyPlan(unitOfWork).execute({
+      workspaceId: fitWorkspace,
+      date: fitForDate,
+      requestRevision: 1,
+    }),
+    null,
+    "stale Plan Fit evidence must not create a plan revision",
+  );
+
+  const listFitUsageOutcomes = new ListDailyPlanFitUsageOutcomes(unitOfWork);
+  assert.deepEqual(
+    await listFitUsageOutcomes.execute({ workspaceId: fitWorkspace, limit: 5 }),
+    [],
+    "reading or prefilling a Plan Fit suggestion must not record usage",
+  );
+  const fitUsageRequest = createDailyPlanningRequest({
+    ...fitUsageRequestBase,
+    planFitInsightKey: changedFitInsight.insightKey,
+  });
+
+  // A selected generation begins before a concurrent real dismissal commits, with both queued
+  // behind the same workspace feedback lock. The dismissal enters the queue first. Its physical SSI
+  // guard write must force the serializable generation to retry, observe the winning dismissal, and
+  // fail without creating either the revision or its use receipt.
+  const waitingBeforeFitGenerationConflict = await waitingAdvisoryLockCount();
+  let markFitGenerationBlockerReady!: () => void;
+  let releaseFitGenerationBlocker!: () => void;
+  const fitGenerationBlockerReady = new Promise<void>((resolve) => {
+    markFitGenerationBlockerReady = resolve;
+  });
+  const fitGenerationBlockerRelease = new Promise<void>((resolve) => {
+    releaseFitGenerationBlocker = resolve;
+  });
+  const fitGenerationBlocker = connection.sql.begin(async (sql) => {
+    await sql`select pg_advisory_xact_lock(hashtextextended(${fitFeedbackLockKey}, 0))`;
+    markFitGenerationBlockerReady();
+    await fitGenerationBlockerRelease;
+  });
+  await fitGenerationBlockerReady;
+
+  let queuedFitDismissal: ReturnType<DismissDailyPlanFitInsight["execute"]> | null = null;
+  let queuedFitGeneration: ReturnType<GenerateDailyPlan["execute"]> | null = null;
+  let fitGenerationQueued = false;
+  try {
+    queuedFitDismissal = dismissPlanFitInsight.execute({
+      workspaceId: fitWorkspace,
+      forDate: fitForDate,
+      insightKey: changedFitInsight.insightKey,
+      idempotencyKey: "daily-plan-fit-concurrent-dismissal",
+    });
+    void queuedFitDismissal.catch(() => undefined);
+    await waitForAdvisoryLockCount(waitingBeforeFitGenerationConflict + 1);
+    queuedFitGeneration = fitGenerator.execute({ request: fitUsageRequest });
+    void queuedFitGeneration.catch(() => undefined);
+    await waitForAdvisoryLockCount(waitingBeforeFitGenerationConflict + 2);
+    fitGenerationQueued = true;
+  } finally {
+    releaseFitGenerationBlocker();
+    await fitGenerationBlocker;
+    if (!fitGenerationQueued) {
+      const pendingOperations: Promise<unknown>[] = [];
+      if (queuedFitDismissal !== null) pendingOperations.push(queuedFitDismissal);
+      if (queuedFitGeneration !== null) pendingOperations.push(queuedFitGeneration);
+      await Promise.allSettled(pendingOperations);
+    }
+  }
+  assert.equal((await queuedFitDismissal!).kind, "dismissed");
+  await assert.rejects(queuedFitGeneration!, (error: unknown) => {
+    assert.equal(
+      typeof error === "object" && error !== null && "code" in error
+        ? (error as { code: unknown }).code
+        : undefined,
+      "daily_plan_fit_insight.evidence_conflict",
+    );
+    return true;
+  });
+  assert.equal(
+    await new GetDailyPlan(unitOfWork).execute({
+      workspaceId: fitWorkspace,
+      date: fitForDate,
+      requestRevision: 1,
+    }),
+    null,
+    "a queued Plan Fit dismissal must win before selected generation without a write",
+  );
+  assert.equal(
+    (
+      await resetPlanFitInsight.execute({
+        workspaceId: fitWorkspace,
+        forDate: fitForDate,
+        insightKey: changedFitInsight.insightKey,
+        idempotencyKey: "daily-plan-fit-reset-after-concurrent-dismissal",
+      })
+    ).kind,
+    "reset",
+  );
+
+  const fitUsagePlan = await fitGenerator.execute({ request: fitUsageRequest });
+  const replayedFitUsagePlan = await fitGenerator.execute({ request: fitUsageRequest });
+  assert.equal(replayedFitUsagePlan.id, fitUsagePlan.id);
+  assert.ok(fitUsagePlan.items.length > 0);
+  assert.equal(
+    (
+      await connection.sql<{ insight_key: string | null }[]>`
+      select input_snapshot #>> '{request,planFitInsightKey}' as insight_key
+      from daily_plans
+      where workspace_id = ${fitWorkspace}
+        and id = ${fitUsagePlan.id}
+    `
+    )[0]?.insight_key,
+    changedFitInsight.insightKey,
+  );
+
+  const usedRows = await connection.sql<
+    {
+      insight_key: string;
+      plan_id: string;
+      suggested_target_minutes: number;
+      suggested_target_task_count: number;
+      applied_target_minutes: number;
+      applied_target_task_count: number;
+    }[]
+  >`
+    select
+      insight_key,
+      plan_id::text,
+      suggested_target_minutes,
+      suggested_target_task_count,
+      applied_target_minutes,
+      applied_target_task_count
+    from daily_plan_fit_insight_feedback_events
+    where workspace_id = ${fitWorkspace}
+      and kind::text = 'used'
+    order by ingested_sequence, id
+  `;
+  assert.deepEqual(
+    [...usedRows],
+    [
+      {
+        insight_key: changedFitInsight.insightKey,
+        plan_id: fitUsagePlan.id,
+        suggested_target_minutes: changedFitInsight.suggestedTargetMinutes,
+        suggested_target_task_count: changedFitInsight.suggestedTargetTaskCount,
+        applied_target_minutes: 105,
+        applied_target_task_count: 3,
+      },
+    ],
+  );
+
+  const headsBeforeUsageRead = await connection.sql<
+    { local_date: string; current_plan_id: string; version: number }[]
+  >`
+    select local_date::text, current_plan_id::text, version
+    from daily_plan_heads
+    where workspace_id = ${fitWorkspace}
+    order by local_date, id
+  `;
+  const [pendingFitOutcome] = await listFitUsageOutcomes.execute({
+    workspaceId: fitWorkspace,
+    limit: 5,
+  });
+  assert.ok(pendingFitOutcome);
+  assert.equal(pendingFitOutcome.status, "pending");
+  assert.equal(pendingFitOutcome.sourcePlanId, fitUsagePlan.id);
+  assert.equal(pendingFitOutcome.currentPlanId, fitUsagePlan.id);
+  assert.equal(pendingFitOutcome.revisedSinceUsage, false);
+  assert.equal(pendingFitOutcome.appliedTargetMinutes, 105);
+  assert.equal(pendingFitOutcome.appliedTargetTaskCount, 3);
+  assert.equal(pendingFitOutcome.completedMinutes, null);
+  assert.equal(pendingFitOutcome.completedTaskCount, null);
+  assert.deepEqual(
+    await connection.sql<{ local_date: string; current_plan_id: string; version: number }[]>`
+      select local_date::text, current_plan_id::text, version
+      from daily_plan_heads
+      where workspace_id = ${fitWorkspace}
+      order by local_date, id
+    `,
+    headsBeforeUsageRead,
+    "outcome history reads must not mutate planner heads",
+  );
+  assert.deepEqual(
+    await listFitUsageOutcomes.execute({ workspaceId: workspace, limit: 5 }),
+    [],
+    "Plan Fit usage history must remain tenant-scoped",
+  );
+
+  let fitUsageHeadVersion = 1;
+  for (const [itemIndex, item] of fitUsagePlan.items.entries()) {
+    const type = itemIndex === 0 ? "completed" : "skipped";
+    const result = await fitActivity.execute({
+      workspaceId: fitWorkspace,
+      date: fitForDate,
+      expectedPlanId: fitUsagePlan.id,
+      itemId: item.id,
+      expectedHeadVersion: fitUsageHeadVersion,
+      type,
+      occurredAt: new Date(`2026-07-14T${String(13 + itemIndex).padStart(2, "0")}:30:00.000Z`),
+      timeZone: "UTC",
+      ...(type === "completed" ? { durationMinutes: item.scheduledMinutes } : {}),
+      idempotencyKey: `daily-plan-fit-used-${itemIndex}-${type}`,
+    });
+    fitUsageHeadVersion = result.headVersion;
+  }
+  const [resolvedFitOutcome] = await listFitUsageOutcomes.execute({
+    workspaceId: fitWorkspace,
+    limit: 5,
+  });
+  assert.ok(resolvedFitOutcome);
+  assert.equal(resolvedFitOutcome.status, "resolved");
+  assert.equal(resolvedFitOutcome.completedMinutes, fitUsagePlan.items[0]!.scheduledMinutes);
+  assert.equal(resolvedFitOutcome.completedTaskCount, 1);
+
+  const revisedFitPlan = await new MutateDailyPlan(unitOfWork, clock).regenerate({
+    workspaceId: fitWorkspace,
+    expectedPlanId: fitUsagePlan.id,
+    expectedHeadVersion: fitUsageHeadVersion,
+    request: createDailyPlanningRequest({
+      ...fitUsageRequestBase,
+      targetMinutes: 45,
+      targetTaskCount: 1,
+      seed: "daily-plan-fit-revised-after-use",
+    }),
+    idempotencyKey: "daily-plan-fit-revise-after-use",
+  });
+  const [revisedFitOutcome] = await listFitUsageOutcomes.execute({
+    workspaceId: fitWorkspace,
+    limit: 5,
+  });
+  assert.ok(revisedFitOutcome);
+  assert.equal(revisedFitOutcome.sourcePlanId, fitUsagePlan.id);
+  assert.equal(revisedFitOutcome.currentPlanId, revisedFitPlan.plan.id);
+  assert.equal(revisedFitOutcome.currentPlanRevision, 2);
+  assert.equal(revisedFitOutcome.revisedSinceUsage, true);
+  assert.equal(
+    (
+      await connection.sql<{ count: number }[]>`
+      select count(*)::int as count
+      from daily_plan_fit_insight_feedback_events
+      where workspace_id = ${fitWorkspace}
+        and kind::text = 'used'
+    `
+    )[0]?.count,
+    1,
+    "retries, outcome reads, activity, and revision must not duplicate the immutable use event",
+  );
+  await assert.rejects(
+    connection.sql`
+      update daily_plan_fit_insight_feedback_events
+      set applied_target_minutes = applied_target_minutes
+      where workspace_id = ${fitWorkspace}
+        and kind::text = 'used'
+    `,
+    assertDatabaseErrorCode("55000"),
+  );
+  await assert.rejects(
+    connection.sql`
+      delete from daily_plan_fit_insight_feedback_events
+      where workspace_id = ${fitWorkspace}
+        and kind::text = 'used'
+    `,
+    assertDatabaseErrorCode("55000"),
+  );
   process.stdout.write("daily-plan-fit-insight verification passed\n");
 
   process.stdout.write("planner database verification passed\n");

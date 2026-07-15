@@ -5,6 +5,7 @@ import type {
   DailyPlanAlternativesResult,
   DailyPlanFitInsight,
   DailyPlanFitInsightFeedback,
+  DailyPlanFitUsageOutcomePage,
   GeneratePlanInput,
   NaturalLanguageConfirmationResult,
   NaturalLanguageProposal,
@@ -460,6 +461,12 @@ export const api = {
   getDailyPlanFitInsight: (workspaceId: string, forDate: string, signal?: AbortSignal) =>
     request<DailyPlanFitInsight>(
       queryPath(workspacePath(workspaceId, "/daily-plan-fit-insight"), { forDate }),
+      signal === undefined ? {} : { signal },
+    ),
+
+  listDailyPlanFitUsageOutcomes: (workspaceId: string, limit = 5, signal?: AbortSignal) =>
+    request<DailyPlanFitUsageOutcomePage>(
+      queryPath(workspacePath(workspaceId, "/daily-plan-fit-insight/usages"), { limit }),
       signal === undefined ? {} : { signal },
     ),
 

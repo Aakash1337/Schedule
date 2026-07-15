@@ -26,7 +26,8 @@ The following Phase 1 capabilities exist in code:
 - Plan-item-scoped start, completion, skip, defer, and dismiss actions with projected Today state
 - Append-only **Not today** and **Not this week** routine feedback with reset and immediate replanning
 - Append-only, resettable explicit routine selection preferences with a bounded future-plan score
-- Read-only Daily Plan Fit guidance from fully resolved prior plans, with exact-key dismissal and reset
+- Daily Plan Fit guidance from fully resolved prior plans, with exact-key dismissal/reset, atomic
+  explicit-use receipts, and read-only outcome history
 
 The planner is implemented as a pure domain operation in `packages/domain/src/daily-planning.ts`. It does not require PostgreSQL, a network connection, or a language model.
 
@@ -224,16 +225,41 @@ date and evidence window, and canonical selected evidence including terminal act
 Evaluation time and repository order do not participate. The latest append-only `dismissed` or
 `reset` event for the exact workspace and key projects the suggestion as hidden or available.
 Feedback takes a lowercase-canonical workspace advisory lock under read committed isolation, so
-equivalent UUID casing cannot split serialization. It resolves exact idempotent replay first and
-recalculates the evidence before append. Changed evidence returns
+equivalent UUID casing cannot split serialization. After the advisory lock, the repository touches
+the existing workspace row as a physical SSI guard. A serializable keyed generation that began and
+waited before a dismissal committed therefore receives `40001`, retries with a fresh snapshot, and
+observes the winning disposition. Feedback resolves exact idempotent replay first and recalculates
+the evidence before append. Changed evidence returns
 `daily_plan_fit_insight.evidence_conflict`; semantic key reuse and invalid disposition transitions
 also fail without a write. New resolved evidence produces a new key and can therefore surface a new
 suggestion without deleting the user's earlier feedback.
 
-The insight and its feedback never change plan targets, generate or regenerate a plan, edit a plan
-head, or enter planner scoring. The local Today interface may copy the suggested pair into the two
-editable target fields, but only an explicit subsequent Generate submission creates a plan. No
-language model, Hermes adapter, or provider participates in the calculation.
+Selecting **Use** still performs no write. The local Today interface only copies the suggested pair
+into the two editable target fields. If the user later submits the initial generation form, the
+request may carry that exact evidence key alongside the final user-edited targets. Inside the same
+serializable transaction as revision-1 creation, generation locks the day and the workspace feedback
+stream, recomputes current bounded evidence, and requires the key to remain an available suggestion.
+Stale evidence returns `daily_plan_fit_insight.evidence_conflict` before either the plan or a usage
+event is stored.
+
+Successful explicit generation appends one immutable `used` event atomically with the plan. It keeps
+the reviewed medians and suggested pair, the generated plan identity, and the actual submitted target
+minutes and task count. The deterministic receipt key is derived from the plan ID; exact revision
+retry must find an identical receipt and returns the same plan without adding another event. A `used`
+event does not dismiss the still-current suggestion and never edits cadence, eligibility, scoring,
+selection, or an existing plan head.
+
+The bounded usage-history projection reads at most 28 newest `used` events and bulk-joins the current
+plan head for their dates. It reports `pending` while any current item is nonterminal, `resolved` only
+after every current item is terminal, and `not_evaluable` when no nonempty current plan exists.
+Resolved completion counts and scheduled minutes include only completed items; partial completion is
+withheld. The projection preserves suggested-versus-applied targets and flags when the current plan
+is a later revision than the plan that recorded the use. It is descriptive, read-only history: it is
+not an acceptance score, causal effectiveness claim, planner input, or learned policy.
+
+No language model, Hermes adapter, or provider participates in the calculation, usage receipt, or
+outcome projection. Automatic application, generation, target changes, and outcome-driven adaptation
+remain outside this boundary.
 
 ## Duration-calibration boundary
 
@@ -314,7 +340,8 @@ pnpm verify:planner-db
 - Exact start-time placement within a selected window
 - Alternative-plan branching and multi-step undo workflows
 - Learned cadence, preference, energy, and adaptive-selection adjustments
-- Automatic Plan Fit application, upward target expansion, and user-editable Plan Fit policy
+- Automatic Plan Fit application, upward target expansion, user-editable Plan Fit policy, and
+  outcome-driven learning
 - Automatic duration-insight application and historical insight comparison
 - User-editable scoring profiles
 - Natural-language creation, model-driven calibration or plan application, and hosted model advisors

@@ -77,6 +77,8 @@ function harness(
         idempotencyLookups.push(key);
         return feedback.find((event) => event.idempotencyKey === key) ?? null;
       },
+      listUsed: async (_workspaceId: string, limit: number) =>
+        feedback.filter((event) => event.kind === "used").slice(0, limit),
       append: async (event: DailyPlanFitInsightFeedback) => {
         const stored = { ...event, ingestedSequence: ++sequence };
         feedback.push(stored);

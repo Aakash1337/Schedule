@@ -107,6 +107,7 @@ export const routineDurationInsightFeedbackKind = pgEnum("routine_duration_insig
 export const dailyPlanFitInsightFeedbackKind = pgEnum("daily_plan_fit_insight_feedback_kind", [
   "dismissed",
   "reset",
+  "used",
 ]);
 export const planMutationKind = pgEnum("plan_mutation_kind", [
   "regenerate",
@@ -1893,6 +1894,7 @@ export const dailyPlanFitInsightFeedbackEvents = pgTable(
     forDate: date("for_date").notNull(),
     insightKey: varchar("insight_key", { length: 64 }).notNull(),
     kind: dailyPlanFitInsightFeedbackKind("kind").notNull(),
+    planId: uuid("plan_id"),
     sampleCount: integer("sample_count").notNull(),
     typicalPlannedMinutes: integer("typical_planned_minutes").notNull(),
     typicalCompletedMinutes: integer("typical_completed_minutes").notNull(),
@@ -1900,6 +1902,8 @@ export const dailyPlanFitInsightFeedbackEvents = pgTable(
     typicalCompletedTaskCount: integer("typical_completed_task_count").notNull(),
     suggestedTargetMinutes: integer("suggested_target_minutes").notNull(),
     suggestedTargetTaskCount: integer("suggested_target_task_count").notNull(),
+    appliedTargetMinutes: integer("applied_target_minutes"),
+    appliedTargetTaskCount: integer("applied_target_task_count"),
     idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
     recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull(),
   },
@@ -1915,6 +1919,20 @@ export const dailyPlanFitInsightFeedbackEvents = pgTable(
       table.ingestedSequence.desc(),
       table.id.desc(),
     ),
+    index("daily_plan_fit_feedback_kind_sequence_idx").on(
+      table.workspaceId,
+      table.kind,
+      table.ingestedSequence.desc(),
+      table.id.desc(),
+    ),
+    uniqueIndex("daily_plan_fit_feedback_used_plan_uq")
+      .on(table.workspaceId, table.planId)
+      .where(sql`${table.planId} is not null`),
+    foreignKey({
+      name: "daily_plan_fit_feedback_plan_tenant_fk",
+      columns: [table.workspaceId, table.planId],
+      foreignColumns: [dailyPlans.workspaceId, dailyPlans.id],
+    }).onDelete("restrict"),
     check(
       "daily_plan_fit_feedback_key_format",
       sql`char_length(${table.insightKey}) = 64 AND ${table.insightKey} ~ '^[0-9a-f]{64}$'`,
@@ -1943,6 +1961,28 @@ export const dailyPlanFitInsightFeedbackEvents = pgTable(
     check(
       "daily_plan_fit_feedback_suggested_tasks_positive",
       sql`${table.suggestedTargetTaskCount} > 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_usage_shape_valid",
+      sql`(
+        ${table.kind}::text = 'used'
+        AND ${table.planId} IS NOT NULL
+        AND ${table.appliedTargetMinutes} IS NOT NULL
+        AND ${table.appliedTargetTaskCount} IS NOT NULL
+      ) OR (
+        ${table.kind}::text IN ('dismissed', 'reset')
+        AND ${table.planId} IS NULL
+        AND ${table.appliedTargetMinutes} IS NULL
+        AND ${table.appliedTargetTaskCount} IS NULL
+      )`,
+    ),
+    check(
+      "daily_plan_fit_feedback_applied_minutes_positive",
+      sql`${table.appliedTargetMinutes} IS NULL OR ${table.appliedTargetMinutes} > 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_applied_tasks_positive",
+      sql`${table.appliedTargetTaskCount} IS NULL OR ${table.appliedTargetTaskCount} > 0`,
     ),
     check(
       "daily_plan_fit_feedback_idempotency_canonical",

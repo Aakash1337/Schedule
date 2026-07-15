@@ -2,12 +2,13 @@ import { isValidLocalDate, type LocalDate } from "./calendar.js";
 import { invariant } from "./errors.js";
 import {
   dailyPlanFitInsightFeedbackId,
+  type DailyPlanId,
   type DailyPlanFitInsightFeedbackId,
   type WorkspaceId,
 } from "./ids.js";
 import type { DailyPlanFitInsight } from "./daily-plan-fit-insight.js";
 
-export const dailyPlanFitInsightFeedbackKinds = ["dismissed", "reset"] as const;
+export const dailyPlanFitInsightFeedbackKinds = ["dismissed", "reset", "used"] as const;
 export type DailyPlanFitInsightFeedbackKind = (typeof dailyPlanFitInsightFeedbackKinds)[number];
 export const dailyPlanFitInsightKeyPattern = /^[0-9a-f]{64}$/;
 
@@ -18,6 +19,8 @@ export interface DailyPlanFitInsightFeedback {
   readonly forDate: LocalDate;
   readonly insightKey: string;
   readonly kind: DailyPlanFitInsightFeedbackKind;
+  /** The generated revision that atomically recorded a `used` event. */
+  readonly planId: DailyPlanId | null;
   readonly sampleCount: number;
   readonly typicalPlannedMinutes: number;
   readonly typicalCompletedMinutes: number;
@@ -25,15 +28,26 @@ export interface DailyPlanFitInsightFeedback {
   readonly typicalCompletedTaskCount: number;
   readonly suggestedTargetMinutes: number;
   readonly suggestedTargetTaskCount: number;
+  /** The final editable targets submitted by the user after selecting the suggestion. */
+  readonly appliedTargetMinutes: number | null;
+  readonly appliedTargetTaskCount: number | null;
   readonly idempotencyKey: string;
   readonly recordedAt: Date;
 }
 
 export interface CreateDailyPlanFitInsightFeedbackInput extends Omit<
   DailyPlanFitInsightFeedback,
-  "id" | "recordedAt" | "idempotencyKey"
+  | "id"
+  | "recordedAt"
+  | "idempotencyKey"
+  | "planId"
+  | "appliedTargetMinutes"
+  | "appliedTargetTaskCount"
 > {
   readonly id?: DailyPlanFitInsightFeedbackId;
+  readonly planId?: DailyPlanId | null;
+  readonly appliedTargetMinutes?: number | null;
+  readonly appliedTargetTaskCount?: number | null;
   readonly idempotencyKey: string;
   readonly recordedAt: Date;
 }
@@ -108,6 +122,34 @@ export function createDailyPlanFitInsightFeedback(
     "daily_plan_fit_insight.feedback_suggested_tasks_invalid",
     "Suggested target task count must be positive.",
   );
+  const planId = input.planId ?? null;
+  const appliedTargetMinutes = input.appliedTargetMinutes ?? null;
+  const appliedTargetTaskCount = input.appliedTargetTaskCount ?? null;
+  if (input.kind === "used") {
+    invariant(
+      planId !== null,
+      "daily_plan_fit_insight.feedback_plan_missing",
+      "Using a Plan Fit suggestion requires the generated plan identity.",
+    );
+    wholeNumber(
+      appliedTargetMinutes ?? 0,
+      1,
+      "daily_plan_fit_insight.feedback_applied_minutes_invalid",
+      "Applied target minutes must be positive when a Plan Fit suggestion is used.",
+    );
+    wholeNumber(
+      appliedTargetTaskCount ?? 0,
+      1,
+      "daily_plan_fit_insight.feedback_applied_tasks_invalid",
+      "Applied target task count must be positive when a Plan Fit suggestion is used.",
+    );
+  } else {
+    invariant(
+      planId === null && appliedTargetMinutes === null && appliedTargetTaskCount === null,
+      "daily_plan_fit_insight.feedback_usage_shape_invalid",
+      "Only a used Plan Fit event may reference a plan or applied targets.",
+    );
+  }
   const idempotencyKey = input.idempotencyKey.trim();
   invariant(
     idempotencyKey.length >= 1 && idempotencyKey.length <= 160,
@@ -122,6 +164,9 @@ export function createDailyPlanFitInsightFeedback(
   return {
     ...input,
     id: input.id ?? dailyPlanFitInsightFeedbackId(),
+    planId,
+    appliedTargetMinutes,
+    appliedTargetTaskCount,
     idempotencyKey,
     recordedAt: new Date(input.recordedAt),
   };
@@ -169,7 +214,7 @@ export function resolveDailyPlanFitInsightFeedback(
   });
   if (insight.insightKey === null) return copy();
   const latest = latestDailyPlanFitInsightFeedback(feedback, workspaceId, insight.insightKey);
-  if (latest === null || latest.kind === "reset") {
+  if (latest === null || latest.kind !== "dismissed") {
     return copy({ disposition: "available", dismissedAt: null });
   }
   return copy({

@@ -7,6 +7,7 @@ import { localDateTimeToIso, todayKey } from "../date";
 import type {
   CurrentDailyPlan,
   DailyPlanFitInsight,
+  DailyPlanFitUsageOutcome,
   ScheduleBlock,
   SchedulingAdviceResult,
   SchedulingAdviceUnavailableReason,
@@ -20,6 +21,7 @@ const apiMocks = vi.hoisted(() => ({
   generatePlan: vi.fn(),
   getCurrentPlan: vi.fn(),
   getDailyPlanFitInsight: vi.fn(),
+  listDailyPlanFitUsageOutcomes: vi.fn(),
   getSchedulingAdvice: vi.fn(),
   listScheduleBlocks: vi.fn(),
   previewDailyPlanAlternatives: vi.fn(),
@@ -165,6 +167,34 @@ function suggestedPlanFitInsight(
   });
 }
 
+function planFitUsageOutcome(
+  overrides: Partial<DailyPlanFitUsageOutcome> = {},
+): DailyPlanFitUsageOutcome {
+  return {
+    usageId: "usage-1",
+    workspaceId: workspace.id,
+    forDate: "2026-07-14",
+    insightKey: "a".repeat(64),
+    recordedAt: "2026-07-14T12:00:00.000Z",
+    sourcePlanId: "plan-previous",
+    currentPlanId: "plan-previous",
+    currentPlanRevision: 1,
+    currentHeadVersion: 1,
+    revisedSinceUsage: false,
+    status: "resolved",
+    suggestedTargetMinutes: 90,
+    suggestedTargetTaskCount: 2,
+    appliedTargetMinutes: 105,
+    appliedTargetTaskCount: 3,
+    usedExactSuggestion: false,
+    plannedMinutes: 90,
+    plannedTaskCount: 2,
+    completedMinutes: 60,
+    completedTaskCount: 1,
+    ...overrides,
+  };
+}
+
 function availableAdvice(overrides: Partial<SchedulingAdviceResult> = {}): SchedulingAdviceResult {
   return {
     version: "schedule.advisor/v1",
@@ -246,6 +276,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   apiMocks.getCurrentPlan.mockResolvedValue(plan);
   apiMocks.getDailyPlanFitInsight.mockResolvedValue(planFitInsight());
+  apiMocks.listDailyPlanFitUsageOutcomes.mockResolvedValue({ items: [] });
   apiMocks.listScheduleBlocks.mockResolvedValue({
     items: [],
     page: { limit: 200, offset: 0 },
@@ -687,14 +718,41 @@ describe("Today commands", () => {
     expect(tasks).toHaveValue(2);
     expect(minutes).toHaveFocus();
     expect(apiMocks.generatePlan).not.toHaveBeenCalled();
+    expect(apiMocks.dismissDailyPlanFitInsight).not.toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent("Review both targets");
 
     await user.click(screen.getByRole("button", { name: "Generate today's plan" }));
     await waitFor(() =>
       expect(apiMocks.generatePlan).toHaveBeenCalledWith(
         workspace.id,
-        expect.objectContaining({ targetMinutes: 90, targetTaskCount: 2 }),
+        expect.objectContaining({
+          targetMinutes: 90,
+          targetTaskCount: 2,
+          planFitInsightKey: "a".repeat(64),
+        }),
       ),
+    );
+  });
+
+  it("shows bounded read-only outcomes for explicitly generated Plan Fit choices", async () => {
+    apiMocks.getCurrentPlan.mockRejectedValue(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
+    apiMocks.listDailyPlanFitUsageOutcomes.mockResolvedValue({
+      items: [planFitUsageOutcome()],
+    });
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByRole("heading", { name: "After using Plan Fit" })).toBeVisible();
+    expect(
+      screen.getByText(/Suggested 1h 30m and 2 tasks; generated with 1h 45m and 3 tasks/),
+    ).toBeVisible();
+    expect(screen.getByText(/Completed 1h and 1 task from 1h 30m across 2 tasks/)).toBeVisible();
+    expect(apiMocks.listDailyPlanFitUsageOutcomes).toHaveBeenCalledWith(
+      workspace.id,
+      5,
+      expect.any(AbortSignal),
     );
   });
 

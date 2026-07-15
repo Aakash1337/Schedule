@@ -1620,6 +1620,62 @@ textarea:focus {
   margin: 0;
 }
 
+.today-plan-fit-history {
+  display: grid;
+  gap: 9px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.today-plan-fit-history > p,
+.today-plan-fit-history-list p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.today-plan-fit-history-heading,
+.today-plan-fit-history-list > li > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.today-plan-fit-history-heading h4 {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.today-plan-fit-history-heading span,
+.today-plan-fit-history-list > li > div > span {
+  color: var(--ink-soft);
+  font-size: 0.65rem;
+  font-weight: 720;
+}
+
+.today-plan-fit-history-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.today-plan-fit-history-list > li {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  background: color-mix(in oklab, var(--paper-raised) 88%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.today-plan-fit-history-list strong {
+  font-size: 0.74rem;
+}
+
 .today-form-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3838,6 +3894,13 @@ textarea:focus {
 
   .today-plan-fit-actions .button {
     width: 100%;
+  }
+
+  .today-plan-fit-history-heading,
+  .today-plan-fit-history-list > li > div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
   }
 
   .icon-button,

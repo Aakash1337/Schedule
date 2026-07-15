@@ -31,6 +31,7 @@ import {
   type DailyPlan,
   type DailyPlanFitInsight,
   type DailyPlanFitInsightFeedback,
+  type DailyPlanFitUsageOutcome,
   type RoutineDurationInsight,
   type RoutineDurationInsightFeedback,
   type WorkItemDependency,
@@ -138,6 +139,7 @@ const planFitFeedback = {
   forDate: planFitInsight.forDate,
   insightKey: planFitInsightKey,
   kind: "dismissed",
+  planId: null,
   sampleCount: 5,
   typicalPlannedMinutes: 180,
   typicalCompletedMinutes: 90,
@@ -145,9 +147,33 @@ const planFitFeedback = {
   typicalCompletedTaskCount: 2,
   suggestedTargetMinutes: 90,
   suggestedTargetTaskCount: 2,
+  appliedTargetMinutes: null,
+  appliedTargetTaskCount: null,
   idempotencyKey: "dismiss-plan-fit",
   recordedAt: new Date("2026-07-15T12:03:00.000Z"),
 } satisfies DailyPlanFitInsightFeedback;
+const planFitUsageOutcome = {
+  usageId: dailyPlanFitInsightFeedbackId("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeef"),
+  workspaceId: workspace.id,
+  forDate: localDate("2026-07-14"),
+  insightKey: planFitInsightKey,
+  recordedAt: new Date("2026-07-14T12:00:00.000Z"),
+  sourcePlanId: dailyPlanId(planUuid),
+  currentPlanId: dailyPlanId(planUuid),
+  currentPlanRevision: 1,
+  currentHeadVersion: 1,
+  revisedSinceUsage: false,
+  status: "resolved",
+  suggestedTargetMinutes: 90,
+  suggestedTargetTaskCount: 2,
+  appliedTargetMinutes: 105,
+  appliedTargetTaskCount: 3,
+  usedExactSuggestion: false,
+  plannedMinutes: 90,
+  plannedTaskCount: 2,
+  completedMinutes: 60,
+  completedTaskCount: 1,
+} satisfies DailyPlanFitUsageOutcome;
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -372,6 +398,7 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
     },
     getRoutineDurationInsight: async () => durationInsight,
     getDailyPlanFitInsight: async () => planFitInsight,
+    listDailyPlanFitUsageOutcomes: async () => [planFitUsageOutcome],
     resetDailyPlanFitInsightDismissal: async () => ({
       ...planFitFeedback,
       kind: "reset",
@@ -1489,6 +1516,10 @@ describe("local product API", () => {
           commands.push(query);
           return planFitInsight;
         },
+        listDailyPlanFitUsageOutcomes: async (query) => {
+          commands.push(query);
+          return [planFitUsageOutcome];
+        },
         dismissDailyPlanFitInsight: async (command) => {
           commands.push(command);
           return planFitFeedback;
@@ -1503,6 +1534,10 @@ describe("local product API", () => {
     const read = await app.inject({
       method: "GET",
       url: `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight?forDate=2026-07-15`,
+    });
+    const history = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight/usages?limit=3`,
     });
     const dismiss = await app.inject({
       method: "POST",
@@ -1524,10 +1559,22 @@ describe("local product API", () => {
       suggestedTargetMinutes: 90,
       suggestedTargetTaskCount: 2,
     });
+    expect(history.statusCode).toBe(200);
+    expect(history.json()).toMatchObject({
+      items: [
+        {
+          status: "resolved",
+          forDate: "2026-07-14",
+          appliedTargetMinutes: 105,
+          completedMinutes: 60,
+        },
+      ],
+    });
     expect(dismiss.statusCode).toBe(200);
     expect(reset.statusCode).toBe(200);
     expect(commands).toEqual([
       { workspaceId: workspace.id, forDate: localDate("2026-07-15") },
+      { workspaceId: workspace.id, limit: 3 },
       {
         workspaceId: workspace.id,
         forDate: localDate("2026-07-15"),
@@ -2120,6 +2167,7 @@ describe("local product API", () => {
         availableContexts: ["computer"],
         seed: "api-plan",
         requestRevision: 1,
+        planFitInsightKey,
       },
     });
     const retrieved = await app.inject({
@@ -2131,6 +2179,7 @@ describe("local product API", () => {
     expect(generated.json()).toMatchObject({ id: planUuid, requestRevision: 1 });
     expect(generated.json()).not.toHaveProperty("inputSnapshot");
     expect(generated.json().request.availableWindows).toHaveLength(1);
+    expect(generated.json().request.planFitInsightKey).toBe(planFitInsightKey);
     expect(retrieved.statusCode).toBe(200);
     expect(retrieved.json()).toEqual(generated.json());
   });

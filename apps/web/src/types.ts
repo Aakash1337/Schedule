@@ -264,6 +264,7 @@ export interface PlanSettings {
 export interface GeneratePlanInput extends PlanSettings {
   readonly date: string;
   readonly requestRevision: number;
+  readonly planFitInsightKey?: string;
 }
 
 export interface PlanRequestSnapshot extends PlanSettings {
@@ -274,6 +275,7 @@ export interface PlanRequestSnapshot extends PlanSettings {
   readonly maximumMinutes: number;
   readonly minimumTaskCount: number;
   readonly maximumTaskCount: number;
+  readonly planFitInsightKey?: string;
 }
 
 export interface DailyPlan {
@@ -333,7 +335,7 @@ export interface DailyPlanAlternativesResult {
 
 export type DailyPlanFitInsightStatus = "insufficient_history" | "aligned" | "suggested";
 export type DailyPlanFitInsightDisposition = "available" | "dismissed";
-export type DailyPlanFitInsightFeedbackKind = "dismissed" | "reset";
+export type DailyPlanFitInsightFeedbackKind = "dismissed" | "reset" | "used";
 
 /** Deterministic, read-only target guidance derived from fully resolved past plans. */
 export interface DailyPlanFitInsight {
@@ -367,6 +369,7 @@ export interface DailyPlanFitInsightFeedback {
   readonly forDate: string;
   readonly insightKey: string;
   readonly kind: DailyPlanFitInsightFeedbackKind;
+  readonly planId: string | null;
   readonly sampleCount: number;
   readonly typicalPlannedMinutes: number;
   readonly typicalCompletedMinutes: number;
@@ -374,8 +377,40 @@ export interface DailyPlanFitInsightFeedback {
   readonly typicalCompletedTaskCount: number;
   readonly suggestedTargetMinutes: number;
   readonly suggestedTargetTaskCount: number;
+  readonly appliedTargetMinutes: number | null;
+  readonly appliedTargetTaskCount: number | null;
   readonly idempotencyKey: string;
   readonly recordedAt: string;
+}
+
+export type DailyPlanFitUsageOutcomeStatus = "pending" | "resolved" | "not_evaluable";
+
+/** Read-only evidence about what happened after an explicitly generated Plan Fit choice. */
+export interface DailyPlanFitUsageOutcome {
+  readonly usageId: string;
+  readonly workspaceId: string;
+  readonly forDate: string;
+  readonly insightKey: string;
+  readonly recordedAt: string;
+  readonly sourcePlanId: string;
+  readonly currentPlanId: string | null;
+  readonly currentPlanRevision: number | null;
+  readonly currentHeadVersion: number | null;
+  readonly revisedSinceUsage: boolean;
+  readonly status: DailyPlanFitUsageOutcomeStatus;
+  readonly suggestedTargetMinutes: number;
+  readonly suggestedTargetTaskCount: number;
+  readonly appliedTargetMinutes: number;
+  readonly appliedTargetTaskCount: number;
+  readonly usedExactSuggestion: boolean;
+  readonly plannedMinutes: number | null;
+  readonly plannedTaskCount: number | null;
+  readonly completedMinutes: number | null;
+  readonly completedTaskCount: number | null;
+}
+
+export interface DailyPlanFitUsageOutcomePage {
+  readonly items: readonly DailyPlanFitUsageOutcome[];
 }
 
 export type SchedulingAdviceUnavailableReason =

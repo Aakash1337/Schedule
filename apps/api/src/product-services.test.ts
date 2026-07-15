@@ -96,6 +96,7 @@ describe("createProductServices", () => {
       "getSchedulingAdvice",
       "getWorkItem",
       "getWorkspace",
+      "listDailyPlanFitUsageOutcomes",
       "listNotificationDeliveries",
       "listNotificationIntents",
       "listNotificationRules",

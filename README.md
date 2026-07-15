@@ -58,7 +58,10 @@ Today also exposes deterministic Daily Plan Fit guidance. Once at least three pr
 are fully resolved, Schedule compares the median planned and completed time/task pairs across a
 bounded 90-day window and may suggest materially smaller joint targets. Using the suggestion only
 prefills both editable fields; explicit generation is still required. Exact evidence-backed
-dismissal and reset are append-only, and changed evidence receives a new key.
+dismissal and reset are append-only, and changed evidence receives a new key. When the user does
+generate from a selected suggestion, Schedule revalidates that exact key and atomically records the
+actual edited targets with the plan. A bounded read-only history then shows pending, resolved, and
+later-revised outcomes without feeding them back into planner scoring.
 
 The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface. Work items support arbitrary-depth, acyclic same-workspace subtasks plus directed prerequisites. Parent and child statuses remain independent, only leaf work is eligible for Today, and a dependent is newly selectable only when every direct prerequisite is `done`.
 
@@ -163,11 +166,12 @@ gaps.
 
 After installing Chromium once with `pnpm exec playwright install chromium`, run
 `pnpm verify:web-e2e` to exercise the built web application, live API, fresh migrations, and an
-isolated PostgreSQL database through eight live flows: routine/Today activity and feedback,
+isolated PostgreSQL database through ten live flows: routine/Today activity and feedback,
 work-item deadline pressure, duration-insight dismissal/reset, accessible 320px prerequisite
 editing, mobile subtask persistence and leaf-only planning, reminder
 policy/materialization/history with responsive checks, and deterministic Daily Plan Fit
-prefill/dismissal/reset with explicit generation. The local proposal flow uses the production
+prefill/dismissal/reset, stale-key rejection, explicit generation receipts, resolved outcomes, and
+revision disclosure. The local proposal flow uses the production
 local-model adapter against a strict loopback double to review a title plus user-authored
 priority/date/duration, confirm, replay the same
 confirmation key, cancel, focus, and reload natural-language work proposals without browser request

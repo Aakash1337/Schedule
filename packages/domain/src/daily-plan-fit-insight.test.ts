@@ -244,6 +244,40 @@ describe("Daily Plan Fit feedback", () => {
     expect(insight.evaluatedAt).toEqual(evaluatedAt);
   });
 
+  it("keeps a used event separate from exact-key dismissal state", () => {
+    const insight = calculateDailyPlanFitInsight(
+      workspace,
+      forDate,
+      [evidencePlan(1), evidencePlan(2), evidencePlan(3)],
+      evaluatedAt,
+    );
+    const used = createDailyPlanFitInsightFeedback({
+      id: dailyPlanFitInsightFeedbackId("feedback-used"),
+      ingestedSequence: 1,
+      workspaceId: workspace,
+      forDate,
+      insightKey: insight.insightKey!,
+      kind: "used",
+      planId: dailyPlanId("plan-used"),
+      sampleCount: insight.sampleCount,
+      typicalPlannedMinutes: insight.typicalPlannedMinutes!,
+      typicalCompletedMinutes: insight.typicalCompletedMinutes!,
+      typicalPlannedTaskCount: insight.typicalPlannedTaskCount!,
+      typicalCompletedTaskCount: insight.typicalCompletedTaskCount!,
+      suggestedTargetMinutes: insight.suggestedTargetMinutes!,
+      suggestedTargetTaskCount: insight.suggestedTargetTaskCount!,
+      appliedTargetMinutes: insight.suggestedTargetMinutes!,
+      appliedTargetTaskCount: insight.suggestedTargetTaskCount!,
+      idempotencyKey: "used",
+      recordedAt: new Date("2026-07-14T12:01:00.000Z"),
+    });
+
+    expect(resolveDailyPlanFitInsightFeedback(insight, workspace, [used])).toMatchObject({
+      disposition: "available",
+      dismissedAt: null,
+    });
+  });
+
   it("normalizes idempotency and validates nonnegative completed medians", () => {
     const event = createDailyPlanFitInsightFeedback({
       id: dailyPlanFitInsightFeedbackId("feedback-zero"),
