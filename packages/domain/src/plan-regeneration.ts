@@ -231,13 +231,15 @@ function replanDailyPlanInternal(
     ...(input.config === undefined ? {} : { config: input.config }),
     ...(input.generatedAt === undefined ? {} : { generatedAt: input.generatedAt }),
   };
-  if (collectResidualPreview !== undefined) {
-    collectResidualPreview(previewDailyPlanAlternatives(residualInput));
-  }
-  const residual =
-    input.selectedAlternativeKey === undefined
-      ? generateDailyPlan(residualInput)
-      : selectDailyPlanAlternative(residualInput, input.selectedAlternativeKey);
+  const residual = (() => {
+    if (input.selectedAlternativeKey !== undefined) {
+      return selectDailyPlanAlternative(residualInput, input.selectedAlternativeKey);
+    }
+    if (collectResidualPreview === undefined) return generateDailyPlan(residualInput);
+    const preview = previewDailyPlanAlternatives(residualInput);
+    collectResidualPreview(preview);
+    return preview.primary;
+  })();
   const usedPositions = new Set(input.anchoredItems.map((item) => item.position));
   let nextPosition = 0;
   const items = [

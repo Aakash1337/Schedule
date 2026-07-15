@@ -7,14 +7,7 @@ import { createDatabase, PostgresUnitOfWork } from "../packages/database/src/ind
 const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule";
 const connection = createDatabase(databaseUrl, 3);
-const app = await buildApp({
-  readinessCheck: async () => {
-    await connection.sql`select 1`;
-  },
-  productServices: createProductServices(new PostgresUnitOfWork(connection), {
-    now: () => new Date("2026-07-15T07:30:00.000Z"),
-  }),
-});
+let app: Awaited<ReturnType<typeof buildApp>> | null = null;
 let workspaceId: string | null = null;
 
 const planningRequest = {
@@ -35,6 +28,14 @@ const planningRequest = {
 };
 
 try {
+  app = await buildApp({
+    readinessCheck: async () => {
+      await connection.sql`select 1`;
+    },
+    productServices: createProductServices(new PostgresUnitOfWork(connection), {
+      now: () => new Date("2026-07-15T07:30:00.000Z"),
+    }),
+  });
   const workspaceResponse = await app.inject({
     method: "POST",
     url: "/v1/workspaces",
@@ -227,15 +228,21 @@ try {
     "daily-plan alternatives verification passed preview purity, locked selection, exact replay, and stale-key rejection\n",
   );
 } finally {
-  await app.close();
-  if (workspaceId !== null) {
-    await connection.sql.begin(async (sql) => {
-      await sql`select set_config('schedule.allow_activity_event_mutation', 'on', true)`;
-      await sql`select set_config('schedule.allow_audit_event_mutation', 'on', true)`;
-      await sql`select set_config('schedule.allow_plan_interaction_event_mutation', 'on', true)`;
-      await sql`select set_config('schedule.allow_plan_mutation_change', 'on', true)`;
-      await sql`delete from workspaces where id = ${workspaceId}`;
-    });
+  try {
+    await app?.close();
+  } finally {
+    try {
+      if (workspaceId !== null) {
+        await connection.sql.begin(async (sql) => {
+          await sql`select set_config('schedule.allow_activity_event_mutation', 'on', true)`;
+          await sql`select set_config('schedule.allow_audit_event_mutation', 'on', true)`;
+          await sql`select set_config('schedule.allow_plan_interaction_event_mutation', 'on', true)`;
+          await sql`select set_config('schedule.allow_plan_mutation_change', 'on', true)`;
+          await sql`delete from workspaces where id = ${workspaceId}`;
+        });
+      }
+    } finally {
+      await connection.close();
+    }
   }
-  await connection.close();
 }

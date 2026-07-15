@@ -198,14 +198,6 @@
           ]
         },
         {
-          "level": "integration",
-          "file": "scripts/verify-daily-plan-alternatives.ts",
-          "command": "daily-plan-alternatives",
-          "anchors": [
-            "daily-plan alternatives verification passed preview purity, locked selection, exact replay, and stale-key rejection"
-          ]
-        },
-        {
           "level": "component",
           "file": "apps/web/src/views/TodayView.test.tsx",
           "command": "unit",
@@ -230,8 +222,7 @@
           "file": "apps/web/e2e/planning-flow.spec.ts",
           "command": "browser-e2e",
           "anchors": [
-            "persists temporary routine feedback and activity through the live Today planning flow",
-            "compares, selects, persists, and rejects stale daily-plan alternatives"
+            "persists temporary routine feedback and activity through the live Today planning flow"
           ]
         }
       ]
@@ -807,10 +798,19 @@
         },
         {
           "level": "integration",
+          "file": "scripts/verify-daily-plan-alternatives.ts",
+          "command": "daily-plan-alternatives",
+          "anchors": [
+            "daily-plan alternatives verification passed preview purity, locked selection, exact replay, and stale-key rejection"
+          ]
+        },
+        {
+          "level": "integration",
           "file": "apps/web/e2e/planning-flow.spec.ts",
           "command": "browser-e2e",
           "anchors": [
-            "persists temporary routine feedback and activity through the live Today planning flow"
+            "persists temporary routine feedback and activity through the live Today planning flow",
+            "compares, selects, persists, and rejects stale daily-plan alternatives"
           ]
         }
       ]

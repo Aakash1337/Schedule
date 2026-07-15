@@ -195,13 +195,6 @@ export class DailyPlanAlternatives {
       }
       assertScope(command, current);
       const input = await loadPlanningInputs(context, command, current, now);
-      const preview = previewReplanDailyPlanAlternatives(input);
-      if (!preview.alternatives.some((candidate) => candidate.candidateKey === candidateKey)) {
-        throw new DomainError(
-          "planning.alternative_stale",
-          "The selected daily-plan alternative is no longer available.",
-        );
-      }
       const generated = replanDailyPlan({ ...input, selectedAlternativeKey: candidateKey });
       const plan = await context.dailyPlans.insertForRevision(generated);
       if (plan.inputHash !== generated.inputHash) {

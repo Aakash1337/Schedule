@@ -1622,10 +1622,9 @@ export async function registerProductRoutes(
     });
   });
 
-  app.post(DAILY_PLAN_ALTERNATIVE_PREVIEW_ROUTE, async (request, reply) => {
+  app.post(DAILY_PLAN_ALTERNATIVE_PREVIEW_ROUTE, async (request) => {
     const params = parseRequest(planParams, request.params);
     const body = parseRequest(planMutationBody, request.body);
-    reply.header("cache-control", "no-store");
     return runPlanningOperation(() =>
       services.previewDailyPlanAlternatives({
         workspaceId: workspaceId(params.workspaceId),

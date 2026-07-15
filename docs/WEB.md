@@ -349,7 +349,7 @@ a dedicated Chromium job and retains traces, screenshots, and video when it fail
 - Public hosting and production static serving until authentication and authorization exist
 - Drag ranking, bulk editing, projects, checklists, attachments, and saved searches
 - Recurrence authoring, calendar conflict detection, and automatic placement
-- Alternative-plan comparison and generalized plan undo
+- Generalized plan undo
 - Learned cadence, energy, preference, and adaptive-selection settings
 - Automatic Plan Fit application, upward target expansion, and editable Plan Fit policy
 - Automatic duration-insight application and historical insight-comparison controls

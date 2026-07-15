@@ -322,6 +322,8 @@ describe("Today commands", () => {
     expect(await screen.findByRole("heading", { name: "Write project notes" })).toBeVisible();
     expect(screen.getByRole("status")).toHaveTextContent("Alternative 1 is now today's plan.");
     expect(screen.queryByRole("heading", { name: "Compare before changing Today" })).toBeNull();
+    const previewRequest = apiMocks.previewDailyPlanAlternatives.mock.calls[0]?.[2].request;
+    expect(previewRequest).toBeDefined();
     expect(apiMocks.selectDailyPlanAlternative).toHaveBeenCalledWith(
       workspace.id,
       plan.date,
@@ -329,7 +331,7 @@ describe("Today commands", () => {
         expectedPlanId: plan.id,
         expectedHeadVersion: plan.headVersion,
         candidateKey,
-        request: expect.objectContaining({ seed: expect.any(String) }),
+        request: previewRequest,
       }),
       expect.any(String),
     );
