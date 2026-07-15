@@ -61,7 +61,8 @@ prefills both editable fields; explicit generation is still required. Exact evid
 dismissal and reset are append-only, and changed evidence receives a new key. When the user does
 generate from a selected suggestion, Schedule revalidates that exact key and atomically records the
 actual edited targets with the plan. A bounded read-only history then shows pending, resolved, and
-later-revised outcomes without feeding them back into planner scoring.
+not-evaluable outcomes, with later revisions disclosed separately and never fed back into planner
+scoring.
 
 The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface. Work items support arbitrary-depth, acyclic same-workspace subtasks plus directed prerequisites. Parent and child statuses remain independent, only leaf work is eligible for Today, and a dependent is newly selectable only when every direct prerequisite is `done`.
 
@@ -168,7 +169,8 @@ After installing Chromium once with `pnpm exec playwright install chromium`, run
 `pnpm verify:web-e2e` to exercise the built web application, live API, fresh migrations, and an
 isolated PostgreSQL database through ten live flows: routine/Today activity and feedback,
 work-item deadline pressure, duration-insight dismissal/reset, accessible 320px prerequisite
-editing, mobile subtask persistence and leaf-only planning, reminder
+editing, mobile subtask persistence and leaf-only planning, routine ranking preferences,
+deterministic alternative comparison and selection, reminder
 policy/materialization/history with responsive checks, and deterministic Daily Plan Fit
 prefill/dismissal/reset, stale-key rejection, explicit generation receipts, resolved outcomes, and
 revision disclosure. The local proposal flow uses the production

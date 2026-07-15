@@ -224,10 +224,11 @@ explicitly submitted. If that evidence changed, the browser clears the selection
 guidance, and leaves the date without a plan; it never silently generates from the stale choice.
 
 **After using Plan Fit** is a bounded read-only history below the guidance. It distinguishes the
-original suggestion from the final edited targets, labels a use as waiting until every current-plan
+original suggestion from the final edited targets, labels a use as pending until every current-plan
 item is terminal, then shows completed scheduled workload for a resolved day. If the day was later
-regenerated or otherwise revised, the row says so and evaluates the current head while preserving the
-original source plan. Missing or empty current plans are labelled not evaluable. Loading, retry,
+regenerated or otherwise revised, `revisedSinceUsage` discloses that separately while the row
+evaluates the current head and preserves the original source plan. Missing or empty current plans are
+labelled not evaluable. Loading, retry,
 empty, and error states are independent of the guidance read, and fetching history cannot submit the
 form or mutate planner state.
 

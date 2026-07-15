@@ -1332,20 +1332,49 @@ try {
     "Plan Fit usage history must remain tenant-scoped",
   );
 
+  assert.ok(
+    fitUsagePlan.items.length >= 2,
+    "the Plan Fit verifier requires multiple items to prove partial outcomes stay pending",
+  );
   let fitUsageHeadVersion = 1;
-  for (const [itemIndex, item] of fitUsagePlan.items.entries()) {
-    const type = itemIndex === 0 ? "completed" : "skipped";
+  const [firstFitUsageItem, ...remainingFitUsageItems] = fitUsagePlan.items;
+  const firstFitUsageResult = await fitActivity.execute({
+    workspaceId: fitWorkspace,
+    date: fitForDate,
+    expectedPlanId: fitUsagePlan.id,
+    itemId: firstFitUsageItem!.id,
+    expectedHeadVersion: fitUsageHeadVersion,
+    type: "completed",
+    occurredAt: new Date("2026-07-14T13:30:00.000Z"),
+    timeZone: "UTC",
+    durationMinutes: firstFitUsageItem!.scheduledMinutes,
+    idempotencyKey: "daily-plan-fit-used-0-completed",
+  });
+  fitUsageHeadVersion = firstFitUsageResult.headVersion;
+  const [partiallyResolvedFitOutcome] = await listFitUsageOutcomes.execute({
+    workspaceId: fitWorkspace,
+    limit: 5,
+  });
+  assert.ok(partiallyResolvedFitOutcome);
+  assert.equal(
+    partiallyResolvedFitOutcome.status,
+    "pending",
+    "a partially terminal Plan Fit use must remain pending",
+  );
+  assert.equal(partiallyResolvedFitOutcome.completedMinutes, null);
+  assert.equal(partiallyResolvedFitOutcome.completedTaskCount, null);
+
+  for (const [itemIndex, item] of remainingFitUsageItems.entries()) {
     const result = await fitActivity.execute({
       workspaceId: fitWorkspace,
       date: fitForDate,
       expectedPlanId: fitUsagePlan.id,
       itemId: item.id,
       expectedHeadVersion: fitUsageHeadVersion,
-      type,
-      occurredAt: new Date(`2026-07-14T${String(13 + itemIndex).padStart(2, "0")}:30:00.000Z`),
+      type: "skipped",
+      occurredAt: new Date(`2026-07-14T${String(14 + itemIndex).padStart(2, "0")}:30:00.000Z`),
       timeZone: "UTC",
-      ...(type === "completed" ? { durationMinutes: item.scheduledMinutes } : {}),
-      idempotencyKey: `daily-plan-fit-used-${itemIndex}-${type}`,
+      idempotencyKey: `daily-plan-fit-used-${String(itemIndex + 1)}-skipped`,
     });
     fitUsageHeadVersion = result.headVersion;
   }

@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
+import { maximumDailyPlanFitUsageOutcomes } from "@schedule/application";
 import type {
   AddWorkItemDependencyCommand,
   AddWorkItemDependencyResult,
@@ -619,7 +620,7 @@ const routineDurationInsightFeedbackBody = z.strictObject({
 });
 const dailyPlanFitInsightQuery = z.strictObject({ forDate: localDateText });
 const dailyPlanFitUsageOutcomesQuery = z.strictObject({
-  limit: z.coerce.number().int().min(1).max(28).default(5),
+  limit: z.coerce.number().int().min(1).max(maximumDailyPlanFitUsageOutcomes).default(5),
 });
 const dailyPlanFitInsightFeedbackBody = z.strictObject({
   forDate: localDateText,

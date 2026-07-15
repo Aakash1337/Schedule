@@ -36,6 +36,8 @@ export class ListDailyPlanFitUsageOutcomes {
         throw new DomainError("workspace.not_found", "The workspace does not exist.");
       }
       const usages = await dailyPlanFitInsightFeedback.listUsed(query.workspaceId, query.limit);
+      if (usages.length === 0) return [];
+
       const dates = [...new Set(usages.map((usage) => usage.forDate))];
       const currentByDate = await dailyPlans.findCurrentForDates(query.workspaceId, dates);
       return usages.map((usage) =>

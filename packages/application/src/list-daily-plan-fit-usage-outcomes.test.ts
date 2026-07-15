@@ -81,8 +81,8 @@ const plan: DailyPlan = {
   generatedAt: new Date("2026-07-14T12:00:00.000Z"),
 };
 
-function harness(workspaceExists = true) {
-  const listUsed = vi.fn().mockResolvedValue([usage]);
+function harness(workspaceExists = true, usages = [usage]) {
+  const listUsed = vi.fn().mockResolvedValue(usages);
   const findCurrentForDates = vi
     .fn()
     .mockResolvedValue(new Map([[plan.date, { plan, headVersion: 1 }]]));
@@ -112,6 +112,14 @@ describe("ListDailyPlanFitUsageOutcomes", () => {
     );
     expect(test.listUsed).toHaveBeenCalledWith(workspace, 5);
     expect(test.findCurrentForDates).toHaveBeenCalledWith(workspace, [usage.forDate]);
+  });
+
+  it("returns immediately without querying plans when no use receipts exist", async () => {
+    const test = harness(true, []);
+
+    await expect(test.useCase.execute({ workspaceId: workspace, limit: 5 })).resolves.toEqual([]);
+    expect(test.listUsed).toHaveBeenCalledWith(workspace, 5);
+    expect(test.findCurrentForDates).not.toHaveBeenCalled();
   });
 
   it("rejects invalid bounds and missing workspaces", async () => {

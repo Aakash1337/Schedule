@@ -56,7 +56,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 100 test files and 1,414 runtime test cases. Three
+The package and script runners currently execute 100 test files and 1,419 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -545,10 +545,13 @@ The audit deliberately leaves these visible instead of turning them into false g
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a
   320px subtask create/complete/reload/detach/reparent/overflow flow with leaf-only planning, plus
+  explicit routine ranking preferences and deterministic alternative comparison and selection, plus
   explicit reminder setup, rule/one-off changes, materialization, safe execution history, and
-  a 320px reminder layout, plus local proposal review/edit/confirm/replay/cancel/reload behavior
-  against a strict loopback model double. They do not cover every browser, every responsive breakpoint, every
-  validation branch, Calendar interaction, or the duration-calibration approval flow;
+  a 320px reminder layout, deterministic Daily Plan Fit prefill/dismissal/reset, stale-key rejection,
+  explicit generation receipts, resolved outcomes, and revision disclosure, plus local proposal
+  review/edit/confirm/replay/cancel/reload behavior against a strict loopback model double. They do
+  not cover every browser, every responsive breakpoint, every validation branch, Calendar
+  interaction, or the duration-calibration approval flow;
 - work-item dependencies have domain, application, repository, API, component, and real PostgreSQL
   evidence, including a two-request reciprocal-add concurrency drill and the 320px live browser flow;
   dependency management is not exposed through the authenticated integration gateway;
@@ -562,8 +565,9 @@ The audit deliberately leaves these visible instead of turning them into false g
   outcome data, learned cadence/energy/preference model, automatic application, historical insight
   comparison, or local-model participation; and
 - Daily Plan Fit has deterministic cross-layer and live-browser evidence plus local descriptive use
-  receipts and pending/resolved/revised outcome history, but no production evidence for its 90-day
-  window, minimum sample, medians, thresholds, acceptance rate, or causal effect. It does not
+  receipts and pending, resolved, and not-evaluable outcome history with later revision disclosed
+  separately, but no production evidence for its 90-day window, minimum sample, medians, thresholds,
+  acceptance rate, or causal effect. It does not
   recommend increases, aggregate or infer effectiveness, learn a per-user policy, apply
   automatically, feed outcomes into scoring, or use a model; and
 - the local-model advisor has CI unit/component evidence for its configuration, application,

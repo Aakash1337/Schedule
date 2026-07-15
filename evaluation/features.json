@@ -1703,7 +1703,7 @@
       },
       "limitations": [
         "Version 1 is downward-only and uses a fixed 90-day, three-to-28-sample median policy; it does not learn or recommend target increases.",
-        "Selecting a suggestion only prefills editable fields; explicit generation records an immutable receipt and descriptive pending/resolved/revised history, but there is no automatic generation, aggregate effectiveness inference, outcome-driven scoring, or model participation."
+        "Selecting a suggestion only prefills editable fields; explicit generation records an immutable receipt and descriptive pending, resolved, and not-evaluable history with later revision disclosed separately, but there is no automatic generation, aggregate effectiveness inference, outcome-driven scoring, or model participation."
       ],
       "evidence": [
         {
@@ -1763,6 +1763,7 @@
           "command": "unit",
           "anchors": [
             "returns bounded explicit uses joined to current resolved plans",
+            "returns immediately without querying plans when no use receipts exist",
             "rejects invalid bounds and missing workspaces"
           ]
         },
@@ -1814,6 +1815,10 @@
           "anchors": [
             "prefills both Plan Fit targets without generating until the user submits",
             "shows bounded read-only outcomes for explicitly generated Plan Fit choices",
+            "keeps Plan Fit outcomes visible while guidance is still loading",
+            "keeps Plan Fit outcomes visible when guidance fails to load",
+            "keeps Plan Fit outcomes visible when there is no current guidance",
+            "keeps the specific announcement when selected Plan Fit evidence changes at generation",
             "announces Plan Fit loading without changing either target",
             "aborts and ignores Plan Fit results from the previous workspace",
             "dismisses and restores only the exact Plan Fit evidence key",
@@ -1831,6 +1836,7 @@
             "a queued Plan Fit dismissal must win before selected generation without a write",
             "outcome history reads must not mutate planner heads",
             "Plan Fit usage history must remain tenant-scoped",
+            "a partially terminal Plan Fit use must remain pending",
             "retries, outcome reads, activity, and revision must not duplicate the immutable use event"
           ]
         },

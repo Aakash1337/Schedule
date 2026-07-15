@@ -113,6 +113,95 @@ function taskCountLabel(count: number): string {
   return `${count} ${count === 1 ? "task" : "tasks"}`;
 }
 
+interface DailyPlanFitUsageHistoryProps {
+  readonly outcomes: readonly DailyPlanFitUsageOutcome[];
+  readonly historyLoading: boolean;
+  readonly historyError: string | null;
+  readonly onHistoryRetry: () => void;
+}
+
+function DailyPlanFitUsageHistory({
+  outcomes,
+  historyLoading,
+  historyError,
+  onHistoryRetry,
+}: DailyPlanFitUsageHistoryProps) {
+  return (
+    <div className="today-plan-fit-history" aria-labelledby="today-plan-fit-history-heading">
+      <div className="today-plan-fit-history-heading">
+        <h4 id="today-plan-fit-history-heading">After using Plan Fit</h4>
+        <span>Read-only</span>
+      </div>
+      {historyLoading && outcomes.length === 0 ? (
+        <p role="status" aria-live="polite">
+          Loading explicit Plan Fit outcomes…
+        </p>
+      ) : historyError !== null ? (
+        <ErrorNotice
+          message={historyError}
+          action={
+            <Button type="button" variant="quiet" onClick={onHistoryRetry}>
+              Retry history
+            </Button>
+          }
+        />
+      ) : outcomes.length === 0 ? (
+        <p>
+          No generated plan has used a Plan Fit suggestion yet. Prefilling alone creates no history.
+        </p>
+      ) : (
+        <ul className="today-plan-fit-history-list">
+          {outcomes.map((outcome) => (
+            <li key={outcome.usageId}>
+              <div>
+                <strong>
+                  {formatDay(new Date(`${outcome.forDate}T12:00:00`), {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  })}
+                </strong>
+                <span>
+                  {outcome.status === "resolved"
+                    ? "Resolved"
+                    : outcome.status === "pending"
+                      ? "Waiting for final outcomes"
+                      : "Not evaluable"}
+                </span>
+              </div>
+              <p>
+                Suggested {formatMinutes(outcome.suggestedTargetMinutes)} and{" "}
+                {taskCountLabel(outcome.suggestedTargetTaskCount)}; generated with{" "}
+                {formatMinutes(outcome.appliedTargetMinutes)} and{" "}
+                {taskCountLabel(outcome.appliedTargetTaskCount)}.
+              </p>
+              {outcome.status === "resolved" &&
+              outcome.completedMinutes !== null &&
+              outcome.completedTaskCount !== null &&
+              outcome.plannedMinutes !== null &&
+              outcome.plannedTaskCount !== null ? (
+                <p>
+                  Completed {formatMinutes(outcome.completedMinutes)} and{" "}
+                  {taskCountLabel(outcome.completedTaskCount)} from{" "}
+                  {formatMinutes(outcome.plannedMinutes)} across{" "}
+                  {taskCountLabel(outcome.plannedTaskCount)}.
+                </p>
+              ) : outcome.status === "pending" ? (
+                <p>Every item in the current plan must resolve before completion is compared.</p>
+              ) : (
+                <p>The current plan has no evaluable items for this comparison.</p>
+              )}
+              {outcome.revisedSinceUsage ? (
+                <p>The day was revised after Plan Fit was used.</p>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function DailyPlanFitPanel({
   insight,
   loading,
@@ -143,6 +232,12 @@ function DailyPlanFitPanel({
         <p className="eyebrow">Deterministic Plan Fit</p>
         <h3 id="today-plan-fit-heading">Checking your resolved plans…</h3>
         <p>No targets will change while this evidence is loaded.</p>
+        <DailyPlanFitUsageHistory
+          outcomes={outcomes}
+          historyLoading={historyLoading}
+          historyError={historyError}
+          onHistoryRetry={onHistoryRetry}
+        />
       </section>
     );
   }
@@ -160,11 +255,28 @@ function DailyPlanFitPanel({
             </Button>
           }
         />
+        <DailyPlanFitUsageHistory
+          outcomes={outcomes}
+          historyLoading={historyLoading}
+          historyError={historyError}
+          onHistoryRetry={onHistoryRetry}
+        />
       </section>
     );
   }
 
-  if (insight === null) return null;
+  if (insight === null) {
+    return (
+      <section className="today-plan-fit" aria-labelledby="today-plan-fit-history-heading">
+        <DailyPlanFitUsageHistory
+          outcomes={outcomes}
+          historyLoading={historyLoading}
+          historyError={historyError}
+          onHistoryRetry={onHistoryRetry}
+        />
+      </section>
+    );
+  }
 
   const hasEvidence =
     insight.typicalPlannedMinutes !== null &&
@@ -294,79 +406,12 @@ function DailyPlanFitPanel({
         </div>
       ) : null}
 
-      <div className="today-plan-fit-history" aria-labelledby="today-plan-fit-history-heading">
-        <div className="today-plan-fit-history-heading">
-          <h4 id="today-plan-fit-history-heading">After using Plan Fit</h4>
-          <span>Read-only</span>
-        </div>
-        {historyLoading && outcomes.length === 0 ? (
-          <p role="status" aria-live="polite">
-            Loading explicit Plan Fit outcomes…
-          </p>
-        ) : historyError !== null ? (
-          <ErrorNotice
-            message={historyError}
-            action={
-              <Button type="button" variant="quiet" onClick={onHistoryRetry}>
-                Retry history
-              </Button>
-            }
-          />
-        ) : outcomes.length === 0 ? (
-          <p>
-            No generated plan has used a Plan Fit suggestion yet. Prefilling alone creates no
-            history.
-          </p>
-        ) : (
-          <ul className="today-plan-fit-history-list">
-            {outcomes.map((outcome) => (
-              <li key={outcome.usageId}>
-                <div>
-                  <strong>
-                    {formatDay(new Date(`${outcome.forDate}T12:00:00`), {
-                      month: "short",
-                      day: "numeric",
-                      year: "numeric",
-                    })}
-                  </strong>
-                  <span>
-                    {outcome.status === "resolved"
-                      ? "Resolved"
-                      : outcome.status === "pending"
-                        ? "Waiting for final outcomes"
-                        : "Not evaluable"}
-                  </span>
-                </div>
-                <p>
-                  Suggested {formatMinutes(outcome.suggestedTargetMinutes)} and{" "}
-                  {taskCountLabel(outcome.suggestedTargetTaskCount)}; generated with{" "}
-                  {formatMinutes(outcome.appliedTargetMinutes)} and{" "}
-                  {taskCountLabel(outcome.appliedTargetTaskCount)}.
-                </p>
-                {outcome.status === "resolved" &&
-                outcome.completedMinutes !== null &&
-                outcome.completedTaskCount !== null &&
-                outcome.plannedMinutes !== null &&
-                outcome.plannedTaskCount !== null ? (
-                  <p>
-                    Completed {formatMinutes(outcome.completedMinutes)} and{" "}
-                    {taskCountLabel(outcome.completedTaskCount)} from{" "}
-                    {formatMinutes(outcome.plannedMinutes)} across{" "}
-                    {taskCountLabel(outcome.plannedTaskCount)}.
-                  </p>
-                ) : outcome.status === "pending" ? (
-                  <p>Every item in the current plan must resolve before completion is compared.</p>
-                ) : (
-                  <p>The current plan has no evaluable items for this comparison.</p>
-                )}
-                {outcome.revisedSinceUsage ? (
-                  <p>The day was revised after Plan Fit was used.</p>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      <DailyPlanFitUsageHistory
+        outcomes={outcomes}
+        historyLoading={historyLoading}
+        historyError={historyError}
+        onHistoryRetry={onHistoryRetry}
+      />
     </section>
   );
 }
@@ -1464,6 +1509,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
                 "Resolved-plan evidence changed before generation. Review the current Plan Fit suggestion; no old selection was recorded.",
               );
               await loadPlanFitInsight();
+              return false;
             }
             throw error;
           }
@@ -1592,7 +1638,10 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
           },
           command.key,
         );
-        if (activeQueryKeyRef.current === requestKey) setPlan(current);
+        if (activeQueryKeyRef.current === requestKey) {
+          setPlan(current);
+          await loadPlanFitUsageOutcomes();
+        }
       },
       "The unlocked part of today's plan was regenerated.",
       retryIdentity,
@@ -1682,6 +1731,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
         );
         if (activeQueryKeyRef.current !== requestKey) return false;
         acceptLoadedPlan(current);
+        await loadPlanFitUsageOutcomes();
         globalThis.setTimeout(() => planSummaryHeadingRef.current?.focus(), 0);
       },
       `Alternative ${String(alternativeNumber)} is now today's plan.`,
@@ -1713,7 +1763,10 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
           },
           command.key,
         );
-        if (activeQueryKeyRef.current === requestKey) setPlan(current);
+        if (activeQueryKeyRef.current === requestKey) {
+          setPlan(current);
+          await loadPlanFitUsageOutcomes();
+        }
       },
       `${item.title} was replaced while the rest of the plan stayed in place.`,
       retryIdentity,
@@ -1751,6 +1804,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
         if (activeQueryKeyRef.current === requestKey) {
           shouldFocusRecentFeedbackUndoRef.current = true;
           setPlan(current);
+          await loadPlanFitUsageOutcomes();
         }
       },
       {
@@ -1788,7 +1842,10 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
           },
           command.key,
         );
-        if (activeQueryKeyRef.current === requestKey) setPlan(current);
+        if (activeQueryKeyRef.current === requestKey) {
+          setPlan(current);
+          await loadPlanFitUsageOutcomes();
+        }
       },
       `Temporary feedback for ${entry.title} was cleared. Today's plan was recalculated.`,
       retryIdentity,

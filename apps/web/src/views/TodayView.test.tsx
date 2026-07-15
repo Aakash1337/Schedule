@@ -352,6 +352,7 @@ describe("Today commands", () => {
 
     expect(await screen.findByRole("heading", { name: "Write project notes" })).toBeVisible();
     expect(screen.getByRole("status")).toHaveTextContent("Alternative 1 is now today's plan.");
+    await waitFor(() => expect(apiMocks.listDailyPlanFitUsageOutcomes).toHaveBeenCalledTimes(2));
     expect(screen.queryByRole("heading", { name: "Compare before changing Today" })).toBeNull();
     const previewRequest = apiMocks.previewDailyPlanAlternatives.mock.calls[0]?.[2].request;
     expect(previewRequest).toBeDefined();
@@ -756,6 +757,56 @@ describe("Today commands", () => {
     );
   });
 
+  it("keeps Plan Fit outcomes visible while guidance is still loading", async () => {
+    apiMocks.getCurrentPlan.mockRejectedValue(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
+    apiMocks.getDailyPlanFitInsight.mockImplementation(() => new Promise(() => undefined));
+    apiMocks.listDailyPlanFitUsageOutcomes.mockResolvedValue({
+      items: [planFitUsageOutcome()],
+    });
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Checking your resolved plans…" }),
+    ).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "After using Plan Fit" })).toBeVisible();
+    expect(screen.getByText(/Completed 1h and 1 task from 1h 30m across 2 tasks/)).toBeVisible();
+  });
+
+  it("keeps Plan Fit outcomes visible when guidance fails to load", async () => {
+    apiMocks.getCurrentPlan.mockRejectedValue(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
+    apiMocks.getDailyPlanFitInsight.mockRejectedValue(new Error("insight unavailable"));
+    apiMocks.listDailyPlanFitUsageOutcomes.mockResolvedValue({
+      items: [planFitUsageOutcome()],
+    });
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByRole("heading", { name: "Plan Fit is unavailable" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "After using Plan Fit" })).toBeVisible();
+    expect(screen.getByText(/Completed 1h and 1 task from 1h 30m across 2 tasks/)).toBeVisible();
+  });
+
+  it("keeps Plan Fit outcomes visible when there is no current guidance", async () => {
+    apiMocks.getCurrentPlan.mockRejectedValue(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
+    apiMocks.getDailyPlanFitInsight.mockResolvedValue(null);
+    apiMocks.listDailyPlanFitUsageOutcomes.mockResolvedValue({
+      items: [planFitUsageOutcome()],
+    });
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByRole("heading", { name: "After using Plan Fit" })).toBeVisible();
+    expect(screen.getByText(/Completed 1h and 1 task from 1h 30m across 2 tasks/)).toBeVisible();
+    expect(screen.queryByText("Deterministic Plan Fit")).not.toBeInTheDocument();
+  });
+
   it("dismisses and restores only the exact Plan Fit evidence key", async () => {
     const user = userEvent.setup();
     const available = suggestedPlanFitInsight();
@@ -862,6 +913,38 @@ describe("Today commands", () => {
     expect(screen.getByRole("status")).toHaveTextContent("evidence changed");
     expect(screen.getByRole("spinbutton", { name: /^Target minutes/ })).toHaveValue(180);
     expect(screen.getByRole("spinbutton", { name: /^Target tasks/ })).toHaveValue(4);
+  });
+
+  it("keeps the specific announcement when selected Plan Fit evidence changes at generation", async () => {
+    const user = userEvent.setup();
+    apiMocks.getCurrentPlan.mockRejectedValue(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
+    apiMocks.getDailyPlanFitInsight
+      .mockResolvedValueOnce(suggestedPlanFitInsight())
+      .mockResolvedValueOnce(
+        suggestedPlanFitInsight({
+          insightKey: "b".repeat(64),
+          suggestedTargetMinutes: 120,
+          suggestedTargetTaskCount: 3,
+        }),
+      );
+    apiMocks.generatePlan.mockRejectedValue(
+      new ApiError(409, "daily_plan_fit_insight.evidence_conflict", "Evidence changed.", null),
+    );
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await user.click(await screen.findByRole("button", { name: "Use 90 minutes and 2 tasks" }));
+    await user.click(screen.getByRole("button", { name: "Generate today's plan" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Try 120 minutes and 3 tasks" }),
+    ).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Resolved-plan evidence changed before generation",
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("subtracts calendar blocks into explicit free windows before generating", async () => {
@@ -1186,6 +1269,7 @@ describe("Today commands", () => {
     expect(regenerateCall?.[3]).toEqual(expect.any(String));
     expect(await screen.findByText("Review grammar")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("regenerated");
+    expect(apiMocks.listDailyPlanFitUsageOutcomes).toHaveBeenCalledTimes(2);
 
     await user.click(screen.getByRole("button", { name: "Replace" }));
     await waitFor(() => expect(apiMocks.replacePlanItem).toHaveBeenCalledOnce());
@@ -1207,6 +1291,7 @@ describe("Today commands", () => {
     expect(replaceCall?.[4]).toEqual(expect.any(String));
     expect(await screen.findByText("Listen to a podcast")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("replaced");
+    expect(apiMocks.listDailyPlanFitUsageOutcomes).toHaveBeenCalledTimes(3);
   });
 
   it("reuses the same idempotency key and timestamp after an ambiguous failure", async () => {
@@ -1353,6 +1438,7 @@ describe("Today commands", () => {
       expect(recentUndo).toBeVisible();
       await waitFor(() => expect(recentUndo).toHaveFocus());
       expect(apiMocks.recordPlanItemActivity).not.toHaveBeenCalled();
+      expect(apiMocks.listDailyPlanFitUsageOutcomes).toHaveBeenCalledTimes(2);
     },
   );
 
@@ -1452,6 +1538,7 @@ describe("Today commands", () => {
     );
     expect(screen.getByRole("button", { name: "Not today" })).not.toHaveFocus();
     expect(apiMocks.recordPlanItemActivity).not.toHaveBeenCalled();
+    expect(apiMocks.listDailyPlanFitUsageOutcomes).toHaveBeenCalledTimes(3);
   });
 
   it("keeps reloaded temporary feedback visible, reversible, and out of generic exclusions", async () => {
