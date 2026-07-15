@@ -504,6 +504,12 @@ describe("work board", () => {
     expect(duration).toHaveAccessibleDescription("The planner will reserve this many minutes.");
     await user.clear(duration);
     await user.type(duration, "75");
+    await user.type(screen.getByRole("searchbox", { name: "Search work" }), "unrelated task");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filter by status" }), "done");
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Filter by due date" }),
+      "overdue",
+    );
     await user.click(screen.getByRole("button", { name: "Create this work item" }));
 
     expect(apiMocks.updateNaturalLanguageProposal).toHaveBeenCalledWith(
@@ -528,6 +534,9 @@ describe("work board", () => {
     const card = createdHeading.closest("article");
     if (card === null) throw new Error("Confirmed work card was not rendered.");
     await waitFor(() => expect(card).toHaveFocus());
+    expect(screen.getByRole("searchbox", { name: "Search work" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "Filter by status" })).toHaveValue("active");
+    expect(screen.getByRole("combobox", { name: "Filter by due date" })).toHaveValue("all");
     expect(screen.getByRole("status", { name: "Work proposal status" })).toHaveTextContent(
       "was created in Backlog",
     );

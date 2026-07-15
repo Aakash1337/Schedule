@@ -293,6 +293,14 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const activeQueryKey = queryKey(workspace.id, priorityFilter);
   const activeQueryKeyRef = useRef(activeQueryKey);
   activeQueryKeyRef.current = activeQueryKey;
+  const activeDiscoveryFilterKey = JSON.stringify([
+    searchQuery,
+    statusFilter,
+    dueDateFilter,
+    priorityFilter,
+  ]);
+  const activeDiscoveryFilterKeyRef = useRef(activeDiscoveryFilterKey);
+  activeDiscoveryFilterKeyRef.current = activeDiscoveryFilterKey;
   proposalWorkspaceRef.current = workspace.id;
 
   const loadBoard = useCallback(
@@ -1145,6 +1153,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     } as const;
     const request = beginProposalOperation();
     const requestQueryKey = activeQueryKey;
+    const requestDiscoveryFilterKey = activeDiscoveryFilterKey;
     const confirmationKey = confirmationKeyRef.current ?? globalThis.crypto.randomUUID();
     confirmationKeyRef.current = confirmationKey;
     setProposalBusy("confirming");
@@ -1216,7 +1225,13 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
             : current.items;
         return { ...current, allItems, items };
       });
-      if (activeQueryKeyRef.current === requestQueryKey) {
+      if (
+        activeQueryKeyRef.current === requestQueryKey &&
+        activeDiscoveryFilterKeyRef.current === requestDiscoveryFilterKey
+      ) {
+        setSearchQuery("");
+        setStatusFilter("active");
+        setDueDateFilter("all");
         if (priorityFilter !== "" && created.priority !== priorityFilter) setPriorityFilter("");
         setRecentlyCreatedItemId(created.id);
       }
