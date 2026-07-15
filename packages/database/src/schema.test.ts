@@ -551,11 +551,17 @@ describe("database schema", () => {
       "utf8",
     );
 
-    expect(migration).toContain('ADD COLUMN "review_priority" "work_item_priority"');
-    expect(migration).toContain('ADD COLUMN "review_hash" varchar(64)');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "review_priority" "work_item_priority"');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "review_hash" varchar(64)');
     expect(migration).toContain("65f7aef345c4f828788d1f4b3d779476b02a9599c31b1442ac7a4b3dbd670805");
-    expect(migration).toContain('ADD COLUMN "review_due_on" date');
-    expect(migration).toContain('ADD COLUMN "review_planning_duration_minutes" integer');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "review_due_on" date');
+    expect(migration).toContain(
+      'ADD COLUMN IF NOT EXISTS "review_planning_duration_minutes" integer',
+    );
+    expect(migration).toContain("natural-language proposal review columns have incompatible types");
+    expect(migration).toContain(
+      'DROP CONSTRAINT IF EXISTS "natural_language_proposals_review_hash_valid"',
+    );
     expect(migration).toContain('"review_planning_duration_minutes" <= 43200');
     expect(migration).not.toContain('ALTER COLUMN "command"');
   });

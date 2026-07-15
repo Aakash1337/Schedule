@@ -10,6 +10,11 @@ intents; and presents separate planned and product-safe execution histories. An 
 enable background intent materialization. Neither path implies that an external provider sent a
 message.
 
+Separately, an opt-in local Hermes plugin calls the authenticated read/write gateway, binds a later
+confirmation turn to the same sender/session/platform identity, and includes a deterministic stdout
+Today helper. It does not make the provider-neutral delivery runtime or live WhatsApp delivery
+complete. See [HERMES.md](./HERMES.md).
+
 ## 1. Product summary
 
 The target application combines conventional task and schedule management with an adaptive daily
@@ -680,6 +685,10 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   single-flight polling with loopback health and graceful shutdown, while concrete provider
   transport/reconciliation, external bootstrap/control wiring, and human/account binding remain
   follow-on work
+- Implemented local adapter: disabled-by-default Hermes tools for authenticated Today/work-item
+  reads and sender/session/platform-bound confirmed mutations, plus a deterministic stdout reminder
+  helper; it is separate from the delivery-claim runtime, and live WhatsApp still requires the
+  operator's `WHATSAPP_HOME_CHANNEL` and self-chat smoke
 - Implemented foundation: dormant provider-neutral users, exact issuer/subject bindings,
   digest-only revocable browser sessions, and binary workspace memberships with deletion-safe
   workspace preservation

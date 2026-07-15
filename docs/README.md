@@ -11,9 +11,10 @@ Durable product and engineering specifications live here so the repository root 
 - [Natural-language proposals](./NATURAL_LANGUAGE.md): review-only local model capture, privacy,
   lifecycle, exactly-once confirmation, and deliberate command limits.
 - [Integration gateway](./INTEGRATIONS.md): authenticated automation credentials, versioned
-  commands, confirmation, idempotency, reminder claims/receipts, and the future Hermes boundary.
-- [Hermes reminder adapter](./HERMES.md): provider-neutral polling, lease and dedupe ordering,
-  crash semantics, transport/store ports, and the remaining account-binding boundary.
+  commands, confirmation, idempotency, reminder claims/receipts, and the external-adapter boundary.
+- [Hermes integrations](./HERMES.md): local plugin installation and sender-bound confirmation plus
+  the separate provider-neutral polling, lease, durable dedupe, health, and shutdown boundary;
+  includes WhatsApp prerequisites, privacy, limitations, and safe rollout.
 - [Outbound webhook delivery](./WEBHOOKS.md): encrypted endpoint secrets, signed delivery, opt-in
   privacy-thin Today-change invalidations, subscriptions, network policy, rotation, retries, and
   dead-letter operations.

@@ -1,0 +1,23 @@
+name: hermes-schedule
+version: 0.1.0
+description: "Read Schedule and prepare explicitly confirmed changes through the local authenticated integration gateway."
+author: Schedule contributors
+kind: standalone
+provides_tools:
+  - schedule_today
+  - schedule_list_work_items
+  - schedule_prepare_change
+  - schedule_confirm_change
+  - schedule_cancel_change
+provides_hooks:
+  - pre_llm_call
+requires_env:
+  - name: SCHEDULE_INTEGRATION_URL
+    description: "Canonical loopback Schedule URL, for example http://127.0.0.1:4000"
+    password: false
+  - name: SCHEDULE_INTEGRATION_TOKEN
+    description: "Workspace-bound Schedule machine credential"
+    password: true
+  - name: SCHEDULE_HERMES_BINDING_KEY
+    description: "Random secret of at least 32 characters used to bind confirmations to a Hermes sender and session"
+    password: true

@@ -197,7 +197,9 @@ Delivery remains at least once and unordered. A Hermes-style receiver should:
 The receiver must keep polling Today as a fallback. Webhooks can be disabled, delayed, duplicated,
 delivered out of order, dead-lettered, or unavailable while an endpoint is being rotated. This event
 does not request a phone notification, carry reminder content, prove a WhatsApp message was sent, or
-replace the separate provider-neutral reminder claim/receipt gateway or a future Hermes/WhatsApp adapter.
+replace the provider-neutral reminder claim/receipt gateway, the local
+[Hermes Schedule plugin](./HERMES.md), its deterministic reminder helper, or a future verified
+phone-delivery system.
 
 ## Delivery behavior
 
@@ -270,10 +272,12 @@ dead-letter metadata, redrive identity, revocation, audits, and rollback behavio
 ## Current limits
 
 - The only automatic product event is the privacy-thin `schedule.changed.v1` invalidation. There are
-  no task-content, reminder, deadline, notification-request, or reminder-receipt webhook events.
-  Reminder commands and receipts use the authenticated pull gateway in [INTEGRATIONS.md](./INTEGRATIONS.md).
-- Private-network and loopback callbacks are not supported. A future local Hermes transport needs a
-  separate authenticated design rather than an unsafe general-purpose bypass.
+  no task-content, reminder, deadline, notification-request, or delivery-receipt events.
+- Reminder commands and receipts use the authenticated pull gateway in
+  [INTEGRATIONS.md](./INTEGRATIONS.md), not webhooks.
+- Private-network and loopback callbacks are not supported. The local Hermes plugin does not weaken
+  this policy or act as a webhook receiver; it calls Schedule's authenticated loopback integration
+  gateway when a tool or deterministic cron script runs.
 - Custom headers, redirects, HTTP, arbitrary ports, proxy routing, mTLS, per-endpoint ordering, and a
   management UI are not supported.
 - Delivery success means the receiver returned `2xx`; it does not prove that a phone notification or

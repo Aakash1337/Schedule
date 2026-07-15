@@ -61,6 +61,9 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
       - run: pnpm install --frozen-lockfile
       - name: Start disposable PostgreSQL Compose service
         run: docker compose up -d --wait postgres
@@ -70,6 +73,8 @@ jobs:
         run: pnpm db:migrate
       - name: Verify database integrations against PostgreSQL
         run: pnpm verify:database
+      - name: Verify the Hermes adapter against the real integration gateway
+        run: pnpm verify:hermes-adapter
       - name: Verify complete backup and restore path
         run: pnpm verify:backup-restore
       - name: Verify restore, promotion, rollback, and cleanup state machine

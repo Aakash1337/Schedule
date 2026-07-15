@@ -374,7 +374,8 @@ For a delivery incident:
    print endpoint URLs, request or response bodies, signatures, DNS answers, key material, or raw
    network exceptions in worker failures.
 3. Correct the receiver, DNS, certificate, or key configuration. Do not bypass the public-HTTPS DNS
-   policy to reach a private Hermes process; that requires a separate authenticated transport.
+   policy to reach a private Hermes process. The local Hermes plugin is not a webhook receiver; it
+   calls Schedule's authenticated loopback integration gateway when invoked.
 4. Redrive the existing delivery. Redrive preserves the delivery ID, exact body, destination, and
    secret version, so the receiver must deduplicate it.
 5. Revoke the endpoint if its destination or receiver secret may be compromised. Create a replacement
@@ -391,11 +392,16 @@ replacement, privacy-thin automatic event fan-out, immutable body and outbox lin
 dead-letter redrive, revocation, and transactional rollback. It is also part of
 `pnpm verify:database` and the PostgreSQL CI job. `schedule.changed.v1` is only an invalidation; it
 does not transport reminder commands. Reminder claim/receipt state uses a separate authenticated
-pull gateway. The dormant [Hermes adapter foundation](./HERMES.md) consumes that contract, but its
+pull gateway. The dormant [Hermes delivery adapter foundation](./HERMES.md) consumes that contract,
+but its
 shared PostgreSQL dedupe store and fail-safe supervised runtime do not make it a live provider:
 concrete transport and reconciliation, provider/account binding, external bootstrap and control
 wiring, and phone verification remain deferred. A successful webhook test or invalidation delivery
-does not imply those systems exist.
+also does not verify the separate local Hermes plugin or imply that a reminder reached a phone.
+Verify the plugin's local/stdout and real integration-gateway boundary with
+`pnpm verify:hermes-adapter`, and verify the delivery store with
+`pnpm verify:hermes-dedupe-store`. Live WhatsApp remains incomplete until the operator configures
+`WHATSAPP_HOME_CHANNEL` and completes the smoke described in [HERMES.md](./HERMES.md).
 
 ## Deterministic reminder operations
 

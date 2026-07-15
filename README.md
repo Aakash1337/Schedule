@@ -8,7 +8,9 @@ provider-neutral delivery are specified in [docs/REMINDERS.md](./docs/REMINDERS.
 authenticated automation boundary is in
 the [integration gateway guide](./docs/INTEGRATIONS.md). Local data protection and recovery
 procedures are in the [operations guide](./docs/OPERATIONS.md). Behavioral confidence and known test
-limitations are tracked in the [evaluation guide](./docs/EVALUATION.md).
+limitations are tracked in the [evaluation guide](./docs/EVALUATION.md). The two distinct opt-in
+Hermes paths—one local conversational plugin and one provider-neutral reminder-delivery adapter
+foundation—are documented in the [Hermes guide](./docs/HERMES.md).
 The optional loopback worker health and metrics contract is in
 [docs/OBSERVABILITY.md](./docs/OBSERVABILITY.md).
 The local model's explicit, review-before-write capture contract is documented in
@@ -67,8 +69,10 @@ version-checked, audited, and durable exactly-once under concurrent retries.
 
 An optional integration gateway gives a workspace-scoped machine credential read-only access to
 Today and a two-step, idempotent structured-command flow. It is disabled by default. Schedule stays
-authoritative; Hermes or another messaging agent belongs in an external adapter that calls this
-boundary instead of writing the database.
+authoritative; Hermes or another messaging agent calls this boundary instead of writing the
+database. The repository includes an opt-in local Hermes plugin that adds sender/session/platform-
+bound later-turn confirmation and a deterministic stdout reminder helper. It remains local-only and
+does not silently enable a cron job or WhatsApp delivery.
 
 A separate outbound webhook substrate can deliver signed, workspace-bound test events and explicitly
 subscribed privacy-thin Today-change invalidations through the existing durable outbox. It is also
@@ -131,10 +135,13 @@ Outbound delivery remains disabled unless `WEBHOOK_DELIVERY_MODE=enabled` and a 
 master-key keyring is configured. Provision endpoints and verify a receiver with the CLI before
 enabling the worker. Endpoints have no automatic subscriptions by default; an operator may opt one
 into `schedule.changed.v1`, which tells a receiver to refresh Today without carrying plan or task
-content. Reminder policy decisions, durable intents, and the dormant adapter core are implemented;
-provider-neutral supervised delivery polling is implemented but disabled by default. Provider/account
-binding, provider reconciliation, external bootstrap, and a concrete Hermes/WhatsApp transport are
-not part of this release. Automatic
+content. This webhook is not used as a reminder. Reminder policy decisions, durable intents, and
+provider-neutral supervised delivery polling are implemented, with polling disabled by default.
+Provider/account binding, reconciliation, external bootstrap, and a concrete Hermes/WhatsApp
+transport are not part of this release. Separately, the opt-in local Hermes plugin calls the
+authenticated read/write gateway when invoked and offers a deterministic stdout Today helper; live
+WhatsApp delivery remains incomplete until the operator configures `WHATSAPP_HOME_CHANNEL` and
+verifies an operator-owned self-chat. Automatic
 local intent materialization is available but disabled by default; set
 `NOTIFICATION_MATERIALIZATION_MODE=enabled` only after reminder policy is configured. This does not
 enable delivery. The least-privilege claim/receipt gateway is implemented for an external adapter.
@@ -184,6 +191,15 @@ exact-once materialization, source/target invalidation, fenced claim/receipt rec
 constraints, and populated pre-0024/pre-0025/pre-0026/pre-0027 upgrades. The notification migration
 verifier checks the
 workspace/schedule/id execution-history index without changing delivery or credential data.
+
+Verify the Hermes plugin's deterministic Python contract and its disposable PostgreSQL/real
+Fastify prepare-and-confirm flow separately:
+
+```powershell
+pnpm verify:hermes-adapter
+```
+
+That command proves the local/stdout provider boundary, not delivery to a WhatsApp account or phone.
 
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh
