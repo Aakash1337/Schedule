@@ -699,8 +699,9 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   workspace preservation
 - Implemented foundation: a centralized, enumeration-resistant hosted request and workspace
   authorization seam with request isolation and explicit revocation/transaction semantics, plus
-  strict host-only session-cookie and exact-Origin double-submit CSRF adapters; none is registered
-  in production, and no browser route or identity provider is exposed
+  strict host-only session-cookie and exact-Origin double-submit CSRF adapters, and an injectable
+  provider-neutral login/session/logout lifecycle; none is registered in production, and no
+  concrete identity provider or browser route is exposed
 - Authentication and secure workspace isolation
 - Cloud deployment selected from measured operational needs
 - Offline-capable synchronization and conflict handling, if required

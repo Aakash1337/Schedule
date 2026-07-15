@@ -2449,7 +2449,7 @@
         "anchor": "# Hosted identity persistence foundation"
       },
       "limitations": [
-        "The foundation is dormant: strict cookie and CSRF transport exists, but no browser route, identity provider, or deployment flag exposes it.",
+        "The foundation is dormant: strict cookie and CSRF transport plus an injectable authentication lifecycle exist, but buildApp registers no browser route and no concrete identity provider or deployment flag exposes them.",
         "Public hosted authentication and synchronization remain deferred, and machine integration credentials remain a separate trust boundary."
       ],
       "evidence": [
@@ -2526,7 +2526,7 @@
         "anchor": "# Dormant hosted request authorization seam"
       },
       "limitations": [
-        "The seam and implemented cookie/CSRF transport are not registered in buildApp: provider verification, public end-user routes, transaction-coupled product mutations, and synchronization remain unimplemented.",
+        "The seam, cookie/CSRF transport, and provider-neutral authentication lifecycle registrar are not registered in buildApp: concrete provider verification, public end-user routes, transaction-coupled product mutations, and synchronization remain unimplemented.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [
@@ -2561,6 +2561,20 @@
             "crosses the dormant boundary with one real cookie resolution and exact CSRF proof",
             "keeps concurrent request principals isolated",
             "refuses to register an unscoped route inside the hosted workspace boundary"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-auth-lifecycle.test.ts",
+          "command": "unit",
+          "anchors": [
+            "reports an %s session without exposing identity",
+            "provisions an exact verified identity and issues only hardened browser cookies",
+            "rejects a provisioner binding with a %s",
+            "enforces the route body limit before provider or database work",
+            "rejects %s before credential or revocation work when CSRF fails",
+            "revokes the exact presented session and clears both browser cookies",
+            "redacts internal %s failures"
           ]
         },
         {

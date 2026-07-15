@@ -80,7 +80,7 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     57.90% |   69.01% |    65.94% | 58.41% |
+| Whole repository, measured |     58.33% |   69.36% |    66.26% | 58.83% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     94.79% |   91.30% |    93.20% | 95.80% |
 | Domain, required           |        91% |      82% |       92% |    93% |
@@ -549,10 +549,13 @@ The audit deliberately leaves these visible instead of turning them into false g
   enumeration-resistant membership denial, redacted failures, immutable workspace contexts, and
   post-revocation fencing. The dormant browser transport additionally has unit evidence for bounded
   duplicate-safe session cookies, host-only issue/clear attributes, exact-Origin constant-time
-  double-submit CSRF proof, verification ordering, and safe/unsafe production-route closure. The
-  stack remains dormant: there is no browser route, provider verification, route-level cookie
-  issuance, transaction-coupled product mutation authorization, public deployment, or
-  synchronization;
+  double-submit CSRF proof, and safe/unsafe production-route closure. A separately injectable
+  lifecycle registrar has unit evidence for identity-private session bootstrap, strict and bounded
+  proof exchange, verification-before-credential-work ordering, exact issuer/subject provisioning
+  with returned-binding consistency checks, disabled-user denial, hardened cookie issuance,
+  idempotent signed-out revocation, and redacted failures. The stack remains dormant: the registrar
+  is not installed, and there is no concrete provider verification, hosted configuration,
+  transaction-coupled product mutation authorization, public deployment, or synchronization;
 - ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a

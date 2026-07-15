@@ -81,16 +81,33 @@ describe("API infrastructure", () => {
     const app = await buildApp();
     apps.push(app);
 
-    for (const url of [
-      "/v1/auth/login",
-      "/v1/auth/callback",
-      "/v1/auth/session",
-      "/v1/auth/logout",
-      "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/probe",
-    ]) {
-      const response = await app.inject({ method: "GET", url });
-      expect(response.statusCode, url).toBe(404);
+    const browserHeaders = {
+      origin: "https://hosted.schedule.test",
+      cookie:
+        "__Host-schedule_session=00000000-0000-4000-8000-000000000201.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; __Host-schedule_csrf=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "x-schedule-csrf": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    };
+    for (const url of ["/v1/auth/login", "/v1/auth/session", "/v1/auth/logout"]) {
+      for (const method of ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] as const) {
+        const response = await app.inject({
+          method,
+          url,
+          headers: browserHeaders,
+          ...(method === "GET" || method === "HEAD"
+            ? {}
+            : { payload: { proof: "unreachable-provider-proof" } }),
+        });
+        expect(response.statusCode, `${method} ${url}`).toBe(404);
+      }
     }
+
+    const callbackResponse = await app.inject({ method: "GET", url: "/v1/auth/callback" });
+    expect(callbackResponse.statusCode).toBe(404);
+    const hostedProbeResponse = await app.inject({
+      method: "GET",
+      url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/probe",
+    });
+    expect(hostedProbeResponse.statusCode).toBe(404);
 
     for (const method of ["POST", "PUT", "PATCH", "DELETE"] as const) {
       const response = await app.inject({

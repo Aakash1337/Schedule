@@ -140,12 +140,17 @@ export class HostedBrowserSessionAuthenticator {
   constructor(private readonly resolver: BrowserSessionResolver) {}
 
   authenticate(request: FastifyRequest): Promise<BrowserSessionPrincipal | null> {
-    const header = cookieHeader(request);
-    if (header === null) return Promise.resolve(null);
-    const value = namedCookieValue(header, HOSTED_SESSION_COOKIE_NAME);
-    const token = value === null ? null : parseSessionCookieValue(value);
+    const token = hostedSessionTokenFromRequest(request);
     return token === null ? Promise.resolve(null) : this.resolver.execute(token);
   }
+}
+
+/** Parse the one canonical browser-session cookie without resolving or trusting its identity. */
+export function hostedSessionTokenFromRequest(request: FastifyRequest): BrowserSessionToken | null {
+  const header = cookieHeader(request);
+  if (header === null) return null;
+  const value = namedCookieValue(header, HOSTED_SESSION_COOKIE_NAME);
+  return value === null ? null : parseSessionCookieValue(value);
 }
 
 export class HostedBrowserCsrfGuard {

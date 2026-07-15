@@ -1,9 +1,10 @@
 # Dormant hosted request authorization seam
 
 Schedule contains a centralized, provider-neutral request boundary for future hosted workspace
-routes. The boundary is implemented and tested, but deliberately has no production registration:
-`buildApp` and the server do not install it, no browser route is reachable, and the local and
-machine-integration trust boundaries are unchanged.
+routes and a provider-neutral browser authentication lifecycle registrar. Both are implemented and
+tested, but deliberately have no production registration: `buildApp` and the server do not install
+them, no browser route is reachable, and the local and machine-integration trust boundaries are
+unchanged.
 
 ## Boundary contract
 
@@ -52,8 +53,37 @@ scope plus both `Max-Age=0` and a past `Expires` value.
 header using fixed-length validation and constant-time equality. The 256-bit CSRF token helper emits
 a script-readable `Path=/; Secure; SameSite=Lax` host cookie; it intentionally omits `HttpOnly` so a
 same-origin browser client can copy the token into the header. Duplicate Origin, Cookie, or proof
-headers fail closed. These adapters and serializers are implemented and unit tested, but no login,
-callback, session, logout, or workspace route currently calls them.
+headers fail closed.
+
+## Dormant authentication lifecycle contract
+
+`registerHostedAuthLifecycle` composes those transport helpers with injected identity and session
+application ports. It is a registrar, not production wiring: no call site in `buildApp`, the server,
+configuration, or deployment manifests installs it. Direct registrar tests exercise three routes:
+
+- `GET /v1/auth/session` resolves only the hardened session cookie, returns exactly
+  `{ "authenticated": true | false }`, and emits a fresh CSRF cookie even when there is no active
+  session. It never returns a user, provider, workspace, or session identifier.
+- `POST /v1/auth/login` requires exact Origin and double-submit CSRF proof before body, provider, or
+  database work. It accepts one strict `{ "proof": string }` object, bounds the JSON body to 16 KiB
+  and the opaque proof to 12 KiB, and passes the unchanged proof to an injected verifier. Only an
+  exact, bounded issuer/subject pair returned by that verifier may reach
+  `FindOrProvisionHostedUser`; the lifecycle then requires the provisioner to return that same exact
+  identity bound to the same active user before a session may be issued under an injected lifetime
+  policy. Success is an empty `204` with hardened session and fresh CSRF cookies.
+- `POST /v1/auth/logout` applies the same CSRF check first, parses the canonical session token once,
+  requests `signed_out` revocation when possible, and clears both host cookies. Missing, malformed,
+  unknown, already-revoked, and successful sessions all produce the same empty `204`; an internal
+  revocation outage is a redacted `503`, but local cookies are still cleared.
+
+All lifecycle responses receive `Cache-Control: no-store`. Invalid credentials and disabled users
+share one generic `401`; CSRF denial is one generic `403`; verifier, persistence, session, and
+contract failures are logged without private values and returned as one generic `503`. The verifier
+port is intentionally not an identity provider implementation. A future adapter must verify its
+protocol completely—including exact issuer allowlisting, signatures and algorithm policy,
+audience/authorized-party claims, timestamps, nonce, and the state/redirect/PKCE rules of any code
+flow—before returning issuer and subject. Email, display name, or other claims can never substitute
+for that exact provider identity.
 
 ## Revocation and transaction limit
 
@@ -70,20 +100,23 @@ not make that stronger claim.
 
 ## Deliberately absent
 
-There is still no OIDC discovery or callback, identity-provider verification, route that issues or
-clears these cookies, hosted configuration flag, public workspace route, hosted CORS policy,
-account-management API, role model, synchronization protocol, or cloud deployment. Integration
-credentials remain a separate machine boundary and cannot authenticate a browser principal. Product
-routes must remain closed until provider validation and transaction-coupled mutation authorization
-have their own negative isolation tests.
+There is still no OIDC discovery or callback, concrete identity-provider verifier, production-
+registered authentication route, hosted configuration flag, public workspace route, hosted CORS
+policy, account-management API, role model, synchronization protocol, or cloud deployment.
+Integration credentials remain a separate machine boundary and cannot authenticate a browser
+principal. Product routes must remain closed until provider validation and transaction-coupled
+mutation authorization have their own negative isolation tests.
 
 ## Verification
 
 `pnpm check` covers bounded and duplicate-safe cookie parsing, exact Origin and double-submit CSRF
-proof, cookie issue/clear attributes, request isolation, verification-before-authentication ordering,
-single authentication, spoof resistance, generic negative responses, response and log redaction,
-non-overridable private caching, inconsistent adapter rejection, scoped-route registration, dormant
-HTTP closure across safe and unsafe methods, and active/revoked application membership decisions.
+proof, cookie issue/clear attributes, strict and bounded login input, exact verified-identity
+provisioning and binding consistency, session bootstrap without identity disclosure, disabled-user
+denial, logout idempotency and revocation, request isolation, verification-before-credential-work
+ordering, single authentication, spoof resistance, generic negative responses, response and log
+redaction, non-overridable private caching, inconsistent adapter rejection, scoped-route
+registration, dormant HTTP closure across safe and unsafe methods, and active/revoked application
+membership decisions.
 `pnpm verify:hosted-identity` drives the production PostgreSQL adapter through active authorization
 plus concurrent authorization/revocation (where either valid linearization is allowed) and proves
 the committed revocation fences the next decision.
