@@ -1,5 +1,18 @@
 # Local operations
 
+## Production-image runtime smoke
+
+Run `pnpm verify:oci-runtime` before selecting or deploying to a cloud provider. The disposable
+verification builds the repository's API and worker OCI images, migrates a temporary PostgreSQL
+database from the built API image, and proves production health/readiness, disabled product and
+integration routes, loopback-only worker diagnostics, and graceful worker shutdown. It uses no
+provider credentials or persistent volume and removes its uniquely named Compose project and images
+on completion.
+
+This is a runtime portability gate, not a hosted deployment. It does not enable browser
+authentication, public product routes, managed backups, monitoring, TLS, synchronization, or any
+specific AWS, Cloudflare, Railway, Oracle, or other provider configuration.
+
 This guide covers backup, restore, rollback, and database verification for the loopback-only Docker
 Compose PostgreSQL service. These procedures protect the local MVP; they are not a substitute for
 managed backups, point-in-time recovery, encryption, and access controls in a hosted deployment.

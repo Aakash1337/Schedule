@@ -47,6 +47,7 @@
     "verify:worker-observability": "tsx scripts/verify-worker-observability.ts",
     "verify:hosted-identity": "tsx scripts/verify-hosted-identity.ts",
     "verify:hosted-identity-migrations": "tsx scripts/verify-hosted-identity-migrations.ts",
+    "verify:oci-runtime": "tsx scripts/verify-oci-runtime.ts",
     "verify:notification-delivery": "tsx scripts/verify-notification-delivery.ts",
     "verify:notification-migrations": "tsx scripts/verify-notification-migrations.ts",
     "verify:webhook-delivery": "tsx scripts/verify-webhook-delivery.ts",

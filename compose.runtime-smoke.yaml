@@ -1,0 +1,97 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: schedule
+      POSTGRES_USER: schedule
+      POSTGRES_PASSWORD: schedule
+    labels:
+      io.schedule.runtime-smoke.owner: ${RUNTIME_SMOKE_OWNER:?RUNTIME_SMOKE_OWNER is required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U schedule -d schedule"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  migrate:
+    image: schedule-api-runtime-smoke:${RUNTIME_SMOKE_IMAGE_TAG:?RUNTIME_SMOKE_IMAGE_TAG is required}
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    command: ["node", "node_modules/@schedule/database/dist/migrate.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://schedule:schedule@postgres:5432/schedule
+    labels:
+      io.schedule.runtime-smoke.owner: ${RUNTIME_SMOKE_OWNER:?RUNTIME_SMOKE_OWNER is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    image: schedule-api-runtime-smoke:${RUNTIME_SMOKE_IMAGE_TAG:?RUNTIME_SMOKE_IMAGE_TAG is required}
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: warn
+      API_HOST: 0.0.0.0
+      API_PORT: 4000
+      PRODUCT_API_MODE: disabled
+      INTEGRATION_API_MODE: disabled
+      DATABASE_URL: postgres://schedule:schedule@postgres:5432/schedule
+    labels:
+      io.schedule.runtime-smoke.owner: ${RUNTIME_SMOKE_OWNER:?RUNTIME_SMOKE_OWNER is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1::4000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4000/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    image: schedule-worker-runtime-smoke:${RUNTIME_SMOKE_IMAGE_TAG:?RUNTIME_SMOKE_IMAGE_TAG is required}
+    build:
+      context: .
+      dockerfile: infra/docker/worker.Dockerfile
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: warn
+      DATABASE_URL: postgres://schedule:schedule@postgres:5432/schedule
+      OUTBOX_POLL_INTERVAL_MS: 250
+      OUTBOX_BATCH_SIZE: 5
+      OUTBOX_MAX_ATTEMPTS: 2
+      WORKER_OBSERVABILITY_MODE: loopback
+      WORKER_OBSERVABILITY_PORT: 9464
+      NOTIFICATION_MATERIALIZATION_MODE: disabled
+      WEBHOOK_DELIVERY_MODE: disabled
+    labels:
+      io.schedule.runtime-smoke.owner: ${RUNTIME_SMOKE_OWNER:?RUNTIME_SMOKE_OWNER is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 15s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:9464/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 20

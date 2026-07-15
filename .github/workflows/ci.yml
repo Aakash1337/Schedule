@@ -115,3 +115,29 @@ jobs:
       - name: Remove disposable browser-test services
         if: always()
         run: E2E_OWNER_TOKEN=ci-cleanup docker compose --project-name "$E2E_COMPOSE_PROJECT" --file compose.e2e.yaml down --volumes --remove-orphans
+
+  oci-runtime:
+    name: OCI production runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CI: true
+      OCI_RUNTIME_SMOKE_PROJECT: schedule-runtime-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify built API and worker images
+        run: pnpm verify:oci-runtime
+      - name: Remove disposable runtime-smoke services
+        if: always()
+        run: |
+          RUNTIME_SMOKE_OWNER=ci-cleanup RUNTIME_SMOKE_IMAGE_TAG=ci-cleanup \
+            docker compose --project-name "$OCI_RUNTIME_SMOKE_PROJECT" --file compose.runtime-smoke.yaml \
+            down --volumes --remove-orphans --timeout 20

@@ -5,6 +5,11 @@ oracle, exercises a meaningful boundary or failure mode, and would fail if the c
 contract were materially broken. Line coverage helps find code that was never exercised, but it does
 not prove that ranking, concurrency, recovery, or user-visible behavior is correct.
 
+The CI-only `pnpm verify:oci-runtime` gate builds and executes the production API and worker OCI
+images against disposable PostgreSQL. It verifies migrations, live/ready health, fail-closed
+production product routes, worker loopback diagnostics, and graceful shutdown. It is provider
+neutral and does not count as evidence that public hosting or synchronization is implemented.
+
 ## Evidence model
 
 The machine-readable registry at [`evaluation/features.json`](../evaluation/features.json) connects
