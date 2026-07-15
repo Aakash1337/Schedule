@@ -22,11 +22,13 @@ const apiMocks = vi.hoisted(() => ({
   getDailyPlanFitInsight: vi.fn(),
   getSchedulingAdvice: vi.fn(),
   listScheduleBlocks: vi.fn(),
+  previewDailyPlanAlternatives: vi.fn(),
   recordPlanItemActivity: vi.fn(),
   regeneratePlan: vi.fn(),
   replacePlanItem: vi.fn(),
   resetDailyPlanFitInsightDismissal: vi.fn(),
   resetRoutineFeedback: vi.fn(),
+  selectDailyPlanAlternative: vi.fn(),
   setPlanItemLock: vi.fn(),
 }));
 
@@ -253,6 +255,141 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Today commands", () => {
+  it("compares distinct plans and changes Today only after an explicit selection", async () => {
+    const user = userEvent.setup();
+    const candidateKey = "a".repeat(64);
+    apiMocks.previewDailyPlanAlternatives.mockResolvedValue({
+      sourcePlanId: plan.id,
+      sourceHeadVersion: plan.headVersion,
+      alternatives: [
+        {
+          candidateKey,
+          items: [
+            {
+              sourceType: "routine",
+              routineId: "routine-2",
+              workItemId: null,
+              title: "Write project notes",
+              windowIndex: 0,
+              scheduledMinutes: 45,
+              partialSession: false,
+              score: 2,
+              reasons: ["Due this week"],
+            },
+          ],
+          totalMinutes: 45,
+          taskCount: 1,
+          fitness: 2,
+          warnings: [],
+          deltaMinutes: 15,
+          deltaTaskCount: 0,
+          addedSourceKeys: ["routine:routine-2"],
+          removedSourceKeys: ["routine:routine-1"],
+          changedPlacements: [],
+        },
+      ],
+    });
+    apiMocks.selectDailyPlanAlternative.mockResolvedValue({
+      ...plan,
+      id: "plan-2",
+      headVersion: 3,
+      requestRevision: 2,
+      totalMinutes: 45,
+      items: [
+        {
+          ...plan.items[0]!,
+          id: "plan-item-2",
+          routineId: "routine-2",
+          title: "Write project notes",
+          scheduledMinutes: 45,
+        },
+      ],
+    });
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Compare alternatives" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Compare before changing Today" }),
+    ).toBeVisible();
+    expect(screen.getByText("Current plan")).toBeVisible();
+    expect(screen.getByRole("heading", { name: /45m · 1 item/i })).toBeVisible();
+    expect(screen.getByText(/Write project notes · 45m/i)).toBeVisible();
+    expect(apiMocks.selectDailyPlanAlternative).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Use alternative 1 as today's plan" }));
+
+    expect(await screen.findByRole("heading", { name: "Write project notes" })).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("Alternative 1 is now today's plan.");
+    expect(screen.queryByRole("heading", { name: "Compare before changing Today" })).toBeNull();
+    expect(apiMocks.selectDailyPlanAlternative).toHaveBeenCalledWith(
+      workspace.id,
+      plan.date,
+      expect.objectContaining({
+        expectedPlanId: plan.id,
+        expectedHeadVersion: plan.headVersion,
+        candidateKey,
+        request: expect.objectContaining({ seed: expect.any(String) }),
+      }),
+      expect.any(String),
+    );
+  });
+
+  it("discards stale alternatives and refreshes the authoritative plan", async () => {
+    const user = userEvent.setup();
+    const latest = {
+      ...plan,
+      items: [{ ...plan.items[0]!, title: "Authoritative current title" }],
+    };
+    apiMocks.getCurrentPlan.mockResolvedValueOnce(plan).mockResolvedValueOnce(latest);
+    apiMocks.previewDailyPlanAlternatives.mockResolvedValue({
+      sourcePlanId: plan.id,
+      sourceHeadVersion: plan.headVersion,
+      alternatives: [
+        {
+          candidateKey: "b".repeat(64),
+          items: [
+            {
+              sourceType: "routine",
+              routineId: "routine-2",
+              workItemId: null,
+              title: "Write project notes",
+              windowIndex: 0,
+              scheduledMinutes: 30,
+              partialSession: false,
+              score: 2,
+              reasons: [],
+            },
+          ],
+          totalMinutes: 30,
+          taskCount: 1,
+          fitness: 2,
+          warnings: [],
+          deltaMinutes: 0,
+          deltaTaskCount: 0,
+          addedSourceKeys: ["routine:routine-2"],
+          removedSourceKeys: ["routine:routine-1"],
+          changedPlacements: [],
+        },
+      ],
+    });
+    apiMocks.selectDailyPlanAlternative.mockRejectedValue(
+      new ApiError(409, "planning.alternative_stale", "Alternative changed.", null),
+    );
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Compare alternatives" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Use alternative 1 as today's plan" }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This plan changed. The latest plan is shown; compare again.",
+    );
+    expect(screen.getByRole("heading", { name: "Authoritative current title" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Compare before changing Today" })).toBeNull();
+  });
+
   it("identifies routine and one-time work sources in a mixed plan", async () => {
     const mixedPlan: CurrentDailyPlan = {
       ...plan,

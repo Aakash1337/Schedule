@@ -2,6 +2,7 @@ import type {
   ActivityPage,
   CurrentDailyPlan,
   DailyPlan,
+  DailyPlanAlternativesResult,
   DailyPlanFitInsight,
   DailyPlanFitInsightFeedback,
   GeneratePlanInput,
@@ -814,6 +815,38 @@ export const api = {
     idempotencyKey: string,
   ) =>
     request<CurrentDailyPlan>(workspacePath(workspaceId, `/plans/${date}/regenerations`), {
+      method: "POST",
+      json: input,
+      idempotencyKey,
+    }),
+
+  previewDailyPlanAlternatives: (
+    workspaceId: string,
+    date: string,
+    input: { expectedPlanId: string; expectedHeadVersion: number; request: PlanSettings },
+    signal?: AbortSignal,
+  ) =>
+    request<DailyPlanAlternativesResult>(
+      workspacePath(workspaceId, `/plans/${date}/alternative-previews`),
+      {
+        method: "POST",
+        json: input,
+        ...(signal === undefined ? {} : { signal }),
+      },
+    ),
+
+  selectDailyPlanAlternative: (
+    workspaceId: string,
+    date: string,
+    input: {
+      expectedPlanId: string;
+      expectedHeadVersion: number;
+      candidateKey: string;
+      request: PlanSettings;
+    },
+    idempotencyKey: string,
+  ) =>
+    request<CurrentDailyPlan>(workspacePath(workspaceId, `/plans/${date}/alternative-selections`), {
       method: "POST",
       json: input,
       idempotencyKey,

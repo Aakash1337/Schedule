@@ -6,6 +6,7 @@
     "coverage": { "command": "pnpm test:coverage", "ci": true },
     "planner-db": { "command": "pnpm verify:database", "ci": true },
     "product-api": { "command": "pnpm verify:database", "ci": true },
+    "daily-plan-alternatives": { "command": "pnpm verify:database", "ci": true },
     "work-item-hierarchy": { "command": "pnpm verify:database", "ci": true },
     "natural-language-proposals": { "command": "pnpm verify:database", "ci": true },
     "integration-gateway": { "command": "pnpm verify:database", "ci": true },
@@ -197,6 +198,14 @@
           ]
         },
         {
+          "level": "integration",
+          "file": "scripts/verify-daily-plan-alternatives.ts",
+          "command": "daily-plan-alternatives",
+          "anchors": [
+            "daily-plan alternatives verification passed preview purity, locked selection, exact replay, and stale-key rejection"
+          ]
+        },
+        {
           "level": "component",
           "file": "apps/web/src/views/TodayView.test.tsx",
           "command": "unit",
@@ -221,7 +230,8 @@
           "file": "apps/web/e2e/planning-flow.spec.ts",
           "command": "browser-e2e",
           "anchors": [
-            "persists temporary routine feedback and activity through the live Today planning flow"
+            "persists temporary routine feedback and activity through the live Today planning flow",
+            "compares, selects, persists, and rejects stale daily-plan alternatives"
           ]
         }
       ]
@@ -766,12 +776,33 @@
       "contract": { "file": "docs/WEB.md", "anchor": "## Mutation and conflict contract" },
       "evidence": [
         {
+          "level": "unit",
+          "file": "packages/domain/src/daily-planning.test.ts",
+          "command": "unit",
+          "anchors": [
+            "projects stable non-primary alternatives without changing the primary plan",
+            "materializes only a currently offered alternative and records its opaque selection"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/daily-plan-alternatives.test.ts",
+          "command": "unit",
+          "anchors": [
+            "previews bounded deterministic choices without changing persisted state",
+            "selects exactly once, preserves a locked anchor, and replays after the head advances",
+            "rejects a candidate that is no longer offered before writing anything"
+          ]
+        },
+        {
           "level": "component",
           "file": "apps/web/src/views/TodayView.test.tsx",
           "command": "unit",
           "anchors": [
             "renders successful regenerate and replace responses with versioned idempotent commands",
-            "reuses the same idempotency key and timestamp after an ambiguous failure"
+            "reuses the same idempotency key and timestamp after an ambiguous failure",
+            "compares distinct plans and changes Today only after an explicit selection",
+            "discards stale alternatives and refreshes the authoritative plan"
           ]
         },
         {

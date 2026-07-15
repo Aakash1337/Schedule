@@ -460,6 +460,80 @@ describe("web API client", () => {
     );
   });
 
+  it("previews daily-plan alternatives with an exact cancellable head fence", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ sourcePlanId: "plan-1", alternatives: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+    const request = {
+      timeZone: "UTC",
+      availableWindows: [],
+      targetMinutes: 60,
+      targetTaskCount: 2,
+      fitPreference: "balanced" as const,
+      energy: null,
+      availableContexts: [],
+      seed: "compare-1",
+    };
+    const input = { expectedPlanId: "plan-1", expectedHeadVersion: 3, request };
+
+    await api.previewDailyPlanAlternatives("workspace-1", "2026-07-14", input, controller.signal);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/plans/2026-07-14/alternative-previews",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: controller.signal,
+      }),
+    );
+  });
+
+  it("selects a daily-plan alternative with the same request and an idempotency key", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _options?: RequestInit) =>
+        new Response(JSON.stringify({ id: "plan-2", headVersion: 4 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const input = {
+      expectedPlanId: "plan-1",
+      expectedHeadVersion: 3,
+      candidateKey: "a".repeat(64),
+      request: {
+        timeZone: "UTC",
+        availableWindows: [],
+        targetMinutes: 60,
+        targetTaskCount: 2,
+        fitPreference: "balanced" as const,
+        energy: null,
+        availableContexts: [],
+        seed: "compare-1",
+      },
+    };
+
+    await api.selectDailyPlanAlternative(
+      "workspace-1",
+      "2026-07-14",
+      input,
+      "select-alternative-1",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/plans/2026-07-14/alternative-selections",
+      expect.objectContaining({ method: "POST", body: JSON.stringify(input) }),
+    );
+    const options = fetchMock.mock.calls[0]?.[1];
+    expect((options?.headers as Headers).get("Idempotency-Key")).toBe("select-alternative-1");
+  });
+
   it.each([
     ["dismiss", "/daily-plan-fit-insight/dismissals", "dismissDailyPlanFitInsight"],
     ["reset", "/daily-plan-fit-insight/dismissal-resets", "resetDailyPlanFitInsightDismissal"],

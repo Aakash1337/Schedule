@@ -35,6 +35,10 @@ effect and after an idempotent side effect but before acknowledgement, then prov
 fencing, exactly-once effect persistence, and second-attempt completion.
 
 The domain now includes a pure, seeded daily planner that balances cadence, time budget, task count, context, and recent completion history.
+Today can compare the current plan with up to three deterministic, structurally distinct alternatives
+without writing anything. Choosing one is explicit, optimistic, and idempotent: the server recomputes
+the opaque candidate under the day lock, preserves locked nonterminal work, rejects stale choices,
+and stores one immutable next revision.
 
 Routine details also expose a transparent duration-calibration insight. After three completed
 sessions in the trailing 90 days, Schedule compares the routine's configured estimate with the

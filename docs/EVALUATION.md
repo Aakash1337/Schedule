@@ -304,6 +304,30 @@ migrations, and a disposable database, and confirms that plan creation occurs on
 submits the prefilled form. These checks establish the implementation contract, not that its
 thresholds improve completion or wellbeing for a particular user.
 
+### Daily-plan alternative evidence
+
+Alternative comparison has independent domain, application, persistence, transport, component, and
+browser oracles. Domain tests require the ordinary primary plan to remain byte-equivalent, cap the
+projection at three distinct non-primary combinations, keep keys and ordering stable under reversed
+candidate input, and reject a key that is not in the recomputed offer. Keys hash versioned canonical
+planner input plus typed source placements and exclude generation time and ephemeral IDs.
+
+Application tests require a read-only preview with no revision, receipt, head advance, or notification
+invalidation. Selection must lock in the established workspace/day order, resolve an exact receipt
+before the optimistic fence, recompute candidates from bounded tenant-scoped routines, work,
+dependencies, activity, and feedback, preserve locked nonterminal anchors, and exclude terminal
+sources. They also cover exact replay after head advancement and fail-closed stale-key behavior before
+any write. Schema coverage registers `alternative_select` in the append-only mutation ledger.
+
+API tests cover strict complete preview/selection bodies, `Cache-Control: no-store`, mandatory
+selection idempotency, service dispatch, and public-plan snapshot redaction. Web API and Today
+component tests cover cancellable preview, current-versus-alternative cards, explicit-only selection,
+authoritative success rendering, and stale `409` refresh/discard behavior. The live PostgreSQL and
+Chromium checks are expected to prove migration, durable exactly-once selection, locked-anchor
+retention, reload persistence, and compare-again recovery through built processes. These checks
+establish deterministic choice and concurrency safety; they do not claim that presenting more options
+improves a user's completion rate.
+
 ### Local-model advisor evidence
 
 The implemented advisor scope is deliberately narrower than the broad feature name, so the registry

@@ -17,6 +17,7 @@ import type {
   CreateOneOffReminderCommand,
   DismissDailyPlanFitInsightCommand,
   DismissRoutineDurationInsightCommand,
+  DailyPlanAlternativesResult,
   GenerateDailyPlanCommand,
   GetSchedulingAdviceCommand,
   GetCurrentDailyPlanQuery,
@@ -45,12 +46,14 @@ import type {
   RecordActivityEventCommand,
   RecordPlanItemActivityCommand,
   RegenerateDailyPlanCommand,
+  PreviewDailyPlanAlternativesCommand,
   ReplacePlanItemCommand,
   RemoveWorkItemDependencyCommand,
   ResetDailyPlanFitInsightDismissalCommand,
   ResetRoutineDurationInsightDismissalCommand,
   ResetRoutinePlanningFeedbackCommand,
   SetPlanItemLockCommand,
+  SelectDailyPlanAlternativeCommand,
   UpdateRoutineCommand,
   UpdateNotificationRuleCommand,
   UpdateOneOffReminderCommand,
@@ -163,6 +166,10 @@ export interface ProductServices {
   getCurrentDailyPlan(query: GetCurrentDailyPlanQuery): Promise<CurrentDailyPlan>;
   setPlanItemLock(command: SetPlanItemLockCommand): Promise<PlanItemLockResult>;
   regenerateDailyPlan(command: RegenerateDailyPlanCommand): Promise<CurrentDailyPlan>;
+  previewDailyPlanAlternatives(
+    command: PreviewDailyPlanAlternativesCommand,
+  ): Promise<DailyPlanAlternativesResult>;
+  selectDailyPlanAlternative(command: SelectDailyPlanAlternativeCommand): Promise<CurrentDailyPlan>;
   replacePlanItem(command: ReplacePlanItemCommand): Promise<CurrentDailyPlan>;
   applyRoutineFeedback(command: ApplyRoutinePlanningFeedbackCommand): Promise<CurrentDailyPlan>;
   resetRoutineFeedback(command: ResetRoutinePlanningFeedbackCommand): Promise<CurrentDailyPlan>;
@@ -223,6 +230,8 @@ const DEFAULT_PRODUCT_API_LIMITS: ProductApiLimits = {
 };
 
 export const SCHEDULING_ADVICE_ROUTE = "/v1/workspaces/:workspaceId/advisor/advice";
+export const DAILY_PLAN_ALTERNATIVE_PREVIEW_ROUTE =
+  "/v1/workspaces/:workspaceId/plans/:date/alternative-previews";
 export const NATURAL_LANGUAGE_PROPOSAL_ROUTE =
   "/v1/workspaces/:workspaceId/natural-language/proposals";
 export const NATURAL_LANGUAGE_PROPOSAL_ITEM_ROUTE =
@@ -703,6 +712,9 @@ const planMutationBody = z.strictObject({
   expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
   request: planMutationRequestBody,
 });
+const planAlternativeSelectionBody = planMutationBody.extend({
+  candidateKey: z.string().regex(/^[a-f0-9]{64}$/),
+});
 const routineFeedbackBody = planMutationBody.extend({
   kind: z.enum(["not_today", "not_this_week"]),
 });
@@ -811,6 +823,7 @@ export async function registerProductRoutes(
   app.addHook("onRequest", async (request, reply) => {
     if (
       request.routeOptions.url === SCHEDULING_ADVICE_ROUTE ||
+      request.routeOptions.url === DAILY_PLAN_ALTERNATIVE_PREVIEW_ROUTE ||
       request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_ROUTE ||
       request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_ITEM_ROUTE ||
       request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_CANCELLATION_ROUTE ||
@@ -1603,6 +1616,37 @@ export async function registerProductRoutes(
         expectedPlanId: dailyPlanId(body.expectedPlanId),
         expectedHeadVersion: body.expectedHeadVersion,
         request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
+        idempotencyKey: key,
+      });
+      return { ...publicPlan(result.plan), headVersion: result.headVersion };
+    });
+  });
+
+  app.post(DAILY_PLAN_ALTERNATIVE_PREVIEW_ROUTE, async (request, reply) => {
+    const params = parseRequest(planParams, request.params);
+    const body = parseRequest(planMutationBody, request.body);
+    reply.header("cache-control", "no-store");
+    return runPlanningOperation(() =>
+      services.previewDailyPlanAlternatives({
+        workspaceId: workspaceId(params.workspaceId),
+        expectedPlanId: dailyPlanId(body.expectedPlanId),
+        expectedHeadVersion: body.expectedHeadVersion,
+        request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
+      }),
+    );
+  });
+
+  app.post("/v1/workspaces/:workspaceId/plans/:date/alternative-selections", async (request) => {
+    const params = parseRequest(planParams, request.params);
+    const body = parseRequest(planAlternativeSelectionBody, request.body);
+    const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+    return runPlanningOperation(async () => {
+      const result = await services.selectDailyPlanAlternative({
+        workspaceId: workspaceId(params.workspaceId),
+        expectedPlanId: dailyPlanId(body.expectedPlanId),
+        expectedHeadVersion: body.expectedHeadVersion,
+        request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
+        candidateKey: body.candidateKey,
         idempotencyKey: key,
       });
       return { ...publicPlan(result.plan), headVersion: result.headVersion };

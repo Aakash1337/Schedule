@@ -372,6 +372,15 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
       return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
     },
+    previewDailyPlanAlternatives: async (command) => ({
+      sourcePlanId: command.expectedPlanId,
+      sourceHeadVersion: command.expectedHeadVersion,
+      alternatives: [],
+    }),
+    selectDailyPlanAlternative: async (command) => {
+      if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
+      return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
+    },
     replacePlanItem: async (command) => {
       if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
       return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
@@ -1903,6 +1912,139 @@ describe("local product API", () => {
     expect(current.json()).toMatchObject({ id: planUuid, headVersion: 1 });
     expect(locked.statusCode).toBe(200);
     expect(locked.json()).toMatchObject({ itemId, locked: true, headVersion: 2 });
+  });
+
+  it("previews and explicitly selects a head-bound daily-plan alternative", async () => {
+    const dispatched: unknown[] = [];
+    const candidateKey = "a".repeat(64);
+    const harness = createHarness({
+      previewDailyPlanAlternatives: async (command) => {
+        dispatched.push({ operation: "preview", command });
+        return {
+          sourcePlanId: command.expectedPlanId,
+          sourceHeadVersion: command.expectedHeadVersion,
+          alternatives: [],
+        };
+      },
+      selectDailyPlanAlternative: async (command) => {
+        dispatched.push({ operation: "select", command });
+        const current = await harness.services.getCurrentDailyPlan({
+          workspaceId: command.workspaceId,
+          date: command.request.date,
+        });
+        return { plan: current.plan, headVersion: command.expectedHeadVersion + 1 };
+      },
+    });
+    const app = await appWith(harness.services);
+    await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans`,
+      payload: {
+        date: "2026-07-15",
+        timeZone: "UTC",
+        targetMinutes: 30,
+        targetTaskCount: 1,
+        seed: "alternative-api-source",
+      },
+    });
+    const request = {
+      timeZone: "UTC",
+      availableWindows: [],
+      targetMinutes: 30,
+      targetTaskCount: 1,
+      seed: "alternative-api-next",
+    };
+    const preview = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/alternative-previews`,
+      payload: { expectedPlanId: planUuid, expectedHeadVersion: 1, request },
+    });
+    const malformedPreview = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/alternative-previews`,
+      headers: { "content-type": "application/json" },
+      payload: "{",
+    });
+    const missingKey = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/alternative-selections`,
+      payload: { expectedPlanId: planUuid, expectedHeadVersion: 1, candidateKey, request },
+    });
+    const selected = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/alternative-selections`,
+      headers: { "idempotency-key": "select-alternative-api" },
+      payload: { expectedPlanId: planUuid, expectedHeadVersion: 1, candidateKey, request },
+    });
+
+    expect(preview.statusCode).toBe(200);
+    expect(preview.headers["cache-control"]).toBe("no-store");
+    expect(malformedPreview.statusCode).toBe(400);
+    expect(malformedPreview.headers["cache-control"]).toBe("no-store");
+    expect(preview.json()).toEqual({
+      sourcePlanId: planUuid,
+      sourceHeadVersion: 1,
+      alternatives: [],
+    });
+    expect(missingKey.statusCode).toBe(400);
+    expect(selected.statusCode).toBe(200);
+    expect(selected.json()).toMatchObject({ id: planUuid, headVersion: 2 });
+    expect(dispatched).toMatchObject([
+      {
+        operation: "preview",
+        command: {
+          expectedPlanId: planUuid,
+          expectedHeadVersion: 1,
+          request: { requestRevision: 1, seed: "alternative-api-next" },
+        },
+      },
+      {
+        operation: "select",
+        command: {
+          expectedPlanId: planUuid,
+          expectedHeadVersion: 1,
+          candidateKey,
+          idempotencyKey: "select-alternative-api",
+          request: { requestRevision: 1, seed: "alternative-api-next" },
+        },
+      },
+    ]);
+  });
+
+  it("maps a no-longer-offered daily-plan alternative to 409", async () => {
+    const app = await appWith(
+      createHarness({
+        selectDailyPlanAlternative: async () => {
+          throw new DomainError(
+            "planning.alternative_stale",
+            "The selected daily-plan alternative is no longer available.",
+          );
+        },
+      }).services,
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/alternative-selections`,
+      headers: { "idempotency-key": "stale-alternative-api" },
+      payload: {
+        expectedPlanId: planUuid,
+        expectedHeadVersion: 1,
+        candidateKey: "b".repeat(64),
+        request: {
+          timeZone: "UTC",
+          availableWindows: [],
+          targetMinutes: 30,
+          targetTaskCount: 1,
+          seed: "stale-alternative",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: { code: "planning.alternative_stale" },
+    });
   });
 
   it("records activity against an exact current-plan item", async () => {

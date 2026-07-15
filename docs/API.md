@@ -83,6 +83,8 @@ not authorize these product routes.
 | `PATCH`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/lock`                          | Idempotently lock or unlock a current plan item        |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/activity-events`               | Record a current item action                           |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/regenerations`                                | Regenerate around locked items                         |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/alternative-previews`                         | Preview up to three distinct plans without writing     |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/alternative-selections`                       | Select one still-current alternative idempotently      |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/replacement`                   | Replace one unlocked item                              |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/routine-feedback`              | Suppress one pending routine and replan                |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/routines/{routineId}/routine-feedback-resets` | Reset routine feedback and replan                      |
@@ -543,6 +545,22 @@ the loopback request, and releases its bounded concurrency permit. The route per
 write, audit append, plan regeneration, or readiness check against Ollama.
 
 Regeneration and replacement require the same optimistic identity and idempotency header plus a complete planning request with a new seed. The server allocates the next revision. Regeneration carries locked non-terminal items exactly and plans only residual capacity. Replacement anchors every sibling, rejects a locked target, excludes the removed typed source, and fills the released capacity. Terminal sources are not replanned. Prior revisions remain immutable and mutation provenance is retained for replay. A retry resolves to the same immutable plan revision and recorded head version; its projected lock and activity fields reflect the latest state for that revision.
+
+Alternative preview accepts the same strict planning request and exact `expectedPlanId` and
+`expectedHeadVersion`, but performs no insert, head advance, notification invalidation, or audit
+write. It returns at most three deterministic, structurally distinct non-primary candidates with an
+opaque lowercase SHA-256 `candidateKey`, projected items, totals, fitness, warnings, and differences
+from the current plan. Candidate keys bind the canonical planner input and placements; they exclude
+generated timestamps and disposable UUIDs. Responses use `Cache-Control: no-store`.
+
+Alternative selection sends the identical request and chosen `candidateKey`, plus an
+`Idempotency-Key`. Under the existing workspace/day lock order, the server resolves an earlier
+receipt before checking the head, reloads tenant-scoped planner inputs, and recomputes the bounded
+candidate set. A missing key returns `409 planning.alternative_stale` without writing. An accepted
+choice preserves locked nonterminal anchors, excludes terminal sources, stores exactly one immutable
+next revision and `alternative_select` receipt, advances the head once, and invalidates notification
+intents for the superseded plan. Exact retries return that recorded revision even after the head has
+advanced; semantic key reuse returns `409 planning.idempotency_conflict`.
 
 Routine feedback is a separate plan mutation, not an item activity. Applying feedback posts the same
 strict mutation body plus `kind: "not_today" | "not_this_week"` to the item route. The item must be a

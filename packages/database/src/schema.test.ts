@@ -651,6 +651,7 @@ describe("database schema", () => {
       "replace",
       "feedback",
       "feedback_reset",
+      "alternative_select",
     ]);
     expect(config.foreignKeys.map((constraint) => constraint.getName())).toEqual(
       expect.arrayContaining([

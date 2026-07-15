@@ -232,6 +232,13 @@
       "when": 1784079639528,
       "tag": "0032_harsh_purifiers",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1784081379519,
+      "tag": "0033_greedy_hannibal_king",
+      "breakpoints": true
     }
   ]
 }

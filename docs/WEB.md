@@ -77,6 +77,17 @@ A collection that changes during traversal asks the user to refresh instead of s
 partial list. Initial loading uses announced skeleton states, and mutations keep existing data
 visible while disabling only the submitted control.
 
+Today exposes **Compare alternatives** only for a current plan with retained planning settings. The
+inline, non-modal panel keeps the current plan visible beside up to three deterministic alternatives,
+including total time, item count, compact titles, and deltas. Previewing is read-only: no card is a
+selection control, and nothing changes until **Use this plan** is pressed. Selection reuses the exact
+preview request with the current plan ID/head and a retained idempotency key. A successful response
+replaces Today with the authoritative revision and returns focus to its summary. A stale preview is
+discarded on `409`, the latest plan is loaded, and the user must compare again; the client never
+silently selects a replacement or automatically replays a stale choice. Workspace changes and any
+observed head change abort and discard pending previews. On narrow screens, comparison cards stack
+and their actions retain the 44px control minimum.
+
 ## Work-item hierarchy
 
 The board remains organized by the six workflow columns instead of nesting cards. Each card shows

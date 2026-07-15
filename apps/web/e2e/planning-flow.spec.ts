@@ -1111,3 +1111,169 @@ test("persists subtasks and keeps parent containers out of Today in the live 320
   expect(requestFailures).toEqual([]);
   expect(unexpectedHttpResponses).toEqual([]);
 });
+
+test("compares, selects, persists, and rejects stale daily-plan alternatives", async ({ page }) => {
+  const pageErrors: string[] = [];
+  const requestFailures: string[] = [];
+  const unexpectedHttpResponses: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("requestfailed", (request) => {
+    requestFailures.push(`${request.method()} ${new URL(request.url()).pathname}`);
+  });
+  page.on("response", (response) => {
+    if (response.status() < 400) return;
+    const pathname = new URL(response.url()).pathname;
+    const expectedStaleSelection =
+      response.status() === 409 && pathname.endsWith("/alternative-selections");
+    if (!expectedStaleSelection) {
+      unexpectedHttpResponses.push(
+        `${response.status()} ${response.request().method()} ${pathname}`,
+      );
+    }
+  });
+
+  await page.clock.install({ time: new Date("2026-07-15T12:00:00.000Z") });
+  const workspaceResponse = await page.request.post("/v1/workspaces", {
+    data: { name: "Alternative comparison E2E" },
+  });
+  expect(workspaceResponse.status()).toBe(201);
+  const workspace = (await workspaceResponse.json()) as { id: string };
+  const routines: Array<{ id: string; version: number; title: string }> = [];
+  for (const [index, title] of [
+    "Anchor the morning",
+    "Review the roadmap",
+    "Draft the update",
+    "Practice vocabulary",
+    "Clear small follow-ups",
+  ].entries()) {
+    const response = await page.request.post(`/v1/workspaces/${workspace.id}/routines`, {
+      data: {
+        title,
+        tags: { priority: ["critical", "high", "high", "medium", "low"][index] },
+        duration: { expectedMinutes: 30 },
+        cadence: { period: "week", targetCompletions: 3 },
+      },
+    });
+    expect(response.status()).toBe(201);
+    routines.push((await response.json()) as { id: string; version: number; title: string });
+  }
+  const planResponse = await page.request.post(`/v1/workspaces/${workspace.id}/plans`, {
+    data: {
+      date: "2026-07-15",
+      timeZone: "UTC",
+      availableWindows: [
+        {
+          startsAt: "2026-07-15T08:00:00.000Z",
+          endsAt: "2026-07-15T09:00:00.000Z",
+        },
+      ],
+      targetMinutes: 60,
+      maximumMinutes: 60,
+      targetTaskCount: 2,
+      maximumTaskCount: 2,
+      seed: "alternatives-browser-source",
+    },
+  });
+  expect(planResponse.status()).toBe(200);
+
+  await page.addInitScript((workspaceId) => {
+    globalThis.localStorage.setItem("schedule.selectedWorkspace", workspaceId);
+  }, workspace.id);
+  await page.goto("/#today");
+  await expect(page.getByRole("main", { name: "Today view" })).toBeVisible();
+  const plannedItems = page.getByRole("list", { name: "Today's planned items" });
+  const firstItem = plannedItems.getByRole("article").first();
+  const lockedTitle = await firstItem.getByRole("heading", { level: 3 }).innerText();
+  const lockResponsePromise = page.waitForResponse(
+    (response) =>
+      response.status() === 200 &&
+      /\/plans\/[^/]+\/items\/[^/]+\/lock$/.test(new URL(response.url()).pathname),
+  );
+  await firstItem.getByRole("button", { name: "Lock" }).click();
+  await lockResponsePromise;
+  await expect(firstItem.getByRole("button", { name: "Unlock" })).toBeVisible();
+
+  const previewResponsePromise = page.waitForResponse(
+    (response) =>
+      response.status() === 200 &&
+      new URL(response.url()).pathname.endsWith("/alternative-previews"),
+  );
+  await page.getByRole("button", { name: "Compare alternatives" }).click();
+  const previewResponse = await previewResponsePromise;
+  const preview = (await previewResponse.json()) as {
+    alternatives: Array<{ items: Array<{ title: string }> }>;
+  };
+  expect(preview.alternatives.length).toBeGreaterThan(0);
+  await expect(page.getByRole("heading", { name: "Compare before changing Today" })).toBeVisible();
+  const chosenTitles = preview.alternatives[0]!.items.map((item) => item.title);
+  const selectionResponsePromise = page.waitForResponse(
+    (response) =>
+      response.status() === 200 &&
+      new URL(response.url()).pathname.endsWith("/alternative-selections"),
+  );
+  await page.getByRole("button", { name: "Use alternative 1 as today's plan" }).click();
+  await selectionResponsePromise;
+  await expect(page.getByText("Alternative 1 is now today's plan.")).toBeVisible();
+  for (const title of chosenTitles) {
+    await expect(plannedItems.getByRole("article", { name: title })).toBeVisible();
+  }
+  await expect(
+    plannedItems
+      .getByRole("article", { name: lockedTitle })
+      .getByRole("button", { name: "Unlock" }),
+  ).toBeVisible();
+
+  await page.reload();
+  for (const title of chosenTitles) {
+    await expect(plannedItems.getByRole("article", { name: title })).toBeVisible();
+  }
+  await expect(
+    plannedItems
+      .getByRole("article", { name: lockedTitle })
+      .getByRole("button", { name: "Unlock" }),
+  ).toBeVisible();
+
+  const stalePreviewResponsePromise = page.waitForResponse(
+    (response) =>
+      response.status() === 200 &&
+      new URL(response.url()).pathname.endsWith("/alternative-previews"),
+  );
+  await page.getByRole("button", { name: "Compare alternatives" }).click();
+  const stalePreviewResponse = await stalePreviewResponsePromise;
+  const stalePreview = (await stalePreviewResponse.json()) as {
+    alternatives: Array<{
+      items: Array<{ routineId: string | null; title: string }>;
+    }>;
+  };
+  const staleRoutineId = stalePreview.alternatives[0]?.items.find(
+    (item) => item.routineId !== null && item.title !== lockedTitle,
+  )?.routineId;
+  expect(staleRoutineId).toBeTruthy();
+  const editedRoutine = routines.find((routine) => routine.id === staleRoutineId);
+  expect(editedRoutine).toBeTruthy();
+  const editResponse = await page.request.patch(
+    `/v1/workspaces/${workspace.id}/routines/${editedRoutine!.id}`,
+    {
+      data: {
+        expectedVersion: editedRoutine!.version,
+        status: "paused",
+      },
+    },
+  );
+  expect(editResponse.status()).toBe(200);
+  const staleSelectionResponsePromise = page.waitForResponse(
+    (response) =>
+      response.status() === 409 &&
+      new URL(response.url()).pathname.endsWith("/alternative-selections"),
+  );
+  await page.getByRole("button", { name: "Use alternative 1 as today's plan" }).click();
+  await staleSelectionResponsePromise;
+  await expect(page.getByRole("alert")).toContainText(
+    "This plan changed. The latest plan is shown; compare again.",
+  );
+  await expect(page.getByRole("heading", { name: "Compare before changing Today" })).toHaveCount(0);
+
+  expect(pageErrors).toEqual([]);
+  expect(requestFailures).toEqual([]);
+  expect(unexpectedHttpResponses).toEqual([]);
+});

@@ -288,6 +288,37 @@ export interface CurrentDailyPlan extends DailyPlan {
   readonly headVersion: number;
 }
 
+export interface DailyPlanAlternativeItem {
+  readonly sourceType: "routine" | "work_item";
+  readonly routineId: string | null;
+  readonly workItemId: string | null;
+  readonly title: string;
+  readonly windowIndex: number;
+  readonly scheduledMinutes: number;
+  readonly partialSession: boolean;
+  readonly score: number;
+  readonly reasons: readonly string[];
+}
+
+export interface DailyPlanAlternative {
+  readonly candidateKey: string;
+  readonly items: readonly DailyPlanAlternativeItem[];
+  readonly totalMinutes: number;
+  readonly taskCount: number;
+  readonly fitness: number;
+  readonly warnings: readonly string[];
+  readonly deltaMinutes: number;
+  readonly deltaTaskCount: number;
+  readonly addedSourceKeys: readonly string[];
+  readonly removedSourceKeys: readonly string[];
+}
+
+export interface DailyPlanAlternativesResult {
+  readonly sourcePlanId: string;
+  readonly sourceHeadVersion: number;
+  readonly alternatives: readonly DailyPlanAlternative[];
+}
+
 export type DailyPlanFitInsightStatus = "insufficient_history" | "aligned" | "suggested";
 export type DailyPlanFitInsightDisposition = "available" | "dismissed";
 export type DailyPlanFitInsightFeedbackKind = "dismissed" | "reset";

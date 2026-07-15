@@ -10,6 +10,7 @@ import {
   CreateWorkspace,
   DismissDailyPlanFitInsight,
   DismissRoutineDurationInsight,
+  DailyPlanAlternatives,
   GenerateDailyPlan,
   GenerateNaturalLanguageProposal,
   GetCurrentDailyPlan,
@@ -107,6 +108,7 @@ export function createProductServices(
     clock,
   );
   const generateDailyPlan = new GenerateDailyPlan(unitOfWork, clock);
+  const dailyPlanAlternatives = new DailyPlanAlternatives(unitOfWork, clock);
   const getCurrentDailyPlan = new GetCurrentDailyPlan(unitOfWork);
   const getDailyPlanFitInsight = new GetDailyPlanFitInsight(unitOfWork, clock);
   const setPlanItemLock = new SetPlanItemLock(unitOfWork, clock);
@@ -189,6 +191,8 @@ export function createProductServices(
     resetDailyPlanFitInsightDismissal: (command) =>
       resetDailyPlanFitInsightDismissal.execute(command),
     generateDailyPlan: (command) => generateDailyPlan.execute(command),
+    previewDailyPlanAlternatives: (command) => dailyPlanAlternatives.preview(command),
+    selectDailyPlanAlternative: (command) => dailyPlanAlternatives.select(command),
     getCurrentDailyPlan: (query) => getCurrentDailyPlan.execute(query),
     getDailyPlanFitInsight: (query) => getDailyPlanFitInsight.execute(query),
     setPlanItemLock: (command) => setPlanItemLock.execute(command),

@@ -1789,6 +1789,84 @@ textarea:focus {
   font-weight: 650;
 }
 
+.today-alternatives {
+  display: grid;
+  gap: 16px;
+  margin: 18px 0 22px;
+  padding: 18px;
+  background: linear-gradient(145deg, var(--paper-raised), var(--paper-muted));
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+}
+
+.today-alternatives .today-section-heading h2 {
+  margin-bottom: 4px;
+  font-size: 1rem;
+}
+
+.today-alternatives .today-section-heading p:last-child,
+.today-alternatives-empty {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.today-alternative-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.today-alternative-card {
+  display: grid;
+  align-content: start;
+  gap: 13px;
+  height: 100%;
+  padding: 15px;
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.today-alternative-current {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.today-alternative-card h3 {
+  margin: 0;
+  font-size: 0.94rem;
+}
+
+.today-alternative-card > ol {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink-soft);
+  font-size: 0.77rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.today-alternative-card .button {
+  justify-self: start;
+  margin-top: auto;
+}
+
+.today-alternative-delta {
+  margin: 4px 0 0;
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+}
+
+.today-alternative-error {
+  margin-top: 18px;
+}
+
 .today-advisor {
   display: grid;
   gap: 12px;
@@ -3968,6 +4046,15 @@ textarea:focus {
   .today-summary-facts div {
     grid-template-columns: 80px 1fr;
     align-items: baseline;
+  }
+
+  .today-alternative-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .today-alternative-card .button {
+    width: 100%;
+    min-height: 44px;
   }
 
   .today-item-header {

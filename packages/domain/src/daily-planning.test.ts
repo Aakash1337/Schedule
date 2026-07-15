@@ -13,11 +13,13 @@ import {
   dailyPlanId,
   evaluateRoutineForPlan,
   generateDailyPlan,
+  previewDailyPlanAlternatives,
   planItemId,
   recordActivityEvent,
   replanDailyPlan,
   routineId,
   routinePlanningFeedbackId,
+  selectDailyPlanAlternative,
   workspaceId,
   type ActivityEvent,
   type Routine,
@@ -666,5 +668,93 @@ describe("deterministic daily planning", () => {
 
     expect(satisfiedSelections).toBeGreaterThan(0);
     expect(satisfiedSelections).toBeLessThan(30);
+  });
+
+  it("projects stable non-primary alternatives without changing the primary plan", () => {
+    const routines = [
+      routine("alternative-alpha", { priority: "critical" }),
+      routine("alternative-beta", { priority: "high" }),
+      routine("alternative-gamma"),
+      routine("alternative-delta"),
+      routine("alternative-epsilon", { priority: "low" }),
+      routine("alternative-zeta", { priority: "low" }),
+    ];
+    const input = {
+      id: dailyPlanId("alternative-preview-plan"),
+      request: request("alternative-preview-seed", {
+        targetMinutes: 60,
+        maximumMinutes: 60,
+        targetTaskCount: 2,
+        maximumTaskCount: 2,
+      }),
+      routines,
+      events: [],
+      generatedAt,
+    };
+    const primary = generateDailyPlan(input);
+    const preview = previewDailyPlanAlternatives(input);
+    const reversed = previewDailyPlanAlternatives({ ...input, routines: [...routines].reverse() });
+
+    expect(preview.primary).toEqual(primary);
+    expect(reversed).toEqual(preview);
+    expect(preview.alternatives.length).toBeGreaterThan(0);
+    expect(preview.alternatives.length).toBeLessThanOrEqual(3);
+    expect(new Set(preview.alternatives.map((candidate) => candidate.candidateKey)).size).toBe(
+      preview.alternatives.length,
+    );
+    for (const candidate of preview.alternatives) {
+      expect(candidate.candidateKey).toMatch(/^[a-f0-9]{64}$/);
+      expect(candidate.items).not.toHaveLength(0);
+      expect(candidate.items.map((item) => item.routineId)).not.toEqual(
+        primary.items.map((item) => item.routineId),
+      );
+    }
+  });
+
+  it("materializes only a currently offered alternative and records its opaque selection", () => {
+    const input = {
+      id: dailyPlanId("alternative-selection-plan"),
+      request: request("alternative-selection-seed", {
+        targetMinutes: 30,
+        maximumMinutes: 30,
+        targetTaskCount: 1,
+        maximumTaskCount: 1,
+      }),
+      routines: [
+        routine("selection-alpha", { priority: "critical" }),
+        routine("selection-beta", { priority: "high" }),
+        routine("selection-gamma"),
+        routine("selection-delta", { priority: "low" }),
+      ],
+      events: [],
+      generatedAt,
+    };
+    const preview = previewDailyPlanAlternatives(input);
+    const offered = preview.alternatives[0];
+    expect(offered).toBeDefined();
+
+    const selected = selectDailyPlanAlternative(input, offered!.candidateKey);
+    expect(selected.items.map(({ id: _id, position: _position, ...item }) => item)).toEqual(
+      offered!.items.map((item) => ({
+        ...item,
+        scoreComponents: selected.items.find(
+          (selectedItem) =>
+            selectedItem.sourceType === item.sourceType &&
+            selectedItem.routineId === item.routineId &&
+            selectedItem.workItemId === item.workItemId,
+        )!.scoreComponents,
+        locked: false,
+        activityState: "pending",
+        lastActivityEventId: null,
+        activityUpdatedAt: null,
+      })),
+    );
+    expect(selected.inputHash).not.toBe(preview.primary.inputHash);
+    expect(selected.inputSnapshot).toMatchObject({
+      selectedAlternativeKey: offered!.candidateKey,
+    });
+    expect(() => selectDailyPlanAlternative(input, "0".repeat(64))).toThrowError(
+      expect.objectContaining({ code: "planning.alternative_stale" }),
+    );
   });
 });

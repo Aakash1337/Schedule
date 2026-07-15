@@ -1,6 +1,7 @@
 import {
   Check,
   Clock3,
+  GitCompareArrows,
   Lock,
   MessageSquareText,
   Play,
@@ -41,6 +42,8 @@ import {
 } from "../date";
 import type {
   CurrentDailyPlan,
+  DailyPlanAlternative,
+  DailyPlanAlternativesResult,
   DailyPlanFitInsight,
   EnergyLevel,
   PlanExclusion,
@@ -76,6 +79,11 @@ interface CommandSuccess {
 type AdvisorPhase = "idle" | "loading";
 type CalendarAvailabilityPhase = "idle" | "loading" | "ready" | "error";
 type PlanFitFeedbackAction = "dismiss" | "restore" | null;
+type AlternativePreviewPhase = "idle" | "loading" | "ready";
+
+interface LoadedAlternativePreview extends DailyPlanAlternativesResult {
+  readonly request: PlanSettings;
+}
 
 interface DailyPlanFitPanelProps {
   readonly insight: DailyPlanFitInsight | null;
@@ -729,6 +737,11 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const [energy, setEnergy] = useState<EnergyLevel | "">("");
   const [contexts, setContexts] = useState("");
   const [durationByItem, setDurationByItem] = useState<Readonly<Record<string, string>>>({});
+  const [alternativePhase, setAlternativePhase] = useState<AlternativePreviewPhase>("idle");
+  const [alternativePreview, setAlternativePreview] = useState<LoadedAlternativePreview | null>(
+    null,
+  );
+  const [alternativeError, setAlternativeError] = useState<string | null>(null);
   const pendingCommandsRef = useRef(new Map<string, PendingIdempotentCommand>());
   const recentFeedbackRef = useRef<HTMLDivElement>(null);
   const shouldFocusRecentFeedbackUndoRef = useRef(false);
@@ -741,6 +754,8 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const planFitFeedbackCommandsRef = useRef(new Map<string, string>());
   const planFitHeadingRef = useRef<HTMLHeadingElement>(null);
   const targetMinutesRef = useRef<HTMLInputElement>(null);
+  const planSummaryHeadingRef = useRef<HTMLHeadingElement>(null);
+  const alternativeControllerRef = useRef<AbortController | null>(null);
   const advisorEpochRef = useRef(0);
   const shouldRestoreAdvisorFocusRef = useRef(false);
   const activeQueryKey = planQueryKey(workspace.id, date);
@@ -802,14 +817,25 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     setAdvisorError(null);
   }, []);
 
+  const clearAlternativePreview = useCallback(() => {
+    alternativeControllerRef.current?.abort();
+    alternativeControllerRef.current = null;
+    setAlternativePhase("idle");
+    setAlternativePreview(null);
+    setAlternativeError(null);
+  }, []);
+
   const acceptLoadedPlan = useCallback(
     (current: CurrentDailyPlan | null) => {
       const nextSnapshotKey = current === null ? null : planSnapshotKey(current);
-      if (planSnapshotKeyRef.current !== nextSnapshotKey) invalidateAdvisor();
+      if (planSnapshotKeyRef.current !== nextSnapshotKey) {
+        invalidateAdvisor();
+        clearAlternativePreview();
+      }
       planSnapshotKeyRef.current = nextSnapshotKey;
       setPlan(current);
     },
-    [invalidateAdvisor],
+    [clearAlternativePreview, invalidateAdvisor],
   );
 
   const loadCurrentPlan = useCallback(
@@ -914,6 +940,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     generationControllerRef.current?.abort();
     generationControllerRef.current = null;
     invalidateAdvisor();
+    clearAlternativePreview();
     planSnapshotKeyRef.current = null;
     setPlan(null);
     setCommandError(null);
@@ -926,8 +953,9 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
       controller.abort();
       advisorControllerRef.current?.abort();
       generationControllerRef.current?.abort();
+      alternativeControllerRef.current?.abort();
     };
-  }, [invalidateAdvisor, loadCurrentPlan]);
+  }, [clearAlternativePreview, invalidateAdvisor, loadCurrentPlan]);
 
   useEffect(() => {
     planFitControllerRef.current?.abort();
@@ -969,6 +997,17 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     );
   }, [plan]);
 
+  useEffect(() => {
+    if (
+      alternativePreview !== null &&
+      (plan === null ||
+        alternativePreview.sourcePlanId !== plan.id ||
+        alternativePreview.sourceHeadVersion !== plan.headVersion)
+    ) {
+      clearAlternativePreview();
+    }
+  }, [alternativePreview, clearAlternativePreview, plan]);
+
   async function refreshPlan(requestKey = activeQueryKey): Promise<boolean> {
     if (activeQueryKeyRef.current !== requestKey) return false;
     const current = await api.getCurrentPlan(workspace.id, date);
@@ -980,10 +1019,13 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   async function handleCommandFailure(error: unknown, requestKey: string): Promise<void> {
     if (activeQueryKeyRef.current !== requestKey) return;
     if (error instanceof ApiError && error.status === 409) {
+      if (error.code === "planning.alternative_stale") clearAlternativePreview();
       const conflictMessage =
         error.code === "planning.feedback_head_conflict"
           ? "Newer planning feedback exists for this routine on another plan date. Use that newer plan to change it."
-          : "This plan changed in another action. The latest version is now shown.";
+          : error.code === "planning.alternative_stale"
+            ? "This plan changed. The latest plan is shown; compare again."
+            : "This plan changed in another action. The latest version is now shown.";
       try {
         const refreshed = await refreshPlan(requestKey);
         if (!refreshed) return;
@@ -1402,6 +1444,93 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     );
   }
 
+  async function compareAlternatives(): Promise<void> {
+    if (plan === null) return;
+    const settings = retainedSettings(plan);
+    if (settings === null) {
+      setAlternativeError(
+        "This plan does not include the settings needed to compare alternatives.",
+      );
+      return;
+    }
+    alternativeControllerRef.current?.abort();
+    const controller = new AbortController();
+    alternativeControllerRef.current = controller;
+    const requestKey = activeQueryKey;
+    const sourceSnapshot = planSnapshotKey(plan);
+    const request = settingsWithFreshSeed(plan, settings, newIdempotencyKey());
+    setAlternativePhase("loading");
+    setAlternativePreview(null);
+    setAlternativeError(null);
+    try {
+      const preview = await api.previewDailyPlanAlternatives(
+        workspace.id,
+        date,
+        {
+          expectedPlanId: plan.id,
+          expectedHeadVersion: plan.headVersion,
+          request,
+        },
+        controller.signal,
+      );
+      if (
+        controller.signal.aborted ||
+        alternativeControllerRef.current !== controller ||
+        activeQueryKeyRef.current !== requestKey ||
+        planSnapshotKeyRef.current !== sourceSnapshot
+      ) {
+        return;
+      }
+      setAlternativePreview({ ...preview, request });
+      setAlternativePhase("ready");
+    } catch (error) {
+      if (controller.signal.aborted || isAbortError(error)) return;
+      if (error instanceof ApiError && error.status === 409) {
+        clearAlternativePreview();
+        await handleCommandFailure(error, requestKey);
+        return;
+      }
+      setAlternativeError(messageForError(error));
+      setAlternativePhase("idle");
+    } finally {
+      if (alternativeControllerRef.current === controller) {
+        alternativeControllerRef.current = null;
+      }
+    }
+  }
+
+  async function selectAlternative(
+    candidate: DailyPlanAlternative,
+    alternativeNumber: number,
+  ): Promise<void> {
+    if (plan === null || alternativePreview === null) return;
+    const sourcePlan = plan;
+    const preview = alternativePreview;
+    const retryIdentity = `${sourcePlan.id}:${sourcePlan.headVersion}:alternative:${candidate.candidateKey}`;
+    const command = pendingCommand(retryIdentity);
+    await runCommand(
+      `alternative:${candidate.candidateKey}`,
+      async (requestKey) => {
+        const current = await api.selectDailyPlanAlternative(
+          workspace.id,
+          date,
+          {
+            expectedPlanId: sourcePlan.id,
+            expectedHeadVersion: sourcePlan.headVersion,
+            candidateKey: candidate.candidateKey,
+            request: preview.request,
+          },
+          command.key,
+        );
+        if (activeQueryKeyRef.current !== requestKey) return false;
+        acceptLoadedPlan(current);
+        globalThis.setTimeout(() => planSummaryHeadingRef.current?.focus(), 0);
+      },
+      `Alternative ${String(alternativeNumber)} is now today's plan.`,
+      retryIdentity,
+    );
+  }
+
   async function replace(item: PlanItem): Promise<void> {
     if (plan === null) return;
     const settings = retainedSettings(plan);
@@ -1665,6 +1794,18 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
               </Button>
               <Button
                 type="button"
+                variant="quiet"
+                busy={alternativePhase === "loading"}
+                disabled={commandInProgress || plan.request === null}
+                aria-expanded={alternativePreview !== null}
+                aria-controls="today-plan-alternatives"
+                onClick={() => void compareAlternatives()}
+              >
+                <GitCompareArrows size={15} aria-hidden="true" />
+                Compare alternatives
+              </Button>
+              <Button
+                type="button"
                 busy={busyAction === "regenerate"}
                 disabled={commandInProgress || plan.request === null}
                 onClick={() => void regenerate()}
@@ -1864,7 +2005,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
           <section className="today-plan-summary" aria-labelledby="today-plan-summary-heading">
             <div>
               <p className="eyebrow">Plan revision {plan.requestRevision}</p>
-              <h2 id="today-plan-summary-heading">
+              <h2 ref={planSummaryHeadingRef} id="today-plan-summary-heading" tabIndex={-1}>
                 {formatMinutes(plan.totalMinutes)} across {plan.items.length}{" "}
                 {plan.items.length === 1 ? "item" : "items"}
               </h2>
@@ -1892,6 +2033,121 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
               </div>
             </dl>
           </section>
+
+          {alternativeError === null ? null : (
+            <div className="today-alternative-error">
+              <ErrorNotice
+                message={alternativeError}
+                onDismiss={() => setAlternativeError(null)}
+                action={
+                  <Button
+                    type="button"
+                    variant="quiet"
+                    disabled={commandInProgress}
+                    onClick={() => void compareAlternatives()}
+                  >
+                    Retry comparison
+                  </Button>
+                }
+              />
+            </div>
+          )}
+
+          {alternativePhase === "loading" ? (
+            <section
+              id="today-plan-alternatives"
+              className="today-alternatives"
+              aria-labelledby="today-alternatives-heading"
+              aria-busy="true"
+              role="status"
+            >
+              <div className="today-section-heading">
+                <p className="eyebrow">Plan comparison</p>
+                <h2 id="today-alternatives-heading">Finding distinct options…</h2>
+              </div>
+            </section>
+          ) : null}
+
+          {alternativePreview === null ? null : (
+            <section
+              id="today-plan-alternatives"
+              className="today-alternatives"
+              aria-labelledby="today-alternatives-heading"
+            >
+              <div className="today-section-heading">
+                <p className="eyebrow">Plan comparison</p>
+                <h2 id="today-alternatives-heading">Compare before changing Today</h2>
+                <p>Nothing changes until you explicitly choose an alternative.</p>
+              </div>
+              {alternativePreview.alternatives.length === 0 ? (
+                <p className="today-alternatives-empty" role="status">
+                  No distinct alternative fits the current limits. Your plan is unchanged.
+                </p>
+              ) : (
+                <ul className="today-alternative-grid">
+                  <li>
+                    <article className="today-alternative-card today-alternative-current">
+                      <div>
+                        <p className="eyebrow">Current plan</p>
+                        <h3>
+                          {formatMinutes(plan.totalMinutes)} · {plan.items.length}{" "}
+                          {plan.items.length === 1 ? "item" : "items"}
+                        </h3>
+                      </div>
+                      <ol>
+                        {sortedItems.map((item) => (
+                          <li key={item.id}>{item.title}</li>
+                        ))}
+                      </ol>
+                    </article>
+                  </li>
+                  {alternativePreview.alternatives.map((candidate, index) => {
+                    const number = index + 1;
+                    const selectKey = `alternative:${candidate.candidateKey}`;
+                    return (
+                      <li key={candidate.candidateKey}>
+                        <article className="today-alternative-card">
+                          <div>
+                            <p className="eyebrow">Alternative {number}</p>
+                            <h3>
+                              {formatMinutes(candidate.totalMinutes)} · {candidate.taskCount}{" "}
+                              {candidate.taskCount === 1 ? "item" : "items"}
+                            </h3>
+                            <p className="today-alternative-delta">
+                              {candidate.deltaMinutes === 0
+                                ? "Same total time"
+                                : `${candidate.deltaMinutes > 0 ? "+" : "−"}${formatMinutes(Math.abs(candidate.deltaMinutes))}`}
+                              {" · "}
+                              {candidate.deltaTaskCount === 0
+                                ? "same item count"
+                                : `${candidate.deltaTaskCount > 0 ? "+" : "−"}${String(Math.abs(candidate.deltaTaskCount))} ${Math.abs(candidate.deltaTaskCount) === 1 ? "item" : "items"}`}
+                            </p>
+                          </div>
+                          <ol>
+                            {candidate.items.map((item) => (
+                              <li key={`${item.sourceType}:${item.routineId ?? item.workItemId}`}>
+                                {item.title} · {formatMinutes(item.scheduledMinutes)}
+                              </li>
+                            ))}
+                          </ol>
+                          <Button
+                            type="button"
+                            variant="primary"
+                            aria-label={`Use alternative ${String(number)} as today's plan`}
+                            busy={busyAction === selectKey}
+                            disabled={commandInProgress}
+                            onClick={() => void selectAlternative(candidate, number)}
+                          >
+                            Use this plan
+                          </Button>
+                        </article>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          )}
 
           <SchedulingAdvisorPanel
             phase={advisorPhase}

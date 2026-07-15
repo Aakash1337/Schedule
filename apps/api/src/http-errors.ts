@@ -81,6 +81,7 @@ function domainStatus(error: DomainError): number {
     error.code === "integration.request_conflict" ||
     error.code === "integration.receipt_conflict" ||
     error.code === "integration.receipt_in_progress" ||
+    error.code === "planning.alternative_stale" ||
     error.code === "notification_delivery.claim_stale" ||
     error.code === "notification_delivery.request_in_progress"
   ) {

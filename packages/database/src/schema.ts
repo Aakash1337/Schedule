@@ -109,6 +109,7 @@ export const planMutationKind = pgEnum("plan_mutation_kind", [
   "replace",
   "feedback",
   "feedback_reset",
+  "alternative_select",
 ]);
 export const integrationRequestStatus = pgEnum("integration_request_status", [
   "processing",
