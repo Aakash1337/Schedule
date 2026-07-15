@@ -492,14 +492,22 @@ The audit deliberately leaves these visible instead of turning them into false g
   Its opt-in local materializer has unit evidence for disabled mode, bounded sequential cycles,
   failure isolation, non-overlap, abort behavior, and sibling-service supervision, plus disposable
   PostgreSQL evidence for catch-up boundaries, concurrent exact-once ticks, recreated-pool restart
-  replay, unconfigured-workspace skips, and no outbox/delivery side effects. It does not process-kill a materialization mid-transaction;
-  graceful shutdown waits for that transaction because the use case has no cancellation signal. It
-  A separate dormant Hermes adapter foundation adds unit and loopback-HTTP evidence for
+  replay, unconfigured-workspace skips, and no outbox/delivery side effects. It does not process-kill
+  a materialization mid-transaction; graceful shutdown waits for that transaction because the use
+  case has no cancellation signal. A separate dormant Hermes adapter foundation adds unit and
+  loopback-HTTP evidence for
   claim/send/receipt ordering, delivered dedupe replay, lease-budget refusal, contention and
   ambiguity without attempt consumption, bounded failure mapping, strict envelope validation, and
-  URL/error redaction. It still has no concrete external provider/account binding, shared durable
-  adapter dedupe implementation, runnable polling supervisor, live phone verification, or
-  dead-letter redrive control;
+  URL/error redaction. Its disposable PostgreSQL verifier additionally covers a shared digest-only
+  dedupe store, atomic multi-replica exclusion, payload binding, release/expiry takeover fencing,
+  full database-clock lease-budget checks, bounded lock waits, checksum/catalog migration
+  attestation including exact relation/function inventory, same-name definitions, function sources,
+  enabled triggers, and logged-table durability, execute-only security-definer runtime operations,
+  privilege and object-ownership drift rejection, immutable delivered transitions, denied runtime
+  table access, and restart durability. Delivered tombstone cleanup remains disabled until Schedule
+  exposes an authoritative replay retention watermark. It still has no concrete
+  external provider/account binding, provider reconciliation, runnable polling supervisor, live
+  phone verification, or dead-letter redrive control;
 - worker observability has unit and disposable-PostgreSQL evidence for loopback-only binding,
   liveness/readiness separation, fixed-cardinality Prometheus text, live outbox/reminder queue
   aggregates, materialization/outbox instrumentation, private-data exclusion, database-failure

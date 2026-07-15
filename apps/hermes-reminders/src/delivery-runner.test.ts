@@ -113,6 +113,9 @@ describe("Hermes reminder delivery runner", () => {
       "hermes-claim:00000000-0000-4000-8000-000000000003",
     );
     expect(test.transport.deliver).toHaveBeenCalledWith(command, expect.any(AbortSignal));
+    expect(test.store.reserve).toHaveBeenCalledWith(
+      expect.objectContaining({ minimumRemainingMilliseconds: 45_000 }),
+    );
     expect(test.events).toEqual(["transport", "dedupe_delivered", "receipt"]);
     expect(test.receipts).toEqual([
       {

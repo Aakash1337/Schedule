@@ -5,8 +5,8 @@ reminder process. It consumes the existing `schedule:delivery` claim/receipt API
 provider, destination, recipient, conversation, or account data to Schedule.
 
 This is not yet a running WhatsApp transport. The concrete Hermes send API, human/account binding,
-and shared durable dedupe-store implementation depend on the external Hermes installation and must
-be supplied before the adapter can be started.
+polling supervisor, and provider reconciliation contract still depend on the external Hermes
+installation and must be supplied before the adapter can be started.
 
 ## Components
 
@@ -27,6 +27,48 @@ be supplied before the adapter can be started.
 - `DeliveryDedupeStore`, the shared persistence port. Multiple adapter replicas must share one
   implementation. Reservations bind the stable command hash and fence updates with an opaque token;
   a mismatched payload fails permanently rather than reusing a dedupe identity for different text.
+- `PostgresDeliveryDedupeStore`, a reference shared implementation with atomic reservation takeover,
+  database-clock lease-budget checks, bounded database statements, digest-only reservation tokens,
+  immutable delivered state, and fenced idempotent delivery/release transitions.
+
+## PostgreSQL reference store
+
+Run `migratePostgresDeliveryDedupeStore(sql)` once with a dedicated adapter migration role before starting
+workers. Create a dedicated `NOINHERIT LOGIN` runtime role with no elevated attributes, role
+memberships, or ownership of the database or adapter objects and provision it with
+`grantPostgresDeliveryDedupeRuntimeRole(sql, roleName)`: this grants `USAGE` on the adapter schema,
+`SELECT` on its migration ledger, and `EXECUTE` only on the reserve, mark-delivered, and release
+operations. The role receives no read or DML privilege on the dedupe table and no access to the
+transition trigger function. The three operations are fixed, `STRICT`, security-definer functions
+owned by the migration role with a `pg_catalog`-only search path; each checks the opaque token inside
+the database. Construct the runtime store with a client for that role, not the migration owner.
+Migration v1 is serialized with a transaction advisory lock, records a fixed checksum in
+`hermes_adapter.schema_migrations`, and attests logged-table durability, exact columns/defaults,
+constraint definitions, every relation and function in the schema, operation and transition function
+sources, the enabled trigger, and public-access revocations. Migration also revokes PUBLIC execution
+from future functions by default. Every runtime operation repeats the catalog and execute-only role
+attestation and fails closed when the identity, permissions, ownership, or catalog shape does not
+match.
+
+The table persists only the stable Schedule dedupe UUID, the command digest, a SHA-256 digest of the
+adapter reservation token, bounded state, and timestamps. The Schedule claim token is validated in
+memory and never persisted. The table does not store message text, destination, provider payload,
+account binding, plaintext bearer material, or receipt content. A reservation expiry is accepted
+only when PostgreSQL's clock confirms that the complete configured transport-plus-receipt budget
+still remains and that the lease is inside the maximum horizon (15 minutes by default, at most one
+hour). Every runtime transaction also sets local lock and statement deadlines (two seconds by
+default); a timed-out reservation reports `busy` without stealing the existing fence.
+
+One atomic upsert wins an absent, explicitly released, or expired same-payload key and rotates the
+reservation token on every reacquisition. Concurrent owners observe `busy`; a different command
+digest observes `payload_conflict`; and delivered records are immutable under a database transition
+trigger. Direct runtime-role table reads and writes are denied entirely.
+`markDelivered` requires the current unexpired reservation token. `release` is idempotent for the
+same token but cannot clear a later owner's reservation. Delivered rows must be retained for at least
+as long as Schedule can replay the corresponding delivery identity. Schedule does not yet expose an
+authoritative replay-retention watermark, so automatic deletion is intentionally disabled: the table
+can grow until that contract and a bounded, audited cleanup job are implemented. Guessing a window
+here could delete a tombstone and allow a duplicate external send.
 
 ## Outcome and crash semantics
 
@@ -65,8 +107,8 @@ Before enabling a real process, provide and verify:
 
 1. the exact Hermes/WhatsApp send and reconciliation contract;
 2. an explicit human/account binding lifecycle;
-3. a durable shared `DeliveryDedupeStore` with reservation expiry and fencing;
-4. provider authentication, secret rotation, circuit breaking, and an operator kill switch;
+3. provider authentication, secret rotation, circuit breaking, and an operator kill switch;
+4. a bounded polling supervisor with shutdown and health behavior;
 5. an opt-in live smoke test using a non-production recipient.
 
 Inbound messages, natural-language interpretation, command confirmation, provider callbacks, and
@@ -80,4 +122,12 @@ second send, lease-budget refusal, reservation contention, payload conflict, kno
 ambiguous-send preservation, malformed transport results, exact HTTP request contracts, strict
 streaming response limits and hard timeout, outbound receipt validation, URL safety, and fixed HTTP
 failure classification. The HTTP tests use a real ephemeral loopback server and no provider
-network.
+network. `pnpm verify:hermes-dedupe-store` additionally creates a nonce PostgreSQL database and proves
+atomic multi-replica exclusion, payload binding before and after delivery, digest-only token storage,
+idempotent delivery and release, expired-reservation takeover, stale-owner fencing, database-clock
+budget and horizon rejection, bounded row-lock waits, checksum/catalog migration attestation,
+same-name definition, function-source, trigger-enable, and logged-table tamper detection, rejection of
+database/adapter-object ownership, default-private future functions, rejection of unexpected schema
+helpers and privilege drift, successful operation through execute-only security-definer functions,
+denial of runtime table reads/DML and DDL, restart durability, and exact cleanup of the nonce database
+and role.

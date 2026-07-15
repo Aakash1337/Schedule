@@ -169,6 +169,7 @@ export class HermesReminderRunner {
       commandHash: commandHash(command),
       claimToken: command.claimToken,
       reservationExpiresAt: leaseExpiresAt,
+      minimumRemainingMilliseconds: receiptBudget + this.transportTimeoutMilliseconds,
     });
     if (reservation.state === "delivered") {
       return this.settle(command, { outcome: "delivered" }, true);

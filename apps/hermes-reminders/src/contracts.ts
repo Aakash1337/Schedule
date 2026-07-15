@@ -52,6 +52,8 @@ export interface DeliveryDedupeStore {
     readonly commandHash: string;
     readonly claimToken: string;
     readonly reservationExpiresAt: Date;
+    /** Store-authoritative time that must remain before transport may begin. */
+    readonly minimumRemainingMilliseconds: number;
   }): Promise<DedupeReservation>;
   markDelivered(input: {
     readonly dedupeKey: string;

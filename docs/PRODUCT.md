@@ -676,8 +676,9 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
 - Implemented foundation: deterministic reminder profiles, rules, one-offs, exact-once intent
   materialization, an opt-in bounded local materialization worker, and provider-neutral claim/receipt
   state; a separate dormant Hermes adapter core now enforces lease budget, dedupe ordering, bounded
-  outcomes, and a strict Schedule HTTP client, while concrete provider transport, durable adapter
-  storage, polling supervision, and human/account binding remain follow-on work
+  outcomes, a strict Schedule HTTP client, and shared PostgreSQL side-effect fencing, while concrete
+  provider transport/reconciliation, polling supervision, and human/account binding remain follow-on
+  work
 - Implemented foundation: dormant provider-neutral users, exact issuer/subject bindings,
   digest-only revocable browser sessions, and binary workspace memberships with deletion-safe
   workspace preservation

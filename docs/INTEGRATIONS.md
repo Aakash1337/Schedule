@@ -597,9 +597,9 @@ security-sensitive recovery.
 ## Current limitations
 
 - A tested [Hermes reminder adapter foundation](./HERMES.md) now consumes this delivery contract, but
-  there is no runnable Hermes runtime, concrete WhatsApp transport, human binding, or shared durable
-  dedupe implementation. No endpoint accepts a chat message, audio, image, or natural-language
-  instruction.
+  despite its shared PostgreSQL dedupe implementation, there is no runnable Hermes runtime, concrete
+  WhatsApp transport, provider reconciliation, or human binding. No endpoint accepts a chat message,
+  audio, image, or natural-language instruction.
 - Work-item discovery makes a future Hermes-style adapter capable of finding credential-scoped
   backlog/Kanban IDs and versions. It does not implement provider transport, message ingestion,
   intent parsing, human/account binding, or phone alerts.

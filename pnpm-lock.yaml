@@ -67,6 +67,9 @@ importers:
 
   apps/hermes-reminders:
     dependencies:
+      postgres:
+        specifier: 3.4.9
+        version: 3.4.9
       zod:
         specifier: 4.4.3
         version: 4.4.3

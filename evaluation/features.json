@@ -10,6 +10,7 @@
     "work-item-hierarchy": { "command": "pnpm verify:database", "ci": true },
     "natural-language-proposals": { "command": "pnpm verify:database", "ci": true },
     "integration-gateway": { "command": "pnpm verify:database", "ci": true },
+    "hermes-dedupe-store": { "command": "pnpm verify:database", "ci": true },
     "webhook-delivery": { "command": "pnpm verify:database", "ci": true },
     "outbox-db": { "command": "pnpm verify:database", "ci": true },
     "plan-state-migrations": { "command": "pnpm verify:database", "ci": true },
@@ -2020,7 +2021,8 @@
       },
       "limitations": [
         "Schedule exposes fenced pull claims and bounded receipts and now includes a dormant provider-neutral Hermes adapter core, but has no concrete Hermes/WhatsApp, email, push, or other provider transport and stores no human/account binding.",
-        "Periodic intent materialization is implemented; runnable adapter polling and a shared durable adapter dedupe-store implementation remain absent.",
+        "Periodic intent materialization and a shared PostgreSQL adapter dedupe store are implemented; runnable adapter polling and provider reconciliation remain absent.",
+        "Delivered dedupe tombstone cleanup is intentionally disabled until Schedule exposes an authoritative replay-retention watermark.",
         "Dead-letter redrive is not implemented in this slice."
       ],
       "evidence": [
@@ -2046,6 +2048,24 @@
             "rejects malformed responses without exposing the credential",
             "rejects oversized responses without exposing the credential",
             "rejects mismatched reminder kind and target semantics"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/hermes-reminders/src/postgres-dedupe-store.test.ts",
+          "command": "unit",
+          "anchors": [
+            "rejects unsafe reservation horizon configuration",
+            "rejects unsafe database statement timeout configuration",
+            "rejects an invalid generated fencing token without leaking it"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hermes-dedupe-store.ts",
+          "command": "hermes-dedupe-store",
+          "anchors": [
+            "Hermes delivery dedupe verification passed atomic concurrency, payload binding, digest-only fencing, delivered replay, release and expiry takeover, database-clock budget rechecks, bounded lock waits, migration attestation, least-privilege runtime access, and restart durability"
           ]
         },
         {

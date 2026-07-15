@@ -84,8 +84,10 @@ control, and separates planned reminder history from a product-safe execution hi
 local worker can also materialize intents periodically with bounded catch-up and look-ahead windows.
 Schedule still performs no provider transport and never stores provider, recipient, account,
 conversation, or raw receipt data. A dormant [Hermes reminder adapter foundation](./docs/HERMES.md)
-now implements the safe claim/send/receipt and dedupe ordering around this gateway; it still needs a
-concrete Hermes transport, human binding, and shared durable adapter store before it can run.
+now implements the safe claim/send/receipt and dedupe ordering around this gateway plus a shared,
+fenced PostgreSQL dedupe store that persists only a digest of its reservation token. It still needs
+a concrete Hermes transport, human binding, provider reconciliation, and a polling supervisor before
+it can run.
 
 The worker can optionally expose loopback-only liveness, database readiness, and fixed-cardinality
 Prometheus text metrics for outbox, reminder materialization, and provider-neutral delivery queues.
