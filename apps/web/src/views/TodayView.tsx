@@ -2257,6 +2257,15 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
             </dl>
           </section>
 
+          <section className="today-plan-fit" aria-label="Plan Fit outcomes">
+            <DailyPlanFitUsageHistory
+              outcomes={planFitUsageOutcomes}
+              historyLoading={planFitHistoryLoading}
+              historyError={planFitHistoryError}
+              onHistoryRetry={() => void loadPlanFitUsageOutcomes()}
+            />
+          </section>
+
           {alternativeError === null ? null : (
             <div className="today-alternative-error">
               <ErrorNotice

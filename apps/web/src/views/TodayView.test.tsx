@@ -757,6 +757,18 @@ describe("Today commands", () => {
     );
   });
 
+  it("keeps Plan Fit outcome history visible while the current plan is present", async () => {
+    apiMocks.listDailyPlanFitUsageOutcomes.mockResolvedValue({
+      items: [planFitUsageOutcome({ status: "pending" })],
+    });
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByRole("heading", { name: "Practice Spanish" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "After using Plan Fit" })).toBeVisible();
+    expect(screen.getByText("Waiting for final outcomes")).toBeVisible();
+  });
+
   it("keeps Plan Fit outcomes visible while guidance is still loading", async () => {
     apiMocks.getCurrentPlan.mockRejectedValue(
       new ApiError(404, "daily_plan.not_found", "No plan exists.", null),

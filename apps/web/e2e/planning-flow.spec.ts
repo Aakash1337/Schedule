@@ -971,6 +971,8 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
     readonly items: readonly { readonly id: string; readonly scheduledMinutes: number }[];
   };
   expect(generatedPlan.items.length).toBeGreaterThan(0);
+  await expect(page.getByRole("heading", { name: "After using Plan Fit" })).toBeVisible();
+  await expect(page.getByText("Waiting for final outcomes")).toBeVisible();
 
   const replayResponse = await page.request.post(`/v1/workspaces/${workspace.id}/plans`, {
     data: generationRequestBody,
@@ -1029,6 +1031,10 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
     generatedHeadVersion = ((await activityResponse.json()) as { readonly headVersion: number })
       .headVersion;
   }
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "After using Plan Fit" })).toBeVisible();
+  await expect(page.getByText("Resolved", { exact: true })).toBeVisible();
 
   await page.clock.setFixedTime(new Date("2026-07-15T12:00:00.000Z"));
   await page.reload();

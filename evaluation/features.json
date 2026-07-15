@@ -1815,6 +1815,7 @@
           "anchors": [
             "prefills both Plan Fit targets without generating until the user submits",
             "shows bounded read-only outcomes for explicitly generated Plan Fit choices",
+            "keeps Plan Fit outcome history visible while the current plan is present",
             "keeps Plan Fit outcomes visible while guidance is still loading",
             "keeps Plan Fit outcomes visible when guidance fails to load",
             "keeps Plan Fit outcomes visible when there is no current guidance",

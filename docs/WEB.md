@@ -223,7 +223,8 @@ entry. The later generated request carries the selected evidence key plus the va
 explicitly submitted. If that evidence changed, the browser clears the selection, reloads current
 guidance, and leaves the date without a plan; it never silently generates from the stale choice.
 
-**After using Plan Fit** is a bounded read-only history below the guidance. It distinguishes the
+**After using Plan Fit** is a bounded read-only history below the guidance and remains visible while
+the generated current plan is on screen. It distinguishes the
 original suggestion from the final edited targets, labels a use as pending until every current-plan
 item is terminal, then shows completed scheduled workload for a resolved day. If the day was later
 regenerated or otherwise revised, `revisedSinceUsage` discloses that separately while the row
