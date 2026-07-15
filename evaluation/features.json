@@ -1849,11 +1849,35 @@
         "anchor": "## Delivery lifecycle"
       },
       "limitations": [
-        "Schedule exposes fenced pull claims and bounded receipts but has no Hermes/WhatsApp, email, push, or other provider transport and stores no human/account binding.",
-        "Periodic intent materialization and adapter polling are not implemented; multiple adapter instances require their own shared durable dedupe store.",
+        "Schedule exposes fenced pull claims and bounded receipts and now includes a dormant provider-neutral Hermes adapter core, but has no concrete Hermes/WhatsApp, email, push, or other provider transport and stores no human/account binding.",
+        "Periodic intent materialization is implemented; runnable adapter polling and a shared durable adapter dedupe-store implementation remain absent.",
         "Dead-letter redrive is not implemented in this slice."
       ],
       "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/hermes-reminders/src/delivery-runner.test.ts",
+          "command": "unit",
+          "anchors": [
+            "claims, sends idempotently, persists dedupe success, then acknowledges Schedule",
+            "acknowledges a previously delivered dedupe key without sending again",
+            "does not start transport without enough lease budget",
+            "bounds a transport that ignores cancellation and preserves its ambiguous reservation",
+            "replays delivered dedupe state after a lost Schedule receipt without another send"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/hermes-reminders/src/schedule-client.test.ts",
+          "command": "unit",
+          "anchors": [
+            "sends exact claim authentication/version/idempotency and validates the bounded command",
+            "sends only the discriminated bounded receipt contract",
+            "rejects malformed responses without exposing the credential",
+            "rejects oversized responses without exposing the credential",
+            "rejects mismatched reminder kind and target semantics"
+          ]
+        },
         {
           "level": "unit",
           "file": "packages/application/src/list-notification-deliveries.test.ts",

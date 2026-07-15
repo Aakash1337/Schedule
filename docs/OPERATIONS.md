@@ -373,8 +373,10 @@ replacement, privacy-thin automatic event fan-out, immutable body and outbox lin
 dead-letter redrive, revocation, and transactional rollback. It is also part of
 `pnpm verify:database` and the PostgreSQL CI job. `schedule.changed.v1` is only an invalidation; it
 does not transport reminder commands. Reminder claim/receipt state uses a separate authenticated
-pull gateway. The Hermes/WhatsApp adapter, provider/account binding, and phone transport remain
-deferred. A successful webhook test or invalidation delivery does not imply those systems exist.
+pull gateway. The dormant [Hermes adapter foundation](./HERMES.md) consumes that contract, but its
+concrete transport, durable shared store, provider/account binding, polling process, and phone
+verification remain deferred. A successful webhook test or invalidation delivery does not imply
+those systems exist.
 
 ## Deterministic reminder operations
 

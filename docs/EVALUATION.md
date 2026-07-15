@@ -432,8 +432,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   PostgreSQL evidence for catch-up boundaries, concurrent exact-once ticks, recreated-pool restart
   replay, unconfigured-workspace skips, and no outbox/delivery side effects. It does not process-kill a materialization mid-transaction;
   graceful shutdown waits for that transaction because the use case has no cancellation signal. It
-  also has no external provider/account binding, shared adapter dedupe store, or dead-letter redrive
-  control;
+  A separate dormant Hermes adapter foundation adds unit and loopback-HTTP evidence for
+  claim/send/receipt ordering, delivered dedupe replay, lease-budget refusal, contention and
+  ambiguity without attempt consumption, bounded failure mapping, strict envelope validation, and
+  URL/error redaction. It still has no concrete external provider/account binding, shared durable
+  adapter dedupe implementation, runnable polling supervisor, live phone verification, or
+  dead-letter redrive control;
 - worker observability has unit and disposable-PostgreSQL evidence for loopback-only binding,
   liveness/readiness separation, fixed-cardinality Prometheus text, live outbox/reminder queue
   aggregates, materialization/outbox instrumentation, private-data exclusion, database-failure

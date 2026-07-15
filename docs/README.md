@@ -12,6 +12,8 @@ Durable product and engineering specifications live here so the repository root 
   lifecycle, exactly-once confirmation, and deliberate command limits.
 - [Integration gateway](./INTEGRATIONS.md): authenticated automation credentials, versioned
   commands, confirmation, idempotency, reminder claims/receipts, and the future Hermes boundary.
+- [Hermes reminder adapter](./HERMES.md): provider-neutral polling, lease and dedupe ordering,
+  crash semantics, transport/store ports, and the remaining account-binding boundary.
 - [Outbound webhook delivery](./WEBHOOKS.md): encrypted endpoint secrets, signed delivery, opt-in
   privacy-thin Today-change invalidations, subscriptions, network policy, rotation, retries, and
   dead-letter operations.

@@ -271,11 +271,13 @@ occurrence keys, policy contents, credentials, provider data, or raw exceptions.
 
 Enabling this mode does not claim, poll, or deliver an intent and does not enable
 `WEBHOOK_DELIVERY_MODE`. External reminder transport still requires a separately authenticated,
-deduplicating adapter using the claim/receipt gateway.
+deduplicating adapter using the claim/receipt gateway. The repository now contains a tested dormant
+[Hermes adapter foundation](./HERMES.md), but it has no concrete transport, binding, or shared store
+and therefore cannot yet be started as a provider process.
 
 Not yet implemented in this slice:
 
-- a Hermes/WhatsApp, email, push, or other provider transport and human/account binding;
-- automatic worker polling of the delivery gateway;
+- a concrete Hermes/WhatsApp, email, push, or other provider transport and human/account binding;
+- a runnable adapter with a shared durable dedupe store and polling supervision;
 - dead-letter redrive controls;
 - hosted-user authorization for these local product routes.
