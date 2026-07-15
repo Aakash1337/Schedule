@@ -1476,9 +1476,12 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
       if (
         controller.signal.aborted ||
         alternativeControllerRef.current !== controller ||
-        activeQueryKeyRef.current !== requestKey ||
-        planSnapshotKeyRef.current !== sourceSnapshot
+        activeQueryKeyRef.current !== requestKey
       ) {
+        return;
+      }
+      if (planSnapshotKeyRef.current !== sourceSnapshot) {
+        clearAlternativePreview();
         return;
       }
       setAlternativePreview({ ...preview, request });

@@ -390,6 +390,43 @@ describe("Today commands", () => {
     expect(screen.queryByRole("heading", { name: "Compare before changing Today" })).toBeNull();
   });
 
+  it("clears preview loading when a plan mutation wins the response race", async () => {
+    const user = userEvent.setup();
+    const pendingPreview = deferred<{
+      sourcePlanId: string;
+      sourceHeadVersion: number;
+      alternatives: [];
+    }>();
+    apiMocks.previewDailyPlanAlternatives.mockReturnValue(pendingPreview.promise);
+    apiMocks.setPlanItemLock.mockResolvedValue({
+      planId: plan.id,
+      itemId: plan.items[0]!.id,
+      locked: true,
+      headVersion: plan.headVersion + 1,
+    });
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Compare alternatives" }));
+    expect(await screen.findByRole("heading", { name: "Finding distinct options…" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Lock" }));
+    expect(await screen.findByRole("button", { name: "Unlock" })).toBeVisible();
+    await act(async () => {
+      pendingPreview.resolve({
+        sourcePlanId: plan.id,
+        sourceHeadVersion: plan.headVersion,
+        alternatives: [],
+      });
+      await pendingPreview.promise;
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Finding distinct options…" })).toBeNull(),
+    );
+    expect(screen.queryByRole("heading", { name: "Compare before changing Today" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Compare alternatives" })).toBeEnabled();
+  });
+
   it("identifies routine and one-time work sources in a mixed plan", async () => {
     const mixedPlan: CurrentDailyPlan = {
       ...plan,
