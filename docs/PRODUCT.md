@@ -529,7 +529,9 @@ The adaptive planner complements, rather than replaces:
 - Work-item due dates plus deterministic reminder policy, intent materialization, and a fenced
   provider-neutral delivery gateway; opt-in local periodic materialization is implemented while
   provider transport remains deferred
-- Search, filters, saved views, and bulk editing
+- Implemented on the Work board: normalized title/description search plus active/status, local due-
+  date, and priority filters with visible counts and one reset; saved views and bulk editing remain
+  targets
 - Notes, links, and attachments
 - Import, export, backup, and restore
 - Activity history and audit trail
@@ -624,6 +626,9 @@ Success is not simply "more tasks completed." Useful measures include realistic 
   immediate optimistic, idempotent replanning
 - Implemented: Kanban/backlog work can opt into Today with a planning duration and an optional local
   due date
+- Implemented: the Work task pool defaults to active statuses and provides combined normalized
+  search, explicit terminal-status access, exhaustive local due-date buckets, priority filtering,
+  result counts, and accessible reset/reveal behavior
 - Implemented: directed same-workspace work prerequisites with idempotent editing, transitive cycle
   rejection, and done-only eligibility for newly selected Today work
 - Implemented: opt-in calendar-aware first-plan availability, with a visible free-window preview,

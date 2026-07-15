@@ -589,12 +589,43 @@ textarea:focus {
 
 /* Work board */
 
-.work-priority-filter {
-  width: 180px;
-}
-
 .work-board-refresh {
   align-self: flex-end;
+}
+
+.work-filter-bar {
+  margin-bottom: 28px;
+  padding: 14px;
+  background: var(--paper-muted);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.work-filter-controls {
+  display: grid;
+  grid-template-columns: minmax(230px, 1.4fr) repeat(3, minmax(145px, 0.75fr));
+  align-items: end;
+  gap: 10px;
+}
+
+.work-filter-controls input,
+.work-filter-controls select {
+  min-height: 44px;
+}
+
+.work-filter-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.work-filter-summary {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .work-composer {
@@ -4085,8 +4116,18 @@ textarea:focus {
     min-height: 44px;
   }
 
-  .work-priority-filter {
-    width: min(100%, 220px);
+  .work-filter-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .work-filter-meta {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .work-filter-meta .button {
+    width: 100%;
+    min-height: 44px;
   }
 
   .work-composer-heading {

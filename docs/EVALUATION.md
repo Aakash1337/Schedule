@@ -56,8 +56,8 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 102 test files and 1,429 runtime test cases. Three
-additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
+The package and script runners currently execute 103 test files and 1,444 runtime test cases. Four
+additional Playwright specifications contain eleven live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
 
@@ -69,7 +69,7 @@ an independent product feature.
 | Critical implemented features with CI-registered integration or drills |      19 / 19 |
 | Partial features with an explicit limitation                           |        5 / 5 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          215 |
+| CI-registered evidence items                                           |          217 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -80,7 +80,7 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     57.90% |   69.01% |    65.94% | 58.41% |
+| Whole repository, measured |     58.12% |   69.10% |    66.20% | 58.62% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     94.79% |   91.30% |    93.20% | 95.80% |
 | Domain, required           |        91% |      82% |       92% |    93% |
@@ -93,8 +93,8 @@ quality levels.
 | Web, measured              |     84.92% |   71.84% |    74.26% | 85.38% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 10,164 of 17,554 statements, 7,290 of 10,563 branches,
-2,229 of 3,380 functions, and 9,619 of 16,466 lines.
+The whole-repository totals are 10,242 of 17,634 statements, 7,345 of 10,624 branches,
+2,251 of 3,402 functions, and 9,684 of 16,529 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -122,6 +122,24 @@ including source-matched activity references.
 These are contract metrics, not claims that the heuristic is globally optimal. Historical replay and
 fitness-regret evaluation will become meaningful once real usage fixtures and a second planner version
 exist.
+
+### Work-board discovery evidence
+
+Pure web units cover NFKC-normalized, case-insensitive, all-term title/description matching; the
+active-status default and explicit terminal access; null, overdue, today, next-seven-day, and later
+local-date boundaries; and AND composition across query, status, and due date. Work component tests
+combine those client dimensions with the existing priority request boundary, verify visible/loaded
+counts and reset behavior, prove the terminal-only empty-state path, preserve keyboard focus, and
+reveal a filtered overflow subtask before focusing it. Regression cases also prove that local due
+boundaries roll over after midnight and discovery controls remain usable during unrelated card
+mutations. The full workspace catalog remains separate from visible cards so hierarchy and
+prerequisite context is not truncated by discovery filters.
+
+The independent 320px Chromium scenario seeds active and terminal work through the real API, proves
+the active default, normalized search, Done and Cancelled access, overdue/future and priority
+filtering, complete reset semantics, 44px controls, bounded body/document width, and clean page,
+request, and HTTP results. This browser flow is an integration oracle for the assembled product; the
+pure date and query matrices remain the boundary oracle.
 
 ### Work-item deadline evidence
 
@@ -550,10 +568,11 @@ The audit deliberately leaves these visible instead of turning them into false g
   post-revocation fencing. Both remain dormant: there is no browser route, provider
   verification, cookie/CSRF policy, transaction-coupled product mutation authorization, public
   deployment, or synchronization;
-- ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
+- eleven live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a
   320px subtask create/complete/reload/detach/reparent/overflow flow with leaf-only planning, plus
+  a 320px active/terminal work-discovery, search, due-date, priority, reset, and responsive flow, plus
   explicit routine ranking preferences and deterministic alternative comparison and selection, plus
   explicit reminder setup, rule/one-off changes, materialization, safe execution history, and
   a 320px reminder layout, deterministic Daily Plan Fit prefill/dismissal/reset, stale-key rejection,

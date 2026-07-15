@@ -45,6 +45,11 @@ The application uses a persistent desktop rail and a compact mobile navigation b
    Today candidate; the card shows its selected duration and due date when present. A due date adds
    visible planner pressure but cannot make ineligible or over-capacity work appear in Today. Each
    card also lists its parent, direct subtasks, completion progress, and direct prerequisites.
+   A dedicated discovery bar searches normalized title and description terms, combines status, due-
+   date, and priority filters, reports the visible and loaded counts, and restores all controls with
+   one reset. The default **Active work** scope shows Backlog, Planned, In progress, and Blocked;
+   Done and Cancelled remain available through the status control. Due-date buckets are disjoint
+   browser-local dates: overdue, today, the next seven days, later, and no due date.
 3. **Routines** manages the reusable activity pool, including structured tags, duration policy,
    cadence, status, activity history, and transparent duration calibration. The selected routine
    reports whether it needs more completed sessions, supports the current estimate, has a material
@@ -100,7 +105,9 @@ disclosure keeps every additional child reachable without making the card perman
 The details editor can detach or move an item. It excludes the item and its complete descendant set
 from parent choices, while the server still revalidates the graph for concurrent changes. A rejected
 cycle keeps the draft and explains the conflict. Parent/child links clear an active priority filter
-when necessary and move focus to the revealed card. Parent and child statuses remain independent.
+when necessary. Selecting a relationship hidden by search, due date, or status also clears those
+client filters, selects the target status, and moves focus to the revealed card. Parent and child
+statuses remain independent.
 
 Only leaf work items enter Today. A card with children uses a **Parent · not in Today** badge. If it
 already has a saved duration, the editor shows that value as dormant and disables the planning
@@ -111,11 +118,11 @@ expand the page width.
 ## Work-item prerequisites
 
 The Work board loads the complete bounded work-item and dependency collections even when a priority
-filter hides some cards, so a linked prerequisite does not disappear merely because the board is
-filtered. Each card's **Manage prerequisites** disclosure offers other unlinked work items, excludes
-self-reference, and shows every existing prerequisite with its title and current status. `Done` is
-the only satisfied status; the interface does not equate the workflow's manual `Blocked` column with
-dependency state.
+filter hides some cards. Search, status, and due-date filtering operate only on board visibility, so
+a linked prerequisite does not disappear merely because its own card is filtered. Each card's
+**Manage prerequisites** disclosure offers other unlinked work items, excludes self-reference, and
+shows every existing prerequisite with its title and current status. `Done` is the only satisfied
+status; the interface does not equate the workflow's manual `Blocked` column with dependency state.
 
 The complete workspace catalog and edge collection are cached across priority-filter changes, while
 fresh filtered records merge back into the catalog so visible prerequisite statuses do not go stale.
@@ -361,7 +368,10 @@ keyboard-adds a done prerequisite, reloads it, removes it, reloads its absence, 
 44px targets, horizontal fit, unchanged workflow status, and clean page/network results. Another
 mobile Work scenario creates, completes, reloads, detaches, and reparents a subtask; proves the
 parent is excluded while the leaf enters Today; expands overflow children; and verifies 44px targets
-and horizontal fit. Duration-
+and horizontal fit. A separate 320px Work discovery scenario seeds active, done, cancelled,
+overdue, undated, and far-future work; proves the active default, normalized search, explicit
+terminal visibility, due-date and priority filters, reset semantics, 44px controls, bounded page
+width, and clean browser/network results. Duration-
 calibration approval has component and API/PostgreSQL evidence but is not yet part of a browser
 scenario. A reminder scenario creates policy, edits a rule, creates a one-off, explicitly materializes
 intents, inserts an execution fixture through the isolated PostgreSQL test boundary, and verifies the

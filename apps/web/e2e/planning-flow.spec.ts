@@ -197,6 +197,7 @@ test("persists temporary routine feedback and activity through the live Today pl
 
   await page.getByRole("button", { name: "Work", exact: true }).click();
   await expect(page.getByRole("main", { name: "Work view" })).toBeVisible();
+  await page.getByRole("combobox", { name: "Filter by status" }).selectOption("done");
   await expect(page.getByRole("combobox", { name: `Status for ${workItemTitle}` })).toHaveValue(
     "done",
   );
@@ -219,6 +220,7 @@ test("persists temporary routine feedback and activity through the live Today pl
   await expect(plannedWorkItem.getByLabel("Status: Pending")).toBeVisible();
 
   await page.getByRole("button", { name: "Work", exact: true }).click();
+  await page.getByRole("combobox", { name: "Filter by status" }).selectOption("active");
   await expect(page.getByRole("combobox", { name: `Status for ${workItemTitle}` })).toHaveValue(
     "backlog",
   );
@@ -1203,7 +1205,11 @@ test("manages prerequisites accessibly through the live 320px work-board flow", 
     const response = await responsePromise;
     expect(response.status()).toBe(201);
     const created = (await response.json()) as { readonly id: string };
-    await expect(main.getByRole("heading", { name: title, exact: true })).toBeVisible();
+    if (status === "done") {
+      await expect(main.getByRole("heading", { name: title, exact: true })).toHaveCount(0);
+    } else {
+      await expect(main.getByRole("heading", { name: title, exact: true })).toBeVisible();
+    }
     return created;
   };
 
@@ -1400,7 +1406,9 @@ test("persists subtasks and keeps parent containers out of Today in the live 320
   expectMobileTargetHeight(addSubtaskBounds?.height ?? 0);
   await addSubtask.click();
   await expect(page.getByRole("heading", { name: "Add a subtask" })).toBeVisible();
-  await expect(page.getByRole("status")).toContainText(`Subtask of ${parentTitle}`);
+  await expect(page.getByRole("status", { name: "Subtask capture status" })).toContainText(
+    `Subtask of ${parentTitle}`,
+  );
 
   const childTitle = "Verify launch links";
   await page.getByRole("textbox", { name: "Title" }).fill(childTitle);
@@ -1460,6 +1468,7 @@ test("persists subtasks and keeps parent containers out of Today in the live 320
 
   await page.reload();
   await expect(main).toBeVisible();
+  await page.getByRole("combobox", { name: "Filter by status" }).selectOption("all");
   await expect(childCard.getByText(/Subtask of/)).toContainText(parentTitle);
   await expect(childStatus).toHaveValue("done");
   await expect(parentCard.getByText("1/1 subtasks done", { exact: true })).toBeVisible();

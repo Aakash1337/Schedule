@@ -1,8 +1,17 @@
 import { ChevronDown, Pencil, Plus, RefreshCw, ShieldCheck, Sparkles, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 
 import { api, ApiError } from "../api";
 import { Button, EmptyState, ErrorNotice, Field, PageHeader, PageSkeleton } from "../components/ui";
+import { todayKey } from "../date";
 import type {
   WorkItem,
   WorkItemDependency,
@@ -11,6 +20,12 @@ import type {
   WorkItemStatus,
   WorkspaceViewProps,
 } from "../types";
+import {
+  filterWorkItems,
+  statusesForWorkFilter,
+  type WorkDueDateFilter,
+  type WorkStatusFilter,
+} from "./work-filters";
 
 const statuses: readonly { readonly value: WorkItemStatus; readonly label: string }[] = [
   { value: "backlog", label: "Backlog" },
@@ -30,6 +45,58 @@ const priorities: readonly { readonly value: WorkItemPriority; readonly label: s
 ];
 
 type PriorityFilter = WorkItemPriority | "";
+
+const workStatusFilters: readonly { readonly value: WorkStatusFilter; readonly label: string }[] = [
+  { value: "active", label: "Active work" },
+  { value: "all", label: "All statuses" },
+  ...statuses,
+];
+
+const workDueDateFilters: readonly {
+  readonly value: WorkDueDateFilter;
+  readonly label: string;
+}[] = [
+  { value: "all", label: "All due dates" },
+  { value: "overdue", label: "Overdue" },
+  { value: "today", label: "Due today" },
+  { value: "next_seven_days", label: "Next 7 days" },
+  { value: "later", label: "Later" },
+  { value: "none", label: "No due date" },
+];
+
+function useLocalToday(): string {
+  const [localToday, setLocalToday] = useState(() => todayKey());
+
+  useEffect(() => {
+    let timeoutId: number | undefined;
+
+    function refreshToday(): void {
+      const now = new Date();
+      const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      setLocalToday(todayKey(now));
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(
+        refreshToday,
+        Math.max(1, nextMidnight.getTime() - now.getTime() + 1_000),
+      );
+    }
+
+    function refreshVisibleToday(): void {
+      if (!document.hidden) refreshToday();
+    }
+
+    refreshToday();
+    window.addEventListener("focus", refreshToday);
+    document.addEventListener("visibilitychange", refreshVisibleToday);
+    return () => {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      window.removeEventListener("focus", refreshToday);
+      document.removeEventListener("visibilitychange", refreshVisibleToday);
+    };
+  }, []);
+
+  return localToday;
+}
 
 interface BoardData {
   readonly queryKey: string;
@@ -157,6 +224,12 @@ function formatDueOn(dueOn: string): string {
 
 export function WorkView({ workspace }: WorkspaceViewProps) {
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("");
+  const [statusFilter, setStatusFilter] = useState<WorkStatusFilter>("active");
+  const [dueDateFilter, setDueDateFilter] = useState<WorkDueDateFilter>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const statusFilterRef = useRef<HTMLSelectElement>(null);
   const [board, setBoard] = useState<BoardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -338,18 +411,6 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const items = board?.queryKey === activeQueryKey ? board.items : null;
   const allItems = board?.queryKey === activeQueryKey ? board.allItems : null;
   const dependencies = board?.queryKey === activeQueryKey ? board.dependencies : null;
-  useEffect(() => {
-    if (
-      recentlyCreatedItemId === null ||
-      items?.some((item) => item.id === recentlyCreatedItemId) !== true
-    ) {
-      return;
-    }
-    window.setTimeout(() => {
-      document.getElementById(`work-item-${recentlyCreatedItemId}`)?.focus();
-      setRecentlyCreatedItemId(null);
-    });
-  }, [items, recentlyCreatedItemId]);
   const allItemsById = useMemo(
     () => new Map((allItems ?? []).map((item) => [item.id, item] as const)),
     [allItems],
@@ -384,22 +445,68 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     }
     return grouped;
   }, [dependencies]);
+  const localToday = useLocalToday();
+  const visibleItems = useMemo(
+    () =>
+      filterWorkItems(items ?? [], {
+        query: deferredSearchQuery,
+        status: statusFilter,
+        dueDate: dueDateFilter,
+        today: localToday,
+      }),
+    [deferredSearchQuery, dueDateFilter, items, localToday, statusFilter],
+  );
+  useEffect(() => {
+    if (
+      recentlyCreatedItemId === null ||
+      visibleItems.some((item) => item.id === recentlyCreatedItemId) !== true
+    ) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      const card = document.getElementById(`work-item-${recentlyCreatedItemId}`);
+      if (card === null) return;
+      card.focus();
+      setRecentlyCreatedItemId(null);
+    });
+    return () => window.clearTimeout(timeoutId);
+  }, [recentlyCreatedItemId, visibleItems]);
+  const visibleStatuses = useMemo(() => statusesForWorkFilter(statusFilter), [statusFilter]);
   const itemsByStatus = useMemo(() => {
     const grouped = new Map<WorkItemStatus, readonly WorkItem[]>();
-    for (const status of statuses) {
+    for (const status of visibleStatuses) {
       grouped.set(
-        status.value,
-        (items ?? []).filter((item) => item.status === status.value),
+        status,
+        visibleItems.filter((item) => item.status === status),
       );
     }
     return grouped;
-  }, [items]);
+  }, [visibleItems, visibleStatuses]);
+  const filtersAreDefault =
+    searchQuery.trim() === "" &&
+    statusFilter === "active" &&
+    dueDateFilter === "all" &&
+    priorityFilter === "";
+  const totalWorkItemCount = allItems?.length ?? 0;
   const newPlanningDurationIsValid = isPlanningDurationValid(
     planningDurationMinutes,
     includeInDailyPlan,
   );
   const selectedComposerParent =
     newParentWorkItemId === null ? null : (allItemsById.get(newParentWorkItemId) ?? null);
+
+  function resetFilters(focusSearch = false): void {
+    setSearchQuery("");
+    setStatusFilter("active");
+    setDueDateFilter("all");
+    setPriorityFilter("");
+    if (focusSearch) window.setTimeout(() => searchInputRef.current?.focus());
+  }
+
+  function showTerminalWork(): void {
+    setStatusFilter("all");
+    window.setTimeout(() => statusFilterRef.current?.focus());
+  }
 
   function updateWorkspaceDependencyData(
     workspaceId: string,
@@ -643,13 +750,18 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   }
 
   function revealWorkItem(itemId: string): void {
-    if (items?.some((candidate) => candidate.id === itemId) === true) {
-      const card = document.getElementById(`work-item-${itemId}`);
+    const card = document.getElementById(`work-item-${itemId}`);
+    if (card !== null) {
       card?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
       card?.focus();
       return;
     }
-    setPriorityFilter("");
+    const target = allItemsById.get(itemId);
+    if (target === undefined) return;
+    setSearchQuery("");
+    setDueDateFilter("all");
+    setStatusFilter(target.status);
+    if (priorityFilter !== "" && priorityFilter !== target.priority) setPriorityFilter("");
     setRecentlyCreatedItemId(itemId);
   }
 
@@ -1113,35 +1225,92 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         title="Work board"
         description="Capture work, choose what can enter Today, and move it through a clear six-step flow."
         actions={
-          <>
-            <Field label="Filter by priority" className="work-priority-filter">
-              <select
-                value={priorityFilter}
-                onChange={(event) => setPriorityFilter(event.currentTarget.value as PriorityFilter)}
-                disabled={creating || pendingItemIds.size > 0 || dependencyPendingTokens.size > 0}
-              >
-                <option value="">All priorities</option>
-                {priorities.map((priority) => (
-                  <option value={priority.value} key={priority.value}>
-                    {priority.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Button
-              type="button"
-              variant="quiet"
-              className="work-board-refresh"
-              busy={loading}
-              disabled={creating || pendingItemIds.size > 0 || dependencyPendingTokens.size > 0}
-              onClick={() => void loadBoard(undefined, true)}
-            >
-              {loading ? null : <RefreshCw size={15} aria-hidden="true" />}
-              Refresh board
-            </Button>
-          </>
+          <Button
+            type="button"
+            variant="quiet"
+            className="work-board-refresh"
+            busy={loading}
+            onClick={() => void loadBoard(undefined, true)}
+          >
+            {loading ? null : <RefreshCw size={15} aria-hidden="true" />}
+            Refresh board
+          </Button>
         }
       />
+
+      <section className="work-filter-bar" aria-label="Filter work">
+        <div className="work-filter-controls">
+          <Field label="Search work" className="work-search-filter">
+            <input
+              ref={searchInputRef}
+              type="search"
+              value={searchQuery}
+              placeholder="Title or description"
+              autoComplete="off"
+              onChange={(event) => setSearchQuery(event.currentTarget.value)}
+            />
+          </Field>
+          <Field label="Filter by status">
+            <select
+              ref={statusFilterRef}
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.currentTarget.value as WorkStatusFilter)}
+            >
+              {workStatusFilters.map((option) => (
+                <option value={option.value} key={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Filter by due date">
+            <select
+              value={dueDateFilter}
+              onChange={(event) => setDueDateFilter(event.currentTarget.value as WorkDueDateFilter)}
+            >
+              {workDueDateFilters.map((option) => (
+                <option value={option.value} key={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Filter by priority">
+            <select
+              value={priorityFilter}
+              onChange={(event) => setPriorityFilter(event.currentTarget.value as PriorityFilter)}
+            >
+              <option value="">All priorities</option>
+              {priorities.map((priority) => (
+                <option value={priority.value} key={priority.value}>
+                  {priority.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        <div className="work-filter-meta">
+          <p
+            className="work-filter-summary"
+            role="status"
+            aria-label="Work filter results"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {items === null
+              ? "Loading work items."
+              : `${visibleItems.length} of ${totalWorkItemCount} ${totalWorkItemCount === 1 ? "work item" : "work items"} shown.`}
+          </p>
+          <Button
+            type="button"
+            variant="quiet"
+            disabled={filtersAreDefault}
+            onClick={() => resetFilters()}
+          >
+            Reset filters
+          </Button>
+        </div>
+      </section>
 
       <section className="work-composer" aria-labelledby="work-composer-title">
         <div className="work-composer-heading">
@@ -1394,7 +1563,12 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         ) : null}
 
         {proposalAnnouncement === null ? null : (
-          <p className="work-natural-language-announcement" role="status" aria-live="polite">
+          <p
+            className="work-natural-language-announcement"
+            role="status"
+            aria-label="Work proposal status"
+            aria-live="polite"
+          >
             {proposalAnnouncement}
           </p>
         )}
@@ -1403,7 +1577,12 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
           <ErrorNotice message={createError} onDismiss={() => setCreateError(null)} />
         )}
         {newParentWorkItemId === null ? null : (
-          <div className="work-subtask-context" role="status" aria-live="polite">
+          <div
+            className="work-subtask-context"
+            role="status"
+            aria-label="Subtask capture status"
+            aria-live="polite"
+          >
             <span>
               <strong>Subtask of</strong> {selectedComposerParent?.title ?? "Unavailable item"}
             </span>
@@ -1547,11 +1726,17 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
             </p>
           ) : null}
 
-          {items.length === 0 ? (
+          {visibleItems.length === 0 ? (
             <EmptyState
-              title={priorityFilter === "" ? "No work items yet" : "No matching work items"}
+              title={
+                totalWorkItemCount === 0
+                  ? "No work items yet"
+                  : filtersAreDefault
+                    ? "No active work"
+                    : "No matching work items"
+              }
               action={
-                priorityFilter === "" ? (
+                totalWorkItemCount === 0 ? (
                   <Button
                     type="button"
                     variant="primary"
@@ -1559,21 +1744,33 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                   >
                     Add your first item
                   </Button>
+                ) : filtersAreDefault ? (
+                  <Button type="button" variant="quiet" onClick={showTerminalWork}>
+                    Show done and cancelled
+                  </Button>
                 ) : (
-                  <Button type="button" variant="quiet" onClick={() => setPriorityFilter("")}>
-                    Clear priority filter
+                  <Button type="button" variant="quiet" onClick={() => resetFilters(true)}>
+                    Reset filters
                   </Button>
                 )
               }
             >
-              {priorityFilter === ""
+              {totalWorkItemCount === 0
                 ? "Use quick capture above to give the board its first item."
-                : "Try another priority or clear the filter to see the whole board."}
+                : filtersAreDefault
+                  ? "Done and cancelled items are hidden from the active view."
+                  : "Try a broader search or reset the filters to return to active work."}
             </EmptyState>
           ) : null}
 
-          <div className="work-board" aria-label="Work items by status">
-            {statuses.map((status) => {
+          <div
+            className="work-board"
+            aria-label="Work items by status"
+            hidden={visibleItems.length === 0}
+          >
+            {visibleStatuses.map((statusValue) => {
+              const status = statuses.find((option) => option.value === statusValue);
+              if (status === undefined) return null;
               const columnItems = itemsByStatus.get(status.value) ?? [];
               const headingId = `work-column-${status.value}`;
               return (

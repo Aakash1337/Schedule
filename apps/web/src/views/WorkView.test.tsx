@@ -195,6 +195,177 @@ describe("work board", () => {
     );
   });
 
+  it("searches and combines status, due-date, and priority-safe client filters", async () => {
+    const user = userEvent.setup();
+    const matching = {
+      ...item,
+      id: "item-matching",
+      title: "Review finance report",
+      description: "Quarterly close notes",
+      status: "backlog" as const,
+    };
+    const later = {
+      ...item,
+      id: "item-later",
+      title: "Book conference travel",
+      description: null,
+      status: "in_progress" as const,
+      dueOn: "9999-12-31",
+    };
+    const done = {
+      ...item,
+      id: "item-done",
+      title: "Archive release notes",
+      status: "done" as const,
+    };
+    const cancelled = {
+      ...item,
+      id: "item-cancelled",
+      title: "Cancel unused booking",
+      status: "cancelled" as const,
+    };
+    apiMocks.listWorkItems.mockResolvedValue({
+      items: [item, matching, later, done, cancelled],
+      page: { limit: 200, offset: 0 },
+    });
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByRole("heading", { name: matching.title })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: later.title })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: done.title })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: cancelled.title })).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Work filter results" })).toHaveTextContent(
+      "3 of 5 work items shown",
+    );
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filter by status" }), "all");
+    expect(await screen.findByRole("heading", { name: done.title })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: cancelled.title })).toBeInTheDocument();
+
+    await user.type(screen.getByRole("searchbox", { name: "Search work" }), "QUARTERLY finance");
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: done.title })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("heading", { name: matching.title })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Work filter results" })).toHaveTextContent(
+      "1 of 5 work items shown",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Reset filters" }));
+    expect(screen.getByRole("searchbox", { name: "Search work" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "Filter by status" })).toHaveValue("active");
+    expect(screen.queryByRole("heading", { name: done.title })).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filter by due date" }), "later");
+    expect(await screen.findByRole("heading", { name: later.title })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: matching.title })).not.toBeInTheDocument();
+  });
+
+  it("recomputes due-date boundaries after local midnight", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2026, 6, 15, 23, 59, 59, 500));
+      const dueTomorrow = {
+        ...item,
+        id: "item-due-tomorrow",
+        title: "Prepare tomorrow's agenda",
+        dueOn: "2026-07-16",
+      };
+      apiMocks.listWorkItems.mockResolvedValue({
+        items: [dueTomorrow],
+        page: { limit: 200, offset: 0 },
+      });
+
+      render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByRole("heading", { name: dueTomorrow.title })).toBeInTheDocument();
+      fireEvent.change(screen.getByRole("combobox", { name: "Filter by due date" }), {
+        target: { value: "today" },
+      });
+      expect(screen.queryByRole("heading", { name: dueTomorrow.title })).not.toBeInTheDocument();
+
+      await act(async () => {
+        vi.advanceTimersByTime(1_501);
+      });
+
+      expect(screen.getByRole("heading", { name: dueTomorrow.title })).toBeInTheDocument();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps discovery controls usable while a card mutation is pending", async () => {
+    const user = userEvent.setup();
+    const pendingUpdate = deferred<WorkItem>();
+    const updated = { ...item, status: "blocked" as const, version: item.version + 1 };
+    apiMocks.updateWorkItem.mockReturnValue(pendingUpdate.promise);
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const heading = await screen.findByRole("heading", { name: item.title });
+    const card = heading.closest("article");
+    if (card === null) throw new Error("Work card was not rendered.");
+    await user.type(screen.getByRole("searchbox", { name: "Search work" }), "draft");
+    await user.selectOptions(
+      within(card).getByRole("combobox", { name: `Status for ${item.title}` }),
+      "blocked",
+    );
+    await waitFor(() => expect(apiMocks.updateWorkItem).toHaveBeenCalledOnce());
+
+    expect(screen.getByRole("searchbox", { name: "Search work" })).toBeEnabled();
+    expect(screen.getByRole("combobox", { name: "Filter by status" })).toBeEnabled();
+    expect(screen.getByRole("combobox", { name: "Filter by due date" })).toBeEnabled();
+    expect(screen.getByRole("combobox", { name: "Filter by priority" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Refresh board" })).toBeEnabled();
+    const resetButton = screen.getByRole("button", { name: "Reset filters" });
+    expect(resetButton).toBeEnabled();
+    await user.click(resetButton);
+    expect(screen.getByRole("searchbox", { name: "Search work" })).toHaveValue("");
+
+    await act(async () => pendingUpdate.resolve(updated));
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: `Status for ${item.title}` })).toHaveValue(
+        "blocked",
+      ),
+    );
+  });
+
+  it("reveals terminal-only work from the active empty state and preserves keyboard focus", async () => {
+    const user = userEvent.setup();
+    const done = { ...item, id: "item-done", title: "Filed report", status: "done" as const };
+    const cancelled = {
+      ...item,
+      id: "item-cancelled",
+      title: "Retired draft",
+      status: "cancelled" as const,
+    };
+    apiMocks.listWorkItems.mockResolvedValue({
+      items: [done, cancelled],
+      page: { limit: 200, offset: 0 },
+    });
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const emptyHeading = await screen.findByRole("heading", { name: "No active work" });
+    const emptyState = emptyHeading.closest(".empty-state");
+    if (!(emptyState instanceof HTMLElement)) {
+      throw new Error("Active-work empty state was not rendered.");
+    }
+    await user.click(within(emptyState).getByRole("button", { name: "Show done and cancelled" }));
+
+    const statusFilter = screen.getByRole("combobox", { name: "Filter by status" });
+    expect(statusFilter).toHaveValue("all");
+    await waitFor(() => expect(statusFilter).toHaveFocus());
+    expect(screen.getByRole("heading", { name: done.title })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: cancelled.title })).toBeInTheDocument();
+  });
+
   it("prepares and cancels a local proposal without creating a work item", async () => {
     const user = userEvent.setup();
     const proposal = naturalLanguageProposal();
@@ -242,7 +413,7 @@ describe("work board", () => {
       proposal.version,
       expect.any(AbortSignal),
     );
-    expect(await screen.findByRole("status")).toHaveTextContent(
+    expect(await screen.findByRole("status", { name: "Work proposal status" })).toHaveTextContent(
       "Proposal cancelled. No work item was created.",
     );
     expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
@@ -340,7 +511,9 @@ describe("work board", () => {
     const card = createdHeading.closest("article");
     if (card === null) throw new Error("Confirmed work card was not rendered.");
     await waitFor(() => expect(card).toHaveFocus());
-    expect(screen.getByRole("status")).toHaveTextContent("was created in Backlog");
+    expect(screen.getByRole("status", { name: "Work proposal status" })).toHaveTextContent(
+      "was created in Backlog",
+    );
   });
 
   it("does not insert a confirmed proposal into a priority filter selected in flight", async () => {
@@ -406,7 +579,9 @@ describe("work board", () => {
     expect(screen.getByRole("combobox", { name: "Filter by priority" })).toHaveValue("high");
     expect(screen.getByRole("heading", { name: filteredItem.title })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: created.title })).not.toBeInTheDocument();
-    expect(await screen.findByRole("status")).toHaveTextContent("was created in Backlog");
+    expect(await screen.findByRole("status", { name: "Work proposal status" })).toHaveTextContent(
+      "was created in Backlog",
+    );
   });
 
   it("reuses the same confirmation key after an ambiguous failure", async () => {
@@ -605,16 +780,33 @@ describe("work board", () => {
     expect(within(parentCard).getByText(/Saved at 90 minutes, but dormant/)).toBeInTheDocument();
     await user.click(within(parentCard).getByRole("button", { name: "Cancel" }));
 
-    const childHeading = screen.getByRole("heading", { name: completedChild.title });
+    await user.type(screen.getByRole("searchbox", { name: "Search work" }), "ship release");
+    await waitFor(() =>
+      expect(screen.getByRole("status", { name: "Work filter results" })).toHaveTextContent(
+        "1 of 2 work items shown",
+      ),
+    );
+    await user.click(
+      within(parentCard).getByRole("button", { name: new RegExp(`^${completedChild.title}`) }),
+    );
+    expect(screen.getByRole("combobox", { name: "Filter by status" })).toHaveValue("done");
+    const childHeading = await screen.findByRole("heading", { name: completedChild.title });
     const childCard = childHeading.closest("article");
     if (childCard === null) throw new Error("Child work card was not rendered.");
+    await waitFor(() => expect(childCard).toHaveFocus());
     expect(within(childCard).getByText(/Subtask of/)).toHaveTextContent(parent.title);
 
+    await user.click(screen.getByRole("button", { name: "Reset filters" }));
+    const restoredParentHeading = await screen.findByRole("heading", { name: parent.title });
+    const restoredParentCard = restoredParentHeading.closest("article");
+    if (restoredParentCard === null) throw new Error("Parent work card was not restored.");
     await user.click(
-      within(parentCard).getByRole("button", { name: `Add subtask to ${parent.title}` }),
+      within(restoredParentCard).getByRole("button", { name: `Add subtask to ${parent.title}` }),
     );
     expect(screen.getByRole("heading", { name: "Add a subtask" })).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent(`Subtask of ${parent.title}`);
+    expect(screen.getByRole("status", { name: "Subtask capture status" })).toHaveTextContent(
+      `Subtask of ${parent.title}`,
+    );
     await user.type(screen.getByRole("textbox", { name: "Title" }), createdChild.title);
     await user.click(screen.getByRole("button", { name: "Add subtask" }));
 
@@ -630,7 +822,10 @@ describe("work board", () => {
     );
     expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
     expect(await screen.findByRole("heading", { name: createdChild.title })).toBeInTheDocument();
-    expect(within(parentCard).getByText("1/2 subtasks done")).toBeInTheDocument();
+    const updatedParentHeading = screen.getByRole("heading", { name: parent.title });
+    const updatedParentCard = updatedParentHeading.closest("article");
+    if (updatedParentCard === null) throw new Error("Updated parent work card was not rendered.");
+    expect(within(updatedParentCard).getByText("1/2 subtasks done")).toBeInTheDocument();
   });
 
   it("detaches and reparents a subtask without changing either parent's version", async () => {

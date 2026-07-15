@@ -292,8 +292,21 @@
           "file": "apps/web/src/views/WorkView.test.tsx",
           "command": "unit",
           "anchors": [
+            "searches and combines status, due-date, and priority-safe client filters",
+            "reveals terminal-only work from the active empty state and preserves keyboard focus",
             "keeps the latest priority-filter response when an earlier response finishes late",
             "removes an item that no longer matches the active priority filter"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/views/work-filters.test.ts",
+          "command": "unit",
+          "anchors": [
+            "matches every normalized search term across title and description",
+            "defaults to active work while keeping every terminal status explicitly reachable",
+            "classifies due date %s in %s",
+            "combines query, status, and due-date dimensions with AND semantics"
           ]
         },
         {
@@ -301,6 +314,12 @@
           "file": "scripts/verify-product-api.ts",
           "command": "product-api",
           "anchors": ["concurrentWorkItemUpdates"]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/work-discovery-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": ["discovers active and terminal work through accessible mobile filters"]
         }
       ]
     },

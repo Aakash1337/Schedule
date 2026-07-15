@@ -168,9 +168,10 @@ gaps.
 
 After installing Chromium once with `pnpm exec playwright install chromium`, run
 `pnpm verify:web-e2e` to exercise the built web application, live API, fresh migrations, and an
-isolated PostgreSQL database through ten live flows: routine/Today activity and feedback,
+isolated PostgreSQL database through eleven live flows: routine/Today activity and feedback,
 work-item deadline pressure, duration-insight dismissal/reset, accessible 320px prerequisite
-editing, mobile subtask persistence and leaf-only planning, routine ranking preferences,
+editing, mobile subtask persistence and leaf-only planning, responsive task-pool search/status/due-
+date/priority filtering, routine ranking preferences,
 deterministic alternative comparison and selection, reminder
 policy/materialization/history with responsive checks, and deterministic Daily Plan Fit
 prefill/dismissal/reset, stale-key rejection, explicit generation receipts, resolved outcomes, and
@@ -211,7 +212,7 @@ That command proves the local/stdout provider boundary, not delivery to a WhatsA
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh
 PostgreSQL 17 Compose project. It also verifies a complete archive round trip, the real disposable
-restore/promote/rollback/cleanup state machine, and the ten live Chromium product flows in a
+restore/promote/rollback/cleanup state machine, and the eleven live Chromium product flows in a
 separate disposable database.
 
 ## Local data protection
