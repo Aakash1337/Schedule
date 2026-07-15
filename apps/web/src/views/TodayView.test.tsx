@@ -1835,6 +1835,8 @@ describe("Today local advisor", () => {
     expect(
       screen.queryByText("Keep the first block focused and leave room for the backlog."),
     ).not.toBeInTheDocument();
+    expect(apiMocks.listDailyPlanFitUsageOutcomes).toHaveBeenCalledTimes(2);
+    expect(apiMocks.getDailyPlanFitEffectiveness).toHaveBeenCalledTimes(2);
   });
 
   it("aborts and ignores late advice when a scheduling command changes the head", async () => {

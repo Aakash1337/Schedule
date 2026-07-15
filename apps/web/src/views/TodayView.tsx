@@ -1242,6 +1242,10 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     await Promise.all([loadPlanFitUsageOutcomes(), loadPlanFitEffectiveness()]);
   }, [loadPlanFitEffectiveness, loadPlanFitUsageOutcomes]);
 
+  const refreshToday = useCallback(async () => {
+    await Promise.all([loadCurrentPlan(), refreshPlanFitOutcomeEvidence()]);
+  }, [loadCurrentPlan, refreshPlanFitOutcomeEvidence]);
+
   const loadCalendarAvailability = useCallback(async () => {
     calendarControllerRef.current?.abort();
     const controller = new AbortController();
@@ -2255,7 +2259,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
           <ErrorNotice
             message={loadError}
             action={
-              <Button type="button" variant="quiet" onClick={() => void loadCurrentPlan()}>
+              <Button type="button" variant="quiet" onClick={() => void refreshToday()}>
                 Retry
               </Button>
             }
@@ -2804,7 +2808,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
               type="button"
               variant="quiet"
               disabled={commandInProgress}
-              onClick={() => void loadCurrentPlan()}
+              onClick={() => void refreshToday()}
             >
               <RefreshCw size={15} aria-hidden="true" />
               Refresh
