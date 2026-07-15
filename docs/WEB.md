@@ -267,8 +267,9 @@ server-persisted, expiring proposal; the next screen displays the exact command,
 and warnings, model provenance, expiration time, and the explicit message “Nothing has been created
 yet.”
 
-The title remains editable. Confirming a changed title first updates the proposal with its expected
-version and then sends one stable confirmation key. A transport failure keeps the proposal and key
+The title remains editable. Priority, optional due date, and optional planning duration appear in a
+separate section labelled as the user's choices rather than model suggestions. Confirming any changed
+field first replaces the complete review snapshot with its expected version and then sends one stable confirmation key. A transport failure keeps the proposal and key
 so the user can retry without duplicate work. **Cancel proposal** terminally cancels it and announces
 that no item was created. Closing during provider generation aborts that request; workspace changes
 abort and discard every in-flight or displayed proposal so a late response cannot cross workspaces.
@@ -280,8 +281,8 @@ available regardless of model configuration or availability. The panel does not 
 settings, arbitrary commands, automation, or a prompt/model history. Component tests cover cancel,
 edit/confirm/focus, stable-key retry, and a deliberately late success after workspace cancellation.
 The live Chromium flow uses the built API and production adapter against a controllably held loopback
-model double—without browser interception—to prove cancellation, same-key replay, and workspace-switch
-request abortion.
+model double—without browser interception—to prove full-snapshot persistence, exact created fields,
+cancellation, same-key replay, and workspace-switch request abortion.
 
 ## Design system
 

@@ -473,16 +473,19 @@ the submitted prompt; it has no plan context, repositories, tools, or mutation s
 valid command is one `work_item.create` title. Model summary and warnings are transient review text.
 The raw prompt and free-form model output are never persisted; only a secret-keyed prompt fingerprint,
 canonical command/digest, bounded provenance, expiration, status, and result identity are durable.
+Priority, due date, and planning duration are stored separately only when the user reviews them;
+they never widen the title-only model command.
 
 The proposal is not an applied recommendation. It is pending, editable, cancellable, tenant-scoped,
 optimistically versioned, and valid for 60 minutes at most. Confirmation is a distinct explicit
 action with a stable idempotency key. One serializable transaction locks and revalidates the exact
 proposal and digest, creates a deterministic backlog work-item identity, marks the proposal, and
-audits it. Same-key retries replay; a competing key conflicts. Nothing in this path changes Today,
-planner input, routines, calendar blocks, priority, deadlines, tags, duration, or cadence.
+audits it. Same-key retries replay; a competing key conflicts. The user may select priority, a due
+date, and a planning duration before confirmation. This creates eligible source data but does not
+mutate the current Today plan, routines, calendar blocks, tags, or cadence.
 
-This implements natural-language creation only for one reviewed backlog title. Natural-language
-routine creation, structured fields, task breakdown, multi-command capture, automatic confirmation,
+This implements natural-language creation only for one reviewed root backlog item. Natural-language
+routine creation, model-extracted structured fields, task breakdown, multi-command capture, automatic confirmation,
 prompt history, model-driven planning, hosted providers, and Hermes/WhatsApp interpretation remain
 deferred. The complete privacy, lifecycle, API, and verification contract is in
 [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md).
@@ -625,8 +628,10 @@ Success is not simply "more tasks completed." Useful measures include realistic 
   rejection, and no Apply or mutation control
 - Implemented: separate free-form Work capture for one expiring, editable backlog-title proposal,
   with prompt-private persistence and explicit audited exactly-once confirmation
-- Deferred: natural-language routine creation, structured fields, multi-command capture, and task
-  breakdown
+- Implemented: user-authored priority, optional due date, and optional planning duration in the
+  versioned review snapshot; the model remains title-only
+- Deferred: natural-language routine creation, model-extracted structured fields, multi-command
+  capture, and task breakdown
 - Deferred: free-form context interpretation, automatic application, duration calibration, and
   model-driven planner changes
 - Deferred: local OpenAI-compatible endpoints and hosted model providers

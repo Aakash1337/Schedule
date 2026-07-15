@@ -83,8 +83,17 @@ const proposalRow = {
   requestId: "70000000-0000-4000-8000-000000000007",
   promptHash: "c".repeat(64),
   commandHash: createHash("sha256").update(proposalCommandDisplay).digest("hex"),
+  reviewHash: "40ceef00dce6da430703dbbde48ccf4937f68efd7253a5415dbabc4e316b5f81",
   commandDisplay: proposalCommandDisplay,
   command: { type: "work_item.create", title: "Send the report" },
+  userSelection: {
+    priority: "medium" as const,
+    dueOn: localDate("2026-07-20"),
+    planningDurationMinutes: 45,
+  },
+  reviewPriority: "medium" as const,
+  reviewDueOn: "2026-07-20",
+  reviewPlanningDurationMinutes: 45,
   provider: "ollama",
   model: "gemma4:e4b",
   status: "pending" as const,
@@ -824,6 +833,11 @@ describe("PostgresNaturalLanguageProposalRepository", () => {
         id: proposalRow.id,
         workspaceId: proposalRow.workspaceId,
         command: { type: "work_item.create", title: "Send the report" },
+        userSelection: {
+          priority: "medium",
+          dueOn: "2026-07-20",
+          planningDurationMinutes: 45,
+        },
       },
     });
   });
@@ -831,6 +845,21 @@ describe("PostgresNaturalLanguageProposalRepository", () => {
   it("fails closed when persisted command JSON does not match its canonical digest", async () => {
     const repository = new PostgresNaturalLanguageProposalRepository(
       proposalInsertDatabase({ ...proposalRow, command: { ...proposalRow.command, extra: true } }),
+    );
+
+    await expect(repository.insertOrFind(proposalRow)).rejects.toMatchObject({
+      code: "natural_language.confirmation_corrupt",
+    });
+  });
+
+  it.each([
+    ["priority", { reviewPriority: "critical" }],
+    ["due date", { reviewDueOn: "2026-02-30" }],
+    ["duration", { reviewPlanningDurationMinutes: 43_201 }],
+    ["digest", { reviewHash: "f".repeat(64) }],
+  ])("fails closed when a persisted review %s is invalid", async (_label, overrides) => {
+    const repository = new PostgresNaturalLanguageProposalRepository(
+      proposalInsertDatabase({ ...proposalRow, ...overrides }),
     );
 
     await expect(repository.insertOrFind(proposalRow)).rejects.toMatchObject({

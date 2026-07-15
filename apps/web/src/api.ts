@@ -298,7 +298,15 @@ export const api = {
   updateNaturalLanguageProposal: (
     workspaceId: string,
     proposalId: string,
-    input: { readonly expectedVersion: number; readonly title: string },
+    input: {
+      readonly expectedVersion: number;
+      readonly title: string;
+      readonly userSelection: {
+        readonly priority: WorkItemPriority;
+        readonly dueOn: string | null;
+        readonly planningDurationMinutes: number | null;
+      };
+    },
     signal?: AbortSignal,
   ) =>
     request<NaturalLanguageProposal>(

@@ -3,8 +3,12 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import {
   DomainError,
   createWorkItem,
+  isValidLocalDate,
+  workItemPriorities,
   workItemId,
+  type LocalDate,
   type WorkItem,
+  type WorkItemPriority,
   type WorkspaceId,
 } from "@schedule/domain";
 
@@ -29,6 +33,7 @@ const MAXIMUM_WARNINGS = 3;
 const MAXIMUM_PROVIDER_CHARACTERS = 40;
 const MAXIMUM_MODEL_CHARACTERS = 120;
 const MAXIMUM_IDEMPOTENCY_KEY_CHARACTERS = 200;
+const MAXIMUM_PLANNING_DURATION_MINUTES = 43_200;
 const DEFAULT_PROPOSAL_TTL_MILLISECONDS = 10 * 60_000;
 const MINIMUM_PROPOSAL_TTL_MILLISECONDS = 60_000;
 const MAXIMUM_PROPOSAL_TTL_MILLISECONDS = 60 * 60_000;
@@ -69,14 +74,23 @@ export interface NaturalLanguageProposer {
 
 export type NaturalLanguageProposalStatus = "pending" | "confirmed" | "cancelled";
 
+/** User-authored work-item fields. These values never come from the local model. */
+export interface NaturalLanguageProposalUserSelection {
+  readonly priority: WorkItemPriority;
+  readonly dueOn: LocalDate | null;
+  readonly planningDurationMinutes: number | null;
+}
+
 export interface NaturalLanguageProposalRecord {
   readonly id: string;
   readonly workspaceId: WorkspaceId;
   readonly requestId: string;
   readonly promptHash: string;
   readonly commandHash: string;
+  readonly reviewHash: string;
   readonly commandDisplay: string;
   readonly command: NaturalLanguageWorkItemCommand;
+  readonly userSelection: NaturalLanguageProposalUserSelection;
   readonly provider: string;
   readonly model: string | null;
   readonly status: NaturalLanguageProposalStatus;
@@ -126,6 +140,7 @@ export interface PreparedNaturalLanguageProposal {
   readonly commandHash: string;
   readonly commandDisplay: string;
   readonly command: NaturalLanguageWorkItemCommand;
+  readonly userSelection: NaturalLanguageProposalUserSelection;
   readonly provider: string;
   readonly model: string | null;
   readonly status: NaturalLanguageProposalStatus;
@@ -162,6 +177,7 @@ export interface UpdateNaturalLanguageProposalCommand {
   readonly proposalId: string;
   readonly expectedVersion: number;
   readonly title: string;
+  readonly userSelection: NaturalLanguageProposalUserSelection;
 }
 
 export interface CancelNaturalLanguageProposalCommand {
@@ -359,6 +375,106 @@ function parseCommand(
   return { type: "work_item.create", title: item.title };
 }
 
+function parseUserSelection(value: unknown): NaturalLanguageProposalUserSelection {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new DomainError(
+      "natural_language.review_invalid",
+      "The proposal review fields are invalid.",
+    );
+  }
+  const candidate = value as Readonly<Record<string, unknown>>;
+  if (
+    !exactKeys(candidate, ["dueOn", "planningDurationMinutes", "priority"]) ||
+    !workItemPriorities.some((priority) => priority === candidate.priority) ||
+    !(
+      candidate.dueOn === null ||
+      (typeof candidate.dueOn === "string" && isValidLocalDate(candidate.dueOn))
+    ) ||
+    !(
+      candidate.planningDurationMinutes === null ||
+      (typeof candidate.planningDurationMinutes === "number" &&
+        Number.isInteger(candidate.planningDurationMinutes) &&
+        candidate.planningDurationMinutes > 0 &&
+        candidate.planningDurationMinutes <= MAXIMUM_PLANNING_DURATION_MINUTES)
+    )
+  ) {
+    throw new DomainError(
+      "natural_language.review_invalid",
+      "Priority, due date, and planning duration must be valid user choices.",
+    );
+  }
+  return {
+    priority: candidate.priority as WorkItemPriority,
+    dueOn: candidate.dueOn as LocalDate | null,
+    planningDurationMinutes: candidate.planningDurationMinutes as number | null,
+  };
+}
+
+function parseStoredUserSelection(value: unknown): NaturalLanguageProposalUserSelection {
+  try {
+    return parseUserSelection(value);
+  } catch (error) {
+    if (!(error instanceof DomainError)) throw error;
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored proposal review fields are invalid.",
+    );
+  }
+}
+
+function sameUserSelection(
+  left: NaturalLanguageProposalUserSelection,
+  right: NaturalLanguageProposalUserSelection,
+): boolean {
+  return (
+    left.priority === right.priority &&
+    left.dueOn === right.dueOn &&
+    left.planningDurationMinutes === right.planningDurationMinutes
+  );
+}
+
+function userSelectionHash(userSelection: NaturalLanguageProposalUserSelection): string {
+  return hash(canonicalize(userSelection));
+}
+
+function validatedStoredUserSelection(
+  record: NaturalLanguageProposalRecord,
+): NaturalLanguageProposalUserSelection {
+  const userSelection = parseStoredUserSelection(record.userSelection);
+  if (userSelectionHash(userSelection) !== record.reviewHash) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored proposal review fields do not match their digest.",
+    );
+  }
+  return userSelection;
+}
+
+function validatedStoredCommand(
+  record: NaturalLanguageProposalRecord,
+  workspaceId: WorkspaceId,
+  now: Date,
+): NaturalLanguageWorkItemCommand {
+  let command: NaturalLanguageWorkItemCommand;
+  try {
+    command = parseCommand(record.command, workspaceId, now);
+  } catch (error) {
+    if (!(error instanceof DomainError)) throw error;
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored proposal command is invalid.",
+    );
+  }
+  const commandDisplay = canonicalize(command);
+  if (commandDisplay !== record.commandDisplay || hash(commandDisplay) !== record.commandHash) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored proposal does not match its command hash.",
+    );
+  }
+  return command;
+}
+
 function parseOutput(
   output: NaturalLanguageProposerOutput,
   workspaceId: WorkspaceId,
@@ -422,6 +538,7 @@ function prepared(record: NaturalLanguageProposalRecord): PreparedNaturalLanguag
     commandHash: record.commandHash,
     commandDisplay: record.commandDisplay,
     command: record.command,
+    userSelection: record.userSelection,
     provider: record.provider,
     model: record.model,
     status: record.status,
@@ -601,14 +718,21 @@ export class GenerateNaturalLanguageProposal {
 
     const commandDisplay = canonicalize(parsed.command);
     const commandHash = hash(commandDisplay);
+    const userSelection: NaturalLanguageProposalUserSelection = {
+      priority: "none",
+      dueOn: null,
+      planningDurationMinutes: null,
+    };
     const record: NaturalLanguageProposalRecord = {
       id: randomUUID(),
       workspaceId: input.workspaceId,
       requestId,
       promptHash,
       commandHash,
+      reviewHash: userSelectionHash(userSelection),
       commandDisplay,
       command: parsed.command,
+      userSelection,
       provider,
       model,
       status: "pending",
@@ -707,8 +831,15 @@ export class UpdateNaturalLanguageProposal {
       );
       const commandDisplay = canonicalize(command);
       const commandHash = hash(commandDisplay);
+      const userSelection = parseUserSelection(input.userSelection);
+      const currentUserSelection = validatedStoredUserSelection(current);
+      const nextReviewHash = userSelectionHash(userSelection);
       assertPending(current, now);
-      if (current.commandHash === commandHash && input.expectedVersion <= current.version) {
+      if (
+        current.commandHash === commandHash &&
+        sameUserSelection(currentUserSelection, userSelection) &&
+        input.expectedVersion <= current.version
+      ) {
         return prepared(current);
       }
       if (current.version !== input.expectedVersion) {
@@ -722,6 +853,8 @@ export class UpdateNaturalLanguageProposal {
         command,
         commandDisplay,
         commandHash,
+        reviewHash: nextReviewHash,
+        userSelection,
         version: current.version + 1,
         updatedAt: new Date(now),
       };
@@ -731,7 +864,12 @@ export class UpdateNaturalLanguageProposal {
         action: "natural_language.proposal_edited",
         entityType: "natural_language_proposal",
         entityId: current.id,
-        data: { previousCommandHash: current.commandHash, commandHash },
+        data: {
+          previousCommandHash: current.commandHash,
+          commandHash,
+          previousReviewHash: current.reviewHash,
+          reviewHash: nextReviewHash,
+        },
         occurredAt: now,
       });
       return prepared(updated);
@@ -827,6 +965,14 @@ export class ConfirmNaturalLanguageProposal {
             "The proposal was already confirmed by another request.",
           );
         }
+        validatedStoredCommand(current, input.workspaceId, now);
+        validatedStoredUserSelection(current);
+        if (current.resultWorkItemId !== workItemId(current.id)) {
+          throw new DomainError(
+            "natural_language.confirmation_corrupt",
+            "The confirmed proposal result identity is invalid.",
+          );
+        }
         const existingWorkItem = await workItems.findById(
           input.workspaceId,
           current.resultWorkItemId as WorkItem["id"],
@@ -851,28 +997,36 @@ export class ConfirmNaturalLanguageProposal {
           "The proposal changed before it was confirmed.",
         );
       }
-      const command = parseCommand(current.command, input.workspaceId, now);
-      const commandDisplay = canonicalize(command);
-      if (
-        commandDisplay !== current.commandDisplay ||
-        hash(commandDisplay) !== current.commandHash
-      ) {
-        throw new DomainError(
-          "natural_language.confirmation_corrupt",
-          "The stored proposal does not match its command hash.",
-        );
-      }
+      const command = validatedStoredCommand(current, input.workspaceId, now);
+      const userSelection = validatedStoredUserSelection(current);
       const deterministicWorkItemId = workItemId(current.id);
       const priorWorkItem = await workItems.findById(input.workspaceId, deterministicWorkItemId);
-      const workItem =
-        priorWorkItem ??
-        createWorkItem({
-          id: deterministicWorkItemId,
-          workspaceId: input.workspaceId,
-          title: command.title,
-          now,
-        });
-      if (priorWorkItem !== null && priorWorkItem.title !== command.title) {
+      const desiredWorkItem = createWorkItem({
+        id: deterministicWorkItemId,
+        workspaceId: input.workspaceId,
+        parentWorkItemId: null,
+        title: command.title,
+        description: null,
+        status: "backlog",
+        priority: userSelection.priority,
+        dueOn: userSelection.dueOn,
+        planningDurationMinutes: userSelection.planningDurationMinutes,
+        now,
+      });
+      const workItem = priorWorkItem ?? desiredWorkItem;
+      if (
+        priorWorkItem !== null &&
+        (priorWorkItem.id !== desiredWorkItem.id ||
+          priorWorkItem.workspaceId !== desiredWorkItem.workspaceId ||
+          priorWorkItem.parentWorkItemId !== null ||
+          priorWorkItem.title !== desiredWorkItem.title ||
+          priorWorkItem.description !== null ||
+          priorWorkItem.status !== "backlog" ||
+          priorWorkItem.priority !== desiredWorkItem.priority ||
+          priorWorkItem.dueOn !== desiredWorkItem.dueOn ||
+          priorWorkItem.planningDurationMinutes !== desiredWorkItem.planningDurationMinutes ||
+          priorWorkItem.version !== 1)
+      ) {
         throw new DomainError(
           "natural_language.confirmation_corrupt",
           "The proposal creation identity is already used by different work.",
@@ -896,6 +1050,7 @@ export class ConfirmNaturalLanguageProposal {
         entityId: current.id,
         data: {
           commandHash: current.commandHash,
+          reviewHash: current.reviewHash,
           workItemId: workItem.id,
           provider: current.provider,
           model: current.model,

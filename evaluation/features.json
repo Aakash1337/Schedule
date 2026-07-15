@@ -1554,7 +1554,7 @@
         "anchor": "# Local natural-language work proposals"
       },
       "limitations": [
-        "Version 1 prepares only one editable backlog-title command; routines, structured fields, task breakdown, multiple commands, automatic confirmation, hosted providers, and messaging interpretation remain deferred.",
+        "Version 1 prepares only one editable backlog-title command; user-authored priority, due date, and duration are supported during review, while model-extracted structured fields, routines, task breakdown, multiple commands, automatic confirmation, hosted providers, and messaging interpretation remain deferred.",
         "The browser E2E uses a strict loopback provider double; it establishes authority and lifecycle behavior, not real-model title quality."
       ],
       "evidence": [
@@ -1564,6 +1564,8 @@
           "command": "unit",
           "anchors": [
             "persists a bounded hash-bound proposal without mutating work or storing the prompt",
+            "confirms the complete user-reviewed snapshot as one root backlog item",
+            "rejects invalid review fields and deterministic work-item mismatches",
             "confirms the persisted command exactly once and replays the same idempotency key",
             "recovers a deterministic proposal work item without creating a duplicate",
             "rolls back proposal creation and confirmation when audit persistence fails"
@@ -1584,7 +1586,8 @@
           "command": "unit",
           "anchors": [
             "constrains private, expiring, tenant-bound natural-language proposals",
-            "migrates natural-language proposal lifecycle and retention boundaries"
+            "migrates natural-language proposal lifecycle and retention boundaries",
+            "migrates user-authored natural-language review fields without widening model commands"
           ]
         },
         {
@@ -1621,7 +1624,7 @@
           "file": "scripts/verify-natural-language-proposals.ts",
           "command": "natural-language-proposals",
           "anchors": [
-            "Natural-language proposal verification passed private persistence, tenant isolation, and concurrent exactly-once confirmation"
+            "Natural-language proposal verification passed private review persistence, exact reviewed creation, tenant isolation, and concurrent exactly-once confirmation"
           ]
         },
         {

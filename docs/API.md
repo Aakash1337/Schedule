@@ -38,7 +38,7 @@ not authorize these product routes.
 | `POST`   | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/subtasks`                                | Create a direct child (`201`)                          |
 | `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/subtasks`                                | List a bounded direct-child page                       |
 | `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals`                                      | Prepare one review-only backlog-title proposal         |
-| `PATCH`  | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}`                         | Version-checked proposal-title edit                    |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}`                         | Replace the version-checked reviewed work snapshot     |
 | `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}/cancellations`           | Cancel a pending proposal without creating work        |
 | `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}/confirmations`           | Idempotently confirm and create the exact work item    |
 | `GET`    | `/v1/workspaces/{workspaceId}/work-item-dependencies`                                          | List a bounded dependency page                         |
@@ -404,18 +404,35 @@ inference. Reusing the same request UUID and normalized prompt returns the still
 proposal without another provider call; reusing it for different text returns
 `409 natural_language.request_conflict`.
 
-The response's proposal has an ID, request ID, exact canonical command and command hash,
-provider/model identifiers, `pending` status, expiration instant, and positive optimistic version.
+The response's proposal has an ID, request ID, exact canonical title-only command and command hash,
+provider/model identifiers, `pending` status, expiration instant, positive optimistic version, and
+`userSelection` initialized to `none`/`null`/`null` for priority, due date, and planning duration.
 The prompt, provider summary, warnings, raw envelope, and provider errors are not persisted. Schedule
 stores only a deployment-keyed prompt fingerprint for request-conflict detection. Every response in
 this route family, including validation and errors, uses `Cache-Control: no-store`.
 
-Editing sends `{ "expectedVersion": 1, "title": "Reviewed title" }` to the proposal item route.
+Editing sends the complete reviewed snapshot to the proposal item route:
+
+```json
+{
+  "expectedVersion": 1,
+  "title": "Reviewed title",
+  "userSelection": {
+    "priority": "high",
+    "dueOn": "2026-07-20",
+    "planningDurationMinutes": 60
+  }
+}
+```
+
+`userSelection` is authored by the user after inference; it is not extracted or suggested by the
+model. Priority is `none`, `low`, `medium`, `high`, or `urgent`; due date is a real local Gregorian
+date or `null`; duration is a whole number from 1 through 43,200 or `null`.
 Cancellation sends only `{ "expectedVersion": 1 }` to its dedicated route. Both lock the exact
 tenant-scoped proposal and reject terminal state. An edit with a mismatched version conflicts unless
-the requested canonical title already equals the stored winner and the expected version is not from
-the future; this exact semantic replay returns the current version without another audit and lets a
-client recover when the original successful response was lost. An accepted change increments its
+the requested title and all three review fields already equal the stored winner and the expected
+version is not from the future; this exact semantic replay returns the current version without
+another audit and lets a client recover when the original successful response was lost. An accepted change increments its
 version and appends an audit event. Cancellation requires the exact current version. Neither command
 creates work.
 
@@ -423,8 +440,11 @@ Confirmation sends `{ "expectedVersion": 2 }` and requires an `Idempotency-Key`.
 call returns `201` with the proposal ID, command hash, `replayed: false`, and the created backlog work
 item. The exact same key returns the original result with `200` and `replayed: true`; a different key
 after confirmation returns `409 natural_language.confirmation_conflict`. One serializable
-transaction locks and revalidates the proposal, expiration, version, canonical command digest, and
-deterministic result identity before creating the work item, marking confirmation, and auditing it.
+transaction locks and revalidates the proposal, expiration, version, canonical command digest,
+reviewed fields, and deterministic result identity before creating one root backlog work item with
+the reviewed priority, due date, and duration, marking confirmation, and auditing it.
+The review fields have a separate canonical digest; the title-only model command hash is never
+repurposed. Same-key replay also verifies that the stored result identity is the proposal-derived ID.
 Concurrent confirmations therefore create one work item and one confirmation audit. Missing
 proposals return `404`; expired, cancelled, or already-consumed proposal operations return `410`;
 corrupt stored commands fail as a redacted `500`.

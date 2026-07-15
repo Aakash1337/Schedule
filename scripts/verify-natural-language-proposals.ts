@@ -7,13 +7,14 @@ import {
   HmacNaturalLanguagePromptHasher,
   NATURAL_LANGUAGE_PROPOSAL_VERSION,
   NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION,
+  UpdateNaturalLanguageProposal,
   type NaturalLanguageProposer,
 } from "../packages/application/src/index.js";
 import {
   createDatabase,
   PostgresNaturalLanguageProposalUnitOfWork,
 } from "../packages/database/src/index.js";
-import { workspaceId } from "../packages/domain/src/index.js";
+import { localDate, workspaceId } from "../packages/domain/src/index.js";
 
 const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule";
@@ -51,6 +52,7 @@ const generate = new GenerateNaturalLanguageProposal(
 );
 const firstConfirm = new ConfirmNaturalLanguageProposal(firstUnitOfWork, clock);
 const secondConfirm = new ConfirmNaturalLanguageProposal(secondUnitOfWork, clock);
+const update = new UpdateNaturalLanguageProposal(firstUnitOfWork, clock);
 const createdWorkspaceIds: string[] = [];
 
 async function createVerificationWorkspace(label: string): Promise<ReturnType<typeof workspaceId>> {
@@ -75,6 +77,11 @@ async function prepareProposal(targetWorkspaceId: ReturnType<typeof workspaceId>
   assert.equal(result.summary?.includes(requestId), true);
   assert.deepEqual(result.warnings, ["Confirm only after reviewing the exact title."]);
   assert.notEqual(result.proposal, null);
+  assert.deepEqual(result.proposal!.userSelection, {
+    priority: "none",
+    dueOn: null,
+    planningDurationMinutes: null,
+  });
   return { requestId, proposal: result.proposal! };
 }
 
@@ -125,11 +132,21 @@ try {
   assert.equal(columnNames.has("prompt"), false);
   assert.equal(columnNames.has("summary"), false);
   assert.equal(columnNames.has("warnings"), false);
+  assert.equal(columnNames.has("review_priority"), true);
+  assert.equal(columnNames.has("review_due_on"), true);
+  assert.equal(columnNames.has("review_planning_duration_minutes"), true);
+  assert.equal(columnNames.has("review_hash"), true);
 
   const [persisted] = await observerConnection.sql<
-    { prompt_hash: string; command_display: string; command: unknown; status: string }[]
+    {
+      prompt_hash: string;
+      command_display: string;
+      command: unknown;
+      review_hash: string;
+      status: string;
+    }[]
   >`
-    select prompt_hash, command_display, command, status
+    select prompt_hash, command_display, command, review_hash, status
     from natural_language_proposals
     where workspace_id = ${privateWorkspaceId} and id = ${prepared.proposal.id}
   `;
@@ -141,6 +158,49 @@ try {
     createHash("sha256").update(privatePrompt, "utf8").digest("hex"),
   );
   assert.equal(persisted!.command_display, prepared.proposal.commandDisplay);
+  assert.equal(
+    persisted!.review_hash,
+    createHash("sha256")
+      .update('{"dueOn":null,"planningDurationMinutes":null,"priority":"none"}', "utf8")
+      .digest("hex"),
+  );
+
+  const reviewed = await update.execute({
+    workspaceId: privateWorkspaceId,
+    proposalId: prepared.proposal.id,
+    expectedVersion: prepared.proposal.version,
+    title: "Prepare the reviewed launch checklist",
+    userSelection: {
+      priority: "urgent",
+      dueOn: localDate("2026-07-20"),
+      planningDurationMinutes: 75,
+    },
+  });
+  assert.deepEqual(reviewed.userSelection, {
+    priority: "urgent",
+    dueOn: "2026-07-20",
+    planningDurationMinutes: 75,
+  });
+  const [persistedReview] = await observerConnection.sql<
+    {
+      review_hash: string;
+      review_priority: string;
+      review_due_on: string | null;
+      review_planning_duration_minutes: number | null;
+    }[]
+  >`
+    select review_hash, review_priority, review_due_on, review_planning_duration_minutes
+    from natural_language_proposals
+    where workspace_id = ${privateWorkspaceId} and id = ${reviewed.id}
+  `;
+  assert.deepEqual(persistedReview, {
+    review_hash: createHash("sha256")
+      .update('{"dueOn":"2026-07-20","planningDurationMinutes":75,"priority":"urgent"}', "utf8")
+      .digest("hex"),
+    review_priority: "urgent",
+    review_due_on: "2026-07-20",
+    review_planning_duration_minutes: 75,
+  });
 
   const [beforeConfirmation] = await observerConnection.sql<{ count: string }[]>`
     select count(*)::text as count from work_items where workspace_id = ${privateWorkspaceId}
@@ -149,8 +209,8 @@ try {
 
   const sameKeyCommand = {
     workspaceId: privateWorkspaceId,
-    proposalId: prepared.proposal.id,
-    expectedVersion: prepared.proposal.version,
+    proposalId: reviewed.id,
+    expectedVersion: reviewed.version,
     idempotencyKey: "natural-language-same-key-live-verification",
   };
   const sameKeyResults = await Promise.all([
@@ -160,6 +220,26 @@ try {
   assert.deepEqual(sameKeyResults.map((result) => result.replayed).sort(), [false, true]);
   assert.equal(sameKeyResults[0]?.workItem.id, prepared.proposal.id);
   assert.equal(sameKeyResults[1]?.workItem.id, prepared.proposal.id);
+  assert.deepEqual(
+    {
+      parentWorkItemId: sameKeyResults[0]?.workItem.parentWorkItemId,
+      title: sameKeyResults[0]?.workItem.title,
+      description: sameKeyResults[0]?.workItem.description,
+      status: sameKeyResults[0]?.workItem.status,
+      priority: sameKeyResults[0]?.workItem.priority,
+      dueOn: sameKeyResults[0]?.workItem.dueOn,
+      planningDurationMinutes: sameKeyResults[0]?.workItem.planningDurationMinutes,
+    },
+    {
+      parentWorkItemId: null,
+      title: "Prepare the reviewed launch checklist",
+      description: null,
+      status: "backlog",
+      priority: "urgent",
+      dueOn: "2026-07-20",
+      planningDurationMinutes: 75,
+    },
+  );
 
   const [sameKeyCounts] = await observerConnection.sql<
     { work_items: string; confirmation_events: string }[]
@@ -224,7 +304,7 @@ try {
   );
 
   console.log(
-    "Natural-language proposal verification passed private persistence, tenant isolation, and concurrent exactly-once confirmation",
+    "Natural-language proposal verification passed private review persistence, exact reviewed creation, tenant isolation, and concurrent exactly-once confirmation",
   );
 } finally {
   await removeVerificationWorkspaces().catch(() => undefined);

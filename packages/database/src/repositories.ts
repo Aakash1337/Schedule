@@ -430,14 +430,49 @@ function mapNaturalLanguageProposal(
       "The stored natural-language proposal command does not match its digest.",
     );
   }
+  if (
+    !workItemPriorities.some((priority) => priority === row.reviewPriority) ||
+    (row.reviewPlanningDurationMinutes !== null &&
+      (!Number.isInteger(row.reviewPlanningDurationMinutes) ||
+        row.reviewPlanningDurationMinutes < 1 ||
+        row.reviewPlanningDurationMinutes > 43_200))
+  ) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal review fields are invalid.",
+    );
+  }
+  let reviewDueOn: LocalDate | null;
+  try {
+    reviewDueOn = row.reviewDueOn === null ? null : localDate(row.reviewDueOn);
+  } catch {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal review fields are invalid.",
+    );
+  }
+  const reviewDisplay = `{"dueOn":${JSON.stringify(reviewDueOn)},"planningDurationMinutes":${JSON.stringify(row.reviewPlanningDurationMinutes)},"priority":${JSON.stringify(row.reviewPriority)}}`;
+  const reviewHash = createHash("sha256").update(reviewDisplay, "utf8").digest("hex");
+  if (reviewHash !== row.reviewHash) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal review fields do not match their digest.",
+    );
+  }
   return {
     id: row.id,
     workspaceId: workspaceId(row.workspaceId),
     requestId: row.requestId,
     promptHash: row.promptHash,
     commandHash: row.commandHash,
+    reviewHash: row.reviewHash,
     commandDisplay: row.commandDisplay,
     command: typedCommand,
+    userSelection: {
+      priority: row.reviewPriority,
+      dueOn: reviewDueOn,
+      planningDurationMinutes: row.reviewPlanningDurationMinutes,
+    },
     provider: row.provider,
     model: row.model,
     status: row.status,
@@ -4476,8 +4511,12 @@ export class PostgresNaturalLanguageProposalRepository implements NaturalLanguag
         requestId: record.requestId,
         promptHash: record.promptHash,
         commandHash: record.commandHash,
+        reviewHash: record.reviewHash,
         commandDisplay: record.commandDisplay,
         command: record.command as unknown as Record<string, unknown>,
+        reviewPriority: record.userSelection.priority,
+        reviewDueOn: record.userSelection.dueOn,
+        reviewPlanningDurationMinutes: record.userSelection.planningDurationMinutes,
         provider: record.provider,
         model: record.model,
         status: record.status,
@@ -4516,8 +4555,12 @@ export class PostgresNaturalLanguageProposalRepository implements NaturalLanguag
       .update(naturalLanguageProposals)
       .set({
         commandHash: record.commandHash,
+        reviewHash: record.reviewHash,
         commandDisplay: record.commandDisplay,
         command: record.command as unknown as Record<string, unknown>,
+        reviewPriority: record.userSelection.priority,
+        reviewDueOn: record.userSelection.dueOn,
+        reviewPlanningDurationMinutes: record.userSelection.planningDurationMinutes,
         provider: record.provider,
         model: record.model,
         status: record.status,

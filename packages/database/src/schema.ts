@@ -639,8 +639,14 @@ export const naturalLanguageProposals = pgTable(
     requestId: uuid("request_id").notNull(),
     promptHash: varchar("prompt_hash", { length: 64 }).notNull(),
     commandHash: varchar("command_hash", { length: 64 }).notNull(),
+    reviewHash: varchar("review_hash", { length: 64 })
+      .notNull()
+      .default("65f7aef345c4f828788d1f4b3d779476b02a9599c31b1442ac7a4b3dbd670805"),
     commandDisplay: text("command_display").notNull(),
     command: jsonb("command").$type<Readonly<Record<string, unknown>>>().notNull(),
+    reviewPriority: workItemPriority("review_priority").notNull().default("none"),
+    reviewDueOn: date("review_due_on"),
+    reviewPlanningDurationMinutes: integer("review_planning_duration_minutes"),
     provider: varchar("provider", { length: 40 }).notNull(),
     model: varchar("model", { length: 120 }),
     status: naturalLanguageProposalStatus("status").notNull().default("pending"),
@@ -684,12 +690,20 @@ export const naturalLanguageProposals = pgTable(
       sql`${table.commandHash} ~ '^[0-9a-f]{64}$'`,
     ),
     check(
+      "natural_language_proposals_review_hash_valid",
+      sql`${table.reviewHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
       "natural_language_proposals_confirmation_hash_valid",
       sql`${table.confirmationKeyHash} IS NULL OR ${table.confirmationKeyHash} ~ '^[0-9a-f]{64}$'`,
     ),
     check(
       "natural_language_proposals_command_display_bounded",
       sql`char_length(${table.commandDisplay}) BETWEEN 1 AND 1000`,
+    ),
+    check(
+      "natural_language_proposals_review_duration_valid",
+      sql`${table.reviewPlanningDurationMinutes} IS NULL OR (${table.reviewPlanningDurationMinutes} > 0 AND ${table.reviewPlanningDurationMinutes} <= 43200)`,
     ),
     check(
       "natural_language_proposals_expiry_after_creation",

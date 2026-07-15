@@ -689,6 +689,11 @@ const naturalLanguageProposalBody = z.strictObject({
 const updateNaturalLanguageProposalBody = z.strictObject({
   expectedVersion: z.number().int().positive().max(2_147_483_647),
   title: z.string().min(1).max(240),
+  userSelection: z.strictObject({
+    priority: workItemPriority,
+    dueOn: localDateText.nullable(),
+    planningDurationMinutes: z.number().int().positive().max(43_200).nullable(),
+  }),
 });
 const naturalLanguageProposalVersionBody = z.strictObject({
   expectedVersion: z.number().int().positive().max(2_147_483_647),
@@ -915,6 +920,11 @@ export async function registerProductRoutes(
       proposalId: params.proposalId,
       expectedVersion: body.expectedVersion,
       title: body.title,
+      userSelection: {
+        priority: body.userSelection.priority,
+        dueOn: body.userSelection.dueOn === null ? null : localDate(body.userSelection.dueOn),
+        planningDurationMinutes: body.userSelection.planningDurationMinutes,
+      },
     });
   });
 

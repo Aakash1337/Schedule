@@ -177,6 +177,10 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const [proposalPrompt, setProposalPrompt] = useState("");
   const [proposal, setProposal] = useState<NaturalLanguageProposal | null>(null);
   const [proposalTitle, setProposalTitle] = useState("");
+  const [proposalPriority, setProposalPriority] = useState<WorkItemPriority>("none");
+  const [proposalDueOn, setProposalDueOn] = useState("");
+  const [proposalIncludeInDailyPlan, setProposalIncludeInDailyPlan] = useState(false);
+  const [proposalPlanningDurationMinutes, setProposalPlanningDurationMinutes] = useState("30");
   const [proposalSummary, setProposalSummary] = useState<string | null>(null);
   const [proposalWarnings, setProposalWarnings] = useState<readonly string[]>([]);
   const [proposalBusy, setProposalBusy] = useState<
@@ -295,6 +299,10 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     setProposalPrompt("");
     setProposal(null);
     setProposalTitle("");
+    setProposalPriority("none");
+    setProposalDueOn("");
+    setProposalIncludeInDailyPlan(false);
+    setProposalPlanningDurationMinutes("30");
     setProposalSummary(null);
     setProposalWarnings([]);
     setProposalBusy(null);
@@ -865,6 +873,10 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     confirmationKeyRef.current = null;
     setProposal(null);
     setProposalTitle("");
+    setProposalPriority("none");
+    setProposalDueOn("");
+    setProposalIncludeInDailyPlan(false);
+    setProposalPlanningDurationMinutes("30");
     setProposalSummary(null);
     setProposalWarnings([]);
     setProposalError(null);
@@ -890,6 +902,12 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       }
       setProposal(result.proposal);
       setProposalTitle(result.proposal.command.title);
+      setProposalPriority(result.proposal.userSelection.priority);
+      setProposalDueOn(result.proposal.userSelection.dueOn ?? "");
+      setProposalIncludeInDailyPlan(result.proposal.userSelection.planningDurationMinutes !== null);
+      setProposalPlanningDurationMinutes(
+        String(result.proposal.userSelection.planningDurationMinutes ?? 30),
+      );
       setProposalSummary(result.summary);
       setProposalWarnings(result.warnings);
       setProposalAnnouncement("Proposal ready for review. Nothing has been created yet.");
@@ -925,6 +943,10 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       if (!proposalOperationIsCurrent(request.operation, request.workspaceId)) return;
       setProposal(null);
       setProposalTitle("");
+      setProposalPriority("none");
+      setProposalDueOn("");
+      setProposalIncludeInDailyPlan(false);
+      setProposalPlanningDurationMinutes("30");
       setProposalSummary(null);
       setProposalWarnings([]);
       confirmationKeyRef.current = null;
@@ -955,7 +977,18 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     event.preventDefault();
     if (proposal === null || proposalBusy !== null) return;
     const normalizedTitle = proposalTitle.trim();
-    if (normalizedTitle.length === 0) return;
+    const durationIsValid = isPlanningDurationValid(
+      proposalPlanningDurationMinutes,
+      proposalIncludeInDailyPlan,
+    );
+    if (normalizedTitle.length === 0 || !durationIsValid) return;
+    const userSelection = {
+      priority: proposalPriority,
+      dueOn: proposalDueOn === "" ? null : proposalDueOn,
+      planningDurationMinutes: proposalIncludeInDailyPlan
+        ? Number(proposalPlanningDurationMinutes)
+        : null,
+    } as const;
     const request = beginProposalOperation();
     const requestQueryKey = activeQueryKey;
     const confirmationKey = confirmationKeyRef.current ?? globalThis.crypto.randomUUID();
@@ -964,16 +997,34 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     setProposalError(null);
     let currentProposal = proposal;
     try {
-      if (normalizedTitle !== currentProposal.command.title) {
+      if (
+        normalizedTitle !== currentProposal.command.title ||
+        userSelection.priority !== currentProposal.userSelection.priority ||
+        userSelection.dueOn !== currentProposal.userSelection.dueOn ||
+        userSelection.planningDurationMinutes !==
+          currentProposal.userSelection.planningDurationMinutes
+      ) {
         currentProposal = await api.updateNaturalLanguageProposal(
           request.workspaceId,
           currentProposal.id,
-          { expectedVersion: currentProposal.version, title: normalizedTitle },
+          {
+            expectedVersion: currentProposal.version,
+            title: normalizedTitle,
+            userSelection,
+          },
           request.controller.signal,
         );
         if (!proposalOperationIsCurrent(request.operation, request.workspaceId)) return;
         setProposal(currentProposal);
         setProposalTitle(currentProposal.command.title);
+        setProposalPriority(currentProposal.userSelection.priority);
+        setProposalDueOn(currentProposal.userSelection.dueOn ?? "");
+        setProposalIncludeInDailyPlan(
+          currentProposal.userSelection.planningDurationMinutes !== null,
+        );
+        setProposalPlanningDurationMinutes(
+          String(currentProposal.userSelection.planningDurationMinutes ?? 30),
+        );
       }
       const result = await api.confirmNaturalLanguageProposal(
         request.workspaceId,
@@ -1015,6 +1066,10 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       setProposal(null);
       setProposalPrompt("");
       setProposalTitle("");
+      setProposalPriority("none");
+      setProposalDueOn("");
+      setProposalIncludeInDailyPlan(false);
+      setProposalPlanningDurationMinutes("30");
       setProposalSummary(null);
       setProposalWarnings([]);
       setProposalOpen(false);
@@ -1214,10 +1269,90 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                     }}
                   />
                 </Field>
+                <section
+                  className="work-natural-language-user-fields"
+                  aria-labelledby="work-natural-language-user-fields-title"
+                >
+                  <div className="work-natural-language-user-fields-heading">
+                    <p className="eyebrow" id="work-natural-language-user-fields-title">
+                      Your choices — not suggested by the model
+                    </p>
+                    <p>These fields are stored only when you review them.</p>
+                  </div>
+                  <Field label="Priority">
+                    <select
+                      value={proposalPriority}
+                      disabled={proposalBusy !== null}
+                      onChange={(event) => {
+                        setProposalPriority(event.currentTarget.value as WorkItemPriority);
+                        setProposalError(null);
+                      }}
+                    >
+                      {priorities.map((priority) => (
+                        <option value={priority.value} key={priority.value}>
+                          {priority.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Due date (optional)" hint="Leave blank when there is no deadline.">
+                    <input
+                      type="date"
+                      value={proposalDueOn}
+                      disabled={proposalBusy !== null}
+                      onChange={(event) => {
+                        setProposalDueOn(event.currentTarget.value);
+                        setProposalError(null);
+                      }}
+                    />
+                  </Field>
+                  <fieldset className="work-natural-language-planning-fieldset">
+                    <legend>Daily plan</legend>
+                    <label className="work-planning-toggle">
+                      <input
+                        type="checkbox"
+                        checked={proposalIncludeInDailyPlan}
+                        disabled={proposalBusy !== null}
+                        aria-describedby="work-natural-language-planning-hint"
+                        onChange={(event) => {
+                          setProposalIncludeInDailyPlan(event.currentTarget.checked);
+                          setProposalError(null);
+                        }}
+                      />
+                      <span>Include in Today</span>
+                    </label>
+                    {proposalIncludeInDailyPlan ? (
+                      <Field label="Plan duration (minutes)">
+                        <input
+                          type="number"
+                          min={1}
+                          max={43_200}
+                          step={1}
+                          inputMode="numeric"
+                          value={proposalPlanningDurationMinutes}
+                          disabled={proposalBusy !== null}
+                          aria-invalid={
+                            !isPlanningDurationValid(proposalPlanningDurationMinutes, true)
+                          }
+                          aria-describedby="work-natural-language-planning-hint"
+                          onChange={(event) => {
+                            setProposalPlanningDurationMinutes(event.currentTarget.value);
+                            setProposalError(null);
+                          }}
+                        />
+                      </Field>
+                    ) : null}
+                    <p id="work-natural-language-planning-hint" className="work-planning-hint">
+                      {proposalIncludeInDailyPlan
+                        ? "The planner will reserve this many minutes."
+                        : "Keep this off when the item should stay out of automatic plans."}
+                    </p>
+                  </fieldset>
+                </section>
                 <p className="work-natural-language-no-mutation">
                   <ShieldCheck size={17} aria-hidden="true" />
-                  Nothing has been created yet. Confirming will atomically create this exact title
-                  in Backlog.
+                  Nothing has been created yet. Confirming will atomically create this reviewed root
+                  item in Backlog.
                 </p>
                 <p className="work-natural-language-provenance">
                   Prepared by {proposal.model ?? proposal.provider}; expires at{" "}
@@ -1241,7 +1376,14 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                     type="submit"
                     variant="primary"
                     busy={proposalBusy === "confirming"}
-                    disabled={proposalBusy !== null || proposalTitle.trim().length === 0}
+                    disabled={
+                      proposalBusy !== null ||
+                      proposalTitle.trim().length === 0 ||
+                      !isPlanningDurationValid(
+                        proposalPlanningDurationMinutes,
+                        proposalIncludeInDailyPlan,
+                      )
+                    }
                   >
                     Create this work item
                   </Button>

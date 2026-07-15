@@ -144,6 +144,13 @@ test("reviews and explicitly confirms a local natural-language proposal through 
 
   const reviewedTitle = "Prepare the reviewed launch checklist";
   await page.getByRole("textbox", { name: /^Work item title/ }).fill(reviewedTitle);
+  const userFields = page.getByRole("region", {
+    name: "Your choices — not suggested by the model",
+  });
+  await userFields.getByRole("combobox", { name: "Priority" }).selectOption("urgent");
+  await userFields.locator('input[type="date"]').fill("2026-07-20");
+  await userFields.getByRole("checkbox", { name: "Include in Today" }).check();
+  await userFields.getByRole("spinbutton", { name: "Plan duration (minutes)" }).fill("75");
   const updateResponsePromise = page.waitForResponse((response) =>
     isMutationResponse(
       response,
@@ -168,7 +175,29 @@ test("reviews and explicitly confirms a local natural-language proposal through 
   const confirmationResponse = await confirmationResponsePromise;
   expect(updateResponse.status()).toBe(200);
   expect(confirmationResponse.status()).toBe(201);
-  const updatedProposal = (await updateResponse.json()) as { readonly version: number };
+  expect(updateResponse.request().postDataJSON()).toEqual({
+    expectedVersion: 1,
+    title: reviewedTitle,
+    userSelection: {
+      priority: "urgent",
+      dueOn: "2026-07-20",
+      planningDurationMinutes: 75,
+    },
+  });
+  expect(confirmationResponse.request().postDataJSON()).toEqual({ expectedVersion: 2 });
+  const updatedProposal = (await updateResponse.json()) as {
+    readonly version: number;
+    readonly userSelection: {
+      readonly priority: string;
+      readonly dueOn: string | null;
+      readonly planningDurationMinutes: number | null;
+    };
+  };
+  expect(updatedProposal.userSelection).toEqual({
+    priority: "urgent",
+    dueOn: "2026-07-20",
+    planningDurationMinutes: 75,
+  });
   const firstConfirmation = (await confirmationResponse.json()) as {
     readonly replayed: boolean;
     readonly workItem: { readonly id: string };
@@ -184,6 +213,9 @@ test("reviews and explicitly confirms a local natural-language proposal through 
   await expect(
     createdCard.getByRole("combobox", { name: `Status for ${reviewedTitle}` }),
   ).toHaveValue("backlog");
+  await expect(createdCard.locator(".work-priority-badge")).toHaveText("Urgent");
+  await expect(createdCard.getByText("Today · 75 min", { exact: true })).toBeVisible();
+  await expect(createdCard.getByText(/Due Jul 20, 2026/)).toBeVisible();
 
   const replay = await page.evaluate(
     async ({ path, key, expectedVersion }) => {

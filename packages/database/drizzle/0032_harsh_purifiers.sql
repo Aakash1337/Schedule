@@ -1,0 +1,6 @@
+ALTER TABLE "natural_language_proposals" ADD COLUMN "review_hash" varchar(64) DEFAULT '65f7aef345c4f828788d1f4b3d779476b02a9599c31b1442ac7a4b3dbd670805' NOT NULL;--> statement-breakpoint
+ALTER TABLE "natural_language_proposals" ADD COLUMN "review_priority" "work_item_priority" DEFAULT 'none' NOT NULL;--> statement-breakpoint
+ALTER TABLE "natural_language_proposals" ADD COLUMN "review_due_on" date;--> statement-breakpoint
+ALTER TABLE "natural_language_proposals" ADD COLUMN "review_planning_duration_minutes" integer;--> statement-breakpoint
+ALTER TABLE "natural_language_proposals" ADD CONSTRAINT "natural_language_proposals_review_hash_valid" CHECK ("natural_language_proposals"."review_hash" ~ '^[0-9a-f]{64}$');--> statement-breakpoint
+ALTER TABLE "natural_language_proposals" ADD CONSTRAINT "natural_language_proposals_review_duration_valid" CHECK ("natural_language_proposals"."review_planning_duration_minutes" IS NULL OR ("natural_language_proposals"."review_planning_duration_minutes" > 0 AND "natural_language_proposals"."review_planning_duration_minutes" <= 43200));

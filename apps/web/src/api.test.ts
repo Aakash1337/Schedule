@@ -693,7 +693,15 @@ describe("web API client", () => {
     await api.updateNaturalLanguageProposal(
       "workspace/one",
       "proposal/one",
-      { expectedVersion: 1, title: "Prepare the launch checklist" },
+      {
+        expectedVersion: 1,
+        title: "Prepare the launch checklist",
+        userSelection: {
+          priority: "medium",
+          dueOn: "2026-07-20",
+          planningDurationMinutes: 45,
+        },
+      },
       controller.signal,
     );
     await api.cancelNaturalLanguageProposal("workspace/one", "proposal/one", 2, controller.signal);
@@ -723,6 +731,11 @@ describe("web API client", () => {
         body: JSON.stringify({
           expectedVersion: 1,
           title: "Prepare the launch checklist",
+          userSelection: {
+            priority: "medium",
+            dueOn: "2026-07-20",
+            planningDurationMinutes: 45,
+          },
         }),
       }),
     );

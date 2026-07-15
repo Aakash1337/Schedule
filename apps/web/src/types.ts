@@ -36,12 +36,19 @@ export interface NaturalLanguageWorkItemCommand {
 
 export type NaturalLanguageProposalStatus = "pending" | "confirmed" | "cancelled";
 
+export interface NaturalLanguageProposalUserSelection {
+  readonly priority: WorkItemPriority;
+  readonly dueOn: string | null;
+  readonly planningDurationMinutes: number | null;
+}
+
 export interface NaturalLanguageProposal {
   readonly id: string;
   readonly requestId: string;
   readonly commandHash: string;
   readonly commandDisplay: string;
   readonly command: NaturalLanguageWorkItemCommand;
+  readonly userSelection: NaturalLanguageProposalUserSelection;
   readonly provider: string;
   readonly model: string | null;
   readonly status: NaturalLanguageProposalStatus;

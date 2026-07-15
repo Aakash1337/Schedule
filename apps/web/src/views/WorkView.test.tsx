@@ -60,6 +60,11 @@ function naturalLanguageProposal(title = "Prepare quarterly report"): NaturalLan
     commandHash: "a".repeat(64),
     commandDisplay: JSON.stringify({ title, type: "work_item.create" }),
     command: { type: "work_item.create", title },
+    userSelection: {
+      priority: "none",
+      dueOn: null,
+      planningDurationMinutes: null,
+    },
     provider: "ollama",
     model: "gemma4:e4b",
     status: "pending",
@@ -213,7 +218,10 @@ describe("work board", () => {
       await screen.findByRole("heading", { name: "Create one backlog work item" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/Confirming will atomically create this exact title in Backlog/),
+      screen.getByText(/Confirming will atomically create this reviewed root item in Backlog/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "Your choices — not suggested by the model" }),
     ).toBeInTheDocument();
     expect(apiMocks.generateNaturalLanguageProposal).toHaveBeenCalledWith(
       workspace.id,
@@ -246,6 +254,11 @@ describe("work board", () => {
     const edited = {
       ...proposal,
       command: { ...proposal.command, title: "Prepare final quarterly report" },
+      userSelection: {
+        priority: "urgent" as const,
+        dueOn: "2026-07-20",
+        planningDurationMinutes: 75,
+      },
       version: 2,
     };
     const created: WorkItem = {
@@ -254,8 +267,9 @@ describe("work board", () => {
       title: edited.command.title,
       description: null,
       status: "backlog",
-      priority: "none",
-      planningDurationMinutes: null,
+      priority: edited.userSelection.priority,
+      dueOn: edited.userSelection.dueOn,
+      planningDurationMinutes: edited.userSelection.planningDurationMinutes,
       version: 1,
     };
     apiMocks.generateNaturalLanguageProposal.mockResolvedValue(naturalLanguageResult(proposal));
@@ -278,12 +292,40 @@ describe("work board", () => {
     const title = await screen.findByRole("textbox", { name: /^Work item title/ });
     await user.clear(title);
     await user.type(title, edited.command.title);
+    const userFields = screen.getByRole("region", {
+      name: "Your choices — not suggested by the model",
+    });
+    await user.selectOptions(
+      within(userFields).getByRole("combobox", { name: "Priority" }),
+      "urgent",
+    );
+    const dueDate = userFields.querySelector<HTMLInputElement>('input[type="date"]');
+    if (dueDate === null) throw new Error("Proposal due-date field was not rendered.");
+    fireEvent.change(dueDate, { target: { value: "2026-07-20" } });
+    const includeInToday = within(userFields).getByRole("checkbox", { name: "Include in Today" });
+    expect(includeInToday).toHaveAccessibleDescription(
+      "Keep this off when the item should stay out of automatic plans.",
+    );
+    await user.click(includeInToday);
+    expect(includeInToday).toHaveAccessibleDescription(
+      "The planner will reserve this many minutes.",
+    );
+    const duration = within(userFields).getByRole("spinbutton", {
+      name: "Plan duration (minutes)",
+    });
+    expect(duration).toHaveAccessibleDescription("The planner will reserve this many minutes.");
+    await user.clear(duration);
+    await user.type(duration, "75");
     await user.click(screen.getByRole("button", { name: "Create this work item" }));
 
     expect(apiMocks.updateNaturalLanguageProposal).toHaveBeenCalledWith(
       workspace.id,
       proposal.id,
-      { expectedVersion: 1, title: edited.command.title },
+      {
+        expectedVersion: 1,
+        title: edited.command.title,
+        userSelection: edited.userSelection,
+      },
       expect.any(AbortSignal),
     );
     expect(apiMocks.confirmNaturalLanguageProposal).toHaveBeenCalledWith(

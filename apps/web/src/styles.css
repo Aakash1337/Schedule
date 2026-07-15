@@ -726,6 +726,40 @@ textarea:focus {
   font-size: 0.82rem;
 }
 
+.work-natural-language-user-fields {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(190px, 1fr);
+  gap: 12px;
+  padding: 14px;
+  background: var(--paper-muted);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.work-natural-language-user-fields-heading,
+.work-natural-language-planning-fieldset {
+  grid-column: 1 / -1;
+}
+
+.work-natural-language-user-fields-heading p {
+  margin: 0;
+}
+
+.work-natural-language-user-fields-heading > p:last-child {
+  margin-top: 4px;
+  color: var(--ink-faint);
+  font-size: 0.78rem;
+}
+
+.work-natural-language-planning-fieldset {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
 .work-natural-language-actions {
   justify-content: flex-end;
 }
@@ -3829,6 +3863,10 @@ textarea:focus {
   .work-natural-language-prompt-footer .button,
   .work-natural-language-actions .button {
     width: 100%;
+  }
+
+  .work-natural-language-user-fields {
+    grid-template-columns: 1fr;
   }
 
   .work-composer-form {

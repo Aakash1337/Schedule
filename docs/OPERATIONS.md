@@ -297,8 +297,10 @@ configured TTL (at most one hour), rotate the secret, and restart. Existing conf
 need the original key, but replaying an old generation request after rotation cannot match its prior
 fingerprint.
 
-Migration `0028` creates `natural_language_proposals`, and the table is part of the exact backup and
-restore catalog. Back up before migration. After applying it, run the real concurrency verifier:
+Migration `0028` creates `natural_language_proposals`; migration `0032` adds the separately stored
+user review fields and a bounded-duration constraint without changing the title-only model command.
+The table is part of the exact backup and restore catalog. Back up before migration. After applying
+it, run the real concurrency verifier:
 
 ```powershell
 pnpm db:migrate
@@ -306,8 +308,8 @@ pnpm verify:natural-language-proposals
 ```
 
 The verifier does not call Ollama. It uses production PostgreSQL repositories from two independent
-connection pools and checks private persistence, tenant isolation, same-key replay, competing-key
-conflict, and exactly one result/audit. The browser verifier starts a strict loopback model double and
+connection pools and checks private persistence, the exact reviewed root result, tenant isolation,
+same-key replay, competing-key conflict, and exactly one result/audit. The browser verifier starts a strict loopback model double and
 exercises the production adapter and UI. A real provider can be checked manually through the Work
 view after Ollama itself is healthy; this is usability smoke testing, not a correctness or quality
 gate.

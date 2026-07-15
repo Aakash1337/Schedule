@@ -148,7 +148,8 @@ work-item deadline pressure, duration-insight dismissal/reset, accessible 320px 
 editing, mobile subtask persistence and leaf-only planning, reminder
 policy/materialization/history with responsive checks, and deterministic Daily Plan Fit
 prefill/dismissal/reset with explicit generation. The local proposal flow uses the production
-local-model adapter against a strict loopback double to review, edit, confirm, replay the same
+local-model adapter against a strict loopback double to review a title plus user-authored
+priority/date/duration, confirm, replay the same
 confirmation key, cancel, focus, and reload natural-language work proposals without browser request
 interception.
 
@@ -163,7 +164,8 @@ pnpm verify:database
 
 The database gate includes `verify:natural-language-proposals`, `verify:notification-core`,
 `verify:notification-delivery`, and `verify:notification-migrations`. The proposal verifier covers
-private persistence, tenant isolation, and concurrent same-key and competing-key confirmation. The
+private persistence, exact reviewed root-item creation, tenant isolation, and concurrent same-key
+and competing-key confirmation. The
 reminder verifiers cover all six deterministic occurrence sources, concurrent
 exact-once materialization, source/target invalidation, fenced claim/receipt recovery, tenant
 constraints, and populated pre-0024/pre-0025/pre-0026/pre-0027 upgrades. The notification migration

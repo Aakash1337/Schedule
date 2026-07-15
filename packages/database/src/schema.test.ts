@@ -490,6 +490,14 @@ describe("database schema", () => {
 
     expect(naturalLanguageProposalStatus.enumValues).toEqual(["pending", "confirmed", "cancelled"]);
     expect(columnNames).toContain("prompt_hash");
+    expect(columnNames).toEqual(
+      expect.arrayContaining([
+        "review_priority",
+        "review_due_on",
+        "review_planning_duration_minutes",
+        "review_hash",
+      ]),
+    );
     expect(columnNames).not.toEqual(expect.arrayContaining(["prompt", "summary", "warnings"]));
     expect(config.uniqueConstraints.map((constraint) => constraint.name)).toContain(
       "natural_language_proposals_workspace_request_uq",
@@ -507,6 +515,8 @@ describe("database schema", () => {
       expect.arrayContaining([
         "natural_language_proposals_prompt_hash_valid",
         "natural_language_proposals_command_hash_valid",
+        "natural_language_proposals_review_hash_valid",
+        "natural_language_proposals_review_duration_valid",
         "natural_language_proposals_expiry_after_creation",
         "natural_language_proposals_lifecycle_valid",
         "natural_language_proposals_terminal_time_valid",
@@ -528,6 +538,21 @@ describe("database schema", () => {
       'CONSTRAINT "natural_language_proposals_result_work_item_tenant_fk"',
     );
     expect(migration).toContain('CREATE INDEX "natural_language_proposals_workspace_expiry_idx"');
+  });
+
+  it("migrates user-authored natural-language review fields without widening model commands", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0032_harsh_purifiers.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain('ADD COLUMN "review_priority" "work_item_priority"');
+    expect(migration).toContain('ADD COLUMN "review_hash" varchar(64)');
+    expect(migration).toContain("65f7aef345c4f828788d1f4b3d779476b02a9599c31b1442ac7a4b3dbd670805");
+    expect(migration).toContain('ADD COLUMN "review_due_on" date');
+    expect(migration).toContain('ADD COLUMN "review_planning_duration_minutes" integer');
+    expect(migration).toContain('"review_planning_duration_minutes" <= 43200');
+    expect(migration).not.toContain('ALTER COLUMN "command"');
   });
 
   it("constrains routine weekday arrays at the database boundary", () => {

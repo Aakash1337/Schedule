@@ -1,9 +1,11 @@
 # Local natural-language work proposals
 
 Schedule can use an optional local Ollama/Gemma model to turn free-form text into one reviewable
-backlog-title proposal. This is a deliberately narrow capture path, not a general command agent. The
+backlog-title proposal. The user can then choose priority, an optional due date, and an optional
+planning duration before confirmation. This is a deliberately narrow capture path, not a general command agent. The
 model cannot create work, call tools, read Schedule data, select a workspace, or change planning
-state. A work item exists only after the user reviews the exact title and explicitly confirms it.
+state. A work item exists only after the user reviews the title and those user-authored fields and
+explicitly confirms them.
 
 ## Implemented scope
 
@@ -13,10 +15,11 @@ The version 1 contract supports exactly one command:
 { "type": "work_item.create", "title": "Prepare the launch checklist" }
 ```
 
-The result is always a new `backlog` work item with no priority, description, due date, or planning
-duration. The user may edit the title before confirmation or cancel the proposal without creating
-anything. Routine creation, tags, recurrence, priorities, dates, duration, task breakdown, bulk
-commands, calendar changes, and plan mutations remain outside this contract.
+The model result remains title-only. The review starts with no priority, due date, or planning
+duration; the user may edit the title and select those fields before confirmation. Confirmation
+creates exactly one root `backlog` work item with no description and the complete reviewed snapshot.
+Routine creation, tags, recurrence, model-extracted structured fields, task breakdown, bulk commands,
+calendar changes, and plan mutations remain outside the model contract.
 
 ## Trust and privacy boundary
 
@@ -34,8 +37,9 @@ summary, warnings, raw envelope, hidden reasoning, or provider error body. A dep
 domain-separated HMAC fingerprint is stored only to recognize conflicting reuse of a request ID;
 an unkeyed prompt hash is not used. The persisted proposal contains the canonical command and its
 SHA-256 digest, bounded provider/model identifiers, lifecycle state, expiration, optimistic version,
-and eventual result identity. API responses use `Cache-Control: no-store` for the complete proposal
-route family, including validation and error paths.
+eventual result identity, and the separately stored user-authored review fields plus their own
+canonical SHA-256 digest. API responses use
+`Cache-Control: no-store` for the complete proposal route family, including validation and error paths.
 
 ## Proposal lifecycle
 
@@ -44,14 +48,15 @@ route family, including validation and error paths.
 3. A valid provider result is canonicalized and inserted as a pending proposal with a configurable
    lifetime of 60 seconds to one hour. Reusing the same request UUID and normalized prompt returns
    the pending winner without another model call; different text conflicts.
-4. The browser displays the exact proposed command and states that nothing has been created. An edit
-   is a version-checked proposal update, not a work-item mutation. If an edit response is lost, an
-   exact-title retry may return the already-won current version without another write or audit.
+4. The browser displays the exact proposed title and labels priority, due date, and duration as the
+   user's choices—not model suggestions. An edit replaces the complete reviewed snapshot under one
+   version check and is not a work-item mutation. If an edit response is lost, an exact-snapshot retry
+   may return the already-won current version without another write or audit.
 5. Cancellation is version-checked, audited, terminal, and creates no work item.
 6. Confirmation requires an `Idempotency-Key` and the expected proposal version. One serializable
    PostgreSQL transaction locks the tenant-scoped proposal, revalidates expiration and the canonical
-   command digest, creates the deterministic result work-item identity, marks the proposal confirmed,
-   and appends the audit event.
+   command digest and reviewed-field digest, creates the deterministic root backlog work item, marks the
+   proposal confirmed, and appends the audit event.
 
 The same confirmation key replays the original result with `replayed: true`. A different key after a
 successful confirmation conflicts. The deterministic work-item ID also permits safe recovery if the
@@ -65,8 +70,9 @@ confirmed proposals cannot be edited, cancelled again, or regenerated through th
 The Work view exposes **Describe work** beside ordinary quick capture. The local-proposal panel
 explains its one-title authority, keeps the prompt visible on recoverable provider failure, and shows
 the model result only as review data. **Review proposal** never creates work. **Cancel proposal**
-records the terminal cancellation. **Create this work item** first persists a changed title when
-needed and then confirms with one stable key; an ambiguous network retry reuses that key. After
+records the terminal cancellation. The review labels priority, due date, and planning duration as
+user choices. **Create this work item** first persists a changed full snapshot when needed and then
+confirms with one stable key; an ambiguous network retry reuses that key. After
 success, the panel closes, filters are cleared if necessary, the returned backlog item is merged into
 the board, and keyboard focus moves to its card. Workspace changes abort and discard in-flight work.
 Cancellation is rechecked after inference, around persistence and audit writes, and immediately before
@@ -93,10 +99,11 @@ its prompt; disable generation and let the maximum one-hour proposal lifetime el
 rotation. `LOCAL_MODEL_PROPOSAL_MODE=disabled` is the generation kill switch and does not affect
 ordinary capture, planning, health, or readiness.
 
-Migration `0028` adds `natural_language_proposals`; the table is included in the exact backup and
+Migration `0028` adds `natural_language_proposals`, and migration `0032` adds the user-authored
+review fields without widening the model command; the table is included in the exact backup and
 restore catalog. With PostgreSQL running, `pnpm verify:natural-language-proposals` checks private
-persistence, tenant isolation, same-key replay, competing-key conflict, and exactly one work item and
-confirmation audit under real concurrent transactions. `pnpm verify:web-e2e` uses the production
+persistence, the reviewed fields on the exact root backlog result, tenant isolation, same-key replay,
+competing-key conflict, and exactly one work item and confirmation audit under real concurrent transactions. `pnpm verify:web-e2e` uses the production
 adapter against a strict in-process loopback Ollama double and drives the built UI without network
 interception. Neither check is a model-quality benchmark.
 

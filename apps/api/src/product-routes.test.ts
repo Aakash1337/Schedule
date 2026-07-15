@@ -2620,6 +2620,11 @@ describe("local product API", () => {
       commandHash: "e".repeat(64),
       commandDisplay: '{"title":"Prepare quarterly report","type":"work_item.create"}',
       command: { type: "work_item.create" as const, title: "Prepare quarterly report" },
+      userSelection: {
+        priority: "none" as const,
+        dueOn: null,
+        planningDurationMinutes: null,
+      },
       provider: "ollama",
       model: "gemma4:e4b",
       status: "pending" as const,
@@ -2664,6 +2669,7 @@ describe("local product API", () => {
           return {
             ...preparedProposal,
             command: { ...preparedProposal.command, title: command.title },
+            userSelection: command.userSelection,
             version: 2,
           };
         },
@@ -2706,11 +2712,46 @@ describe("local product API", () => {
     const edited = await app.inject({
       method: "PATCH",
       url: `${baseUrl}/${proposalUuid}`,
-      payload: { expectedVersion: 1, title: "Prepare final quarterly report" },
+      payload: {
+        expectedVersion: 1,
+        title: "Prepare final quarterly report",
+        userSelection: {
+          priority: "high",
+          dueOn: "2026-07-20",
+          planningDurationMinutes: 60,
+        },
+      },
     });
     expect(edited.statusCode).toBe(200);
     expect(edited.headers["cache-control"]).toBe("no-store");
-    expect(editedCommand).toMatchObject({ proposalId: proposalUuid, expectedVersion: 1 });
+    expect(editedCommand).toMatchObject({
+      proposalId: proposalUuid,
+      expectedVersion: 1,
+      userSelection: {
+        priority: "high",
+        dueOn: "2026-07-20",
+        planningDurationMinutes: 60,
+      },
+    });
+
+    for (const invalidUserSelection of [
+      undefined,
+      { priority: "critical", dueOn: null, planningDurationMinutes: null },
+      { priority: "none", dueOn: "2026-02-30", planningDurationMinutes: null },
+      { priority: "none", dueOn: null, planningDurationMinutes: 43_201 },
+      { priority: "none", dueOn: null, planningDurationMinutes: null, modelChoice: true },
+    ]) {
+      const invalidEdit = await app.inject({
+        method: "PATCH",
+        url: `${baseUrl}/${proposalUuid}`,
+        payload: {
+          expectedVersion: 1,
+          title: "Prepare final quarterly report",
+          ...(invalidUserSelection === undefined ? {} : { userSelection: invalidUserSelection }),
+        },
+      });
+      expect(invalidEdit.statusCode).toBe(400);
+    }
 
     const cancelled = await app.inject({
       method: "POST",
@@ -2727,6 +2768,14 @@ describe("local product API", () => {
     });
     expect(missingKey.statusCode).toBe(400);
     expect(missingKey.headers["cache-control"]).toBe("no-store");
+
+    const rejectedConfirmationFields = await app.inject({
+      method: "POST",
+      url: `${baseUrl}/${proposalUuid}/confirmations`,
+      headers: { "idempotency-key": "confirm-with-extra-fields" },
+      payload: { expectedVersion: 1, priority: "urgent" },
+    });
+    expect(rejectedConfirmationFields.statusCode).toBe(400);
 
     const confirmed = await app.inject({
       method: "POST",
@@ -2765,7 +2814,15 @@ describe("local product API", () => {
     const expired = await expiredApp.inject({
       method: "PATCH",
       url: `/v1/workspaces/${workspaceUuid}/natural-language/proposals/${proposalUuid}`,
-      payload: { expectedVersion: 1, title: "Still valid" },
+      payload: {
+        expectedVersion: 1,
+        title: "Still valid",
+        userSelection: {
+          priority: "none",
+          dueOn: null,
+          planningDurationMinutes: null,
+        },
+      },
     });
     expect(expired.statusCode).toBe(410);
     expect(expired.body).not.toContain("private expiry detail");

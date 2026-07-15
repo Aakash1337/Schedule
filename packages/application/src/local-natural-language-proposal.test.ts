@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createWorkItem,
   createWorkspace,
+  localDate,
   workItemId,
   workspaceId,
   type WorkItem,
@@ -29,6 +30,7 @@ import {
   UpdateNaturalLanguageProposal,
   type NaturalLanguageProposalRecord,
   type NaturalLanguageProposalRepository,
+  type NaturalLanguageProposalUserSelection,
   type NaturalLanguageProposalTransactionContext,
   type NaturalLanguageProposalUnitOfWork,
   type NaturalLanguageProposer,
@@ -218,6 +220,11 @@ describe("local natural-language work-item proposals", () => {
       status: "proposal",
       proposal: {
         command: { type: "work_item.create", title: "Prepare release notes" },
+        userSelection: {
+          priority: "none",
+          dueOn: null,
+          planningDurationMinutes: null,
+        },
         status: "pending",
         version: 1,
       },
@@ -473,10 +480,20 @@ describe("local natural-language work-item proposals", () => {
       proposalId: proposal.id,
       expectedVersion: proposal.version,
       title: "Prepare final release notes",
+      userSelection: {
+        priority: "high",
+        dueOn: localDate("2026-07-20"),
+        planningDurationMinutes: 90,
+      },
     });
 
     expect(updated).toMatchObject({
       command: { title: "Prepare final release notes" },
+      userSelection: {
+        priority: "high",
+        dueOn: "2026-07-20",
+        planningDurationMinutes: 90,
+      },
       version: 2,
     });
     expect(updated.commandHash).not.toBe(proposal.commandHash);
@@ -486,6 +503,7 @@ describe("local natural-language work-item proposals", () => {
         proposalId: proposal.id,
         expectedVersion: proposal.version,
         title: "Prepare final release notes",
+        userSelection: updated.userSelection,
       }),
     ).resolves.toMatchObject({
       command: { title: "Prepare final release notes" },
@@ -497,6 +515,7 @@ describe("local natural-language work-item proposals", () => {
         proposalId: proposal.id,
         expectedVersion: 99,
         title: "Prepare final release notes",
+        userSelection: updated.userSelection,
       }),
     ).rejects.toMatchObject({ code: "natural_language.version_conflict" });
     expect(test.workItems).toHaveLength(0);
@@ -525,6 +544,129 @@ describe("local natural-language work-item proposals", () => {
         idempotencyKey: "confirm-cancelled",
       }),
     ).rejects.toMatchObject({ code: "natural_language.proposal_cancelled" });
+  });
+
+  it("confirms the complete user-reviewed snapshot as one root backlog item", async () => {
+    const test = createHarness();
+    const proposal = (await prepare(test)).proposal!;
+    const updated = await new UpdateNaturalLanguageProposal(test.unitOfWork, test.clock).execute({
+      workspaceId: WORKSPACE_ID,
+      proposalId: proposal.id,
+      expectedVersion: proposal.version,
+      title: "Prepare final release notes",
+      userSelection: {
+        priority: "urgent",
+        dueOn: localDate("2026-07-21"),
+        planningDurationMinutes: 75,
+      },
+    });
+
+    const result = await new ConfirmNaturalLanguageProposal(test.unitOfWork, test.clock).execute({
+      workspaceId: WORKSPACE_ID,
+      proposalId: updated.id,
+      expectedVersion: updated.version,
+      idempotencyKey: "confirm-reviewed-snapshot",
+    });
+
+    expect(result.workItem).toMatchObject({
+      id: proposal.id,
+      workspaceId: WORKSPACE_ID,
+      parentWorkItemId: null,
+      title: "Prepare final release notes",
+      description: null,
+      status: "backlog",
+      priority: "urgent",
+      dueOn: "2026-07-21",
+      planningDurationMinutes: 75,
+      version: 1,
+    });
+    expect(test.workItems).toHaveLength(1);
+  });
+
+  it("rejects invalid review fields and deterministic work-item mismatches", async () => {
+    const invalidReview = createHarness();
+    const invalidProposal = (await prepare(invalidReview)).proposal!;
+    await expect(
+      new UpdateNaturalLanguageProposal(invalidReview.unitOfWork, invalidReview.clock).execute({
+        workspaceId: WORKSPACE_ID,
+        proposalId: invalidProposal.id,
+        expectedVersion: invalidProposal.version,
+        title: invalidProposal.command.title,
+        userSelection: {
+          priority: "urgent",
+          dueOn: null,
+          planningDurationMinutes: 43_201,
+        } as unknown as NaturalLanguageProposalUserSelection,
+      }),
+    ).rejects.toMatchObject({ code: "natural_language.review_invalid" });
+    expect(invalidReview.proposals[0]).toMatchObject({ version: 1, status: "pending" });
+
+    const corruptedReview = createHarness();
+    const corruptedProposal = (await prepare(corruptedReview)).proposal!;
+    corruptedReview.proposals[0] = {
+      ...corruptedReview.proposals[0]!,
+      userSelection: {
+        priority: "urgent",
+        dueOn: null,
+        planningDurationMinutes: null,
+      },
+    };
+    await expect(
+      new ConfirmNaturalLanguageProposal(corruptedReview.unitOfWork, corruptedReview.clock).execute(
+        {
+          workspaceId: WORKSPACE_ID,
+          proposalId: corruptedProposal.id,
+          expectedVersion: corruptedProposal.version,
+          idempotencyKey: "corrupt-review-digest",
+        },
+      ),
+    ).rejects.toMatchObject({ code: "natural_language.confirmation_corrupt" });
+
+    const collision = createHarness();
+    const collisionProposal = (await prepare(collision)).proposal!;
+    collision.workItems.push(
+      createWorkItem({
+        id: workItemId(collisionProposal.id),
+        workspaceId: WORKSPACE_ID,
+        title: collisionProposal.command.title,
+        priority: "high",
+        now: NOW,
+      }),
+    );
+    await expect(
+      new ConfirmNaturalLanguageProposal(collision.unitOfWork, collision.clock).execute({
+        workspaceId: WORKSPACE_ID,
+        proposalId: collisionProposal.id,
+        expectedVersion: collisionProposal.version,
+        idempotencyKey: "mismatched-existing-work-item",
+      }),
+    ).rejects.toMatchObject({ code: "natural_language.confirmation_corrupt" });
+    expect(collision.proposals[0]).toMatchObject({ version: 1, status: "pending" });
+  });
+
+  it("rejects a confirmed replay whose stored result points at another work item", async () => {
+    const test = createHarness();
+    const proposal = (await prepare(test)).proposal!;
+    const confirmation = new ConfirmNaturalLanguageProposal(test.unitOfWork, test.clock);
+    const command = {
+      workspaceId: WORKSPACE_ID,
+      proposalId: proposal.id,
+      expectedVersion: proposal.version,
+      idempotencyKey: "confirmed-result-identity",
+    } as const;
+    await confirmation.execute(command);
+    const unrelated = createWorkItem({
+      id: workItemId("33333333-3333-4333-8333-333333333333"),
+      workspaceId: WORKSPACE_ID,
+      title: "Unrelated work",
+      now: NOW,
+    });
+    test.workItems.push(unrelated);
+    test.proposals[0] = { ...test.proposals[0]!, resultWorkItemId: unrelated.id };
+
+    await expect(confirmation.execute(command)).rejects.toMatchObject({
+      code: "natural_language.confirmation_corrupt",
+    });
   });
 
   it("confirms the persisted command exactly once and replays the same idempotency key", async () => {
@@ -652,6 +794,7 @@ describe("local natural-language work-item proposals", () => {
               proposalId: proposal.id,
               expectedVersion: proposal.version,
               title: "Prepare final release notes",
+              userSelection: proposal.userSelection,
             })
           : mutation === "cancel"
             ? new CancelNaturalLanguageProposal(retryingUnitOfWork, test.clock).execute({
