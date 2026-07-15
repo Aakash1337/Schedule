@@ -69,6 +69,7 @@ describe("API infrastructure", () => {
     expect(response.json()).toMatchObject({
       productEndpointsEnabled: false,
       integrationEndpointsEnabled: false,
+      hostedEndpointsEnabled: false,
     });
     const integrationResponse = await app.inject({
       method: "GET",

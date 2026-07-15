@@ -129,7 +129,12 @@ The web app listens on `http://127.0.0.1:5173` and the API listens on
 `http://127.0.0.1:4000` by default. Use `/health/live` for process health and `/health/ready` for
 database readiness.
 
-Local unauthenticated product routes are enabled only for non-production loopback development. Configuration rejects attempts to enable them in production or on a non-loopback bind, and the API rejects non-loopback product-route `Host` headers. Authentication will be required before hosted product routes are introduced. Health and system-information endpoints intentionally remain available independently of the product Host guard for local diagnostics.
+Local unauthenticated product routes are enabled only for non-production loopback development.
+Configuration rejects attempts to enable them in production or on a non-loopback bind, and the API
+rejects non-loopback product-route `Host` headers. `HOSTED_API_MODE` defaults to and accepts only
+`disabled`; any non-empty companion `HOSTED_*` configuration is rejected so staged provider secrets
+cannot be mistaken for an enabled deployment. Health and system-information endpoints intentionally
+remain available independently of the product Host guard for local diagnostics.
 
 The separately authenticated integration gateway is disabled by default. Provision a per-workspace
 credential and configure `INTEGRATION_API_PEPPER` before enabling `INTEGRATION_API_MODE`; see the
@@ -238,5 +243,6 @@ read-only root filesystem, dropped Linux capabilities, and `no-new-privileges` f
 API, and the worker. These controls are a provider-neutral deployment prerequisite, not evidence that
 public hosting or browser authentication is enabled. Provider-neutral login/session/logout and
 transaction-coupled hosted work-item-create registrars now exercise the hardened browser boundary in
-isolation. Both remain absent from `buildApp` and production server wiring until a concrete verifier,
-fail-closed configuration, and an intentionally selected public hosted surface exist.
+isolation. A disabled-only hosted runtime gate rejects premature companion configuration, and both
+registrars remain absent from `buildApp` and production server wiring until a concrete verifier and
+an intentionally selected public hosted surface exist.

@@ -482,6 +482,7 @@ export async function verifyOciRuntime(): Promise<void> {
       architecture: "modular-monolith",
       productEndpointsEnabled: false,
       integrationEndpointsEnabled: false,
+      hostedEndpointsEnabled: false,
     });
 
     await runCommand(

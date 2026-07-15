@@ -11,6 +11,7 @@ describe("runtime configuration", () => {
     expect(config.API_PORT).toBe(4_000);
     expect(config.API_TRUSTED_PROXIES).toEqual([]);
     expect(config.PRODUCT_API_MODE).toBe("local_unauthenticated");
+    expect(config.HOSTED_API_MODE).toBe("disabled");
     expect(config.PRODUCT_RATE_LIMIT_PER_MINUTE).toBe(240);
     expect(config.LOCAL_MODEL_ADVISOR_MODE).toBe("disabled");
     expect(config.LOCAL_MODEL_PROPOSAL_MODE).toBe("disabled");
@@ -32,6 +33,41 @@ describe("runtime configuration", () => {
     const config = loadApiConfig({ NODE_ENV: "production" });
     expect(config.PRODUCT_API_MODE).toBe("disabled");
     expect(config.INTEGRATION_API_MODE).toBe("disabled");
+    expect(config.HOSTED_API_MODE).toBe("disabled");
+  });
+
+  it("accepts only the explicit disabled hosted API mode", () => {
+    expect(loadApiConfig({ HOSTED_API_MODE: "disabled" }).HOSTED_API_MODE).toBe("disabled");
+    expect(() => loadApiConfig({ HOSTED_API_MODE: "enabled" })).toThrow(/HOSTED_API_MODE/);
+    expect(() => loadApiConfig({ HOSTED_API_MODE: "oidc" })).toThrow(/HOSTED_API_MODE/);
+  });
+
+  it("rejects non-empty hosted companion configuration without disclosing it", () => {
+    const secret = "https://issuer.example/tenant?credential=private-value";
+    for (const environment of [
+      { HOSTED_PUBLIC_ORIGIN: secret },
+      { HOSTED_SESSION_PEPPER: secret },
+      { HOSTED_OIDC_CLIENT_SECRET: " " },
+      { Hosted_Oidc_Client_Secret: secret },
+    ]) {
+      try {
+        loadApiConfig(environment);
+        expect.unreachable("expected premature hosted configuration to fail");
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toMatch(/Hosted companion configuration/);
+        expect((error as Error).message).not.toContain(secret);
+        expect((error as Error).message).not.toContain("private-value");
+      }
+    }
+
+    expect(
+      loadApiConfig({
+        HOSTED_API_MODE: "disabled",
+        HOSTED_PUBLIC_ORIGIN: "",
+        HOSTED_SESSION_PEPPER: "",
+      }).HOSTED_API_MODE,
+    ).toBe("disabled");
   });
 
   it("rejects attempts to expose the unauthenticated product API", () => {

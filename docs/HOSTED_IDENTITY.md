@@ -68,9 +68,10 @@ workspaces.
 This foundation has no login, callback, logout, refresh, password, OIDC discovery, email-link,
 browser principal route, or public membership route. It does not read identity claims, bind a
 WhatsApp account, replace integration credentials, or enable synchronization. No environment flag
-can accidentally expose it. Strict session-cookie serialization/parsing and double-submit CSRF
-transport now exist behind the centralized request seam, but no production route issues or consumes
-them.
+can expose it: `HOSTED_API_MODE` accepts only `disabled`, and non-empty companion `HOSTED_*`
+configuration fails startup without disclosing the configured value. Strict session-cookie
+serialization/parsing and double-submit CSRF transport now exist behind the centralized request
+seam, but no production route issues or consumes them.
 
 The centralized request-authentication and workspace-authorization seam now exists but is not wired
 into `buildApp`; see [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md). The dormant browser-session

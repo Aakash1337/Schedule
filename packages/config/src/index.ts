@@ -13,6 +13,7 @@ const apiSchema = baseSchema.extend({
   API_PORT: z.coerce.number().int().min(1).max(65_535).default(4_000),
   API_TRUSTED_PROXIES: z.string().max(16_384).default(""),
   PRODUCT_API_MODE: z.enum(["disabled", "local_unauthenticated"]).optional(),
+  HOSTED_API_MODE: z.literal("disabled").default("disabled"),
   PRODUCT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(240),
   LOCAL_MODEL_ADVISOR_MODE: z.enum(["disabled", "ollama"]).default("disabled"),
   LOCAL_MODEL_PROPOSAL_MODE: z.enum(["disabled", "ollama"]).default("disabled"),
@@ -249,6 +250,21 @@ function parseLocalModelAdvisorUrl(value: string): string {
 }
 
 export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): ApiConfig => {
+  const hasPrematureHostedConfiguration = Object.entries(environment).some(([name, value]) => {
+    const normalizedName = name.toUpperCase();
+    return (
+      normalizedName.startsWith("HOSTED_") &&
+      normalizedName !== "HOSTED_API_MODE" &&
+      value !== undefined &&
+      value.length > 0
+    );
+  });
+  if (hasPrematureHostedConfiguration) {
+    // Do not echo names or values: future companion variables may contain credentials.
+    throw new Error(
+      "Hosted companion configuration is not accepted while HOSTED_API_MODE is disabled.",
+    );
+  }
   const parsed = apiSchema.parse(environment);
   const config: ApiConfig = {
     ...parsed,

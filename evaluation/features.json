@@ -23,6 +23,7 @@
     "notification-materializer": { "command": "pnpm verify:database", "ci": true },
     "worker-observability": { "command": "pnpm verify:database", "ci": true },
     "hosted-identity": { "command": "pnpm verify:database", "ci": true },
+    "hosted-runtime-gate": { "command": "pnpm verify:database", "ci": true },
     "hosted-mutation-authorization": { "command": "pnpm verify:database", "ci": true },
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
     "notification-migrations": { "command": "pnpm verify:database", "ci": true },
@@ -2442,6 +2443,43 @@
       ]
     },
     {
+      "id": "hosted-runtime-disabled-gate",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Disabled runtime configuration gate"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/config/src/config.test.ts",
+          "command": "unit",
+          "anchors": [
+            "accepts only the explicit disabled hosted API mode",
+            "rejects non-empty hosted companion configuration without disclosing it"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": [
+            "exposes only infrastructure capabilities for now",
+            "keeps the dormant hosted identity foundation unreachable over HTTP"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
       "id": "hosted-identity-persistence-foundation",
       "status": "partial",
       "risk": "critical",
@@ -2450,7 +2488,7 @@
         "anchor": "# Hosted identity persistence foundation"
       },
       "limitations": [
-        "The foundation is dormant: strict cookie and CSRF transport plus an injectable authentication lifecycle exist, but buildApp registers no browser route and no concrete identity provider or deployment flag exposes them.",
+        "The foundation is dormant: strict cookie and CSRF transport plus an injectable authentication lifecycle exist, but buildApp registers no browser route; the disabled-only runtime gate cannot expose them, and no concrete identity provider or enabling configuration exists.",
         "Public hosted authentication and synchronization remain deferred, and machine integration credentials remain a separate trust boundary."
       ],
       "evidence": [
@@ -2527,7 +2565,7 @@
         "anchor": "# Dormant hosted request authorization seam"
       },
       "limitations": [
-        "The seam, cookie/CSRF transport, provider-neutral authentication lifecycle, and one transaction-coupled work-item-create registrar are not registered in buildApp: concrete provider verification, a broader public end-user product surface, and synchronization remain unimplemented.",
+        "The seam, cookie/CSRF transport, provider-neutral authentication lifecycle, and one transaction-coupled work-item-create registrar are not registered in buildApp: the disabled-only runtime gate cannot expose them, while concrete provider verification, enabling configuration, a broader public end-user product surface, and synchronization remain unimplemented.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [

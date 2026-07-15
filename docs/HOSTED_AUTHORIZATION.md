@@ -6,6 +6,18 @@ hosted work-item-create registrar. All are implemented and tested, but deliberat
 production registration: `buildApp` and the server do not install them, no browser route is
 reachable, and the local and machine-integration trust boundaries are unchanged.
 
+## Disabled runtime configuration gate
+
+`HOSTED_API_MODE` defaults to and accepts only `disabled`. While it is disabled, configuration
+rejects every non-empty companion `HOSTED_*` environment value before API startup without echoing a
+variable name or value that may contain credentials. Empty placeholders are inert. This flag cannot
+register the login lifecycle, workspace boundary, or work-item route; `buildApp` has no hosted
+runtime input and `/v1/system/info` always reports `hostedEndpointsEnabled: false`.
+
+This gate records an explicit production posture, not an enabling mechanism. A later provider slice
+must add its own complete proof flow, bounded secret and lifetime policy, exact HTTPS origin, and
+intentional route composition before the accepted mode can be widened.
+
 ## Boundary contract
 
 Every route registered inside `registerHostedWorkspaceBoundary` must contain a `:workspaceId`
@@ -131,8 +143,8 @@ membership loss is the same generic `404`; unexpected adapter/database failures 
 ## Deliberately absent
 
 There is still no OIDC discovery or callback, concrete identity-provider verifier, production-
-registered authentication route, hosted configuration flag, public workspace route, hosted CORS
-policy, account-management API, role model, synchronization protocol, or cloud deployment.
+registered authentication route, enabling hosted configuration, public workspace route, hosted
+CORS policy, account-management API, role model, synchronization protocol, or cloud deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. The dormant work-item create is the only transaction-coupled hosted product mutation;
 all other product routes remain local-only and require their own transaction authority before any
@@ -157,3 +169,7 @@ an authorized create, cross-tenant combinations, committed membership/session/us
 both forced create-versus-revocation linearizations, and rollback isolation. It also proves a denied
 or failed create leaves no work item or hierarchy audit; a bounded membership write immediately
 after the forced rollback probes that its authorization locks were released.
+`pnpm verify:hosted-runtime-gate` launches the real API entry point twice: premature companion
+configuration must fail before listening without disclosing its value, while the explicit disabled
+mode must report hosted capabilities off and keep representative authentication and workspace
+routes at `404`.

@@ -109,6 +109,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     architecture: "modular-monolith",
     productEndpointsEnabled: options.productServices !== undefined,
     integrationEndpointsEnabled: options.integrationServices !== undefined,
+    hostedEndpointsEnabled: false,
   }));
 
   const integrationServices = options.integrationServices;

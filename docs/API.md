@@ -10,6 +10,9 @@ not authorize these product routes.
 
 - Development defaults to `local_unauthenticated` and binds to `127.0.0.1`.
 - Production is always `disabled`; configuration rejects attempts to enable unauthenticated routes in production or on a non-loopback application bind.
+- `HOSTED_API_MODE` is a separate disabled-only gate. Its sole accepted value is `disabled`, any
+  non-empty companion `HOSTED_*` variable fails startup, and `/v1/system/info` reports
+  `hostedEndpointsEnabled: false`.
 - This mode must not be exposed to an untrusted network. Authentication and authorization are required before public hosting.
 - CORS is disabled, JSON bodies are limited to 256 KiB, request objects reject unknown fields, and error responses do not include stack traces.
 - Product routes reject missing, malformed, or non-loopback `Host` authorities before routing. This protects the unauthenticated loopback service from browser DNS-rebinding attacks; `localhost`, IPv4 `127.0.0.0/8`, and IPv6 loopback (`[::1]`) are accepted with an optional valid port. Health and system-information endpoints remain outside this product-route guard for local process and container diagnostics.
