@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("keeps tablet filters reachable and discovers work through accessible mobile filters", async ({
+test("discovers active and terminal work through accessible mobile filters while keeping tablet controls reachable", async ({
   page,
 }) => {
   const pageErrors: string[] = [];
