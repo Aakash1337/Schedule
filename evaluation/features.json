@@ -2021,7 +2021,7 @@
       },
       "limitations": [
         "Schedule exposes fenced pull claims and bounded receipts and now includes a dormant provider-neutral Hermes adapter core, but has no concrete Hermes/WhatsApp, email, push, or other provider transport and stores no human/account binding.",
-        "Periodic intent materialization and a shared PostgreSQL adapter dedupe store are implemented; runnable adapter polling and provider reconciliation remain absent.",
+        "Periodic intent materialization, a shared PostgreSQL adapter dedupe store, and fail-safe supervised provider-neutral polling are implemented; external provider bootstrap/control wiring and provider reconciliation remain absent.",
         "Delivered dedupe tombstone cleanup is intentionally disabled until Schedule exposes an authoritative replay-retention watermark.",
         "Dead-letter redrive is not implemented in this slice."
       ],
@@ -2058,6 +2058,44 @@
             "rejects unsafe reservation horizon configuration",
             "rejects unsafe database statement timeout configuration",
             "rejects an invalid generated fencing token without leaking it"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/hermes-reminders/src/supervisor.test.ts",
+          "command": "unit",
+          "anchors": [
+            "keeps the default kill switch off and performs no claim",
+            "does not claim when shutdown races the operator control check",
+            "treats a reject-on-abort polling sleep as graceful shutdown",
+            "never overlaps an in-flight cycle and rejects a second run",
+            "does not claim while disabled and resumes only after the control enables it",
+            "uses deterministic jitter for retryable failures and resets after a successful poll",
+            "fails immediately on a non-retryable gateway contract error without exposing details",
+            "fails closed when injected classification or jitter hooks violate their contract"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/hermes-reminders/src/health-server.test.ts",
+          "command": "unit",
+          "anchors": [
+            "binds to loopback and serves fixed live, ready, method, and missing responses",
+            "keeps liveness available and sanitizes a failing readiness provider",
+            "stops cleanly when shutdown races listener startup",
+            "fails safely on a port collision",
+            "does not expose server lifecycle control and sanitizes listening callback failures"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/hermes-reminders/src/runtime.test.ts",
+          "command": "unit",
+          "anchors": [
+            "runs polling and loopback health in one graceful shutdown domain",
+            "closes health when the supervisor enters a sanitized fatal state",
+            "stops polling and sanitizes a health listener startup failure",
+            "does not poll until health is listening and rejects a port collision"
           ]
         },
         {

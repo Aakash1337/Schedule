@@ -85,9 +85,10 @@ local worker can also materialize intents periodically with bounded catch-up and
 Schedule still performs no provider transport and never stores provider, recipient, account,
 conversation, or raw receipt data. A dormant [Hermes reminder adapter foundation](./docs/HERMES.md)
 now implements the safe claim/send/receipt and dedupe ordering around this gateway plus a shared,
-fenced PostgreSQL dedupe store that persists only a digest of its reservation token. It still needs
-a concrete Hermes transport, human binding, provider reconciliation, and a polling supervisor before
-it can run.
+fenced PostgreSQL dedupe store that persists only a digest of its reservation token. A fail-safe,
+single-flight polling supervisor and loopback health runtime are also implemented, but remain inert
+without an explicit operator control. A concrete Hermes transport, human binding, provider
+reconciliation, and external process bootstrap are still required for real delivery.
 
 The worker can optionally expose loopback-only liveness, database readiness, and fixed-cardinality
 Prometheus text metrics for outbox, reminder materialization, and provider-neutral delivery queues.
@@ -131,7 +132,8 @@ master-key keyring is configured. Provision endpoints and verify a receiver with
 enabling the worker. Endpoints have no automatic subscriptions by default; an operator may opt one
 into `schedule.changed.v1`, which tells a receiver to refresh Today without carrying plan or task
 content. Reminder policy decisions, durable intents, and the dormant adapter core are implemented;
-runnable delivery polling, provider/account binding, and a concrete Hermes/WhatsApp transport are
+provider-neutral supervised delivery polling is implemented but disabled by default. Provider/account
+binding, provider reconciliation, external bootstrap, and a concrete Hermes/WhatsApp transport are
 not part of this release. Automatic
 local intent materialization is available but disabled by default; set
 `NOTIFICATION_MATERIALIZATION_MODE=enabled` only after reminder policy is configured. This does not

@@ -1,7 +1,7 @@
 # Adaptive Scheduling System — Product Specification
 
 Status: Working product definition
-Last updated: 2026-07-14
+Last updated: 2026-07-15
 
 Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement and alternative-selection revisions, deterministic read-only comparison of up to three distinct alternatives, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items with direct prerequisites and arbitrary-depth subtasks, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v6 selects both reusable routines and explicitly opted-in one-time leaf work items, applies temporary routine feedback and explicit bounded routine selection preferences, and hard-excludes parent containers and work with unmet prerequisites from new selection and unlocked regeneration retention. A locked nonterminal item remains anchored under the existing user-authority rules. The planner also adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent routine-duration insight with explicit approval, read-only Daily Plan Fit guidance that may prefill a smaller evidence-backed joint time/task target, and reversible user-authored routine ranking preferences; none applies automatically or changes the current plan. Broader inferred preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. The Work interface may separately prepare one expiring, editable backlog-title proposal from free-form text; no work exists until explicit, audited, exactly-once confirmation. A provider-neutral authenticated gateway provides Today reads, credential-scoped work-item discovery including hierarchy, reviewed create/reparent/detach mutations, and least-privilege reminder delivery claims/receipts for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. A deterministic reminder-policy core stores versioned profiles and rules, explicit one-offs, concurrency-safe immutable intents, an opt-in local periodic materializer, and a provider-neutral fenced delivery lifecycle without performing provider transport. See [API.md](./API.md), [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md), [REMINDERS.md](./REMINDERS.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language routine creation, model-driven task breakdown, multi-command capture, automatic advisor application or calibration, hosted model providers, generalized undo, recurrence authoring, phone delivery, a Hermes/WhatsApp transport, and public hosting remain deferred.
 
@@ -676,9 +676,10 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
 - Implemented foundation: deterministic reminder profiles, rules, one-offs, exact-once intent
   materialization, an opt-in bounded local materialization worker, and provider-neutral claim/receipt
   state; a separate dormant Hermes adapter core now enforces lease budget, dedupe ordering, bounded
-  outcomes, a strict Schedule HTTP client, and shared PostgreSQL side-effect fencing, while concrete
-  provider transport/reconciliation, polling supervision, and human/account binding remain follow-on
-  work
+  outcomes, a strict Schedule HTTP client, shared PostgreSQL side-effect fencing, and fail-safe
+  single-flight polling with loopback health and graceful shutdown, while concrete provider
+  transport/reconciliation, external bootstrap/control wiring, and human/account binding remain
+  follow-on work
 - Implemented foundation: dormant provider-neutral users, exact issuer/subject bindings,
   digest-only revocable browser sessions, and binary workspace memberships with deletion-safe
   workspace preservation

@@ -273,12 +273,13 @@ Enabling this mode does not claim, poll, or deliver an intent and does not enabl
 `WEBHOOK_DELIVERY_MODE`. External reminder transport still requires a separately authenticated,
 deduplicating adapter using the claim/receipt gateway. The repository now contains a tested dormant
 [Hermes adapter foundation](./HERMES.md) with a shared PostgreSQL dedupe store, but it has no concrete
-transport/reconciliation, binding, or polling supervisor and therefore cannot yet be started as a
-provider process.
+transport/reconciliation or human/account binding. Its supervised polling boundary is fail-safe and
+disabled without an operator-provided control hook, and the repository does not provide the external
+Hermes/provider process bootstrap.
 
 Not yet implemented in this slice:
 
 - a concrete Hermes/WhatsApp, email, push, or other provider transport and human/account binding;
-- runnable adapter polling supervision, provider reconciliation, and a kill switch;
+- provider reconciliation, external provider bootstrap, and an operator control source;
 - dead-letter redrive controls;
 - hosted-user authorization for these local product routes.

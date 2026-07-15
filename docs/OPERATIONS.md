@@ -392,9 +392,10 @@ dead-letter redrive, revocation, and transactional rollback. It is also part of
 `pnpm verify:database` and the PostgreSQL CI job. `schedule.changed.v1` is only an invalidation; it
 does not transport reminder commands. Reminder claim/receipt state uses a separate authenticated
 pull gateway. The dormant [Hermes adapter foundation](./HERMES.md) consumes that contract, but its
-shared PostgreSQL dedupe store does not make it runnable: concrete transport and reconciliation,
-provider/account binding, polling supervision, and phone verification remain deferred. A successful
-webhook test or invalidation delivery does not imply those systems exist.
+shared PostgreSQL dedupe store and fail-safe supervised runtime do not make it a live provider:
+concrete transport and reconciliation, provider/account binding, external bootstrap and control
+wiring, and phone verification remain deferred. A successful webhook test or invalidation delivery
+does not imply those systems exist.
 
 ## Deterministic reminder operations
 

@@ -504,10 +504,13 @@ The audit deliberately leaves these visible instead of turning them into false g
   attestation including exact relation/function inventory, same-name definitions, function sources,
   enabled triggers, and logged-table durability, execute-only security-definer runtime operations,
   privilege and object-ownership drift rejection, immutable delivered transitions, denied runtime
-  table access, and restart durability. Delivered tombstone cleanup remains disabled until Schedule
-  exposes an authoritative replay retention watermark. It still has no concrete
-  external provider/account binding, provider reconciliation, runnable polling supervisor, live
-  phone verification, or dead-letter redrive control;
+  table access, and restart durability. Its supervised runtime adds fail-safe default disablement,
+  per-claim operator control, single-flight polling, bounded full-jitter retry/failure budgets, fixed
+  fatal classifications, graceful in-flight shutdown, sibling-service supervision, and real
+  loopback live/ready HTTP evidence without private identifiers. Delivered tombstone cleanup remains
+  disabled until Schedule exposes an authoritative replay retention watermark. It still has no
+  concrete external provider/account binding, provider reconciliation, external provider bootstrap,
+  live phone verification, or dead-letter redrive control;
 - worker observability has unit and disposable-PostgreSQL evidence for loopback-only binding,
   liveness/readiness separation, fixed-cardinality Prometheus text, live outbox/reminder queue
   aggregates, materialization/outbox instrumentation, private-data exclusion, database-failure

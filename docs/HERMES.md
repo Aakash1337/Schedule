@@ -4,9 +4,10 @@ Schedule includes a separate, provider-neutral adapter foundation for a future H
 reminder process. It consumes the existing `schedule:delivery` claim/receipt API without adding
 provider, destination, recipient, conversation, or account data to Schedule.
 
-This is not yet a running WhatsApp transport. The concrete Hermes send API, human/account binding,
-polling supervisor, and provider reconciliation contract still depend on the external Hermes
-installation and must be supplied before the adapter can be started.
+This is not yet a running WhatsApp transport. The repository now provides a supervised,
+provider-neutral polling boundary, but the concrete Hermes send API, human/account binding,
+provider reconciliation contract, and external process bootstrap still depend on the Hermes
+installation and must be supplied before real delivery can be enabled.
 
 ## Components
 
@@ -30,6 +31,36 @@ installation and must be supplied before the adapter can be started.
 - `PostgresDeliveryDedupeStore`, a reference shared implementation with atomic reservation takeover,
   database-clock lease-budget checks, bounded database statements, digest-only reservation tokens,
   immutable delivered state, and fenced idempotent delivery/release transitions.
+- `HermesReminderSupervisor`, a single-flight sequential loop around `HermesReminderRunner`. Polling
+  is disabled unless an operator-supplied control returns `true`; the control is evaluated before
+  every claim. Retryable dependency failures use bounded full-jitter backoff and a fixed consecutive
+  failure budget, while contract, authentication, schema, and control failures stop the supervisor
+  with fixed redacted classifications.
+- `runHermesReminderHealthServer`, a health-only HTTP listener restricted to literal IPv4 or IPv6
+  loopback. Its live and ready responses are fixed, contain no reminder or dependency detail, and
+  readiness is withheld until the supervisor completes a successful poll.
+- `runHermesReminderRuntime`, which owns the supervisor and health listener in one abort domain. A
+  process does not begin polling until health is listening. Shutdown prevents another claim, waits
+  for the current runner cycle, and then closes health; it does not invent a receipt or force-release
+  an ambiguous reservation.
+
+## Supervised runtime boundary
+
+The supervisor is a library boundary for an external adapter process, not an auto-starting service.
+Its default kill switch is off: omitting the `enabled` hook performs no Schedule claim. A real
+bootstrap must supply an explicit operator-controlled hook, the concrete `ReminderTransport`, the
+shared dedupe-store client, and a delivery-only Schedule gateway credential.
+
+Only one `runOnce` call can be active per supervisor and a second `run` call is rejected. Polling and
+retry sleeps accept an abort signal, but an abort does not cancel or detach an already-running
+claim/send/receipt cycle. The runtime waits for that cycle so the runner's existing dedupe and
+ambiguity rules remain authoritative. Busy reservations, ambiguous sends, and insufficient lease
+budget are ordinary bounded cycle outcomes rather than dependency failures.
+
+Health is deliberately narrow. Liveness remains available while the process is starting, disabled,
+backing off, or stopping. Readiness becomes true only while enabled and running after at least one
+successful poll, and returns false after disablement, fatal failure, or shutdown. The endpoint never
+returns delivery IDs, workspace IDs, raw errors, credentials, destinations, or provider data.
 
 ## PostgreSQL reference store
 
@@ -110,8 +141,9 @@ Before enabling a real process, provide and verify:
 
 1. the exact Hermes/WhatsApp send and reconciliation contract;
 2. an explicit human/account binding lifecycle;
-3. provider authentication, secret rotation, circuit breaking, and an operator kill switch;
-4. a bounded polling supervisor with shutdown and health behavior;
+3. provider authentication, secret rotation, and circuit breaking;
+4. an external process bootstrap and explicit operator control source for the fail-safe `enabled`
+   hook;
 5. an opt-in live smoke test using a non-production recipient.
 
 Inbound messages, natural-language interpretation, command confirmation, provider callbacks, and
@@ -124,8 +156,11 @@ The package's normal tests cover successful ordering, empty claims, delivered re
 second send, lease-budget refusal, reservation contention, payload conflict, known failure release,
 ambiguous-send preservation, malformed transport results, exact HTTP request contracts, strict
 streaming response limits and hard timeout, outbound receipt validation, URL safety, and fixed HTTP
-failure classification. The HTTP tests use a real ephemeral loopback server and no provider
-network. `pnpm verify:hermes-dedupe-store` additionally creates a nonce PostgreSQL database and proves
+failure classification. They also cover fail-safe default disablement, per-claim control checks,
+single-flight polling, non-overlap, bounded jitter and failure budgets, fatal error sanitization,
+invalid injected-hook handling, graceful in-flight shutdown, runtime sibling supervision, and the
+real loopback live/ready HTTP surface. The HTTP tests use a real ephemeral loopback server and no
+provider network. `pnpm verify:hermes-dedupe-store` additionally creates a nonce PostgreSQL database and proves
 atomic multi-replica exclusion, payload binding before and after delivery, digest-only token storage,
 idempotent delivery and release, expired-reservation takeover, stale-owner fencing, database-clock
 budget and horizon rejection, bounded row-lock waits, checksum/catalog migration attestation,
