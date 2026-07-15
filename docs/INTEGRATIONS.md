@@ -620,8 +620,9 @@ security-sensitive recovery.
   session, and platform identity.
 - A separate tested reminder-delivery foundation consumes the `schedule:delivery` claim/receipt
   contract with shared PostgreSQL dedupe and fail-safe loopback supervision. It has no standalone
-  provider bootstrap, concrete WhatsApp transport, provider reconciliation, or human/account
-  binding; its supervisor is disabled unless an operator control explicitly enables claims.
+  provider bootstrap, live authenticated WhatsApp client, provider-specific conclusive
+  reconciliation, or human/account binding; its dormant reconcile-before-send bridge remains inert
+  unless an operator constructs it and explicitly enables supervisor claims.
 - A disabled-by-default [outbound webhook substrate](./WEBHOOKS.md) can send operator-queued signed
   test events and explicitly subscribed `schedule.changed.v1` invalidations. It cannot send schedule
   contents, push-notification requests, reminders, or end-to-end phone delivery receipts. An adapter

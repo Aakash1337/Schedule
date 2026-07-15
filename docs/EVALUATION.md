@@ -532,9 +532,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   per-claim operator control, single-flight polling, bounded full-jitter retry/failure budgets, fixed
   fatal classifications, graceful in-flight shutdown, sibling-service supervision, and real
   loopback live/ready HTTP evidence without private identifiers. Delivered tombstone cleanup remains
-  disabled until Schedule exposes an authoritative replay retention watermark. It still has no
-  concrete external provider/account binding, provider reconciliation, external provider bootstrap,
-  live phone verification, or dead-letter redrive control;
+  disabled until Schedule exposes an authoritative replay retention watermark. A dormant
+  Hermes/WhatsApp client bridge adds unit evidence for reconcile-before-send behavior, sanitized
+  minimal payloads, bounded known failures, ambiguous-result redaction, and preservation of the
+  runner fence. It still has no live external provider/account binding, provider-specific conclusive
+  reconciliation, external provider bootstrap, live phone verification, or dead-letter redrive
+  control;
 - worker observability has unit and disposable-PostgreSQL evidence for loopback-only binding,
   liveness/readiness separation, fixed-cardinality Prometheus text, live outbox/reminder queue
   aggregates, materialization/outbox instrumentation, private-data exclusion, database-failure
