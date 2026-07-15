@@ -56,8 +56,8 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 81 test files and 1,196 runtime test cases. Three
-additional Playwright specifications contain eight live Chromium integration scenarios. Parameterized
+The package and script runners currently execute 100 test files and 1,414 runtime test cases. Three
+additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
 
@@ -65,11 +65,11 @@ an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      32 / 32 |
-| Critical implemented features with CI-registered integration or drills |      18 / 18 |
-| Partial features with an explicit limitation                           |        2 / 2 |
-| Deferred features explicitly tracked as not passing                    |        1 / 1 |
-| CI-registered evidence items                                           |          165 |
+| Implemented features with CI-registered evidence                       |      35 / 35 |
+| Critical implemented features with CI-registered integration or drills |      19 / 19 |
+| Partial features with an explicit limitation                           |        5 / 5 |
+| Deferred features explicitly tracked as not passing                    |        0 / 0 |
+| CI-registered evidence items                                           |          213 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -80,21 +80,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.17% |   70.46% |    67.22% | 59.58% |
+| Whole repository, measured |     57.65% |   68.80% |    65.84% | 58.17% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |     96.52% |   92.21% |    97.14% | 97.56% |
+| Domain, measured           |     94.65% |   91.23% |    93.12% | 95.70% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     90.54% |   84.47% |    99.24% | 91.28% |
+| Application, measured      |     89.84% |   83.76% |    98.52% | 90.65% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     86.49% |   75.97% |    75.50% | 87.87% |
+| API, measured              |     87.12% |   76.98% |    76.38% | 88.50% |
 | API, required              |        73% |      69% |       57% |    74% |
-| Worker, measured           |     92.26% |   89.18% |    91.11% | 95.14% |
+| Worker, measured           |     92.00% |   88.01% |    93.25% | 94.62% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     84.63% |   72.68% |    73.07% | 85.08% |
+| Web, measured              |     84.87% |   71.92% |    74.07% | 85.33% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 8,351 of 14,112 statements, 6,154 of 8,733 branches,
-1,856 of 2,761 functions, and 7,883 of 13,230 lines.
+The whole-repository totals are 10,044 of 17,420 statements, 7,228 of 10,505 branches,
+2,213 of 3,361 functions, and 9,502 of 16,334 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -541,7 +541,7 @@ The audit deliberately leaves these visible instead of turning them into false g
   post-revocation fencing. Both remain dormant: there is no browser route, provider
   verification, cookie/CSRF policy, transaction-coupled product mutation authorization, public
   deployment, or synchronization;
-- eight live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
+- ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a
   320px subtask create/complete/reload/detach/reparent/overflow flow with leaf-only planning, plus

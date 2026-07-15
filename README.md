@@ -208,7 +208,7 @@ That command proves the local/stdout provider boundary, not delivery to a WhatsA
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh
 PostgreSQL 17 Compose project. It also verifies a complete archive round trip, the real disposable
-restore/promote/rollback/cleanup state machine, and the eight live Chromium product flows in a
+restore/promote/rollback/cleanup state machine, and the ten live Chromium product flows in a
 separate disposable database.
 
 ## Local data protection
