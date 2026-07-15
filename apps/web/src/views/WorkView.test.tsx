@@ -303,6 +303,10 @@ describe("work board", () => {
   it("keeps discovery controls usable while a card mutation is pending", async () => {
     const user = userEvent.setup();
     const pendingUpdate = deferred<WorkItem>();
+    const pendingRefresh = deferred<{
+      readonly items: readonly WorkItem[];
+      readonly page: { readonly limit: number; readonly offset: number };
+    }>();
     const updated = { ...item, status: "blocked" as const, version: item.version + 1 };
     apiMocks.updateWorkItem.mockReturnValue(pendingUpdate.promise);
 
@@ -311,6 +315,7 @@ describe("work board", () => {
     const heading = await screen.findByRole("heading", { name: item.title });
     const card = heading.closest("article");
     if (card === null) throw new Error("Work card was not rendered.");
+    apiMocks.listWorkItems.mockReturnValueOnce(pendingRefresh.promise);
     await user.type(screen.getByRole("searchbox", { name: "Search work" }), "draft");
     await user.selectOptions(
       within(card).getByRole("combobox", { name: `Status for ${item.title}` }),
@@ -323,10 +328,8 @@ describe("work board", () => {
     expect(screen.getByRole("combobox", { name: "Filter by due date" })).toBeEnabled();
     expect(screen.getByRole("combobox", { name: "Filter by priority" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Refresh board" })).toBeEnabled();
-    const resetButton = screen.getByRole("button", { name: "Reset filters" });
-    expect(resetButton).toBeEnabled();
-    await user.click(resetButton);
-    expect(screen.getByRole("searchbox", { name: "Search work" })).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "Refresh board" }));
+    await waitFor(() => expect(apiMocks.listWorkItems).toHaveBeenCalledTimes(2));
 
     await act(async () => pendingUpdate.resolve(updated));
     await waitFor(() =>
@@ -334,6 +337,20 @@ describe("work board", () => {
         "blocked",
       ),
     );
+    await act(async () =>
+      pendingRefresh.resolve({ items: [item], page: { limit: 200, offset: 0 } }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Refresh board" })).toBeEnabled(),
+    );
+    expect(screen.getByRole("combobox", { name: `Status for ${item.title}` })).toHaveValue(
+      "blocked",
+    );
+
+    const resetButton = screen.getByRole("button", { name: "Reset filters" });
+    expect(resetButton).toBeEnabled();
+    await user.click(resetButton);
+    expect(screen.getByRole("searchbox", { name: "Search work" })).toHaveValue("");
   });
 
   it("reveals terminal-only work from the active empty state and preserves keyboard focus", async () => {

@@ -80,7 +80,7 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     58.12% |   69.10% |    66.20% | 58.62% |
+| Whole repository, measured |     58.16% |   69.13% |    66.20% | 58.67% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     94.79% |   91.30% |    93.20% | 95.80% |
 | Domain, required           |        91% |      82% |       92% |    93% |
