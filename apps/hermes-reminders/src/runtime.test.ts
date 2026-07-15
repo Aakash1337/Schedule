@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { describe, expect, it, vi } from "vitest";
@@ -6,7 +6,31 @@ import { describe, expect, it, vi } from "vitest";
 import type { HermesReminderRunResult } from "./delivery-runner.js";
 import { runHermesReminderRuntime } from "./runtime.js";
 import { ScheduleDeliveryGatewayError } from "./schedule-client.js";
-import { HermesReminderSupervisor } from "./supervisor.js";
+import { HermesReminderSupervisor, type HermesReminderSupervisorHealth } from "./supervisor.js";
+
+const stoppedHealth: HermesReminderSupervisorHealth = {
+  live: true,
+  ready: false,
+  state: "stopped",
+  consecutiveFailures: 0,
+  lastCycleStatus: null,
+  lastFailureClass: null,
+  lastFailureAt: null,
+  lastSuccessfulPollAt: null,
+};
+
+function failServerCloseSynchronously(privateDetail: string) {
+  const originalClose = Server.prototype.close;
+  return vi.spyOn(Server.prototype, "close").mockImplementation(function (
+    this: Server,
+    ...args: Parameters<Server["close"]>
+  ): never {
+    void originalClose.apply(this, args);
+    const error = new Error(privateDetail) as NodeJS.ErrnoException;
+    error.code = "EIO";
+    throw error;
+  });
+}
 
 describe("Hermes reminder runtime", () => {
   it("runs polling and loopback health in one graceful shutdown domain", async () => {
@@ -106,5 +130,44 @@ describe("Hermes reminder runtime", () => {
     }
     expect(runner.runOnce).not.toHaveBeenCalled();
     expect(supervisor.health()).toMatchObject({ state: "starting", ready: false });
+  });
+
+  it("propagates a sanitized sibling cleanup failure when the primary lifecycle succeeds", async () => {
+    const privateDetail = "private synchronous close detail";
+    const close = failServerCloseSynchronously(privateDetail);
+    const supervisor = {
+      health: () => stoppedHealth,
+      run: vi.fn(async () => undefined),
+    } as unknown as HermesReminderSupervisor;
+
+    try {
+      const failure = await runHermesReminderRuntime(
+        { supervisor, healthPort: 0 },
+        new AbortController().signal,
+      ).catch((reason: unknown) => reason);
+      expect(failure).toEqual(new Error("Hermes reminder health listener failed."));
+      expect(String(failure)).not.toContain(privateDetail);
+    } finally {
+      close.mockRestore();
+    }
+  });
+
+  it("preserves a primary failure when sibling cleanup also fails", async () => {
+    const primaryFailure = new Error("primary lifecycle failure");
+    const close = failServerCloseSynchronously("private sibling close detail");
+    const supervisor = {
+      health: () => stoppedHealth,
+      run: vi.fn(async () => Promise.reject(primaryFailure)),
+    } as unknown as HermesReminderSupervisor;
+
+    try {
+      const failure = await runHermesReminderRuntime(
+        { supervisor, healthPort: 0 },
+        new AbortController().signal,
+      ).catch((reason: unknown) => reason);
+      expect(failure).toBe(primaryFailure);
+    } finally {
+      close.mockRestore();
+    }
   });
 });

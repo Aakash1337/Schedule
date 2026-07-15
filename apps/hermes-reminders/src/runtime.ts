@@ -42,18 +42,30 @@ export async function runHermesReminderRuntime(
     runtimeController.signal,
   );
   let supervisor: Promise<void> | undefined;
+  let cleanupFailed = false;
+  let cleanupFailure: unknown;
 
   try {
     await Promise.race([listening, health]);
     if (!healthListening || runtimeController.signal.aborted) {
       await health;
-      return;
+    } else {
+      supervisor = options.supervisor.run(runtimeController.signal);
+      await Promise.race([supervisor, health]);
     }
-    supervisor = options.supervisor.run(runtimeController.signal);
-    await Promise.race([supervisor, health]);
   } finally {
     runtimeController.abort("Hermes reminder runtime stopping");
-    await Promise.allSettled(supervisor === undefined ? [health] : [supervisor, health]);
+    const settlements = await Promise.allSettled(
+      supervisor === undefined ? [health] : [supervisor, health],
+    );
     signal.removeEventListener("abort", forwardAbort);
+    const rejected = settlements.find(
+      (settlement): settlement is PromiseRejectedResult => settlement.status === "rejected",
+    );
+    if (rejected !== undefined) {
+      cleanupFailed = true;
+      cleanupFailure = rejected.reason;
+    }
   }
+  if (cleanupFailed) throw cleanupFailure;
 }

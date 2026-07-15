@@ -2096,7 +2096,9 @@
             "runs polling and loopback health in one graceful shutdown domain",
             "closes health when the supervisor enters a sanitized fatal state",
             "stops polling and sanitizes a health listener startup failure",
-            "does not poll until health is listening and rejects a port collision"
+            "does not poll until health is listening and rejects a port collision",
+            "propagates a sanitized sibling cleanup failure when the primary lifecycle succeeds",
+            "preserves a primary failure when sibling cleanup also fails"
           ]
         },
         {

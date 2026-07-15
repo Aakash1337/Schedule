@@ -115,8 +115,9 @@ export async function runHermesReminderHealthServer(
           );
         });
         server.closeAllConnections();
-      } catch {
-        finish(firstFailure);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        finish(firstFailure ?? (code === "ERR_SERVER_NOT_RUNNING" ? undefined : listenerFailure()));
       }
     };
 
