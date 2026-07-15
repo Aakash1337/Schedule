@@ -2071,6 +2071,7 @@
             "never overlaps an in-flight cycle and rejects a second run",
             "does not claim while disabled and resumes only after the control enables it",
             "uses deterministic jitter for retryable failures and resets after a successful poll",
+            "keeps readiness false while a failed dependency retry is in flight",
             "fails immediately on a non-retryable gateway contract error without exposing details",
             "fails closed when injected classification or jitter hooks violate their contract"
           ]

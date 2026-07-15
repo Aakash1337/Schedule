@@ -301,6 +301,7 @@ export class HermesReminderSupervisor {
         if (typeof enabled !== "boolean") this.fatal("control_failure", "unexpected");
         if (signal.aborted) break;
         if (!enabled) {
+          this.successfulPollObserved = false;
           this.state = "disabled";
           await this.wait(this.pollIntervalMilliseconds, signal);
           continue;
@@ -320,6 +321,7 @@ export class HermesReminderSupervisor {
         } catch (error) {
           if (error instanceof HermesReminderSupervisorError) throw error;
           if (signal.aborted) break;
+          this.successfulPollObserved = false;
           let candidate: unknown;
           try {
             candidate = this.classifyFailure(error);

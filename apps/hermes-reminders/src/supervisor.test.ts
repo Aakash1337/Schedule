@@ -271,6 +271,38 @@ describe("HermesReminderSupervisor lifecycle", () => {
     expect(runner.runOnce).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps readiness false while a failed dependency retry is in flight", async () => {
+    const recovery = deferred<HermesReminderRunResult>();
+    const runner = {
+      runOnce: vi
+        .fn<() => Promise<HermesReminderRunResult>>()
+        .mockResolvedValueOnce(idle)
+        .mockRejectedValueOnce(new ScheduleDeliveryGatewayError("server_unavailable", true))
+        .mockImplementationOnce(() => recovery.promise),
+    };
+    const supervisor = new HermesReminderSupervisor(runner, {
+      pollIntervalMilliseconds: 100,
+      retryBaseMilliseconds: 100,
+      retryCapMilliseconds: 100,
+      enabled: () => true,
+      random: () => 1,
+      sleep: async () => undefined,
+    });
+    const controller = new AbortController();
+    const running = supervisor.run(controller.signal);
+    await vi.waitFor(() => expect(runner.runOnce).toHaveBeenCalledTimes(3));
+
+    expect(supervisor.health()).toMatchObject({
+      state: "running",
+      ready: false,
+      consecutiveFailures: 1,
+      lastFailureClass: "schedule_unavailable",
+    });
+    controller.abort("test complete");
+    recovery.resolve(idle);
+    await running;
+  });
+
   it("fails immediately on a non-retryable gateway contract error without exposing details", async () => {
     const privateDetail = "Bearer private-schedule-credential";
     const error = new ScheduleDeliveryGatewayError("authentication_failed", false);
