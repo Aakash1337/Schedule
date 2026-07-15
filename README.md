@@ -205,4 +205,8 @@ same mechanics are exercised automatically against nonce-bound disposable databa
 ## Deployment boundary
 
 The API and worker are ordinary OCI-compatible Node processes. PostgreSQL is the system of record.
-Core packages do not depend on a hosting provider, queue vendor, or cloud SDK.
+Core packages do not depend on a hosting provider, queue vendor, or cloud SDK. The production
+runtime images use a fixed non-root identity; the executable OCI smoke gate additionally enforces a
+read-only root filesystem, dropped Linux capabilities, and `no-new-privileges` for migrations, the
+API, and the worker. These controls are a provider-neutral deployment prerequisite, not evidence that
+public hosting or browser authentication is enabled.

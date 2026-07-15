@@ -24,6 +24,13 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_URL: postgres://schedule:schedule@postgres:5432/schedule
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16777216,mode=1777,uid=10001,gid=10001
     labels:
       io.schedule.runtime-smoke.owner: ${RUNTIME_SMOKE_OWNER:?RUNTIME_SMOKE_OWNER is required}
     depends_on:
@@ -43,6 +50,13 @@ services:
       PRODUCT_API_MODE: disabled
       INTEGRATION_API_MODE: disabled
       DATABASE_URL: postgres://schedule:schedule@postgres:5432/schedule
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16777216,mode=1777,uid=10001,gid=10001
     labels:
       io.schedule.runtime-smoke.owner: ${RUNTIME_SMOKE_OWNER:?RUNTIME_SMOKE_OWNER is required}
     depends_on:
@@ -80,6 +94,13 @@ services:
       WORKER_OBSERVABILITY_PORT: 9464
       NOTIFICATION_MATERIALIZATION_MODE: disabled
       WEBHOOK_DELIVERY_MODE: disabled
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16777216,mode=1777,uid=10001,gid=10001
     labels:
       io.schedule.runtime-smoke.owner: ${RUNTIME_SMOKE_OWNER:?RUNTIME_SMOKE_OWNER is required}
     depends_on:

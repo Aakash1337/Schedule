@@ -25,6 +25,7 @@
       "command": "pnpm verify:recovery-state-machine",
       "ci": true
     },
+    "oci-runtime": { "command": "pnpm verify:oci-runtime", "ci": true },
     "browser-e2e": {
       "command": "pnpm verify:web-e2e",
       "ci": true
@@ -924,6 +925,32 @@
           "file": "packages/config/src/config.test.ts",
           "command": "unit",
           "anchors": ["rejects attempts to expose the unauthenticated product API"]
+        }
+      ]
+    },
+    {
+      "id": "oci-runtime-hardening",
+      "status": "implemented",
+      "risk": "high",
+      "contract": {
+        "file": "docs/OPERATIONS.md",
+        "anchor": "## Production-image runtime smoke"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "scripts/verify-oci-runtime.test.ts",
+          "command": "unit",
+          "anchors": [
+            "builds isolated run and exec security probes",
+            "accepts only a complete bounded runtime security probe"
+          ]
+        },
+        {
+          "level": "drill",
+          "file": "scripts/verify-oci-runtime.ts",
+          "command": "oci-runtime",
+          "anchors": ["OCI runtime verification passed hardened non-root containers"]
         }
       ]
     },

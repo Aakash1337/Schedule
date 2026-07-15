@@ -4,12 +4,15 @@
 
 Run `pnpm verify:oci-runtime` before selecting or deploying to a cloud provider. The disposable
 verification builds the repository's API and worker OCI images, migrates a temporary PostgreSQL
-database from the built API image, and proves production health/readiness, disabled product and
-integration routes, loopback-only worker diagnostics, and graceful worker shutdown. It uses no
-provider credentials or persistent volume and removes its uniquely named Compose project and images
-on completion.
+database from the built API image, and proves that the migration, API, and worker processes run as
+the fixed unprivileged identity `10001:10001` with a read-only root filesystem, empty inheritable,
+permitted, effective, bounding, and ambient Linux capability masks, and `no-new-privileges`. Each
+process receives only a bounded in-memory `/tmp` mount.
+The same drill proves production health/readiness, disabled product and integration routes,
+loopback-only worker diagnostics, and graceful worker shutdown. It uses no provider credentials or
+persistent volume and removes its uniquely named Compose project and images on completion.
 
-This is a runtime portability gate, not a hosted deployment. It does not enable browser
+This is a hardened runtime portability gate, not a hosted deployment. It does not enable browser
 authentication, public product routes, managed backups, monitoring, TLS, synchronization, or any
 specific AWS, Cloudflare, Railway, Oracle, or other provider configuration.
 

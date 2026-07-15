@@ -19,6 +19,37 @@ const migrationJournal = path.join(
 const COMMAND_TIMEOUT_MS = 12 * 60 * 1_000;
 const CAPTURE_LIMIT_BYTES = 64 * 1_024;
 const TERMINATION_GRACE_MS = 5_000;
+const RUNTIME_UID = 10_001;
+const RUNTIME_GID = 10_001;
+const EMPTY_CAPABILITY_MASK = "0000000000000000";
+const CAPABILITY_MASK_NAMES = [
+  "ambient",
+  "bounding",
+  "effective",
+  "inheritable",
+  "permitted",
+] as const;
+const RUNTIME_SECURITY_PROBE = [
+  "const fs=require('node:fs');",
+  "const status=fs.readFileSync('/proc/self/status','utf8');",
+  "const mountInfo=fs.readFileSync('/proc/self/mountinfo','utf8');",
+  "const rootMount=mountInfo.split('\\n').find(line=>line.split(' ')[4]==='/');",
+  "const rootFilesystemReadOnly=rootMount?.split(' ')[5]?.split(',').includes('ro')??false;",
+  "const readMask=label=>new RegExp('^'+label+':\\\\s*([0-9a-f]+)$','imu').exec(status)?.[1]??null;",
+  "const capabilityMasks={ambient:readMask('CapAmb'),bounding:readMask('CapBnd'),effective:readMask('CapEff'),inheritable:readMask('CapInh'),permitted:readMask('CapPrm')};",
+  "const noNewPrivileges=/^NoNewPrivs:\\s*1$/mu.test(status);",
+  "process.stdout.write(JSON.stringify({uid:process.getuid?.()??-1,gid:process.getgid?.()??-1,rootFilesystemReadOnly,noNewPrivileges,capabilityMasks}));",
+].join("");
+
+type RuntimeService = "api" | "migrate" | "worker";
+
+interface RuntimeSecurityProbe {
+  readonly uid: number;
+  readonly gid: number;
+  readonly rootFilesystemReadOnly: boolean;
+  readonly noNewPrivileges: boolean;
+  readonly capabilityMasks: Readonly<Record<(typeof CAPABILITY_MASK_NAMES)[number], string>>;
+}
 
 let activeChild: ChildProcess | null = null;
 let interruptedBy: NodeJS.Signals | null = null;
@@ -162,6 +193,71 @@ export function parseMigrationCount(output: string): number {
   return Number(output.trim());
 }
 
+export function runtimeSecurityProbeArguments(
+  compose: readonly string[],
+  service: RuntimeService,
+): readonly string[] {
+  return service === "migrate"
+    ? [...compose, "run", "--rm", "--no-deps", service, "node", "-e", RUNTIME_SECURITY_PROBE]
+    : [...compose, "exec", "--no-TTY", service, "node", "-e", RUNTIME_SECURITY_PROBE];
+}
+
+export function parseRuntimeSecurityProbe(output: string): RuntimeSecurityProbe {
+  let value: unknown;
+  try {
+    value = JSON.parse(output) as unknown;
+  } catch {
+    throw new Error("Container returned an invalid runtime security probe.");
+  }
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join(",") !==
+      "capabilityMasks,gid,noNewPrivileges,rootFilesystemReadOnly,uid"
+  ) {
+    throw new Error("Container returned an invalid runtime security probe.");
+  }
+  const candidate = value as Record<string, unknown>;
+  const capabilityMasks = candidate.capabilityMasks;
+  if (
+    typeof capabilityMasks !== "object" ||
+    capabilityMasks === null ||
+    Array.isArray(capabilityMasks) ||
+    Object.keys(capabilityMasks).sort().join(",") !== CAPABILITY_MASK_NAMES.join(",") ||
+    !CAPABILITY_MASK_NAMES.every(
+      (name) =>
+        typeof (capabilityMasks as Record<string, unknown>)[name] === "string" &&
+        /^[0-9a-f]{16}$/u.test((capabilityMasks as Record<string, string>)[name] ?? ""),
+    ) ||
+    typeof candidate.uid !== "number" ||
+    typeof candidate.gid !== "number" ||
+    !Number.isSafeInteger(candidate.uid) ||
+    !Number.isSafeInteger(candidate.gid) ||
+    typeof candidate.rootFilesystemReadOnly !== "boolean" ||
+    typeof candidate.noNewPrivileges !== "boolean"
+  ) {
+    throw new Error("Container returned an invalid runtime security probe.");
+  }
+  return candidate as unknown as RuntimeSecurityProbe;
+}
+
+function assertRuntimeSecurity(service: RuntimeService, output: string): void {
+  const probe = parseRuntimeSecurityProbe(output);
+  if (probe.uid !== RUNTIME_UID || probe.gid !== RUNTIME_GID) {
+    throw new Error(`${service} did not run with the fixed non-root identity.`);
+  }
+  if (!probe.rootFilesystemReadOnly) {
+    throw new Error(`${service} did not run with a read-only root filesystem.`);
+  }
+  if (!probe.noNewPrivileges) {
+    throw new Error(`${service} did not run with no-new-privileges.`);
+  }
+  if (Object.values(probe.capabilityMasks).some((mask) => mask !== EMPTY_CAPABILITY_MASK)) {
+    throw new Error(`${service} retained Linux capabilities.`);
+  }
+}
+
 function expectedMigrationCount(): number {
   const value = JSON.parse(readFileSync(migrationJournal, "utf8")) as unknown;
   if (
@@ -284,6 +380,15 @@ export async function verifyOciRuntime(): Promise<void> {
     if ((await projectOwnership(projectName, owner, environment)) !== "owned") {
       throw new Error(`Compose project ${projectName} is not owned by this verification.`);
     }
+    assertRuntimeSecurity(
+      "migrate",
+      await runCommand(
+        "docker",
+        runtimeSecurityProbeArguments(compose, "migrate"),
+        environment,
+        true,
+      ),
+    );
     await runCommand("docker", [...compose, "run", "--rm", "migrate"], environment);
     const appliedMigrations = parseMigrationCount(
       await runCommand(
@@ -338,6 +443,17 @@ export async function verifyOciRuntime(): Promise<void> {
       [...compose, "up", "--detach", "--wait", "api", "worker"],
       environment,
     );
+    for (const service of ["api", "worker"] as const) {
+      assertRuntimeSecurity(
+        service,
+        await runCommand(
+          "docker",
+          runtimeSecurityProbeArguments(compose, service),
+          environment,
+          true,
+        ),
+      );
+    }
 
     const apiPort = parsePublishedApiPort(
       await runCommand("docker", [...compose, "port", "api", "4000"], environment, true),
@@ -420,7 +536,7 @@ export async function verifyOciRuntime(): Promise<void> {
       throw new Error(`OCI runtime verification interrupted by ${interruptedBy}.`);
     }
     process.stdout.write(
-      "OCI runtime verification passed image builds, migrations, fail-closed API health, loopback worker health, and graceful shutdown.\n",
+      "OCI runtime verification passed hardened non-root containers, image builds, migrations, fail-closed API health, loopback worker health, and graceful shutdown.\n",
     );
   } catch (error) {
     primaryError = error;
