@@ -1,0 +1,210 @@
+import {
+  DomainError,
+  browserSessionId,
+  createWorkItem,
+  userId,
+  workspaceId,
+} from "@schedule/domain";
+import Fastify, { type FastifyInstance } from "fastify";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  HOSTED_WORK_ITEM_CREATE_ROUTE,
+  registerHostedWorkItemBoundary,
+  type HostedWorkItemServices,
+} from "./hosted-work-item-routes.js";
+import { installErrorHandler } from "./http-errors.js";
+
+const USER_ID = userId("00000000-0000-4000-8000-000000000101");
+const OTHER_USER_ID = userId("00000000-0000-4000-8000-000000000102");
+const SESSION_ID = browserSessionId("00000000-0000-4000-8000-000000000201");
+const WORKSPACE_ID = workspaceId("00000000-0000-4000-8000-000000000301");
+const OTHER_WORKSPACE_ID = workspaceId("00000000-0000-4000-8000-000000000302");
+const principal = {
+  userId: USER_ID,
+  sessionId: SESSION_ID,
+  idleExpiresAt: new Date("2026-07-15T10:00:00.000Z"),
+  absoluteExpiresAt: new Date("2026-07-16T00:00:00.000Z"),
+};
+const authorization = Object.freeze({
+  userId: USER_ID,
+  sessionId: SESSION_ID,
+  workspaceId: WORKSPACE_ID,
+});
+
+const apps: FastifyInstance[] = [];
+
+afterEach(async () => {
+  await Promise.all(apps.splice(0).map(async (app) => app.close()));
+});
+
+async function createHostedApp(services: HostedWorkItemServices): Promise<FastifyInstance> {
+  const app = Fastify();
+  apps.push(app);
+  installErrorHandler(app);
+  await registerHostedWorkItemBoundary(
+    app,
+    {
+      csrfGuard: { verify: () => true },
+      authenticator: { authenticate: async () => principal },
+      authorizer: {
+        execute: async (candidate, requestedWorkspace) =>
+          candidate.userId === USER_ID && requestedWorkspace === WORKSPACE_ID
+            ? Object.freeze({ ...candidate, workspaceId: requestedWorkspace })
+            : null,
+      },
+    },
+    services,
+  );
+  await app.ready();
+  return app;
+}
+
+describe("dormant hosted work-item routes", () => {
+  it("derives canonical authority from the boundary and ignores spoofed headers", async () => {
+    const created = createWorkItem({
+      workspaceId: WORKSPACE_ID,
+      title: "Hosted task",
+      description: "Created through the dormant route",
+      priority: "high",
+      planningDurationMinutes: 45,
+      now: new Date("2026-07-15T09:00:00.000Z"),
+    });
+    const createWorkItemService = vi.fn(async () => created);
+    const app = await createHostedApp({ createWorkItem: createWorkItemService });
+
+    const response = await app.inject({
+      method: "POST",
+      url: HOSTED_WORK_ITEM_CREATE_ROUTE.replace(":workspaceId", WORKSPACE_ID.toUpperCase()),
+      headers: { "x-user-id": OTHER_USER_ID, "x-workspace-id": OTHER_WORKSPACE_ID },
+      payload: {
+        title: "  Hosted task  ",
+        description: "Created through the dormant route",
+        priority: "high",
+        planningDurationMinutes: 45,
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toMatchObject({ id: created.id, workspaceId: WORKSPACE_ID });
+    expect(createWorkItemService).toHaveBeenCalledWith({
+      authorization,
+      command: {
+        parentWorkItemId: null,
+        title: "Hosted task",
+        description: "Created through the dormant route",
+        status: "backlog",
+        priority: "high",
+        dueOn: null,
+        planningDurationMinutes: 45,
+      },
+    });
+    expect(Object.isFrozen(createWorkItemService.mock.calls[0]?.[0].authorization)).toBe(true);
+  });
+
+  it("rejects identity-bearing and malformed bodies before calling the service", async () => {
+    const createWorkItemService = vi.fn();
+    const app = await createHostedApp({ createWorkItem: createWorkItemService });
+
+    for (const payload of [
+      { title: "Spoof", userId: OTHER_USER_ID },
+      { title: "" },
+      { title: "Valid", planningDurationMinutes: 0 },
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: HOSTED_WORK_ITEM_CREATE_ROUTE.replace(":workspaceId", WORKSPACE_ID),
+        payload,
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    expect(createWorkItemService).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      new DomainError("hosted.authentication_failed", "private session detail"),
+      401,
+      "hosted.authentication_failed",
+      "Authentication failed.",
+    ],
+    [
+      new DomainError("workspace.not_found", "private membership detail"),
+      404,
+      "workspace.not_found",
+      "The requested workspace does not exist.",
+    ],
+  ] as const)(
+    "maps transaction authorization denial without exposing auth detail",
+    async (failure, status, code, message) => {
+      const app = await createHostedApp({
+        createWorkItem: vi.fn().mockRejectedValue(failure),
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: HOSTED_WORK_ITEM_CREATE_ROUTE.replace(":workspaceId", WORKSPACE_ID),
+        payload: { title: "Denied" },
+      });
+
+      expect(response.statusCode).toBe(status);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.json()).toMatchObject({ error: { code, message } });
+      if (code === "hosted.authentication_failed") {
+        expect(response.headers["www-authenticate"]).toBeUndefined();
+        expect(response.body).not.toContain("private session detail");
+      } else {
+        expect(response.body).not.toContain("private membership detail");
+      }
+    },
+  );
+
+  it("redacts internal transaction failures", async () => {
+    const app = await createHostedApp({
+      createWorkItem: vi.fn().mockRejectedValue(new Error("database-password")),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: HOSTED_WORK_ITEM_CREATE_ROUTE.replace(":workspaceId", WORKSPACE_ID),
+      payload: { title: "Unavailable" },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toMatchObject({
+      error: { code: "internal.unexpected_error", message: "An unexpected error occurred." },
+    });
+    expect(response.body).not.toContain("database-password");
+  });
+
+  it("fails closed before route services when the composed boundary returns inconsistent access", async () => {
+    const app = Fastify();
+    apps.push(app);
+    installErrorHandler(app);
+    const createWorkItemService = vi.fn();
+    await registerHostedWorkItemBoundary(
+      app,
+      {
+        csrfGuard: { verify: () => true },
+        authenticator: { authenticate: async () => principal },
+        authorizer: {
+          execute: async () => Object.freeze({ ...authorization, workspaceId: OTHER_WORKSPACE_ID }),
+        },
+      },
+      { createWorkItem: createWorkItemService },
+    );
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST",
+      url: HOSTED_WORK_ITEM_CREATE_ROUTE.replace(":workspaceId", WORKSPACE_ID),
+      payload: { title: "Mismatched" },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ error: { code: "hosted.authorization_unavailable" } });
+    expect(createWorkItemService).not.toHaveBeenCalled();
+  });
+});

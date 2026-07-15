@@ -23,6 +23,7 @@
     "notification-materializer": { "command": "pnpm verify:database", "ci": true },
     "worker-observability": { "command": "pnpm verify:database", "ci": true },
     "hosted-identity": { "command": "pnpm verify:database", "ci": true },
+    "hosted-mutation-authorization": { "command": "pnpm verify:database", "ci": true },
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
     "notification-migrations": { "command": "pnpm verify:database", "ci": true },
     "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
@@ -2526,7 +2527,7 @@
         "anchor": "# Dormant hosted request authorization seam"
       },
       "limitations": [
-        "The seam, cookie/CSRF transport, and provider-neutral authentication lifecycle registrar are not registered in buildApp: concrete provider verification, public end-user routes, transaction-coupled product mutations, and synchronization remain unimplemented.",
+        "The seam, cookie/CSRF transport, provider-neutral authentication lifecycle, and one transaction-coupled work-item-create registrar are not registered in buildApp: concrete provider verification, a broader public end-user product surface, and synchronization remain unimplemented.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [
@@ -2589,6 +2590,70 @@
           "command": "hosted-identity",
           "anchors": [
             "Hosted identity verification passed exact concurrent provisioning, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-transaction-coupled-work-item-create",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Dormant transaction-coupled work-item create"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/hosted-mutation-authorization.test.ts",
+          "command": "unit",
+          "anchors": [
+            "reauthorizes before one product operation and forwards transaction options",
+            "fails closed on %s before product work",
+            "propagates repository failures without starting product work"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/create-hosted-work-item.test.ts",
+          "command": "unit",
+          "anchors": [
+            "derives authority from the request context and writes in the same transaction"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/repositories.test.ts",
+          "command": "unit",
+          "anchors": [
+            "wires hosted reauthorization into one product transaction",
+            "retries hosted mutations after a serialization failure"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-work-item-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "derives canonical authority from the boundary and ignores spoofed headers",
+            "rejects identity-bearing and malformed bodies before calling the service",
+            "maps transaction authorization denial without exposing auth detail",
+            "redacts internal transaction failures",
+            "fails closed before route services when the composed boundary returns inconsistent access"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-mutation-authorization.ts",
+          "command": "hosted-mutation-authorization",
+          "anchors": [
+            "Hosted mutation verification passed exact user/session/workspace/membership locking, cross-tenant denial, logout/disable/expiry fencing, both revocation linearizations, and rollback isolation"
           ]
         }
       ]

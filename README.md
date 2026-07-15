@@ -236,7 +236,7 @@ Core packages do not depend on a hosting provider, queue vendor, or cloud SDK. T
 runtime images use a fixed non-root identity; the executable OCI smoke gate additionally enforces a
 read-only root filesystem, dropped Linux capabilities, and `no-new-privileges` for migrations, the
 API, and the worker. These controls are a provider-neutral deployment prerequisite, not evidence that
-public hosting or browser authentication is enabled. A provider-neutral login/session/logout
-registrar now exercises the hardened browser-session boundary in isolation, but it remains absent
-from `buildApp` and production server wiring until a concrete verifier, fail-closed configuration,
-and transaction-coupled hosted mutations exist.
+public hosting or browser authentication is enabled. Provider-neutral login/session/logout and
+transaction-coupled hosted work-item-create registrars now exercise the hardened browser boundary in
+isolation. Both remain absent from `buildApp` and production server wiring until a concrete verifier,
+fail-closed configuration, and an intentionally selected public hosted surface exist.

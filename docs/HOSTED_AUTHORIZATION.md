@@ -1,10 +1,10 @@
 # Dormant hosted request authorization seam
 
 Schedule contains a centralized, provider-neutral request boundary for future hosted workspace
-routes and a provider-neutral browser authentication lifecycle registrar. Both are implemented and
-tested, but deliberately have no production registration: `buildApp` and the server do not install
-them, no browser route is reachable, and the local and machine-integration trust boundaries are
-unchanged.
+routes, a provider-neutral browser authentication lifecycle registrar, and one transaction-coupled
+hosted work-item-create registrar. All are implemented and tested, but deliberately have no
+production registration: `buildApp` and the server do not install them, no browser route is
+reachable, and the local and machine-integration trust boundaries are unchanged.
 
 ## Boundary contract
 
@@ -85,18 +85,48 @@ audience/authorized-party claims, timestamps, nonce, and the state/redirect/PKCE
 flow—before returning issuer and subject. Email, display name, or other claims can never substitute
 for that exact provider identity.
 
-## Revocation and transaction limit
+## Preflight transaction limit
 
 The read-side membership decision uses one exact indexed statement at `read committed`. A committed
 revocation fences subsequent requests. If authorization races a revocation, the request may
 linearize immediately before the revocation; the revocation cannot retroactively cancel an
 already-authorized in-flight request.
 
-This preflight boundary is therefore not transaction authority for a hosted mutation. Before any
-existing product mutation is exposed, its hosted adapter must reauthorize inside the same database
-transaction as the product write (with a documented common lock order), or provide an equivalent
-database-enforced tenant boundary. The current separate identity and local-product units of work do
-not make that stronger claim.
+This preflight boundary is therefore not transaction authority for a hosted mutation. Every hosted
+mutation must reauthorize inside the same database transaction as the product write (with a
+documented common lock order), or provide an equivalent database-enforced tenant boundary. It is
+never sufficient to call the separate identity and local-product units of work in sequence.
+
+## Dormant transaction-coupled work-item create
+
+`registerHostedWorkItemBoundary` inseparably composes the hosted authentication, CSRF, and workspace
+authorization boundary with one route:
+`POST /v1/hosted/workspaces/:workspaceId/work-items`. It accepts the same strict work-item body as
+the local create route, derives workspace authority only from the immutable hosted boundary context,
+ignores identity-shaped headers, rejects identity fields in the body, and returns `201` for a
+successful create. A path/context mismatch fails as the same generic `workspace.not_found` response.
+The registrar is not installed by `buildApp`, the server, configuration, or deployment manifests.
+
+`CreateHostedWorkItem` adapts a specialized hosted mutation unit of work to the existing product
+create use case without nesting transactions. In one PostgreSQL transaction the adapter locks and
+checks, in this order:
+
+1. the exact hosted user `FOR UPDATE`, requiring active status;
+2. the exact browser session `FOR UPDATE`, requiring the same user, no revocation, and idle plus
+   absolute availability at authoritative `clock_timestamp()`;
+3. the exact workspace `FOR KEY SHARE`, fencing deletion before the cascading membership child is
+   locked;
+4. the exact `(user_id, workspace_id)` membership `FOR UPDATE`, requiring active status; and
+5. only then, any product graph locks, workspace/parent reads, work-item insert, and hierarchy audit.
+
+This global user-before-session order matches session resolution and user disablement. Locking the
+workspace before membership avoids an inverse order with workspace deletion. The membership lock is
+the common linearization point with revocation/reactivation, and all locks remain held through the
+product commit or rollback. A create that acquires the locks first may commit before a queued
+revocation; a revocation that commits first makes the create fail without product or audit residue.
+A committed logout, disabled user, expired session, missing workspace, cross-tenant tuple, or revoked
+membership likewise denies the write. Authentication loss is a generic `401`; workspace or
+membership loss is the same generic `404`; unexpected adapter/database failures remain redacted.
 
 ## Deliberately absent
 
@@ -104,8 +134,9 @@ There is still no OIDC discovery or callback, concrete identity-provider verifie
 registered authentication route, hosted configuration flag, public workspace route, hosted CORS
 policy, account-management API, role model, synchronization protocol, or cloud deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
-principal. Product routes must remain closed until provider validation and transaction-coupled
-mutation authorization have their own negative isolation tests.
+principal. The dormant work-item create is the only transaction-coupled hosted product mutation;
+all other product routes remain local-only and require their own transaction authority before any
+future hosted exposure.
 
 ## Verification
 
@@ -120,3 +151,9 @@ membership decisions.
 `pnpm verify:hosted-identity` drives the production PostgreSQL adapter through active authorization
 plus concurrent authorization/revocation (where either valid linearization is allowed) and proves
 the committed revocation fences the next decision.
+`pnpm verify:hosted-mutation-authorization` provisions disposable hosted identities, sessions,
+workspaces, and memberships, then drives the production hosted/product transaction adapter through
+an authorized create, cross-tenant combinations, committed membership/session/user/expiry denial,
+both forced create-versus-revocation linearizations, and rollback isolation. It also proves a denied
+or failed create leaves no work item or hierarchy audit; a bounded membership write immediately
+after the forced rollback probes that its authorization locks were released.

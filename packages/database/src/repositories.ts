@@ -44,6 +44,11 @@ import type {
   IntegrationRequestReservationInput,
   IntegrationTransactionContext,
   IntegrationUnitOfWork,
+  HostedMutationAuthorizationDecision,
+  HostedMutationAuthorizationRepository,
+  HostedMutationTransactionContext,
+  HostedMutationUnitOfWork,
+  HostedWorkspaceAuthorization,
   NaturalLanguageProposalRecord,
   NaturalLanguageProposalRepository,
   NaturalLanguageProposalTransactionContext,
@@ -151,6 +156,7 @@ import { databaseErrorCode, databaseErrorConstraint } from "./database-errors.js
 import {
   activityEvents,
   auditEvents,
+  browserSessions,
   dailyPlanFitInsightFeedbackEvents,
   dailyPlanHeads,
   dailyPlanItemStates,
@@ -159,6 +165,7 @@ import {
   integrationConfirmations,
   integrationCredentials,
   integrationRequests,
+  hostedUsers,
   notificationDeliveryAttempts,
   notificationDeliveryCommands,
   notificationDeliveryRequests,
@@ -177,6 +184,7 @@ import {
   workItemDependencies,
   workItems,
   workspaces,
+  workspaceMemberships,
 } from "./schema.js";
 
 type TransactionCallback = Parameters<DatabaseConnection["db"]["transaction"]>[0];
@@ -4863,6 +4871,75 @@ export class PostgresNaturalLanguageProposalRepository implements NaturalLanguag
   }
 }
 
+class PostgresHostedMutationAuthorizationRepository implements HostedMutationAuthorizationRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async reauthorizeForUpdate(
+    authorization: HostedWorkspaceAuthorization,
+  ): Promise<HostedMutationAuthorizationDecision> {
+    // This order matches identity administration (user before session), locks the workspace before
+    // its cascading membership child, and leaves all product locks until after authorization.
+    const [user] = await this.database
+      .select({ status: hostedUsers.status })
+      .from(hostedUsers)
+      .where(eq(hostedUsers.id, authorization.userId))
+      .limit(1)
+      .for("update");
+    const [session] = await this.database
+      .select({
+        userId: browserSessions.userId,
+        idleExpiresAt: browserSessions.idleExpiresAt,
+        absoluteExpiresAt: browserSessions.absoluteExpiresAt,
+        revokedAt: browserSessions.revokedAt,
+      })
+      .from(browserSessions)
+      .where(eq(browserSessions.id, authorization.sessionId))
+      .limit(1)
+      .for("update");
+    const [workspace] = await this.database
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(eq(workspaces.id, authorization.workspaceId))
+      .limit(1)
+      .for("key share");
+    const [membership] = await this.database
+      .select({ status: workspaceMemberships.status })
+      .from(workspaceMemberships)
+      .where(
+        and(
+          eq(workspaceMemberships.userId, authorization.userId),
+          eq(workspaceMemberships.workspaceId, authorization.workspaceId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    const clockRows = await this.database.execute(
+      sql<{ value: unknown }>`select clock_timestamp() as value`,
+    );
+    const clockValue = clockRows[0]?.value;
+    const now =
+      clockValue instanceof Date || typeof clockValue === "string" ? new Date(clockValue) : null;
+    if (now === null || !Number.isFinite(now.getTime())) {
+      throw new Error("Hosted mutation authorization received an invalid database timestamp.");
+    }
+
+    if (
+      user?.status !== "active" ||
+      session === undefined ||
+      session.userId !== authorization.userId ||
+      session.revokedAt !== null ||
+      now.getTime() >= session.idleExpiresAt.getTime() ||
+      now.getTime() >= session.absoluteExpiresAt.getTime()
+    ) {
+      return "authentication_failed";
+    }
+    if (workspace === undefined || membership?.status !== "active") {
+      return "workspace_not_found";
+    }
+    return "authorized";
+  }
+}
+
 function createTransactionContext(database: DatabaseExecutor): TransactionContext {
   return {
     workspaces: new PostgresWorkspaceRepository(database),
@@ -4879,6 +4956,15 @@ function createTransactionContext(database: DatabaseExecutor): TransactionContex
     ),
     dailyPlans: new PostgresDailyPlanRepository(database),
     notifications: new PostgresNotificationRepository(database),
+  };
+}
+
+function createHostedMutationTransactionContext(
+  database: DatabaseExecutor,
+): HostedMutationTransactionContext {
+  return {
+    ...createTransactionContext(database),
+    hostedMutationAuthorization: new PostgresHostedMutationAuthorizationRepository(database),
   };
 }
 
@@ -4934,6 +5020,33 @@ export class PostgresUnitOfWork implements UnitOfWork {
       try {
         return await this.connection.db.transaction(
           async (transaction) => operation(createTransactionContext(transaction)),
+          {
+            isolationLevel:
+              options?.isolationLevel === "read_committed" ? "read committed" : "serializable",
+          },
+        );
+      } catch (error) {
+        if (databaseErrorCode(error) !== "40001" || retry >= serializationRetryLimit) throw error;
+        await waitForSerializationRetry(retry);
+        retry += 1;
+      }
+    }
+  }
+}
+
+/** Product repositories plus hosted reauthorization, all backed by one PostgreSQL transaction. */
+export class PostgresHostedMutationUnitOfWork implements HostedMutationUnitOfWork {
+  constructor(private readonly connection: DatabaseConnection) {}
+
+  async run<Result>(
+    operation: (context: HostedMutationTransactionContext) => Promise<Result>,
+    options?: UnitOfWorkOptions,
+  ): Promise<Result> {
+    let retry = 0;
+    while (true) {
+      try {
+        return await this.connection.db.transaction(
+          async (transaction) => operation(createHostedMutationTransactionContext(transaction)),
           {
             isolationLevel:
               options?.isolationLevel === "read_committed" ? "read committed" : "serializable",

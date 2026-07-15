@@ -30,6 +30,7 @@ import {
   PostgresNaturalLanguageProposalRepository,
   PostgresNaturalLanguageProposalUnitOfWork,
   PostgresDailyPlanFitInsightFeedbackRepository,
+  PostgresHostedMutationUnitOfWork,
   PostgresRoutineDurationInsightFeedbackRepository,
   PostgresUnitOfWork,
   PostgresWorkItemDependencyRepository,
@@ -205,6 +206,42 @@ describe("PostgresUnitOfWork", () => {
 
     expect(repositories).toContain("workItemDependencies");
     expect(repositories).toContain("routineDurationInsightFeedback");
+  });
+
+  it("wires hosted reauthorization into one product transaction", async () => {
+    const transaction = vi.fn(async (operation: (transaction: unknown) => Promise<unknown>) =>
+      operation({}),
+    );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+
+    const repositories = await new PostgresHostedMutationUnitOfWork(connection).run(
+      async (context) => Object.keys(context).sort(),
+      { isolationLevel: "read_committed" },
+    );
+
+    expect(repositories).toContain("hostedMutationAuthorization");
+    expect(repositories).toContain("workItems");
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "read committed",
+    });
+  });
+
+  it("retries hosted mutations after a serialization failure", async () => {
+    const serializationFailure = Object.assign(new Error("serialization failure"), {
+      code: "40001",
+    });
+    const transaction = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("query failed", { cause: serializationFailure }))
+      .mockImplementationOnce(async (operation: (transaction: unknown) => Promise<unknown>) =>
+        operation({}),
+      );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+
+    await expect(
+      new PostgresHostedMutationUnitOfWork(connection).run(async () => "committed"),
+    ).resolves.toBe("committed");
+    expect(transaction).toHaveBeenCalledTimes(2);
   });
 
   it("persists a work item due date on insert and save", async () => {

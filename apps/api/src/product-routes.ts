@@ -329,7 +329,7 @@ const workItemStatus = z.enum([
   "cancelled",
 ]);
 const workItemPriority = z.enum(["none", "low", "medium", "high", "urgent"]);
-const workItemBody = z.strictObject({
+export const workItemCreateBodySchema = z.strictObject({
   parentWorkItemId: uuid.nullable().default(null),
   title: z.string().trim().min(1).max(240),
   description: z.string().max(4_000).nullable().default(null),
@@ -338,7 +338,7 @@ const workItemBody = z.strictObject({
   dueOn: localDateText.nullable().default(null),
   planningDurationMinutes: z.number().int().positive().max(43_200).nullable().default(null),
 });
-const subtaskBody = workItemBody.omit({ parentWorkItemId: true });
+const subtaskBody = workItemCreateBodySchema.omit({ parentWorkItemId: true });
 const workItemQuery = z.strictObject({
   status: workItemStatus.optional(),
   priority: workItemPriority.optional(),
@@ -1006,7 +1006,7 @@ export async function registerProductRoutes(
 
   app.post("/v1/workspaces/:workspaceId/work-items", async (request, reply) => {
     const params = parseRequest(workspaceParams, request.params);
-    const body = parseRequest(workItemBody, request.body);
+    const body = parseRequest(workItemCreateBodySchema, request.body);
     const created = await services.createWorkItem({
       workspaceId: workspaceId(params.workspaceId),
       parentWorkItemId: body.parentWorkItemId === null ? null : workItemId(body.parentWorkItemId),

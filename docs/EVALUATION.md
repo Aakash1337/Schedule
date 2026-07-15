@@ -553,9 +553,13 @@ The audit deliberately leaves these visible instead of turning them into false g
   lifecycle registrar has unit evidence for identity-private session bootstrap, strict and bounded
   proof exchange, verification-before-credential-work ordering, exact issuer/subject provisioning
   with returned-binding consistency checks, disabled-user denial, hardened cookie issuance,
-  idempotent signed-out revocation, and redacted failures. The stack remains dormant: the registrar
-  is not installed, and there is no concrete provider verification, hosted configuration,
-  transaction-coupled product mutation authorization, public deployment, or synchronization;
+  idempotent signed-out revocation, and redacted failures. One separately dormant work-item-create
+  registrar has application, API, adapter, and disposable-PostgreSQL evidence for same-transaction
+  user/session/workspace/membership locking, exact-context authority, cross-tenant denial,
+  logout/disable/expiry fencing, both membership-revocation linearizations, and rollback isolation.
+  The stack remains dormant: neither registrar is installed, and there is no concrete provider
+  verification, hosted configuration, broader hosted product surface, public deployment, or
+  synchronization;
 - ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a
