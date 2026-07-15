@@ -109,10 +109,12 @@ function dependency(
 
 function deferred<Value>() {
   let resolve!: (value: Value | PromiseLike<Value>) => void;
-  const promise = new Promise<Value>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<Value>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 beforeEach(() => {
@@ -192,6 +194,63 @@ describe("work board", () => {
         expectedVersion: created.version,
         status: "done",
       }),
+    );
+  });
+
+  it("reveals and focuses a terminal item created from the default active-work view", async () => {
+    const user = userEvent.setup();
+    const created: WorkItem = {
+      ...item,
+      id: "item-created-done",
+      title: "Close the launch checklist",
+      description: null,
+      status: "done",
+      priority: "none",
+      version: 1,
+    };
+    apiMocks.createWorkItem.mockResolvedValue(created);
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await screen.findByRole("heading", { name: item.title });
+    await user.type(screen.getByRole("textbox", { name: "Title" }), created.title);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Starting status" }), "done");
+    await user.click(screen.getByRole("button", { name: "Add item" }));
+
+    expect(screen.getByRole("combobox", { name: "Filter by status" })).toHaveValue("done");
+    const createdHeading = await screen.findByRole("heading", { name: created.title });
+    const createdCard = createdHeading.closest("article");
+    if (createdCard === null) throw new Error("Created terminal work card was not rendered.");
+    await waitFor(() => expect(createdCard).toHaveFocus());
+  });
+
+  it("reports a create failure after the priority filter changes in flight", async () => {
+    const user = userEvent.setup();
+    const creation = deferred<WorkItem>();
+    apiMocks.createWorkItem.mockReturnValue(creation.promise);
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await screen.findByRole("heading", { name: item.title });
+    await user.type(screen.getByRole("textbox", { name: "Title" }), "Publish release notes");
+    await user.click(screen.getByRole("button", { name: "Add item" }));
+    await waitFor(() => expect(apiMocks.createWorkItem).toHaveBeenCalledOnce());
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filter by priority" }), "high");
+    await waitFor(() =>
+      expect(apiMocks.listWorkItems).toHaveBeenCalledWith(
+        workspace.id,
+        { priority: "high" },
+        expect.any(AbortSignal),
+      ),
+    );
+    await act(async () => {
+      creation.reject(new Error("The work item could not be created."));
+      await creation.promise.catch(() => undefined);
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The work item could not be created.",
     );
   });
 
@@ -398,6 +457,110 @@ describe("work board", () => {
     expect(resetButton).toBeEnabled();
     await user.click(resetButton);
     expect(screen.getByRole("searchbox", { name: "Search work" })).toHaveValue("");
+  });
+
+  it("merges a fresh dependency catalog with a concurrent local item create", async () => {
+    const user = userEvent.setup();
+    const pendingCreate = deferred<WorkItem>();
+    const pendingFilteredRefresh = deferred<{
+      readonly items: readonly WorkItem[];
+      readonly page: { readonly limit: number; readonly offset: number };
+    }>();
+    const pendingCatalogRefresh = deferred<{
+      readonly items: readonly WorkItem[];
+      readonly page: { readonly limit: number; readonly offset: number };
+    }>();
+    const pendingDependencyRefresh = deferred<{
+      readonly items: readonly WorkItemDependency[];
+      readonly page: { readonly limit: number; readonly offset: number };
+    }>();
+    const created: WorkItem = {
+      ...item,
+      id: "item-created-during-refresh",
+      title: "Prepare the rollback checklist",
+      description: null,
+      status: "backlog",
+      version: 1,
+    };
+    const externalPrerequisite: WorkItem = {
+      ...item,
+      id: "item-external-prerequisite",
+      title: "Approve the release candidate",
+      priority: "low",
+      version: 1,
+    };
+    const filterLoadedMarker: WorkItem = {
+      ...item,
+      id: "item-high-filter-loaded",
+      title: "High-priority filter loaded",
+      version: 1,
+    };
+    let highPriorityLoads = 0;
+    let allPriorityLoads = 0;
+    apiMocks.createWorkItem.mockReturnValue(pendingCreate.promise);
+    apiMocks.listWorkItems.mockImplementation(
+      (_workspaceId: string, filters: { priority?: string }) => {
+        if (filters.priority === "high") {
+          highPriorityLoads += 1;
+          return highPriorityLoads === 1
+            ? Promise.resolve({
+                items: [item, filterLoadedMarker],
+                page: { limit: 200, offset: 0 },
+              })
+            : pendingFilteredRefresh.promise;
+        }
+        allPriorityLoads += 1;
+        return allPriorityLoads === 1
+          ? Promise.resolve({ items: [item], page: { limit: 200, offset: 0 } })
+          : pendingCatalogRefresh.promise;
+      },
+    );
+    apiMocks.listWorkItemDependencies
+      .mockResolvedValueOnce({ items: [], page: { limit: 200, offset: 0 } })
+      .mockReturnValueOnce(pendingDependencyRefresh.promise);
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await screen.findByRole("heading", { name: item.title });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filter by priority" }), "high");
+    await screen.findByRole("heading", { name: filterLoadedMarker.title });
+    const heading = await screen.findByRole("heading", { name: item.title });
+    const card = heading.closest("article");
+    if (card === null) throw new Error("Work card was not rendered.");
+    await user.type(screen.getByRole("textbox", { name: "Title" }), created.title);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Priority" }), "high");
+    await user.click(screen.getByRole("button", { name: "Add item" }));
+    await waitFor(() => expect(apiMocks.createWorkItem).toHaveBeenCalledOnce());
+
+    await user.click(screen.getByRole("button", { name: "Refresh board" }));
+    await waitFor(() => {
+      expect(apiMocks.listWorkItems).toHaveBeenCalledTimes(4);
+      expect(apiMocks.listWorkItemDependencies).toHaveBeenCalledTimes(2);
+    });
+    await act(async () => {
+      pendingCreate.resolve(created);
+      await pendingCreate.promise;
+    });
+    expect(await screen.findByRole("heading", { name: created.title })).toBeInTheDocument();
+    await act(async () => {
+      pendingFilteredRefresh.resolve({ items: [item], page: { limit: 200, offset: 0 } });
+      pendingCatalogRefresh.resolve({
+        items: [item, externalPrerequisite],
+        page: { limit: 200, offset: 0 },
+      });
+      pendingDependencyRefresh.resolve({
+        items: [dependency(externalPrerequisite.id)],
+        page: { limit: 200, offset: 0 },
+      });
+      await Promise.all([
+        pendingFilteredRefresh.promise,
+        pendingCatalogRefresh.promise,
+        pendingDependencyRefresh.promise,
+      ]);
+    });
+
+    expect(screen.getByRole("heading", { name: created.title })).toBeInTheDocument();
+    expect(within(card).getByText(externalPrerequisite.title)).toBeVisible();
   });
 
   it("reveals terminal-only work from the active empty state and preserves keyboard focus", async () => {

@@ -1206,10 +1206,9 @@ test("manages prerequisites accessibly through the live 320px work-board flow", 
     expect(response.status()).toBe(201);
     const created = (await response.json()) as { readonly id: string };
     if (status === "done") {
-      await expect(main.getByRole("heading", { name: title, exact: true })).toHaveCount(0);
-    } else {
-      await expect(main.getByRole("heading", { name: title, exact: true })).toBeVisible();
+      await expect(page.getByRole("combobox", { name: "Filter by status" })).toHaveValue("done");
     }
+    await expect(main.getByRole("heading", { name: title, exact: true })).toBeVisible();
     return created;
   };
 

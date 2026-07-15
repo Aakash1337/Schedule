@@ -292,6 +292,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const [openDependencyEditorId, setOpenDependencyEditorId] = useState<string | null>(null);
   const dependencyRequestSequence = useRef(0);
   const boardDataRevisionRef = useRef(0);
+  const dependencyDataRevisionRef = useRef(0);
   const boardLoadSequenceRef = useRef(0);
   const workspaceDependencyDataRef = useRef<WorkspaceDependencyData | null>(null);
   const prerequisiteSelectRefs = useRef(new Map<string, HTMLSelectElement>());
@@ -316,6 +317,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       const requestSequence = boardLoadSequenceRef.current + 1;
       boardLoadSequenceRef.current = requestSequence;
       const startingDataRevision = boardDataRevisionRef.current;
+      const startingDependencyDataRevision = dependencyDataRevisionRef.current;
       setLoading(true);
       setLoadError(null);
       try {
@@ -351,14 +353,24 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
           boardLoadSequenceRef.current === requestSequence
         ) {
           const dataChangedDuringLoad = boardDataRevisionRef.current !== startingDataRevision;
+          const dependencyDataChangedDuringLoad =
+            dependencyDataRevisionRef.current !== startingDependencyDataRevision;
           const currentWorkspaceData =
-            dataChangedDuringLoad &&
             workspaceDependencyDataRef.current?.workspaceId === workspace.id
               ? workspaceDependencyDataRef.current
-              : workspaceData;
+              : null;
           const mergedWorkspaceData = {
-            ...currentWorkspaceData,
-            allItems: mergeWorkItems(currentWorkspaceData.allItems, result.items),
+            workspaceId: workspace.id,
+            allItems: mergeWorkItems(
+              dataChangedDuringLoad && currentWorkspaceData !== null
+                ? mergeWorkItems(workspaceData.allItems, currentWorkspaceData.allItems)
+                : workspaceData.allItems,
+              result.items,
+            ),
+            dependencies:
+              dependencyDataChangedDuringLoad && currentWorkspaceData !== null
+                ? currentWorkspaceData.dependencies
+                : workspaceData.dependencies,
           };
           const mergedItemsById = new Map(
             mergedWorkspaceData.allItems.map((item) => [item.id, item] as const),
@@ -573,7 +585,6 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     }
 
     const requestWorkspaceId = workspace.id;
-    const requestKey = activeQueryKey;
     setCreating(true);
     setCreateError(null);
     try {
@@ -623,8 +634,14 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       } else if (priorityFilter === "" || created.priority === priorityFilter) {
         setRecentlyCreatedItemId(created.id);
       }
+      const currentStatusFilter = (statusFilterRef.current?.value ??
+        statusFilter) as WorkStatusFilter;
+      if (!statusesForWorkFilter(currentStatusFilter).includes(created.status)) {
+        setStatusFilter(created.status);
+        setRecentlyCreatedItemId(created.id);
+      }
     } catch (error) {
-      if (activeQueryKeyRef.current === requestKey) setCreateError(messageFor(error));
+      if (proposalWorkspaceRef.current === requestWorkspaceId) setCreateError(messageFor(error));
     } finally {
       setCreating(false);
     }
@@ -674,6 +691,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       ]);
       if (activeQueryKeyRef.current !== requestKey) return;
       boardDataRevisionRef.current += 1;
+      dependencyDataRevisionRef.current += 1;
       workspaceDependencyDataRef.current = {
         workspaceId: requestWorkspaceId,
         allItems: allItems.items,
@@ -896,6 +914,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       }
       if (proposalWorkspaceRef.current === requestWorkspaceId) {
         boardDataRevisionRef.current += 1;
+        dependencyDataRevisionRef.current += 1;
       }
       updateWorkspaceDependencyData(requestWorkspaceId, (current) => {
         const exists = current.dependencies.some(
@@ -948,6 +967,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       await api.removeWorkItemPrerequisite(requestWorkspaceId, item.id, prerequisiteWorkItemId);
       if (proposalWorkspaceRef.current === requestWorkspaceId) {
         boardDataRevisionRef.current += 1;
+        dependencyDataRevisionRef.current += 1;
       }
       updateWorkspaceDependencyData(requestWorkspaceId, (current) => ({
         ...current,
