@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createScheduleBlock,
@@ -78,12 +78,17 @@ function createHarness() {
     updatedAt: new Date("2026-07-01T00:00:00.000Z"),
   };
   const credentials: IntegrationCredential[] = [credential];
+  const findCredentialByIdForUpdate = vi.fn(async (id: string) =>
+    credentials.find((item) => item.id === id),
+  );
   const confirmations: IntegrationConfirmationRecord[] = [];
   const requests: IntegrationRequestRecord[] = [];
   const workItems: WorkItem[] = [];
   const scheduleBlocks: ScheduleBlock[] = [];
   const audits: AuditEventRecord[] = [];
   const activityInputs: RecordPlanItemActivityInput[] = [];
+  const invalidatedTargets: string[] = [];
+  let notificationLocks = 0;
   const workItemListCalls: {
     workspaceId: string;
     status: string | undefined;
@@ -123,6 +128,7 @@ function createHarness() {
   const context: IntegrationTransactionContext = {
     credentials: {
       findById: async (id) => credentials.find((item) => item.id === id) ?? null,
+      findByIdForUpdate: async (id) => (await findCredentialByIdForUpdate(id)) ?? null,
       list: async (id) => credentials.filter((item) => item.workspaceId === id),
       insert: async (item) => {
         if (credentials.some((candidate) => candidate.id === item.id)) throw new Error("duplicate");
@@ -283,6 +289,10 @@ function createHarness() {
         workspaceIdValue === WORKSPACE_ID && date === currentPlan.date
           ? { plan: currentPlan, headVersion: 1 }
           : null,
+      findCurrentForDates: async (workspaceIdValue, dates) =>
+        workspaceIdValue === WORKSPACE_ID && dates.includes(currentPlan.date)
+          ? new Map([[currentPlan.date, { plan: currentPlan, headVersion: 1 }]])
+          : new Map(),
       setItemLock: async () => {
         throw new Error("not used");
       },
@@ -309,6 +319,7 @@ function createHarness() {
           activityState: input.type === "completion_reversed" ? "pending" : input.type,
           activityEvent: event,
           headVersion: input.expectedHeadVersion + 1,
+          replayed: false,
         };
       },
       lockDay: async () => undefined,
@@ -319,6 +330,15 @@ function createHarness() {
       listRoutineFeedbackForPlanning: async () => [],
       appendRoutineFeedback: async (feedback) => feedback,
     },
+    notifications: {
+      lockWorkspace: async () => {
+        notificationLocks += 1;
+      },
+      deleteIntentsForTarget: async (_workspaceId, targetType, targetId, kind) => {
+        invalidatedTargets.push(`${targetType}:${targetId}:${kind ?? "all"}`);
+        return 1;
+      },
+    } as IntegrationTransactionContext["notifications"],
   };
 
   const unitOfWork: IntegrationUnitOfWork = {
@@ -332,6 +352,8 @@ function createHarness() {
         scheduleBlocks: copy(scheduleBlocks),
         audits: copy(audits),
         activityInputs: copy(activityInputs),
+        invalidatedTargets: copy(invalidatedTargets),
+        notificationLocks,
       };
       try {
         return await operation(context);
@@ -343,6 +365,8 @@ function createHarness() {
         replace(scheduleBlocks, snapshot.scheduleBlocks);
         replace(audits, snapshot.audits);
         replace(activityInputs, snapshot.activityInputs);
+        replace(invalidatedTargets, snapshot.invalidatedTargets);
+        notificationLocks = snapshot.notificationLocks;
         throw error;
       }
     },
@@ -372,11 +396,16 @@ function createHarness() {
     scheduleBlocks,
     audits,
     activityInputs,
+    invalidatedTargets,
+    getNotificationLocks() {
+      return notificationLocks;
+    },
     workItemListCalls,
     getUnitOfWorkRuns() {
       return unitOfWorkRuns;
     },
     verifyCalls,
+    findCredentialByIdForUpdate,
     setNow(value: string) {
       currentTime = new Date(value);
     },
@@ -488,6 +517,7 @@ describe("integration credential boundary", () => {
     const replay = await test.services.revoke.execute({ credentialId: created.id });
     expect(revoked).toEqual(replay);
     expect(revoked).toMatchObject({ active: false, version: 2 });
+    expect(test.findCredentialByIdForUpdate).toHaveBeenCalledTimes(2);
     expect(
       test.audits.filter((event) => event.action === "integration.credential_revoked"),
     ).toHaveLength(1);
@@ -983,6 +1013,8 @@ describe("integration confirmation execution", () => {
       idempotencyKey: "due-date-create",
     });
     expect(replay).toEqual(created);
+    expect(test.getNotificationLocks()).toBe(2);
+    expect(test.invalidatedTargets).toEqual([`work_item:${created.outcome.workItem.id}:all`]);
 
     const storedResult = test.requests.find(
       (request) => request.idempotencyKey === "due-date-create",
@@ -1395,6 +1427,12 @@ describe("integration confirmation execution", () => {
     expect(activity.outcome).not.toHaveProperty("planItemActivity.activityEvent.idempotencyKey");
     expect(test.activityInputs[0]?.workspaceId).toBe(WORKSPACE_ID);
     expect(test.activityInputs[0]?.idempotencyKey).toMatch(/^integration:[0-9a-f]{64}$/);
+    expect(test.invalidatedTargets).toEqual([
+      `work_item:${SOURCE_WORK_ITEM_ID}:all`,
+      `schedule_block:${seededBlock.id}:all`,
+      `daily_plan:${PLAN_ID}:daily_follow_up`,
+      `work_item:${SOURCE_WORK_ITEM_ID}:work_item_due`,
+    ]);
     expect(
       JSON.parse(JSON.stringify([createdWork, updatedWork, createdBlock, updatedBlock, activity])),
     ).toBeDefined();

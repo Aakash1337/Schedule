@@ -116,6 +116,54 @@ export const webhookSecretStatus = pgEnum("webhook_secret_status", [
   "active",
   "retired",
 ]);
+export const notificationQuietHoursPolicy = pgEnum("notification_quiet_hours_policy", [
+  "skip",
+  "next_allowed",
+]);
+export const notificationRuleKind = pgEnum("notification_rule_kind", [
+  "daily_digest",
+  "daily_follow_up",
+  "plan_window_open",
+  "schedule_block_lead",
+  "work_item_due",
+]);
+export const notificationKind = pgEnum("notification_kind", [
+  "daily_digest",
+  "daily_follow_up",
+  "plan_window_open",
+  "schedule_block_lead",
+  "work_item_due",
+  "one_off",
+]);
+export const notificationTargetType = pgEnum("notification_target_type", [
+  "workspace",
+  "daily_plan",
+  "schedule_block",
+  "work_item",
+  "one_off",
+]);
+export const notificationLocalTimeResolution = pgEnum("notification_local_time_resolution", [
+  "exact",
+  "gap_later",
+  "overlap_earlier",
+]);
+export const notificationDeliveryStatus = pgEnum("notification_delivery_status", [
+  "pending",
+  "processing",
+  "delivered",
+  "dead_letter",
+  "invalidated",
+]);
+export const notificationDeliveryAttemptOutcome = pgEnum("notification_delivery_attempt_outcome", [
+  "delivered",
+  "retryable_failure",
+  "permanent_failure",
+  "lease_expired",
+]);
+export const notificationDeliveryRequestOperation = pgEnum(
+  "notification_delivery_request_operation",
+  ["claim", "receipt"],
+);
 
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -167,11 +215,11 @@ export const integrationCredentials = pgTable(
     check("integration_credentials_scopes_nonempty", sql`cardinality(${table.scopes}) > 0`),
     check(
       "integration_credentials_scopes_allowed",
-      sql`${table.scopes} <@ ARRAY['schedule:read', 'schedule:write']::text[]`,
+      sql`${table.scopes} <@ ARRAY['schedule:read', 'schedule:write', 'schedule:delivery']::text[]`,
     ),
     check(
       "integration_credentials_scopes_unique",
-      sql`cardinality(${table.scopes}) = (CASE WHEN 'schedule:read' = ANY(${table.scopes}) THEN 1 ELSE 0 END + CASE WHEN 'schedule:write' = ANY(${table.scopes}) THEN 1 ELSE 0 END)`,
+      sql`cardinality(${table.scopes}) = (CASE WHEN 'schedule:read' = ANY(${table.scopes}) THEN 1 ELSE 0 END + CASE WHEN 'schedule:write' = ANY(${table.scopes}) THEN 1 ELSE 0 END + CASE WHEN 'schedule:delivery' = ANY(${table.scopes}) THEN 1 ELSE 0 END)`,
     ),
     check(
       "integration_credentials_scopes_one_dimensional",
@@ -380,6 +428,7 @@ export const workItems = pgTable(
     unique("work_items_workspace_id_id_uq").on(table.workspaceId, table.id),
     index("work_items_workspace_status_idx").on(table.workspaceId, table.status),
     index("work_items_workspace_created_id_idx").on(table.workspaceId, table.createdAt, table.id),
+    index("work_items_workspace_due_id_idx").on(table.workspaceId, table.dueOn, table.id),
     index("work_items_workspace_status_priority_created_id_idx").on(
       table.workspaceId,
       table.status,
@@ -500,6 +549,115 @@ export const scheduleBlocks = pgTable(
     }).onDelete("cascade"),
     check("schedule_blocks_valid_range", sql`${table.endsAt} > ${table.startsAt}`),
     check("schedule_blocks_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
+export const notificationProfiles = pgTable(
+  "notification_profiles",
+  {
+    workspaceId: uuid("workspace_id")
+      .primaryKey()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    enabled: boolean("enabled").notNull().default(true),
+    timeZone: varchar("time_zone", { length: 80 }).notNull(),
+    quietHoursStartMinute: integer("quiet_hours_start_minute"),
+    quietHoursEndMinute: integer("quiet_hours_end_minute"),
+    quietHoursPolicy: notificationQuietHoursPolicy("quiet_hours_policy")
+      .notNull()
+      .default("next_allowed"),
+    catchUpWindowMinutes: integer("catch_up_window_minutes").notNull().default(60),
+    dailyIntentLimit: integer("daily_intent_limit").notNull().default(12),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check(
+      "notification_profiles_quiet_hours_pair",
+      sql`(${table.quietHoursStartMinute} IS NULL) = (${table.quietHoursEndMinute} IS NULL)`,
+    ),
+    check(
+      "notification_profiles_quiet_start_range",
+      sql`${table.quietHoursStartMinute} IS NULL OR ${table.quietHoursStartMinute} BETWEEN 0 AND 1439`,
+    ),
+    check(
+      "notification_profiles_quiet_end_range",
+      sql`${table.quietHoursEndMinute} IS NULL OR ${table.quietHoursEndMinute} BETWEEN 0 AND 1439`,
+    ),
+    check(
+      "notification_profiles_catch_up_range",
+      sql`${table.catchUpWindowMinutes} BETWEEN 0 AND 10080`,
+    ),
+    check(
+      "notification_profiles_daily_limit_range",
+      sql`${table.dailyIntentLimit} BETWEEN 1 AND 100`,
+    ),
+    check("notification_profiles_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
+export const notificationRules = pgTable(
+  "notification_rules",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    kind: notificationRuleKind("kind").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    localMinute: integer("local_minute"),
+    leadMinutes: integer("lead_minutes"),
+    cooldownMinutes: integer("cooldown_minutes").notNull().default(0),
+    priority: integer("priority").notNull().default(50),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("notification_rules_workspace_id_id_uq").on(table.workspaceId, table.id),
+    unique("notification_rules_workspace_id_kind_uq").on(table.workspaceId, table.id, table.kind),
+    index("notification_rules_workspace_kind_idx").on(table.workspaceId, table.kind, table.id),
+    check(
+      "notification_rules_configuration_valid",
+      sql`(
+        (${table.kind} IN ('daily_digest', 'daily_follow_up', 'work_item_due') AND ${table.localMinute} BETWEEN 0 AND 1439 AND ${table.leadMinutes} IS NULL)
+        OR
+        (${table.kind} IN ('plan_window_open', 'schedule_block_lead') AND ${table.localMinute} IS NULL AND ${table.leadMinutes} BETWEEN 0 AND 10080)
+      )`,
+    ),
+    check("notification_rules_cooldown_range", sql`${table.cooldownMinutes} BETWEEN 0 AND 10080`),
+    check("notification_rules_priority_range", sql`${table.priority} BETWEEN 0 AND 100`),
+    check("notification_rules_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
+export const oneOffReminders = pgTable(
+  "one_off_reminders",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    title: varchar("title", { length: 240 }).notNull(),
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("one_off_reminders_workspace_id_id_uq").on(table.workspaceId, table.id),
+    index("one_off_reminders_workspace_schedule_idx").on(
+      table.workspaceId,
+      table.scheduledFor,
+      table.id,
+    ),
+    check("one_off_reminders_title_nonempty", sql`char_length(btrim(${table.title})) > 0`),
+    check(
+      "one_off_reminders_cancellation_valid",
+      sql`${table.cancelledAt} IS NULL OR ${table.cancelledAt} >= ${table.createdAt}`,
+    ),
+    check("one_off_reminders_version_positive", sql`${table.version} > 0`),
   ],
 );
 
@@ -672,6 +830,333 @@ export const dailyPlans = pgTable(
     check("daily_plans_revision_positive", sql`${table.requestRevision} > 0`),
     check("daily_plans_minutes_nonnegative", sql`${table.totalMinutes} >= 0`),
     check("daily_plans_input_hash_length", sql`char_length(${table.inputHash}) = 64`),
+  ],
+);
+
+export const notificationIntents = pgTable(
+  "notification_intents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    ruleId: uuid("rule_id"),
+    ruleKind: notificationRuleKind("rule_kind"),
+    oneOffReminderId: uuid("one_off_reminder_id"),
+    kind: notificationKind("kind").notNull(),
+    occurrenceKey: varchar("occurrence_key", { length: 200 }).notNull(),
+    targetType: notificationTargetType("target_type").notNull(),
+    dailyPlanId: uuid("daily_plan_id"),
+    scheduleBlockId: uuid("schedule_block_id"),
+    workItemId: uuid("work_item_id"),
+    titleSnapshot: varchar("title_snapshot", { length: 240 }),
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    localDate: date("local_date").notNull(),
+    priority: integer("priority").notNull(),
+    policySnapshot: jsonb("policy_snapshot")
+      .$type<Record<string, string | number | boolean | null>>()
+      .notNull(),
+    localTimeResolution: notificationLocalTimeResolution("local_time_resolution").notNull(),
+    adjustedForQuietHours: boolean("adjusted_for_quiet_hours").notNull().default(false),
+    caughtUp: boolean("caught_up").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("notification_intents_workspace_id_id_uq").on(table.workspaceId, table.id),
+    unique("notification_intents_workspace_occurrence_uq").on(
+      table.workspaceId,
+      table.occurrenceKey,
+    ),
+    index("notification_intents_workspace_schedule_idx").on(
+      table.workspaceId,
+      table.scheduledFor,
+      table.id,
+    ),
+    index("notification_intents_workspace_rule_schedule_idx").on(
+      table.workspaceId,
+      table.ruleId,
+      table.scheduledFor,
+    ),
+    index("notification_intents_workspace_daily_plan_idx")
+      .on(table.workspaceId, table.dailyPlanId)
+      .where(sql`${table.dailyPlanId} is not null`),
+    index("notification_intents_workspace_schedule_block_idx")
+      .on(table.workspaceId, table.scheduleBlockId)
+      .where(sql`${table.scheduleBlockId} is not null`),
+    index("notification_intents_workspace_work_item_idx")
+      .on(table.workspaceId, table.workItemId)
+      .where(sql`${table.workItemId} is not null`),
+    index("notification_intents_workspace_one_off_idx")
+      .on(table.workspaceId, table.oneOffReminderId)
+      .where(sql`${table.oneOffReminderId} is not null`),
+    foreignKey({
+      name: "notification_intents_rule_tenant_kind_fk",
+      columns: [table.workspaceId, table.ruleId, table.ruleKind],
+      foreignColumns: [notificationRules.workspaceId, notificationRules.id, notificationRules.kind],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "notification_intents_one_off_tenant_fk",
+      columns: [table.workspaceId, table.oneOffReminderId],
+      foreignColumns: [oneOffReminders.workspaceId, oneOffReminders.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "notification_intents_daily_plan_tenant_fk",
+      columns: [table.workspaceId, table.dailyPlanId],
+      foreignColumns: [dailyPlans.workspaceId, dailyPlans.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "notification_intents_schedule_block_tenant_fk",
+      columns: [table.workspaceId, table.scheduleBlockId],
+      foreignColumns: [scheduleBlocks.workspaceId, scheduleBlocks.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "notification_intents_work_item_tenant_fk",
+      columns: [table.workspaceId, table.workItemId],
+      foreignColumns: [workItems.workspaceId, workItems.id],
+    }).onDelete("cascade"),
+    check(
+      "notification_intents_source_valid",
+      sql`(
+        (${table.kind} = 'one_off' AND ${table.ruleId} IS NULL AND ${table.ruleKind} IS NULL AND ${table.oneOffReminderId} IS NOT NULL)
+        OR
+        (${table.kind} <> 'one_off' AND ${table.ruleId} IS NOT NULL AND ${table.ruleKind} IS NOT NULL AND ${table.kind}::text = ${table.ruleKind}::text AND ${table.oneOffReminderId} IS NULL)
+      )`,
+    ),
+    check(
+      "notification_intents_target_valid",
+      sql`(
+        (${table.kind} = 'daily_digest' AND ${table.targetType} = 'workspace' AND ${table.dailyPlanId} IS NULL AND ${table.scheduleBlockId} IS NULL AND ${table.workItemId} IS NULL)
+        OR
+        (${table.kind} IN ('daily_follow_up', 'plan_window_open') AND ${table.targetType} = 'daily_plan' AND ${table.dailyPlanId} IS NOT NULL AND ${table.scheduleBlockId} IS NULL AND ${table.workItemId} IS NULL)
+        OR
+        (${table.kind} = 'schedule_block_lead' AND ${table.targetType} = 'schedule_block' AND ${table.dailyPlanId} IS NULL AND ${table.scheduleBlockId} IS NOT NULL AND ${table.workItemId} IS NULL)
+        OR
+        (${table.kind} = 'work_item_due' AND ${table.targetType} = 'work_item' AND ${table.dailyPlanId} IS NULL AND ${table.scheduleBlockId} IS NULL AND ${table.workItemId} IS NOT NULL)
+        OR
+        (${table.kind} = 'one_off' AND ${table.targetType} = 'one_off' AND ${table.dailyPlanId} IS NULL AND ${table.scheduleBlockId} IS NULL AND ${table.workItemId} IS NULL)
+      )`,
+    ),
+    check(
+      "notification_intents_occurrence_nonempty",
+      sql`char_length(btrim(${table.occurrenceKey})) > 0`,
+    ),
+    check("notification_intents_priority_range", sql`${table.priority} BETWEEN 0 AND 100`),
+    check(
+      "notification_intents_policy_snapshot_valid",
+      sql`jsonb_typeof(${table.policySnapshot}) = 'object' AND octet_length(${table.policySnapshot}::text) <= 4096`,
+    ),
+  ],
+);
+
+/**
+ * Provider-neutral delivery commands created lazily from due notification intents.
+ *
+ * The source intent ID and occurrence key are durable snapshots rather than foreign
+ * keys: policy or target invalidation may delete the mutable pending intent while
+ * this command remains as the exact-once delivery and audit boundary.
+ */
+export const notificationDeliveryCommands = pgTable(
+  "notification_delivery_commands",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    intentId: uuid("intent_id").notNull(),
+    occurrenceKey: varchar("occurrence_key", { length: 200 }).notNull(),
+    kind: notificationKind("kind").notNull(),
+    targetType: notificationTargetType("target_type").notNull(),
+    titleSnapshot: varchar("title_snapshot", { length: 240 }),
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    localDate: date("local_date").notNull(),
+    priority: integer("priority").notNull(),
+    status: notificationDeliveryStatus("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    availableAt: timestamp("available_at", { withTimezone: true }).notNull(),
+    currentClaimToken: uuid("current_claim_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    lastFailureCode: varchar("last_failure_code", { length: 80 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("notification_delivery_commands_workspace_id_id_uq").on(table.workspaceId, table.id),
+    unique("notification_delivery_commands_workspace_intent_uq").on(
+      table.workspaceId,
+      table.intentId,
+    ),
+    unique("notification_delivery_commands_workspace_occurrence_uq").on(
+      table.workspaceId,
+      table.occurrenceKey,
+    ),
+    index("notification_delivery_commands_claim_idx").on(
+      table.workspaceId,
+      table.status,
+      table.availableAt,
+      table.scheduledFor,
+    ),
+    index("notification_delivery_commands_recovery_idx")
+      .on(table.workspaceId, table.leaseExpiresAt, table.id)
+      .where(
+        sql`${table.status} IN ('processing', 'invalidated') AND ${table.leaseExpiresAt} IS NOT NULL`,
+      ),
+    check(
+      "notification_delivery_commands_occurrence_nonempty",
+      sql`char_length(btrim(${table.occurrenceKey})) > 0`,
+    ),
+    check(
+      "notification_delivery_commands_priority_range",
+      sql`${table.priority} BETWEEN 0 AND 100`,
+    ),
+    check("notification_delivery_commands_attempts_nonnegative", sql`${table.attempts} >= 0`),
+    check(
+      "notification_delivery_commands_failure_code_valid",
+      sql`${table.lastFailureCode} IS NULL OR ${table.lastFailureCode} ~ '^[a-z0-9][a-z0-9._-]{0,79}$'`,
+    ),
+    check(
+      "notification_delivery_commands_state_valid",
+      sql`(
+        (${table.status} = 'pending' AND ${table.currentClaimToken} IS NULL AND ${table.leaseExpiresAt} IS NULL AND ${table.completedAt} IS NULL)
+        OR
+        (${table.status} = 'processing' AND ${table.currentClaimToken} IS NOT NULL AND ${table.leaseExpiresAt} IS NOT NULL AND ${table.completedAt} IS NULL)
+        OR
+        (${table.status} IN ('delivered', 'dead_letter') AND ${table.currentClaimToken} IS NULL AND ${table.leaseExpiresAt} IS NULL AND ${table.completedAt} IS NOT NULL)
+        OR
+        (${table.status} = 'invalidated' AND ${table.completedAt} IS NOT NULL AND ((${table.currentClaimToken} IS NULL AND ${table.leaseExpiresAt} IS NULL) OR (${table.currentClaimToken} IS NOT NULL AND ${table.leaseExpiresAt} IS NOT NULL)))
+      )`,
+    ),
+    check(
+      "notification_delivery_commands_timestamps_valid",
+      sql`${table.updatedAt} >= ${table.createdAt} AND (${table.completedAt} IS NULL OR ${table.completedAt} >= ${table.createdAt})`,
+    ),
+  ],
+);
+
+/** Immutable claim attempts and bounded provider-neutral outcomes. */
+export const notificationDeliveryAttempts = pgTable(
+  "notification_delivery_attempts",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    deliveryId: uuid("delivery_id").notNull(),
+    credentialId: uuid("credential_id").notNull(),
+    attemptNumber: integer("attempt_number").notNull(),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull(),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(),
+    outcome: notificationDeliveryAttemptOutcome("outcome"),
+    failureCode: varchar("failure_code", { length: 80 }),
+    retryAfterSeconds: integer("retry_after_seconds"),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("notification_delivery_attempts_workspace_delivery_number_uq").on(
+      table.workspaceId,
+      table.deliveryId,
+      table.attemptNumber,
+    ),
+    index("notification_delivery_attempts_workspace_claimed_idx").on(
+      table.workspaceId,
+      table.claimedAt,
+      table.id,
+    ),
+    foreignKey({
+      name: "notification_delivery_attempts_command_tenant_fk",
+      columns: [table.workspaceId, table.deliveryId],
+      foreignColumns: [notificationDeliveryCommands.workspaceId, notificationDeliveryCommands.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "notification_delivery_attempts_credential_tenant_fk",
+      columns: [table.workspaceId, table.credentialId],
+      foreignColumns: [integrationCredentials.workspaceId, integrationCredentials.id],
+    }).onDelete("restrict"),
+    check("notification_delivery_attempts_number_positive", sql`${table.attemptNumber} > 0`),
+    check(
+      "notification_delivery_attempts_lease_after_claim",
+      sql`${table.leaseExpiresAt} > ${table.claimedAt}`,
+    ),
+    check(
+      "notification_delivery_attempts_failure_code_valid",
+      sql`${table.failureCode} IS NULL OR ${table.failureCode} ~ '^[a-z0-9][a-z0-9._-]{0,79}$'`,
+    ),
+    check(
+      "notification_delivery_attempts_outcome_valid",
+      sql`(
+        (${table.outcome} IS NULL AND ${table.failureCode} IS NULL AND ${table.retryAfterSeconds} IS NULL AND ${table.completedAt} IS NULL)
+        OR
+        (${table.outcome} IN ('delivered', 'lease_expired') AND ${table.failureCode} IS NULL AND ${table.retryAfterSeconds} IS NULL AND ${table.completedAt} IS NOT NULL)
+        OR
+        (${table.outcome} = 'retryable_failure' AND ${table.failureCode} IS NOT NULL AND ${table.retryAfterSeconds} BETWEEN 0 AND 60 AND ${table.completedAt} IS NOT NULL)
+        OR
+        (${table.outcome} = 'permanent_failure' AND ${table.failureCode} IS NOT NULL AND ${table.retryAfterSeconds} IS NULL AND ${table.completedAt} IS NOT NULL)
+      )`,
+    ),
+    check(
+      "notification_delivery_attempts_completion_after_claim",
+      sql`${table.completedAt} IS NULL OR ${table.completedAt} >= ${table.claimedAt}`,
+    ),
+  ],
+);
+
+/** Durable exact-replay records for delivery claim and receipt requests. */
+export const notificationDeliveryRequests = pgTable(
+  "notification_delivery_requests",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    credentialId: uuid("credential_id").notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    operation: notificationDeliveryRequestOperation("operation").notNull(),
+    requestHash: varchar("request_hash", { length: 64 }).notNull(),
+    status: integrationRequestStatus("status").notNull().default("processing"),
+    result: jsonb("result").$type<Record<string, unknown>>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("notification_delivery_requests_credential_key_uq").on(
+      table.credentialId,
+      table.idempotencyKey,
+    ),
+    index("notification_delivery_requests_workspace_created_idx").on(
+      table.workspaceId,
+      table.createdAt,
+      table.id,
+    ),
+    foreignKey({
+      name: "notification_delivery_requests_credential_tenant_fk",
+      columns: [table.workspaceId, table.credentialId],
+      foreignColumns: [integrationCredentials.workspaceId, integrationCredentials.id],
+    }).onDelete("cascade"),
+    check(
+      "notification_delivery_requests_key_nonempty",
+      sql`char_length(btrim(${table.idempotencyKey})) > 0`,
+    ),
+    check(
+      "notification_delivery_requests_hash_valid",
+      sql`${table.requestHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "notification_delivery_requests_result_bounded",
+      sql`${table.result} IS NULL OR (jsonb_typeof(${table.result}) = 'object' AND octet_length(${table.result}::text) <= 16384)`,
+    ),
+    check(
+      "notification_delivery_requests_state_valid",
+      sql`(
+        (${table.status} = 'processing' AND ${table.result} IS NULL AND ${table.completedAt} IS NULL)
+        OR
+        (${table.status} = 'succeeded' AND ${table.result} IS NOT NULL AND ${table.completedAt} IS NOT NULL)
+      )`,
+    ),
+    check(
+      "notification_delivery_requests_timestamps_valid",
+      sql`${table.updatedAt} >= ${table.createdAt} AND (${table.completedAt} IS NULL OR ${table.completedAt} >= ${table.createdAt})`,
+    ),
   ],
 );
 

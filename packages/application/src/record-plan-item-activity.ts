@@ -10,6 +10,7 @@ import {
 } from "@schedule/domain";
 
 import type { Clock, PlanItemActivityResult, UnitOfWork } from "./ports.js";
+import { invalidatePlanItemActivityIntents } from "./invalidate-plan-item-activity-intents.js";
 
 export interface RecordPlanItemActivityCommand {
   readonly workspaceId: WorkspaceId;
@@ -63,15 +64,24 @@ export class RecordPlanItemActivity {
     if (!Number.isFinite(now.getTime())) {
       throw new DomainError("planning.timestamp_invalid", "A valid interaction time is required.");
     }
-    return this.unitOfWork.run(({ dailyPlans }) =>
-      dailyPlans.recordItemActivity({
+    return this.unitOfWork.run(async ({ dailyPlans, notifications }) => {
+      await notifications.lockWorkspace(command.workspaceId);
+      const result = await dailyPlans.recordItemActivity({
         ...command,
         durationMinutes,
         reason: command.reason ?? null,
         metadata: command.metadata ?? {},
         idempotencyKey,
         now,
-      }),
-    );
+      });
+      await invalidatePlanItemActivityIntents(notifications, command.workspaceId, result);
+      return {
+        planId: result.planId,
+        itemId: result.itemId,
+        activityState: result.activityState,
+        activityEvent: result.activityEvent,
+        headVersion: result.headVersion,
+      };
+    });
   }
 }

@@ -17,6 +17,7 @@ const CONFIRMATION_ID = "00000000-0000-4000-8000-000000000004";
 const RESOURCE_ID = "00000000-0000-4000-8000-000000000005";
 const PLAN_ID = "00000000-0000-4000-8000-000000000006";
 const ITEM_ID = "00000000-0000-4000-8000-000000000007";
+const CLAIM_TOKEN = "00000000-0000-4000-8000-000000000008";
 const CASE_CREDENTIAL_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const SECRET = Buffer.alloc(32, 7).toString("base64url");
 const AUTHORIZATION = `Bearer ${CREDENTIAL_ID}.${SECRET}`;
@@ -54,7 +55,7 @@ function integrationServices(): IntegrationServices {
     authenticateCredential: vi.fn(async () => ({
       credentialId: CREDENTIAL_ID,
       workspaceId: workspaceId(WORKSPACE_ID),
-      scopes: ["schedule:read", "schedule:write"],
+      scopes: ["schedule:read", "schedule:write", "schedule:delivery"],
     })),
     getToday: vi.fn(async () => ({ date: "2026-07-13", plan: null }) as never),
     listWorkItems: vi.fn(
@@ -103,6 +104,26 @@ function integrationServices(): IntegrationServices {
           },
         }) as never,
     ),
+    claimNotificationDelivery: vi.fn(async () => ({
+      command: {
+        deliveryId: RESOURCE_ID,
+        intentId: RESOURCE_ID,
+        dedupeKey: RESOURCE_ID,
+        kind: "one_off",
+        targetType: "one_off",
+        title: "Call the dentist",
+        scheduledFor: "2026-07-13T12:00:00.000Z",
+        localDate: "2026-07-13",
+        priority: 80,
+        attempt: 1,
+        claimToken: CLAIM_TOKEN,
+        leaseExpiresAt: "2026-07-13T12:05:00.000Z",
+      },
+    })),
+    recordNotificationDeliveryReceipt: vi.fn(async () => ({
+      deliveryId: RESOURCE_ID,
+      status: "delivered" as const,
+    })),
   };
 }
 
@@ -387,6 +408,102 @@ describe("integration gateway authentication", () => {
 });
 
 describe("integration gateway routes", () => {
+  it("claims one provider-neutral reminder with the delivery-only scope", async () => {
+    const services = integrationServices();
+    const app = await integrationApp(services);
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/integrations/reminder-deliveries/claim",
+      headers: {
+        authorization: AUTHORIZATION,
+        "content-type": "application/json",
+        "idempotency-key": "claim-2026-07-13-1",
+      },
+      payload: { version: INTEGRATION_API_VERSION },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      version: INTEGRATION_API_VERSION,
+      data: {
+        command: {
+          deliveryId: RESOURCE_ID,
+          dedupeKey: RESOURCE_ID,
+          claimToken: CLAIM_TOKEN,
+        },
+      },
+    });
+    expect(services.authenticateCredential).toHaveBeenCalledWith(
+      expect.objectContaining({ requiredScope: "schedule:delivery" }),
+    );
+    expect(services.claimNotificationDelivery).toHaveBeenCalledWith({
+      principal: expect.objectContaining({ workspaceId: WORKSPACE_ID }),
+      idempotencyKey: "claim-2026-07-13-1",
+    });
+  });
+
+  it("records bounded delivery receipts and rejects provider payloads", async () => {
+    const services = integrationServices();
+    const app = await integrationApp(services);
+    const delivered = await app.inject({
+      method: "POST",
+      url: "/v1/integrations/reminder-deliveries/receipt",
+      headers: {
+        authorization: AUTHORIZATION,
+        "content-type": "application/json",
+        "idempotency-key": "receipt-1",
+      },
+      payload: {
+        version: INTEGRATION_API_VERSION,
+        deliveryId: RESOURCE_ID,
+        claimToken: CLAIM_TOKEN,
+        outcome: "delivered",
+      },
+    });
+    expect(delivered.statusCode).toBe(200);
+    expect(delivered.json().data).toEqual({ deliveryId: RESOURCE_ID, status: "delivered" });
+
+    const unbounded = await app.inject({
+      method: "POST",
+      url: "/v1/integrations/reminder-deliveries/receipt",
+      headers: {
+        authorization: AUTHORIZATION,
+        "content-type": "application/json",
+        "idempotency-key": "receipt-2",
+      },
+      payload: {
+        version: INTEGRATION_API_VERSION,
+        deliveryId: RESOURCE_ID,
+        claimToken: CLAIM_TOKEN,
+        outcome: "permanent_failure",
+        failureCode: "transport.rejected",
+        providerResponse: "raw provider content",
+      },
+    });
+    expect(unbounded.statusCode).toBe(400);
+    expect(unbounded.json().error.code).toBe("request.validation_failed");
+    expect(services.recordNotificationDeliveryReceipt).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires JSON and an idempotency key for delivery mutations", async () => {
+    const app = await integrationApp();
+    const missingJson = await app.inject({
+      method: "POST",
+      url: "/v1/integrations/reminder-deliveries/claim",
+      headers: { authorization: AUTHORIZATION },
+      payload: "{}",
+    });
+    expect(missingJson.statusCode).toBe(415);
+
+    const missingKey = await app.inject({
+      method: "POST",
+      url: "/v1/integrations/reminder-deliveries/claim",
+      headers: { authorization: AUTHORIZATION, "content-type": "application/json" },
+      payload: { version: INTEGRATION_API_VERSION },
+    });
+    expect(missingKey.statusCode).toBe(400);
+  });
+
   it("returns the authenticated workspace Today view in a no-store envelope", async () => {
     const services = integrationServices();
     const app = await integrationApp(services);

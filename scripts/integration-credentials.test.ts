@@ -65,6 +65,25 @@ describe("integration credential CLI argument parsing", () => {
     });
   });
 
+  it("requires the delivery side-effect scope to be granted explicitly", () => {
+    expect(
+      parseIntegrationCredentialArguments([
+        "create",
+        "--workspace",
+        workspaceId,
+        "--name",
+        "Delivery bridge",
+        "--scopes",
+        "schedule:delivery",
+      ]),
+    ).toEqual({
+      kind: "create",
+      workspaceId,
+      name: "Delivery bridge",
+      scopes: ["schedule:delivery"],
+    });
+  });
+
   it("parses revoke and list without requiring a database", () => {
     expect(parseIntegrationCredentialArguments(["revoke", "--credential", credentialId])).toEqual({
       kind: "revoke",

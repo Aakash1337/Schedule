@@ -15,6 +15,9 @@
     "outbox-db": { "command": "pnpm verify:database", "ci": true },
     "plan-state-migrations": { "command": "pnpm verify:database", "ci": true },
     "weekday-migrations": { "command": "pnpm verify:database", "ci": true },
+    "notification-core": { "command": "pnpm verify:database", "ci": true },
+    "notification-delivery": { "command": "pnpm verify:database", "ci": true },
+    "notification-migrations": { "command": "pnpm verify:database", "ci": true },
     "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
     "recovery-state": {
       "command": "pnpm verify:recovery-state-machine",
@@ -1507,6 +1510,165 @@
             "rejects unavailable, oversized, duplicate, and extended output",
             "formats only the allowed safe diagnostics",
             "runs the production adapter against a deterministic loopback Ollama response"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "deterministic-notification-policy-core",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/REMINDERS.md",
+        "anchor": "# Deterministic reminder policy core"
+      },
+      "limitations": [
+        "Materialization is an explicit local API command; no periodic worker invokes it yet.",
+        "The web application has no reminder settings or intent-history interface; provider transport and human/account binding remain external."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/notification-policy.test.ts",
+          "command": "unit",
+          "anchors": [
+            "moves through a spring-forward gap using compatible/later semantics",
+            "chooses the earlier instant during a fall-back overlap",
+            "reapplies quiet policy when catch-up lands inside quiet hours",
+            "creates an immutable intent snapshot only from the matching accepted evaluation"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/materialize-notification-intents.test.ts",
+          "command": "unit",
+          "anchors": [
+            "materializes all supported deterministic sources and makes replay exact-once",
+            "applies the stable source-priority order before the daily cap",
+            "applies a rule cooldown deterministically across nearby targets",
+            "fails closed for malformed plan snapshots and invalid or unconfigured windows",
+            "supports the maximum window together with the maximum catch-up horizon",
+            "rejects overlarge persisted rule, window, and aggregate candidate sets"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/notification-management.test.ts",
+          "command": "unit",
+          "anchors": [
+            "enforces a bounded per-workspace rule count",
+            "creates, lists, updates, cancels, and audits one-off reminders",
+            "fails closed when a bounded one-off list still exceeds its result cap"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/record-plan-item-activity.test.ts",
+          "command": "unit",
+          "anchors": [
+            "keeps a non-terminal activity from invalidating follow-up reminders",
+            "invalidates a completed work source's due reminder"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": ["constrains deterministic notification policy and immutable intent sources"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/notification-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "wires profile, rules, one-offs, materialization, and intent reads",
+            "rejects unpaired quiet hours, mismatched rule configuration, and empty patches"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-notification-core.ts",
+          "command": "notification-core",
+          "anchors": ["Notification policy core verification passed"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-notification-migrations.ts",
+          "command": "notification-migrations",
+          "anchors": ["Notification migration verification passed"]
+        }
+      ]
+    },
+    {
+      "id": "provider-neutral-notification-delivery",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/REMINDERS.md",
+        "anchor": "## Delivery lifecycle"
+      },
+      "limitations": [
+        "Schedule exposes fenced pull claims and bounded receipts but has no Hermes/WhatsApp, email, push, or other provider transport and stores no human/account binding.",
+        "Periodic intent materialization and adapter polling are not implemented; multiple adapter instances require their own shared durable dedupe store.",
+        "Dead-letter redrive and reminder delivery/settings history UI are not implemented in this slice."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/notification-delivery.test.ts",
+          "command": "unit",
+          "anchors": [
+            "claims one bounded command and exactly replays an idempotent request",
+            "revalidates the delivery-only scope inside the transaction",
+            "rejects a credential revoked after the outer authentication step",
+            "normalizes retry receipts and exactly replays the stored result",
+            "rejects free-form or contradictory receipt fields before persistence"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/integration-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "claims one provider-neutral reminder with the delivery-only scope",
+            "records bounded delivery receipts and rejects provider payloads",
+            "requires JSON and an idempotency key for delivery mutations"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": [
+            "fences provider-neutral notification delivery and exact request replay",
+            "migrates the least-privilege delivery scope and lifecycle tables"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/integration-credentials.test.ts",
+          "command": "unit",
+          "anchors": ["requires the delivery side-effect scope to be granted explicitly"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-notification-delivery.ts",
+          "command": "notification-delivery",
+          "anchors": [
+            "notification-delivery-claim-idempotency-and-fresh-lease",
+            "notification-delivery-revocation-linearization",
+            "notification-delivery-lease-recovery",
+            "notification-delivery-invalidation-cutoff",
+            "notification-delivery-null-claim-replay",
+            "notification delivery verification passed"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-notification-migrations.ts",
+          "command": "notification-migrations",
+          "anchors": [
+            "Notification migration verification passed with populated policy and delivery upgrades"
           ]
         }
       ]

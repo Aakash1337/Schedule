@@ -1,0 +1,4 @@
+CREATE INDEX "notification_intents_workspace_daily_plan_idx" ON "notification_intents" USING btree ("workspace_id","daily_plan_id") WHERE "notification_intents"."daily_plan_id" is not null;--> statement-breakpoint
+CREATE INDEX "notification_intents_workspace_schedule_block_idx" ON "notification_intents" USING btree ("workspace_id","schedule_block_id") WHERE "notification_intents"."schedule_block_id" is not null;--> statement-breakpoint
+CREATE INDEX "notification_intents_workspace_work_item_idx" ON "notification_intents" USING btree ("workspace_id","work_item_id") WHERE "notification_intents"."work_item_id" is not null;--> statement-breakpoint
+CREATE INDEX "notification_intents_workspace_one_off_idx" ON "notification_intents" USING btree ("workspace_id","one_off_reminder_id") WHERE "notification_intents"."one_off_reminder_id" is not null;

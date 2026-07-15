@@ -326,12 +326,78 @@ pnpm verify:webhook-delivery
 The verifier covers workspace isolation, encrypted-envelope constraints, rotation, subscription
 replacement, privacy-thin automatic event fan-out, immutable body and outbox linkage, audit records,
 dead-letter redrive, revocation, and transactional rollback. It is also part of
-`pnpm verify:database` and the PostgreSQL CI job. `schedule.changed.v1` is only an invalidation; a
-successful test or invalidation delivery does not verify the separate local Hermes plugin or imply
-that a reminder reached a phone. Verify the plugin's local/stdout and real integration-gateway
-boundary with `pnpm verify:hermes-adapter`. Live WhatsApp transport, Schedule-side reminder policy,
-and end-to-end provider/phone receipts remain deferred until the operator configures
-`WHATSAPP_HOME_CHANNEL` and completes the smoke described in [HERMES.md](./HERMES.md).
+`pnpm verify:database` and the PostgreSQL CI job. `schedule.changed.v1` is only an invalidation; it
+does not transport reminder commands. Reminder claim/receipt state uses a separate authenticated
+pull gateway. A successful webhook test or invalidation delivery does not verify the separate local
+Hermes plugin or imply that a reminder reached a phone. Verify the plugin's local/stdout and real
+integration-gateway boundary with `pnpm verify:hermes-adapter`. Live WhatsApp transport,
+provider/account binding, and end-to-end provider/phone receipts remain incomplete until the operator
+configures `WHATSAPP_HOME_CHANNEL` and completes the smoke described in [HERMES.md](./HERMES.md).
+
+## Deterministic reminder operations
+
+Migration `0024` adds `notification_profiles`, `notification_rules`, `one_off_reminders`, and
+`notification_intents`. The delivery migration adds `notification_delivery_commands`,
+`notification_delivery_attempts`, and `notification_delivery_requests`. All seven tables are part
+of the exact backup catalog and restore-content signal. Back up before applying migrations, then run:
+
+```powershell
+pnpm db:migrate
+pnpm verify:notification-core
+pnpm verify:notification-delivery
+pnpm verify:notification-migrations
+pnpm verify:backup-restore
+```
+
+`verify:notification-core` uses the production local API and repositories. It creates every rule
+source and a one-off, launches two materializers concurrently, proves one intent per occurrence,
+checks cross-tenant source/target, rule-kind, and duplicate-key rejection, proves source/target edits
+and terminal activity invalidate the correct pending intents, proves target deletion cleanup, and
+confirms the outbox count is unchanged.
+`verify:notification-migrations` creates a nonce database, migrates it only through `0023`, seeds
+legacy data, applies each reminder migration in order, validates constraints and populated upgrades,
+and drops the database. `verify:notification-delivery` creates a separate nonce database and drives
+the real authenticated Fastify routes through claim, exact replay, retry, expiry, recovery,
+invalidation, dead letter, receipt fencing, and a credential-revocation lock race. The migration and
+delivery verifiers also assert the partial expired-lease recovery index. These commands are also
+inside `verify:database`.
+
+There is currently no periodic materialization daemon to monitor. Materialization happens only when
+the local product API command is explicitly invoked. If an operator invokes it manually, use a window no
+longer than 31 days and inspect all three result groups: `created`, `existing`, and `suppressed`.
+Repeated or concurrent invocation is safe. Policy and target changes never rewrite an intent; they
+transactionally delete affected pending intents under the same workspace notification lock. Deleting
+a referenced daily plan, schedule block, or work item also invalidates its open delivery command and
+removes the source intent so it cannot later be claimed against a missing target.
+
+The provider-neutral delivery routes are pull-based and require an explicitly `schedule:delivery`
+credential; the default credential scopes do not grant delivery. Each claim leases one command for
+five minutes by default, creates a new fencing token, and exposes the stable delivery ID as the
+adapter dedupe key. Receipt outcomes are bounded metadata only. Schedule stores no destination,
+provider response, conversation, account, or raw exception. PostgreSQL time is authoritative for
+due checks, lease expiry, retry availability, and receipts. Final claim/receipt authorization
+row-locks the credential after the workspace lock; revocation uses the same row lock and therefore
+cannot commit invisibly between final authorization and the delivery mutation.
+
+Operational adapters must persist dedupe IDs before causing external side effects. A process crash
+after a provider accepts a message but before Schedule commits the receipt can cause the same
+delivery ID to be claimed with a new token. A second instance must share the same dedupe store.
+Repeated `claim` and `receipt` calls must use the original idempotency key only for exact replay; use
+a new key for the next poll or changed outcome. `dead_letter` is terminal in this slice and has no
+redrive command. Inspect it through database-safe operational metrics only; do not log provider or
+recipient data.
+
+Source invalidation before claim prevents delivery. Invalidation after claim prevents reclaim, but
+cannot retract an already-running external side effect. A receipt before the original lease expires
+records the attempt while the command stays `invalidated`; otherwise later claim maintenance closes
+the abandoned attempt as `lease_expired`. Treat this claim-commit interval as an unavoidable race,
+not proof a message did or did not leave the adapter.
+
+Profile `enabled: false` is the policy kill switch. The versioned update invalidates existing pending
+intents and open commands and suppresses new candidate evaluation, but does not erase the profile,
+rules, or one-offs and cannot retract an in-flight provider side effect. External transport needs
+its own adapter-side kill switch when implemented. See
+[REMINDERS.md](./REMINDERS.md).
 
 ## Routine verification
 

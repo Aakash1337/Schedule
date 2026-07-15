@@ -13,6 +13,21 @@ import {
   integrationConfirmations,
   integrationCredentials,
   integrationRequests,
+  notificationDeliveryAttemptOutcome,
+  notificationDeliveryAttempts,
+  notificationDeliveryCommands,
+  notificationDeliveryRequests,
+  notificationDeliveryRequestOperation,
+  notificationDeliveryStatus,
+  notificationIntents,
+  notificationKind,
+  notificationLocalTimeResolution,
+  notificationProfiles,
+  notificationQuietHoursPolicy,
+  notificationRuleKind,
+  notificationRules,
+  notificationTargetType,
+  oneOffReminders,
   outboxEvents,
   planInteractionEvents,
   planMutationKind,
@@ -54,10 +69,197 @@ describe("database schema", () => {
     expect(getTableName(integrationCredentials)).toBe("integration_credentials");
     expect(getTableName(integrationConfirmations)).toBe("integration_confirmations");
     expect(getTableName(integrationRequests)).toBe("integration_requests");
+    expect(getTableName(notificationProfiles)).toBe("notification_profiles");
+    expect(getTableName(notificationRules)).toBe("notification_rules");
+    expect(getTableName(oneOffReminders)).toBe("one_off_reminders");
+    expect(getTableName(notificationIntents)).toBe("notification_intents");
+    expect(getTableName(notificationDeliveryCommands)).toBe("notification_delivery_commands");
+    expect(getTableName(notificationDeliveryAttempts)).toBe("notification_delivery_attempts");
+    expect(getTableName(notificationDeliveryRequests)).toBe("notification_delivery_requests");
     expect(getTableName(webhookEndpoints)).toBe("webhook_endpoints");
     expect(getTableName(webhookEndpointSecrets)).toBe("webhook_endpoint_secrets");
     expect(getTableName(webhookDeliveries)).toBe("webhook_deliveries");
     expect(getTableName(webhookEventSubscriptions)).toBe("webhook_event_subscriptions");
+  });
+
+  it("fences provider-neutral notification delivery and exact request replay", () => {
+    expect(notificationDeliveryStatus.enumValues).toEqual([
+      "pending",
+      "processing",
+      "delivered",
+      "dead_letter",
+      "invalidated",
+    ]);
+    expect(notificationDeliveryAttemptOutcome.enumValues).toEqual([
+      "delivered",
+      "retryable_failure",
+      "permanent_failure",
+      "lease_expired",
+    ]);
+    expect(notificationDeliveryRequestOperation.enumValues).toEqual(["claim", "receipt"]);
+
+    const command = getTableConfig(notificationDeliveryCommands);
+    expect(command.uniqueConstraints.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "notification_delivery_commands_workspace_intent_uq",
+        "notification_delivery_commands_workspace_occurrence_uq",
+      ]),
+    );
+    expect(command.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "notification_delivery_commands_state_valid",
+        "notification_delivery_commands_failure_code_valid",
+        "notification_delivery_commands_timestamps_valid",
+      ]),
+    );
+    expect(command.indexes.map((constraint) => constraint.config.name)).toEqual(
+      expect.arrayContaining([
+        "notification_delivery_commands_claim_idx",
+        "notification_delivery_commands_recovery_idx",
+      ]),
+    );
+
+    const attempt = getTableConfig(notificationDeliveryAttempts);
+    expect(attempt.foreignKeys.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "notification_delivery_attempts_command_tenant_fk",
+        "notification_delivery_attempts_credential_tenant_fk",
+      ]),
+    );
+    expect(attempt.checks.map((constraint) => constraint.name)).toContain(
+      "notification_delivery_attempts_outcome_valid",
+    );
+
+    const request = getTableConfig(notificationDeliveryRequests);
+    expect(request.foreignKeys.map((constraint) => constraint.getName())).toContain(
+      "notification_delivery_requests_credential_tenant_fk",
+    );
+    expect(request.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "notification_delivery_requests_hash_valid",
+        "notification_delivery_requests_result_bounded",
+        "notification_delivery_requests_state_valid",
+      ]),
+    );
+  });
+
+  it("migrates the least-privilege delivery scope and lifecycle tables", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0026_puzzling_micromax.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain("'schedule:delivery'");
+    expect(migration).toContain('CREATE TABLE "notification_delivery_commands"');
+    expect(migration).toContain('CREATE TABLE "notification_delivery_attempts"');
+    expect(migration).toContain('CREATE TABLE "notification_delivery_requests"');
+    expect(migration).toContain('CREATE INDEX "notification_delivery_commands_recovery_idx"');
+  });
+
+  it("constrains deterministic notification policy and immutable intent sources", () => {
+    expect(notificationQuietHoursPolicy.enumValues).toEqual(["skip", "next_allowed"]);
+    expect(notificationRuleKind.enumValues).toEqual([
+      "daily_digest",
+      "daily_follow_up",
+      "plan_window_open",
+      "schedule_block_lead",
+      "work_item_due",
+    ]);
+    expect(notificationKind.enumValues).toEqual([...notificationRuleKind.enumValues, "one_off"]);
+    expect(notificationTargetType.enumValues).toEqual([
+      "workspace",
+      "daily_plan",
+      "schedule_block",
+      "work_item",
+      "one_off",
+    ]);
+    expect(notificationLocalTimeResolution.enumValues).toEqual([
+      "exact",
+      "gap_later",
+      "overlap_earlier",
+    ]);
+
+    const profile = getTableConfig(notificationProfiles);
+    expect(profile.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "notification_profiles_quiet_hours_pair",
+        "notification_profiles_quiet_start_range",
+        "notification_profiles_quiet_end_range",
+        "notification_profiles_catch_up_range",
+        "notification_profiles_daily_limit_range",
+        "notification_profiles_version_positive",
+      ]),
+    );
+
+    const rule = getTableConfig(notificationRules);
+    expect(rule.uniqueConstraints.map((constraint) => constraint.getName())).toContain(
+      "notification_rules_workspace_id_id_uq",
+    );
+    expect(rule.uniqueConstraints.map((constraint) => constraint.getName())).toContain(
+      "notification_rules_workspace_id_kind_uq",
+    );
+    expect(rule.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "notification_rules_configuration_valid",
+        "notification_rules_cooldown_range",
+        "notification_rules_priority_range",
+        "notification_rules_version_positive",
+      ]),
+    );
+
+    const oneOff = getTableConfig(oneOffReminders);
+    expect(oneOff.uniqueConstraints.map((constraint) => constraint.getName())).toContain(
+      "one_off_reminders_workspace_id_id_uq",
+    );
+    expect(oneOff.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "one_off_reminders_title_nonempty",
+        "one_off_reminders_cancellation_valid",
+        "one_off_reminders_version_positive",
+      ]),
+    );
+
+    const intent = getTableConfig(notificationIntents);
+    expect(intent.uniqueConstraints.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "notification_intents_workspace_id_id_uq",
+        "notification_intents_workspace_occurrence_uq",
+      ]),
+    );
+    expect(intent.foreignKeys.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "notification_intents_rule_tenant_kind_fk",
+        "notification_intents_one_off_tenant_fk",
+        "notification_intents_daily_plan_tenant_fk",
+        "notification_intents_schedule_block_tenant_fk",
+        "notification_intents_work_item_tenant_fk",
+      ]),
+    );
+    expect(intent.indexes.map((constraint) => constraint.config.name)).toEqual(
+      expect.arrayContaining([
+        "notification_intents_workspace_schedule_idx",
+        "notification_intents_workspace_rule_schedule_idx",
+        "notification_intents_workspace_daily_plan_idx",
+        "notification_intents_workspace_schedule_block_idx",
+        "notification_intents_workspace_work_item_idx",
+        "notification_intents_workspace_one_off_idx",
+      ]),
+    );
+    expect(intent.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "notification_intents_source_valid",
+        "notification_intents_target_valid",
+        "notification_intents_occurrence_nonempty",
+        "notification_intents_priority_range",
+        "notification_intents_policy_snapshot_valid",
+      ]),
+    );
+  });
+
+  it("indexes due-work notification scans by tenant, date, and stable id", () => {
+    expect(getTableConfig(workItems).indexes.map((constraint) => constraint.config.name)).toContain(
+      "work_items_workspace_due_id_idx",
+    );
   });
 
   it("tenant-binds the explicit schedule event subscription allowlist", () => {

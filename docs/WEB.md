@@ -237,4 +237,4 @@ a dedicated Chromium job and retains traces, screenshots, and video when it fail
 - Learned cadence, energy, preference, overload, and adaptive-selection settings
 - Automatic duration-insight application and historical insight-comparison controls
 - Natural-language task/routine creation, model-driven plan application, and hosted advisor controls
-- Collaboration, sync, reminder/notification policy, Hermes/WhatsApp transport, and cloud deployment
+- Collaboration, sync, reminder settings and intent history, Hermes/WhatsApp transport, and cloud deployment

@@ -1,0 +1,730 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { buildApp } from "../apps/api/src/app.js";
+import { createIntegrationServices } from "../apps/api/src/integration-services.js";
+import { createProductServices } from "../apps/api/src/product-services.js";
+import {
+  ProvisionIntegrationCredential,
+  type IntegrationCredentialScope,
+} from "../packages/application/src/index.js";
+import {
+  createDatabase,
+  PostgresIntegrationUnitOfWork,
+  PostgresUnitOfWork,
+  type DatabaseConnection,
+} from "../packages/database/src/index.js";
+import { workspaceId } from "../packages/domain/src/index.js";
+import {
+  generateIntegrationCredentialSecret,
+  hashIntegrationCredentialSecret,
+} from "./integration-credentials.js";
+
+const VERSION = "schedule.integration/v1" as const;
+const sourceDatabaseUrl =
+  process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule";
+const verificationDatabase = `schedule_nd_verify_${randomUUID().replaceAll("-", "")}`;
+const verificationDatabasePattern = /^schedule_nd_verify_[a-f0-9]{32}$/;
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const pepper = "notification-delivery-verification-pepper-32-characters";
+
+function databaseUrlFor(databaseName: string): string {
+  const url = new URL(sourceDatabaseUrl);
+  url.pathname = `/${databaseName}`;
+  return url.toString();
+}
+
+function quotedVerificationDatabase(): string {
+  if (!verificationDatabasePattern.test(verificationDatabase)) {
+    throw new Error("Unsafe notification-delivery verification database identifier.");
+  }
+  return `"${verificationDatabase}"`;
+}
+
+async function applyCurrentMigrations(databaseUrl: string): Promise<void> {
+  const executable =
+    process.platform === "win32"
+      ? (process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe")
+      : "pnpm";
+  const args =
+    process.platform === "win32"
+      ? ["/d", "/s", "/c", "pnpm.cmd", "--filter", "@schedule/database", "run", "db:migrate"]
+      : ["--filter", "@schedule/database", "run", "db:migrate"];
+  await new Promise<void>((resolve, reject) => {
+    const output: Buffer[] = [];
+    const child = spawn(executable, args, {
+      cwd: repositoryRoot,
+      env: { ...process.env, DATABASE_URL: databaseUrl, NODE_ENV: "test" },
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout?.on("data", (chunk: Buffer) => output.push(chunk));
+    child.stderr?.on("data", (chunk: Buffer) => output.push(chunk));
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) return resolve();
+      const diagnostic = Buffer.concat(output)
+        .toString("utf8")
+        .replaceAll(databaseUrl, "[DISPOSABLE_DATABASE_URL]")
+        .trim();
+      reject(
+        new Error(
+          `Notification-delivery migration failed with exit code ${String(code)}${diagnostic === "" ? "" : `: ${diagnostic}`}`,
+        ),
+      );
+    });
+  });
+}
+
+interface CredentialFixture {
+  readonly id: string;
+  readonly token: string;
+}
+
+interface DeliveryCommand {
+  readonly deliveryId: string;
+  readonly intentId: string;
+  readonly dedupeKey: string;
+  readonly kind: string;
+  readonly targetType: string;
+  readonly title: string | null;
+  readonly scheduledFor: string;
+  readonly localDate: string;
+  readonly priority: number;
+  readonly attempt: number;
+  readonly claimToken: string;
+  readonly leaseExpiresAt: string;
+}
+
+interface ClaimEnvelope {
+  readonly version: typeof VERSION;
+  readonly requestId: string;
+  readonly data: { readonly command: DeliveryCommand | null };
+}
+
+interface ReceiptEnvelope {
+  readonly version: typeof VERSION;
+  readonly requestId: string;
+  readonly data: {
+    readonly deliveryId: string;
+    readonly status: "delivered" | "retry_scheduled" | "dead_lettered" | "invalidated";
+  };
+}
+
+interface ErrorEnvelope {
+  readonly error: { readonly code: string };
+}
+
+function authorization(token: string) {
+  return { authorization: `Bearer ${token}` };
+}
+
+const adminConnection = createDatabase(databaseUrlFor("postgres"), 1);
+const disposableDatabaseUrl = databaseUrlFor(verificationDatabase);
+let connection: DatabaseConnection | null = null;
+let app: Awaited<ReturnType<typeof buildApp>> | null = null;
+let databaseCreated = false;
+let failure: unknown;
+
+try {
+  await adminConnection.sql.unsafe(`create database ${quotedVerificationDatabase()}`);
+  databaseCreated = true;
+  await applyCurrentMigrations(disposableDatabaseUrl);
+
+  const activeConnection = createDatabase(disposableDatabaseUrl, 6);
+  connection = activeConnection;
+  const productUnitOfWork = new PostgresUnitOfWork(activeConnection);
+  const integrationUnitOfWork = new PostgresIntegrationUnitOfWork(activeConnection);
+  const [databaseClock] = await activeConnection.sql<{ value: string }[]>`
+    select clock_timestamp()::text as value
+  `;
+  assert.ok(databaseClock !== undefined);
+  const now = new Date(databaseClock.value);
+  const clock = { now: () => new Date(now) };
+  app = await buildApp({
+    productServices: createProductServices(productUnitOfWork, clock),
+    integrationServices: createIntegrationServices(integrationUnitOfWork, clock, pepper, 600, {
+      leaseDurationMilliseconds: 2_000,
+      maxAttempts: 5,
+    }),
+    integrationApiLimits: { requestsPerMinute: 1_000 },
+  });
+
+  const createWorkspace = async (name: string): Promise<string> => {
+    const response = await app!.inject({
+      method: "POST",
+      url: "/v1/workspaces",
+      payload: { name },
+    });
+    assert.equal(response.statusCode, 201, response.body);
+    return response.json<{ readonly id: string }>().id;
+  };
+  const primaryWorkspaceId = await createWorkspace("Notification delivery verification");
+  const isolatedWorkspaceId = await createWorkspace("Notification delivery isolation");
+  const revocationWorkspaceId = await createWorkspace("Notification delivery revocation race");
+
+  const profile = await app.inject({
+    method: "PUT",
+    url: `/v1/workspaces/${primaryWorkspaceId}/notification-profile`,
+    payload: {
+      expectedVersion: null,
+      timeZone: "UTC",
+      quietHoursStartMinute: null,
+      quietHoursEndMinute: null,
+      quietHoursPolicy: "next_allowed",
+      catchUpWindowMinutes: 60,
+      dailyIntentLimit: 100,
+    },
+  });
+  assert.equal(profile.statusCode, 200, profile.body);
+  const revocationProfile = await app.inject({
+    method: "PUT",
+    url: `/v1/workspaces/${revocationWorkspaceId}/notification-profile`,
+    payload: {
+      expectedVersion: null,
+      timeZone: "UTC",
+      quietHoursStartMinute: null,
+      quietHoursEndMinute: null,
+      quietHoursPolicy: "next_allowed",
+      catchUpWindowMinutes: 60,
+      dailyIntentLimit: 100,
+    },
+  });
+  assert.equal(revocationProfile.statusCode, 200, revocationProfile.body);
+
+  const [recoveryIndex] = await activeConnection.sql<{ indexdef: string }[]>`
+    select indexdef from pg_indexes
+    where schemaname = 'public' and indexname = 'notification_delivery_commands_recovery_idx'
+  `;
+  assert.ok(recoveryIndex !== undefined, "the expired-lease recovery index must be installed");
+  const recoveryIndexDefinition = recoveryIndex.indexdef.toLowerCase().replaceAll('"', "");
+  assert.ok(
+    recoveryIndexDefinition.includes("using btree (workspace_id, lease_expires_at, id)"),
+    "the recovery index must preserve workspace/expiry/id key order",
+  );
+  for (const fragment of ["processing", "invalidated"]) {
+    assert.ok(
+      recoveryIndexDefinition.includes(fragment),
+      `the recovery index must include ${fragment}`,
+    );
+  }
+
+  const provision = async (
+    targetWorkspaceId: string,
+    name: string,
+    scopes: readonly IntegrationCredentialScope[],
+  ): Promise<CredentialFixture> => {
+    const secret = generateIntegrationCredentialSecret();
+    const result = await new ProvisionIntegrationCredential(integrationUnitOfWork, clock).execute({
+      workspaceId: workspaceId(targetWorkspaceId),
+      name,
+      scopes,
+      secretHash: hashIntegrationCredentialSecret(secret, pepper),
+    });
+    return { id: result.id, token: `${result.id}.${secret}` };
+  };
+  const deliveryCredential = await provision(primaryWorkspaceId, "Delivery adapter", [
+    "schedule:delivery",
+  ]);
+  const readCredential = await provision(primaryWorkspaceId, "Read-only adapter", [
+    "schedule:read",
+  ]);
+  const isolatedDeliveryCredential = await provision(isolatedWorkspaceId, "Isolated delivery", [
+    "schedule:delivery",
+  ]);
+  const revocationCredential = await provision(revocationWorkspaceId, "Revocation race delivery", [
+    "schedule:delivery",
+  ]);
+
+  const createOneOff = async (
+    title: string,
+  ): Promise<{ readonly id: string; readonly version: number }> => {
+    const response = await app!.inject({
+      method: "POST",
+      url: `/v1/workspaces/${primaryWorkspaceId}/one-off-reminders`,
+      payload: { title, scheduledFor: now.toISOString() },
+    });
+    assert.equal(response.statusCode, 201, response.body);
+    return response.json<{ readonly id: string; readonly version: number }>();
+  };
+  const materialize = async (): Promise<void> => {
+    const response = await app!.inject({
+      method: "POST",
+      url: `/v1/workspaces/${primaryWorkspaceId}/notification-intents/materializations`,
+      payload: {
+        from: new Date(now.getTime() - 60 * 60_000).toISOString(),
+        through: new Date(now.getTime() + 60 * 60_000).toISOString(),
+      },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+  };
+  const claim = async (
+    token: string,
+    idempotencyKey: string,
+  ): Promise<{
+    readonly statusCode: number;
+    readonly body: string;
+    readonly envelope: ClaimEnvelope;
+  }> => {
+    const response = await app!.inject({
+      method: "POST",
+      url: "/v1/integrations/reminder-deliveries/claim",
+      headers: { ...authorization(token), "idempotency-key": idempotencyKey },
+      payload: { version: VERSION },
+    });
+    return {
+      statusCode: response.statusCode,
+      body: response.body,
+      envelope: response.json<ClaimEnvelope>(),
+    };
+  };
+  const receipt = async (
+    token: string,
+    idempotencyKey: string,
+    payload: Readonly<Record<string, unknown>>,
+  ) =>
+    app!.inject({
+      method: "POST",
+      url: "/v1/integrations/reminder-deliveries/receipt",
+      headers: { ...authorization(token), "idempotency-key": idempotencyKey },
+      payload: { version: VERSION, ...payload },
+    });
+  const wait = (milliseconds: number) =>
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, milliseconds);
+    });
+
+  // EVIDENCE: notification-delivery-revocation-linearization
+  // Final revalidation waits on the credential row and observes a revocation that wins the lock.
+  const revocationReminder = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${revocationWorkspaceId}/one-off-reminders`,
+    payload: { title: "Must not be claimed after revocation", scheduledFor: now.toISOString() },
+  });
+  assert.equal(revocationReminder.statusCode, 201, revocationReminder.body);
+  const revocationMaterialization = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${revocationWorkspaceId}/notification-intents/materializations`,
+    payload: {
+      from: new Date(now.getTime() - 60 * 60_000).toISOString(),
+      through: new Date(now.getTime() + 60 * 60_000).toISOString(),
+    },
+  });
+  assert.equal(revocationMaterialization.statusCode, 200, revocationMaterialization.body);
+
+  let releaseRevocation = (): void => undefined;
+  let markRevocationReady = (): void => undefined;
+  const revocationReady = new Promise<void>((resolve) => {
+    markRevocationReady = resolve;
+  });
+  const releaseRevocationSignal = new Promise<void>((resolve) => {
+    releaseRevocation = resolve;
+  });
+  const revocationTransaction = activeConnection.sql.begin(async (transaction) => {
+    await transaction`
+      select id from integration_credentials
+      where id = ${revocationCredential.id}
+      for update
+    `;
+    await transaction`
+      update integration_credentials
+      set active = false,
+          revoked_at = clock_timestamp(),
+          updated_at = clock_timestamp(),
+          version = version + 1
+      where id = ${revocationCredential.id}
+    `;
+    markRevocationReady();
+    await releaseRevocationSignal;
+  });
+  await revocationReady;
+  let revocationClaimSettled = false;
+  const pendingRevokedClaim = claim(
+    revocationCredential.token,
+    "claim-revocation-linearization",
+  ).finally(() => {
+    revocationClaimSettled = true;
+  });
+  try {
+    await wait(100);
+    assert.equal(
+      revocationClaimSettled,
+      false,
+      "the final credential check must wait for the revocation row lock",
+    );
+  } finally {
+    releaseRevocation();
+  }
+  await revocationTransaction;
+  const [committedRevocation] = await activeConnection.sql<
+    { active: boolean; revoked_at: string | null }[]
+  >`
+    select active, revoked_at::text from integration_credentials
+    where id = ${revocationCredential.id}
+  `;
+  assert.ok(committedRevocation !== undefined);
+  assert.equal(committedRevocation.active, false);
+  assert.notEqual(committedRevocation.revoked_at, null);
+  const revokedClaim = await pendingRevokedClaim;
+  assert.equal(revokedClaim.statusCode, 401, revokedClaim.body);
+  assert.equal(
+    (JSON.parse(revokedClaim.body) as ErrorEnvelope).error.code,
+    "integration.authentication_failed",
+  );
+  const [revocationState] = await activeConnection.sql<
+    { commands: number; attempts: number; requests: number; audits: number }[]
+  >`
+    select
+      (select count(*)::int from notification_delivery_commands where workspace_id = ${revocationWorkspaceId}) as commands,
+      (select count(*)::int from notification_delivery_attempts where credential_id = ${revocationCredential.id}) as attempts,
+      (select count(*)::int from notification_delivery_requests where credential_id = ${revocationCredential.id}) as requests,
+      (
+        select count(*)::int from audit_events
+        where workspace_id = ${revocationWorkspaceId}
+          and action in ('notification_delivery.claimed', 'notification_delivery.receipt_recorded')
+      ) as audits
+  `;
+  assert.deepEqual(revocationState, { commands: 0, attempts: 0, requests: 0, audits: 0 });
+
+  await createOneOff("Retry and deliver");
+  await materialize();
+  const denied = await claim(readCredential.token, "scope-denied");
+  assert.equal(denied.statusCode, 403, denied.body);
+  assert.equal((JSON.parse(denied.body) as ErrorEnvelope).error.code, "integration.scope_denied");
+
+  // EVIDENCE: notification-delivery-claim-idempotency-and-fresh-lease
+  // Concurrent lost-response retries expose one command, and the database starts its lease only
+  // after a deliberately long wait for the workspace lock.
+  let releaseWorkspaceLock = (): void => undefined;
+  let markWorkspaceLockHeld = (): void => undefined;
+  const workspaceLockHeld = new Promise<void>((resolve) => {
+    markWorkspaceLockHeld = resolve;
+  });
+  const releaseWorkspaceLockSignal = new Promise<void>((resolve) => {
+    releaseWorkspaceLock = resolve;
+  });
+  const blockingTransaction = activeConnection.sql.begin(async (transaction) => {
+    await transaction`
+      select pg_advisory_xact_lock(
+        hashtextextended(${`${primaryWorkspaceId.toLowerCase()}:notifications`}, 0)
+      )
+    `;
+    markWorkspaceLockHeld();
+    await releaseWorkspaceLockSignal;
+  });
+  await workspaceLockHeld;
+  const pendingConcurrentClaims = Promise.all(
+    Array.from({ length: 4 }, () => claim(deliveryCredential.token, "claim-retry-and-deliver")),
+  );
+  await wait(2_200);
+  releaseWorkspaceLock();
+  await blockingTransaction;
+  const concurrentClaims = await pendingConcurrentClaims;
+  for (const response of concurrentClaims) assert.equal(response.statusCode, 200, response.body);
+  const firstCommand = concurrentClaims[0]?.envelope.data.command;
+  assert.ok(firstCommand !== null && firstCommand !== undefined);
+  for (const response of concurrentClaims.slice(1)) {
+    assert.deepEqual(response.envelope.data.command, firstCommand);
+  }
+  assert.equal(firstCommand.deliveryId, firstCommand.intentId);
+  assert.equal(firstCommand.dedupeKey, firstCommand.deliveryId);
+  assert.equal(firstCommand.attempt, 1);
+  const [clockAfterClaim] = await activeConnection.sql<{ value: string }[]>`
+    select clock_timestamp()::text as value
+  `;
+  assert.ok(clockAfterClaim !== undefined);
+  assert.ok(
+    new Date(firstCommand.leaseExpiresAt).getTime() - new Date(clockAfterClaim.value).getTime() >
+      1_500,
+    "the lease must begin after the workspace lock is acquired",
+  );
+  assert.equal("provider" in firstCommand, false);
+  assert.equal("recipient" in firstCommand, false);
+  assert.equal("conversation" in firstCommand, false);
+
+  const reusedClaimKey = await receipt(deliveryCredential.token, "claim-retry-and-deliver", {
+    deliveryId: firstCommand.deliveryId,
+    claimToken: firstCommand.claimToken,
+    outcome: "delivered",
+  });
+  assert.equal(reusedClaimKey.statusCode, 409, reusedClaimKey.body);
+  assert.equal(
+    reusedClaimKey.json<ErrorEnvelope>().error.code,
+    "notification_delivery.request_conflict",
+  );
+
+  const crossTenantReceipt = await receipt(
+    isolatedDeliveryCredential.token,
+    "cross-tenant-receipt",
+    {
+      deliveryId: firstCommand.deliveryId,
+      claimToken: firstCommand.claimToken,
+      outcome: "delivered",
+    },
+  );
+  assert.equal(crossTenantReceipt.statusCode, 404, crossTenantReceipt.body);
+  assert.equal(
+    crossTenantReceipt.json<ErrorEnvelope>().error.code,
+    "notification_delivery.command_not_found",
+  );
+
+  const retryPayload = {
+    deliveryId: firstCommand.deliveryId,
+    claimToken: firstCommand.claimToken,
+    outcome: "retryable_failure",
+    failureCode: "transport.unavailable",
+    retryAfterSeconds: 0,
+  } as const;
+  const firstRetry = await receipt(
+    deliveryCredential.token,
+    "receipt-retry-and-deliver-1",
+    retryPayload,
+  );
+  const replayedRetry = await receipt(
+    deliveryCredential.token,
+    "receipt-retry-and-deliver-1",
+    retryPayload,
+  );
+  assert.equal(firstRetry.statusCode, 200, firstRetry.body);
+  assert.deepEqual(
+    replayedRetry.json<ReceiptEnvelope>().data,
+    firstRetry.json<ReceiptEnvelope>().data,
+  );
+  assert.equal(firstRetry.json<ReceiptEnvelope>().data.status, "retry_scheduled");
+
+  const secondClaim = await claim(deliveryCredential.token, "claim-retry-and-deliver-2");
+  assert.equal(secondClaim.statusCode, 200, secondClaim.body);
+  const secondCommand = secondClaim.envelope.data.command;
+  assert.ok(secondCommand !== null);
+  assert.equal(secondCommand.deliveryId, firstCommand.deliveryId);
+  assert.equal(secondCommand.dedupeKey, firstCommand.dedupeKey);
+  assert.equal(secondCommand.attempt, 2);
+  assert.notEqual(secondCommand.claimToken, firstCommand.claimToken);
+
+  const staleReceipt = await receipt(deliveryCredential.token, "stale-receipt", {
+    deliveryId: firstCommand.deliveryId,
+    claimToken: firstCommand.claimToken,
+    outcome: "delivered",
+  });
+  assert.equal(staleReceipt.statusCode, 409, staleReceipt.body);
+  assert.equal(staleReceipt.json<ErrorEnvelope>().error.code, "notification_delivery.claim_stale");
+  const delivered = await receipt(deliveryCredential.token, "receipt-retry-and-deliver-2", {
+    deliveryId: secondCommand.deliveryId,
+    claimToken: secondCommand.claimToken,
+    outcome: "delivered",
+  });
+  assert.equal(delivered.statusCode, 200, delivered.body);
+  assert.equal(delivered.json<ReceiptEnvelope>().data.status, "delivered");
+
+  // EVIDENCE: notification-delivery-lease-recovery
+  // A crash after an external effect re-exposes the same dedupe key with a new fence.
+  await createOneOff("Lease recovery");
+  await materialize();
+  const leaseClaim = await claim(deliveryCredential.token, "claim-lease-1");
+  const leaseCommand = leaseClaim.envelope.data.command;
+  assert.ok(leaseCommand !== null);
+  await wait(2_100);
+  const expiredBeforeReclaim = await receipt(
+    deliveryCredential.token,
+    "receipt-expired-before-reclaim",
+    {
+      deliveryId: leaseCommand.deliveryId,
+      claimToken: leaseCommand.claimToken,
+      outcome: "delivered",
+    },
+  );
+  assert.equal(expiredBeforeReclaim.statusCode, 409, expiredBeforeReclaim.body);
+  assert.equal(
+    expiredBeforeReclaim.json<ErrorEnvelope>().error.code,
+    "notification_delivery.claim_stale",
+  );
+  const recoveredClaim = await claim(deliveryCredential.token, "claim-lease-2");
+  const recoveredCommand = recoveredClaim.envelope.data.command;
+  assert.ok(recoveredCommand !== null);
+  assert.equal(recoveredCommand.deliveryId, leaseCommand.deliveryId);
+  assert.equal(recoveredCommand.dedupeKey, leaseCommand.dedupeKey);
+  assert.equal(recoveredCommand.attempt, 2);
+  assert.notEqual(recoveredCommand.claimToken, leaseCommand.claimToken);
+  const oldLeaseReceipt = await receipt(deliveryCredential.token, "receipt-old-lease", {
+    deliveryId: leaseCommand.deliveryId,
+    claimToken: leaseCommand.claimToken,
+    outcome: "delivered",
+  });
+  assert.equal(oldLeaseReceipt.statusCode, 409, oldLeaseReceipt.body);
+  const recoveredDelivered = await receipt(deliveryCredential.token, "receipt-recovered-lease", {
+    deliveryId: recoveredCommand.deliveryId,
+    claimToken: recoveredCommand.claimToken,
+    outcome: "delivered",
+  });
+  assert.equal(recoveredDelivered.statusCode, 200, recoveredDelivered.body);
+
+  // EVIDENCE: notification-delivery-invalidation-cutoff
+  // Source changes after claim retain the command, reject retries, and still record a late outcome.
+  const invalidatedReminder = await createOneOff("Invalidate after claim");
+  await materialize();
+  const invalidatedClaim = await claim(deliveryCredential.token, "claim-invalidated");
+  const invalidatedCommand = invalidatedClaim.envelope.data.command;
+  assert.ok(invalidatedCommand !== null);
+  const cancellation = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${primaryWorkspaceId}/one-off-reminders/${invalidatedReminder.id}/cancellations`,
+    payload: { expectedVersion: invalidatedReminder.version },
+  });
+  assert.equal(cancellation.statusCode, 200, cancellation.body);
+  const afterInvalidation = await claim(deliveryCredential.token, "claim-after-invalidation");
+  assert.equal(afterInvalidation.statusCode, 200, afterInvalidation.body);
+  assert.equal(afterInvalidation.envelope.data.command, null);
+  const invalidatedReceipt = await receipt(deliveryCredential.token, "receipt-invalidated", {
+    deliveryId: invalidatedCommand.deliveryId,
+    claimToken: invalidatedCommand.claimToken,
+    outcome: "delivered",
+  });
+  assert.equal(invalidatedReceipt.statusCode, 200, invalidatedReceipt.body);
+  assert.equal(invalidatedReceipt.json<ReceiptEnvelope>().data.status, "invalidated");
+
+  // An invalidated command whose adapter disappears is closed after its original lease.
+  const abandonedReminder = await createOneOff("Invalidate and abandon");
+  await materialize();
+  const abandonedClaim = await claim(deliveryCredential.token, "claim-abandoned");
+  const abandonedCommand = abandonedClaim.envelope.data.command;
+  assert.ok(abandonedCommand !== null);
+  const abandonedCancellation = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${primaryWorkspaceId}/one-off-reminders/${abandonedReminder.id}/cancellations`,
+    payload: { expectedVersion: abandonedReminder.version },
+  });
+  assert.equal(abandonedCancellation.statusCode, 200, abandonedCancellation.body);
+  await wait(2_100);
+  const sweepInvalidated = await claim(deliveryCredential.token, "claim-sweep-invalidated");
+  assert.equal(sweepInvalidated.statusCode, 200, sweepInvalidated.body);
+  assert.equal(sweepInvalidated.envelope.data.command, null);
+  const [abandonedState] = await activeConnection.sql<
+    { current_claim_token: string | null; attempt_outcome: string | null }[]
+  >`
+    select
+      command.current_claim_token::text,
+      attempt.outcome::text as attempt_outcome
+    from notification_delivery_commands command
+    join notification_delivery_attempts attempt
+      on attempt.workspace_id = command.workspace_id and attempt.delivery_id = command.id
+    where command.workspace_id = ${primaryWorkspaceId} and command.id = ${abandonedCommand.deliveryId}
+  `;
+  assert.deepEqual(abandonedState, {
+    current_claim_token: null,
+    attempt_outcome: "lease_expired",
+  });
+  const abandonedLateReceipt = await receipt(deliveryCredential.token, "receipt-abandoned-late", {
+    deliveryId: abandonedCommand.deliveryId,
+    claimToken: abandonedCommand.claimToken,
+    outcome: "delivered",
+  });
+  assert.equal(abandonedLateReceipt.statusCode, 409, abandonedLateReceipt.body);
+
+  await createOneOff("Permanent failure");
+  await materialize();
+  const permanentClaim = await claim(deliveryCredential.token, "claim-permanent");
+  const permanentCommand = permanentClaim.envelope.data.command;
+  assert.ok(permanentCommand !== null);
+  const permanentReceipt = await receipt(deliveryCredential.token, "receipt-permanent", {
+    deliveryId: permanentCommand.deliveryId,
+    claimToken: permanentCommand.claimToken,
+    outcome: "permanent_failure",
+    failureCode: "transport.rejected",
+  });
+  assert.equal(permanentReceipt.statusCode, 200, permanentReceipt.body);
+  assert.equal(permanentReceipt.json<ReceiptEnvelope>().data.status, "dead_lettered");
+
+  // EVIDENCE: notification-delivery-null-claim-replay
+  // An empty claim is a durable point-in-time result and cannot later lease a different command.
+  const emptyClaim = await claim(deliveryCredential.token, "claim-empty");
+  assert.equal(emptyClaim.statusCode, 200, emptyClaim.body);
+  assert.equal(emptyClaim.envelope.data.command, null);
+  await createOneOff("Created after empty claim");
+  await materialize();
+  const replayedEmptyClaim = await claim(deliveryCredential.token, "claim-empty");
+  assert.equal(replayedEmptyClaim.envelope.data.command, null);
+  const laterClaim = await claim(deliveryCredential.token, "claim-after-empty");
+  assert.ok(laterClaim.envelope.data.command !== null);
+  await receipt(deliveryCredential.token, "receipt-after-empty", {
+    deliveryId: laterClaim.envelope.data.command.deliveryId,
+    claimToken: laterClaim.envelope.data.command.claimToken,
+    outcome: "delivered",
+  });
+
+  const [state] = await activeConnection.sql<
+    {
+      delivered: number;
+      dead_letter: number;
+      invalidated: number;
+      lease_expired_attempts: number;
+      duplicate_occurrences: number;
+      raw_receipt_fields: number;
+    }[]
+  >`
+    select
+      count(*) filter (where status = 'delivered')::int as delivered,
+      count(*) filter (where status = 'dead_letter')::int as dead_letter,
+      count(*) filter (where status = 'invalidated')::int as invalidated,
+      (select count(*)::int from notification_delivery_attempts where outcome = 'lease_expired') as lease_expired_attempts,
+      (
+        select count(*)::int
+        from (
+          select workspace_id, occurrence_key
+          from notification_delivery_commands
+          group by workspace_id, occurrence_key
+          having count(*) > 1
+        ) duplicates
+      ) as duplicate_occurrences,
+      (
+        select count(*)::int
+        from notification_delivery_requests
+        where result::text ~* '(provider|recipient|conversation|phone|whatsapp)'
+      ) as raw_receipt_fields
+    from notification_delivery_commands
+    where workspace_id = ${primaryWorkspaceId}
+  `;
+  assert.ok(state !== undefined);
+  assert.equal(state.delivered, 3);
+  assert.equal(state.dead_letter, 1);
+  assert.equal(state.invalidated, 2);
+  assert.equal(state.lease_expired_attempts, 2);
+  assert.equal(state.duplicate_occurrences, 0);
+  assert.equal(state.raw_receipt_fields, 0);
+
+  const [auditState] = await activeConnection.sql<
+    { claim_audits: number; receipt_audits: number; request_count: number }[]
+  >`
+    select
+      count(*) filter (where action = 'notification_delivery.claimed')::int as claim_audits,
+      count(*) filter (where action = 'notification_delivery.receipt_recorded')::int as receipt_audits,
+      (select count(*)::int from notification_delivery_requests) as request_count
+    from audit_events
+    where workspace_id = ${primaryWorkspaceId}
+  `;
+  assert.ok(auditState !== undefined);
+  assert.equal(auditState.claim_audits, 8);
+  assert.equal(auditState.receipt_audits, 6);
+  assert.equal(auditState.request_count, 17);
+} catch (error) {
+  failure = error;
+} finally {
+  if (app !== null) await app.close().catch(() => undefined);
+  if (connection !== null) await connection.close().catch(() => undefined);
+  if (databaseCreated) {
+    await adminConnection.sql`
+      select pg_terminate_backend(pid)
+      from pg_stat_activity
+      where datname = ${verificationDatabase} and pid <> pg_backend_pid()
+    `.catch(() => undefined);
+    await adminConnection.sql
+      .unsafe(`drop database if exists ${quotedVerificationDatabase()}`)
+      .catch(() => undefined);
+  }
+  await adminConnection.close().catch(() => undefined);
+}
+
+if (failure !== undefined) throw failure;
+process.stdout.write("notification delivery verification passed\n");

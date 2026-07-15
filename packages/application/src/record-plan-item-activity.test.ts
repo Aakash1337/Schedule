@@ -8,6 +8,7 @@ import {
   planItemId,
   recordActivityEvent,
   routineId,
+  workItemId,
   workspaceId,
 } from "@schedule/domain";
 
@@ -21,12 +22,15 @@ describe("RecordPlanItemActivity", () => {
   const occurredAt = new Date("2026-07-15T10:00:00.000Z");
   const now = new Date("2026-07-15T10:01:00.000Z");
 
-  function harness(clockNow = now) {
+  function harness(clockNow = now, source: "routine" | "work_item" = "routine", replayed = false) {
     let captured: RecordPlanItemActivityInput | null = null;
     let transactionRuns = 0;
+    const invalidatedTargets: string[] = [];
+    const callOrder: string[] = [];
     const context = {
       dailyPlans: {
         recordItemActivity: async (input: RecordPlanItemActivityInput) => {
+          callOrder.push("record");
           captured = input;
           return {
             planId: input.expectedPlanId,
@@ -35,7 +39,9 @@ describe("RecordPlanItemActivity", () => {
             activityEvent: recordActivityEvent({
               id: activityEventId("plan-item-activity-event"),
               workspaceId: input.workspaceId,
-              routineId: routineId("plan-item-activity-routine"),
+              ...(source === "routine"
+                ? { routineId: routineId("plan-item-activity-routine") }
+                : { sourceType: "work_item", workItemId: workItemId("plan-item-activity-work") }),
               planId: input.expectedPlanId,
               planItemId: input.itemId,
               type: input.type,
@@ -51,9 +57,18 @@ describe("RecordPlanItemActivity", () => {
               recordedAt: input.now,
             }),
             headVersion: input.expectedHeadVersion + 1,
+            replayed,
           };
         },
       } as TransactionContext["dailyPlans"],
+      notifications: {
+        lockWorkspace: async () => void callOrder.push("lock"),
+        deleteIntentsForTarget: async (_workspaceId, targetType, targetId, kind) => {
+          callOrder.push("delete");
+          invalidatedTargets.push(`${targetType}:${targetId}:${kind ?? "all"}`);
+          return 1;
+        },
+      } as TransactionContext["notifications"],
       workItemDependencies: {
         loadPlanningGraph: async () => ({ workItems: [], dependencies: [] }),
       } as TransactionContext["workItemDependencies"],
@@ -68,6 +83,8 @@ describe("RecordPlanItemActivity", () => {
       useCase: new RecordPlanItemActivity(unitOfWork, { now: () => new Date(clockNow) }),
       captured: () => captured,
       transactionRuns: () => transactionRuns,
+      invalidatedTargets,
+      callOrder,
     };
   }
 
@@ -94,6 +111,8 @@ describe("RecordPlanItemActivity", () => {
       idempotencyKey: "complete-item",
       now,
     });
+    expect(test.invalidatedTargets).toEqual([`daily_plan:${plan}:daily_follow_up`]);
+    expect(test.callOrder).toEqual(["lock", "record", "delete"]);
   });
 
   it("rejects duration on a non-completion before opening a transaction", () => {
@@ -139,6 +158,64 @@ describe("RecordPlanItemActivity", () => {
       idempotencyKey: "reverse-completion",
       metadata: {},
     });
+    expect(test.invalidatedTargets).toEqual([]);
+  });
+
+  it("keeps a non-terminal activity from invalidating follow-up reminders", async () => {
+    const test = harness();
+    await test.useCase.execute({
+      workspaceId: workspace,
+      date: localDate("2026-07-15"),
+      expectedPlanId: plan,
+      itemId: item,
+      expectedHeadVersion: 4,
+      type: "started",
+      occurredAt,
+      timeZone: "UTC",
+      idempotencyKey: "start-item",
+    });
+
+    expect(test.invalidatedTargets).toEqual([]);
+  });
+
+  it("invalidates a completed work source's due reminder", async () => {
+    const test = harness(now, "work_item");
+    await test.useCase.execute({
+      workspaceId: workspace,
+      date: localDate("2026-07-15"),
+      expectedPlanId: plan,
+      itemId: item,
+      expectedHeadVersion: 4,
+      type: "completed",
+      occurredAt,
+      timeZone: "UTC",
+      durationMinutes: 31,
+      idempotencyKey: "complete-work-item",
+    });
+
+    expect(test.invalidatedTargets).toEqual([
+      `daily_plan:${plan}:daily_follow_up`,
+      `work_item:${workItemId("plan-item-activity-work")}:work_item_due`,
+    ]);
+  });
+
+  it("does not invalidate newly materialized reminders when a terminal action replays", async () => {
+    const test = harness(now, "work_item", true);
+    const result = await test.useCase.execute({
+      workspaceId: workspace,
+      date: localDate("2026-07-15"),
+      expectedPlanId: plan,
+      itemId: item,
+      expectedHeadVersion: 4,
+      type: "completed",
+      occurredAt,
+      timeZone: "UTC",
+      durationMinutes: 31,
+      idempotencyKey: "replay-completion",
+    });
+
+    expect(result).not.toHaveProperty("replayed");
+    expect(test.invalidatedTargets).toEqual([]);
   });
 
   it.each([

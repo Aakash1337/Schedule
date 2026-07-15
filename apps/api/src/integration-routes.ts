@@ -1,6 +1,7 @@
 import type {
   ConfirmIntegrationCommandInput,
   ConfirmedIntegrationCommandResult,
+  ClaimNotificationDeliveryResult,
   IntegrationCommand,
   IntegrationCredentialScope,
   IntegrationPrincipal,
@@ -8,6 +9,8 @@ import type {
   IntegrationWorkItemPageResult,
   ListIntegrationWorkItemsQuery,
   PreparedIntegrationCommand,
+  NotificationDeliveryReceiptResult,
+  RecordNotificationDeliveryReceiptCommand,
 } from "@schedule/application";
 import { isValidLocalDate } from "@schedule/domain";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -39,6 +42,13 @@ export interface IntegrationServices {
     readonly command: IntegrationCommand;
   }): Promise<PreparedIntegrationCommand>;
   confirmCommand(input: ConfirmIntegrationCommandInput): Promise<ConfirmedIntegrationCommandResult>;
+  claimNotificationDelivery(input: {
+    readonly principal: IntegrationPrincipal;
+    readonly idempotencyKey: string;
+  }): Promise<ClaimNotificationDeliveryResult>;
+  recordNotificationDeliveryReceipt(
+    input: RecordNotificationDeliveryReceiptCommand,
+  ): Promise<NotificationDeliveryReceiptResult>;
 }
 
 export interface IntegrationApiLimits {
@@ -182,6 +192,30 @@ const confirmBody = z.strictObject({
   version,
   confirmationId: uuid,
 });
+const deliveryClaimBody = z.strictObject({ version });
+const deliveryReceiptBody = z.discriminatedUnion("outcome", [
+  z.strictObject({
+    version,
+    deliveryId: uuid,
+    claimToken: uuid,
+    outcome: z.literal("delivered"),
+  }),
+  z.strictObject({
+    version,
+    deliveryId: uuid,
+    claimToken: uuid,
+    outcome: z.literal("retryable_failure"),
+    failureCode: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,79}$/),
+    retryAfterSeconds: z.number().int().min(0).max(60),
+  }),
+  z.strictObject({
+    version,
+    deliveryId: uuid,
+    claimToken: uuid,
+    outcome: z.literal("permanent_failure"),
+    failureCode: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,79}$/),
+  }),
+]);
 const todayQuery = z.strictObject({ date: localDateText });
 function canonicalPageValue(minimum: number, maximum: number, defaultValue: number) {
   return z
@@ -375,5 +409,40 @@ export async function registerIntegrationRoutes(
       idempotencyKey: key,
     });
     return envelope(body.confirmationId, result);
+  });
+
+  app.post("/v1/integrations/reminder-deliveries/claim", async (request, reply) => {
+    const principal = await authenticate(request, reply, "schedule:delivery");
+    requireJson(request);
+    parseRequest(deliveryClaimBody, request.body);
+    const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+    const result = await services.claimNotificationDelivery({
+      principal,
+      idempotencyKey: key,
+    });
+    return envelope(request.id, result);
+  });
+
+  app.post("/v1/integrations/reminder-deliveries/receipt", async (request, reply) => {
+    const principal = await authenticate(request, reply, "schedule:delivery");
+    requireJson(request);
+    const body = parseRequest(deliveryReceiptBody, request.body);
+    const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+    const result = await services.recordNotificationDeliveryReceipt({
+      principal,
+      idempotencyKey: key,
+      deliveryId: body.deliveryId,
+      claimToken: body.claimToken,
+      outcome: body.outcome,
+      ...(body.outcome === "delivered"
+        ? {}
+        : {
+            failureCode: body.failureCode,
+            ...(body.outcome === "retryable_failure"
+              ? { retryAfterSeconds: body.retryAfterSeconds }
+              : {}),
+          }),
+    });
+    return envelope(request.id, result);
   });
 }

@@ -3,6 +3,14 @@ import type {
   ActivityMetadataValue,
   DailyPlan,
   LocalDate,
+  NotificationIntent,
+  NotificationKind,
+  NotificationProfile,
+  NotificationRule,
+  NotificationRuleId,
+  NotificationTargetType,
+  OneOffReminder,
+  OneOffReminderId,
   Routine,
   RoutineDurationInsightFeedback,
   RoutineId,
@@ -69,6 +77,11 @@ export interface PlanItemActivityResult {
   readonly activityState: PlanItemActivityState;
   readonly activityEvent: ActivityEvent;
   readonly headVersion: number;
+}
+
+/** Repository-only metadata used to keep idempotent replays free of new side effects. */
+export interface RecordedPlanItemActivityResult extends PlanItemActivityResult {
+  readonly replayed: boolean;
 }
 
 export interface PlanMutationRecord {
@@ -225,6 +238,63 @@ export interface ActivityEventRepository {
   ): Promise<ActivityHistoryPage>;
 }
 
+export interface NotificationRepository {
+  /** Serializes policy evaluation and intent insertion for one workspace. */
+  lockWorkspace(workspaceId: WorkspaceId): Promise<void>;
+  findProfile(workspaceId: WorkspaceId): Promise<NotificationProfile | null>;
+  insertProfile(profile: NotificationProfile): Promise<void>;
+  saveProfile(profile: NotificationProfile, expectedVersion: number): Promise<void>;
+  findRule(workspaceId: WorkspaceId, id: NotificationRuleId): Promise<NotificationRule | null>;
+  listRules(workspaceId: WorkspaceId, limit: number): Promise<readonly NotificationRule[]>;
+  insertRule(rule: NotificationRule): Promise<void>;
+  saveRule(rule: NotificationRule, expectedVersion: number): Promise<void>;
+  findOneOffReminder(
+    workspaceId: WorkspaceId,
+    id: OneOffReminderId,
+  ): Promise<OneOffReminder | null>;
+  listOneOffReminders(
+    workspaceId: WorkspaceId,
+    fromInclusive: Date,
+    throughExclusive: Date,
+    limit: number,
+  ): Promise<readonly OneOffReminder[]>;
+  insertOneOffReminder(reminder: OneOffReminder): Promise<void>;
+  saveOneOffReminder(reminder: OneOffReminder, expectedVersion: number): Promise<void>;
+  listDueWorkItems(
+    workspaceId: WorkspaceId,
+    fromInclusive: LocalDate,
+    throughInclusive: LocalDate,
+    limit: number,
+  ): Promise<readonly WorkItem[]>;
+  listIntents(
+    workspaceId: WorkspaceId,
+    fromInclusive: Date,
+    throughExclusive: Date,
+    limit: number,
+    offset: number,
+  ): Promise<readonly NotificationIntent[]>;
+  /** Inserts the immutable intent, or returns the existing natural-key winner. */
+  insertIntent(intent: NotificationIntent): Promise<NotificationIntent>;
+  /** Invalidates all not-yet-delivered intents after a workspace policy change. */
+  deleteIntentsForWorkspace(workspaceId: WorkspaceId): Promise<number>;
+  /** Invalidates not-yet-delivered intents after one rule changes. */
+  deleteIntentsForRule(workspaceId: WorkspaceId, ruleId: NotificationRuleId): Promise<number>;
+  /** Invalidates not-yet-delivered intents after one explicit reminder changes. */
+  deleteIntentsForOneOff(workspaceId: WorkspaceId, reminderId: OneOffReminderId): Promise<number>;
+  /** Invalidates not-yet-delivered intents after a target resource changes. */
+  deleteIntentsForTarget(
+    workspaceId: WorkspaceId,
+    targetType: Extract<NotificationTargetType, "daily_plan" | "schedule_block" | "work_item">,
+    targetId: string,
+    kind?: NotificationKind,
+  ): Promise<number>;
+  /** Invalidates all not-yet-delivered intents for one target class. */
+  deleteIntentsForTargetType(
+    workspaceId: WorkspaceId,
+    targetType: Extract<NotificationTargetType, "daily_plan" | "schedule_block" | "work_item">,
+  ): Promise<number>;
+}
+
 /** Immutable user dispositions for one exact, evidence-derived duration insight. */
 export interface RoutineDurationInsightFeedbackRepository {
   /** Returns the latest disposition for this exact insight key. */
@@ -252,8 +322,13 @@ export interface DailyPlanRepository {
   /** Atomically inserts the revision or returns the plan already stored for that revision. */
   insertForRevision(plan: DailyPlan): Promise<DailyPlan>;
   findCurrent(workspaceId: WorkspaceId, date: LocalDate): Promise<CurrentDailyPlan | null>;
+  /** Loads current plans for a bounded set of dates without a query per date. */
+  findCurrentForDates(
+    workspaceId: WorkspaceId,
+    dates: readonly LocalDate[],
+  ): Promise<ReadonlyMap<LocalDate, CurrentDailyPlan>>;
   setItemLock(input: SetPlanItemLockInput): Promise<PlanItemLockResult>;
-  recordItemActivity(input: RecordPlanItemActivityInput): Promise<PlanItemActivityResult>;
+  recordItemActivity(input: RecordPlanItemActivityInput): Promise<RecordedPlanItemActivityResult>;
   lockDay(workspaceId: WorkspaceId, date: LocalDate): Promise<void>;
   findMutation(
     workspaceId: WorkspaceId,
@@ -287,6 +362,7 @@ export interface TransactionContext {
   readonly activityEvents: ActivityEventRepository;
   readonly routineDurationInsightFeedback: RoutineDurationInsightFeedbackRepository;
   readonly dailyPlans: DailyPlanRepository;
+  readonly notifications: NotificationRepository;
 }
 
 export interface UnitOfWorkOptions {
@@ -308,7 +384,11 @@ export interface Clock {
   now(): Date;
 }
 
-export const integrationCredentialScopes = ["schedule:read", "schedule:write"] as const;
+export const integrationCredentialScopes = [
+  "schedule:read",
+  "schedule:write",
+  "schedule:delivery",
+] as const;
 export type IntegrationCredentialScope = (typeof integrationCredentialScopes)[number];
 
 export interface IntegrationCredential {
@@ -339,6 +419,8 @@ export interface SecretVerifier {
 
 export interface IntegrationCredentialRepository {
   findById(id: string): Promise<IntegrationCredential | null>;
+  /** Locks the credential row until the surrounding transaction completes. */
+  findByIdForUpdate(id: string): Promise<IntegrationCredential | null>;
   list(workspaceId: WorkspaceId): Promise<readonly IntegrationCredential[]>;
   insert(credential: IntegrationCredential): Promise<void>;
   save(credential: IntegrationCredential, expectedVersion: number): Promise<void>;
@@ -560,6 +642,125 @@ export interface IntegrationRequestRepository {
   ): Promise<IntegrationRequestRecord>;
 }
 
+export type NotificationDeliveryStatus =
+  "pending" | "processing" | "delivered" | "dead_letter" | "invalidated";
+
+export type NotificationDeliveryAttemptOutcome =
+  "delivered" | "retryable_failure" | "permanent_failure" | "lease_expired";
+
+export interface ClaimedNotificationDelivery {
+  readonly deliveryId: string;
+  readonly intentId: string;
+  readonly kind: NotificationKind;
+  readonly targetType: NotificationTargetType;
+  readonly title: string | null;
+  readonly scheduledFor: Date;
+  readonly localDate: LocalDate;
+  readonly priority: number;
+  readonly attempt: number;
+  readonly claimToken: string;
+  readonly leaseExpiresAt: Date;
+}
+
+/** JSON-safe command returned to and durably replayed for one adapter claim. */
+export interface NotificationDeliveryCommandData {
+  readonly deliveryId: string;
+  readonly intentId: string;
+  readonly dedupeKey: string;
+  readonly kind: NotificationKind;
+  readonly targetType: NotificationTargetType;
+  readonly title: string | null;
+  readonly scheduledFor: string;
+  readonly localDate: string;
+  readonly priority: number;
+  readonly attempt: number;
+  readonly claimToken: string;
+  readonly leaseExpiresAt: string;
+}
+
+export interface ClaimNotificationDeliveryInput {
+  readonly workspaceId: WorkspaceId;
+  readonly credentialId: string;
+  readonly leaseDurationMilliseconds: number;
+  readonly maxAttempts: number;
+}
+
+export type NotificationDeliveryReceiptOutcome = Exclude<
+  NotificationDeliveryAttemptOutcome,
+  "lease_expired"
+>;
+
+export interface SettleNotificationDeliveryInput {
+  readonly workspaceId: WorkspaceId;
+  readonly credentialId: string;
+  readonly deliveryId: string;
+  readonly claimToken: string;
+  readonly outcome: NotificationDeliveryReceiptOutcome;
+  readonly failureCode: string | null;
+  readonly retryAfterSeconds: number | null;
+  readonly maxAttempts: number;
+}
+
+export interface NotificationDeliveryReceiptResult {
+  readonly deliveryId: string;
+  readonly status: "delivered" | "retry_scheduled" | "dead_lettered" | "invalidated";
+}
+
+export interface NotificationDeliveryRepository {
+  /** PostgreSQL is the authoritative clock for cross-process lease coordination. */
+  currentTime(): Promise<Date>;
+  /** Claims one due command under a workspace notification lock. */
+  claimNext(input: ClaimNotificationDeliveryInput): Promise<ClaimedNotificationDelivery | null>;
+  /** Applies one fenced, provider-neutral outcome or rejects a stale claim token. */
+  settle(input: SettleNotificationDeliveryInput): Promise<NotificationDeliveryReceiptResult>;
+}
+
+export type NotificationDeliveryRequestOperation = "claim" | "receipt";
+export type NotificationDeliveryRequestResult =
+  | {
+      readonly operation: "claim";
+      readonly command: NotificationDeliveryCommandData | null;
+    }
+  | {
+      readonly operation: "receipt";
+      readonly receipt: NotificationDeliveryReceiptResult;
+    };
+
+export interface NotificationDeliveryRequestRecord {
+  readonly id: string;
+  readonly credentialId: string;
+  readonly workspaceId: WorkspaceId;
+  readonly idempotencyKey: string;
+  readonly operation: NotificationDeliveryRequestOperation;
+  readonly requestHash: string;
+  readonly state: "processing" | "succeeded";
+  readonly result: NotificationDeliveryRequestResult | null;
+  readonly createdAt: Date;
+  readonly completedAt: Date | null;
+}
+
+export interface NotificationDeliveryRequestReservationInput {
+  readonly id: string;
+  readonly credentialId: string;
+  readonly workspaceId: WorkspaceId;
+  readonly idempotencyKey: string;
+  readonly operation: NotificationDeliveryRequestOperation;
+  readonly requestHash: string;
+  readonly createdAt: Date;
+}
+
+export interface NotificationDeliveryRequestRepository {
+  reserve(input: NotificationDeliveryRequestReservationInput): Promise<{
+    readonly kind: "reserved" | "replay";
+    readonly request: NotificationDeliveryRequestRecord;
+  }>;
+  succeed(
+    id: string,
+    result: NotificationDeliveryRequestResult,
+    completedAt: Date,
+  ): Promise<NotificationDeliveryRequestRecord>;
+}
+
 /**
  * The integration transaction is intentionally separate so adding gateway persistence never
  * widens every existing application test mock. All fields share one atomic transaction.
@@ -568,15 +769,19 @@ export interface IntegrationTransactionContext {
   readonly credentials: IntegrationCredentialRepository;
   readonly confirmations: IntegrationConfirmationRepository;
   readonly requests: IntegrationRequestRepository;
+  readonly notificationDeliveries: NotificationDeliveryRepository;
+  readonly notificationDeliveryRequests: NotificationDeliveryRequestRepository;
   readonly workspaces: WorkspaceRepository;
   readonly workItems: WorkItemRepository;
   readonly scheduleBlocks: ScheduleBlockRepository;
   readonly auditEvents: AuditEventRepository;
   readonly dailyPlans: DailyPlanRepository;
+  readonly notifications: NotificationRepository;
 }
 
 export interface IntegrationUnitOfWork {
   run<Result>(
     operation: (context: IntegrationTransactionContext) => Promise<Result>,
+    options?: UnitOfWorkOptions,
   ): Promise<Result>;
 }

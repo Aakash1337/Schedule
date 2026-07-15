@@ -13,6 +13,9 @@ export type DailyPlanId = BrandedId<"DailyPlanId">;
 export type PlanItemId = BrandedId<"PlanItemId">;
 export type RoutinePlanningFeedbackId = BrandedId<"RoutinePlanningFeedbackId">;
 export type RoutineDurationInsightFeedbackId = BrandedId<"RoutineDurationInsightFeedbackId">;
+export type NotificationRuleId = BrandedId<"NotificationRuleId">;
+export type OneOffReminderId = BrandedId<"OneOffReminderId">;
+export type NotificationIntentId = BrandedId<"NotificationIntentId">;
 
 function toId<Name extends string>(value: string, label: Name): BrandedId<Name> {
   if (value.trim().length === 0) {
@@ -46,3 +49,12 @@ export const routinePlanningFeedbackId = (
 export const routineDurationInsightFeedbackId = (
   value: string = randomUUID(),
 ): RoutineDurationInsightFeedbackId => toId(value, "RoutineDurationInsightFeedbackId");
+
+export const notificationRuleId = (value: string = randomUUID()): NotificationRuleId =>
+  toId(value, "NotificationRuleId");
+
+export const oneOffReminderId = (value: string = randomUUID()): OneOffReminderId =>
+  toId(value, "OneOffReminderId");
+
+export const notificationIntentId = (value: string = randomUUID()): NotificationIntentId =>
+  toId(value, "NotificationIntentId");

@@ -2,6 +2,8 @@ import {
   AddWorkItemDependency,
   ApproveRoutineDurationInsight,
   CreateRoutine,
+  CreateNotificationRule,
+  CreateOneOffReminder,
   CreateScheduleBlock,
   CreateWorkItem,
   CreateWorkspace,
@@ -11,17 +13,24 @@ import {
   GetDailyPlan,
   GetSchedulingAdvice,
   GetRoutine,
+  GetNotificationProfile,
   GetRoutineDurationInsight,
   GetScheduleBlock,
   GetWorkItem,
   GetWorkspace,
   ListRoutineActivity,
+  ListNotificationIntents,
+  ListNotificationRules,
+  ListOneOffReminders,
   ListRoutines,
   ListScheduleBlocks,
   ListWorkItemDependencies,
   ListWorkItems,
   ListWorkspaces,
   MutateDailyPlan,
+  MaterializeNotificationIntents,
+  ConfigureNotificationProfile,
+  CancelOneOffReminder,
   RecordActivityEvent,
   RecordPlanItemActivity,
   RemoveWorkItemDependency,
@@ -31,6 +40,8 @@ import {
   UpdateScheduleBlock,
   UpdateWorkItem,
   UpdateRoutine,
+  UpdateNotificationRule,
+  UpdateOneOffReminder,
   type Clock,
   type SchedulingAdvisor,
   type UnitOfWork,
@@ -79,6 +90,17 @@ export function createProductServices(
   const mutateDailyPlan = new MutateDailyPlan(unitOfWork, clock);
   const getDailyPlan = new GetDailyPlan(unitOfWork);
   const getSchedulingAdvice = new GetSchedulingAdvice(unitOfWork, advisor, clock);
+  const configureNotificationProfile = new ConfigureNotificationProfile(unitOfWork, clock);
+  const getNotificationProfile = new GetNotificationProfile(unitOfWork);
+  const createNotificationRule = new CreateNotificationRule(unitOfWork, clock);
+  const updateNotificationRule = new UpdateNotificationRule(unitOfWork, clock);
+  const listNotificationRules = new ListNotificationRules(unitOfWork);
+  const createOneOffReminder = new CreateOneOffReminder(unitOfWork, clock);
+  const updateOneOffReminder = new UpdateOneOffReminder(unitOfWork, clock);
+  const cancelOneOffReminder = new CancelOneOffReminder(unitOfWork, clock);
+  const listOneOffReminders = new ListOneOffReminders(unitOfWork);
+  const listNotificationIntents = new ListNotificationIntents(unitOfWork);
+  const materializeNotificationIntents = new MaterializeNotificationIntents(unitOfWork, clock);
 
   return {
     addWorkItemDependency: (command) => addWorkItemDependency.execute(command),
@@ -117,5 +139,16 @@ export function createProductServices(
     resetRoutineFeedback: (command) => mutateDailyPlan.resetRoutineFeedback(command),
     getDailyPlan: (query) => getDailyPlan.execute(query),
     getSchedulingAdvice: (command, signal) => getSchedulingAdvice.execute(command, signal),
+    configureNotificationProfile: (command) => configureNotificationProfile.execute(command),
+    getNotificationProfile: (workspaceId) => getNotificationProfile.execute(workspaceId),
+    createNotificationRule: (command) => createNotificationRule.execute(command),
+    updateNotificationRule: (command) => updateNotificationRule.execute(command),
+    listNotificationRules: (workspaceId) => listNotificationRules.execute(workspaceId),
+    createOneOffReminder: (command) => createOneOffReminder.execute(command),
+    updateOneOffReminder: (command) => updateOneOffReminder.execute(command),
+    cancelOneOffReminder: (command) => cancelOneOffReminder.execute(command),
+    listOneOffReminders: (query) => listOneOffReminders.execute(query),
+    listNotificationIntents: (query) => listNotificationIntents.execute(query),
+    materializeNotificationIntents: (command) => materializeNotificationIntents.execute(command),
   };
 }

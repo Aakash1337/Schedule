@@ -192,7 +192,8 @@ export class MutateDailyPlan {
     const hash = payloadHash(kind, command, details);
     const now = this.clock.now();
     return this.unitOfWork.run(
-      async ({ routines, workItemDependencies, activityEvents, dailyPlans }) => {
+      async ({ routines, workItemDependencies, activityEvents, dailyPlans, notifications }) => {
+        await notifications.lockWorkspace(command.workspaceId);
         await dailyPlans.lockDay(command.workspaceId, command.request.date);
         const prior = await dailyPlans.findMutation(
           command.workspaceId,
@@ -407,6 +408,11 @@ export class MutateDailyPlan {
           resultHeadVersion,
           createdAt: now,
         });
+        await notifications.deleteIntentsForTarget(
+          command.workspaceId,
+          "daily_plan",
+          current.plan.id,
+        );
         return { plan, headVersion: resultHeadVersion };
       },
       // A feedback mutation takes a per-routine lock after its per-day lock. Read committed gives

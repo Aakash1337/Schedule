@@ -24,19 +24,22 @@ drill job results establish whether that evidence actually passed in a particula
 
 ## Commands
 
-| Command                              | Purpose                                                                   | Requires PostgreSQL             |
-| ------------------------------------ | ------------------------------------------------------------------------- | ------------------------------- |
-| `pnpm eval:features`                 | Validate feature-to-evidence traceability                                 | No                              |
-| `pnpm eval:planner`                  | Run deterministic planner quality scenarios                               | No                              |
-| `pnpm test:coverage`                 | Run every unit/component test and enforce coverage floors                 | No                              |
-| `pnpm eval`                          | Validate traceability and run the covered test suite                      | No                              |
-| `pnpm verify:database`               | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL    | Yes                             |
-| `pnpm verify:webhook-delivery`       | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback   | Yes, disposable only            |
-| `pnpm verify:local-model-advisor`    | Opt-in smoke check against the configured local Ollama/Gemma provider     | Ollama and an allowlisted model |
-| `pnpm verify:backup-restore`         | Verify archive/schema/content/sequence fidelity                           | Yes                             |
-| `pnpm verify:recovery-state-machine` | Exercise restore, promotion, rollback, and cleanup                        | Yes, disposable only            |
-| `pnpm verify:web-e2e`                | Exercise the built browser, API, migrations, and PostgreSQL planning loop | Own disposable Compose database |
-| `pnpm eval:full`                     | Run every evaluation layer above, including Chromium                      | Yes, with the recovery sentinel |
+| Command                               | Purpose                                                                     | Requires PostgreSQL             |
+| ------------------------------------- | --------------------------------------------------------------------------- | ------------------------------- |
+| `pnpm eval:features`                  | Validate feature-to-evidence traceability                                   | No                              |
+| `pnpm eval:planner`                   | Run deterministic planner quality scenarios                                 | No                              |
+| `pnpm test:coverage`                  | Run every unit/component test and enforce coverage floors                   | No                              |
+| `pnpm eval`                           | Validate traceability and run the covered test suite                        | No                              |
+| `pnpm verify:database`                | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
+| `pnpm verify:webhook-delivery`        | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback     | Yes, disposable only            |
+| `pnpm verify:notification-core`       | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
+| `pnpm verify:notification-delivery`   | Verify fenced claims/receipts, retries, expiry, and invalidation            | Yes, disposable only            |
+| `pnpm verify:notification-migrations` | Upgrade populated pre-0024 state through reminder migrations 0024-0026      | Yes, disposable only            |
+| `pnpm verify:local-model-advisor`     | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
+| `pnpm verify:backup-restore`          | Verify archive/schema/content/sequence fidelity                             | Yes                             |
+| `pnpm verify:recovery-state-machine`  | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
+| `pnpm verify:web-e2e`                 | Exercise the built browser, API, migrations, and PostgreSQL planning loop   | Own disposable Compose database |
+| `pnpm eval:full`                      | Run every evaluation layer above, including Chromium                        | Yes, with the recovery sentinel |
 
 The destructive recovery command requires the explicit environment guards documented in
 [`OPERATIONS.md`](./OPERATIONS.md). CI supplies those guards only inside its disposable Compose
@@ -44,7 +47,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 68 test files and 989 runtime test cases. The 69th
+The package and script runners currently execute 72 test files and 1,034 runtime test cases. The 73rd
 test file is the Playwright specification, which contains four live Chromium integration scenarios.
 Parameterized state matrices expand into many cases, so this number must not be compared as though
 every case were an independent product feature.
@@ -53,11 +56,11 @@ every case were an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      26 / 26 |
-| Critical implemented features with CI-registered integration or drills |      14 / 14 |
+| Implemented features with CI-registered evidence                       |      27 / 27 |
+| Critical implemented features with CI-registered integration or drills |      15 / 15 |
 | Partial features with an explicit limitation                           |        2 / 2 |
 | Deferred features explicitly tracked as not passing                    |        1 / 1 |
-| CI-registered evidence items                                           |          120 |
+| CI-registered evidence items                                           |          128 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -68,21 +71,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.91% |   71.05% |    68.45% | 60.21% |
+| Whole repository, measured |     59.82% |   71.42% |    67.60% | 60.13% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |     95.72% |   91.29% |    96.33% | 96.77% |
+| Domain, measured           |     96.31% |   92.32% |    96.81% | 97.30% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     89.67% |   83.89% |    99.61% | 90.47% |
+| Application, measured      |     90.84% |   84.11% |    99.69% | 91.61% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     87.58% |   79.74% |    80.10% | 88.87% |
+| API, measured              |     87.55% |   78.52% |    77.25% | 88.72% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.26% |   89.18% |    91.11% | 95.14% |
 | Worker, required           |        85% |      87% |       89% |    87% |
 | Web, measured              |     86.39% |   75.00% |    76.85% | 87.03% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 6,287 of 10,494 statements, 4,693 of 6,605 branches,
-1,428 of 2,086 functions, and 5,888 of 9,779 lines.
+The whole-repository totals are 6,921 of 11,569 statements, 5,113 of 7,159 branches,
+1,544 of 2,284 functions, and 6,514 of 10,833 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -351,9 +354,20 @@ The audit deliberately leaves these visible instead of turning them into false g
   fan-out, deterministic event identity, immutable delivery/outbox linkage, dead-letter metadata,
   redrive identity, revocation, audits, and rollback. DNS, pinned-address HTTPS, TLS, and the external
   receiver are unit-faked, so there is no live-network delivery claim. The automatic event is only an
-  invalidation; Schedule-side reminder policy, phone notifications, live WhatsApp transport, and
-  downstream delivery receipts remain deferred. The local Hermes helper's deterministic standard
-  output is a narrower provider boundary, not evidence of phone delivery;
+  invalidation; it does not transport reminder commands. Phone notifications and Hermes/WhatsApp
+  live transport remain unverified; claims and receipts use the separate authenticated pull gateway,
+  while the local Hermes helper's deterministic standard output is a narrower provider boundary and
+  not evidence of phone delivery;
+- the deterministic reminder core has domain/application/API/schema evidence, a populated migration
+  upgrade, real PostgreSQL coverage for all six source kinds, two-request advisory-lock concurrency,
+  policy/target/terminal invalidation, tenant and duplicate-key constraints, backup/restore
+  inclusion, and a no-outbox-side-effect check. Its delivery verifier exercises the real Fastify
+  gateway and PostgreSQL lifecycle for least-privilege scope denial, exact claim and empty-claim
+  replay, fresh database-clock leases after lock waits, row-locked revocation linearization,
+  concurrent exclusion, retry/dead-letter, indexed expiry fencing/recovery, source invalidation,
+  bounded receipts, audits, occurrence uniqueness, and cross-tenant rejection. It has no periodic
+  materializer, external provider/account binding,
+  shared adapter dedupe store, or web settings/history interface yet;
 - four live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions. They do
