@@ -223,8 +223,8 @@ entry. The later generated request carries the selected evidence key plus the va
 explicitly submitted. If that evidence changed, the browser clears the selection, reloads current
 guidance, and leaves the date without a plan; it never silently generates from the stale choice.
 
-**After using Plan Fit** is a bounded read-only history below the guidance and remains visible while
-the generated current plan is on screen. It distinguishes the
+**Plan Fit outcome summary** and **After using Plan Fit** remain visible while the generated current
+plan is on screen. The bounded read-only history distinguishes the
 original suggestion from the final edited targets, labels a use as pending until every current-plan
 item is terminal, then shows completed scheduled workload for a resolved day. If the day was later
 regenerated or otherwise revised, `revisedSinceUsage` discloses that separately while the row
@@ -232,6 +232,15 @@ evaluates the current head and preserves the original source plan. Missing or em
 labelled not evaluable. Loading, retry,
 empty, and error states are independent of the guidance read, and fetching history cannot submit the
 form or mutate planner state.
+
+**Plan Fit outcome summary** is an independent workspace-scoped read of the newest 28 explicit uses.
+It shows how many settled, unrevised uses support comparison, the separate time/task proportions of
+submitted targets that were scheduled, and the proportions of scheduled plans that were completed.
+Pending, revised, and not-evaluable uses remain visible as counts but never enter those rates. Exact
+suggestion and edited-before-generation counts preserve user authority. Loading, failure, retry, empty,
+and zero-eligible states are independent from both guidance and row history, and stale workspace/date
+responses are aborted and ignored. The copy calls the summary descriptive, never improvement, success,
+causal lift, or learned adaptation.
 
 **Not now** appends feedback for the exact evidence key and refetches the panel. A paused suggestion
 keeps its evidence visible and offers **Show again**. Ambiguous retry retains the same idempotency

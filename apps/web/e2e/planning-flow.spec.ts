@@ -890,6 +890,8 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
   await expect(page.getByText("3 resolved plans")).toBeVisible();
   await expect(page.getByText("3h · 4 tasks")).toBeVisible();
   await expect(page.getByText("1h 30m · 2 tasks")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Plan Fit outcome summary" })).toBeVisible();
+  await expect(page.getByText(/No explicit Plan Fit use is available/)).toBeVisible();
   await expect(page.getByText(/Prefilling alone creates no history/)).toBeVisible();
 
   const dismissalResponsePromise = page.waitForResponse((response) =>
@@ -938,6 +940,16 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
   );
   expect(historyAfterPrefillResponse.status()).toBe(200);
   expect(await historyAfterPrefillResponse.json()).toEqual({ items: [] });
+  const effectivenessAfterPrefillResponse = await page.request.get(
+    `/v1/workspaces/${workspace.id}/daily-plan-fit-insight/effectiveness?limit=28`,
+  );
+  expect(effectivenessAfterPrefillResponse.status()).toBe(200);
+  expect(await effectivenessAfterPrefillResponse.json()).toMatchObject({
+    usesConsidered: 0,
+    eligibleResolvedUseCount: 0,
+    scheduledMinutesRateBasisPoints: null,
+    completionMinutesRateBasisPoints: null,
+  });
   await page.getByRole("spinbutton", { name: /^Target minutes/ }).fill("105");
   await page.getByRole("spinbutton", { name: /^Target tasks/ }).fill("3");
   const absentPlan = await page.request.get(
@@ -971,6 +983,7 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
     readonly items: readonly { readonly id: string; readonly scheduledMinutes: number }[];
   };
   expect(generatedPlan.items.length).toBeGreaterThan(0);
+  await expect(page.getByRole("heading", { name: "Plan Fit outcome summary" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "After using Plan Fit" })).toBeVisible();
   await expect(page.getByText("Waiting for final outcomes")).toBeVisible();
 
@@ -1007,6 +1020,23 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
       appliedTargetTaskCount: 3,
     }),
   ]);
+  const pendingEffectivenessResponse = await page.request.get(
+    `/v1/workspaces/${workspace.id}/daily-plan-fit-insight/effectiveness?limit=28`,
+  );
+  expect(pendingEffectivenessResponse.status()).toBe(200);
+  expect(await pendingEffectivenessResponse.json()).toMatchObject({
+    usesConsidered: 1,
+    resolvedUseCount: 0,
+    pendingUseCount: 1,
+    revisedUseCount: 0,
+    eligibleResolvedUseCount: 0,
+    exactSuggestionUseCount: 0,
+    editedSuggestionUseCount: 1,
+    scheduledMinutesRateBasisPoints: null,
+    scheduledTasksRateBasisPoints: null,
+    completionMinutesRateBasisPoints: null,
+    completionTasksRateBasisPoints: null,
+  });
 
   let generatedHeadVersion = 1;
   for (const [itemIndex, item] of generatedPlan.items.entries()) {
@@ -1044,6 +1074,29 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
     page.getByText(/Suggested 1h 30m and 2 tasks; generated with 1h 45m and 3 tasks/),
   ).toBeVisible();
   await expect(page.getByText(/Completed .* and 1 task from/)).toBeVisible();
+  const generatedMinutes = generatedPlan.items.reduce(
+    (total, item) => total + item.scheduledMinutes,
+    0,
+  );
+  const scheduledMinutesRate = Math.round((generatedMinutes * 10_000) / 105);
+  const scheduledTasksRate = Math.round((generatedPlan.items.length * 10_000) / 3);
+  const completionMinutesRate = Math.round(
+    (generatedPlan.items[0]!.scheduledMinutes * 10_000) / generatedMinutes,
+  );
+  const completionTasksRate = Math.round(10_000 / generatedPlan.items.length);
+  await expect(
+    page.getByText(/Based on 1 settled, unrevised use out of 1 explicit use/),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      `${String(scheduledMinutesRate / 100)}% time · ${String(scheduledTasksRate / 100)}% tasks`,
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      `${String(completionMinutesRate / 100)}% time · ${String(completionTasksRate / 100)}% tasks`,
+    ),
+  ).toBeVisible();
 
   const mutationRequest = { ...generationRequestBody };
   delete mutationRequest.date;
@@ -1066,6 +1119,7 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
   });
   await page.reload();
   await expect(page.getByText("The day was revised after Plan Fit was used.")).toBeVisible();
+  await expect(page.getByText(/No settled, unrevised plan is available/)).toBeVisible();
   const historyAfterRevisionResponse = await page.request.get(
     `/v1/workspaces/${workspace.id}/daily-plan-fit-insight/usages?limit=5`,
   );
@@ -1075,6 +1129,20 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
       readonly items: readonly { readonly revisedSinceUsage: boolean }[];
     },
   ).toMatchObject({ items: [{ revisedSinceUsage: true }] });
+  const effectivenessAfterRevisionResponse = await page.request.get(
+    `/v1/workspaces/${workspace.id}/daily-plan-fit-insight/effectiveness?limit=28`,
+  );
+  expect(effectivenessAfterRevisionResponse.status()).toBe(200);
+  expect(await effectivenessAfterRevisionResponse.json()).toMatchObject({
+    usesConsidered: 1,
+    revisedUseCount: 1,
+    eligibleResolvedUseCount: 0,
+    appliedTargetMinutes: 0,
+    scheduledMinutes: 0,
+    completedMinutes: 0,
+    scheduledMinutesRateBasisPoints: null,
+    completionMinutesRateBasisPoints: null,
+  });
 
   expect(pageErrors).toEqual([]);
   expect(requestFailures).toEqual([]);

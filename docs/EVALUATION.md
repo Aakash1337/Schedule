@@ -56,7 +56,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 100 test files and 1,420 runtime test cases. Three
+The package and script runners currently execute 102 test files and 1,429 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -69,7 +69,7 @@ an independent product feature.
 | Critical implemented features with CI-registered integration or drills |      19 / 19 |
 | Partial features with an explicit limitation                           |        5 / 5 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          213 |
+| CI-registered evidence items                                           |          215 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -80,21 +80,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     57.65% |   68.80% |    65.84% | 58.17% |
+| Whole repository, measured |     57.90% |   69.01% |    65.94% | 58.41% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |     94.65% |   91.23% |    93.12% | 95.70% |
+| Domain, measured           |     94.79% |   91.30% |    93.20% | 95.80% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     89.84% |   83.76% |    98.52% | 90.65% |
+| Application, measured      |     89.86% |   83.77% |    98.52% | 90.66% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     87.12% |   76.98% |    76.38% | 88.50% |
+| API, measured              |     87.11% |   76.98% |    76.19% | 88.48% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.00% |   88.01% |    93.25% | 94.62% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     84.87% |   71.92% |    74.07% | 85.33% |
+| Web, measured              |     84.92% |   71.84% |    74.26% | 85.38% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 10,044 of 17,420 statements, 7,228 of 10,505 branches,
-2,213 of 3,361 functions, and 9,502 of 16,334 lines.
+The whole-repository totals are 10,164 of 17,554 statements, 7,290 of 10,563 branches,
+2,229 of 3,380 functions, and 9,619 of 16,466 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -314,21 +314,27 @@ materiality thresholds, safe 30-minute/one-task floors, downward-only joint sugg
 SHA-256 keys, exact-key dismissal/reset resolution, and a separate pure outcome projection. Outcome
 units require a canonical `used` event, preserve suggested-versus-applied targets, withhold partial
 completion, distinguish pending/resolved/not-evaluable plans, and identify a later current revision.
+Aggregate units partition every use by status and exact-versus-edited provenance, exclude revised or
+unsettled outcomes from weighted totals, keep target-fill and plan-completion denominators separate,
+round half-up basis points, remain permutation invariant, and fail closed on duplicate, cross-tenant,
+or malformed resolved evidence.
 
 Application units require tenant-first lookup, the bounded 90-day/90-candidate repository request,
 lowercase-canonical workspace locking, a physical SSI guard for serializable waiters, read-committed
 disposition transactions, serializable atomic generation receipts, evidence revalidation before append, exact idempotent replay before
 recalculation, semantic-key conflict rejection, and valid disposition transitions. Usage-list units
-require a bounded tenant read and one bulk current-head lookup. Repository and schema tests cover one
+require a bounded tenant read and one bulk current-head lookup; the summary use case reuses that exact
+read and opens no second transaction. Repository and schema tests cover one
 bounded current-head projection, malformed target exclusion, deterministic item grouping,
 tenant-bound append-only feedback, the used-event shape and plan foreign key, database-allocated
 ingestion order, bounded reverse usage order, and workspace-scoped idempotency. API units cover
 explicit local-date validation, strict lowercase SHA-256 feedback and generation provenance,
 required idempotency, bounded history delegation, and `409` mapping for stale evidence. Web API and
 Today component units cover all visible states, retry, stale-response protection, exact-key
-hide/restore, accessible focus and announcements, suggested-versus-applied outcome rendering, and
-the central authority rule: selecting a suggestion only prefills both fields and records nothing
-until explicit generation.
+hide/restore, accessible focus and announcements, suggested-versus-applied outcome rendering,
+independent summary loading/failure/retry, neutral rate wording, and prior-workspace response rejection.
+The central authority rule remains: selecting a suggestion only prefills both fields and records
+nothing until explicit generation.
 
 The PostgreSQL verifier creates four real routines and three resolved current heads, derives the
 expected 90-minute/two-task suggestion from 180-minute/four-task plans, exercises dismiss/reset and
@@ -339,11 +345,14 @@ write, and changes terminal evidence so the old dismissal cannot hide the new ke
 PostgreSQL path then rejects stale selected evidence before any write, atomically stores one use with
 edited targets, deduplicates exact generation retry, proves tenant isolation and read-only history,
 advances pending to resolved only after every item is terminal, flags a later revision, and rejects
-direct mutation of the used receipt. The live Chromium flow repeats that lifecycle through built
+direct mutation of the used receipt. At the same points it proves empty, pending, resolved, and revised
+aggregate projections, exact-versus-edited counts, weighted integer rates, and exclusion of a later
+revision from all totals. The live Chromium flow repeats that lifecycle through built
 processes, real routes, migrations, and a disposable database: prefill leaves history empty, stale
-generation fails closed, exact retry stays singular, resolved history renders, and a later revision
-is disclosed. These checks establish the implementation contract, not that its thresholds or
-suggestions improve completion or wellbeing for a particular user.
+generation fails closed, exact retry stays singular, resolved history and summary rates render, and a
+later revision is disclosed and excluded from comparison. These checks establish the implementation
+contract, not that its thresholds or suggestions improve completion or wellbeing for a particular
+user.
 
 ### Daily-plan alternative evidence
 
@@ -565,10 +574,10 @@ The audit deliberately leaves these visible instead of turning them into false g
   outcome data, learned cadence/energy/preference model, automatic application, historical insight
   comparison, or local-model participation; and
 - Daily Plan Fit has deterministic cross-layer and live-browser evidence plus local descriptive use
-  receipts and pending, resolved, and not-evaluable outcome history with later revision disclosed
-  separately, but no production evidence for its 90-day window, minimum sample, medians, thresholds,
-  acceptance rate, or causal effect. It does not
-  recommend increases, aggregate or infer effectiveness, learn a per-user policy, apply
+  receipts, pending, resolved, and not-evaluable outcome history with later revision disclosed
+  separately, and bounded descriptive aggregate rates, but no production evidence for its 90-day
+  window, minimum sample, medians, thresholds, acceptance rate, or causal effect. It does not
+  recommend increases, infer improvement or causal effectiveness, learn a per-user policy, apply
   automatically, feed outcomes into scoring, or use a model; and
 - the local-model advisor has CI unit/component evidence for its configuration, application,
   transport, API, and UI boundaries, while a real Ollama/Gemma call remains an operator-run smoke

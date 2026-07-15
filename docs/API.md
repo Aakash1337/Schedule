@@ -400,8 +400,18 @@ source plan ID, nullable current-plan identity/revision/head version, `revisedSi
 and applied targets, `usedExactSuggestion`, and nullable planned/completed minute and task totals.
 `status` is `pending` until every item in the current plan is terminal, `resolved` after that point,
 or `not_evaluable` when there is no nonempty current plan. Partial completion totals are deliberately
-withheld. Reads never append feedback, move a head, regenerate, or alter planner scoring; the endpoint
-is descriptive history, not an effectiveness score or learned policy.
+withheld. Reads never append feedback, move a head, regenerate, or alter planner scoring.
+
+`GET .../daily-plan-fit-insight/effectiveness` accepts `limit` 1–28 and defaults to 28. It returns no
+usage identities, dates, evidence keys, or item content. Instead it reports the bounded sample size;
+resolved, pending, and not-evaluable status counts; an overlapping revised count; exact-versus-edited
+use counts; and auditable integer target, scheduled, and completed totals. Only resolved outcomes
+whose current head is still the source plan contribute to totals or rates. Target-scheduled rates are
+weighted scheduled totals divided by the actual submitted targets; plan-completed rates are weighted
+completed totals divided by scheduled totals. Rates are half-up integer basis points and are `null`
+without an eligible denominator. Pending, not-evaluable, and later-revised outcomes remain counted but
+are excluded from every rate. The summary is descriptive current-head reporting, not a causal effect,
+improvement score, planner input, learned policy, or model signal.
 
 Routine activity history is ordered by newest ingestion first and accepts `limit` from 1–200 (default 50) plus an opaque, integrity-protected `cursor`. The cursor is bound to its workspace and routine. The first page captures a high-water mark, so later appends do not shift subsequent pages. A non-null `page.nextCursor` retrieves the next page. Local cursor signing keys are process-bound, so clients should restart pagination after an API restart.
 

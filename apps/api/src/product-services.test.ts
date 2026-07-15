@@ -87,6 +87,7 @@ describe("createProductServices", () => {
       "generateNaturalLanguageProposal",
       "getCurrentDailyPlan",
       "getDailyPlan",
+      "getDailyPlanFitEffectiveness",
       "getDailyPlanFitInsight",
       "getNotificationProfile",
       "getRoutine",

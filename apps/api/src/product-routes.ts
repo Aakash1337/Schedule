@@ -100,6 +100,7 @@ import {
   workspaceId,
   type ActivityEvent,
   type DailyPlan,
+  type DailyPlanFitEffectiveness,
   type DailyPlanFitInsight,
   type DailyPlanFitInsightFeedback,
   type DailyPlanFitUsageOutcome,
@@ -166,6 +167,9 @@ export interface ProductServices {
   listDailyPlanFitUsageOutcomes(
     query: ListDailyPlanFitUsageOutcomesQuery,
   ): Promise<readonly DailyPlanFitUsageOutcome[]>;
+  getDailyPlanFitEffectiveness(
+    query: ListDailyPlanFitUsageOutcomesQuery,
+  ): Promise<DailyPlanFitEffectiveness>;
   resetDailyPlanFitInsightDismissal(
     command: ResetDailyPlanFitInsightDismissalCommand,
   ): Promise<DailyPlanFitInsightFeedback>;
@@ -621,6 +625,9 @@ const routineDurationInsightFeedbackBody = z.strictObject({
 const dailyPlanFitInsightQuery = z.strictObject({ forDate: localDateText });
 const dailyPlanFitUsageOutcomesQuery = z.strictObject({
   limit: z.coerce.number().int().min(1).max(maximumDailyPlanFitUsageOutcomes).default(5),
+});
+const dailyPlanFitEffectivenessQuery = z.strictObject({
+  limit: z.coerce.number().int().min(1).max(28).default(28),
 });
 const dailyPlanFitInsightFeedbackBody = z.strictObject({
   forDate: localDateText,
@@ -1571,6 +1578,15 @@ export async function registerProductRoutes(
         limit: query.limit,
       }),
     };
+  });
+
+  app.get("/v1/workspaces/:workspaceId/daily-plan-fit-insight/effectiveness", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(dailyPlanFitEffectivenessQuery, request.query);
+    return services.getDailyPlanFitEffectiveness({
+      workspaceId: workspaceId(params.workspaceId),
+      limit: query.limit,
+    });
   });
 
   app.post("/v1/workspaces/:workspaceId/daily-plan-fit-insight/dismissals", async (request) => {

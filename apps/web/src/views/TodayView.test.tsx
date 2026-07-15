@@ -6,6 +6,7 @@ import { ApiError } from "../api";
 import { localDateTimeToIso, todayKey } from "../date";
 import type {
   CurrentDailyPlan,
+  DailyPlanFitEffectiveness,
   DailyPlanFitInsight,
   DailyPlanFitUsageOutcome,
   ScheduleBlock,
@@ -20,6 +21,7 @@ const apiMocks = vi.hoisted(() => ({
   dismissDailyPlanFitInsight: vi.fn(),
   generatePlan: vi.fn(),
   getCurrentPlan: vi.fn(),
+  getDailyPlanFitEffectiveness: vi.fn(),
   getDailyPlanFitInsight: vi.fn(),
   listDailyPlanFitUsageOutcomes: vi.fn(),
   getSchedulingAdvice: vi.fn(),
@@ -195,6 +197,32 @@ function planFitUsageOutcome(
   };
 }
 
+function planFitEffectiveness(
+  overrides: Partial<DailyPlanFitEffectiveness> = {},
+): DailyPlanFitEffectiveness {
+  return {
+    usesConsidered: 0,
+    resolvedUseCount: 0,
+    pendingUseCount: 0,
+    notEvaluableUseCount: 0,
+    revisedUseCount: 0,
+    eligibleResolvedUseCount: 0,
+    exactSuggestionUseCount: 0,
+    editedSuggestionUseCount: 0,
+    appliedTargetMinutes: 0,
+    scheduledMinutes: 0,
+    completedMinutes: 0,
+    appliedTargetTaskCount: 0,
+    scheduledTaskCount: 0,
+    completedTaskCount: 0,
+    scheduledMinutesRateBasisPoints: null,
+    scheduledTasksRateBasisPoints: null,
+    completionMinutesRateBasisPoints: null,
+    completionTasksRateBasisPoints: null,
+    ...overrides,
+  };
+}
+
 function availableAdvice(overrides: Partial<SchedulingAdviceResult> = {}): SchedulingAdviceResult {
   return {
     version: "schedule.advisor/v1",
@@ -277,6 +305,7 @@ beforeEach(() => {
   apiMocks.getCurrentPlan.mockResolvedValue(plan);
   apiMocks.getDailyPlanFitInsight.mockResolvedValue(planFitInsight());
   apiMocks.listDailyPlanFitUsageOutcomes.mockResolvedValue({ items: [] });
+  apiMocks.getDailyPlanFitEffectiveness.mockResolvedValue(planFitEffectiveness());
   apiMocks.listScheduleBlocks.mockResolvedValue({
     items: [],
     page: { limit: 200, offset: 0 },
@@ -742,6 +771,24 @@ describe("Today commands", () => {
     apiMocks.listDailyPlanFitUsageOutcomes.mockResolvedValue({
       items: [planFitUsageOutcome()],
     });
+    apiMocks.getDailyPlanFitEffectiveness.mockResolvedValue(
+      planFitEffectiveness({
+        usesConsidered: 1,
+        resolvedUseCount: 1,
+        eligibleResolvedUseCount: 1,
+        editedSuggestionUseCount: 1,
+        appliedTargetMinutes: 120,
+        scheduledMinutes: 90,
+        completedMinutes: 60,
+        appliedTargetTaskCount: 3,
+        scheduledTaskCount: 2,
+        completedTaskCount: 1,
+        scheduledMinutesRateBasisPoints: 7_500,
+        scheduledTasksRateBasisPoints: 6_667,
+        completionMinutesRateBasisPoints: 6_667,
+        completionTasksRateBasisPoints: 5_000,
+      }),
+    );
 
     render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
 
@@ -750,11 +797,81 @@ describe("Today commands", () => {
       screen.getByText(/Suggested 1h 30m and 2 tasks; generated with 1h 45m and 3 tasks/),
     ).toBeVisible();
     expect(screen.getByText(/Completed 1h and 1 task from 1h 30m across 2 tasks/)).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Plan Fit outcome summary" })).toBeVisible();
+    expect(
+      screen.getByText(/Based on 1 settled, unrevised use out of 1 explicit use/),
+    ).toBeVisible();
+    expect(screen.getByText("75% time · 66.67% tasks")).toBeVisible();
+    expect(screen.getByText("66.67% time · 50% tasks")).toBeVisible();
+    expect(
+      screen.getByText(/not an improvement estimate and never changes planning/i),
+    ).toBeVisible();
     expect(apiMocks.listDailyPlanFitUsageOutcomes).toHaveBeenCalledWith(
       workspace.id,
       5,
       expect.any(AbortSignal),
     );
+    expect(apiMocks.getDailyPlanFitEffectiveness).toHaveBeenCalledWith(
+      workspace.id,
+      28,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("recovers the independent Plan Fit outcome summary only after explicit retry", async () => {
+    const user = userEvent.setup();
+    apiMocks.getCurrentPlan.mockRejectedValue(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
+    apiMocks.getDailyPlanFitEffectiveness
+      .mockRejectedValueOnce(new Error("summary failed"))
+      .mockResolvedValueOnce(planFitEffectiveness());
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText("summary failed")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Retry summary" }));
+    expect(await screen.findByText(/No explicit Plan Fit use is available/)).toBeVisible();
+    expect(apiMocks.getDailyPlanFitEffectiveness).toHaveBeenCalledTimes(2);
+  });
+
+  it("aborts and ignores Plan Fit outcome summaries from a previous workspace", async () => {
+    const firstRequest = deferred<DailyPlanFitEffectiveness>();
+    const secondRequest = deferred<DailyPlanFitEffectiveness>();
+    const secondWorkspace = { ...workspace, id: "workspace-2", name: "Shared" };
+    apiMocks.getCurrentPlan.mockRejectedValue(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
+    apiMocks.getDailyPlanFitEffectiveness.mockImplementation((workspaceId: string) =>
+      workspaceId === workspace.id ? firstRequest.promise : secondRequest.promise,
+    );
+
+    const { rerender } = render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(apiMocks.getDailyPlanFitEffectiveness).toHaveBeenCalledTimes(1));
+    const firstSignal = apiMocks.getDailyPlanFitEffectiveness.mock.calls[0]?.[2] as AbortSignal;
+
+    rerender(<TodayView workspace={secondWorkspace} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(apiMocks.getDailyPlanFitEffectiveness).toHaveBeenCalledTimes(2));
+    expect(firstSignal.aborted).toBe(true);
+
+    await act(async () => {
+      secondRequest.resolve(planFitEffectiveness());
+      await secondRequest.promise;
+    });
+    expect(await screen.findByText(/No explicit Plan Fit use is available/)).toBeVisible();
+
+    await act(async () => {
+      firstRequest.resolve(
+        planFitEffectiveness({
+          usesConsidered: 1,
+          resolvedUseCount: 1,
+          eligibleResolvedUseCount: 1,
+          exactSuggestionUseCount: 1,
+        }),
+      );
+      await firstRequest.promise;
+    });
+    expect(screen.queryByText(/Based on 1 settled/)).not.toBeInTheDocument();
   });
 
   it("keeps Plan Fit outcome history visible while the current plan is present", async () => {
@@ -765,6 +882,7 @@ describe("Today commands", () => {
     render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
 
     expect(await screen.findByRole("heading", { name: "Practice Spanish" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Plan Fit outcome summary" })).toBeVisible();
     expect(await screen.findByRole("heading", { name: "After using Plan Fit" })).toBeVisible();
     expect(screen.getByText("Waiting for final outcomes")).toBeVisible();
   });

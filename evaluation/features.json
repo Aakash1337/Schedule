@@ -1514,8 +1514,8 @@
       "risk": "normal",
       "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 3 — Transparent adaptation" },
       "limitations": [
-        "Routine-duration calibration, Daily Plan Fit guidance with explicit use receipts and descriptive outcome history, explicit routine ranking preferences, and reversible exact-key dismissal/reset are implemented; inferred cadence, day/time, energy, preference, and category-balance signals remain deferred.",
-        "Suggestions are never applied automatically, and adaptive probabilistic selection beyond the deterministic planner, upward Plan Fit expansion, aggregate effectiveness analysis, and outcome-driven learning remain deferred.",
+        "Routine-duration calibration, Daily Plan Fit guidance with explicit use receipts, descriptive outcome history, and bounded weighted outcome rates, explicit routine ranking preferences, and reversible exact-key dismissal/reset are implemented; inferred cadence, day/time, energy, preference, and category-balance signals remain deferred.",
+        "Suggestions are never applied automatically, and adaptive probabilistic selection beyond the deterministic planner, upward Plan Fit expansion, causal effectiveness analysis, and outcome-driven learning remain deferred.",
         "The statistical thresholds and lifecycle have contract evidence but no production effectiveness data or causal validation, and no local or hosted model participates."
       ],
       "evidence": [
@@ -1703,7 +1703,7 @@
       },
       "limitations": [
         "Version 1 is downward-only and uses a fixed 90-day, three-to-28-sample median policy; it does not learn or recommend target increases.",
-        "Selecting a suggestion only prefills editable fields; explicit generation records an immutable receipt and descriptive pending, resolved, and not-evaluable history with later revision disclosed separately, but there is no automatic generation, aggregate effectiveness inference, outcome-driven scoring, or model participation."
+        "Selecting a suggestion only prefills editable fields; explicit generation records an immutable receipt, descriptive pending, resolved, and not-evaluable history with later revision disclosed separately, and bounded weighted outcome rates, but there is no automatic generation, causal effectiveness inference, outcome-driven scoring, or model participation."
       ],
       "evidence": [
         {
@@ -1732,6 +1732,17 @@
             "withholds partial outcomes and identifies a later current revision",
             "marks missing or empty current plans as not evaluable",
             "rejects non-usage events and cross-date evidence"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/domain/src/daily-plan-fit-effectiveness.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns explicit zero totals and unavailable rates for an empty bounded sample",
+            "uses weighted resolved-unrevised totals while counting every outcome transparently",
+            "rounds half-up in basis points and never clamps transparent target-fill anomalies",
+            "fails closed on duplicate, cross-workspace, or malformed resolved evidence"
           ]
         },
         {
@@ -1765,6 +1776,15 @@
             "returns bounded explicit uses joined to current resolved plans",
             "returns immediately without querying plans when no use receipts exist",
             "rejects invalid bounds and missing workspaces"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/get-daily-plan-fit-effectiveness.test.ts",
+          "command": "unit",
+          "anchors": [
+            "forwards the bounded workspace query and returns deterministic descriptive totals",
+            "preserves list validation and workspace failures"
           ]
         },
         {
@@ -1805,6 +1825,7 @@
           "anchors": [
             "retrieves a Daily Plan Fit insight for an explicit local date",
             "retrieves bounded Plan Fit usage outcomes",
+            "retrieves a bounded Plan Fit effectiveness summary",
             "records an idempotent Plan Fit %s"
           ]
         },
@@ -1820,6 +1841,8 @@
             "keeps Plan Fit outcomes visible when guidance fails to load",
             "keeps Plan Fit outcomes visible when there is no current guidance",
             "keeps the specific announcement when selected Plan Fit evidence changes at generation",
+            "recovers the independent Plan Fit outcome summary only after explicit retry",
+            "aborts and ignores Plan Fit outcome summaries from a previous workspace",
             "announces Plan Fit loading without changing either target",
             "aborts and ignores Plan Fit results from the previous workspace",
             "dismisses and restores only the exact Plan Fit evidence key",
@@ -1838,6 +1861,10 @@
             "outcome history reads must not mutate planner heads",
             "Plan Fit usage history must remain tenant-scoped",
             "a partially terminal Plan Fit use must remain pending",
+            "prefilling alone must not affect the descriptive aggregate",
+            "pending uses must be counted but excluded from every aggregate rate",
+            "resolved unrevised uses must expose weighted target-fill and completion rates",
+            "a later current revision must remain visible but cannot enter descriptive rates",
             "retries, outcome reads, activity, and revision must not duplicate the immutable use event"
           ]
         },

@@ -3,6 +3,7 @@ import type {
   CurrentDailyPlan,
   DailyPlan,
   DailyPlanAlternativesResult,
+  DailyPlanFitEffectiveness,
   DailyPlanFitInsight,
   DailyPlanFitInsightFeedback,
   DailyPlanFitUsageOutcomePage,
@@ -467,6 +468,12 @@ export const api = {
   listDailyPlanFitUsageOutcomes: (workspaceId: string, limit = 5, signal?: AbortSignal) =>
     request<DailyPlanFitUsageOutcomePage>(
       queryPath(workspacePath(workspaceId, "/daily-plan-fit-insight/usages"), { limit }),
+      signal === undefined ? {} : { signal },
+    ),
+
+  getDailyPlanFitEffectiveness: (workspaceId: string, limit = 28, signal?: AbortSignal) =>
+    request<DailyPlanFitEffectiveness>(
+      queryPath(workspacePath(workspaceId, "/daily-plan-fit-insight/effectiveness"), { limit }),
       signal === undefined ? {} : { signal },
     ),
 

@@ -479,6 +479,25 @@ describe("web API client", () => {
     );
   });
 
+  it("retrieves a bounded Plan Fit effectiveness summary", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ usesConsidered: 0 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await api.getDailyPlanFitEffectiveness("workspace-1", 28, controller.signal);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/daily-plan-fit-insight/effectiveness?limit=28",
+      expect.objectContaining({ method: "GET", signal: controller.signal }),
+    );
+  });
+
   it("previews daily-plan alternatives with an exact cancellable head fence", async () => {
     const fetchMock = vi.fn(
       async () =>

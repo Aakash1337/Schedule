@@ -15,6 +15,7 @@ import {
   GenerateNaturalLanguageProposal,
   GetCurrentDailyPlan,
   GetDailyPlan,
+  GetDailyPlanFitEffectiveness,
   GetDailyPlanFitInsight,
   GetSchedulingAdvice,
   GetRoutine,
@@ -123,6 +124,9 @@ export function createProductServices(
   const getCurrentDailyPlan = new GetCurrentDailyPlan(unitOfWork);
   const getDailyPlanFitInsight = new GetDailyPlanFitInsight(unitOfWork, clock);
   const listDailyPlanFitUsageOutcomes = new ListDailyPlanFitUsageOutcomes(unitOfWork);
+  const getDailyPlanFitEffectiveness = new GetDailyPlanFitEffectiveness(
+    listDailyPlanFitUsageOutcomes,
+  );
   const setPlanItemLock = new SetPlanItemLock(unitOfWork, clock);
   const mutateDailyPlan = new MutateDailyPlan(unitOfWork, clock);
   const getDailyPlan = new GetDailyPlan(unitOfWork);
@@ -212,6 +216,7 @@ export function createProductServices(
     getCurrentDailyPlan: (query) => getCurrentDailyPlan.execute(query),
     getDailyPlanFitInsight: (query) => getDailyPlanFitInsight.execute(query),
     listDailyPlanFitUsageOutcomes: (query) => listDailyPlanFitUsageOutcomes.execute(query),
+    getDailyPlanFitEffectiveness: (query) => getDailyPlanFitEffectiveness.execute(query),
     setPlanItemLock: (command) => setPlanItemLock.execute(command),
     regenerateDailyPlan: (command) => mutateDailyPlan.regenerate(command),
     replacePlanItem: (command) => mutateDailyPlan.replace(command),

@@ -29,6 +29,7 @@ import {
   workItemId,
   workspaceId,
   type DailyPlan,
+  type DailyPlanFitEffectiveness,
   type DailyPlanFitInsight,
   type DailyPlanFitInsightFeedback,
   type DailyPlanFitUsageOutcome,
@@ -174,6 +175,26 @@ const planFitUsageOutcome = {
   completedMinutes: 60,
   completedTaskCount: 1,
 } satisfies DailyPlanFitUsageOutcome;
+const planFitEffectiveness = {
+  usesConsidered: 1,
+  resolvedUseCount: 1,
+  pendingUseCount: 0,
+  notEvaluableUseCount: 0,
+  revisedUseCount: 0,
+  eligibleResolvedUseCount: 1,
+  exactSuggestionUseCount: 0,
+  editedSuggestionUseCount: 1,
+  appliedTargetMinutes: 105,
+  scheduledMinutes: 90,
+  completedMinutes: 60,
+  appliedTargetTaskCount: 3,
+  scheduledTaskCount: 2,
+  completedTaskCount: 1,
+  scheduledMinutesRateBasisPoints: 8_571,
+  scheduledTasksRateBasisPoints: 6_667,
+  completionMinutesRateBasisPoints: 6_667,
+  completionTasksRateBasisPoints: 5_000,
+} satisfies DailyPlanFitEffectiveness;
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -399,6 +420,7 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
     getRoutineDurationInsight: async () => durationInsight,
     getDailyPlanFitInsight: async () => planFitInsight,
     listDailyPlanFitUsageOutcomes: async () => [planFitUsageOutcome],
+    getDailyPlanFitEffectiveness: async () => planFitEffectiveness,
     resetDailyPlanFitInsightDismissal: async () => ({
       ...planFitFeedback,
       kind: "reset",
@@ -1520,6 +1542,10 @@ describe("local product API", () => {
           commands.push(query);
           return [planFitUsageOutcome];
         },
+        getDailyPlanFitEffectiveness: async (query) => {
+          commands.push(query);
+          return planFitEffectiveness;
+        },
         dismissDailyPlanFitInsight: async (command) => {
           commands.push(command);
           return planFitFeedback;
@@ -1538,6 +1564,10 @@ describe("local product API", () => {
     const history = await app.inject({
       method: "GET",
       url: `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight/usages?limit=3`,
+    });
+    const effectiveness = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight/effectiveness`,
     });
     const dismiss = await app.inject({
       method: "POST",
@@ -1570,11 +1600,14 @@ describe("local product API", () => {
         },
       ],
     });
+    expect(effectiveness.statusCode).toBe(200);
+    expect(effectiveness.json()).toEqual(planFitEffectiveness);
     expect(dismiss.statusCode).toBe(200);
     expect(reset.statusCode).toBe(200);
     expect(commands).toEqual([
       { workspaceId: workspace.id, forDate: localDate("2026-07-15") },
       { workspaceId: workspace.id, limit: 3 },
+      { workspaceId: workspace.id, limit: 28 },
       {
         workspaceId: workspace.id,
         forDate: localDate("2026-07-15"),
@@ -1604,6 +1637,10 @@ describe("local product API", () => {
     const path = `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight`;
 
     const invalidDate = await app.inject({ method: "GET", url: `${path}?forDate=2026-02-30` });
+    const invalidEffectivenessLimit = await app.inject({
+      method: "GET",
+      url: `${path}/effectiveness?limit=29`,
+    });
     const missingHeader = await app.inject({
       method: "POST",
       url: `${path}/dismissals`,
@@ -1623,6 +1660,7 @@ describe("local product API", () => {
     });
 
     expect(invalidDate.statusCode).toBe(400);
+    expect(invalidEffectivenessLimit.statusCode).toBe(400);
     expect(missingHeader.statusCode).toBe(400);
     expect(unknownField.statusCode).toBe(400);
     expect(stale.statusCode).toBe(409);

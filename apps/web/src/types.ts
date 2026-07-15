@@ -413,6 +413,28 @@ export interface DailyPlanFitUsageOutcomePage {
   readonly items: readonly DailyPlanFitUsageOutcome[];
 }
 
+/** Workspace-scoped descriptive totals. Revised outcomes never contribute to rates. */
+export interface DailyPlanFitEffectiveness {
+  readonly usesConsidered: number;
+  readonly resolvedUseCount: number;
+  readonly pendingUseCount: number;
+  readonly notEvaluableUseCount: number;
+  readonly revisedUseCount: number;
+  readonly eligibleResolvedUseCount: number;
+  readonly exactSuggestionUseCount: number;
+  readonly editedSuggestionUseCount: number;
+  readonly appliedTargetMinutes: number;
+  readonly scheduledMinutes: number;
+  readonly completedMinutes: number;
+  readonly appliedTargetTaskCount: number;
+  readonly scheduledTaskCount: number;
+  readonly completedTaskCount: number;
+  readonly scheduledMinutesRateBasisPoints: number | null;
+  readonly scheduledTasksRateBasisPoints: number | null;
+  readonly completionMinutesRateBasisPoints: number | null;
+  readonly completionTasksRateBasisPoints: number | null;
+}
+
 export type SchedulingAdviceUnavailableReason =
   | "disabled"
   | "busy"

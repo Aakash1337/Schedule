@@ -257,6 +257,16 @@ withheld. The projection preserves suggested-versus-applied targets and flags wh
 is a later revision than the plan that recorded the use. It is descriptive, read-only history: it is
 not an acceptance score, causal effectiveness claim, planner input, or learned policy.
 
+A separate bounded effectiveness projection aggregates at most the 28 newest outcomes without
+exposing dates, usage IDs, evidence keys, or task content. It partitions every explicit use by status
+and exact-versus-edited submission, counts later revisions separately, and admits only resolved,
+unrevised current heads to weighted totals. **Target scheduled** is scheduled workload divided by the
+submitted editable target; **Plan completed** is completed workload divided by scheduled workload.
+Minute and task rates remain separate, use half-up integer basis points, and are unavailable without
+an eligible denominator. Per-plan percentages are never averaged. The projection is a descriptive
+read model only: no value flows into eligibility, ranking, target generation, a model prompt, or
+automatic adaptation, and it cannot establish that Plan Fit caused an outcome.
+
 No language model, Hermes adapter, or provider participates in the calculation, usage receipt, or
 outcome projection. Automatic application, generation, target changes, and outcome-driven adaptation
 remain outside this boundary.

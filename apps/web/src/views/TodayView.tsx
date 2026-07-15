@@ -44,6 +44,7 @@ import type {
   CurrentDailyPlan,
   DailyPlanAlternative,
   DailyPlanAlternativesResult,
+  DailyPlanFitEffectiveness,
   DailyPlanFitInsight,
   DailyPlanFitUsageOutcome,
   EnergyLevel,
@@ -97,12 +98,16 @@ interface DailyPlanFitPanelProps {
   readonly outcomes: readonly DailyPlanFitUsageOutcome[];
   readonly historyLoading: boolean;
   readonly historyError: string | null;
+  readonly effectiveness: DailyPlanFitEffectiveness | null;
+  readonly effectivenessLoading: boolean;
+  readonly effectivenessError: string | null;
   readonly headingRef: RefObject<HTMLHeadingElement | null>;
   readonly onRetry: () => void;
   readonly onApply: () => void;
   readonly onDismiss: () => void;
   readonly onRestore: () => void;
   readonly onHistoryRetry: () => void;
+  readonly onEffectivenessRetry: () => void;
 }
 
 function planCountLabel(count: number): string {
@@ -202,6 +207,129 @@ function DailyPlanFitUsageHistory({
   );
 }
 
+function formatBasisPoints(value: number | null): string {
+  return value === null ? "Not available" : `${String(value / 100)}%`;
+}
+
+interface DailyPlanFitEffectivenessSummaryProps {
+  readonly effectiveness: DailyPlanFitEffectiveness | null;
+  readonly loading: boolean;
+  readonly error: string | null;
+  readonly onRetry: () => void;
+}
+
+function DailyPlanFitEffectivenessSummary({
+  effectiveness,
+  loading,
+  error,
+  onRetry,
+}: DailyPlanFitEffectivenessSummaryProps) {
+  return (
+    <div
+      className="today-plan-fit-effectiveness"
+      aria-labelledby="today-plan-fit-effectiveness-heading"
+    >
+      <div className="today-plan-fit-history-heading">
+        <h4 id="today-plan-fit-effectiveness-heading">Plan Fit outcome summary</h4>
+        <span>Last 28 uses</span>
+      </div>
+      {loading && effectiveness === null ? (
+        <p role="status" aria-live="polite">
+          Summarizing explicit Plan Fit outcomes…
+        </p>
+      ) : error !== null ? (
+        <ErrorNotice
+          message={error}
+          action={
+            <Button type="button" variant="quiet" onClick={onRetry}>
+              Retry summary
+            </Button>
+          }
+        />
+      ) : effectiveness === null || effectiveness.usesConsidered === 0 ? (
+        <p>No explicit Plan Fit use is available to summarize yet.</p>
+      ) : effectiveness.eligibleResolvedUseCount === 0 ? (
+        <p>
+          No settled, unrevised plan is available for rate comparison yet. Recorded uses include{" "}
+          {effectiveness.pendingUseCount} pending, {effectiveness.revisedUseCount} revised, and{" "}
+          {effectiveness.notEvaluableUseCount} not evaluable.
+        </p>
+      ) : (
+        <>
+          <p>
+            Based on {effectiveness.eligibleResolvedUseCount} settled, unrevised{" "}
+            {effectiveness.eligibleResolvedUseCount === 1 ? "use" : "uses"} out of{" "}
+            {effectiveness.usesConsidered} explicit uses.
+          </p>
+          <dl className="today-plan-fit-effectiveness-rates">
+            <div>
+              <dt>Target scheduled</dt>
+              <dd>
+                {formatBasisPoints(effectiveness.scheduledMinutesRateBasisPoints)} time ·{" "}
+                {formatBasisPoints(effectiveness.scheduledTasksRateBasisPoints)} tasks
+              </dd>
+            </div>
+            <div>
+              <dt>Plan completed</dt>
+              <dd>
+                {formatBasisPoints(effectiveness.completionMinutesRateBasisPoints)} time ·{" "}
+                {formatBasisPoints(effectiveness.completionTasksRateBasisPoints)} tasks
+              </dd>
+            </div>
+          </dl>
+          <p className="today-plan-fit-note">
+            Exact suggestion {effectiveness.exactSuggestionUseCount} · edited before generation{" "}
+            {effectiveness.editedSuggestionUseCount} · pending {effectiveness.pendingUseCount} ·
+            revised {effectiveness.revisedUseCount} · not evaluable{" "}
+            {effectiveness.notEvaluableUseCount}.
+          </p>
+        </>
+      )}
+      <p className="today-plan-fit-note">
+        Descriptive only: this is not an improvement estimate and never changes planning.
+      </p>
+    </div>
+  );
+}
+
+function DailyPlanFitOutcomeEvidence({
+  outcomes,
+  historyLoading,
+  historyError,
+  effectiveness,
+  effectivenessLoading,
+  effectivenessError,
+  onHistoryRetry,
+  onEffectivenessRetry,
+}: Pick<
+  DailyPlanFitPanelProps,
+  | "outcomes"
+  | "historyLoading"
+  | "historyError"
+  | "effectiveness"
+  | "effectivenessLoading"
+  | "effectivenessError"
+  | "onHistoryRetry"
+  | "onEffectivenessRetry"
+>) {
+  return (
+    <>
+      <DailyPlanFitEffectivenessSummary
+        effectiveness={effectiveness}
+        loading={effectivenessLoading}
+        error={effectivenessError}
+        onRetry={onEffectivenessRetry}
+      />
+      <DailyPlanFitUsageHistory
+        outcomes={outcomes}
+        historyLoading={historyLoading}
+        historyError={historyError}
+        onHistoryRetry={onHistoryRetry}
+      />
+    </>
+  );
+}
+
 function DailyPlanFitPanel({
   insight,
   loading,
@@ -213,12 +341,16 @@ function DailyPlanFitPanel({
   outcomes,
   historyLoading,
   historyError,
+  effectiveness,
+  effectivenessLoading,
+  effectivenessError,
   headingRef,
   onRetry,
   onApply,
   onDismiss,
   onRestore,
   onHistoryRetry,
+  onEffectivenessRetry,
 }: DailyPlanFitPanelProps) {
   if (loading && insight === null) {
     return (
@@ -232,11 +364,15 @@ function DailyPlanFitPanel({
         <p className="eyebrow">Deterministic Plan Fit</p>
         <h3 id="today-plan-fit-heading">Checking your resolved plans…</h3>
         <p>No targets will change while this evidence is loaded.</p>
-        <DailyPlanFitUsageHistory
+        <DailyPlanFitOutcomeEvidence
           outcomes={outcomes}
           historyLoading={historyLoading}
           historyError={historyError}
+          effectiveness={effectiveness}
+          effectivenessLoading={effectivenessLoading}
+          effectivenessError={effectivenessError}
           onHistoryRetry={onHistoryRetry}
+          onEffectivenessRetry={onEffectivenessRetry}
         />
       </section>
     );
@@ -255,11 +391,15 @@ function DailyPlanFitPanel({
             </Button>
           }
         />
-        <DailyPlanFitUsageHistory
+        <DailyPlanFitOutcomeEvidence
           outcomes={outcomes}
           historyLoading={historyLoading}
           historyError={historyError}
+          effectiveness={effectiveness}
+          effectivenessLoading={effectivenessLoading}
+          effectivenessError={effectivenessError}
           onHistoryRetry={onHistoryRetry}
+          onEffectivenessRetry={onEffectivenessRetry}
         />
       </section>
     );
@@ -267,12 +407,16 @@ function DailyPlanFitPanel({
 
   if (insight === null) {
     return (
-      <section className="today-plan-fit" aria-labelledby="today-plan-fit-history-heading">
-        <DailyPlanFitUsageHistory
+      <section className="today-plan-fit" aria-label="Plan Fit outcomes">
+        <DailyPlanFitOutcomeEvidence
           outcomes={outcomes}
           historyLoading={historyLoading}
           historyError={historyError}
+          effectiveness={effectiveness}
+          effectivenessLoading={effectivenessLoading}
+          effectivenessError={effectivenessError}
           onHistoryRetry={onHistoryRetry}
+          onEffectivenessRetry={onEffectivenessRetry}
         />
       </section>
     );
@@ -406,11 +550,15 @@ function DailyPlanFitPanel({
         </div>
       ) : null}
 
-      <DailyPlanFitUsageHistory
+      <DailyPlanFitOutcomeEvidence
         outcomes={outcomes}
         historyLoading={historyLoading}
         historyError={historyError}
+        effectiveness={effectiveness}
+        effectivenessLoading={effectivenessLoading}
+        effectivenessError={effectivenessError}
         onHistoryRetry={onHistoryRetry}
+        onEffectivenessRetry={onEffectivenessRetry}
       />
     </section>
   );
@@ -872,6 +1020,10 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   >([]);
   const [planFitHistoryLoading, setPlanFitHistoryLoading] = useState(true);
   const [planFitHistoryError, setPlanFitHistoryError] = useState<string | null>(null);
+  const [planFitEffectiveness, setPlanFitEffectiveness] =
+    useState<DailyPlanFitEffectiveness | null>(null);
+  const [planFitEffectivenessLoading, setPlanFitEffectivenessLoading] = useState(true);
+  const [planFitEffectivenessError, setPlanFitEffectivenessError] = useState<string | null>(null);
   const [planFitFocusPending, setPlanFitFocusPending] = useState(false);
   const [planFitTargetFocusPending, setPlanFitTargetFocusPending] = useState(false);
   const [fitPreference, setFitPreference] = useState<PlanningFitPreference>("balanced");
@@ -892,6 +1044,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const generationControllerRef = useRef<AbortController | null>(null);
   const planFitControllerRef = useRef<AbortController | null>(null);
   const planFitHistoryControllerRef = useRef<AbortController | null>(null);
+  const planFitEffectivenessControllerRef = useRef<AbortController | null>(null);
   const planFitFeedbackControllerRef = useRef<AbortController | null>(null);
   const planFitFeedbackCommandsRef = useRef(new Map<string, string>());
   const planFitHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -1059,6 +1212,36 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     }
   }, [date, workspace.id]);
 
+  const loadPlanFitEffectiveness = useCallback(async () => {
+    planFitEffectivenessControllerRef.current?.abort();
+    const controller = new AbortController();
+    planFitEffectivenessControllerRef.current = controller;
+    const requestKey = planQueryKey(workspace.id, date);
+    const requestIsActive = () =>
+      !controller.signal.aborted &&
+      planFitEffectivenessControllerRef.current === controller &&
+      activeQueryKeyRef.current === requestKey;
+
+    setPlanFitEffectivenessLoading(true);
+    setPlanFitEffectivenessError(null);
+    try {
+      const summary = await api.getDailyPlanFitEffectiveness(workspace.id, 28, controller.signal);
+      if (requestIsActive()) setPlanFitEffectiveness(summary);
+    } catch (error) {
+      if (!requestIsActive() || isAbortError(error)) return;
+      setPlanFitEffectivenessError(messageForError(error));
+    } finally {
+      if (requestIsActive()) setPlanFitEffectivenessLoading(false);
+      if (planFitEffectivenessControllerRef.current === controller) {
+        planFitEffectivenessControllerRef.current = null;
+      }
+    }
+  }, [date, workspace.id]);
+
+  const refreshPlanFitOutcomeEvidence = useCallback(async () => {
+    await Promise.all([loadPlanFitUsageOutcomes(), loadPlanFitEffectiveness()]);
+  }, [loadPlanFitEffectiveness, loadPlanFitUsageOutcomes]);
+
   const loadCalendarAvailability = useCallback(async () => {
     calendarControllerRef.current?.abort();
     const controller = new AbortController();
@@ -1133,6 +1316,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   useEffect(() => {
     planFitControllerRef.current?.abort();
     planFitHistoryControllerRef.current?.abort();
+    planFitEffectivenessControllerRef.current?.abort();
     planFitFeedbackControllerRef.current?.abort();
     setPlanFitInsight(null);
     setPlanFitLoadError(null);
@@ -1143,17 +1327,21 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     setPlanFitUsageOutcomes([]);
     setPlanFitHistoryError(null);
     setPlanFitHistoryLoading(true);
+    setPlanFitEffectiveness(null);
+    setPlanFitEffectivenessError(null);
+    setPlanFitEffectivenessLoading(true);
     setPlanFitFocusPending(false);
     setPlanFitTargetFocusPending(false);
     planFitFeedbackCommandsRef.current.clear();
     void loadPlanFitInsight();
-    void loadPlanFitUsageOutcomes();
+    void refreshPlanFitOutcomeEvidence();
     return () => {
       planFitControllerRef.current?.abort();
       planFitHistoryControllerRef.current?.abort();
+      planFitEffectivenessControllerRef.current?.abort();
       planFitFeedbackControllerRef.current?.abort();
     };
-  }, [loadPlanFitInsight, loadPlanFitUsageOutcomes]);
+  }, [loadPlanFitInsight, refreshPlanFitOutcomeEvidence]);
 
   useEffect(() => {
     if (!planFitFocusPending || planFitLoading || planFitInsight === null) return;
@@ -1193,6 +1381,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     const current = await api.getCurrentPlan(workspace.id, date);
     if (activeQueryKeyRef.current !== requestKey) return false;
     acceptLoadedPlan(current);
+    await refreshPlanFitOutcomeEvidence();
     return true;
   }
 
@@ -1212,7 +1401,10 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
         setCommandError(conflictMessage);
       } catch (refreshError) {
         if (activeQueryKeyRef.current !== requestKey) return;
-        if (refreshError instanceof ApiError && refreshError.status === 404) setPlan(null);
+        if (refreshError instanceof ApiError && refreshError.status === 404) {
+          setPlan(null);
+          await refreshPlanFitOutcomeEvidence();
+        }
         setCommandError(
           `This plan changed, and the latest version could not be loaded. ${messageForError(refreshError)}`,
         );
@@ -1497,7 +1689,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
             if (!generationIsActive(requestKey)) return false;
             acceptLoadedPlan(current);
             setPlanFitSelectedInsightKey(null);
-            await loadPlanFitUsageOutcomes();
+            await refreshPlanFitOutcomeEvidence();
           } catch (error) {
             if (!generationIsActive(requestKey) || isAbortError(error)) return false;
             if (
@@ -1556,7 +1748,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
                 ),
               },
         );
-        await loadPlanFitUsageOutcomes();
+        await refreshPlanFitOutcomeEvidence();
       },
       item.locked ? `${item.title} is unlocked.` : `${item.title} is locked.`,
       retryIdentity,
@@ -1609,7 +1801,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
                 ),
               },
         );
-        await loadPlanFitUsageOutcomes();
+        await refreshPlanFitOutcomeEvidence();
       },
       success,
       retryIdentity,
@@ -1640,7 +1832,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
         );
         if (activeQueryKeyRef.current === requestKey) {
           setPlan(current);
-          await loadPlanFitUsageOutcomes();
+          await refreshPlanFitOutcomeEvidence();
         }
       },
       "The unlocked part of today's plan was regenerated.",
@@ -1731,7 +1923,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
         );
         if (activeQueryKeyRef.current !== requestKey) return false;
         acceptLoadedPlan(current);
-        await loadPlanFitUsageOutcomes();
+        await refreshPlanFitOutcomeEvidence();
         globalThis.setTimeout(() => planSummaryHeadingRef.current?.focus(), 0);
       },
       `Alternative ${String(alternativeNumber)} is now today's plan.`,
@@ -1765,7 +1957,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
         );
         if (activeQueryKeyRef.current === requestKey) {
           setPlan(current);
-          await loadPlanFitUsageOutcomes();
+          await refreshPlanFitOutcomeEvidence();
         }
       },
       `${item.title} was replaced while the rest of the plan stayed in place.`,
@@ -1804,7 +1996,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
         if (activeQueryKeyRef.current === requestKey) {
           shouldFocusRecentFeedbackUndoRef.current = true;
           setPlan(current);
-          await loadPlanFitUsageOutcomes();
+          await refreshPlanFitOutcomeEvidence();
         }
       },
       {
@@ -1844,7 +2036,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
         );
         if (activeQueryKeyRef.current === requestKey) {
           setPlan(current);
-          await loadPlanFitUsageOutcomes();
+          await refreshPlanFitOutcomeEvidence();
         }
       },
       `Temporary feedback for ${entry.title} was cleared. Today's plan was recalculated.`,
@@ -1878,6 +2070,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
         if (!requestEpochIsActive()) return;
         planSnapshotKeyRef.current = planSnapshotKey(current);
         setPlan(current);
+        await refreshPlanFitOutcomeEvidence();
         setAdvisorResult(null);
         setAdvisorError(
           "The plan changed while the advisor was working. Review the current plan and ask again.",
@@ -2137,6 +2330,10 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
               historyLoading={planFitHistoryLoading}
               historyError={planFitHistoryError}
               onHistoryRetry={() => void loadPlanFitUsageOutcomes()}
+              effectiveness={planFitEffectiveness}
+              effectivenessLoading={planFitEffectivenessLoading}
+              effectivenessError={planFitEffectivenessError}
+              onEffectivenessRetry={() => void loadPlanFitEffectiveness()}
             />
 
             <fieldset className="today-form-group">
@@ -2258,11 +2455,15 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
           </section>
 
           <section className="today-plan-fit" aria-label="Plan Fit outcomes">
-            <DailyPlanFitUsageHistory
+            <DailyPlanFitOutcomeEvidence
               outcomes={planFitUsageOutcomes}
               historyLoading={planFitHistoryLoading}
               historyError={planFitHistoryError}
+              effectiveness={planFitEffectiveness}
+              effectivenessLoading={planFitEffectivenessLoading}
+              effectivenessError={planFitEffectivenessError}
               onHistoryRetry={() => void loadPlanFitUsageOutcomes()}
+              onEffectivenessRetry={() => void loadPlanFitEffectiveness()}
             />
           </section>
 

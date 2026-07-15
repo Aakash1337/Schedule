@@ -61,8 +61,9 @@ prefills both editable fields; explicit generation is still required. Exact evid
 dismissal and reset are append-only, and changed evidence receives a new key. When the user does
 generate from a selected suggestion, Schedule revalidates that exact key and atomically records the
 actual edited targets with the plan. A bounded read-only history then shows pending, resolved, and
-not-evaluable outcomes, with later revisions disclosed separately and never fed back into planner
-scoring.
+not-evaluable outcomes, with later revisions disclosed separately. A separate workspace summary
+reports weighted target-fill and plan-completion rates only for settled, unrevised uses. Both views
+are descriptive and never feed planner scoring, model prompts, or automatic adaptation.
 
 The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface. Work items support arbitrary-depth, acyclic same-workspace subtasks plus directed prerequisites. Parent and child statuses remain independent, only leaf work is eligible for Today, and a dependent is newly selectable only when every direct prerequisite is `done`.
 

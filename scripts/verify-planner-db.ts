@@ -9,6 +9,7 @@ import {
   GenerateDailyPlan,
   GetDailyPlanFitInsight,
   GetDailyPlan,
+  GetDailyPlanFitEffectiveness,
   GetRoutineSelectionPreferenceState,
   GetRoutineDurationInsight,
   ListDailyPlanFitUsageOutcomes,
@@ -1156,10 +1157,35 @@ try {
   );
 
   const listFitUsageOutcomes = new ListDailyPlanFitUsageOutcomes(unitOfWork);
+  const getFitEffectiveness = new GetDailyPlanFitEffectiveness(listFitUsageOutcomes);
   assert.deepEqual(
     await listFitUsageOutcomes.execute({ workspaceId: fitWorkspace, limit: 5 }),
     [],
     "reading or prefilling a Plan Fit suggestion must not record usage",
+  );
+  assert.deepEqual(
+    await getFitEffectiveness.execute({ workspaceId: fitWorkspace, limit: 28 }),
+    {
+      usesConsidered: 0,
+      resolvedUseCount: 0,
+      pendingUseCount: 0,
+      notEvaluableUseCount: 0,
+      revisedUseCount: 0,
+      eligibleResolvedUseCount: 0,
+      exactSuggestionUseCount: 0,
+      editedSuggestionUseCount: 0,
+      appliedTargetMinutes: 0,
+      scheduledMinutes: 0,
+      completedMinutes: 0,
+      appliedTargetTaskCount: 0,
+      scheduledTaskCount: 0,
+      completedTaskCount: 0,
+      scheduledMinutesRateBasisPoints: null,
+      scheduledTasksRateBasisPoints: null,
+      completionMinutesRateBasisPoints: null,
+      completionTasksRateBasisPoints: null,
+    },
+    "prefilling alone must not affect the descriptive aggregate",
   );
   const fitUsageRequest = createDailyPlanningRequest({
     ...fitUsageRequestBase,
@@ -1317,6 +1343,30 @@ try {
   assert.equal(pendingFitOutcome.completedMinutes, null);
   assert.equal(pendingFitOutcome.completedTaskCount, null);
   assert.deepEqual(
+    await getFitEffectiveness.execute({ workspaceId: fitWorkspace, limit: 28 }),
+    {
+      usesConsidered: 1,
+      resolvedUseCount: 0,
+      pendingUseCount: 1,
+      notEvaluableUseCount: 0,
+      revisedUseCount: 0,
+      eligibleResolvedUseCount: 0,
+      exactSuggestionUseCount: 0,
+      editedSuggestionUseCount: 1,
+      appliedTargetMinutes: 0,
+      scheduledMinutes: 0,
+      completedMinutes: 0,
+      appliedTargetTaskCount: 0,
+      scheduledTaskCount: 0,
+      completedTaskCount: 0,
+      scheduledMinutesRateBasisPoints: null,
+      scheduledTasksRateBasisPoints: null,
+      completionMinutesRateBasisPoints: null,
+      completionTasksRateBasisPoints: null,
+    },
+    "pending uses must be counted but excluded from every aggregate rate",
+  );
+  assert.deepEqual(
     await connection.sql<{ local_date: string; current_plan_id: string; version: number }[]>`
       select local_date::text, current_plan_id::text, version
       from daily_plan_heads
@@ -1386,6 +1436,36 @@ try {
   assert.equal(resolvedFitOutcome.status, "resolved");
   assert.equal(resolvedFitOutcome.completedMinutes, fitUsagePlan.items[0]!.scheduledMinutes);
   assert.equal(resolvedFitOutcome.completedTaskCount, 1);
+  const resolvedFitEffectiveness = await getFitEffectiveness.execute({
+    workspaceId: fitWorkspace,
+    limit: 28,
+  });
+  assert.deepEqual(
+    resolvedFitEffectiveness,
+    {
+      usesConsidered: 1,
+      resolvedUseCount: 1,
+      pendingUseCount: 0,
+      notEvaluableUseCount: 0,
+      revisedUseCount: 0,
+      eligibleResolvedUseCount: 1,
+      exactSuggestionUseCount: 0,
+      editedSuggestionUseCount: 1,
+      appliedTargetMinutes: 105,
+      scheduledMinutes: fitUsagePlan.totalMinutes,
+      completedMinutes: fitUsagePlan.items[0]!.scheduledMinutes,
+      appliedTargetTaskCount: 3,
+      scheduledTaskCount: fitUsagePlan.items.length,
+      completedTaskCount: 1,
+      scheduledMinutesRateBasisPoints: Math.round((fitUsagePlan.totalMinutes * 10_000) / 105),
+      scheduledTasksRateBasisPoints: Math.round((fitUsagePlan.items.length * 10_000) / 3),
+      completionMinutesRateBasisPoints: Math.round(
+        (fitUsagePlan.items[0]!.scheduledMinutes * 10_000) / fitUsagePlan.totalMinutes,
+      ),
+      completionTasksRateBasisPoints: Math.round(10_000 / fitUsagePlan.items.length),
+    },
+    "resolved unrevised uses must expose weighted target-fill and completion rates",
+  );
 
   const revisedFitPlan = await new MutateDailyPlan(unitOfWork, clock).regenerate({
     workspaceId: fitWorkspace,
@@ -1408,6 +1488,30 @@ try {
   assert.equal(revisedFitOutcome.currentPlanId, revisedFitPlan.plan.id);
   assert.equal(revisedFitOutcome.currentPlanRevision, 2);
   assert.equal(revisedFitOutcome.revisedSinceUsage, true);
+  assert.deepEqual(
+    await getFitEffectiveness.execute({ workspaceId: fitWorkspace, limit: 28 }),
+    {
+      usesConsidered: 1,
+      resolvedUseCount: revisedFitOutcome.status === "resolved" ? 1 : 0,
+      pendingUseCount: revisedFitOutcome.status === "pending" ? 1 : 0,
+      notEvaluableUseCount: revisedFitOutcome.status === "not_evaluable" ? 1 : 0,
+      revisedUseCount: 1,
+      eligibleResolvedUseCount: 0,
+      exactSuggestionUseCount: 0,
+      editedSuggestionUseCount: 1,
+      appliedTargetMinutes: 0,
+      scheduledMinutes: 0,
+      completedMinutes: 0,
+      appliedTargetTaskCount: 0,
+      scheduledTaskCount: 0,
+      completedTaskCount: 0,
+      scheduledMinutesRateBasisPoints: null,
+      scheduledTasksRateBasisPoints: null,
+      completionMinutesRateBasisPoints: null,
+      completionTasksRateBasisPoints: null,
+    },
+    "a later current revision must remain visible but cannot enter descriptive rates",
+  );
   assert.equal(
     (
       await connection.sql<{ count: number }[]>`
