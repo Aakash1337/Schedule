@@ -698,8 +698,9 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   digest-only revocable browser sessions, and binary workspace memberships with deletion-safe
   workspace preservation
 - Implemented foundation: a centralized, enumeration-resistant hosted request and workspace
-  authorization seam with request isolation and explicit revocation/transaction semantics; it is
-  not registered in production, and no browser route, cookie, or provider is exposed
+  authorization seam with request isolation and explicit revocation/transaction semantics, plus
+  strict host-only session-cookie and exact-Origin double-submit CSRF adapters; none is registered
+  in production, and no browser route or identity provider is exposed
 - Authentication and secure workspace isolation
 - Cloud deployment selected from measured operational needs
 - Offline-capable synchronization and conflict handling, if required

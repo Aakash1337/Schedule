@@ -25,8 +25,9 @@ Durable product and engineering specifications live here so the repository root 
   boundaries, queue signals, alert guidance, and verification.
 - [Hosted identity foundation](./HOSTED_IDENTITY.md): dormant exact provider bindings, digest-only
   browser sessions, binary memberships, deletion boundaries, and PostgreSQL verification.
-- [Hosted authorization seam](./HOSTED_AUTHORIZATION.md): closed-by-default request authentication,
-  enumeration-resistant workspace authorization, revocation semantics, and transaction limits.
+- [Hosted authorization seam](./HOSTED_AUTHORIZATION.md): closed-by-default cookie/CSRF transport,
+  request authentication, enumeration-resistant workspace authorization, revocation semantics, and
+  transaction limits.
 - [Evaluation and test evidence](./EVALUATION.md): feature traceability, behavioral gates, coverage floors, planner metrics, and known evidence gaps.
 
 The root [README](../README.md) remains the installation and repository entry point.

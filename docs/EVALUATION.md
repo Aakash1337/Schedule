@@ -547,9 +547,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   product data. A centralized hosted request boundary additionally has unit and disposable-
   PostgreSQL evidence for request isolation, single authentication, spoof resistance,
   enumeration-resistant membership denial, redacted failures, immutable workspace contexts, and
-  post-revocation fencing. Both remain dormant: there is no browser route, provider
-  verification, cookie/CSRF policy, transaction-coupled product mutation authorization, public
-  deployment, or synchronization;
+  post-revocation fencing. The dormant browser transport additionally has unit evidence for bounded
+  duplicate-safe session cookies, host-only issue/clear attributes, exact-Origin constant-time
+  double-submit CSRF proof, verification ordering, and safe/unsafe production-route closure. The
+  stack remains dormant: there is no browser route, provider verification, route-level cookie
+  issuance, transaction-coupled product mutation authorization, public deployment, or
+  synchronization;
 - ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a

@@ -5,8 +5,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   registerHostedWorkspaceBoundary,
   type HostedRequestAuthenticator,
+  type HostedRequestCsrfGuard,
   type HostedWorkspaceAuthorizer,
 } from "./hosted-auth-boundary.js";
+import {
+  HostedBrowserCsrfGuard,
+  HostedBrowserSessionAuthenticator,
+  HOSTED_CSRF_COOKIE_NAME,
+  HOSTED_CSRF_HEADER_NAME,
+  HOSTED_SESSION_COOKIE_NAME,
+} from "./hosted-browser-session.js";
 import { installErrorHandler } from "./http-errors.js";
 
 const USER_ID = userId("00000000-0000-4000-8000-000000000101");
@@ -42,6 +50,7 @@ async function createBoundaryApp(
   authenticator: HostedRequestAuthenticator,
   authorizer: HostedWorkspaceAuthorizer = authorizerFor(),
   logLines?: string[],
+  csrfGuard: HostedRequestCsrfGuard = { verify: () => true },
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger:
@@ -56,7 +65,7 @@ async function createBoundaryApp(
   installErrorHandler(app);
   await registerHostedWorkspaceBoundary(
     app,
-    { authenticator, authorizer },
+    { authenticator, csrfGuard, authorizer },
     async (hosted, access) => {
       hosted.get(
         "/v1/hosted/workspaces/:workspaceId/probe",
@@ -77,6 +86,15 @@ async function createBoundaryApp(
           };
         },
       );
+      hosted.post("/v1/hosted/workspaces/:workspaceId/probe", async (request) => {
+        const authorization = access.authorization(request);
+        return {
+          userId: authorization.userId,
+          sessionId: authorization.sessionId,
+          workspaceId: authorization.workspaceId,
+          frozen: Object.isFrozen(authorization),
+        };
+      });
     },
   );
   await app.ready();
@@ -148,7 +166,7 @@ describe("dormant hosted workspace request boundary", () => {
     }
   });
 
-  it.each(["authentication", "authorization"] as const)(
+  it.each(["verification", "authentication", "authorization"] as const)(
     "redacts internal %s failures behind one temporary-unavailability response",
     async (failure) => {
       const secret = `${failure}-private-diagnostic`;
@@ -167,6 +185,12 @@ describe("dormant hosted workspace request boundary", () => {
           },
         },
         logLines,
+        {
+          verify: () => {
+            if (failure === "verification") throw new Error(secret);
+            return true;
+          },
+        },
       );
       const response = await app.inject({
         method: "GET",
@@ -201,6 +225,92 @@ describe("dormant hosted workspace request boundary", () => {
       url: `/v1/hosted/workspaces/${WORKSPACE_ID}/probe`,
     });
     expect(response.statusCode).toBe(503);
+  });
+
+  it("rejects unsafe browser requests before authentication and workspace authorization", async () => {
+    const authenticate = vi.fn(async () => principal);
+    const authorizer = authorizerFor();
+    const verify = vi.fn(() => false);
+    const app = await createBoundaryApp({ authenticate }, authorizer, undefined, { verify });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/hosted/workspaces/${WORKSPACE_ID}/probe`,
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["www-authenticate"]).toBeUndefined();
+    expect(response.json()).toMatchObject({
+      error: { code: "hosted.csrf_failed", message: "Request verification failed." },
+    });
+    expect(verify).toHaveBeenCalledOnce();
+    expect(authenticate).not.toHaveBeenCalled();
+    expect(authorizer.execute).not.toHaveBeenCalled();
+  });
+
+  it("awaits asynchronous request verification before authentication and authorization", async () => {
+    const order: string[] = [];
+    const authenticate = vi.fn(async () => {
+      order.push("authenticate");
+      return principal;
+    });
+    const authorizer: HostedWorkspaceAuthorizer = {
+      execute: vi.fn(async (candidate, requestedWorkspace) => {
+        order.push("authorize");
+        return { ...candidate, workspaceId: requestedWorkspace };
+      }),
+    };
+    const verify = vi.fn(async () => {
+      await Promise.resolve();
+      order.push("verify");
+      return true;
+    });
+    const app = await createBoundaryApp({ authenticate }, authorizer, undefined, { verify });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/hosted/workspaces/${WORKSPACE_ID}/probe`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(order).toEqual(["verify", "authenticate", "authorize"]);
+  });
+
+  it("crosses the dormant boundary with one real cookie resolution and exact CSRF proof", async () => {
+    const secret = "A".repeat(43);
+    const csrfToken = "B".repeat(43);
+    const execute = vi.fn(async () => principal);
+    const authorizer = authorizerFor();
+    const app = await createBoundaryApp(
+      new HostedBrowserSessionAuthenticator({ execute }),
+      authorizer,
+      undefined,
+      new HostedBrowserCsrfGuard("https://hosted.schedule.test"),
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/hosted/workspaces/${WORKSPACE_ID}/probe`,
+      headers: {
+        origin: "https://hosted.schedule.test",
+        cookie: `${HOSTED_SESSION_COOKIE_NAME}=${SESSION_ID}.${secret}; ${HOSTED_CSRF_COOKIE_NAME}=${csrfToken}`,
+        [HOSTED_CSRF_HEADER_NAME]: csrfToken,
+        "x-user-id": OTHER_USER_ID,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toMatchObject({
+      userId: USER_ID,
+      sessionId: SESSION_ID,
+      workspaceId: WORKSPACE_ID,
+      frozen: true,
+    });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledWith({ selector: SESSION_ID, secret });
+    expect(authorizer.execute).toHaveBeenCalledOnce();
   });
 
   it("keeps concurrent request principals isolated", async () => {
@@ -249,7 +359,11 @@ describe("dormant hosted workspace request boundary", () => {
     await expect(
       registerHostedWorkspaceBoundary(
         app,
-        { authenticator: { authenticate: async () => principal }, authorizer: authorizerFor() },
+        {
+          authenticator: { authenticate: async () => principal },
+          csrfGuard: { verify: () => true },
+          authorizer: authorizerFor(),
+        },
         async (hosted) => {
           hosted.get("/v1/hosted/workspaces/:workspaceIdSuffix", async () => []);
         },
