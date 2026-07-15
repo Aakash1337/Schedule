@@ -195,6 +195,53 @@ describe("work board", () => {
     );
   });
 
+  it("merges a pending create into a matching priority board loaded in flight", async () => {
+    const user = userEvent.setup();
+    const creation = deferred<WorkItem>();
+    const created: WorkItem = {
+      ...item,
+      id: "item-created-after-filter",
+      title: "Review the rollout",
+      description: null,
+      status: "backlog",
+      priority: "high",
+      version: 1,
+    };
+    apiMocks.createWorkItem.mockReturnValue(creation.promise);
+    apiMocks.listWorkItems.mockImplementation(
+      async (_workspaceId: string, filters: { priority?: string }) => ({
+        items: filters.priority === "high" ? [] : [item],
+        page: { limit: 200, offset: 0 },
+      }),
+    );
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await screen.findByRole("heading", { name: item.title });
+    await user.type(screen.getByRole("textbox", { name: "Title" }), created.title);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Priority" }), "high");
+    await user.click(screen.getByRole("button", { name: "Add item" }));
+    await waitFor(() => expect(apiMocks.createWorkItem).toHaveBeenCalledOnce());
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filter by priority" }), "high");
+    await waitFor(() =>
+      expect(apiMocks.listWorkItems).toHaveBeenCalledWith(
+        workspace.id,
+        { priority: "high" },
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(screen.queryByRole("heading", { name: item.title })).not.toBeInTheDocument();
+
+    await act(async () => {
+      creation.resolve(created);
+      await creation.promise;
+    });
+
+    expect(await screen.findByRole("heading", { name: created.title })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Filter by priority" })).toHaveValue("high");
+  });
+
   it("searches and combines status, due-date, and priority-safe client filters", async () => {
     const user = userEvent.setup();
     const matching = {

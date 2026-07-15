@@ -125,6 +125,13 @@ function queryKey(workspaceId: string, priority: PriorityFilter): string {
   return `${workspaceId}:${priority || "all"}`;
 }
 
+function priorityForQueryKey(workspaceId: string, key: string): PriorityFilter | null {
+  if (key === queryKey(workspaceId, "")) return "";
+  return (
+    priorities.find((priority) => key === queryKey(workspaceId, priority.value))?.value ?? null
+  );
+}
+
 function mergeWorkItems(
   current: readonly WorkItem[],
   fresh: readonly WorkItem[],
@@ -592,19 +599,17 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
           ? current.allItems.map((item) => (item.id === created.id ? created : item))
           : [...current.allItems, created],
       }));
-      if (activeQueryKeyRef.current === requestKey) {
-        setBoard((current) => {
-          if (current?.queryKey !== requestKey) return current;
-          const allItems = current.allItems.some((item) => item.id === created.id)
-            ? current.allItems.map((item) => (item.id === created.id ? created : item))
-            : [...current.allItems, created];
-          const items =
-            priorityFilter !== "" && created.priority !== priorityFilter
-              ? current.items
-              : [...current.items, created];
-          return { ...current, items, allItems };
-        });
-      }
+      setBoard((current) => {
+        if (current === null) return current;
+        const currentPriority = priorityForQueryKey(requestWorkspaceId, current.queryKey);
+        if (currentPriority === null) return current;
+        const allItems = mergeWorkItems(current.allItems, [created]);
+        const items =
+          currentPriority === "" || created.priority === currentPriority
+            ? mergeWorkItems(current.items, [created])
+            : current.items;
+        return { ...current, items, allItems };
+      });
       setTitle("");
       setDescription("");
       setNewStatus("backlog");
