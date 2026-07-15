@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from . import schemas
 from .tools import (
     capture_turn,
@@ -49,7 +51,7 @@ def register(ctx: object) -> None:
         ctx.register_tool(
             name=name,
             toolset="schedule",
-            schema=schema,
+            schema=deepcopy(schema),
             handler=handler,
             emoji=emoji,
         )

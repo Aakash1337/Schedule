@@ -1,4 +1,4 @@
-import { ChevronDown, Pencil, Plus, RefreshCw } from "lucide-react";
+import { ChevronDown, Pencil, Plus, RefreshCw, ShieldCheck, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { api, ApiError } from "../api";
@@ -6,6 +6,7 @@ import { Button, EmptyState, ErrorNotice, Field, PageHeader, PageSkeleton } from
 import type {
   WorkItem,
   WorkItemDependency,
+  NaturalLanguageProposal,
   WorkItemPriority,
   WorkItemStatus,
   WorkspaceViewProps,
@@ -45,6 +46,7 @@ interface WorkspaceDependencyData {
 
 interface WorkEditDraft {
   readonly id: string;
+  readonly parentWorkItemId: string;
   readonly title: string;
   readonly description: string;
   readonly dueOn: string;
@@ -74,10 +76,41 @@ function mergeWorkItems(
   ];
 }
 
+function descendantWorkItemIds(
+  rootId: string,
+  childrenByParentId: ReadonlyMap<string, readonly WorkItem[]>,
+): ReadonlySet<string> {
+  const descendants = new Set<string>();
+  const pending = [...(childrenByParentId.get(rootId) ?? [])];
+  while (pending.length > 0) {
+    const child = pending.pop();
+    if (child === undefined || descendants.has(child.id)) continue;
+    descendants.add(child.id);
+    pending.push(...(childrenByParentId.get(child.id) ?? []));
+  }
+  return descendants;
+}
+
+const emptyDescendantWorkItemIds: ReadonlySet<string> = new Set();
+
 function messageFor(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
   return "The work board could not be updated.";
+}
+
+function proposalUnavailableMessage(reason: string | null): string {
+  if (reason === "disabled") {
+    return "Local work drafting is off. Enable the local proposal model to use this capture path.";
+  }
+  if (reason === "busy")
+    return "The local model is busy. Your text is safe here; try again shortly.";
+  if (reason === "timeout")
+    return "The local model took too long. Your text is still here to retry.";
+  if (reason === "no_proposal") {
+    return "Describe one concrete work item. No work item was created.";
+  }
+  return "The local model could not prepare a safe proposal. No work item was created.";
 }
 
 function priorityLabel(priority: WorkItemPriority): string {
@@ -91,6 +124,19 @@ function statusLabel(status: WorkItemStatus): string {
 function dependencyMessageFor(error: unknown): string {
   if (error instanceof ApiError && error.code === "work_item_dependency.cycle_conflict") {
     return "That prerequisite would create a cycle. Choose a different work item.";
+  }
+  return messageFor(error);
+}
+
+function workItemMessageFor(error: unknown): string {
+  if (error instanceof ApiError && error.code === "work_item_hierarchy.cycle_conflict") {
+    return "That parent would create a cycle. Choose an item outside this subtask branch.";
+  }
+  if (error instanceof ApiError && error.code === "work_item_hierarchy.self_reference_invalid") {
+    return "A work item cannot be its own parent.";
+  }
+  if (error instanceof ApiError && error.code === "work_item.not_found") {
+    return "That parent is no longer available. Refresh the board and choose another item.";
   }
   return messageFor(error);
 }
@@ -123,9 +169,32 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const [newStatus, setNewStatus] = useState<WorkItemStatus>("backlog");
   const [newPriority, setNewPriority] = useState<WorkItemPriority>("none");
   const [newDueOn, setNewDueOn] = useState("");
+  const [newParentWorkItemId, setNewParentWorkItemId] = useState<string | null>(null);
   const [includeInDailyPlan, setIncludeInDailyPlan] = useState(false);
   const [planningDurationMinutes, setPlanningDurationMinutes] = useState("30");
   const titleInputRef = useRef<HTMLInputElement>(null);
+  const [proposalOpen, setProposalOpen] = useState(false);
+  const [proposalPrompt, setProposalPrompt] = useState("");
+  const [proposal, setProposal] = useState<NaturalLanguageProposal | null>(null);
+  const [proposalTitle, setProposalTitle] = useState("");
+  const [proposalPriority, setProposalPriority] = useState<WorkItemPriority>("none");
+  const [proposalDueOn, setProposalDueOn] = useState("");
+  const [proposalIncludeInDailyPlan, setProposalIncludeInDailyPlan] = useState(false);
+  const [proposalPlanningDurationMinutes, setProposalPlanningDurationMinutes] = useState("30");
+  const [proposalSummary, setProposalSummary] = useState<string | null>(null);
+  const [proposalWarnings, setProposalWarnings] = useState<readonly string[]>([]);
+  const [proposalBusy, setProposalBusy] = useState<
+    "proposing" | "confirming" | "cancelling" | null
+  >(null);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+  const [proposalAnnouncement, setProposalAnnouncement] = useState<string | null>(null);
+  const [recentlyCreatedItemId, setRecentlyCreatedItemId] = useState<string | null>(null);
+  const proposalPromptRef = useRef<HTMLTextAreaElement>(null);
+  const proposalOpenerRef = useRef<HTMLElement | null>(null);
+  const proposalAbortRef = useRef<AbortController | null>(null);
+  const proposalOperationRef = useRef(0);
+  const proposalWorkspaceRef = useRef(workspace.id);
+  const confirmationKeyRef = useRef<string | null>(null);
   const editOpenerRef = useRef<HTMLElement | null>(null);
   const [editDraft, setEditDraft] = useState<WorkEditDraft | null>(null);
   const [prerequisiteSelections, setPrerequisiteSelections] = useState<
@@ -149,6 +218,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const activeQueryKey = queryKey(workspace.id, priorityFilter);
   const activeQueryKeyRef = useRef(activeQueryKey);
   activeQueryKeyRef.current = activeQueryKey;
+  proposalWorkspaceRef.current = workspace.id;
 
   const loadBoard = useCallback(
     async (signal?: AbortSignal, revalidateWorkspaceData = false) => {
@@ -221,6 +291,37 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   }, [workspace.id]);
 
   useEffect(() => {
+    proposalAbortRef.current?.abort();
+    proposalAbortRef.current = null;
+    proposalOperationRef.current += 1;
+    confirmationKeyRef.current = null;
+    setProposalOpen(false);
+    setProposalPrompt("");
+    setProposal(null);
+    setProposalTitle("");
+    setProposalPriority("none");
+    setProposalDueOn("");
+    setProposalIncludeInDailyPlan(false);
+    setProposalPlanningDurationMinutes("30");
+    setProposalSummary(null);
+    setProposalWarnings([]);
+    setProposalBusy(null);
+    setProposalError(null);
+    setProposalAnnouncement(null);
+    setRecentlyCreatedItemId(null);
+    setNewParentWorkItemId(null);
+    return () => {
+      proposalAbortRef.current?.abort();
+      proposalOperationRef.current += 1;
+    };
+  }, [workspace.id]);
+
+  useEffect(() => {
+    if (!proposalOpen) return;
+    window.setTimeout(() => proposalPromptRef.current?.focus());
+  }, [proposalOpen]);
+
+  useEffect(() => {
     const controller = new AbortController();
     setActionError(null);
     setCreateError(null);
@@ -237,9 +338,42 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const items = board?.queryKey === activeQueryKey ? board.items : null;
   const allItems = board?.queryKey === activeQueryKey ? board.allItems : null;
   const dependencies = board?.queryKey === activeQueryKey ? board.dependencies : null;
+  useEffect(() => {
+    if (
+      recentlyCreatedItemId === null ||
+      items?.some((item) => item.id === recentlyCreatedItemId) !== true
+    ) {
+      return;
+    }
+    window.setTimeout(() => {
+      document.getElementById(`work-item-${recentlyCreatedItemId}`)?.focus();
+      setRecentlyCreatedItemId(null);
+    });
+  }, [items, recentlyCreatedItemId]);
   const allItemsById = useMemo(
     () => new Map((allItems ?? []).map((item) => [item.id, item] as const)),
     [allItems],
+  );
+  const childrenByParentId = useMemo(() => {
+    const grouped = new Map<string, WorkItem[]>();
+    for (const candidate of allItems ?? []) {
+      if (candidate.parentWorkItemId === null) continue;
+      const current = grouped.get(candidate.parentWorkItemId) ?? [];
+      current.push(candidate);
+      grouped.set(candidate.parentWorkItemId, current);
+    }
+    for (const children of grouped.values()) {
+      children.sort((left, right) => left.title.localeCompare(right.title));
+    }
+    return grouped;
+  }, [allItems]);
+  const editedWorkItemId = editDraft?.id ?? null;
+  const editedDescendantWorkItemIds = useMemo(
+    () =>
+      editedWorkItemId === null
+        ? emptyDescendantWorkItemIds
+        : descendantWorkItemIds(editedWorkItemId, childrenByParentId),
+    [childrenByParentId, editedWorkItemId],
   );
   const dependenciesByDependentId = useMemo(() => {
     const grouped = new Map<string, WorkItemDependency[]>();
@@ -264,6 +398,8 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     planningDurationMinutes,
     includeInDailyPlan,
   );
+  const selectedComposerParent =
+    newParentWorkItemId === null ? null : (allItemsById.get(newParentWorkItemId) ?? null);
 
   function updateWorkspaceDependencyData(
     workspaceId: string,
@@ -289,14 +425,19 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     setCreating(true);
     setCreateError(null);
     try {
-      const created = await api.createWorkItem(requestWorkspaceId, {
+      const input = {
         title: normalizedTitle,
         description: description.trim().length === 0 ? null : description.trim(),
         status: newStatus,
         priority: newPriority,
         dueOn: newDueOn || null,
         planningDurationMinutes: parsedPlanningDuration,
-      });
+      };
+      const requestedParentWorkItemId = newParentWorkItemId;
+      const created =
+        requestedParentWorkItemId === null
+          ? await api.createWorkItem(requestWorkspaceId, input)
+          : await api.createSubtask(requestWorkspaceId, requestedParentWorkItemId, input);
       if (activeQueryKeyRef.current === requestKey) {
         updateWorkspaceDependencyData(requestWorkspaceId, (current) => ({
           ...current,
@@ -321,9 +462,14 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       setNewStatus("backlog");
       setNewPriority("none");
       setNewDueOn("");
+      setNewParentWorkItemId(null);
       setIncludeInDailyPlan(false);
       setPlanningDurationMinutes("30");
-      titleInputRef.current?.focus();
+      if (requestedParentWorkItemId === null) {
+        titleInputRef.current?.focus();
+      } else if (priorityFilter === "" || created.priority === priorityFilter) {
+        setRecentlyCreatedItemId(created.id);
+      }
     } catch (error) {
       if (activeQueryKeyRef.current === requestKey) setCreateError(messageFor(error));
     } finally {
@@ -336,6 +482,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setEditDraft({
       id: item.id,
+      parentWorkItemId: item.parentWorkItemId ?? "",
       title: item.title,
       description: item.description ?? "",
       dueOn: item.dueOn ?? "",
@@ -401,6 +548,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     item: WorkItem,
     changes: {
       readonly title?: string;
+      readonly parentWorkItemId?: string | null;
       readonly description?: string | null;
       readonly status?: WorkItemStatus;
       readonly priority?: WorkItemPriority;
@@ -448,10 +596,10 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       return true;
     } catch (error) {
       if (activeQueryKeyRef.current !== requestKey) return false;
-      if (error instanceof ApiError && error.status === 409) {
+      if (error instanceof ApiError && error.code === "work_item.version_conflict") {
         await refreshAfterConflict(requestKey, requestWorkspaceId, item.id);
       } else {
-        setActionError(messageFor(error));
+        setActionError(workItemMessageFor(error));
       }
       return false;
     } finally {
@@ -476,12 +624,33 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     );
     if (normalizedTitle.length === 0 || !planningDurationIsValid) return;
     const saved = await updateItem(item, {
+      parentWorkItemId: editDraft.parentWorkItemId || null,
       title: normalizedTitle,
       description: editDraft.description.trim() || null,
       dueOn: editDraft.dueOn || null,
       planningDurationMinutes: parsedPlanningDuration,
     });
     if (saved) closeEdit();
+  }
+
+  function beginSubtask(parent: WorkItem): void {
+    setNewParentWorkItemId(parent.id);
+    setCreateError(null);
+    window.setTimeout(() => {
+      titleInputRef.current?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+      titleInputRef.current?.focus();
+    });
+  }
+
+  function revealWorkItem(itemId: string): void {
+    if (items?.some((candidate) => candidate.id === itemId) === true) {
+      const card = document.getElementById(`work-item-${itemId}`);
+      card?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+      card?.focus();
+      return;
+    }
+    setPriorityFilter("");
+    setRecentlyCreatedItemId(itemId);
   }
 
   function beginDependencyMutation(itemId: string, requestKey: string): string | null {
@@ -651,6 +820,292 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     }
   }
 
+  function beginProposalOperation(): {
+    readonly controller: AbortController;
+    readonly operation: number;
+    readonly workspaceId: string;
+  } {
+    proposalAbortRef.current?.abort();
+    const controller = new AbortController();
+    proposalAbortRef.current = controller;
+    proposalOperationRef.current += 1;
+    return {
+      controller,
+      operation: proposalOperationRef.current,
+      workspaceId: workspace.id,
+    };
+  }
+
+  function proposalOperationIsCurrent(operation: number, requestWorkspaceId: string): boolean {
+    return (
+      proposalOperationRef.current === operation &&
+      proposalWorkspaceRef.current === requestWorkspaceId
+    );
+  }
+
+  function openProposalPanel(): void {
+    proposalOpenerRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setProposalOpen(true);
+    setProposalError(null);
+  }
+
+  function closeProposalPanel(): void {
+    if (proposalBusy === "confirming" || proposalBusy === "cancelling") return;
+    if (proposalBusy === "proposing") {
+      proposalAbortRef.current?.abort();
+      proposalOperationRef.current += 1;
+      setProposalBusy(null);
+    }
+    setProposalOpen(false);
+    window.setTimeout(() => {
+      const opener = proposalOpenerRef.current;
+      if (opener?.isConnected === true) opener.focus();
+    });
+  }
+
+  async function prepareProposal(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    const prompt = proposalPrompt.trim();
+    if (prompt.length === 0 || proposalBusy !== null) return;
+    const request = beginProposalOperation();
+    const requestId = globalThis.crypto.randomUUID();
+    confirmationKeyRef.current = null;
+    setProposal(null);
+    setProposalTitle("");
+    setProposalPriority("none");
+    setProposalDueOn("");
+    setProposalIncludeInDailyPlan(false);
+    setProposalPlanningDurationMinutes("30");
+    setProposalSummary(null);
+    setProposalWarnings([]);
+    setProposalError(null);
+    setProposalAnnouncement(null);
+    setProposalBusy("proposing");
+    try {
+      const result = await api.generateNaturalLanguageProposal(
+        request.workspaceId,
+        {
+          version: "schedule.natural-language/v1",
+          requestId,
+          prompt,
+        },
+        request.controller.signal,
+      );
+      if (!proposalOperationIsCurrent(request.operation, request.workspaceId)) return;
+      if (result.status !== "proposal" || result.proposal === null) {
+        setProposalSummary(result.summary);
+        setProposalWarnings(result.warnings);
+        setProposalError(result.summary ?? proposalUnavailableMessage(result.reason));
+        setProposalAnnouncement("No work item was created.");
+        return;
+      }
+      setProposal(result.proposal);
+      setProposalTitle(result.proposal.command.title);
+      setProposalPriority(result.proposal.userSelection.priority);
+      setProposalDueOn(result.proposal.userSelection.dueOn ?? "");
+      setProposalIncludeInDailyPlan(result.proposal.userSelection.planningDurationMinutes !== null);
+      setProposalPlanningDurationMinutes(
+        String(result.proposal.userSelection.planningDurationMinutes ?? 30),
+      );
+      setProposalSummary(result.summary);
+      setProposalWarnings(result.warnings);
+      setProposalAnnouncement("Proposal ready for review. Nothing has been created yet.");
+      confirmationKeyRef.current = globalThis.crypto.randomUUID();
+    } catch (error) {
+      if (
+        !request.controller.signal.aborted &&
+        proposalOperationIsCurrent(request.operation, request.workspaceId)
+      ) {
+        setProposalError(messageFor(error));
+        setProposalAnnouncement("No work item was created.");
+      }
+    } finally {
+      if (proposalOperationIsCurrent(request.operation, request.workspaceId)) {
+        setProposalBusy(null);
+        if (proposalAbortRef.current === request.controller) proposalAbortRef.current = null;
+      }
+    }
+  }
+
+  async function cancelProposal(): Promise<void> {
+    if (proposal === null || proposalBusy !== null) return;
+    const request = beginProposalOperation();
+    setProposalBusy("cancelling");
+    setProposalError(null);
+    try {
+      await api.cancelNaturalLanguageProposal(
+        request.workspaceId,
+        proposal.id,
+        proposal.version,
+        request.controller.signal,
+      );
+      if (!proposalOperationIsCurrent(request.operation, request.workspaceId)) return;
+      setProposal(null);
+      setProposalTitle("");
+      setProposalPriority("none");
+      setProposalDueOn("");
+      setProposalIncludeInDailyPlan(false);
+      setProposalPlanningDurationMinutes("30");
+      setProposalSummary(null);
+      setProposalWarnings([]);
+      confirmationKeyRef.current = null;
+      setProposalAnnouncement("Proposal cancelled. No work item was created.");
+      window.setTimeout(() => proposalPromptRef.current?.focus());
+    } catch (error) {
+      if (
+        !request.controller.signal.aborted &&
+        proposalOperationIsCurrent(request.operation, request.workspaceId)
+      ) {
+        if (error instanceof ApiError && error.status === 410) {
+          setProposal(null);
+          confirmationKeyRef.current = null;
+          setProposalError("This proposal is no longer available. Review your text and try again.");
+        } else {
+          setProposalError(messageFor(error));
+        }
+      }
+    } finally {
+      if (proposalOperationIsCurrent(request.operation, request.workspaceId)) {
+        setProposalBusy(null);
+        if (proposalAbortRef.current === request.controller) proposalAbortRef.current = null;
+      }
+    }
+  }
+
+  async function confirmProposal(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (proposal === null || proposalBusy !== null) return;
+    const normalizedTitle = proposalTitle.trim();
+    const durationIsValid = isPlanningDurationValid(
+      proposalPlanningDurationMinutes,
+      proposalIncludeInDailyPlan,
+    );
+    if (normalizedTitle.length === 0 || !durationIsValid) return;
+    const userSelection = {
+      priority: proposalPriority,
+      dueOn: proposalDueOn === "" ? null : proposalDueOn,
+      planningDurationMinutes: proposalIncludeInDailyPlan
+        ? Number(proposalPlanningDurationMinutes)
+        : null,
+    } as const;
+    const request = beginProposalOperation();
+    const requestQueryKey = activeQueryKey;
+    const confirmationKey = confirmationKeyRef.current ?? globalThis.crypto.randomUUID();
+    confirmationKeyRef.current = confirmationKey;
+    setProposalBusy("confirming");
+    setProposalError(null);
+    let currentProposal = proposal;
+    try {
+      if (
+        normalizedTitle !== currentProposal.command.title ||
+        userSelection.priority !== currentProposal.userSelection.priority ||
+        userSelection.dueOn !== currentProposal.userSelection.dueOn ||
+        userSelection.planningDurationMinutes !==
+          currentProposal.userSelection.planningDurationMinutes
+      ) {
+        currentProposal = await api.updateNaturalLanguageProposal(
+          request.workspaceId,
+          currentProposal.id,
+          {
+            expectedVersion: currentProposal.version,
+            title: normalizedTitle,
+            userSelection,
+          },
+          request.controller.signal,
+        );
+        if (!proposalOperationIsCurrent(request.operation, request.workspaceId)) return;
+        setProposal(currentProposal);
+        setProposalTitle(currentProposal.command.title);
+        setProposalPriority(currentProposal.userSelection.priority);
+        setProposalDueOn(currentProposal.userSelection.dueOn ?? "");
+        setProposalIncludeInDailyPlan(
+          currentProposal.userSelection.planningDurationMinutes !== null,
+        );
+        setProposalPlanningDurationMinutes(
+          String(currentProposal.userSelection.planningDurationMinutes ?? 30),
+        );
+      }
+      const result = await api.confirmNaturalLanguageProposal(
+        request.workspaceId,
+        currentProposal.id,
+        currentProposal.version,
+        confirmationKey,
+        request.controller.signal,
+      );
+      if (!proposalOperationIsCurrent(request.operation, request.workspaceId)) return;
+      const created = result.workItem;
+      updateWorkspaceDependencyData(request.workspaceId, (current) => ({
+        ...current,
+        allItems: current.allItems.some((item) => item.id === created.id)
+          ? current.allItems.map((item) => (item.id === created.id ? created : item))
+          : [...current.allItems, created],
+      }));
+      setBoard((current) => {
+        if (
+          activeQueryKeyRef.current !== requestQueryKey ||
+          current?.queryKey !== requestQueryKey
+        ) {
+          return current;
+        }
+        const allItems = current.allItems.some((item) => item.id === created.id)
+          ? current.allItems.map((item) => (item.id === created.id ? created : item))
+          : [...current.allItems, created];
+        const visible = priorityFilter === "" || created.priority === priorityFilter;
+        const items = current.items.some((item) => item.id === created.id)
+          ? current.items.map((item) => (item.id === created.id ? created : item))
+          : visible
+            ? [...current.items, created]
+            : current.items;
+        return { ...current, allItems, items };
+      });
+      if (activeQueryKeyRef.current === requestQueryKey) {
+        if (priorityFilter !== "" && created.priority !== priorityFilter) setPriorityFilter("");
+        setRecentlyCreatedItemId(created.id);
+      }
+      setProposal(null);
+      setProposalPrompt("");
+      setProposalTitle("");
+      setProposalPriority("none");
+      setProposalDueOn("");
+      setProposalIncludeInDailyPlan(false);
+      setProposalPlanningDurationMinutes("30");
+      setProposalSummary(null);
+      setProposalWarnings([]);
+      setProposalOpen(false);
+      confirmationKeyRef.current = null;
+      setProposalAnnouncement(
+        result.replayed
+          ? `${created.title} was already created; the existing work item is shown.`
+          : `${created.title} was created in Backlog.`,
+      );
+    } catch (error) {
+      if (
+        !request.controller.signal.aborted &&
+        proposalOperationIsCurrent(request.operation, request.workspaceId)
+      ) {
+        if (error instanceof ApiError && error.status === 410) {
+          setProposal(null);
+          confirmationKeyRef.current = null;
+          setProposalError("This proposal expired or was closed. Review your text and try again.");
+        } else if (error instanceof ApiError && error.status === 409) {
+          setProposalError(
+            "This proposal changed or was confirmed elsewhere. No second work item was created.",
+          );
+        } else {
+          setProposalError(
+            `${messageFor(error)} You can retry; the same confirmation key will be reused.`,
+          );
+        }
+      }
+    } finally {
+      if (proposalOperationIsCurrent(request.operation, request.workspaceId)) {
+        setProposalBusy(null);
+        if (proposalAbortRef.current === request.controller) proposalAbortRef.current = null;
+      }
+    }
+  }
+
   return (
     <div className="work-view">
       <PageHeader
@@ -692,13 +1147,275 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         <div className="work-composer-heading">
           <div>
             <p className="eyebrow">Quick capture</p>
-            <h2 id="work-composer-title">Add a work item</h2>
+            <h2 id="work-composer-title">
+              {newParentWorkItemId === null ? "Add a work item" : "Add a subtask"}
+            </h2>
           </div>
-          <p>Start it in any status. Opt in only the one-time work that belongs in Today.</p>
+          <div className="work-composer-heading-actions">
+            <p>
+              {newParentWorkItemId === null
+                ? "Start it in any status. Opt in only the one-time work that belongs in Today."
+                : `This item will sit under ${selectedComposerParent?.title ?? "the selected parent"} and keep its own status.`}
+            </p>
+            {!proposalOpen ? (
+              <Button
+                type="button"
+                variant="quiet"
+                aria-expanded="false"
+                aria-controls="work-natural-language-panel"
+                onClick={openProposalPanel}
+              >
+                <Sparkles size={16} aria-hidden="true" />
+                Describe work
+              </Button>
+            ) : null}
+          </div>
         </div>
+
+        {proposalOpen ? (
+          <section
+            id="work-natural-language-panel"
+            className="work-natural-language-panel"
+            aria-labelledby="work-natural-language-title"
+          >
+            <header className="work-natural-language-header">
+              <div>
+                <p className="eyebrow">Local proposal</p>
+                <h3 id="work-natural-language-title">Describe work in your own words</h3>
+              </div>
+              <Button
+                type="button"
+                variant="quiet"
+                className="icon-button"
+                aria-label="Close work proposal"
+                disabled={proposalBusy === "confirming" || proposalBusy === "cancelling"}
+                onClick={closeProposalPanel}
+              >
+                <X size={17} aria-hidden="true" />
+              </Button>
+            </header>
+            <p className="work-natural-language-trust">
+              <ShieldCheck size={17} aria-hidden="true" />
+              The local model can only suggest one backlog title. It cannot create or change work.
+            </p>
+            {proposalError === null ? null : (
+              <ErrorNotice message={proposalError} onDismiss={() => setProposalError(null)} />
+            )}
+
+            {proposal === null ? (
+              <form
+                className="work-natural-language-prompt"
+                onSubmit={(event) => void prepareProposal(event)}
+              >
+                <Field
+                  label="Describe one work item"
+                  hint="Keep this to one concrete outcome. You will review the exact title next."
+                >
+                  <textarea
+                    ref={proposalPromptRef}
+                    value={proposalPrompt}
+                    maxLength={2_000}
+                    required
+                    disabled={proposalBusy !== null}
+                    placeholder="For example: remind me to prepare the quarterly report"
+                    onChange={(event) => {
+                      setProposalPrompt(event.currentTarget.value);
+                      setProposalError(null);
+                    }}
+                  />
+                </Field>
+                <div className="work-natural-language-prompt-footer">
+                  <p>Nothing is created when you ask for a proposal.</p>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    busy={proposalBusy === "proposing"}
+                    disabled={proposalPrompt.trim().length === 0 || proposalBusy !== null}
+                  >
+                    <Sparkles size={16} aria-hidden="true" />
+                    Review proposal
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <form
+                className="work-natural-language-review"
+                onSubmit={(event) => void confirmProposal(event)}
+              >
+                <div className="work-natural-language-summary">
+                  <p className="eyebrow">Proposed command</p>
+                  <h4>Create one backlog work item</h4>
+                  {proposalSummary === null ? null : <p>{proposalSummary}</p>}
+                  {proposalWarnings.length === 0 ? null : (
+                    <ul>
+                      {proposalWarnings.map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <Field
+                  label="Work item title"
+                  hint="Editing this changes only the stored proposal. It still creates nothing."
+                >
+                  <input
+                    value={proposalTitle}
+                    maxLength={240}
+                    required
+                    disabled={proposalBusy !== null}
+                    onChange={(event) => {
+                      setProposalTitle(event.currentTarget.value);
+                      setProposalError(null);
+                    }}
+                  />
+                </Field>
+                <section
+                  className="work-natural-language-user-fields"
+                  aria-labelledby="work-natural-language-user-fields-title"
+                >
+                  <div className="work-natural-language-user-fields-heading">
+                    <p className="eyebrow" id="work-natural-language-user-fields-title">
+                      Your choices — not suggested by the model
+                    </p>
+                    <p>These fields are stored only when you review them.</p>
+                  </div>
+                  <Field label="Priority">
+                    <select
+                      value={proposalPriority}
+                      disabled={proposalBusy !== null}
+                      onChange={(event) => {
+                        setProposalPriority(event.currentTarget.value as WorkItemPriority);
+                        setProposalError(null);
+                      }}
+                    >
+                      {priorities.map((priority) => (
+                        <option value={priority.value} key={priority.value}>
+                          {priority.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Due date (optional)" hint="Leave blank when there is no deadline.">
+                    <input
+                      type="date"
+                      value={proposalDueOn}
+                      disabled={proposalBusy !== null}
+                      onChange={(event) => {
+                        setProposalDueOn(event.currentTarget.value);
+                        setProposalError(null);
+                      }}
+                    />
+                  </Field>
+                  <fieldset className="work-natural-language-planning-fieldset">
+                    <legend>Daily plan</legend>
+                    <label className="work-planning-toggle">
+                      <input
+                        type="checkbox"
+                        checked={proposalIncludeInDailyPlan}
+                        disabled={proposalBusy !== null}
+                        aria-describedby="work-natural-language-planning-hint"
+                        onChange={(event) => {
+                          setProposalIncludeInDailyPlan(event.currentTarget.checked);
+                          setProposalError(null);
+                        }}
+                      />
+                      <span>Include in Today</span>
+                    </label>
+                    {proposalIncludeInDailyPlan ? (
+                      <Field label="Plan duration (minutes)">
+                        <input
+                          type="number"
+                          min={1}
+                          max={43_200}
+                          step={1}
+                          inputMode="numeric"
+                          value={proposalPlanningDurationMinutes}
+                          disabled={proposalBusy !== null}
+                          aria-invalid={
+                            !isPlanningDurationValid(proposalPlanningDurationMinutes, true)
+                          }
+                          aria-describedby="work-natural-language-planning-hint"
+                          onChange={(event) => {
+                            setProposalPlanningDurationMinutes(event.currentTarget.value);
+                            setProposalError(null);
+                          }}
+                        />
+                      </Field>
+                    ) : null}
+                    <p id="work-natural-language-planning-hint" className="work-planning-hint">
+                      {proposalIncludeInDailyPlan
+                        ? "The planner will reserve this many minutes."
+                        : "Keep this off when the item should stay out of automatic plans."}
+                    </p>
+                  </fieldset>
+                </section>
+                <p className="work-natural-language-no-mutation">
+                  <ShieldCheck size={17} aria-hidden="true" />
+                  Nothing has been created yet. Confirming will atomically create this reviewed root
+                  item in Backlog.
+                </p>
+                <p className="work-natural-language-provenance">
+                  Prepared by {proposal.model ?? proposal.provider}; expires at{" "}
+                  {new Date(proposal.expiresAt).toLocaleTimeString([], {
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}
+                  .
+                </p>
+                <div className="work-natural-language-actions">
+                  <Button
+                    type="button"
+                    variant="quiet"
+                    busy={proposalBusy === "cancelling"}
+                    disabled={proposalBusy !== null}
+                    onClick={() => void cancelProposal()}
+                  >
+                    Cancel proposal
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    busy={proposalBusy === "confirming"}
+                    disabled={
+                      proposalBusy !== null ||
+                      proposalTitle.trim().length === 0 ||
+                      !isPlanningDurationValid(
+                        proposalPlanningDurationMinutes,
+                        proposalIncludeInDailyPlan,
+                      )
+                    }
+                  >
+                    Create this work item
+                  </Button>
+                </div>
+              </form>
+            )}
+          </section>
+        ) : null}
+
+        {proposalAnnouncement === null ? null : (
+          <p className="work-natural-language-announcement" role="status" aria-live="polite">
+            {proposalAnnouncement}
+          </p>
+        )}
 
         {createError === null ? null : (
           <ErrorNotice message={createError} onDismiss={() => setCreateError(null)} />
+        )}
+        {newParentWorkItemId === null ? null : (
+          <div className="work-subtask-context" role="status" aria-live="polite">
+            <span>
+              <strong>Subtask of</strong> {selectedComposerParent?.title ?? "Unavailable item"}
+            </span>
+            <Button
+              type="button"
+              variant="quiet"
+              disabled={creating}
+              onClick={() => setNewParentWorkItemId(null)}
+            >
+              Clear parent
+            </Button>
+          </div>
         )}
         <form className="work-composer-form" onSubmit={(event) => void createItem(event)}>
           <Field label="Title" className="work-composer-title-field">
@@ -800,7 +1517,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
             disabled={title.trim().length === 0 || !newPlanningDurationIsValid}
           >
             <Plus size={16} aria-hidden="true" />
-            Add item
+            {newParentWorkItemId === null ? "Add item" : "Add subtask"}
           </Button>
         </form>
       </section>
@@ -912,12 +1629,33 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                       const dependencyHeadingId = `work-dependencies-${item.id}`;
                       const dependencyError = dependencyErrors[item.id] ?? null;
                       const dependencyAnnouncement = dependencyAnnouncements[item.id] ?? null;
+                      const parentItem =
+                        item.parentWorkItemId === null
+                          ? null
+                          : (allItemsById.get(item.parentWorkItemId) ?? null);
+                      const childItems = childrenByParentId.get(item.id) ?? [];
+                      const completedChildren = childItems.filter(
+                        (child) => child.status === "done",
+                      ).length;
                       return (
-                        <article className="work-card" aria-busy={pending} key={item.id}>
+                        <article
+                          id={`work-item-${item.id}`}
+                          className="work-card"
+                          aria-busy={pending}
+                          tabIndex={-1}
+                          key={item.id}
+                        >
                           <header className="work-card-header">
                             <h3>{item.title}</h3>
                             <span className="work-card-header-actions">
-                              {item.planningDurationMinutes === null ? null : (
+                              {childItems.length > 0 ? (
+                                <span
+                                  className="work-plan-badge work-plan-badge-container"
+                                  aria-label="Parent container; leaf subtasks are considered for Today"
+                                >
+                                  Parent · not in Today
+                                </span>
+                              ) : item.planningDurationMinutes === null ? null : (
                                 <span
                                   className="work-plan-badge"
                                   aria-label="Included in daily plan"
@@ -980,6 +1718,37 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                 />
                               </Field>
                               <Field
+                                label="Parent item (optional)"
+                                hint="Choose No parent to make this a top-level item. Cycles are rejected."
+                              >
+                                <select
+                                  value={editDraft.parentWorkItemId}
+                                  disabled={cardPending}
+                                  onChange={(event) => {
+                                    const value = event.currentTarget.value;
+                                    setEditDraft((current) =>
+                                      current === null
+                                        ? null
+                                        : { ...current, parentWorkItemId: value },
+                                    );
+                                  }}
+                                >
+                                  <option value="">No parent</option>
+                                  {[...(allItems ?? [])]
+                                    .filter(
+                                      (candidate) =>
+                                        candidate.id !== item.id &&
+                                        !editedDescendantWorkItemIds.has(candidate.id),
+                                    )
+                                    .sort((left, right) => left.title.localeCompare(right.title))
+                                    .map((candidate) => (
+                                      <option value={candidate.id} key={candidate.id}>
+                                        {candidate.title} ({statusLabel(candidate.status)})
+                                      </option>
+                                    ))}
+                                </select>
+                              </Field>
+                              <Field
                                 label="Due date (optional)"
                                 hint="Leave blank when this work has no deadline."
                               >
@@ -1001,7 +1770,8 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                   <input
                                     type="checkbox"
                                     checked={editDraft.includeInDailyPlan}
-                                    disabled={cardPending}
+                                    disabled={cardPending || childItems.length > 0}
+                                    aria-describedby={`work-card-planning-duration-${item.id}-hint`}
                                     onChange={(event) => {
                                       const checked = event.currentTarget.checked;
                                       setEditDraft((current) =>
@@ -1011,7 +1781,11 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                       );
                                     }}
                                   />
-                                  <span>Include in Today</span>
+                                  <span>
+                                    {childItems.length > 0
+                                      ? "Eligible for Today when leaf"
+                                      : "Include in Today"}
+                                  </span>
                                 </label>
                                 {editDraft.includeInDailyPlan ? (
                                   <Field label="Plan duration (minutes)">
@@ -1022,7 +1796,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                       step={1}
                                       inputMode="numeric"
                                       value={editDraft.planningDurationMinutes}
-                                      disabled={cardPending}
+                                      disabled={cardPending || childItems.length > 0}
                                       aria-invalid={
                                         !isPlanningDurationValid(
                                           editDraft.planningDurationMinutes,
@@ -1045,9 +1819,13 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                                   id={`work-card-planning-duration-${item.id}-hint`}
                                   className="work-planning-hint"
                                 >
-                                  {editDraft.includeInDailyPlan
-                                    ? "The planner reserves this many minutes. Work items remain one-time candidates."
-                                    : "This item will not be selected for Today."}
+                                  {childItems.length > 0
+                                    ? editDraft.includeInDailyPlan
+                                      ? `Saved at ${editDraft.planningDurationMinutes} minutes, but dormant while this item has subtasks. Detach every child to make it eligible again.`
+                                      : "Parents stay out of Today. Detach every child before opting this item into the plan."
+                                    : editDraft.includeInDailyPlan
+                                      ? "The planner reserves this many minutes. Work items remain one-time candidates."
+                                      : "This item will not be selected for Today."}
                                 </p>
                               </fieldset>
                               <div className="work-card-editor-actions">
@@ -1074,6 +1852,87 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                           ) : item.description === null ? null : (
                             <p className="work-card-description">{item.description}</p>
                           )}
+                          <section
+                            className="work-hierarchy"
+                            aria-label={`Subtask relationships for ${item.title}`}
+                          >
+                            <div className="work-hierarchy-summary">
+                              {parentItem === null ? (
+                                <span className="work-hierarchy-level">Top-level item</span>
+                              ) : (
+                                <span className="work-hierarchy-parent">
+                                  Subtask of{" "}
+                                  <button
+                                    type="button"
+                                    disabled={cardPending}
+                                    onClick={() => revealWorkItem(parentItem.id)}
+                                  >
+                                    {parentItem.title}
+                                  </button>
+                                </span>
+                              )}
+                              {childItems.length === 0 ? null : (
+                                <span className="work-hierarchy-progress">
+                                  {completedChildren}/{childItems.length} subtasks done
+                                </span>
+                              )}
+                              <Button
+                                type="button"
+                                variant="quiet"
+                                className="work-add-subtask"
+                                disabled={cardPending}
+                                aria-label={`Add subtask to ${item.title}`}
+                                onClick={() => beginSubtask(item)}
+                              >
+                                <Plus size={13} aria-hidden="true" />
+                                Add subtask
+                              </Button>
+                            </div>
+                            {childItems.length === 0 ? null : (
+                              <ul className="work-subtask-list">
+                                {childItems.slice(0, 3).map((child) => (
+                                  <li key={child.id}>
+                                    <button
+                                      type="button"
+                                      disabled={cardPending}
+                                      onClick={() => revealWorkItem(child.id)}
+                                    >
+                                      <span>{child.title}</span>
+                                      <small>{statusLabel(child.status)}</small>
+                                    </button>
+                                  </li>
+                                ))}
+                                {childItems.length <= 3 ? null : (
+                                  <li className="work-subtask-overflow">
+                                    <details>
+                                      <summary>
+                                        Show {childItems.length - 3} more{" "}
+                                        {childItems.length - 3 === 1 ? "subtask" : "subtasks"}
+                                      </summary>
+                                      <ul>
+                                        {childItems.slice(3).map((child) => (
+                                          <li key={child.id}>
+                                            <button
+                                              type="button"
+                                              disabled={cardPending}
+                                              onClick={() => revealWorkItem(child.id)}
+                                            >
+                                              <span>{child.title}</span>
+                                              <small>{statusLabel(child.status)}</small>
+                                            </button>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </details>
+                                  </li>
+                                )}
+                              </ul>
+                            )}
+                            <p>
+                              Parent and subtask statuses stay independent. Only leaf items can
+                              enter Today.
+                            </p>
+                          </section>
                           <section
                             className="work-dependencies"
                             aria-labelledby={dependencyHeadingId}

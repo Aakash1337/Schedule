@@ -9,6 +9,7 @@ import type {
 
 import type { OutboxDispatcher } from "./dispatcher.js";
 import { OutboxHandlerFailure } from "./dispatcher.js";
+import type { OutboxWorkerTelemetry } from "./observability.js";
 
 const databaseMocks = vi.hoisted(() => ({
   DEFAULT_OUTBOX_LEASE_DURATION_MS: 300_000,
@@ -30,6 +31,11 @@ const config: WorkerConfig = {
   OUTBOX_POLL_INTERVAL_MS: 1_000,
   OUTBOX_BATCH_SIZE: 25,
   OUTBOX_MAX_ATTEMPTS: 3,
+  WORKER_OBSERVABILITY_MODE: "disabled",
+  WORKER_OBSERVABILITY_PORT: 9_464,
+  NOTIFICATION_MATERIALIZATION_MODE: "disabled",
+  NOTIFICATION_MATERIALIZATION_INTERVAL_MS: 60_000,
+  NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS: 300_000,
 };
 
 const database = {} as DatabaseConnection;
@@ -53,6 +59,15 @@ const dispatcherWith = (dispatch: OutboxDispatcher["dispatch"]): OutboxDispatche
   ({ dispatch }) as OutboxDispatcher;
 const parsedLogs = (spy: ReturnType<typeof vi.spyOn>): Record<string, unknown>[] =>
   spy.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+const telemetryHarness = (): OutboxWorkerTelemetry => ({
+  recordOutboxClaimed: vi.fn(),
+  recordOutboxCompleted: vi.fn(),
+  recordOutboxRetried: vi.fn(),
+  recordOutboxDeadLettered: vi.fn(),
+  recordOutboxStaleClaim: vi.fn(),
+  recordOutboxLeaseRenewalFailure: vi.fn(),
+  recordOutboxShutdownDeadline: vi.fn(),
+});
 
 describe("outbox worker", () => {
   beforeEach(() => {
@@ -75,6 +90,7 @@ describe("outbox worker", () => {
 
   it("claims one event immediately before dispatch and acknowledges its fencing token", async () => {
     const controller = new AbortController();
+    const telemetry = telemetryHarness();
     databaseMocks.claimNextOutboxEvent.mockResolvedValue(claim(firstEvent));
     const dispatch = vi.fn(async () => {
       expect(databaseMocks.claimNextOutboxEvent).toHaveBeenCalledTimes(1);
@@ -82,7 +98,9 @@ describe("outbox worker", () => {
       return { handled: true };
     });
 
-    await runOutboxWorker(config, database, dispatcherWith(dispatch), controller.signal);
+    await runOutboxWorker(config, database, dispatcherWith(dispatch), controller.signal, {
+      telemetry,
+    });
 
     expect(dispatch).toHaveBeenCalledWith(firstEvent, expect.any(AbortSignal));
     expect(databaseMocks.claimNextOutboxEvent).toHaveBeenCalledWith(database, {
@@ -92,6 +110,8 @@ describe("outbox worker", () => {
     });
     expect(databaseMocks.claimNextOutboxEvent).toHaveBeenCalledTimes(1);
     expect(databaseMocks.completeOutboxEvent).toHaveBeenCalledWith(database, firstEvent);
+    expect(telemetry.recordOutboxClaimed).toHaveBeenCalledTimes(1);
+    expect(telemetry.recordOutboxCompleted).toHaveBeenCalledTimes(1);
   });
 
   it("forwards excluded topics to every claim without changing other claim options", async () => {
@@ -138,6 +158,7 @@ describe("outbox worker", () => {
 
   it("retries a handler failure without acknowledging the event", async () => {
     const controller = new AbortController();
+    const telemetry = telemetryHarness();
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const privateFailure =
       "request to postgres://private-user:private-password@db.internal failed for person@example.com";
@@ -147,7 +168,9 @@ describe("outbox worker", () => {
       throw new Error(privateFailure);
     });
 
-    await runOutboxWorker(config, database, dispatcherWith(dispatch), controller.signal);
+    await runOutboxWorker(config, database, dispatcherWith(dispatch), controller.signal, {
+      telemetry,
+    });
 
     expect(databaseMocks.failOutboxEvent).toHaveBeenCalledWith(
       database,
@@ -162,6 +185,7 @@ describe("outbox worker", () => {
       "person@example.com",
     );
     expect(databaseMocks.completeOutboxEvent).not.toHaveBeenCalled();
+    expect(telemetry.recordOutboxRetried).toHaveBeenCalledTimes(1);
     expect(parsedLogs(consoleWarn)).toContainEqual(
       expect.objectContaining({
         level: "warn",
@@ -219,6 +243,7 @@ describe("outbox worker", () => {
 
   it("logs a structured error when delivery reaches the dead letter state", async () => {
     const controller = new AbortController();
+    const telemetry = telemetryHarness();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     databaseMocks.claimNextOutboxEvent.mockResolvedValue(claim(firstEvent));
     databaseMocks.failOutboxEvent.mockResolvedValue("dead_lettered");
@@ -227,7 +252,9 @@ describe("outbox worker", () => {
       throw new Error("https://private-user:private-password@example.com/customer/42");
     });
 
-    await runOutboxWorker(config, database, dispatcherWith(dispatch), controller.signal);
+    await runOutboxWorker(config, database, dispatcherWith(dispatch), controller.signal, {
+      telemetry,
+    });
 
     expect(databaseMocks.failOutboxEvent).toHaveBeenCalledWith(
       database,
@@ -248,6 +275,7 @@ describe("outbox worker", () => {
     );
     expect(consoleError.mock.calls.flat().join(" ")).not.toContain("private-password");
     expect(consoleError.mock.calls.flat().join(" ")).not.toContain("customer/42");
+    expect(telemetry.recordOutboxDeadLettered).toHaveBeenCalledTimes(1);
   });
 
   it("logs crash-exhausted claims that recovery dead-letters", async () => {

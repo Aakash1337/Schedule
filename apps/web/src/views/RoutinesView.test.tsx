@@ -3,7 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api";
-import type { Routine, RoutineDurationInsight, Workspace } from "../types";
+import { browserTimeZone } from "../date";
+import type {
+  Routine,
+  RoutineDurationInsight,
+  RoutineSelectionPreferenceState,
+  Workspace,
+} from "../types";
 import { RoutinesView } from "./RoutinesView";
 
 const apiMocks = vi.hoisted(() => ({
@@ -12,8 +18,10 @@ const apiMocks = vi.hoisted(() => ({
   dismissRoutineDurationInsight: vi.fn(),
   getRoutine: vi.fn(),
   getRoutineDurationInsight: vi.fn(),
+  getRoutineSelectionPreference: vi.fn(),
   listRoutineActivity: vi.fn(),
   listRoutines: vi.fn(),
+  recordRoutineSelectionPreference: vi.fn(),
   resetRoutineDurationInsightDismissal: vi.fn(),
   updateRoutine: vi.fn(),
 }));
@@ -99,6 +107,20 @@ function routineDurationInsight(
   };
 }
 
+function routineSelectionPreference(
+  overrides: Partial<RoutineSelectionPreferenceState> = {},
+): RoutineSelectionPreferenceState {
+  return {
+    routineId: routine.id,
+    feedbackVersion: 0,
+    activeEventCount: 0,
+    score: 0,
+    reason: null,
+    updatedAt: null,
+    ...overrides,
+  };
+}
+
 function deferred<Value>() {
   let resolve!: (value: Value | PromiseLike<Value>) => void;
   const promise = new Promise<Value>((resolvePromise) => {
@@ -114,6 +136,7 @@ beforeEach(() => {
     page: { limit: 200, offset: 0 },
   });
   apiMocks.getRoutineDurationInsight.mockResolvedValue(routineDurationInsight());
+  apiMocks.getRoutineSelectionPreference.mockResolvedValue(routineSelectionPreference());
 });
 
 afterEach(cleanup);
@@ -803,6 +826,271 @@ describe("routine pool", () => {
       await screen.findByText(/Duration learning needs 3 completed sessions in the last 90 days/),
     ).toHaveTextContent("1 of 3 recorded");
     expect(apiMocks.getRoutineDurationInsight).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads a quiet initial future-plan preference with accessible routine-specific controls", async () => {
+    const user = userEvent.setup();
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const routineButton = (await screen.findByText(routine.title)).closest("button");
+    if (routineButton === null) throw new Error("Routine selection button was not rendered.");
+    await user.click(routineButton);
+
+    expect(
+      await screen.findByRole("group", { name: `Future plan preference for ${routine.title}` }),
+    ).toBeInTheDocument();
+    expect(apiMocks.getRoutineSelectionPreference).toHaveBeenCalledWith(
+      workspace.id,
+      routine.id,
+      browserTimeZone(),
+      expect.any(AbortSignal),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: `Choose ${routine.title} more often in future plans`,
+      }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", {
+        name: `Choose ${routine.title} less often in future plans`,
+      }),
+    ).toBeEnabled();
+    expect(
+      screen.queryByRole("button", {
+        name: `Clear the future plan preference for ${routine.title}`,
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/preference score/i)).not.toBeInTheDocument();
+  });
+
+  it("progresses optimistic preference versions through more, less, and reset commands", async () => {
+    const user = userEvent.setup();
+    apiMocks.recordRoutineSelectionPreference
+      .mockResolvedValueOnce(
+        routineSelectionPreference({
+          feedbackVersion: 1,
+          activeEventCount: 1,
+          score: 100,
+          reason: "You asked to see this routine more often (+100).",
+          updatedAt: "2026-07-14T10:00:00.000Z",
+        }),
+      )
+      .mockResolvedValueOnce(
+        routineSelectionPreference({
+          feedbackVersion: 2,
+          activeEventCount: 2,
+          score: 0,
+          updatedAt: "2026-07-14T10:01:00.000Z",
+        }),
+      )
+      .mockResolvedValueOnce(
+        routineSelectionPreference({
+          feedbackVersion: 3,
+          activeEventCount: 0,
+          score: 0,
+          updatedAt: "2026-07-14T10:02:00.000Z",
+        }),
+      );
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    const routineButton = (await screen.findByText(routine.title)).closest("button");
+    if (routineButton === null) throw new Error("Routine selection button was not rendered.");
+    await user.click(routineButton);
+
+    const more = await screen.findByRole("button", {
+      name: `Choose ${routine.title} more often in future plans`,
+    });
+    await user.click(more);
+    expect(await screen.findByText("More often · +100")).toBeInTheDocument();
+    expect(
+      screen.getByText("You asked to see this routine more often (+100)."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Saved for future plans. Today’s plan was not changed."),
+    ).toHaveAttribute("role", "status");
+
+    await user.click(
+      screen.getByRole("button", {
+        name: `Choose ${routine.title} less often in future plans`,
+      }),
+    );
+    await waitFor(() => expect(screen.queryByText("More often · +100")).not.toBeInTheDocument());
+    expect(screen.getByText("Neutral · 0")).toBeInTheDocument();
+    const clear = await screen.findByRole("button", {
+      name: `Clear the future plan preference for ${routine.title}`,
+    });
+    await user.click(clear);
+    await waitFor(() => expect(clear).not.toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "Future selection" })).toHaveFocus();
+
+    expect(apiMocks.recordRoutineSelectionPreference.mock.calls.map((call) => call[2])).toEqual([
+      {
+        kind: "more_often",
+        expectedFeedbackVersion: 0,
+        timeZone: browserTimeZone(),
+      },
+      {
+        kind: "less_often",
+        expectedFeedbackVersion: 1,
+        timeZone: browserTimeZone(),
+      },
+      { kind: "reset", expectedFeedbackVersion: 2, timeZone: browserTimeZone() },
+    ]);
+  });
+
+  it("refreshes authoritative preference state after a version conflict without replaying", async () => {
+    const user = userEvent.setup();
+    const initial = routineSelectionPreference({
+      feedbackVersion: 2,
+      activeEventCount: 1,
+      score: 100,
+      reason: "You asked to see this routine more often (+100).",
+    });
+    const latest = routineSelectionPreference({
+      feedbackVersion: 3,
+      activeEventCount: 1,
+      score: -100,
+      reason: "You asked to see this routine less often (-100).",
+      updatedAt: "2026-07-14T11:00:00.000Z",
+    });
+    apiMocks.getRoutineSelectionPreference.mockResolvedValueOnce(initial).mockResolvedValue(latest);
+    apiMocks.recordRoutineSelectionPreference.mockRejectedValue(
+      new ApiError(409, "routine_selection_preference.version_conflict", "Changed.", null),
+    );
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    const routineButton = (await screen.findByText(routine.title)).closest("button");
+    if (routineButton === null) throw new Error("Routine selection button was not rendered.");
+    await user.click(routineButton);
+    await screen.findByText("More often · +100");
+
+    await user.click(
+      screen.getByRole("button", {
+        name: `Choose ${routine.title} less often in future plans`,
+      }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("changed elsewhere");
+    expect(await screen.findByText("Less often · -100")).toBeInTheDocument();
+    expect(apiMocks.getRoutineSelectionPreference).toHaveBeenCalledTimes(2);
+    expect(apiMocks.recordRoutineSelectionPreference).toHaveBeenCalledOnce();
+    expect(screen.getByRole("heading", { name: "Future selection" })).toHaveFocus();
+  });
+
+  it("retries an ambiguous preference failure with the exact same idempotency key", async () => {
+    const user = userEvent.setup();
+    apiMocks.recordRoutineSelectionPreference
+      .mockRejectedValueOnce(new Error("Connection closed before the response arrived."))
+      .mockResolvedValue(
+        routineSelectionPreference({
+          feedbackVersion: 1,
+          activeEventCount: 1,
+          score: 100,
+          reason: "You asked to see this routine more often (+100).",
+        }),
+      );
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    const routineButton = (await screen.findByText(routine.title)).closest("button");
+    if (routineButton === null) throw new Error("Routine selection button was not rendered.");
+    await user.click(routineButton);
+    await user.click(
+      await screen.findByRole("button", {
+        name: `Choose ${routine.title} more often in future plans`,
+      }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Retry to reuse the same request safely.",
+    );
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("More often · +100")).toBeInTheDocument();
+
+    const first = apiMocks.recordRoutineSelectionPreference.mock.calls[0];
+    const retry = apiMocks.recordRoutineSelectionPreference.mock.calls[1];
+    expect(retry?.[2]).toEqual(first?.[2]);
+    expect(retry?.[3]).toBe(first?.[3]);
+  });
+
+  it("ignores a late preference response after the workspace changes", async () => {
+    const user = userEvent.setup();
+    const oldPreference = deferred<RoutineSelectionPreferenceState>();
+    const secondWorkspace: Workspace = { ...workspace, id: "workspace-2", name: "Shared" };
+    const secondRoutine: Routine = {
+      ...routine,
+      id: "routine-2",
+      workspaceId: secondWorkspace.id,
+      title: "Morning walk",
+    };
+    apiMocks.listRoutines.mockImplementation((workspaceId: string) =>
+      Promise.resolve({
+        items: workspaceId === workspace.id ? [routine] : [secondRoutine],
+        page: { limit: 200, offset: 0 },
+      }),
+    );
+    apiMocks.getRoutineDurationInsight.mockImplementation(
+      (_workspaceId: string, routineId: string) =>
+        Promise.resolve(routineDurationInsight({ routineId })),
+    );
+    apiMocks.getRoutineSelectionPreference.mockImplementation((workspaceId: string) =>
+      workspaceId === workspace.id
+        ? oldPreference.promise
+        : Promise.resolve(
+            routineSelectionPreference({
+              routineId: secondRoutine.id,
+              feedbackVersion: 1,
+              activeEventCount: 1,
+              score: -100,
+              reason: "Current workspace preference.",
+            }),
+          ),
+    );
+    const view = render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    const firstButton = (await screen.findByText(routine.title)).closest("button");
+    if (firstButton === null) throw new Error("Routine selection button was not rendered.");
+    await user.click(firstButton);
+
+    view.rerender(<RoutinesView workspace={secondWorkspace} onNavigate={vi.fn()} />);
+    const secondButton = (await screen.findByText(secondRoutine.title)).closest("button");
+    if (secondButton === null) throw new Error("Second routine selection button was not rendered.");
+    await user.click(secondButton);
+    expect(await screen.findByText("Current workspace preference.")).toBeInTheDocument();
+
+    await act(async () => {
+      oldPreference.resolve(
+        routineSelectionPreference({
+          score: 400,
+          reason: "Stale preference from the old workspace.",
+        }),
+      );
+      await oldPreference.promise;
+    });
+    expect(screen.queryByText("Stale preference from the old workspace.")).not.toBeInTheDocument();
+    expect(screen.getByText("Current workspace preference.")).toBeInTheDocument();
+  });
+
+  it("renders hostile routine and reason strings literally while keeping labels accessible", async () => {
+    const user = userEvent.setup();
+    const hostileTitle = '<img src=x onerror="alert(1)">';
+    const hostileReason = "<script>window.compromised = true</script>";
+    const hostileRoutine: Routine = { ...routine, title: hostileTitle };
+    apiMocks.listRoutines.mockResolvedValue({
+      items: [hostileRoutine],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.getRoutineSelectionPreference.mockResolvedValue(
+      routineSelectionPreference({ activeEventCount: 1, score: 100, reason: hostileReason }),
+    );
+    const view = render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    const routineButton = (await screen.findByText(hostileTitle)).closest("button");
+    if (routineButton === null) throw new Error("Routine selection button was not rendered.");
+    await user.click(routineButton);
+
+    expect(await screen.findByText(hostileReason)).toBeInTheDocument();
+    expect(view.container.querySelector("script")).toBeNull();
+    expect(view.container.querySelector("img")).toBeNull();
+    expect(
+      screen.getByRole("button", {
+        name: `Choose ${hostileTitle} more often in future plans`,
+      }),
+    ).toBeInTheDocument();
   });
 
   it("supports arrow-key navigation across status tabs", async () => {

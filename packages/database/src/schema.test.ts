@@ -6,13 +6,22 @@ import { describe, expect, it } from "vitest";
 
 import {
   activityEvents,
+  browserSessionRevocationReason,
+  browserSessions,
+  dailyPlanFitInsightFeedbackEvents,
+  dailyPlanFitInsightFeedbackKind,
   dailyPlanHeads,
   dailyPlanItemStates,
   dailyPlanItems,
   dailyPlans,
+  externalIdentities,
+  hostedUsers,
+  hostedUserStatus,
   integrationConfirmations,
   integrationCredentials,
   integrationRequests,
+  naturalLanguageProposalStatus,
+  naturalLanguageProposals,
   notificationDeliveryAttemptOutcome,
   notificationDeliveryAttempts,
   notificationDeliveryCommands,
@@ -36,11 +45,15 @@ import {
   routineDurationInsightFeedbackKind,
   routinePlanningFeedbackEvents,
   routinePlanningFeedbackKind,
+  routineSelectionPreferenceFeedbackEvents,
+  routineSelectionPreferenceFeedbackKind,
   routines,
   scheduleBlocks,
   workItemDependencies,
   workItems,
   workspaces,
+  workspaceMemberships,
+  workspaceMembershipStatus,
   webhookDeliveries,
   webhookEndpointSecrets,
   webhookEndpoints,
@@ -58,6 +71,9 @@ describe("database schema", () => {
     expect(getTableName(activityEvents)).toBe("activity_events");
     expect(getTableName(dailyPlans)).toBe("daily_plans");
     expect(getTableName(dailyPlanItems)).toBe("daily_plan_items");
+    expect(getTableName(dailyPlanFitInsightFeedbackEvents)).toBe(
+      "daily_plan_fit_insight_feedback_events",
+    );
     expect(getTableName(dailyPlanHeads)).toBe("daily_plan_heads");
     expect(getTableName(dailyPlanItemStates)).toBe("daily_plan_item_states");
     expect(getTableName(planInteractionEvents)).toBe("plan_interaction_events");
@@ -66,9 +82,13 @@ describe("database schema", () => {
       "routine_duration_insight_feedback_events",
     );
     expect(getTableName(routinePlanningFeedbackEvents)).toBe("routine_planning_feedback_events");
+    expect(getTableName(routineSelectionPreferenceFeedbackEvents)).toBe(
+      "routine_selection_preference_feedback_events",
+    );
     expect(getTableName(integrationCredentials)).toBe("integration_credentials");
     expect(getTableName(integrationConfirmations)).toBe("integration_confirmations");
     expect(getTableName(integrationRequests)).toBe("integration_requests");
+    expect(getTableName(naturalLanguageProposals)).toBe("natural_language_proposals");
     expect(getTableName(notificationProfiles)).toBe("notification_profiles");
     expect(getTableName(notificationRules)).toBe("notification_rules");
     expect(getTableName(oneOffReminders)).toBe("one_off_reminders");
@@ -80,6 +100,103 @@ describe("database schema", () => {
     expect(getTableName(webhookEndpointSecrets)).toBe("webhook_endpoint_secrets");
     expect(getTableName(webhookDeliveries)).toBe("webhook_deliveries");
     expect(getTableName(webhookEventSubscriptions)).toBe("webhook_event_subscriptions");
+    expect(getTableName(hostedUsers)).toBe("users");
+    expect(getTableName(externalIdentities)).toBe("external_identities");
+    expect(getTableName(browserSessions)).toBe("browser_sessions");
+    expect(getTableName(workspaceMemberships)).toBe("workspace_memberships");
+  });
+
+  it("persists a provider-neutral hosted identity and binary membership boundary", () => {
+    expect(hostedUserStatus.enumValues).toEqual(["active", "disabled"]);
+    expect(browserSessionRevocationReason.enumValues).toEqual([
+      "signed_out",
+      "rotated",
+      "user_disabled",
+      "administrative",
+    ]);
+    expect(workspaceMembershipStatus.enumValues).toEqual(["active", "revoked"]);
+
+    const users = getTableConfig(hostedUsers);
+    expect(users.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "users_lifecycle_valid",
+        "users_timestamps_valid",
+        "users_version_positive",
+      ]),
+    );
+
+    const identities = getTableConfig(externalIdentities);
+    expect(identities.indexes.map((constraint) => constraint.config.name)).toEqual(
+      expect.arrayContaining([
+        "external_identities_exact_binding_uq",
+        "external_identities_user_idx",
+      ]),
+    );
+
+    const sessions = getTableConfig(browserSessions);
+    expect(sessions.uniqueConstraints.map((constraint) => constraint.getName())).toContain(
+      "browser_sessions_secret_digest_uq",
+    );
+    expect(sessions.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "browser_sessions_digest_valid",
+        "browser_sessions_idle_timeout_valid",
+        "browser_sessions_expiry_valid",
+        "browser_sessions_revocation_valid",
+        "browser_sessions_version_positive",
+      ]),
+    );
+
+    const memberships = getTableConfig(workspaceMemberships);
+    expect(memberships.primaryKeys.map((constraint) => constraint.getName())).toContain(
+      "workspace_memberships_pk",
+    );
+    expect(memberships.checks.map((constraint) => constraint.name)).toContain(
+      "workspace_memberships_lifecycle_valid",
+    );
+  });
+
+  it("migrates hosted identity without attaching ownership to workspace data", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0031_daffy_bloodstrike.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain('CREATE TABLE "users"');
+    expect(migration).toContain('CREATE TABLE "external_identities"');
+    expect(migration).toContain('CREATE TABLE "browser_sessions"');
+    expect(migration).toContain('CREATE TABLE "workspace_memberships"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "external_identities_exact_binding_uq"');
+    expect(migration).toContain('"issuer" collate "C"');
+    expect(migration).not.toContain('ALTER TABLE "workspaces" ADD COLUMN "user_id"');
+  });
+
+  it("enforces a tenant-scoped, non-cascading work-item hierarchy", () => {
+    const workItem = getTableConfig(workItems);
+
+    expect(workItem.foreignKeys.map((constraint) => constraint.getName())).toContain(
+      "work_items_parent_tenant_fk",
+    );
+    expect(workItem.checks.map((constraint) => constraint.name)).toContain(
+      "work_items_parent_not_self",
+    );
+    expect(workItem.indexes.map((constraint) => constraint.config.name)).toContain(
+      "work_items_workspace_parent_created_id_idx",
+    );
+  });
+
+  it("migrates existing work items into the hierarchy as roots", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0029_needy_vampiro.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain('ADD COLUMN "parent_work_item_id" uuid');
+    expect(migration).toContain('CONSTRAINT "work_items_parent_tenant_fk"');
+    expect(migration).toContain("ON DELETE restrict");
+    expect(migration).toContain('CREATE INDEX "work_items_workspace_parent_created_id_idx"');
+    expect(migration).toContain('CONSTRAINT "work_items_parent_not_self"');
+    expect(migration).not.toContain('UPDATE "work_items"');
   });
 
   it("fences provider-neutral notification delivery and exact request replay", () => {
@@ -116,6 +233,7 @@ describe("database schema", () => {
       expect.arrayContaining([
         "notification_delivery_commands_claim_idx",
         "notification_delivery_commands_recovery_idx",
+        "notification_delivery_commands_workspace_schedule_idx",
       ]),
     );
 
@@ -371,6 +489,83 @@ describe("database schema", () => {
     );
   });
 
+  it("constrains private, expiring, tenant-bound natural-language proposals", () => {
+    const config = getTableConfig(naturalLanguageProposals);
+    const columnNames = config.columns.map((column) => column.name);
+
+    expect(naturalLanguageProposalStatus.enumValues).toEqual(["pending", "confirmed", "cancelled"]);
+    expect(columnNames).toContain("prompt_hash");
+    expect(columnNames).toEqual(
+      expect.arrayContaining([
+        "review_priority",
+        "review_due_on",
+        "review_planning_duration_minutes",
+        "review_hash",
+      ]),
+    );
+    expect(columnNames).not.toEqual(expect.arrayContaining(["prompt", "summary", "warnings"]));
+    expect(config.uniqueConstraints.map((constraint) => constraint.name)).toContain(
+      "natural_language_proposals_workspace_request_uq",
+    );
+    expect(config.foreignKeys.map((constraint) => constraint.getName())).toContain(
+      "natural_language_proposals_result_work_item_tenant_fk",
+    );
+    expect(config.indexes.map((constraint) => constraint.config.name)).toEqual(
+      expect.arrayContaining([
+        "natural_language_proposals_workspace_status_created_idx",
+        "natural_language_proposals_workspace_expiry_idx",
+      ]),
+    );
+    expect(config.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "natural_language_proposals_prompt_hash_valid",
+        "natural_language_proposals_command_hash_valid",
+        "natural_language_proposals_review_hash_valid",
+        "natural_language_proposals_review_duration_valid",
+        "natural_language_proposals_expiry_after_creation",
+        "natural_language_proposals_lifecycle_valid",
+        "natural_language_proposals_terminal_time_valid",
+      ]),
+    );
+  });
+
+  it("migrates natural-language proposal lifecycle and retention boundaries", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0028_warm_rictor.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain('CREATE TABLE "natural_language_proposals"');
+    expect(migration).not.toContain('"prompt" text');
+    expect(migration).not.toContain('"summary"');
+    expect(migration).toContain("interval '1 hour'");
+    expect(migration).toContain(
+      'CONSTRAINT "natural_language_proposals_result_work_item_tenant_fk"',
+    );
+    expect(migration).toContain('CREATE INDEX "natural_language_proposals_workspace_expiry_idx"');
+  });
+
+  it("migrates user-authored natural-language review fields without widening model commands", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0032_harsh_purifiers.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "review_priority" "work_item_priority"');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "review_hash" varchar(64)');
+    expect(migration).toContain("65f7aef345c4f828788d1f4b3d779476b02a9599c31b1442ac7a4b3dbd670805");
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "review_due_on" date');
+    expect(migration).toContain(
+      'ADD COLUMN IF NOT EXISTS "review_planning_duration_minutes" integer',
+    );
+    expect(migration).toContain("natural-language proposal review columns have incompatible types");
+    expect(migration).toContain(
+      'DROP CONSTRAINT IF EXISTS "natural_language_proposals_review_hash_valid"',
+    );
+    expect(migration).toContain('"review_planning_duration_minutes" <= 43200');
+    expect(migration).not.toContain('ALTER COLUMN "command"');
+  });
+
   it("constrains routine weekday arrays at the database boundary", () => {
     const checkNames = getTableConfig(routines).checks.map((constraint) => constraint.name);
 
@@ -467,6 +662,7 @@ describe("database schema", () => {
       "replace",
       "feedback",
       "feedback_reset",
+      "alternative_select",
     ]);
     expect(config.foreignKeys.map((constraint) => constraint.getName())).toEqual(
       expect.arrayContaining([
@@ -539,6 +735,49 @@ describe("database schema", () => {
     );
   });
 
+  it("stores append-only routine selection preferences behind an independent version fence", () => {
+    const config = getTableConfig(routineSelectionPreferenceFeedbackEvents);
+    expect(routineSelectionPreferenceFeedbackKind.enumValues).toEqual([
+      "more_often",
+      "less_often",
+      "reset",
+    ]);
+    expect(config.foreignKeys.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "routine_select_pref_events_workspace_fk",
+        "routine_select_pref_events_routine_fk",
+        "routine_select_pref_events_plan_fk",
+        "routine_select_pref_events_source_item_fk",
+      ]),
+    );
+    expect(config.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "routine_select_pref_events_source_valid",
+        "routine_select_pref_events_reset_item_null",
+        "routine_select_pref_events_version_positive",
+      ]),
+    );
+    expect(config.indexes.map((constraint) => constraint.config.name)).toContain(
+      "routine_select_pref_events_planning_idx",
+    );
+    const migration = readFileSync(
+      new URL("../drizzle/0034_majestic_maverick.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain(
+      'ADD COLUMN "selection_preference_version" integer DEFAULT 0 NOT NULL',
+    );
+    expect(migration).toContain(
+      'CREATE TRIGGER "routine_selection_preference_feedback_events_prevent_change"',
+    );
+    expect(migration).toContain(
+      'ALTER SEQUENCE "routine_selection_preference_feedback_eve_ingested_sequence_seq" RENAME TO "routine_select_pref_events_ingested_sequence_seq"',
+    );
+    expect(migration).toContain(
+      'BEFORE UPDATE OR DELETE ON "routine_selection_preference_feedback_events"',
+    );
+  });
+
   it("stores tenant-bound immutable routine-duration insight feedback", () => {
     const config = getTableConfig(routineDurationInsightFeedbackEvents);
 
@@ -608,6 +847,46 @@ describe("database schema", () => {
     );
     expect(migration).toContain(
       'BEFORE UPDATE OR DELETE ON "routine_duration_insight_feedback_events"',
+    );
+  });
+
+  it("stores and migrates append-only Daily Plan Fit feedback", () => {
+    const config = getTableConfig(dailyPlanFitInsightFeedbackEvents);
+    expect(dailyPlanFitInsightFeedbackKind.enumValues).toEqual(["dismissed", "reset"]);
+    expect(
+      config.uniqueConstraints
+        .find(
+          (constraint) =>
+            constraint.getName() === "daily_plan_fit_feedback_workspace_idempotency_uq",
+        )
+        ?.columns.map((column) => column.name),
+    ).toEqual(["workspace_id", "idempotency_key"]);
+    expect(config.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "daily_plan_fit_feedback_key_format",
+        "daily_plan_fit_feedback_sample_positive",
+        "daily_plan_fit_feedback_completed_minutes_nonnegative",
+        "daily_plan_fit_feedback_completed_tasks_nonnegative",
+        "daily_plan_fit_feedback_idempotency_canonical",
+        "daily_plan_fit_feedback_sequence_positive",
+      ]),
+    );
+
+    const migration = readFileSync(
+      new URL("../drizzle/0030_exotic_the_anarchist.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain(
+      "CREATE TYPE \"public\".\"daily_plan_fit_insight_feedback_kind\" AS ENUM('dismissed', 'reset')",
+    );
+    expect(migration).toContain(
+      '"daily_plan_fit_feedback_workspace_idempotency_uq" UNIQUE("workspace_id","idempotency_key")',
+    );
+    expect(migration).toContain(
+      'CREATE TRIGGER "daily_plan_fit_insight_feedback_events_prevent_change"',
+    );
+    expect(migration).toContain(
+      'BEFORE UPDATE OR DELETE ON "daily_plan_fit_insight_feedback_events"',
     );
   });
 

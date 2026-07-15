@@ -6,7 +6,11 @@
     "coverage": { "command": "pnpm test:coverage", "ci": true },
     "planner-db": { "command": "pnpm verify:database", "ci": true },
     "product-api": { "command": "pnpm verify:database", "ci": true },
+    "daily-plan-alternatives": { "command": "pnpm verify:database", "ci": true },
+    "work-item-hierarchy": { "command": "pnpm verify:database", "ci": true },
+    "natural-language-proposals": { "command": "pnpm verify:database", "ci": true },
     "integration-gateway": { "command": "pnpm verify:database", "ci": true },
+    "hermes-dedupe-store": { "command": "pnpm verify:database", "ci": true },
     "hermes-adapter": {
       "command": "pnpm verify:hermes-adapter",
       "ci": true
@@ -16,6 +20,9 @@
     "plan-state-migrations": { "command": "pnpm verify:database", "ci": true },
     "weekday-migrations": { "command": "pnpm verify:database", "ci": true },
     "notification-core": { "command": "pnpm verify:database", "ci": true },
+    "notification-materializer": { "command": "pnpm verify:database", "ci": true },
+    "worker-observability": { "command": "pnpm verify:database", "ci": true },
+    "hosted-identity": { "command": "pnpm verify:database", "ci": true },
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
     "notification-migrations": { "command": "pnpm verify:database", "ci": true },
     "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
@@ -23,6 +30,7 @@
       "command": "pnpm verify:recovery-state-machine",
       "ci": true
     },
+    "oci-runtime": { "command": "pnpm verify:oci-runtime", "ci": true },
     "browser-e2e": {
       "command": "pnpm verify:web-e2e",
       "ci": true
@@ -410,7 +418,7 @@
         "anchor": "### 3.1.1 Work-item prerequisite"
       },
       "limitations": [
-        "Only direct work-item prerequisites are modeled; projects, milestones, subtasks, and checklist relationships remain deferred.",
+        "Only direct work-item prerequisites are modeled; projects, milestones, and checklist relationships remain deferred.",
         "Dependency editing is not exposed through the authenticated integration gateway."
       ],
       "evidence": [
@@ -561,6 +569,104 @@
       ]
     },
     {
+      "id": "work-item-hierarchy",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/PRODUCT.md",
+        "anchor": "### 3.1.2 Work-item hierarchy"
+      },
+      "limitations": [
+        "Projects, milestones, checklist rows, roll-up status, and cascading completion are separate deferred concepts.",
+        "The collection endpoint lists direct children; clients traverse arbitrary depth one bounded level at a time."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/work-item.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates, preserves, reparents, and detaches a subtask with version semantics",
+            "rejects self-parenting with canonical persisted identity"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/work-item-management.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates and lists direct subtasks with a tenant-scoped parent audit",
+            "reparents and detaches a subtask without changing either parent's version",
+            "rejects missing parents, self-parenting, and descendant cycles"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/integration-gateway.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates, discovers, detaches, and reparents subtasks through confirmed Hermes commands"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": [
+            "enforces a tenant-scoped, non-cascading work-item hierarchy",
+            "migrates existing work items into the hierarchy as roots"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": ["creates, lists, reparents, and detaches direct subtasks"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/api.test.ts",
+          "command": "unit",
+          "anchors": ["creates, lists, reparents, and detaches subtasks through hierarchy routes"]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/WorkView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "shows hierarchy context and creates a subtask under the selected parent",
+            "detaches and reparents a subtask without changing either parent's version",
+            "removes every descendant from the parent selector at arbitrary depth",
+            "reveals every overflow subtask after clearing an active priority filter"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-work-item-hierarchy.ts",
+          "command": "work-item-hierarchy",
+          "anchors": ["work-item hierarchy verification passed"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-integration-gateway.ts",
+          "command": "integration-gateway",
+          "anchors": [
+            "integration-gateway-work-item-hierarchy",
+            "integration-gateway-hierarchy-cross-surface-lock-order",
+            "integration-gateway-hierarchy-snapshot-race"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/planning-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": [
+            "persists subtasks and keeps parent containers out of Today in the live 320px flow"
+          ]
+        }
+      ]
+    },
+    {
       "id": "calendar-block-management",
       "status": "implemented",
       "risk": "high",
@@ -667,12 +773,41 @@
       "contract": { "file": "docs/WEB.md", "anchor": "## Mutation and conflict contract" },
       "evidence": [
         {
+          "level": "unit",
+          "file": "packages/domain/src/daily-planning.test.ts",
+          "command": "unit",
+          "anchors": [
+            "projects stable non-primary alternatives without changing the primary plan",
+            "materializes only a currently offered alternative and records its opaque selection"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/daily-plan-alternatives.test.ts",
+          "command": "unit",
+          "anchors": [
+            "previews bounded deterministic choices without changing persisted state",
+            "selects exactly once, preserves a locked anchor, and replays after the head advances",
+            "rejects a candidate that is no longer offered before writing anything"
+          ]
+        },
+        {
           "level": "component",
           "file": "apps/web/src/views/TodayView.test.tsx",
           "command": "unit",
           "anchors": [
             "renders successful regenerate and replace responses with versioned idempotent commands",
-            "reuses the same idempotency key and timestamp after an ambiguous failure"
+            "reuses the same idempotency key and timestamp after an ambiguous failure",
+            "compares distinct plans and changes Today only after an explicit selection",
+            "discards stale alternatives and refreshes the authoritative plan"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-daily-plan-alternatives.ts",
+          "command": "daily-plan-alternatives",
+          "anchors": [
+            "daily-plan alternatives verification passed preview purity, locked selection, exact replay, and stale-key rejection"
           ]
         },
         {
@@ -680,7 +815,8 @@
           "file": "apps/web/e2e/planning-flow.spec.ts",
           "command": "browser-e2e",
           "anchors": [
-            "persists temporary routine feedback and activity through the live Today planning flow"
+            "persists temporary routine feedback and activity through the live Today planning flow",
+            "compares, selects, persists, and rejects stale daily-plan alternatives"
           ]
         }
       ]
@@ -794,6 +930,32 @@
           "file": "packages/config/src/config.test.ts",
           "command": "unit",
           "anchors": ["rejects attempts to expose the unauthenticated product API"]
+        }
+      ]
+    },
+    {
+      "id": "oci-runtime-hardening",
+      "status": "implemented",
+      "risk": "high",
+      "contract": {
+        "file": "docs/OPERATIONS.md",
+        "anchor": "## Production-image runtime smoke"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "scripts/verify-oci-runtime.test.ts",
+          "command": "unit",
+          "anchors": [
+            "builds isolated run and exec security probes",
+            "accepts only a complete bounded runtime security probe"
+          ]
+        },
+        {
+          "level": "drill",
+          "file": "scripts/verify-oci-runtime.ts",
+          "command": "oci-runtime",
+          "anchors": ["OCI runtime verification passed hardened non-root containers"]
         }
       ]
     },
@@ -1238,13 +1400,122 @@
       ]
     },
     {
+      "id": "explicit-routine-selection-preference",
+      "status": "implemented",
+      "risk": "high",
+      "contract": {
+        "file": "docs/PRODUCT.md",
+        "anchor": "### 3.7 Routine selection preference"
+      },
+      "limitations": [
+        "This is a direct user-authored routine ranking signal, not inferred learning, and it never changes cadence, eligibility, duration, activity, or the current plan.",
+        "The v1 policy uses the latest eight directional events after reset within 90 local days, fixed 100-point steps, and a [-400, 400] clamp; editable weights and generalized adaptation remain deferred."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/routine-selection-preference-feedback.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates immutable routine feedback with optional, internally consistent provenance",
+            "uses the last eight non-reset events after the latest reset, independent of input order",
+            "uses an inclusive local 90-day window and clamps a directional score to [-400, 400]"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/domain/src/daily-planning.test.ts",
+          "command": "unit",
+          "anchors": [
+            "adds only an explicit routine selection preference score and snapshots it canonically",
+            "excludes future, out-of-window, and reset preference history from the plan snapshot",
+            "rejects duplicate routine selection preference event IDs",
+            "propagates routine-only selection preference feedback through residual replanning"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/routine-selection-preference-feedback.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns a zero-version read projection without mutating a routine or plan",
+            "records an append-only preference and projects its new version and score",
+            "rechecks the receipt after the routine lock so an ordered duplicate does not advance twice",
+            "replays the exact accepted projection after newer preference events",
+            "rejects new events at the finite routine history capacity",
+            "rejects nonexistent source-plan provenance before appending",
+            "returns the accepted projection that becomes visible only after waiting for the feedback lock"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": [
+            "stores append-only routine selection preferences behind an independent version fence"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns the initial routine selection preference state for an explicit time zone",
+            "records a future-planning routine preference and returns only authoritative public state",
+            "replays an identical routine preference idempotently without advancing twice",
+            "strictly validates routine preference reads and writes before invoking services",
+            "requires a routine preference idempotency key and maps stale versions to conflict"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/api.test.ts",
+          "command": "unit",
+          "anchors": [
+            "retrieves a routine selection preference in the browser's explicit time zone",
+            "records an idempotent routine selection preference with its optimistic version"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/RoutinesView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "loads a quiet initial future-plan preference with accessible routine-specific controls",
+            "progresses optimistic preference versions through more, less, and reset commands",
+            "refreshes authoritative preference state after a version conflict without replaying",
+            "retries an ambiguous preference failure with the exact same idempotency key",
+            "ignores a late preference response after the workspace changes",
+            "renders hostile routine and reason strings literally while keeping labels accessible"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-planner-db.ts",
+          "command": "planner-db",
+          "anchors": [
+            "selection preference feedback must not mutate the current plan",
+            "future plans must consume explicit routine selection preference feedback"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/planning-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": [
+            "persists explicit future-plan preference without changing Today in the live 320px flow"
+          ]
+        }
+      ]
+    },
+    {
       "id": "transparent-adaptation",
       "status": "partial",
       "risk": "normal",
       "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 3 — Transparent adaptation" },
       "limitations": [
-        "Routine-duration calibration and reversible exact-key dismissal/reset are implemented; learned cadence, day/time, energy, preference, overload, and category-balance signals remain deferred.",
-        "Suggestions are never applied automatically, and adaptive probabilistic selection beyond the deterministic planner and historical insight comparison remain deferred.",
+        "Routine-duration calibration, Daily Plan Fit guidance, explicit routine ranking preferences, and reversible exact-key dismissal/reset are implemented; inferred cadence, day/time, energy, preference, and category-balance signals remain deferred.",
+        "Suggestions are never applied automatically, and adaptive probabilistic selection beyond the deterministic planner, upward Plan Fit expansion, and historical insight comparison remain deferred.",
         "The statistical thresholds have contract evidence but no production outcome data, and no local or hosted model participates."
       ],
       "evidence": [
@@ -1423,12 +1694,211 @@
       ]
     },
     {
+      "id": "daily-plan-fit-guidance",
+      "status": "implemented",
+      "risk": "high",
+      "contract": {
+        "file": "docs/PLANNER.md",
+        "anchor": "## Daily Plan Fit guidance"
+      },
+      "limitations": [
+        "Version 1 is downward-only and uses a fixed 90-day, three-to-28-sample median policy; it does not learn or recommend target increases.",
+        "Using a suggestion only prefills editable fields, and there is no automatic generation, historical outcome comparison, or model participation."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/daily-plan-fit-insight.test.ts",
+          "command": "unit",
+          "anchors": [
+            "requires three fully resolved, nonempty current plans",
+            "jointly recommends materially lower median time and task targets",
+            "does not emit an actionable suggestion for a sub-threshold gap",
+            "uses safe minimum targets when recent plans resolved with no completed items",
+            "caps evidence, ignores repository order, and excludes the evaluation clock from its key",
+            "rejects cross-workspace and duplicate evidence",
+            "fails closed when one evidence plan exceeds the item bound",
+            "resolves the latest exact-key dismissal and reset",
+            "normalizes idempotency and validates nonnegative completed medians"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/daily-plan-fit-insight.test.ts",
+          "command": "unit",
+          "anchors": [
+            "reads the bounded prior-plan projection and resolves exact-key feedback",
+            "rejects a missing workspace before reading history",
+            "rejects an invalid local date before opening a unit of work",
+            "dismisses then resets the same exact suggestion under a read-committed lock",
+            "returns an exact idempotent replay without recalculating evidence",
+            "rejects idempotency reuse and stale evidence",
+            "enforces disposition transitions"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/repositories.test.ts",
+          "command": "unit",
+          "anchors": [
+            "rejects unbounded history requests before querying",
+            "maps one bounded current-head query and skips malformed target snapshots",
+            "fails closed when one current plan exceeds the item projection bound",
+            "uses one canonical workspace advisory lock across UUID casing",
+            "loads the latest exact key and bounded idempotency receipt",
+            "lets PostgreSQL allocate the sequence and targets workspace idempotency",
+            "replays equivalent feedback but rejects changed semantics"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": ["stores and migrates append-only Daily Plan Fit feedback"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "serves and records exact-key Daily Plan Fit guidance for an explicit local date",
+            "validates Plan Fit payloads and maps stale evidence to conflict"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/api.test.ts",
+          "command": "unit",
+          "anchors": [
+            "retrieves a Daily Plan Fit insight for an explicit local date",
+            "records an idempotent Plan Fit %s"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/TodayView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "prefills both Plan Fit targets without generating until the user submits",
+            "announces Plan Fit loading without changing either target",
+            "aborts and ignores Plan Fit results from the previous workspace",
+            "dismisses and restores only the exact Plan Fit evidence key",
+            "refetches changed evidence after a stale Plan Fit feedback command"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-planner-db.ts",
+          "command": "planner-db",
+          "anchors": ["daily-plan-fit-insight-postgres"]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/planning-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": ["derives, prefills, and explicitly restores a Daily Plan Fit suggestion"]
+        }
+      ]
+    },
+    {
+      "id": "local-natural-language-work-proposals",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/NATURAL_LANGUAGE.md",
+        "anchor": "# Local natural-language work proposals"
+      },
+      "limitations": [
+        "Version 1 prepares only one editable backlog-title command; user-authored priority, due date, and duration are supported during review, while model-extracted structured fields, routines, task breakdown, multiple commands, automatic confirmation, hosted providers, and messaging interpretation remain deferred.",
+        "The browser E2E uses a strict loopback provider double; it establishes authority and lifecycle behavior, not real-model title quality."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/local-natural-language-proposal.test.ts",
+          "command": "unit",
+          "anchors": [
+            "persists a bounded hash-bound proposal without mutating work or storing the prompt",
+            "confirms the complete user-reviewed snapshot as one root backlog item",
+            "rejects invalid review fields and deterministic work-item mismatches",
+            "confirms the persisted command exactly once and replays the same idempotency key",
+            "recovers a deterministic proposal work item without creating a duplicate",
+            "rolls back proposal creation and confirmation when audit persistence fails"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/local-model-advisor.test.ts",
+          "command": "unit",
+          "anchors": [
+            "sends a fixed tool-free proposal request and returns only strict review data",
+            "shares the same concurrency permit across advice and proposal work"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": [
+            "constrains private, expiring, tenant-bound natural-language proposals",
+            "migrates natural-language proposal lifecycle and retention boundaries",
+            "migrates user-authored natural-language review fields without widening model commands"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/repositories.test.ts",
+          "command": "unit",
+          "anchors": [
+            "atomically inserts or returns the request winner and validates its command digest",
+            "takes a tenant-scoped row lock before proposal mutation"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "keeps natural-language capture proposal-only until an idempotent explicit confirmation",
+            "maps terminal proposal state to gone and redacts corrupt persisted commands"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/WorkView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "prepares and cancels a local proposal without creating a work item",
+            "persists an edited proposal, confirms explicitly, and focuses the created backlog card",
+            "reuses the same confirmation key after an ambiguous failure",
+            "aborts and discards proposal work when the workspace changes"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-natural-language-proposals.ts",
+          "command": "natural-language-proposals",
+          "anchors": [
+            "Natural-language proposal verification passed private review persistence, exact reviewed creation, tenant isolation, and concurrent exactly-once confirmation"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/natural-language-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": [
+            "reviews and explicitly confirms a local natural-language proposal through the live stack"
+          ]
+        }
+      ]
+    },
+    {
       "id": "local-model-advisor",
       "status": "partial",
       "risk": "normal",
       "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 4 — Local-model advisor" },
       "limitations": [
-        "Only explicit read-only review of a bounded current plan and eligible backlog through local Ollama is implemented; natural-language creation and task breakdown, automatic application or calibration, hosted providers, and any connection between advisor output and the local Hermes/reminder path remain deferred. The deterministic Hermes stdout reminder does not invoke the advisor, and live WhatsApp delivery is not established.",
+        "Only explicit read-only review of a bounded current plan and eligible backlog through local Ollama is implemented; the separate Work proposal flow is not an advisor action, and task breakdown, automatic application or calibration, hosted providers, and any connection between advisor output and either Hermes path remain deferred. The deterministic Hermes stdout reminder and provider-neutral delivery runtime do not invoke the advisor, and live WhatsApp delivery is not established.",
         "The real Ollama/Gemma smoke command is operator-run and not a CI gate; CI validates the provider boundary with deterministic loopback fakes and does not establish model quality."
       ],
       "evidence": [
@@ -1523,8 +1993,8 @@
         "anchor": "# Deterministic reminder policy core"
       },
       "limitations": [
-        "Materialization is an explicit local API command; no periodic worker invokes it yet.",
-        "The web application has no reminder settings or intent-history interface; provider transport and human/account binding remain external."
+        "Automatic local materialization is opt-in and disabled by default; an in-flight PostgreSQL materialization transaction is awaited rather than cancelled during shutdown.",
+        "Provider transport and human/account binding remain external; the web interface is a local policy and history surface only."
       ],
       "evidence": [
         {
@@ -1549,6 +2019,27 @@
             "fails closed for malformed plan snapshots and invalid or unconfigured windows",
             "supports the maximum window together with the maximum catch-up horizon",
             "rejects overlarge persisted rule, window, and aggregate candidate sets"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/notification-materializer.test.ts",
+          "command": "unit",
+          "anchors": [
+            "does no work while disabled",
+            "uses one bounded look-ahead window and processes at most 20 workspaces sequentially",
+            "fails a tick closed when persisted workspaces violate the local installation limit",
+            "isolates workspace failures, treats missing configuration as a skip, and emits no raw error",
+            "never overlaps ticks and exits promptly from its interval sleep"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/runtime.test.ts",
+          "command": "unit",
+          "anchors": [
+            "aborts sibling services and waits for their cleanup before surfacing a failure",
+            "lets every service stop cleanly after an external shutdown signal"
           ]
         },
         {
@@ -1581,7 +2072,7 @@
           "file": "apps/api/src/notification-routes.test.ts",
           "command": "unit",
           "anchors": [
-            "wires profile, rules, one-offs, materialization, and intent reads",
+            "wires profile, rules, one-offs, materialization, intent reads, and safe delivery history",
             "rejects unpaired quiet hours, mismatched rule configuration, and empty patches"
           ]
         },
@@ -1590,6 +2081,14 @@
           "file": "scripts/verify-notification-core.ts",
           "command": "notification-core",
           "anchors": ["Notification policy core verification passed"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-notification-materializer.ts",
+          "command": "notification-materializer",
+          "anchors": [
+            "Notification materializer verification passed bounded automatic discovery, catch-up boundaries, concurrent exact-once replay, unconfigured skips, restart replay, and no delivery/outbox side effects"
+          ]
         },
         {
           "level": "integration",
@@ -1608,11 +2107,105 @@
         "anchor": "## Delivery lifecycle"
       },
       "limitations": [
-        "Schedule exposes fenced pull claims and bounded receipts but has no Hermes/WhatsApp, email, push, or other provider transport and stores no human/account binding.",
-        "Periodic intent materialization and adapter polling are not implemented; multiple adapter instances require their own shared durable dedupe store.",
-        "Dead-letter redrive and reminder delivery/settings history UI are not implemented in this slice."
+        "Schedule exposes fenced pull claims and bounded receipts and now includes a dormant provider-neutral Hermes adapter core, but has no concrete Hermes/WhatsApp, email, push, or other provider transport and stores no human/account binding.",
+        "Periodic intent materialization, a shared PostgreSQL adapter dedupe store, and fail-safe supervised provider-neutral polling are implemented; external provider bootstrap/control wiring and provider reconciliation remain absent.",
+        "Delivered dedupe tombstone cleanup is intentionally disabled until Schedule exposes an authoritative replay-retention watermark.",
+        "Dead-letter redrive is not implemented in this slice."
       ],
       "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/hermes-reminders/src/delivery-runner.test.ts",
+          "command": "unit",
+          "anchors": [
+            "claims, sends idempotently, persists dedupe success, then acknowledges Schedule",
+            "acknowledges a previously delivered dedupe key without sending again",
+            "does not start transport without enough lease budget",
+            "bounds a transport that ignores cancellation and preserves its ambiguous reservation",
+            "replays delivered dedupe state after a lost Schedule receipt without another send"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/hermes-reminders/src/schedule-client.test.ts",
+          "command": "unit",
+          "anchors": [
+            "sends exact claim authentication/version/idempotency and validates the bounded command",
+            "sends only the discriminated bounded receipt contract",
+            "rejects malformed responses without exposing the credential",
+            "rejects oversized responses without exposing the credential",
+            "rejects mismatched reminder kind and target semantics"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/hermes-reminders/src/postgres-dedupe-store.test.ts",
+          "command": "unit",
+          "anchors": [
+            "rejects unsafe reservation horizon configuration",
+            "rejects unsafe database statement timeout configuration",
+            "rejects an invalid generated fencing token without leaking it"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/hermes-reminders/src/supervisor.test.ts",
+          "command": "unit",
+          "anchors": [
+            "keeps the default kill switch off and performs no claim",
+            "does not claim when shutdown races the operator control check",
+            "treats a reject-on-abort polling sleep as graceful shutdown",
+            "never overlaps an in-flight cycle and rejects a second run",
+            "does not claim while disabled and resumes only after the control enables it",
+            "uses deterministic jitter for retryable failures and resets after a successful poll",
+            "keeps readiness false while a failed dependency retry is in flight",
+            "fails immediately on a non-retryable gateway contract error without exposing details",
+            "fails closed when injected classification or jitter hooks violate their contract"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/hermes-reminders/src/health-server.test.ts",
+          "command": "unit",
+          "anchors": [
+            "binds to loopback and serves fixed live, ready, method, and missing responses",
+            "keeps liveness available and sanitizes a failing readiness provider",
+            "stops cleanly when shutdown races listener startup",
+            "fails safely on a port collision",
+            "does not expose server lifecycle control and sanitizes listening callback failures"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/hermes-reminders/src/runtime.test.ts",
+          "command": "unit",
+          "anchors": [
+            "runs polling and loopback health in one graceful shutdown domain",
+            "closes health when the supervisor enters a sanitized fatal state",
+            "stops polling and sanitizes a health listener startup failure",
+            "does not poll until health is listening and rejects a port collision",
+            "propagates a sanitized sibling cleanup failure when the primary lifecycle succeeds",
+            "preserves a primary failure when sibling cleanup also fails"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hermes-dedupe-store.ts",
+          "command": "hermes-dedupe-store",
+          "anchors": [
+            "Hermes delivery dedupe verification passed atomic concurrency, payload binding, digest-only fencing, delivered replay, release and expiry takeover, database-clock budget rechecks, bounded lock waits, search-path-stable owner attestation, bidirectional role isolation, least-privilege runtime access, and restart durability"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/list-notification-deliveries.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns the bounded product-safe delivery projection",
+            "rejects an invalid bounded query",
+            "rejects a missing workspace before reading history"
+          ]
+        },
         {
           "level": "unit",
           "file": "packages/application/src/notification-delivery.test.ts",
@@ -1674,17 +2267,228 @@
       ]
     },
     {
-      "id": "hosted-authentication-and-sync",
-      "status": "deferred",
-      "risk": "critical",
+      "id": "reminder-settings-and-history-ui",
+      "status": "implemented",
+      "risk": "high",
       "contract": {
-        "file": "docs/PRODUCT.md",
-        "anchor": "### Phase 5 — Hosting and synchronization"
+        "file": "docs/WEB.md",
+        "anchor": "## Reminder interaction"
       },
       "limitations": [
-        "Public end-user authentication, workspace isolation across users, and synchronization are not implemented; integration machine credentials do not authenticate browser users."
+        "The interface exposes manual materialization and cannot observe or configure the optional local worker; it does not connect provider transport or human/account destinations.",
+        "A claimed execution is presented as Schedule state, not proof of an external send."
       ],
-      "evidence": []
+      "evidence": [
+        {
+          "level": "component",
+          "file": "apps/web/src/views/RemindersView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "requires an explicit policy save and never silently creates a default profile",
+            "edits a versioned rule and reloads after the mutation",
+            "creates and cancels one-off reminders through explicit versioned commands",
+            "materializes explicitly, reports the result, and opens planned intent history",
+            "separates claimed execution from proof of an external send",
+            "reloads a concurrent version conflict before asking the user to retry",
+            "keeps a failed one-off edit open with its unsaved values",
+            "serializes reminder mutations and disables competing commands",
+            "rejects blank numeric policy fields before an API request"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/api.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates or updates reminder policy through the versioned PUT boundary",
+            "keeps delivery history on the product-safe paginated read route"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/reminders-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": [
+            "configures, materializes, audits, and responsively renders reminders through the live product"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "worker-operational-observability",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/OBSERVABILITY.md",
+        "anchor": "## Metric contract"
+      },
+      "limitations": [
+        "The listener is loopback-only and disabled by default; no scraper, time-series retention, hosted dashboard, or alert-delivery service is installed.",
+        "Process counters reset on worker restart, and this slice does not monitor future browser authentication or provider-specific transport."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/config/src/config.test.ts",
+          "command": "unit",
+          "anchors": ["enables only a bounded loopback worker observability port"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/observability.test.ts",
+          "command": "unit",
+          "anchors": [
+            "records fixed-cardinality counters and failure-free materialization timestamps",
+            "uses fixed metric names and no identifiers or labels",
+            "binds to loopback and serves bounded health, metrics, and method responses",
+            "keeps liveness up while readiness and database metrics fail safely"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/worker.test.ts",
+          "command": "unit",
+          "anchors": [
+            "claims one event immediately before dispatch and acknowledges its fencing token",
+            "retries a handler failure without acknowledging the event",
+            "logs a structured error when delivery reaches the dead letter state"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-worker-observability.ts",
+          "command": "worker-observability",
+          "anchors": [
+            "Worker observability verification passed loopback binding, dedicated read-only database isolation, bounded health semantics, database queue gauges, retention-aware attempt gauges, fixed-cardinality metrics, redaction, database-failure signaling, and shutdown"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-identity-persistence-foundation",
+      "status": "partial",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_IDENTITY.md",
+        "anchor": "# Hosted identity persistence foundation"
+      },
+      "limitations": [
+        "The foundation is dormant: no browser route, cookie, identity provider, CSRF policy, or deployment flag exposes it.",
+        "Public hosted authentication and synchronization remain deferred, and machine integration credentials remain a separate trust boundary."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/hosted-identity.test.ts",
+          "command": "unit",
+          "anchors": [
+            "preserves exact issuer and subject bytes without claim-based normalization",
+            "caps the combined UTF-8 identity key below PostgreSQL's B-tree entry limit",
+            "fails session availability at idle, absolute, and revocation boundaries",
+            "retains a binary membership lifecycle without introducing roles"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/hosted-identity.test.ts",
+          "command": "unit",
+          "anchors": [
+            "provisions an exact identity once under read-committed lock semantics",
+            "locks the user before the session after a non-locking ownership probe",
+            "rotates without extending absolute lifetime and rejects replay of the old token",
+            "revokes one membership without revoking the user's global session and can reactivate it"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": [
+            "persists a provider-neutral hosted identity and binary membership boundary",
+            "migrates hosted identity without attaching ownership to workspace data"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/hosted-identity.test.ts",
+          "command": "unit",
+          "anchors": [
+            "keeps hosted identity repositories in a separate transaction context",
+            "retries a wrapped serialization failure but not unrelated failures"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-identity.ts",
+          "command": "hosted-identity",
+          "anchors": [
+            "Hosted identity verification passed exact concurrent provisioning, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-identity-migrations.ts",
+          "command": "hosted-identity",
+          "anchors": [
+            "Hosted identity migration verification passed upgrade preservation, exact binding uniqueness, cascade isolation, and workspace data retention"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-authentication-and-sync",
+      "status": "partial",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "# Dormant hosted request authorization seam"
+      },
+      "limitations": [
+        "The seam is not registered in buildApp: provider verification, browser cookie and CSRF transport, public end-user routes, transaction-coupled product mutations, and synchronization remain unimplemented.",
+        "Integration machine credentials remain a separate boundary and do not authenticate browser users."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/hosted-identity.test.ts",
+          "command": "unit",
+          "anchors": [
+            "authorizes only active exact memberships and returns an immutable scoped context"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-auth-boundary.test.ts",
+          "command": "unit",
+          "anchors": [
+            "authenticates once and exposes only an immutable authorized context",
+            "makes malformed and all denied workspace access indistinguishable",
+            "redacts internal %s failures behind one temporary-unavailability response",
+            "keeps concurrent request principals isolated",
+            "refuses to register an unscoped route inside the hosted workspace boundary"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-identity.ts",
+          "command": "hosted-identity",
+          "anchors": [
+            "Hosted identity verification passed exact concurrent provisioning, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
+          ]
+        }
+      ]
     }
   ]
 }

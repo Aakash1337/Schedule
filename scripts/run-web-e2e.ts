@@ -1,6 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createServer, type Server } from "node:net";
+import {
+  createServer as createHttpServer,
+  type IncomingMessage,
+  type Server as HttpServer,
+  type ServerResponse,
+} from "node:http";
+import { createServer as createNetServer, type Server } from "node:net";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -156,7 +162,7 @@ async function runMainCommandCapture(
 
 async function listenOnRandomPort(): Promise<{ readonly port: number; readonly server: Server }> {
   return await new Promise((resolve, reject) => {
-    const server = createServer();
+    const server = createNetServer();
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
@@ -194,7 +200,7 @@ export async function reservePorts(count: number): Promise<readonly number[]> {
 
 async function portIsAvailable(port: number): Promise<boolean> {
   return await new Promise((resolve) => {
-    const server = createServer();
+    const server = createNetServer();
     server.once("error", () => resolve(false));
     server.listen(port, "127.0.0.1", () => {
       server.close(() => resolve(true));
@@ -245,7 +251,12 @@ export function parsePublishedPostgresPort(output: string): number {
 }
 
 export function buildTestEnvironment(
-  ports: { readonly postgres: number; readonly api: number; readonly web: number },
+  ports: {
+    readonly postgres: number;
+    readonly api: number;
+    readonly web: number;
+    readonly ollama: number;
+  },
   environment: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   return {
@@ -253,12 +264,162 @@ export function buildTestEnvironment(
     NODE_ENV: "test",
     LOG_LEVEL: "warn",
     PRODUCT_API_MODE: "local_unauthenticated",
+    // The sequential browser suite shares one loopback source address. Keep the product default
+    // exercised by API tests while preventing unrelated E2E scenarios from exhausting one bucket.
+    PRODUCT_RATE_LIMIT_PER_MINUTE: "1000",
     API_HOST: "127.0.0.1",
     API_PORT: String(ports.api),
     DATABASE_URL: `postgres://schedule:schedule@127.0.0.1:${ports.postgres}/schedule`,
     SCHEDULE_API_URL: `http://127.0.0.1:${ports.api}`,
     E2E_API_PORT: String(ports.api),
     E2E_WEB_PORT: String(ports.web),
+    E2E_OLLAMA_PORT: String(ports.ollama),
+    LOCAL_MODEL_PROPOSAL_MODE: "ollama",
+    LOCAL_MODEL_PROPOSAL_HMAC_KEY: "browser-e2e-natural-language-hmac-key-material",
+    LOCAL_MODEL_ADVISOR_URL: `http://127.0.0.1:${ports.ollama}`,
+    LOCAL_MODEL_ADVISOR_MODEL: "gemma4:e4b",
+  };
+}
+
+interface FakeOllamaServer {
+  readonly port: number;
+  readonly requestCount: () => number;
+  close(): Promise<void>;
+}
+
+const FAKE_OLLAMA_MAXIMUM_REQUEST_BYTES = 64 * 1024;
+
+function sendJson(response: ServerResponse, statusCode: number, value: unknown): void {
+  const body = JSON.stringify(value);
+  response.writeHead(statusCode, {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(body, "utf8"),
+    connection: "close",
+  });
+  response.end(body);
+}
+
+async function readFakeOllamaRequest(request: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > FAKE_OLLAMA_MAXIMUM_REQUEST_BYTES) {
+      throw new Error("Fake Ollama received an oversized request.");
+    }
+    chunks.push(buffer);
+  }
+  return JSON.parse(Buffer.concat(chunks, size).toString("utf8"));
+}
+
+function isProposalRequest(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  if (
+    body.model !== "gemma4:e4b" ||
+    body.stream !== false ||
+    body.think !== false ||
+    Object.hasOwn(body, "tools") ||
+    !Array.isArray(body.messages) ||
+    body.messages.length !== 2 ||
+    body.format === null ||
+    typeof body.format !== "object" ||
+    Array.isArray(body.format)
+  ) {
+    return false;
+  }
+  const format = body.format as Record<string, unknown>;
+  const properties = format.properties;
+  if (properties === null || typeof properties !== "object" || Array.isArray(properties)) {
+    return false;
+  }
+  const command = (properties as Record<string, unknown>).command;
+  return command !== null && typeof command === "object" && !Array.isArray(command);
+}
+
+export async function startFakeOllamaServer(port: number): Promise<FakeOllamaServer> {
+  let handledRequests = 0;
+  let releaseHeldResponse: (() => void) | null = null;
+  let heldClientAborted = false;
+  const server: HttpServer = createHttpServer(async (request, response) => {
+    response.setHeader("cache-control", "no-store");
+    if (request.method === "GET" && request.url === "/test/held-proposal") {
+      sendJson(response, 200, {
+        held: releaseHeldResponse !== null,
+        clientAborted: heldClientAborted,
+      });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/test/release-proposal") {
+      const release = releaseHeldResponse;
+      release?.();
+      sendJson(response, 200, { released: release !== null });
+      return;
+    }
+    if (request.method !== "POST" || request.url !== "/api/chat") {
+      sendJson(response, 404, { error: "not_found" });
+      return;
+    }
+    try {
+      const body = await readFakeOllamaRequest(request);
+      if (!isProposalRequest(body)) {
+        sendJson(response, 400, { error: "invalid_proposal_request" });
+        return;
+      }
+      handledRequests += 1;
+      if (JSON.stringify(body).includes("delay this proposal while I switch workspaces")) {
+        heldClientAborted = false;
+        const markClientAborted = () => {
+          heldClientAborted = true;
+        };
+        const markPrematureClose = () => {
+          if (!response.writableEnded) markClientAborted();
+        };
+        request.once("aborted", markClientAborted);
+        response.once("close", markPrematureClose);
+        await new Promise<void>((resolve) => {
+          releaseHeldResponse = resolve;
+        });
+        releaseHeldResponse = null;
+        request.off("aborted", markClientAborted);
+        response.off("close", markPrematureClose);
+        if (request.destroyed || response.destroyed) return;
+      }
+      sendJson(response, 200, {
+        done: true,
+        message: {
+          role: "assistant",
+          content: JSON.stringify({
+            version: "schedule.natural-language-output/v1",
+            summary: "Prepared one reviewable backlog title.",
+            warnings: [],
+            command: {
+              type: "work_item.create",
+              title: "Prepare the launch checklist",
+            },
+          }),
+        },
+      });
+    } catch {
+      if (!response.headersSent) sendJson(response, 400, { error: "invalid_json" });
+      else response.destroy();
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", resolve);
+  });
+  return {
+    port,
+    requestCount: () => handledRequests,
+    close: async () => {
+      releaseHeldResponse?.();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error === undefined ? resolve() : reject(error))),
+      );
+    },
   };
 }
 
@@ -317,8 +478,8 @@ async function composeProjectIsOwned(
 }
 
 export async function runWebE2e(): Promise<void> {
-  const [apiPort, webPort] = await reservePorts(2);
-  if (apiPort === undefined || webPort === undefined) {
+  const [apiPort, webPort, ollamaPort] = await reservePorts(3);
+  if (apiPort === undefined || webPort === undefined || ollamaPort === undefined) {
     throw new Error("Could not allocate the browser verification ports.");
   }
 
@@ -333,6 +494,7 @@ export async function runWebE2e(): Promise<void> {
   let composeAttempted = false;
   let ownershipVerified = false;
   let postgresPort: number | null = null;
+  let fakeOllama: FakeOllamaServer | null = null;
   let primaryError: unknown = null;
   let cleanupError: unknown = null;
 
@@ -343,6 +505,7 @@ export async function runWebE2e(): Promise<void> {
   process.once("SIGTERM", onSigterm);
 
   try {
+    fakeOllama = await startFakeOllamaServer(ollamaPort);
     await runMainCommand("docker", ["compose", "version"], composeEnvironment);
     await assertComposeProjectUnused(projectName, composeEnvironment);
     composeAttempted = true;
@@ -363,7 +526,7 @@ export async function runWebE2e(): Promise<void> {
       ),
     );
     const testEnvironment = buildTestEnvironment(
-      { postgres: postgresPort, api: apiPort, web: webPort },
+      { postgres: postgresPort, api: apiPort, web: webPort, ollama: ollamaPort },
       composeEnvironment,
     );
     await runMainCommand(process.execPath, [tsxCli, migrationEntryPoint], testEnvironment);
@@ -372,8 +535,11 @@ export async function runWebE2e(): Promise<void> {
       [playwrightCli, "test", "--config", path.join(repositoryRoot, "playwright.config.ts")],
       testEnvironment,
     );
+    if (fakeOllama.requestCount() === 0) {
+      throw new Error("Browser E2E verification did not exercise the local proposal provider.");
+    }
     process.stdout.write(
-      "Browser E2E verification passed live planning and persisted completion\n",
+      "Browser E2E verification passed live planning, persisted completion, and reviewed local proposals\n",
     );
   } catch (error) {
     primaryError =
@@ -417,10 +583,18 @@ export async function runWebE2e(): Promise<void> {
         }
       }
     }
+    if (fakeOllama !== null) {
+      try {
+        await fakeOllama.close();
+      } catch (error) {
+        cleanupError = cleanupError === null ? error : new AggregateError([cleanupError, error]);
+      }
+    }
     try {
       await requireReleasedPorts([
         apiPort,
         webPort,
+        ollamaPort,
         ...(postgresPort === null ? [] : [postgresPort]),
       ]);
     } catch (error) {

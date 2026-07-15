@@ -1,0 +1,1 @@
+ALTER TYPE "public"."plan_mutation_kind" ADD VALUE 'alternative_select';

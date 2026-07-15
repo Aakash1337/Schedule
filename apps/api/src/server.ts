@@ -1,23 +1,27 @@
+import { DisabledNaturalLanguageProposer } from "@schedule/application";
 import { loadApiConfig } from "@schedule/config";
 import {
   createDatabase,
   healthCheckDatabase,
   PostgresIntegrationUnitOfWork,
+  PostgresNaturalLanguageProposalUnitOfWork,
   PostgresUnitOfWork,
 } from "@schedule/database";
 
 import { buildApp } from "./app.js";
 import { createIntegrationServices } from "./integration-services.js";
 import { DisabledSchedulingAdvisor, OllamaSchedulingAdvisor } from "./local-model-advisor.js";
+import { createNaturalLanguagePromptHasher } from "./natural-language-runtime.js";
 import { createProductServices } from "./product-services.js";
 
 const config = loadApiConfig();
 const database = createDatabase(config.DATABASE_URL);
 const unitOfWork = new PostgresUnitOfWork(database);
 const integrationUnitOfWork = new PostgresIntegrationUnitOfWork(database);
+const naturalLanguageProposalUnitOfWork = new PostgresNaturalLanguageProposalUnitOfWork(database);
 const clock = { now: () => new Date() };
-const schedulingAdvisor =
-  config.LOCAL_MODEL_ADVISOR_MODE === "ollama"
+const localModel =
+  config.LOCAL_MODEL_ADVISOR_MODE === "ollama" || config.LOCAL_MODEL_PROPOSAL_MODE === "ollama"
     ? new OllamaSchedulingAdvisor({
         baseUrl: config.LOCAL_MODEL_ADVISOR_URL,
         model: config.LOCAL_MODEL_ADVISOR_MODEL,
@@ -26,8 +30,22 @@ const schedulingAdvisor =
         maxResponseBytes: config.LOCAL_MODEL_ADVISOR_MAX_RESPONSE_BYTES,
         maxConcurrent: config.LOCAL_MODEL_ADVISOR_MAX_CONCURRENT,
       })
-    : new DisabledSchedulingAdvisor();
-const productServices = createProductServices(unitOfWork, clock, schedulingAdvisor);
+    : null;
+const schedulingAdvisor =
+  config.LOCAL_MODEL_ADVISOR_MODE === "ollama" ? localModel! : new DisabledSchedulingAdvisor();
+const naturalLanguageProposer =
+  config.LOCAL_MODEL_PROPOSAL_MODE === "ollama"
+    ? localModel!
+    : new DisabledNaturalLanguageProposer();
+const productServices = createProductServices(unitOfWork, clock, schedulingAdvisor, {
+  unitOfWork: naturalLanguageProposalUnitOfWork,
+  proposer: naturalLanguageProposer,
+  promptHasher: createNaturalLanguagePromptHasher(
+    config.LOCAL_MODEL_PROPOSAL_MODE,
+    config.LOCAL_MODEL_PROPOSAL_HMAC_KEY,
+  ),
+  proposalTtlMilliseconds: config.LOCAL_MODEL_PROPOSAL_TTL_SECONDS * 1_000,
+});
 const integrationPepper = config.INTEGRATION_API_PEPPER;
 let integrationServices: ReturnType<typeof createIntegrationServices> | undefined;
 if (config.INTEGRATION_API_MODE === "enabled") {
@@ -51,7 +69,15 @@ const app = await buildApp({
         }
       : { level: config.LOG_LEVEL },
   readinessCheck: () => healthCheckDatabase(database),
-  ...(config.PRODUCT_API_MODE === "local_unauthenticated" ? { productServices } : {}),
+  ...(config.PRODUCT_API_MODE === "local_unauthenticated"
+    ? {
+        productServices,
+        productApiLimits: {
+          requestsPerMinute: config.PRODUCT_RATE_LIMIT_PER_MINUTE,
+          maxConcurrentPlans: 2,
+        },
+      }
+    : {}),
   ...(integrationServices === undefined
     ? {}
     : {

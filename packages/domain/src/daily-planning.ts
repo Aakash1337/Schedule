@@ -28,14 +28,20 @@ import {
   canonicalRoutinePlanningFeedback,
   type RoutinePlanningFeedback,
 } from "./routine-planning-feedback.js";
+import {
+  canonicalRoutineSelectionPreferenceFeedback,
+  routineSelectionPreferenceReason,
+  routineSelectionPreferenceScore,
+  type RoutineSelectionPreferenceFeedback,
+} from "./routine-selection-preference-feedback.js";
 import { workItemStatuses, type WorkItem } from "./work-item.js";
 import {
   createWorkItemDependency,
   type PlanningWorkItemDependency,
 } from "./work-item-dependency.js";
 
-export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v5";
-export const PLANNER_CONFIG_VERSION = "default-weights-v3";
+export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v6";
+export const PLANNER_CONFIG_VERSION = "default-weights-v4";
 export const PLANNER_PRNG_VERSION = "mulberry32-v1";
 const MAXIMUM_PLANNER_SCORE_COMPONENT = 1_000_000;
 
@@ -261,6 +267,43 @@ export interface DailyPlan {
   readonly generatedAt: Date;
 }
 
+export interface DailyPlanAlternativeItem extends PlanSource {
+  readonly title: string;
+  readonly windowIndex: number;
+  readonly scheduledMinutes: number;
+  readonly partialSession: boolean;
+  readonly score: number;
+  readonly reasons: readonly string[];
+}
+
+export interface DailyPlanAlternativePlacementChange extends PlanSource {
+  readonly fromWindowIndex: number;
+  readonly toWindowIndex: number;
+  readonly fromScheduledMinutes: number;
+  readonly toScheduledMinutes: number;
+  readonly fromPartialSession: boolean;
+  readonly toPartialSession: boolean;
+}
+
+export interface DailyPlanAlternative {
+  readonly candidateKey: string;
+  readonly items: readonly DailyPlanAlternativeItem[];
+  readonly totalMinutes: number;
+  readonly taskCount: number;
+  readonly fitness: number;
+  readonly warnings: readonly PlanWarning[];
+  readonly deltaMinutes: number;
+  readonly deltaTaskCount: number;
+  readonly addedSourceKeys: readonly string[];
+  readonly removedSourceKeys: readonly string[];
+  readonly changedPlacements: readonly DailyPlanAlternativePlacementChange[];
+}
+
+export interface DailyPlanAlternativesPreview {
+  readonly primary: DailyPlan;
+  readonly alternatives: readonly DailyPlanAlternative[];
+}
+
 export interface GenerateDailyPlanInput {
   readonly id?: DailyPlanId;
   readonly request: DailyPlanningRequest;
@@ -269,6 +312,8 @@ export interface GenerateDailyPlanInput {
   readonly workItemDependencies?: readonly PlanningWorkItemDependency[];
   readonly events: readonly ActivityEvent[];
   readonly routineFeedback?: readonly RoutinePlanningFeedback[];
+  /** Explicit user ranking signals. These never affect cadence or eligibility. */
+  readonly routineSelectionPreferenceFeedback?: readonly RoutineSelectionPreferenceFeedback[];
   readonly config?: PlannerConfig;
   readonly generatedAt?: Date;
 }
@@ -306,6 +351,9 @@ interface CandidatePlan {
   readonly fitness: number;
   readonly key: string;
 }
+
+const MAXIMUM_DAILY_PLAN_ALTERNATIVES = 3;
+const DAILY_PLAN_ALTERNATIVE_KEY_VERSION = "daily-plan-alternative-v1";
 
 function wholeNumber(value: number, code: string, message: string, minimum: number): void {
   invariant(Number.isInteger(value) && value >= minimum, code, message);
@@ -559,6 +607,7 @@ export function evaluateRoutineForPlan(
   request: DailyPlanningRequest,
   config: PlannerConfig = DEFAULT_PLANNER_CONFIG,
   routineFeedback: readonly RoutinePlanningFeedback[] = [],
+  selectionPreferenceFeedback: readonly RoutineSelectionPreferenceFeedback[] = [],
 ): RoutineEvaluation {
   const events = canonicalEvents(allEvents, request);
   const completions = activeCompletions(events, routine);
@@ -694,6 +743,15 @@ export function evaluateRoutineForPlan(
     return distance >= 0 && distance < 7;
   }).length;
   scoreComponents.skipFatigue = Math.min(recentSkips, 4) * config.score.skipFatigue;
+  const selectionPreferenceScore = routineSelectionPreferenceScore(
+    selectionPreferenceFeedback,
+    request.workspaceId,
+    routine.id,
+    request.date,
+  );
+  if (selectionPreferenceFeedback.some((feedback) => feedback.routineId === routine.id)) {
+    scoreComponents.selectionPreferenceFeedback = selectionPreferenceScore;
+  }
   const score = Object.values(scoreComponents).reduce((total, component) => total + component, 0);
 
   const reasons = [
@@ -717,6 +775,10 @@ export function evaluateRoutineForPlan(
   }
   if (activeFeedback?.kind === "not_this_week") {
     reasons.push("You asked not to see this routine again this week.");
+  }
+  const selectionPreferenceReason = routineSelectionPreferenceReason(selectionPreferenceScore);
+  if (selectionPreferenceFeedback.length > 0 && selectionPreferenceReason !== null) {
+    reasons.push(selectionPreferenceReason);
   }
 
   return {
@@ -1028,6 +1090,44 @@ function chooseCandidatePlan(plans: readonly CandidatePlan[], random: Mulberry32
   return finalists[0] as CandidatePlan;
 }
 
+function candidateWarnings(
+  baseWarnings: readonly PlanWarning[],
+  candidate: CandidatePlan,
+  eligibleCount: number,
+  request: DailyPlanningRequest,
+): readonly PlanWarning[] {
+  const warnings = [...baseWarnings];
+  if (eligibleCount > 0 && candidate.placements.length === 0) {
+    warnings.push("no_feasible_combination");
+  }
+  if (candidate.totalMinutes < request.minimumMinutes) warnings.push("minimum_minutes_unmet");
+  if (candidate.placements.length < request.minimumTaskCount) {
+    warnings.push("minimum_task_count_unmet");
+  }
+  if (candidate.totalMinutes < request.targetMinutes) warnings.push("target_minutes_unmet");
+  if (candidate.placements.length < request.targetTaskCount) {
+    warnings.push("target_task_count_unmet");
+  }
+  return [...new Set(warnings)];
+}
+
+function candidatePlacementSignature(candidate: CandidatePlan): string {
+  return candidate.placements
+    .map(
+      (placement) =>
+        `${planSourceKey(placement.candidate.source)}@${String(placement.windowIndex)}:${String(placement.scheduledMinutes)}:${placement.partialSession ? "1" : "0"}`,
+    )
+    .join("|");
+}
+
+function candidateAlternativeKey(inputHash: string, candidate: CandidatePlan): string {
+  return createHash("sha256")
+    .update(
+      `${DAILY_PLAN_ALTERNATIVE_KEY_VERSION}\0${inputHash}\0${candidatePlacementSignature(candidate)}`,
+    )
+    .digest("hex");
+}
+
 function toJsonValue(value: unknown): JsonValue {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") {
@@ -1147,6 +1247,7 @@ function createInputSnapshot(
   workItemDependencies: readonly PlanningWorkItemDependency[],
   events: readonly ActivityEvent[],
   routineFeedback: readonly RoutinePlanningFeedback[],
+  routineSelectionPreferenceFeedback: readonly RoutineSelectionPreferenceFeedback[],
   config: PlannerConfig,
 ): JsonValue {
   const canonicalRoutines = [...routines].sort((left, right) =>
@@ -1161,6 +1262,9 @@ function createInputSnapshot(
     events: canonicalActivity,
     request,
     routineFeedback,
+    ...(routineSelectionPreferenceFeedback.length === 0
+      ? {}
+      : { routineSelectionPreferenceFeedback }),
     routines: canonicalRoutines,
     workItemDependencies,
     workItems: canonicalWorkItems,
@@ -1179,7 +1283,10 @@ export function derivePlanItemId(
   );
 }
 
-export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
+function planDailyAlternatives(
+  input: GenerateDailyPlanInput,
+  selectedAlternativeKey?: string,
+): DailyPlanAlternativesPreview {
   const id = input.id ?? dailyPlanId();
   const config = input.config ?? DEFAULT_PLANNER_CONFIG;
   invariant(
@@ -1301,6 +1408,15 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
     );
     feedbackIds.add(feedback.id);
   }
+  const selectionPreferenceFeedbackIds = new Set<string>();
+  for (const feedback of input.routineSelectionPreferenceFeedback ?? []) {
+    invariant(
+      !selectionPreferenceFeedbackIds.has(feedback.id),
+      "planning.duplicate_routine_selection_preference_feedback",
+      `Routine selection preference feedback ${feedback.id} appears more than once in the planner input.`,
+    );
+    selectionPreferenceFeedbackIds.add(feedback.id);
+  }
   const generatedAt = input.generatedAt ?? new Date();
   invariant(
     Number.isFinite(generatedAt.getTime()),
@@ -1310,6 +1426,11 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
 
   const canonicalFeedback = canonicalRoutinePlanningFeedback(
     input.routineFeedback ?? [],
+    input.request.workspaceId,
+    input.request.date,
+  );
+  const canonicalSelectionPreferenceFeedback = canonicalRoutineSelectionPreferenceFeedback(
+    input.routineSelectionPreferenceFeedback ?? [],
     input.request.workspaceId,
     input.request.date,
   );
@@ -1337,6 +1458,7 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
         input.request,
         config,
         canonicalFeedback,
+        canonicalSelectionPreferenceFeedback,
       ),
     }));
   const workItemEvaluations = (input.workItems ?? [])
@@ -1408,17 +1530,6 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
     }
   }
   const chosen = chooseCandidatePlan([...candidatePlans.values()], random);
-  if (eligible.length > 0 && chosen.placements.length === 0) {
-    warnings.push("no_feasible_combination");
-  }
-  if (chosen.totalMinutes < input.request.minimumMinutes) warnings.push("minimum_minutes_unmet");
-  if (chosen.placements.length < input.request.minimumTaskCount) {
-    warnings.push("minimum_task_count_unmet");
-  }
-  if (chosen.totalMinutes < input.request.targetMinutes) warnings.push("target_minutes_unmet");
-  if (chosen.placements.length < input.request.targetTaskCount) {
-    warnings.push("target_task_count_unmet");
-  }
 
   const inputSnapshot = createInputSnapshot(
     input.request,
@@ -1427,43 +1538,166 @@ export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
     canonicalWorkItemDependencies,
     input.events,
     canonicalFeedback,
+    canonicalSelectionPreferenceFeedback,
     config,
   );
-  const inputHash = createHash("sha256").update(JSON.stringify(inputSnapshot)).digest("hex");
-  const items = chosen.placements.map((placement, position): PlanItem => ({
-    id: derivePlanItemId(id, placement.candidate.source, position),
-    ...placement.candidate.source,
-    title: placement.candidate.routine?.title ?? placement.candidate.workItem!.title,
-    position,
-    windowIndex: placement.windowIndex,
-    scheduledMinutes: placement.scheduledMinutes,
-    partialSession: placement.partialSession,
-    score: placement.candidate.evaluation.score,
-    scoreComponents: placement.candidate.evaluation.scoreComponents,
-    reasons: placement.candidate.evaluation.reasons,
-    locked: false,
-    activityState: "pending",
-    lastActivityEventId: null,
-    activityUpdatedAt: null,
-  }));
+  const baseInputHash = createHash("sha256").update(JSON.stringify(inputSnapshot)).digest("hex");
+  const alternativeCandidates = [...candidatePlans.values()]
+    .filter((candidate) => candidate.placements.length > 0 && candidate.key !== chosen.key)
+    .map((candidate) => ({
+      candidate,
+      candidateKey: candidateAlternativeKey(baseInputHash, candidate),
+    }))
+    .sort(
+      (left, right) =>
+        right.candidate.fitness - left.candidate.fitness ||
+        left.candidateKey.localeCompare(right.candidateKey, "en"),
+    )
+    .slice(0, MAXIMUM_DAILY_PLAN_ALTERNATIVES);
+  const selected =
+    selectedAlternativeKey === undefined
+      ? null
+      : (alternativeCandidates.find(
+          (candidate) => candidate.candidateKey === selectedAlternativeKey,
+        ) ?? null);
+  invariant(
+    selectedAlternativeKey === undefined || selected !== null,
+    "planning.alternative_stale",
+    "The selected daily-plan alternative is no longer available.",
+  );
+
+  const materialize = (candidate: CandidatePlan, candidateKey: string | null): DailyPlan => {
+    const effectiveSnapshot =
+      candidateKey === null
+        ? inputSnapshot
+        : toJsonValue({ plannerInput: inputSnapshot, selectedAlternativeKey: candidateKey });
+    const effectiveInputHash = createHash("sha256")
+      .update(JSON.stringify(effectiveSnapshot))
+      .digest("hex");
+    const items = candidate.placements.map((placement, position): PlanItem => ({
+      id: derivePlanItemId(id, placement.candidate.source, position),
+      ...placement.candidate.source,
+      title: placement.candidate.routine?.title ?? placement.candidate.workItem!.title,
+      position,
+      windowIndex: placement.windowIndex,
+      scheduledMinutes: placement.scheduledMinutes,
+      partialSession: placement.partialSession,
+      score: placement.candidate.evaluation.score,
+      scoreComponents: placement.candidate.evaluation.scoreComponents,
+      reasons: placement.candidate.evaluation.reasons,
+      locked: false,
+      activityState: "pending",
+      lastActivityEventId: null,
+      activityUpdatedAt: null,
+    }));
+    return {
+      id,
+      workspaceId: input.request.workspaceId,
+      date: input.request.date,
+      timeZone: input.request.timeZone,
+      items,
+      totalMinutes: candidate.totalMinutes,
+      fitness: candidate.fitness,
+      algorithmVersion: config.algorithmVersion,
+      configVersion: config.configVersion,
+      prngVersion: config.prngVersion,
+      seed: input.request.seed,
+      requestRevision: input.request.requestRevision,
+      inputHash: effectiveInputHash,
+      inputSnapshot: effectiveSnapshot,
+      exclusions,
+      warnings: candidateWarnings(warnings, candidate, eligible.length, input.request),
+      generatedAt: new Date(generatedAt),
+    };
+  };
+
+  const chosenSources = new Map(
+    chosen.placements.map((placement) => [planSourceKey(placement.candidate.source), placement]),
+  );
+  const alternatives = alternativeCandidates.map(
+    ({ candidate, candidateKey }): DailyPlanAlternative => {
+      const alternativeSources = new Map(
+        candidate.placements.map((placement) => [
+          planSourceKey(placement.candidate.source),
+          placement,
+        ]),
+      );
+      const addedSourceKeys = [...alternativeSources.keys()]
+        .filter((key) => !chosenSources.has(key))
+        .sort((left, right) => left.localeCompare(right, "en"));
+      const removedSourceKeys = [...chosenSources.keys()]
+        .filter((key) => !alternativeSources.has(key))
+        .sort((left, right) => left.localeCompare(right, "en"));
+      const changedPlacements = [...alternativeSources.entries()]
+        .flatMap(([key, placement]): DailyPlanAlternativePlacementChange[] => {
+          const primaryPlacement = chosenSources.get(key);
+          if (
+            primaryPlacement === undefined ||
+            (primaryPlacement.windowIndex === placement.windowIndex &&
+              primaryPlacement.scheduledMinutes === placement.scheduledMinutes &&
+              primaryPlacement.partialSession === placement.partialSession)
+          ) {
+            return [];
+          }
+          return [
+            {
+              ...placement.candidate.source,
+              fromWindowIndex: primaryPlacement.windowIndex,
+              toWindowIndex: placement.windowIndex,
+              fromScheduledMinutes: primaryPlacement.scheduledMinutes,
+              toScheduledMinutes: placement.scheduledMinutes,
+              fromPartialSession: primaryPlacement.partialSession,
+              toPartialSession: placement.partialSession,
+            },
+          ];
+        })
+        .sort((left, right) => planSourceKey(left).localeCompare(planSourceKey(right), "en"));
+      return {
+        candidateKey,
+        items: candidate.placements.map((placement) => ({
+          ...placement.candidate.source,
+          title: placement.candidate.routine?.title ?? placement.candidate.workItem!.title,
+          windowIndex: placement.windowIndex,
+          scheduledMinutes: placement.scheduledMinutes,
+          partialSession: placement.partialSession,
+          score: placement.candidate.evaluation.score,
+          reasons: placement.candidate.evaluation.reasons,
+        })),
+        totalMinutes: candidate.totalMinutes,
+        taskCount: candidate.placements.length,
+        fitness: candidate.fitness,
+        warnings: candidateWarnings(warnings, candidate, eligible.length, input.request),
+        deltaMinutes: candidate.totalMinutes - chosen.totalMinutes,
+        deltaTaskCount: candidate.placements.length - chosen.placements.length,
+        addedSourceKeys,
+        removedSourceKeys,
+        changedPlacements,
+      };
+    },
+  );
 
   return {
-    id,
-    workspaceId: input.request.workspaceId,
-    date: input.request.date,
-    timeZone: input.request.timeZone,
-    items,
-    totalMinutes: chosen.totalMinutes,
-    fitness: chosen.fitness,
-    algorithmVersion: config.algorithmVersion,
-    configVersion: config.configVersion,
-    prngVersion: config.prngVersion,
-    seed: input.request.seed,
-    requestRevision: input.request.requestRevision,
-    inputHash,
-    inputSnapshot,
-    exclusions,
-    warnings: [...new Set(warnings)],
-    generatedAt: new Date(generatedAt),
+    primary: materialize(
+      selected?.candidate ?? chosen,
+      selected === null ? null : selected.candidateKey,
+    ),
+    alternatives,
   };
+}
+
+export function generateDailyPlan(input: GenerateDailyPlanInput): DailyPlan {
+  return planDailyAlternatives(input).primary;
+}
+
+export function previewDailyPlanAlternatives(
+  input: GenerateDailyPlanInput,
+): DailyPlanAlternativesPreview {
+  return planDailyAlternatives(input);
+}
+
+export function selectDailyPlanAlternative(
+  input: GenerateDailyPlanInput,
+  candidateKey: string,
+): DailyPlan {
+  return planDailyAlternatives(input, candidateKey).primary;
 }

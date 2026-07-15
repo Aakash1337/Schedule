@@ -24,6 +24,7 @@ const workspaceUuid = "10101010-1010-4010-8010-101010101010";
 const ruleUuid = "20202020-2020-4020-8020-202020202020";
 const reminderUuid = "30303030-3030-4030-8030-303030303030";
 const intentUuid = "40404040-4040-4040-8040-404040404040";
+const deliveryUuid = "50505050-5050-4050-8050-505050505050";
 const workspace = workspaceId(workspaceUuid);
 const fixedNow = new Date("2026-07-14T08:00:00.000Z");
 
@@ -114,6 +115,25 @@ function harness() {
     },
     listOneOffReminders: async () => (reminder === null ? [] : [reminder]),
     listNotificationIntents: async () => [intent],
+    listNotificationDeliveries: async () => [
+      {
+        deliveryId: deliveryUuid,
+        intentId: intentUuid,
+        kind: "daily_digest",
+        targetType: "workspace",
+        title: null,
+        scheduledFor: new Date("2026-07-14T13:00:00.000Z"),
+        localDate: "2026-07-14",
+        priority: 50,
+        status: "delivered",
+        attempts: 1,
+        availableAt: new Date("2026-07-14T13:00:00.000Z"),
+        completedAt: new Date("2026-07-14T13:00:05.000Z"),
+        lastFailureCode: null,
+        createdAt: new Date("2026-07-14T13:00:00.000Z"),
+        updatedAt: new Date("2026-07-14T13:00:05.000Z"),
+      },
+    ],
     materializeNotificationIntents: async () => ({
       created: [intent],
       existing: [],
@@ -124,7 +144,7 @@ function harness() {
 }
 
 describe("notification product routes", () => {
-  it("wires profile, rules, one-offs, materialization, and intent reads", async () => {
+  it("wires profile, rules, one-offs, materialization, intent reads, and safe delivery history", async () => {
     const test = harness();
     const app = await buildApp({ productServices: test.services });
     apps.push(app);
@@ -220,6 +240,25 @@ describe("notification product routes", () => {
     expect(listIntents.statusCode).toBe(200);
     expect(listIntents.json()).toMatchObject({ page: { limit: 25, offset: 0 } });
     expect(listIntents.json().items).toHaveLength(1);
+
+    const listDeliveries = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/notification-deliveries?from=2026-07-14T00%3A00%3A00.000Z&to=2026-07-15T00%3A00%3A00.000Z&limit=25&offset=0`,
+    });
+    expect(listDeliveries.statusCode).toBe(200);
+    expect(listDeliveries.json()).toMatchObject({
+      page: { limit: 25, offset: 0 },
+      items: [
+        {
+          deliveryId: deliveryUuid,
+          intentId: intentUuid,
+          status: "delivered",
+          attempts: 1,
+        },
+      ],
+    });
+    expect(listDeliveries.body).not.toContain("claimToken");
+    expect(listDeliveries.body).not.toContain("credential");
   });
 
   it("rejects unpaired quiet hours, mismatched rule configuration, and empty patches", async () => {

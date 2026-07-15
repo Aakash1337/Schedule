@@ -8,9 +8,13 @@ provider-neutral delivery are specified in [docs/REMINDERS.md](./docs/REMINDERS.
 authenticated automation boundary is in
 the [integration gateway guide](./docs/INTEGRATIONS.md). Local data protection and recovery
 procedures are in the [operations guide](./docs/OPERATIONS.md). Behavioral confidence and known test
-limitations are tracked in the [evaluation guide](./docs/EVALUATION.md). The opt-in local Hermes
-adapter and deterministic reminder helper are documented in the
-[Hermes guide](./docs/HERMES.md).
+limitations are tracked in the [evaluation guide](./docs/EVALUATION.md). The two distinct opt-in
+Hermes paths—one local conversational plugin and one provider-neutral reminder-delivery adapter
+foundation—are documented in the [Hermes guide](./docs/HERMES.md).
+The optional loopback worker health and metrics contract is in
+[docs/OBSERVABILITY.md](./docs/OBSERVABILITY.md).
+The local model's explicit, review-before-write capture contract is documented in
+[docs/NATURAL_LANGUAGE.md](./docs/NATURAL_LANGUAGE.md).
 
 Provider-neutral infrastructure for a customizable work-management and scheduling system.
 
@@ -23,7 +27,7 @@ This repository starts as a TypeScript modular monolith:
 - `packages/config`: validated runtime configuration.
 - `packages/database`: PostgreSQL schema, migrations, and adapters.
 - `apps/api`: HTTP transport and health endpoints.
-- `apps/web`: local React interface for Today, routines, work, and calendar blocks.
+- `apps/web`: local React interface for Today, routines, work, calendar blocks, and reminders.
 - `apps/worker`: database-backed outbox processing.
 
 Outbox delivery is at least once. Every handler that produces an external or otherwise durable side
@@ -33,6 +37,15 @@ effect and after an idempotent side effect but before acknowledgement, then prov
 fencing, exactly-once effect persistence, and second-attempt completion.
 
 The domain now includes a pure, seeded daily planner that balances cadence, time budget, task count, context, and recent completion history.
+Today can compare the current plan with up to three deterministic, structurally distinct alternatives
+without writing anything. Choosing one is explicit, optimistic, and idempotent: the server recomputes
+the opaque candidate under the day lock, preserves locked nonterminal work, rejects stale choices,
+and stores one immutable next revision.
+
+Routines also have explicit **More often**, **Less often**, and **Reset preference** controls. Each
+choice appends a reversible, version-fenced ranking event for future plans. The bounded score is
+visible in planner explanations; it never changes cadence, eligibility, duration, activity history,
+or the current Today plan.
 
 Routine details also expose a transparent duration-calibration insight. After three completed
 sessions in the trailing 90 days, Schedule compares the routine's configured estimate with the
@@ -41,7 +54,18 @@ version-checked update only when the user explicitly approves it. The approval c
 revalidates the current routine and evidence before saving; the insight never rewrites a routine or
 the current Today plan on its own.
 
-The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface. Work items can have directed same-workspace prerequisites. A dependent is eligible for new Today selection only when every direct prerequisite is `done`; links never change workflow status automatically, and transitive cycle checks keep the graph acyclic.
+Today also exposes deterministic Daily Plan Fit guidance. Once at least three prior current plans
+are fully resolved, Schedule compares the median planned and completed time/task pairs across a
+bounded 90-day window and may suggest materially smaller joint targets. Using the suggestion only
+prefills both editable fields; explicit generation is still required. Exact evidence-backed
+dismissal and reset are append-only, and changed evidence receives a new key.
+
+The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface. Work items support arbitrary-depth, acyclic same-workspace subtasks plus directed prerequisites. Parent and child statuses remain independent, only leaf work is eligible for Today, and a dependent is newly selectable only when every direct prerequisite is `done`.
+
+The Work view can optionally ask the same loopback-only Ollama/Gemma boundary to prepare one backlog
+title from free-form text. It stores no raw prompt or model prose and performs no mutation until the
+user reviews the exact command and confirms it. Confirmation is tenant-scoped, expiring,
+version-checked, audited, and durable exactly-once under concurrent retries.
 
 An optional integration gateway gives a workspace-scoped machine credential read-only access to
 Today and a two-step, idempotent structured-command flow. It is disabled by default. Schedule stays
@@ -59,8 +83,20 @@ Schedule now also owns a deterministic reminder-policy core: versioned workspace
 explicit one-off reminders, DST/quiet-hours/catch-up evaluation, and concurrency-safe insert-only
 pending-intent materialization with transactional invalidation when policy or targets change. The
 provider-neutral integration gateway can lease one due intent with a fenced claim and record a
-bounded delivery outcome. Schedule still performs no provider transport and never stores provider,
-recipient, account, conversation, or raw receipt data.
+bounded delivery outcome. The web interface configures that policy, offers a manual materialization
+control, and separates planned reminder history from a product-safe execution history. An opt-in
+local worker can also materialize intents periodically with bounded catch-up and look-ahead windows.
+Schedule still performs no provider transport and never stores provider, recipient, account,
+conversation, or raw receipt data. A dormant [Hermes reminder adapter foundation](./docs/HERMES.md)
+now implements the safe claim/send/receipt and dedupe ordering around this gateway plus a shared,
+fenced PostgreSQL dedupe store that persists only a digest of its reservation token. A fail-safe,
+single-flight polling supervisor and loopback health runtime are also implemented, but remain inert
+without an explicit operator control. A concrete Hermes transport, human binding, provider
+reconciliation, and external process bootstrap are still required for real delivery.
+
+The worker can optionally expose loopback-only liveness, database readiness, and fixed-cardinality
+Prometheus text metrics for outbox, reminder materialization, and provider-neutral delivery queues.
+The surface is disabled by default and contains no task/reminder content or dynamic identifiers.
 
 `WorkItem` represents intent and workflow state. `ScheduleBlock` represents reserved time and may
 optionally reference a work item. Their lifecycles remain independent.
@@ -99,11 +135,18 @@ Outbound delivery remains disabled unless `WEBHOOK_DELIVERY_MODE=enabled` and a 
 master-key keyring is configured. Provision endpoints and verify a receiver with the CLI before
 enabling the worker. Endpoints have no automatic subscriptions by default; an operator may opt one
 into `schedule.changed.v1`, which tells a receiver to refresh Today without carrying plan or task
-content. This webhook is not used as a reminder. Reminder policy decisions, durable intents, and the
-least-privilege claim/receipt gateway are implemented, while periodic execution and provider/account
-binding remain separate. The local Hermes plugin calls the authenticated integration gateway when
-invoked; see [docs/HERMES.md](./docs/HERMES.md). Live WhatsApp delivery remains incomplete until the
-operator configures `WHATSAPP_HOME_CHANNEL` and verifies an operator-owned self-chat.
+content. This webhook is not used as a reminder. Reminder policy decisions, durable intents, and
+provider-neutral supervised delivery polling are implemented, with polling disabled by default.
+Provider/account binding, reconciliation, external bootstrap, and a concrete Hermes/WhatsApp
+transport are not part of this release. Separately, the opt-in local Hermes plugin calls the
+authenticated read/write gateway when invoked and offers a deterministic stdout Today helper; live
+WhatsApp delivery remains incomplete until the operator configures `WHATSAPP_HOME_CHANNEL` and
+verifies an operator-owned self-chat. Automatic
+local intent materialization is available but disabled by default; set
+`NOTIFICATION_MATERIALIZATION_MODE=enabled` only after reminder policy is configured. This does not
+enable delivery. The least-privilege claim/receipt gateway is implemented for an external adapter.
+Set `WORKER_OBSERVABILITY_MODE=loopback` to expose worker diagnostics only on `127.0.0.1:9464`;
+this is independent from both materialization and delivery enablement.
 
 ## Verification
 
@@ -120,22 +163,34 @@ gaps.
 
 After installing Chromium once with `pnpm exec playwright install chromium`, run
 `pnpm verify:web-e2e` to exercise the built web application, live API, fresh migrations, and an
-isolated PostgreSQL database through four live flows: routine/Today activity and feedback, work-item
-deadline pressure, duration-insight dismissal/reset, and accessible 320px prerequisite editing.
+isolated PostgreSQL database through eight live flows: routine/Today activity and feedback,
+work-item deadline pressure, duration-insight dismissal/reset, accessible 320px prerequisite
+editing, mobile subtask persistence and leaf-only planning, reminder
+policy/materialization/history with responsive checks, and deterministic Daily Plan Fit
+prefill/dismissal/reset with explicit generation. The local proposal flow uses the production
+local-model adapter against a strict loopback double to review a title plus user-authored
+priority/date/duration, confirm, replay the same
+confirmation key, cancel, focus, and reload natural-language work proposals without browser request
+interception.
 
-With PostgreSQL running, verify backlog/Kanban, work-item prerequisites, and calendar management,
-routine creation and optimistic updates, duration calibration and approval, stable activity-history pagination,
-idempotent routine and Today-item activity recording, deterministic plan generation, and atomic
-plan-revision persistence:
+With PostgreSQL running, verify backlog/Kanban, hierarchy, work-item prerequisites, and calendar
+management, routine creation and optimistic updates, duration calibration and Daily Plan Fit,
+stable activity-history pagination, idempotent routine and Today-item activity recording,
+deterministic plan generation, and atomic plan-revision persistence:
 
 ```powershell
 pnpm verify:database
 ```
 
-The database gate includes `verify:notification-core`, `verify:notification-delivery`, and
-`verify:notification-migrations`, covering all six deterministic occurrence sources, concurrent
+The database gate includes `verify:natural-language-proposals`, `verify:notification-core`,
+`verify:notification-delivery`, and `verify:notification-migrations`. The proposal verifier covers
+private persistence, exact reviewed root-item creation, tenant isolation, and concurrent same-key
+and competing-key confirmation. The
+reminder verifiers cover all six deterministic occurrence sources, concurrent
 exact-once materialization, source/target invalidation, fenced claim/receipt recovery, tenant
-constraints, and populated pre-0024/pre-0025/pre-0026 upgrades.
+constraints, and populated pre-0024/pre-0025/pre-0026/pre-0027 upgrades. The notification migration
+verifier checks the
+workspace/schedule/id execution-history index without changing delivery or credential data.
 
 Verify the Hermes plugin's deterministic Python contract and its disposable PostgreSQL/real
 Fastify prepare-and-confirm flow separately:
@@ -149,7 +204,7 @@ That command proves the local/stdout provider boundary, not delivery to a WhatsA
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh
 PostgreSQL 17 Compose project. It also verifies a complete archive round trip, the real disposable
-restore/promote/rollback/cleanup state machine, and the four live Chromium product flows in a
+restore/promote/rollback/cleanup state machine, and the eight live Chromium product flows in a
 separate disposable database.
 
 ## Local data protection
@@ -170,4 +225,8 @@ same mechanics are exercised automatically against nonce-bound disposable databa
 ## Deployment boundary
 
 The API and worker are ordinary OCI-compatible Node processes. PostgreSQL is the system of record.
-Core packages do not depend on a hosting provider, queue vendor, or cloud SDK.
+Core packages do not depend on a hosting provider, queue vendor, or cloud SDK. The production
+runtime images use a fixed non-root identity; the executable OCI smoke gate additionally enforces a
+read-only root filesystem, dropped Linux capabilities, and `no-new-privileges` for migrations, the
+API, and the worker. These controls are a provider-neutral deployment prerequisite, not evidence that
+public hosting or browser authentication is enabled.

@@ -3,16 +3,27 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api";
-import type { WorkItem, WorkItemDependency, Workspace } from "../types";
+import type {
+  NaturalLanguageProposal,
+  NaturalLanguageProposalResult,
+  WorkItem,
+  WorkItemDependency,
+  Workspace,
+} from "../types";
 import { WorkView } from "./WorkView";
 
 const apiMocks = vi.hoisted(() => ({
   addWorkItemPrerequisite: vi.fn(),
+  cancelNaturalLanguageProposal: vi.fn(),
+  confirmNaturalLanguageProposal: vi.fn(),
+  createSubtask: vi.fn(),
   createWorkItem: vi.fn(),
+  generateNaturalLanguageProposal: vi.fn(),
   listWorkItemDependencies: vi.fn(),
   listWorkItems: vi.fn(),
   removeWorkItemPrerequisite: vi.fn(),
   updateWorkItem: vi.fn(),
+  updateNaturalLanguageProposal: vi.fn(),
 }));
 
 vi.mock("../api", async (importOriginal) => {
@@ -30,6 +41,7 @@ const workspace: Workspace = {
 const item: WorkItem = {
   id: "item-1",
   workspaceId: workspace.id,
+  parentWorkItemId: null,
   title: "Draft release notes",
   description: "Summarize the MVP.",
   status: "planned",
@@ -40,6 +52,47 @@ const item: WorkItem = {
   createdAt: "2026-07-12T09:00:00.000Z",
   updatedAt: "2026-07-12T09:00:00.000Z",
 };
+
+function naturalLanguageProposal(title = "Prepare quarterly report"): NaturalLanguageProposal {
+  return {
+    id: "88888888-8888-4888-8888-888888888888",
+    requestId: "99999999-9999-4999-8999-999999999999",
+    commandHash: "a".repeat(64),
+    commandDisplay: JSON.stringify({ title, type: "work_item.create" }),
+    command: { type: "work_item.create", title },
+    userSelection: {
+      priority: "none",
+      dueOn: null,
+      planningDurationMinutes: null,
+    },
+    provider: "ollama",
+    model: "gemma4:e4b",
+    status: "pending",
+    expiresAt: "2026-07-14T10:10:00.000Z",
+    version: 1,
+  };
+}
+
+function naturalLanguageResult(
+  proposal = naturalLanguageProposal(),
+): NaturalLanguageProposalResult {
+  return {
+    version: "schedule.natural-language/v1",
+    requestId: proposal.requestId,
+    status: "proposal",
+    reason: null,
+    summary: "Review one concrete backlog title.",
+    warnings: ["Nothing is created until you confirm."],
+    proposal,
+    provenance: {
+      provider: "ollama",
+      model: "gemma4:e4b",
+      requestedAt: "2026-07-14T10:00:00.000Z",
+      completedAt: "2026-07-14T10:00:01.000Z",
+      latencyMs: 1_000,
+    },
+  };
+}
 
 function dependency(
   prerequisiteWorkItemId: string,
@@ -142,6 +195,287 @@ describe("work board", () => {
     );
   });
 
+  it("prepares and cancels a local proposal without creating a work item", async () => {
+    const user = userEvent.setup();
+    const proposal = naturalLanguageProposal();
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(naturalLanguageResult(proposal));
+    apiMocks.cancelNaturalLanguageProposal.mockResolvedValue({
+      ...proposal,
+      status: "cancelled",
+      version: 2,
+    });
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(
+      screen.getByRole("textbox", { name: /^Describe one work item/ }),
+      "Add prepare the quarterly report to my work list",
+    );
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Create one backlog work item" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Confirming will atomically create this reviewed root item in Backlog/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "Your choices — not suggested by the model" }),
+    ).toBeInTheDocument();
+    expect(apiMocks.generateNaturalLanguageProposal).toHaveBeenCalledWith(
+      workspace.id,
+      expect.objectContaining({
+        version: "schedule.natural-language/v1",
+        prompt: "Add prepare the quarterly report to my work list",
+        requestId: expect.any(String),
+      }),
+      expect.any(AbortSignal),
+    );
+    expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
+    expect(apiMocks.confirmNaturalLanguageProposal).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Cancel proposal" }));
+    expect(apiMocks.cancelNaturalLanguageProposal).toHaveBeenCalledWith(
+      workspace.id,
+      proposal.id,
+      proposal.version,
+      expect.any(AbortSignal),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Proposal cancelled. No work item was created.",
+    );
+    expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
+  });
+
+  it("persists an edited proposal, confirms explicitly, and focuses the created backlog card", async () => {
+    const user = userEvent.setup();
+    const proposal = naturalLanguageProposal();
+    const edited = {
+      ...proposal,
+      command: { ...proposal.command, title: "Prepare final quarterly report" },
+      userSelection: {
+        priority: "urgent" as const,
+        dueOn: "2026-07-20",
+        planningDurationMinutes: 75,
+      },
+      version: 2,
+    };
+    const created: WorkItem = {
+      ...item,
+      id: proposal.id,
+      title: edited.command.title,
+      description: null,
+      status: "backlog",
+      priority: edited.userSelection.priority,
+      dueOn: edited.userSelection.dueOn,
+      planningDurationMinutes: edited.userSelection.planningDurationMinutes,
+      version: 1,
+    };
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(naturalLanguageResult(proposal));
+    apiMocks.updateNaturalLanguageProposal.mockResolvedValue(edited);
+    apiMocks.confirmNaturalLanguageProposal.mockResolvedValue({
+      proposalId: proposal.id,
+      commandHash: edited.commandHash,
+      replayed: false,
+      workItem: created,
+    });
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(
+      screen.getByRole("textbox", { name: /^Describe one work item/ }),
+      "Prepare a quarterly report",
+    );
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+    const title = await screen.findByRole("textbox", { name: /^Work item title/ });
+    await user.clear(title);
+    await user.type(title, edited.command.title);
+    const userFields = screen.getByRole("region", {
+      name: "Your choices — not suggested by the model",
+    });
+    await user.selectOptions(
+      within(userFields).getByRole("combobox", { name: "Priority" }),
+      "urgent",
+    );
+    const dueDate = userFields.querySelector<HTMLInputElement>('input[type="date"]');
+    if (dueDate === null) throw new Error("Proposal due-date field was not rendered.");
+    fireEvent.change(dueDate, { target: { value: "2026-07-20" } });
+    const includeInToday = within(userFields).getByRole("checkbox", { name: "Include in Today" });
+    expect(includeInToday).toHaveAccessibleDescription(
+      "Keep this off when the item should stay out of automatic plans.",
+    );
+    await user.click(includeInToday);
+    expect(includeInToday).toHaveAccessibleDescription(
+      "The planner will reserve this many minutes.",
+    );
+    const duration = within(userFields).getByRole("spinbutton", {
+      name: "Plan duration (minutes)",
+    });
+    expect(duration).toHaveAccessibleDescription("The planner will reserve this many minutes.");
+    await user.clear(duration);
+    await user.type(duration, "75");
+    await user.click(screen.getByRole("button", { name: "Create this work item" }));
+
+    expect(apiMocks.updateNaturalLanguageProposal).toHaveBeenCalledWith(
+      workspace.id,
+      proposal.id,
+      {
+        expectedVersion: 1,
+        title: edited.command.title,
+        userSelection: edited.userSelection,
+      },
+      expect.any(AbortSignal),
+    );
+    expect(apiMocks.confirmNaturalLanguageProposal).toHaveBeenCalledWith(
+      workspace.id,
+      proposal.id,
+      edited.version,
+      expect.any(String),
+      expect.any(AbortSignal),
+    );
+    expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
+    const createdHeading = await screen.findByRole("heading", { name: created.title });
+    const card = createdHeading.closest("article");
+    if (card === null) throw new Error("Confirmed work card was not rendered.");
+    await waitFor(() => expect(card).toHaveFocus());
+    expect(screen.getByRole("status")).toHaveTextContent("was created in Backlog");
+  });
+
+  it("does not insert a confirmed proposal into a priority filter selected in flight", async () => {
+    const user = userEvent.setup();
+    const proposal = naturalLanguageProposal();
+    const confirmation = deferred<{
+      proposalId: string;
+      commandHash: string;
+      replayed: boolean;
+      workItem: WorkItem;
+    }>();
+    const created: WorkItem = {
+      ...item,
+      id: proposal.id,
+      title: proposal.command.title,
+      status: "backlog",
+      priority: "none",
+      version: 1,
+    };
+    const filteredItem: WorkItem = {
+      ...item,
+      id: "item-filtered-high",
+      title: "Review incident report",
+    };
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(naturalLanguageResult(proposal));
+    apiMocks.confirmNaturalLanguageProposal.mockReturnValue(confirmation.promise);
+    apiMocks.listWorkItems.mockImplementation(
+      async (_workspaceId: string, filters: { priority?: string }) => ({
+        items: filters.priority === "high" ? [filteredItem] : [item],
+        page: { limit: 200, offset: 0 },
+      }),
+    );
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(screen.getByRole("textbox", { name: /^Describe one work item/ }), "Report");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+    await user.click(await screen.findByRole("button", { name: "Create this work item" }));
+    await waitFor(() => expect(apiMocks.confirmNaturalLanguageProposal).toHaveBeenCalledOnce());
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filter by priority" }), "high");
+    await waitFor(() =>
+      expect(apiMocks.listWorkItems).toHaveBeenCalledWith(
+        workspace.id,
+        { priority: "high" },
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(await screen.findByRole("heading", { name: filteredItem.title })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: item.title })).not.toBeInTheDocument();
+
+    await act(async () => {
+      confirmation.resolve({
+        proposalId: proposal.id,
+        commandHash: proposal.commandHash,
+        replayed: false,
+        workItem: created,
+      });
+      await confirmation.promise;
+    });
+
+    expect(screen.getByRole("combobox", { name: "Filter by priority" })).toHaveValue("high");
+    expect(screen.getByRole("heading", { name: filteredItem.title })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: created.title })).not.toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent("was created in Backlog");
+  });
+
+  it("reuses the same confirmation key after an ambiguous failure", async () => {
+    const user = userEvent.setup();
+    const proposal = naturalLanguageProposal();
+    const created: WorkItem = {
+      ...item,
+      id: proposal.id,
+      title: proposal.command.title,
+      status: "backlog",
+      priority: "none",
+      version: 1,
+    };
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(naturalLanguageResult(proposal));
+    apiMocks.confirmNaturalLanguageProposal
+      .mockRejectedValueOnce(new Error("The connection closed before the result arrived."))
+      .mockResolvedValueOnce({
+        proposalId: proposal.id,
+        commandHash: proposal.commandHash,
+        replayed: true,
+        workItem: created,
+      });
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(screen.getByRole("textbox", { name: /^Describe one work item/ }), "Report");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+    await user.click(await screen.findByRole("button", { name: "Create this work item" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("same confirmation key");
+    await user.click(screen.getByRole("button", { name: "Create this work item" }));
+
+    await screen.findByRole("heading", { name: created.title });
+    const firstKey = apiMocks.confirmNaturalLanguageProposal.mock.calls[0]?.[3];
+    const secondKey = apiMocks.confirmNaturalLanguageProposal.mock.calls[1]?.[3];
+    expect(firstKey).toEqual(expect.any(String));
+    expect(secondKey).toBe(firstKey);
+    expect(apiMocks.confirmNaturalLanguageProposal).toHaveBeenCalledTimes(2);
+  });
+
+  it("aborts and discards proposal work when the workspace changes", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<NaturalLanguageProposalResult>();
+    let requestSignal: AbortSignal | undefined;
+    apiMocks.generateNaturalLanguageProposal.mockImplementation(
+      (_workspaceId: string, _input: unknown, signal: AbortSignal) => {
+        requestSignal = signal;
+        return pending.promise;
+      },
+    );
+    const nextWorkspace: Workspace = { ...workspace, id: "workspace-2", name: "Other" };
+
+    const { rerender } = render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(screen.getByRole("textbox", { name: /^Describe one work item/ }), "Old work");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+    await waitFor(() => expect(requestSignal).toBeInstanceOf(AbortSignal));
+
+    rerender(<WorkView workspace={nextWorkspace} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(requestSignal?.aborted).toBe(true));
+    await act(async () => {
+      pending.resolve(naturalLanguageResult(naturalLanguageProposal("Stale old-workspace task")));
+      await pending.promise;
+    });
+    expect(screen.queryByRole("heading", { name: "Describe work in your own words" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Stale old-workspace task" })).toBeNull();
+  });
+
   it("opts a one-time item into Today with an explicit duration", async () => {
     const user = userEvent.setup();
     const created: WorkItem = {
@@ -209,6 +543,297 @@ describe("work board", () => {
     expect(await screen.findByLabelText("Due 2026-07-20")).toHaveTextContent("Due Jul 20, 2026");
   });
 
+  it("shows hierarchy context and creates a subtask under the selected parent", async () => {
+    const user = userEvent.setup();
+    const parent: WorkItem = {
+      ...item,
+      id: "parent-1",
+      title: "Ship the release",
+      planningDurationMinutes: 90,
+    };
+    const completedChild: WorkItem = {
+      ...item,
+      id: "child-1",
+      parentWorkItemId: parent.id,
+      title: "Draft screenshots",
+      status: "done",
+      version: 1,
+    };
+    const createdChild: WorkItem = {
+      ...item,
+      id: "child-2",
+      parentWorkItemId: parent.id,
+      title: "Check release links",
+      description: null,
+      status: "backlog",
+      priority: "none",
+      planningDurationMinutes: null,
+      version: 1,
+    };
+    apiMocks.listWorkItems.mockResolvedValue({
+      items: [parent, completedChild],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.createSubtask.mockResolvedValue(createdChild);
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const parentHeading = await screen.findByRole("heading", { name: parent.title });
+    const parentCard = parentHeading.closest("article");
+    if (parentCard === null) throw new Error("Parent work card was not rendered.");
+    expect(within(parentCard).getByLabelText(/Parent container/)).toHaveTextContent(
+      "Parent · not in Today",
+    );
+    expect(within(parentCard).getByText("1/1 subtasks done")).toBeInTheDocument();
+    expect(
+      within(parentCard).getByRole("button", { name: /^Draft screenshots/ }),
+    ).toHaveTextContent("Done");
+    await user.click(
+      within(parentCard).getByRole("button", { name: `Edit details for ${parent.title}` }),
+    );
+    const parentPlanningCheckbox = within(parentCard).getByRole("checkbox", {
+      name: "Eligible for Today when leaf",
+    });
+    expect(parentPlanningCheckbox).toBeDisabled();
+    expect(parentPlanningCheckbox).toHaveAttribute(
+      "aria-describedby",
+      `work-card-planning-duration-${parent.id}-hint`,
+    );
+    expect(
+      within(parentCard).getByRole("spinbutton", { name: "Plan duration (minutes)" }),
+    ).toBeDisabled();
+    expect(within(parentCard).getByText(/Saved at 90 minutes, but dormant/)).toBeInTheDocument();
+    await user.click(within(parentCard).getByRole("button", { name: "Cancel" }));
+
+    const childHeading = screen.getByRole("heading", { name: completedChild.title });
+    const childCard = childHeading.closest("article");
+    if (childCard === null) throw new Error("Child work card was not rendered.");
+    expect(within(childCard).getByText(/Subtask of/)).toHaveTextContent(parent.title);
+
+    await user.click(
+      within(parentCard).getByRole("button", { name: `Add subtask to ${parent.title}` }),
+    );
+    expect(screen.getByRole("heading", { name: "Add a subtask" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(`Subtask of ${parent.title}`);
+    await user.type(screen.getByRole("textbox", { name: "Title" }), createdChild.title);
+    await user.click(screen.getByRole("button", { name: "Add subtask" }));
+
+    await waitFor(() =>
+      expect(apiMocks.createSubtask).toHaveBeenCalledWith(workspace.id, parent.id, {
+        title: createdChild.title,
+        description: null,
+        status: "backlog",
+        priority: "none",
+        dueOn: null,
+        planningDurationMinutes: null,
+      }),
+    );
+    expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
+    expect(await screen.findByRole("heading", { name: createdChild.title })).toBeInTheDocument();
+    expect(within(parentCard).getByText("1/2 subtasks done")).toBeInTheDocument();
+  });
+
+  it("detaches and reparents a subtask without changing either parent's version", async () => {
+    const user = userEvent.setup();
+    const firstParent: WorkItem = { ...item, id: "parent-1", title: "First parent", version: 5 };
+    const secondParent: WorkItem = { ...item, id: "parent-2", title: "Second parent", version: 8 };
+    const child: WorkItem = {
+      ...item,
+      id: "child-1",
+      parentWorkItemId: firstParent.id,
+      title: "Movable child",
+      version: 2,
+    };
+    const detached: WorkItem = { ...child, parentWorkItemId: null, version: 3 };
+    const reparented: WorkItem = { ...detached, parentWorkItemId: secondParent.id, version: 4 };
+    apiMocks.listWorkItems.mockResolvedValue({
+      items: [firstParent, secondParent, child],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.updateWorkItem.mockResolvedValueOnce(detached).mockResolvedValueOnce(reparented);
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const childHeading = await screen.findByRole("heading", { name: child.title });
+    const childCard = childHeading.closest("article");
+    if (childCard === null) throw new Error("Child work card was not rendered.");
+    await user.click(
+      within(childCard).getByRole("button", { name: `Edit details for ${child.title}` }),
+    );
+    await user.selectOptions(within(childCard).getByRole("combobox", { name: /Parent item/ }), "");
+    await user.click(within(childCard).getByRole("button", { name: "Save details" }));
+
+    await waitFor(() =>
+      expect(apiMocks.updateWorkItem).toHaveBeenNthCalledWith(1, workspace.id, child.id, {
+        expectedVersion: child.version,
+        parentWorkItemId: null,
+        title: child.title,
+        description: child.description,
+        dueOn: null,
+        planningDurationMinutes: null,
+      }),
+    );
+    expect(within(childCard).getByText("Top-level item")).toBeInTheDocument();
+
+    await user.click(
+      within(childCard).getByRole("button", { name: `Edit details for ${child.title}` }),
+    );
+    await user.selectOptions(
+      within(childCard).getByRole("combobox", { name: /Parent item/ }),
+      secondParent.id,
+    );
+    await user.click(within(childCard).getByRole("button", { name: "Save details" }));
+
+    await waitFor(() =>
+      expect(apiMocks.updateWorkItem).toHaveBeenNthCalledWith(2, workspace.id, child.id, {
+        expectedVersion: detached.version,
+        parentWorkItemId: secondParent.id,
+        title: child.title,
+        description: child.description,
+        dueOn: null,
+        planningDurationMinutes: null,
+      }),
+    );
+    expect(within(childCard).getByText(/Subtask of/)).toHaveTextContent(secondParent.title);
+    expect(firstParent.version).toBe(5);
+    expect(secondParent.version).toBe(8);
+  });
+
+  it("keeps the hierarchy draft open when the server rejects a cycle", async () => {
+    const user = userEvent.setup();
+    const parent: WorkItem = { ...item, id: "parent-1", title: "Parent" };
+    const child: WorkItem = {
+      ...item,
+      id: "child-1",
+      parentWorkItemId: parent.id,
+      title: "Child",
+      version: 1,
+    };
+    const staleCandidate: WorkItem = {
+      ...item,
+      id: "candidate-1",
+      title: "Candidate with a stale relationship",
+      version: 1,
+    };
+    apiMocks.listWorkItems.mockResolvedValue({
+      items: [parent, child, staleCandidate],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.updateWorkItem.mockRejectedValue(
+      new ApiError(
+        409,
+        "work_item_hierarchy.cycle_conflict",
+        "The proposed parent would create a cycle.",
+        null,
+      ),
+    );
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const parentHeading = await screen.findByRole("heading", { name: parent.title });
+    const parentCard = parentHeading.closest("article");
+    if (parentCard === null) throw new Error("Parent work card was not rendered.");
+    const loadCount = apiMocks.listWorkItems.mock.calls.length;
+    await user.click(
+      within(parentCard).getByRole("button", { name: `Edit details for ${parent.title}` }),
+    );
+    await user.selectOptions(
+      within(parentCard).getByRole("combobox", { name: /Parent item/ }),
+      staleCandidate.id,
+    );
+    await user.click(within(parentCard).getByRole("button", { name: "Save details" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "That parent would create a cycle. Choose an item outside this subtask branch.",
+    );
+    expect(within(parentCard).getByRole("combobox", { name: /Parent item/ })).toHaveValue(
+      staleCandidate.id,
+    );
+    expect(apiMocks.listWorkItems).toHaveBeenCalledTimes(loadCount);
+  });
+
+  it("removes every descendant from the parent selector at arbitrary depth", async () => {
+    const user = userEvent.setup();
+    const parent: WorkItem = { ...item, id: "parent-1", title: "Parent" };
+    const child: WorkItem = {
+      ...item,
+      id: "child-1",
+      parentWorkItemId: parent.id,
+      title: "Child",
+    };
+    const grandchild: WorkItem = {
+      ...item,
+      id: "grandchild-1",
+      parentWorkItemId: child.id,
+      title: "Grandchild",
+    };
+    const validParent: WorkItem = { ...item, id: "valid-1", title: "Separate branch" };
+    apiMocks.listWorkItems.mockResolvedValue({
+      items: [parent, child, grandchild, validParent],
+      page: { limit: 200, offset: 0 },
+    });
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const parentHeading = await screen.findByRole("heading", { name: parent.title });
+    const parentCard = parentHeading.closest("article");
+    if (parentCard === null) throw new Error("Parent work card was not rendered.");
+    await user.click(
+      within(parentCard).getByRole("button", { name: `Edit details for ${parent.title}` }),
+    );
+    const select = within(parentCard).getByRole("combobox", { name: /Parent item/ });
+    const options = Array.from((select as HTMLSelectElement).options).map((option) => option.value);
+    expect(options).toContain(validParent.id);
+    expect(options).not.toContain(child.id);
+    expect(options).not.toContain(grandchild.id);
+  });
+
+  it("reveals every overflow subtask after clearing an active priority filter", async () => {
+    const user = userEvent.setup();
+    const parent: WorkItem = {
+      ...item,
+      id: "parent-1",
+      title: "Urgent parent",
+      priority: "urgent",
+    };
+    const children = Array.from({ length: 4 }, (_, index): WorkItem => ({
+      ...item,
+      id: `child-${index + 1}`,
+      parentWorkItemId: parent.id,
+      title: `Low priority child ${index + 1}`,
+      priority: "low",
+      version: 1,
+    }));
+    const overflowChild = children[3];
+    if (overflowChild === undefined) throw new Error("Overflow child fixture is missing.");
+    const allItems = [parent, ...children];
+    apiMocks.listWorkItems.mockImplementation(
+      async (_workspaceId: string, filters: { priority?: string }) => ({
+        items: filters.priority === "urgent" ? [parent] : allItems,
+        page: { limit: 200, offset: 0 },
+      }),
+    );
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await screen.findByRole("heading", { name: parent.title });
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Filter by priority" }),
+      "urgent",
+    );
+    const parentCard = screen.getByRole("heading", { name: parent.title }).closest("article");
+    if (parentCard === null) throw new Error("Parent work card was not rendered.");
+    expect(screen.queryByRole("heading", { name: overflowChild.title })).not.toBeInTheDocument();
+    await user.click(within(parentCard).getByText("Show 1 more subtask"));
+    await user.click(within(parentCard).getByRole("button", { name: /^Low priority child 4/ }));
+
+    const revealedHeading = await screen.findByRole("heading", { name: overflowChild.title });
+    const revealedCard = revealedHeading.closest("article");
+    if (revealedCard === null) throw new Error("Revealed child work card was not rendered.");
+    await waitFor(() => expect(revealedCard).toHaveFocus());
+    expect(screen.getByRole("combobox", { name: "Filter by priority" })).toHaveValue("");
+  });
+
   it("can remove an item from Today's candidate pool while editing details", async () => {
     const user = userEvent.setup();
     const plannable = { ...item, planningDurationMinutes: 45 };
@@ -244,6 +869,7 @@ describe("work board", () => {
     await waitFor(() =>
       expect(apiMocks.updateWorkItem).toHaveBeenCalledWith(workspace.id, plannable.id, {
         expectedVersion: plannable.version,
+        parentWorkItemId: null,
         title: plannable.title,
         description: plannable.description,
         dueOn: null,
@@ -281,6 +907,7 @@ describe("work board", () => {
     await waitFor(() =>
       expect(apiMocks.updateWorkItem).toHaveBeenCalledWith(workspace.id, item.id, {
         expectedVersion: item.version,
+        parentWorkItemId: null,
         title: updated.title,
         description: updated.description,
         dueOn: null,
@@ -315,6 +942,7 @@ describe("work board", () => {
     await waitFor(() =>
       expect(apiMocks.updateWorkItem).toHaveBeenCalledWith(workspace.id, dated.id, {
         expectedVersion: dated.version,
+        parentWorkItemId: null,
         title: dated.title,
         description: dated.description,
         dueOn: null,

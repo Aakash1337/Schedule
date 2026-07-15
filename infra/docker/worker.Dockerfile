@@ -4,9 +4,13 @@ RUN corepack enable && corepack prepare pnpm@11.7.0 --activate
 COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm build
+RUN pnpm --filter @schedule/worker deploy --prod --legacy /runtime
 
 FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
-COPY --from=build /app /app
-CMD ["node", "apps/worker/dist/index.js"]
+RUN groupadd --system --gid 10001 schedule \
+  && useradd --system --uid 10001 --gid schedule --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin schedule
+COPY --from=build /runtime /app
+USER 10001:10001
+CMD ["node", "dist/index.js"]

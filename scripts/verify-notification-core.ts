@@ -33,6 +33,7 @@ async function removeWorkspaces(): Promise<void> {
     await sql`select set_config('schedule.allow_plan_mutation_change', 'on', true)`;
     await sql`select set_config('schedule.allow_routine_planning_feedback_event_change', 'on', true)`;
     await sql`select set_config('schedule.allow_routine_duration_insight_feedback_event_change', 'on', true)`;
+    await sql`select set_config('schedule.allow_daily_plan_fit_insight_feedback_event_change', 'on', true)`;
     await sql`delete from workspaces where id = any(${workspaceIds})`;
   });
 }

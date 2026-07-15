@@ -13,7 +13,11 @@ const apiSchema = baseSchema.extend({
   API_PORT: z.coerce.number().int().min(1).max(65_535).default(4_000),
   API_TRUSTED_PROXIES: z.string().max(16_384).default(""),
   PRODUCT_API_MODE: z.enum(["disabled", "local_unauthenticated"]).optional(),
+  PRODUCT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(240),
   LOCAL_MODEL_ADVISOR_MODE: z.enum(["disabled", "ollama"]).default("disabled"),
+  LOCAL_MODEL_PROPOSAL_MODE: z.enum(["disabled", "ollama"]).default("disabled"),
+  LOCAL_MODEL_PROPOSAL_HMAC_KEY: z.string().optional(),
+  LOCAL_MODEL_PROPOSAL_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(600),
   LOCAL_MODEL_ADVISOR_URL: z.string().default("http://127.0.0.1:11434"),
   LOCAL_MODEL_ADVISOR_MODEL: z
     .enum(["gemma4:e2b", "gemma4:e4b", "gemma4:26b", "gemma4:31b"])
@@ -47,6 +51,21 @@ const workerSchema = baseSchema.extend({
   OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
   OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(25),
   OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(8),
+  WORKER_OBSERVABILITY_MODE: z.enum(["disabled", "loopback"]).default("disabled"),
+  WORKER_OBSERVABILITY_PORT: z.coerce.number().int().min(1).max(65_535).default(9_464),
+  NOTIFICATION_MATERIALIZATION_MODE: z.enum(["disabled", "enabled"]).default("disabled"),
+  NOTIFICATION_MATERIALIZATION_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(10_000)
+    .max(3_600_000)
+    .default(60_000),
+  NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(3_600_000)
+    .default(300_000),
   WEBHOOK_DELIVERY_MODE: z.enum(["disabled", "enabled"]).default("disabled"),
   WEBHOOK_MASTER_KEYS: z.string().max(4_096).default(""),
   WEBHOOK_ACTIVE_MASTER_KEY_ID: z.string().max(32).default(""),
@@ -254,6 +273,15 @@ export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): Api
   ) {
     throw new Error(
       "INTEGRATION_API_PEPPER must contain at least 32 characters when the integration API is enabled.",
+    );
+  }
+  if (
+    config.LOCAL_MODEL_PROPOSAL_MODE === "ollama" &&
+    (config.LOCAL_MODEL_PROPOSAL_HMAC_KEY === undefined ||
+      Buffer.byteLength(config.LOCAL_MODEL_PROPOSAL_HMAC_KEY, "utf8") < 32)
+  ) {
+    throw new Error(
+      "LOCAL_MODEL_PROPOSAL_HMAC_KEY must contain at least 32 bytes when natural-language proposals are enabled.",
     );
   }
   if (

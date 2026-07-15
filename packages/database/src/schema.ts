@@ -96,7 +96,15 @@ export const routinePlanningFeedbackKind = pgEnum("routine_planning_feedback_kin
   "not_this_week",
   "reset",
 ]);
+export const routineSelectionPreferenceFeedbackKind = pgEnum(
+  "routine_selection_preference_feedback_kind",
+  ["more_often", "less_often", "reset"],
+);
 export const routineDurationInsightFeedbackKind = pgEnum("routine_duration_insight_feedback_kind", [
+  "dismissed",
+  "reset",
+]);
+export const dailyPlanFitInsightFeedbackKind = pgEnum("daily_plan_fit_insight_feedback_kind", [
   "dismissed",
   "reset",
 ]);
@@ -105,6 +113,7 @@ export const planMutationKind = pgEnum("plan_mutation_kind", [
   "replace",
   "feedback",
   "feedback_reset",
+  "alternative_select",
 ]);
 export const integrationRequestStatus = pgEnum("integration_request_status", [
   "processing",
@@ -164,6 +173,22 @@ export const notificationDeliveryRequestOperation = pgEnum(
   "notification_delivery_request_operation",
   ["claim", "receipt"],
 );
+export const naturalLanguageProposalStatus = pgEnum("natural_language_proposal_status", [
+  "pending",
+  "confirmed",
+  "cancelled",
+]);
+export const hostedUserStatus = pgEnum("hosted_user_status", ["active", "disabled"]);
+export const browserSessionRevocationReason = pgEnum("browser_session_revocation_reason", [
+  "signed_out",
+  "rotated",
+  "user_disabled",
+  "administrative",
+]);
+export const workspaceMembershipStatus = pgEnum("workspace_membership_status", [
+  "active",
+  "revoked",
+]);
 
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -171,6 +196,151 @@ export const workspaces = pgTable("workspaces", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/** Provider-neutral hosted principals. No profile or provider claims are persisted here. */
+export const hostedUsers = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    status: hostedUserStatus("status").notNull().default("active"),
+    disabledAt: timestamp("disabled_at", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("users_status_idx").on(table.status, table.id),
+    check(
+      "users_lifecycle_valid",
+      sql`(
+        (${table.status} = 'active' and ${table.disabledAt} is null)
+        or (${table.status} = 'disabled' and ${table.disabledAt} is not null)
+      )`,
+    ),
+    check(
+      "users_timestamps_valid",
+      sql`${table.updatedAt} >= ${table.createdAt}
+        and (${table.disabledAt} is null or ${table.disabledAt} >= ${table.createdAt})`,
+    ),
+    check("users_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
+/** Exact issuer/subject bindings. Email, display claims, and provider tokens are excluded. */
+export const externalIdentities = pgTable(
+  "external_identities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => hostedUsers.id, { onDelete: "cascade" }),
+    issuer: varchar("issuer", { length: 2_048 }).notNull(),
+    subject: varchar("subject", { length: 512 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("external_identities_exact_binding_uq").on(
+      sql`${table.issuer} collate "C"`,
+      sql`${table.subject} collate "C"`,
+    ),
+    index("external_identities_user_idx").on(table.userId, table.id),
+    check("external_identities_issuer_nonempty", sql`char_length(${table.issuer}) > 0`),
+    check("external_identities_subject_nonempty", sql`char_length(${table.subject}) > 0`),
+    check(
+      "external_identities_key_bytes_bounded",
+      sql`octet_length(${table.issuer}) + octet_length(${table.subject}) <= 2000`,
+    ),
+  ],
+);
+
+/** Browser sessions persist only a selector and peppered HMAC digest, never a bearer secret. */
+export const browserSessions = pgTable(
+  "browser_sessions",
+  {
+    id: uuid("id").primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => hostedUsers.id, { onDelete: "cascade" }),
+    secretDigest: varchar("secret_digest", { length: 64 }).notNull(),
+    idleTimeoutSeconds: integer("idle_timeout_seconds").notNull(),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull(),
+    idleExpiresAt: timestamp("idle_expires_at", { withTimezone: true }).notNull(),
+    absoluteExpiresAt: timestamp("absolute_expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revocationReason: browserSessionRevocationReason("revocation_reason"),
+    version: integer("version").notNull().default(1),
+  },
+  (table) => [
+    unique("browser_sessions_secret_digest_uq").on(table.secretDigest),
+    index("browser_sessions_user_active_idx").on(
+      table.userId,
+      table.revokedAt,
+      table.idleExpiresAt,
+      table.absoluteExpiresAt,
+    ),
+    check("browser_sessions_digest_valid", sql`${table.secretDigest} ~ '^[0-9a-f]{64}$'`),
+    check(
+      "browser_sessions_idle_timeout_valid",
+      sql`${table.idleTimeoutSeconds} between 60 and 2592000`,
+    ),
+    check(
+      "browser_sessions_expiry_valid",
+      sql`${table.issuedAt} <= ${table.lastSeenAt}
+        and ${table.lastSeenAt} < ${table.idleExpiresAt}
+        and ${table.idleExpiresAt} <= ${table.absoluteExpiresAt}`,
+    ),
+    check(
+      "browser_sessions_revocation_valid",
+      sql`(
+        ${table.revokedAt} is null and ${table.revocationReason} is null
+      ) or (
+        ${table.revokedAt} is not null and ${table.revocationReason} is not null
+        and ${table.revokedAt} >= ${table.issuedAt}
+      )`,
+    ),
+    check("browser_sessions_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
+/** Binary hosted authorization boundary; roles remain deliberately out of scope. */
+export const workspaceMemberships = pgTable(
+  "workspace_memberships",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => hostedUsers.id, { onDelete: "cascade" }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    status: workspaceMembershipStatus("status").notNull().default("active"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ name: "workspace_memberships_pk", columns: [table.userId, table.workspaceId] }),
+    index("workspace_memberships_workspace_status_idx").on(
+      table.workspaceId,
+      table.status,
+      table.userId,
+    ),
+    check(
+      "workspace_memberships_lifecycle_valid",
+      sql`(
+        (${table.status} = 'active' and ${table.revokedAt} is null)
+        or (${table.status} = 'revoked' and ${table.revokedAt} is not null)
+      )`,
+    ),
+    check(
+      "workspace_memberships_timestamps_valid",
+      sql`${table.updatedAt} >= ${table.createdAt}
+        and (${table.revokedAt} is null or ${table.revokedAt} >= ${table.createdAt})`,
+    ),
+    check("workspace_memberships_version_positive", sql`${table.version} > 0`),
+  ],
+);
 
 /**
  * Provider-neutral credentials for trusted automation clients.
@@ -414,6 +584,7 @@ export const workItems = pgTable(
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
+    parentWorkItemId: uuid("parent_work_item_id"),
     title: varchar("title", { length: 240 }).notNull(),
     description: text("description"),
     status: workItemStatus("status").notNull().default("backlog"),
@@ -426,6 +597,12 @@ export const workItems = pgTable(
   },
   (table) => [
     unique("work_items_workspace_id_id_uq").on(table.workspaceId, table.id),
+    index("work_items_workspace_parent_created_id_idx").on(
+      table.workspaceId,
+      table.parentWorkItemId,
+      table.createdAt,
+      table.id,
+    ),
     index("work_items_workspace_status_idx").on(table.workspaceId, table.status),
     index("work_items_workspace_created_id_idx").on(table.workspaceId, table.createdAt, table.id),
     index("work_items_workspace_due_id_idx").on(table.workspaceId, table.dueOn, table.id),
@@ -436,10 +613,124 @@ export const workItems = pgTable(
       table.createdAt,
       table.id,
     ),
+    foreignKey({
+      name: "work_items_parent_tenant_fk",
+      columns: [table.workspaceId, table.parentWorkItemId],
+      foreignColumns: [table.workspaceId, table.id],
+    }).onDelete("restrict"),
+    check(
+      "work_items_parent_not_self",
+      sql`${table.parentWorkItemId} IS NULL OR ${table.parentWorkItemId} <> ${table.id}`,
+    ),
     check("work_items_version_positive", sql`${table.version} > 0`),
     check(
       "work_items_planning_duration_positive",
       sql`${table.planningDurationMinutes} IS NULL OR ${table.planningDurationMinutes} > 0`,
+    ),
+  ],
+);
+
+/**
+ * Expiring local-model proposals. Raw user prompts are deliberately represented only by a digest.
+ * Confirmation always executes the exact stored, canonical command.
+ */
+export const naturalLanguageProposals = pgTable(
+  "natural_language_proposals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    requestId: uuid("request_id").notNull(),
+    promptHash: varchar("prompt_hash", { length: 64 }).notNull(),
+    commandHash: varchar("command_hash", { length: 64 }).notNull(),
+    reviewHash: varchar("review_hash", { length: 64 })
+      .notNull()
+      .default("65f7aef345c4f828788d1f4b3d779476b02a9599c31b1442ac7a4b3dbd670805"),
+    commandDisplay: text("command_display").notNull(),
+    command: jsonb("command").$type<Readonly<Record<string, unknown>>>().notNull(),
+    reviewPriority: workItemPriority("review_priority").notNull().default("none"),
+    reviewDueOn: date("review_due_on"),
+    reviewPlanningDurationMinutes: integer("review_planning_duration_minutes"),
+    provider: varchar("provider", { length: 40 }).notNull(),
+    model: varchar("model", { length: 120 }),
+    status: naturalLanguageProposalStatus("status").notNull().default("pending"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    confirmationKeyHash: varchar("confirmation_key_hash", { length: 64 }),
+    resultWorkItemId: uuid("result_work_item_id"),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("natural_language_proposals_workspace_request_uq").on(
+      table.workspaceId,
+      table.requestId,
+    ),
+    index("natural_language_proposals_workspace_status_created_idx").on(
+      table.workspaceId,
+      table.status,
+      table.createdAt,
+      table.id,
+    ),
+    index("natural_language_proposals_workspace_expiry_idx").on(
+      table.workspaceId,
+      table.expiresAt,
+      table.id,
+    ),
+    foreignKey({
+      name: "natural_language_proposals_result_work_item_tenant_fk",
+      columns: [table.workspaceId, table.resultWorkItemId],
+      foreignColumns: [workItems.workspaceId, workItems.id],
+    }).onDelete("restrict"),
+    check("natural_language_proposals_version_positive", sql`${table.version} > 0`),
+    check(
+      "natural_language_proposals_prompt_hash_valid",
+      sql`${table.promptHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "natural_language_proposals_command_hash_valid",
+      sql`${table.commandHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "natural_language_proposals_review_hash_valid",
+      sql`${table.reviewHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "natural_language_proposals_confirmation_hash_valid",
+      sql`${table.confirmationKeyHash} IS NULL OR ${table.confirmationKeyHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "natural_language_proposals_command_display_bounded",
+      sql`char_length(${table.commandDisplay}) BETWEEN 1 AND 1000`,
+    ),
+    check(
+      "natural_language_proposals_review_duration_valid",
+      sql`${table.reviewPlanningDurationMinutes} IS NULL OR (${table.reviewPlanningDurationMinutes} > 0 AND ${table.reviewPlanningDurationMinutes} <= 43200)`,
+    ),
+    check(
+      "natural_language_proposals_expiry_after_creation",
+      sql`${table.expiresAt} >= ${table.createdAt} + interval '1 minute' AND ${table.expiresAt} <= ${table.createdAt} + interval '1 hour'`,
+    ),
+    check(
+      "natural_language_proposals_updated_after_creation",
+      sql`${table.updatedAt} >= ${table.createdAt}`,
+    ),
+    check(
+      "natural_language_proposals_lifecycle_valid",
+      sql`(
+        (${table.status} = 'pending' AND ${table.confirmationKeyHash} IS NULL AND ${table.resultWorkItemId} IS NULL AND ${table.confirmedAt} IS NULL AND ${table.cancelledAt} IS NULL)
+        OR
+        (${table.status} = 'confirmed' AND ${table.confirmationKeyHash} IS NOT NULL AND ${table.resultWorkItemId} IS NOT NULL AND ${table.confirmedAt} IS NOT NULL AND ${table.cancelledAt} IS NULL)
+        OR
+        (${table.status} = 'cancelled' AND ${table.confirmationKeyHash} IS NULL AND ${table.resultWorkItemId} IS NULL AND ${table.confirmedAt} IS NULL AND ${table.cancelledAt} IS NOT NULL)
+      )`,
+    ),
+    check(
+      "natural_language_proposals_terminal_time_valid",
+      sql`(${table.confirmedAt} IS NULL OR (${table.confirmedAt} >= ${table.createdAt} AND ${table.confirmedAt} <= ${table.expiresAt})) AND (${table.cancelledAt} IS NULL OR (${table.cancelledAt} >= ${table.createdAt} AND ${table.cancelledAt} <= ${table.expiresAt}))`,
     ),
   ],
 );
@@ -714,6 +1005,8 @@ export const routines = pgTable(
     pausedUntil: date("paused_until"),
     endsOn: date("ends_on"),
     version: integer("version").notNull().default(1),
+    /** Independent optimistic-concurrency head for append-only selection preference feedback. */
+    selectionPreferenceVersion: integer("selection_preference_version").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -739,6 +1032,10 @@ export const routines = pgTable(
       sql`(${table.cadencePeriod} = 'rolling_days' AND ${table.rollingIntervalDays} IS NOT NULL AND ${table.rollingIntervalDays} > 0) OR (${table.cadencePeriod} <> 'rolling_days' AND ${table.rollingIntervalDays} IS NULL)`,
     ),
     check("routines_spacing_nonnegative", sql`${table.minimumSpacingDays} >= 0`),
+    check(
+      "routines_selection_preference_version_nonnegative",
+      sql`${table.selectionPreferenceVersion} >= 0`,
+    ),
     check(
       "routines_preferred_weekdays_valid",
       sql`${table.preferredWeekdays} <@ ARRAY[0, 1, 2, 3, 4, 5, 6]::integer[]`,
@@ -995,6 +1292,11 @@ export const notificationDeliveryCommands = pgTable(
       table.status,
       table.availableAt,
       table.scheduledFor,
+    ),
+    index("notification_delivery_commands_workspace_schedule_idx").on(
+      table.workspaceId,
+      table.scheduledFor,
+      table.id,
     ),
     index("notification_delivery_commands_recovery_idx")
       .on(table.workspaceId, table.leaseExpiresAt, table.id)
@@ -1429,6 +1731,93 @@ export const routinePlanningFeedbackEvents = pgTable(
 );
 
 /**
+ * Immutable, user-authored ranking feedback for future routine selection.
+ *
+ * The routine-held selection-preference version is the optimistic fence for
+ * this event stream. Provenance is deliberately optional: this preference can
+ * be recorded directly from the routine catalogue without a current plan.
+ */
+export const routineSelectionPreferenceFeedbackEvents = pgTable(
+  "routine_selection_preference_feedback_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ingestedSequence: bigserial("ingested_sequence", { mode: "number" }).notNull(),
+    workspaceId: uuid("workspace_id").notNull(),
+    routineId: uuid("routine_id").notNull(),
+    feedbackVersion: integer("feedback_version").notNull(),
+    kind: routineSelectionPreferenceFeedbackKind("kind").notNull(),
+    effectiveOn: date("effective_on").notNull(),
+    timeZone: varchar("time_zone", { length: 80 }).notNull(),
+    sourcePlanId: uuid("source_plan_id"),
+    sourcePlanItemId: uuid("source_plan_item_id"),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("routine_select_pref_events_workspace_id_uq").on(table.workspaceId, table.id),
+    unique("routine_select_pref_events_workspace_key_uq").on(
+      table.workspaceId,
+      table.idempotencyKey,
+    ),
+    unique("routine_select_pref_events_routine_version_uq").on(
+      table.workspaceId,
+      table.routineId,
+      table.feedbackVersion,
+    ),
+    index("routine_select_pref_events_planning_idx").on(
+      table.workspaceId,
+      table.routineId,
+      table.effectiveOn,
+      table.ingestedSequence.desc(),
+      table.id.desc(),
+    ),
+    foreignKey({
+      name: "routine_select_pref_events_workspace_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaces.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "routine_select_pref_events_routine_fk",
+      columns: [table.workspaceId, table.routineId],
+      foreignColumns: [routines.workspaceId, routines.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "routine_select_pref_events_plan_fk",
+      columns: [table.workspaceId, table.sourcePlanId],
+      foreignColumns: [dailyPlans.workspaceId, dailyPlans.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "routine_select_pref_events_source_item_fk",
+      columns: [table.workspaceId, table.sourcePlanId, table.sourcePlanItemId, table.routineId],
+      foreignColumns: [
+        dailyPlanItems.workspaceId,
+        dailyPlanItems.planId,
+        dailyPlanItems.id,
+        dailyPlanItems.routineId,
+      ],
+    }).onDelete("restrict"),
+    check(
+      "routine_select_pref_events_source_valid",
+      sql`${table.sourcePlanItemId} IS NULL OR ${table.sourcePlanId} IS NOT NULL`,
+    ),
+    check(
+      "routine_select_pref_events_reset_item_null",
+      sql`${table.kind} <> 'reset' OR ${table.sourcePlanItemId} IS NULL`,
+    ),
+    check(
+      "routine_select_pref_events_timezone_nonempty",
+      sql`char_length(btrim(${table.timeZone})) > 0`,
+    ),
+    check(
+      "routine_select_pref_events_key_nonempty",
+      sql`char_length(btrim(${table.idempotencyKey})) > 0`,
+    ),
+    check("routine_select_pref_events_sequence_positive", sql`${table.ingestedSequence} > 0`),
+    check("routine_select_pref_events_version_positive", sql`${table.feedbackVersion} > 0`),
+  ],
+);
+
+/**
  * Immutable user feedback about one exact routine-duration insight.
  *
  * `insightKey` identifies the evidence-backed insight that was shown to the
@@ -1489,6 +1878,77 @@ export const routineDurationInsightFeedbackEvents = pgTable(
       sql`char_length(${table.idempotencyKey}) > 0 AND ${table.idempotencyKey} = btrim(${table.idempotencyKey})`,
     ),
     check("duration_insight_feedback_sequence_positive", sql`${table.ingestedSequence} > 0`),
+  ],
+);
+
+/** Immutable user feedback for one exact workspace-level Daily Plan Fit evidence hash. */
+export const dailyPlanFitInsightFeedbackEvents = pgTable(
+  "daily_plan_fit_insight_feedback_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ingestedSequence: bigserial("ingested_sequence", { mode: "number" }).notNull(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    forDate: date("for_date").notNull(),
+    insightKey: varchar("insight_key", { length: 64 }).notNull(),
+    kind: dailyPlanFitInsightFeedbackKind("kind").notNull(),
+    sampleCount: integer("sample_count").notNull(),
+    typicalPlannedMinutes: integer("typical_planned_minutes").notNull(),
+    typicalCompletedMinutes: integer("typical_completed_minutes").notNull(),
+    typicalPlannedTaskCount: integer("typical_planned_task_count").notNull(),
+    typicalCompletedTaskCount: integer("typical_completed_task_count").notNull(),
+    suggestedTargetMinutes: integer("suggested_target_minutes").notNull(),
+    suggestedTargetTaskCount: integer("suggested_target_task_count").notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("daily_plan_fit_feedback_workspace_id_uq").on(table.workspaceId, table.id),
+    unique("daily_plan_fit_feedback_workspace_idempotency_uq").on(
+      table.workspaceId,
+      table.idempotencyKey,
+    ),
+    index("daily_plan_fit_feedback_key_sequence_idx").on(
+      table.workspaceId,
+      table.insightKey,
+      table.ingestedSequence.desc(),
+      table.id.desc(),
+    ),
+    check(
+      "daily_plan_fit_feedback_key_format",
+      sql`char_length(${table.insightKey}) = 64 AND ${table.insightKey} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check("daily_plan_fit_feedback_sample_positive", sql`${table.sampleCount} > 0`),
+    check(
+      "daily_plan_fit_feedback_planned_minutes_positive",
+      sql`${table.typicalPlannedMinutes} > 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_completed_minutes_nonnegative",
+      sql`${table.typicalCompletedMinutes} >= 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_planned_tasks_positive",
+      sql`${table.typicalPlannedTaskCount} > 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_completed_tasks_nonnegative",
+      sql`${table.typicalCompletedTaskCount} >= 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_suggested_minutes_positive",
+      sql`${table.suggestedTargetMinutes} > 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_suggested_tasks_positive",
+      sql`${table.suggestedTargetTaskCount} > 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_idempotency_canonical",
+      sql`char_length(${table.idempotencyKey}) > 0 AND ${table.idempotencyKey} = btrim(${table.idempotencyKey})`,
+    ),
+    check("daily_plan_fit_feedback_sequence_positive", sql`${table.ingestedSequence} > 0`),
   ],
 );
 

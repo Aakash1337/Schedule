@@ -1,9 +1,19 @@
 # Adaptive Scheduling System — Product Specification
 
 Status: Working product definition
-Last updated: 2026-07-14
+Last updated: 2026-07-15
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement revisions, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items with direct prerequisites, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v5 selects both reusable routines and explicitly opted-in one-time work items, applies temporary routine feedback, and hard-excludes work with unmet prerequisites from new selection and unlocked regeneration retention. A locked nonterminal item remains anchored under the existing user-authority rules. The planner also adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent, read-only routine-duration insight, explicit approval, and reversible dismissal of one exact evidence-backed recommendation; broader learned preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. A provider-neutral authenticated gateway provides Today reads, credential-scoped backlog/Kanban work-item discovery, confirmed structured mutations, and least-privilege reminder delivery claims/receipts for agents. An opt-in local Hermes plugin calls that boundary, binds a later confirmation turn to the same sender/session/platform identity, and includes a deterministic stdout Today reminder helper. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. A deterministic reminder-policy core stores versioned profiles and rules, explicit one-offs, concurrency-safe immutable intents, and a provider-neutral fenced delivery lifecycle without performing provider transport. See [API.md](./API.md), [REMINDERS.md](./REMINDERS.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), [HERMES.md](./HERMES.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language creation and task breakdown inside Schedule, automatic advisor application or calibration, hosted model providers, alternative-plan comparison, generalized undo, recurrence authoring, periodic reminder execution, verified live WhatsApp delivery, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement and alternative-selection revisions, deterministic read-only comparison of up to three distinct alternatives, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items with direct prerequisites and arbitrary-depth subtasks, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v6 selects both reusable routines and explicitly opted-in one-time leaf work items, applies temporary routine feedback and explicit bounded routine selection preferences, and hard-excludes parent containers and work with unmet prerequisites from new selection and unlocked regeneration retention. A locked nonterminal item remains anchored under the existing user-authority rules. The planner also adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent routine-duration insight with explicit approval, read-only Daily Plan Fit guidance that may prefill a smaller evidence-backed joint time/task target, and reversible user-authored routine ranking preferences; none applies automatically or changes the current plan. Broader inferred preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. The Work interface may separately prepare one expiring, editable backlog-title proposal from free-form text; no work exists until explicit, audited, exactly-once confirmation. A provider-neutral authenticated gateway provides Today reads, credential-scoped work-item discovery including hierarchy, reviewed create/reparent/detach mutations, and least-privilege reminder delivery claims/receipts for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. A deterministic reminder-policy core stores versioned profiles and rules, explicit one-offs, concurrency-safe immutable intents, an opt-in local periodic materializer, and a provider-neutral fenced delivery lifecycle without performing provider transport. See [API.md](./API.md), [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md), [REMINDERS.md](./REMINDERS.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language routine creation, model-driven task breakdown, multi-command capture, automatic advisor application or calibration, hosted model providers, generalized undo, recurrence authoring, phone delivery, a Hermes/WhatsApp transport, and public hosting remain deferred.
+
+The local reminder interface now configures profiles, rules, and one-offs; manually materializes
+intents; and presents separate planned and product-safe execution histories. An operator may also
+enable background intent materialization. Neither path implies that an external provider sent a
+message.
+
+Separately, an opt-in local Hermes plugin calls the authenticated read/write gateway, binds a later
+confirmation turn to the same sender/session/platform identity, and includes a deterministic stdout
+Today helper. It does not make the provider-neutral delivery runtime or live WhatsApp delivery
+complete. See [HERMES.md](./HERMES.md).
 
 ## 1. Product summary
 
@@ -48,6 +58,28 @@ lowercase before dispatch and lock-key derivation, while the domain also treats 
 of one persisted PostgreSQL UUID as the same identity. Casing therefore cannot bypass self-edge or
 cycle protection.
 
+### 3.1.2 Work-item hierarchy
+
+Every work item has a nullable `parentWorkItemId`. `null` means top-level; a non-null value creates
+one same-workspace parent edge. The adjacency model supports arbitrary depth, while every direct
+child listing is bounded and stable. Parent and child workflow statuses, priorities, deadlines,
+planning durations, and optimistic versions remain independent. Creating, moving, or detaching a
+child never completes, reopens, reprioritizes, or increments either parent.
+
+The hierarchy rejects self-parenting and direct or transitive cycles. It uses the same
+workspace-scoped graph lock as prerequisite mutations, then walks the proposed parent chain inside
+the transaction. The database also enforces tenant-bound parent references, rejects a physical
+self-edge, restricts deletion of a referenced parent, and indexes direct-child reads. Reparent and
+detach require the child's current `expectedVersion`; each real edge change increments only that
+child and appends an immutable hierarchy audit event.
+
+Only leaf work items are automatic planning candidates. A parent may retain a saved positive
+planning duration, but that preference is dormant while it has children and becomes eligible again
+only after every direct child is detached. Parent status never cascades to descendants. The local
+API, Work board, and authenticated integration gateway can create a child, list direct children,
+discover `parentWorkItemId`, and reparent or detach a child. Projects, milestones, and checklist
+items remain separate future concepts rather than aliases for this hierarchy.
+
 ### 3.2 Routine
 
 A reusable activity template eligible for repeated recommendation, such as exercising, studying a language, or reviewing finances. A routine defines intent and scheduling policy; it is not itself evidence that the activity occurred.
@@ -73,6 +105,22 @@ source plan; clearing it appends a reset rather than rewriting history. The late
 is authoritative, so a reset reverses the suppression immediately without allowing an older
 instruction to resurface. The routine also has one global feedback order across plan dates: a plan
 that observed an older feedback head cannot overwrite a newer-date instruction.
+
+### 3.7 Routine selection preference
+
+An explicit, reversible instruction to rank one routine more or less often in future plans. Each
+**More often** event adds 100 points and each **Less often** event subtracts 100 points. The planner
+uses at most the latest eight directional events after the latest reset within the inclusive prior
+90 local days, and clamps the total to `[-400, 400]`. A reset clears the active preference without
+deleting history.
+
+This signal changes ranking only. It never changes cadence, eligibility, duration, activity,
+routine policy, or the current Today plan. Events are append-only, tenant-bound, idempotent, and
+guarded by a routine-local preference version independent from the routine edit version. The
+append-only stream is capped at 1,000 events per routine; source-plan provenance is validated, and
+an accepted mutation or exact retry returns its causally stable projection. A later explicit plan
+generation is a new planning run and may consume the signal. This is a direct user instruction, not
+inferred or model-generated learning.
 
 ## 4. Organization and tags
 
@@ -240,6 +288,7 @@ score =
   + preferred-day and context fit
   + plan-balance benefit
   + user affinity
+  + explicit routine selection preference
   - recent-frequency penalty
   - consecutive-day penalty
   - category saturation
@@ -299,7 +348,8 @@ This is based on completions, not merely suggestions. Dismissals and skips influ
 
 ## 9. Daily-plan interaction
 
-The current interface supports stable generation, lock/unlock, lock-preserving regeneration,
+The current interface supports stable generation, deterministic alternative comparison and explicit
+selection, lock/unlock, lock-preserving regeneration,
 single-item replacement, activity transitions, completion reversal, temporary routine feedback,
 and selection/exclusion explanations. **Not today** and **Not this week** apply only to pending,
 unlocked routine items, append a planning-feedback event, and immediately create a new plan revision
@@ -314,7 +364,7 @@ Activity actions operate on the typed source of the selected plan item. Completi
 item marks its source work item `done`. Reversing that completion restores the prior work status only
 when the completion's saved version is still current; a later accepted completion or edit wins and is
 never overwritten. Activity actions do not automatically regenerate Today. The remaining bullets
-describe the broader interaction target; alternatives, **less often**/**more often** adaptation, and
+describe the broader interaction target; **less often**/**more often** adaptation and
 generalized plan undo are not implemented yet.
 
 Dependency edits do not rewrite the current Today revision or change its optimistic head. An explicit
@@ -421,9 +471,9 @@ The implemented advisor may summarize the supplied plan, suggest focus or sequen
 plan items, and point out an eligible supplied backlog item. The following broader responsibilities
 remain deferred:
 
-- Converting natural-language requests into tasks or routines
+- Converting natural-language requests into routines, multiple tasks, or task breakdowns
 - Suggesting or writing tags, duration policies, cadence, energy, or context
-- Breaking work into newly persisted sessions or subtasks
+- Automatically breaking work into newly persisted sessions or subtasks
 - Interpreting free-form daily context
 - Applying recommendations, calibrating user values, or changing planner policy
 - Local OpenAI-compatible endpoints and hosted providers
@@ -438,6 +488,31 @@ Prohibited responsibilities:
 - Exposing an Apply or Accept control for model output
 - Participating in duration calibration or automatic adaptation
 
+### 11.1 Explicit natural-language work proposals
+
+The Work view has a separate, opt-in `NaturalLanguageProposer` boundary for one free-form capture
+request. It shares the local Ollama transport controls but receives only a versioned request ID and
+the submitted prompt; it has no plan context, repositories, tools, or mutation services. Its only
+valid command is one `work_item.create` title. Model summary and warnings are transient review text.
+The raw prompt and free-form model output are never persisted; only a secret-keyed prompt fingerprint,
+canonical command/digest, bounded provenance, expiration, status, and result identity are durable.
+Priority, due date, and planning duration are stored separately only when the user reviews them;
+they never widen the title-only model command.
+
+The proposal is not an applied recommendation. It is pending, editable, cancellable, tenant-scoped,
+optimistically versioned, and valid for 60 minutes at most. Confirmation is a distinct explicit
+action with a stable idempotency key. One serializable transaction locks and revalidates the exact
+proposal and digest, creates a deterministic backlog work-item identity, marks the proposal, and
+audits it. Same-key retries replay; a competing key conflicts. The user may select priority, a due
+date, and a planning duration before confirmation. This creates eligible source data but does not
+mutate the current Today plan, routines, calendar blocks, tags, or cadence.
+
+This implements natural-language creation only for one reviewed root backlog item. Natural-language
+routine creation, model-extracted structured fields, task breakdown, multi-command capture, automatic confirmation,
+prompt history, model-driven planning, hosted providers, and Hermes/WhatsApp interpretation remain
+deferred. The complete privacy, lifecycle, API, and verification contract is in
+[NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md).
+
 ## 12. Conventional scheduling features
 
 The adaptive planner complements, rather than replaces:
@@ -448,9 +523,10 @@ The adaptive planner complements, rather than replaces:
 - Calendar day, week, and month views
 - One-time and recurring work
 - Direct work-item prerequisites are implemented; project and milestone blockers remain targets
-- Subtasks and checklists
+- Arbitrary-depth work-item subtasks are implemented; checklist rows remain a target
 - Work-item due dates plus deterministic reminder policy, intent materialization, and a fenced
-  provider-neutral delivery gateway; periodic execution and provider transport remain deferred
+  provider-neutral delivery gateway; opt-in local periodic materialization is implemented while
+  provider transport remains deferred
 - Search, filters, saved views, and bulk editing
 - Notes, links, and attachments
 - Import, export, backup, and restore
@@ -466,7 +542,9 @@ quiet hours, bounded catch-up, rule cooldowns, stable priority, and a daily cap,
 insert-only natural-key intent under a workspace advisory lock. Two concurrent materializers cannot
 create duplicate occurrences.
 
-Materialization is currently an explicit local API command. No worker runs it periodically. A
+Materialization is available as an explicit local API command and as a disabled-by-default local
+worker mode. The worker captures one bounded catch-up/look-ahead window per tick, processes at most
+20 workspaces sequentially, and shares the same lock/idempotency boundary as manual calls. A
 least-privilege machine credential can claim and revalidate one due intent, then report a fenced
 bounded outcome. No destination, provider, account, channel, conversation, provider acknowledgement,
 or raw receipt is stored. Those responsibilities stay
@@ -502,6 +580,11 @@ Local evaluation should support replaying historical days against a new algorith
 Current executable evidence, coverage floors, planner contract metrics, and known evaluation gaps are
 maintained in [EVALUATION.md](./EVALUATION.md). Feature evidence is CI-gated; production outcome
 metrics remain non-gating until real local usage provides a defined denominator and sufficient sample.
+
+Separately, the local worker has an opt-in loopback operational surface for liveness, database
+readiness, outbox/reminder queue age and state, and fixed-cardinality failure counters. It contains
+no task content or tenant/provider labels and does not treat operational throughput as productivity.
+See [Worker observability](./OBSERVABILITY.md).
 
 Success is not simply "more tasks completed." Useful measures include realistic plans, sustainable cadence attainment, low duration error, fewer unwanted regenerations, and continued user control.
 
@@ -543,7 +626,9 @@ Success is not simply "more tasks completed." Useful measures include realistic 
   rejection, and done-only eligibility for newly selected Today work
 - Implemented: opt-in calendar-aware first-plan availability, with a visible free-window preview,
   stale-calendar rejection, and the submitted windows preserved as deterministic planner input
-- Partial: "why selected" details are implemented; alternative-plan comparison is deferred
+- Implemented: deterministic, read-only comparison of up to three distinct alternatives and an
+  explicit, optimistic, idempotent selection that preserves locked nonterminal items
+- Implemented: "why selected" details on current and alternative items
 
 ### Phase 3 — Transparent adaptation
 
@@ -552,9 +637,13 @@ Success is not simply "more tasks completed." Useful measures include realistic 
   approval with evidence revalidation and without automatic Today regeneration
 - Implemented: append-only, idempotent **Not now** and **Show again** feedback for one exact
   evidence key, with automatic resurfacing when evidence or relevant policy changes
-- Deferred: learned cadence, day/time, energy, preference, overload, and category-balance signals
+- Implemented: deterministic Daily Plan Fit guidance from fully resolved current heads, with a
+  bounded joint time/task suggestion, explicit prefill, and exact-key dismissal/reset
+- Implemented: explicit append-only **More often**, **Less often**, and resettable routine ranking
+  preferences for future plans, with bounded visible score contribution and no current-plan mutation
+- Deferred: inferred cadence, day/time, energy, preference, and category-balance signals
 - Deferred: automatic application, adaptive probabilistic selection, historical insight comparison,
-  and algorithm comparison tools
+  upward Plan Fit expansion, editable Plan Fit policy, and algorithm comparison tools
 
 ### Phase 4 — Local-model advisor
 
@@ -564,7 +653,12 @@ Success is not simply "more tasks completed." Useful measures include realistic 
   allowlist, fixed request shape, resource limits, deterministic unavailable states, and no retries
 - Implemented: explicit Today review with provenance, accessible loading/failure states, stale-result
   rejection, and no Apply or mutation control
-- Deferred: natural-language routine creation and task breakdown
+- Implemented: separate free-form Work capture for one expiring, editable backlog-title proposal,
+  with prompt-private persistence and explicit audited exactly-once confirmation
+- Implemented: user-authored priority, optional due date, and optional planning duration in the
+  versioned review snapshot; the model remains title-only
+- Deferred: natural-language routine creation, model-extracted structured fields, multi-command
+  capture, and task breakdown
 - Deferred: free-form context interpretation, automatic application, duration calibration, and
   model-driven planner changes
 - Deferred: local OpenAI-compatible endpoints and hosted model providers
@@ -585,11 +679,22 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
 - Implemented foundation: encrypted, signed outbound endpoints and explicit opt-in
   `schedule.changed.v1` invalidations; these are refresh hints, not reminders or a messaging adapter
 - Implemented foundation: deterministic reminder profiles, rules, one-offs, exact-once intent
-  materialization, and provider-neutral claim/receipt state; periodic execution, provider transport,
-  human/account binding, and settings UI are separate follow-on work
+  materialization, an opt-in bounded local materialization worker, and provider-neutral claim/receipt
+  state; a separate dormant Hermes adapter core now enforces lease budget, dedupe ordering, bounded
+  outcomes, a strict Schedule HTTP client, shared PostgreSQL side-effect fencing, and fail-safe
+  single-flight polling with loopback health and graceful shutdown, while concrete provider
+  transport/reconciliation, external bootstrap/control wiring, and human/account binding remain
+  follow-on work
 - Implemented local adapter: disabled-by-default Hermes tools for authenticated Today/work-item
   reads and sender/session/platform-bound confirmed mutations, plus a deterministic stdout reminder
-  helper; live WhatsApp still requires the operator's `WHATSAPP_HOME_CHANNEL` and self-chat smoke
+  helper; it is separate from the delivery-claim runtime, and live WhatsApp still requires the
+  operator's `WHATSAPP_HOME_CHANNEL` and self-chat smoke
+- Implemented foundation: dormant provider-neutral users, exact issuer/subject bindings,
+  digest-only revocable browser sessions, and binary workspace memberships with deletion-safe
+  workspace preservation
+- Implemented foundation: a centralized, enumeration-resistant hosted request and workspace
+  authorization seam with request isolation and explicit revocation/transaction semantics; it is
+  not registered in production, and no browser route, cookie, or provider is exposed
 - Authentication and secure workspace isolation
 - Cloud deployment selected from measured operational needs
 - Offline-capable synchronization and conflict handling, if required

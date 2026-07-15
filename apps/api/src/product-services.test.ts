@@ -27,6 +27,7 @@ import {
   workItemId,
   workspaceId,
   type RoutineDurationInsightFeedback,
+  type RoutineSelectionPreferenceFeedback,
   type WorkItemDependency,
 } from "@schedule/domain";
 
@@ -69,8 +70,10 @@ describe("createProductServices", () => {
       "addWorkItemDependency",
       "applyRoutineFeedback",
       "approveRoutineDurationInsight",
+      "cancelNaturalLanguageProposal",
       "cancelOneOffReminder",
       "configureNotificationProfile",
+      "confirmNaturalLanguageProposal",
       "createNotificationRule",
       "createOneOffReminder",
       "createRoutine",
@@ -78,35 +81,46 @@ describe("createProductServices", () => {
       "createWorkItem",
       "createWorkspace",
       "deleteScheduleBlock",
+      "dismissDailyPlanFitInsight",
       "dismissRoutineDurationInsight",
       "generateDailyPlan",
+      "generateNaturalLanguageProposal",
       "getCurrentDailyPlan",
       "getDailyPlan",
+      "getDailyPlanFitInsight",
       "getNotificationProfile",
       "getRoutine",
       "getRoutineDurationInsight",
+      "getRoutineSelectionPreferenceState",
       "getScheduleBlock",
       "getSchedulingAdvice",
       "getWorkItem",
       "getWorkspace",
+      "listNotificationDeliveries",
       "listNotificationIntents",
       "listNotificationRules",
       "listOneOffReminders",
       "listRoutineActivity",
       "listRoutines",
       "listScheduleBlocks",
+      "listWorkItemChildren",
       "listWorkItemDependencies",
       "listWorkItems",
       "listWorkspaces",
       "materializeNotificationIntents",
+      "previewDailyPlanAlternatives",
       "recordActivityEvent",
       "recordPlanItemActivity",
+      "recordRoutineSelectionPreferenceFeedback",
       "regenerateDailyPlan",
       "removeWorkItemDependency",
       "replacePlanItem",
+      "resetDailyPlanFitInsightDismissal",
       "resetRoutineDurationInsightDismissal",
       "resetRoutineFeedback",
+      "selectDailyPlanAlternative",
       "setPlanItemLock",
+      "updateNaturalLanguageProposal",
       "updateNotificationRule",
       "updateOneOffReminder",
       "updateRoutine",
@@ -265,6 +279,7 @@ describe("createProductServices", () => {
     const feedback: RoutineDurationInsightFeedback[] = [];
     const context = {
       workspaces: { findById: async () => workspace },
+      dailyPlans: { findById: async () => null },
       workItemDependencies: createWorkItemDependencyRepositoryStub(),
       routines: { findById: async () => routine },
       activityEvents: {
@@ -305,6 +320,100 @@ describe("createProductServices", () => {
     expect(dismissed).toMatchObject({ kind: "dismissed", ingestedSequence: 1 });
     expect(reset).toMatchObject({ kind: "reset", ingestedSequence: 2 });
     expect(feedback).toEqual([dismissed, reset]);
+  });
+
+  it("wires routine selection preference recording and authoritative state reads", async () => {
+    const now = new Date("2026-07-15T12:00:00.000Z");
+    const workspace = createWorkspace({
+      id: workspaceId("selection-preference-service-workspace"),
+      name: "Selection preference",
+      now,
+    });
+    const routine = createRoutine({
+      id: routineId("selection-preference-service-routine"),
+      workspaceId: workspace.id,
+      title: "Practice",
+      tags: createStructuredTags(),
+      duration: createDurationRange({ expectedMinutes: 30 }),
+      cadence: createCadencePolicy({ period: "week", targetCompletions: 3 }),
+      now,
+    });
+    let feedbackVersion = 0;
+    const feedback: RoutineSelectionPreferenceFeedback[] = [];
+    const context = {
+      workspaces: { findById: async () => workspace },
+      workItemDependencies: createWorkItemDependencyRepositoryStub(),
+      routineSelectionPreferenceFeedback: {
+        lockIdempotencyKey: async () => undefined,
+        findCurrentState: async () => ({
+          feedbackVersion,
+          updatedAt: feedback.at(-1)?.recordedAt ?? null,
+        }),
+        findByIdempotencyKey: async (_workspaceId: string, key: string) => {
+          const index = feedback.findIndex((candidate) => candidate.idempotencyKey === key);
+          const event = feedback[index];
+          return event === undefined ? null : { feedback: event, feedbackVersion: index + 1 };
+        },
+        lockAndGetCurrentVersion: async () => feedbackVersion,
+        listForPlanning: async () => feedback,
+        listForPlanningThroughVersion: async (
+          _workspaceId: string,
+          _routineId: string,
+          _throughDate: string,
+          throughFeedbackVersion: number,
+        ) => feedback.filter((event) => event.ingestedSequence <= throughFeedbackVersion),
+        appendAndAdvance: async (
+          event: RoutineSelectionPreferenceFeedback,
+          expectedFeedbackVersion: number,
+        ) => {
+          expect(expectedFeedbackVersion).toBe(feedbackVersion);
+          const stored = { ...event, ingestedSequence: feedback.length + 1 };
+          feedback.push(stored);
+          feedbackVersion += 1;
+          return { feedback: stored, feedbackVersion };
+        },
+      },
+    } as TransactionContext;
+    const isolationLevels: unknown[] = [];
+    const unitOfWork: UnitOfWork = {
+      run: async (operation, options) => {
+        isolationLevels.push(options?.isolationLevel ?? null);
+        return operation(context);
+      },
+    };
+    const services = createProductServices(unitOfWork, { now: () => now });
+
+    await services.recordRoutineSelectionPreferenceFeedback({
+      workspaceId: workspace.id,
+      routineId: routine.id,
+      expectedFeedbackVersion: 0,
+      kind: "more_often",
+      timeZone: "America/La_Paz",
+      idempotencyKey: "selection-preference-service",
+    });
+    const state = await services.getRoutineSelectionPreferenceState({
+      workspaceId: workspace.id,
+      routineId: routine.id,
+      timeZone: "America/La_Paz",
+    });
+
+    expect(feedback).toHaveLength(1);
+    expect(feedback[0]).toMatchObject({
+      workspaceId: workspace.id,
+      routineId: routine.id,
+      kind: "more_often",
+      idempotencyKey: "selection-preference-service",
+      ingestedSequence: 1,
+    });
+    expect(state).toEqual({
+      routineId: routine.id,
+      feedbackVersion: 1,
+      activeEventCount: 1,
+      score: 100,
+      reason: "You asked to see this routine more often (+100).",
+      updatedAt: now,
+    });
+    expect(isolationLevels).toEqual(["read_committed", null]);
   });
 
   it("delegates dependency creation, replay, listing, and idempotent removal", async () => {

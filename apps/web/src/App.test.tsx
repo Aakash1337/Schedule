@@ -9,6 +9,11 @@ import type { Workspace } from "./types";
 const apiMocks = vi.hoisted(() => ({
   createWorkspace: vi.fn(),
   getCurrentPlan: vi.fn(),
+  getNotificationProfile: vi.fn(),
+  listNotificationDeliveries: vi.fn(),
+  listNotificationIntents: vi.fn(),
+  listNotificationRules: vi.fn(),
+  listOneOffReminders: vi.fn(),
   listWorkItems: vi.fn(),
   listWorkspaces: vi.fn(),
 }));
@@ -52,6 +57,18 @@ beforeEach(() => {
     new ApiError(404, "daily_plan.not_found", "No plan exists yet.", null),
   );
   apiMocks.listWorkItems.mockResolvedValue(page([]));
+  apiMocks.getNotificationProfile.mockRejectedValue(
+    new ApiError(
+      404,
+      "notification_profile.not_found",
+      "The workspace has no notification profile.",
+      null,
+    ),
+  );
+  apiMocks.listNotificationDeliveries.mockResolvedValue(page([]));
+  apiMocks.listNotificationIntents.mockResolvedValue(page([]));
+  apiMocks.listNotificationRules.mockResolvedValue({ items: [] });
+  apiMocks.listOneOffReminders.mockResolvedValue({ items: [] });
 });
 
 afterEach(() => {
@@ -130,6 +147,23 @@ describe("local application shell", () => {
 
     await waitFor(() => expect(screen.getByRole("main", { name: "Today view" })).toHaveFocus());
     expect(localStorage.getItem("schedule.selectedWorkspace")).toBe(personalWorkspace.id);
+  });
+
+  it("exposes the reminder policy and history surface in desktop and mobile navigation", async () => {
+    const user = userEvent.setup();
+    apiMocks.listWorkspaces.mockResolvedValue(page([personalWorkspace]));
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Today" });
+    const navigation = screen.getAllByRole("navigation", { name: "Primary navigation" })[0];
+    if (navigation === undefined) throw new Error("Desktop navigation was not rendered.");
+    await user.click(within(navigation).getByRole("button", { name: "Reminders" }));
+
+    expect(await screen.findByRole("heading", { name: "Reminders" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#reminders");
+    await waitFor(() => expect(screen.getByRole("main", { name: "Reminders view" })).toHaveFocus());
+    expect(screen.getAllByRole("button", { name: "Reminders" })).toHaveLength(2);
   });
 
   it("offers a retry when the workspace API cannot be loaded", async () => {

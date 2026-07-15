@@ -12,7 +12,6 @@ import os
 import re
 from typing import Any, Mapping
 from urllib.parse import urlencode
-from uuid import UUID
 
 
 INTEGRATION_VERSION = "schedule.integration/v1"
@@ -20,6 +19,10 @@ MAXIMUM_RESPONSE_BYTES = 1_048_576
 DEFAULT_TIMEOUT_SECONDS = 8.0
 _BASE_URL = re.compile(r"http://127\.0\.0\.1:([1-9][0-9]{3,4})\Z")
 _TOKEN = re.compile(r"[^\s\x00-\x1f\x7f]{16,4096}\Z")
+_UUID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
+)
+_MAXIMUM_INTEGER = 2_147_483_647
 _PRIORITIES = frozenset({"none", "low", "medium", "high", "urgent"})
 _STATUSES = frozenset({"backlog", "planned", "in_progress", "blocked", "done", "cancelled"})
 _OPERATIONS = frozenset(
@@ -53,13 +56,17 @@ def _exact_object(value: Any, keys: set[str], code: str) -> dict[str, Any]:
 
 
 def _uuid(value: Any, code: str) -> str:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or _UUID.fullmatch(value) is None:
         raise ScheduleAdapterError(code)
-    try:
-        parsed = UUID(value)
-    except (ValueError, AttributeError) as error:
-        raise ScheduleAdapterError(code) from error
-    if str(parsed) != value:
+    return value
+
+
+def _positive_integer(value: Any, code: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not (1 <= value <= _MAXIMUM_INTEGER)
+    ):
         raise ScheduleAdapterError(code)
     return value
 
@@ -205,7 +212,7 @@ class ScheduleClient:
         display_hash = hashlib.sha256(command_display.encode("utf-8")).hexdigest()
         if not hmac.compare_digest(display_hash, prepared["commandHash"]):
             raise ScheduleAdapterError("schedule_prepared_change_invalid")
-        _bounded_text(prepared["summary"], 2_000, "schedule_prepared_change_invalid")
+        _bounded_text(prepared["summary"], 500, "schedule_prepared_change_invalid")
         _bounded_text(prepared["expiresAt"], 64, "schedule_prepared_change_invalid")
         return prepared
 
@@ -230,13 +237,21 @@ class ScheduleClient:
         )
         if not isinstance(data, dict):
             raise ScheduleAdapterError("schedule_confirmed_change_invalid")
-        if set(data) != {
-            "receiptVersion",
+        common_keys = {
             "confirmationId",
             "operation",
             "commandHash",
             "outcome",
-        }:
+        }
+        receipt_version = data.get("receiptVersion") if "receiptVersion" in data else None
+        expected_keys = common_keys if receipt_version is None else common_keys | {"receiptVersion"}
+        if set(data) != expected_keys:
+            raise ScheduleAdapterError("schedule_confirmed_change_invalid")
+        if receipt_version is not None and (
+            isinstance(receipt_version, bool)
+            or not isinstance(receipt_version, int)
+            or receipt_version not in {1, 2}
+        ):
             raise ScheduleAdapterError("schedule_confirmed_change_invalid")
         if data["confirmationId"] != confirmation_id:
             raise ScheduleAdapterError("schedule_confirmed_change_invalid")
@@ -247,15 +262,17 @@ class ScheduleClient:
             raise ScheduleAdapterError("schedule_confirmed_change_invalid")
         if data["operation"] != expected_operation:
             raise ScheduleAdapterError("schedule_confirmed_change_invalid")
-        if isinstance(data["receiptVersion"], bool) or data["receiptVersion"] != 1:
-            raise ScheduleAdapterError("schedule_confirmed_change_invalid")
-        return {
-            "receiptVersion": 1,
+        safe_receipt = {
             "confirmationId": confirmation_id,
             "operation": expected_operation,
             "commandHash": expected_command_hash,
-            "outcome": self._safe_confirmation_outcome(data["outcome"], expected_operation),
+            "outcome": self._safe_confirmation_outcome(
+                data["outcome"], expected_operation, receipt_version
+            ),
         }
+        if receipt_version is not None:
+            safe_receipt["receiptVersion"] = receipt_version
+        return safe_receipt
 
     def _request(
         self,
@@ -277,7 +294,13 @@ class ScheduleClient:
         }
         if body is not None:
             try:
-                encoded = json.dumps(body, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                encoded = json.dumps(
+                    body,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                    allow_nan=False,
+                ).encode("utf-8")
             except (TypeError, ValueError) as error:
                 raise ScheduleAdapterError("schedule_request_invalid") from error
             if len(encoded) > 131_072:
@@ -340,43 +363,60 @@ class ScheduleClient:
             connection.close()
 
     @staticmethod
-    def _validate_work_item(value: Any) -> None:
+    def _validate_work_item(
+        value: Any,
+        receipt_version: int | None = 2,
+        code: str = "schedule_work_items_invalid",
+    ) -> dict[str, Any]:
+        base_keys = {
+            "id",
+            "workspaceId",
+            "title",
+            "description",
+            "status",
+            "priority",
+            "planningDurationMinutes",
+            "version",
+            "createdAt",
+            "updatedAt",
+        }
+        versioned_keys = base_keys | ({"dueOn"} if receipt_version in {1, 2} else set())
+        expected_keys = versioned_keys | ({"parentWorkItemId"} if receipt_version == 2 else set())
         item = _exact_object(
             value,
-            {
-                "id",
-                "workspaceId",
-                "title",
-                "description",
-                "status",
-                "priority",
-                "planningDurationMinutes",
-                "dueOn",
-                "version",
-                "createdAt",
-                "updatedAt",
-            },
-            "schedule_work_items_invalid",
+            expected_keys,
+            code,
         )
-        _uuid(item["id"], "schedule_work_items_invalid")
-        _uuid(item["workspaceId"], "schedule_work_items_invalid")
-        _bounded_text(item["title"], 240, "schedule_work_items_invalid")
+        _uuid(item["id"], code)
+        _uuid(item["workspaceId"], code)
+        if receipt_version == 2 and item["parentWorkItemId"] is not None:
+            _uuid(item["parentWorkItemId"], code)
+        _bounded_text(item["title"], 240, code)
         if item["description"] is not None:
-            _bounded_text(item["description"], 10_000, "schedule_work_items_invalid", allow_empty=True)
+            _bounded_text(item["description"], 4_000, code, allow_empty=True)
         if item["status"] not in _STATUSES or item["priority"] not in _PRIORITIES:
-            raise ScheduleAdapterError("schedule_work_items_invalid")
+            raise ScheduleAdapterError(code)
         duration = item["planningDurationMinutes"]
-        if duration is not None and (isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0):
-            raise ScheduleAdapterError("schedule_work_items_invalid")
-        if item["dueOn"] is not None:
-            _local_date(item["dueOn"])
-        if isinstance(item["version"], bool) or not isinstance(item["version"], int) or item["version"] <= 0:
-            raise ScheduleAdapterError("schedule_work_items_invalid")
-        _bounded_text(item["createdAt"], 64, "schedule_work_items_invalid")
-        _bounded_text(item["updatedAt"], 64, "schedule_work_items_invalid")
+        if duration is not None and (
+            isinstance(duration, bool)
+            or not isinstance(duration, int)
+            or not (1 <= duration <= 43_200)
+        ):
+            raise ScheduleAdapterError(code)
+        if receipt_version in {1, 2} and item["dueOn"] is not None:
+            try:
+                _local_date(item["dueOn"])
+            except ScheduleAdapterError as error:
+                raise ScheduleAdapterError(code) from error
+        _positive_integer(item["version"], code)
+        _bounded_text(item["createdAt"], 64, code)
+        _bounded_text(item["updatedAt"], 64, code)
+        return item
 
     @staticmethod
-    def _safe_confirmation_outcome(value: Any, operation: str) -> dict[str, Any]:
+    def _safe_confirmation_outcome(
+        value: Any, operation: str, receipt_version: int | None
+    ) -> dict[str, Any]:
         if operation in {"work_item.create", "work_item.update"}:
             outcome = _exact_object(
                 value, {"type", "workItem"}, "schedule_confirmed_change_invalid"
@@ -386,19 +426,18 @@ class ScheduleClient:
             )
             if outcome["type"] != expected_type:
                 raise ScheduleAdapterError("schedule_confirmed_change_invalid")
-            try:
-                ScheduleClient._validate_work_item(outcome["workItem"])
-            except ScheduleAdapterError as error:
-                raise ScheduleAdapterError("schedule_confirmed_change_invalid") from error
-            item = outcome["workItem"]
+            item = ScheduleClient._validate_work_item(
+                outcome["workItem"], receipt_version, "schedule_confirmed_change_invalid"
+            )
             return {
                 "type": expected_type,
                 "workItem": {
                     "id": item["id"],
+                    "parentWorkItemId": item.get("parentWorkItemId"),
                     "status": item["status"],
                     "priority": item["priority"],
                     "planningDurationMinutes": item["planningDurationMinutes"],
-                    "dueOn": item["dueOn"],
+                    "dueOn": item.get("dueOn"),
                     "version": item["version"],
                 },
             }
@@ -439,10 +478,8 @@ class ScheduleClient:
                 )
             for field in ("startsAt", "endsAt", "createdAt", "updatedAt"):
                 _bounded_text(block[field], 64, "schedule_confirmed_change_invalid")
-            _bounded_text(block["timeZone"], 128, "schedule_confirmed_change_invalid")
-            version = block["version"]
-            if isinstance(version, bool) or not isinstance(version, int) or version <= 0:
-                raise ScheduleAdapterError("schedule_confirmed_change_invalid")
+            _bounded_text(block["timeZone"], 80, "schedule_confirmed_change_invalid")
+            version = _positive_integer(block["version"], "schedule_confirmed_change_invalid")
             return {
                 "type": expected_type,
                 "scheduleBlock": {"id": block["id"], "version": version},
@@ -462,9 +499,9 @@ class ScheduleClient:
         item_id = _uuid(activity["itemId"], "schedule_confirmed_change_invalid")
         if activity["activityState"] not in _ACTIVITY_STATES:
             raise ScheduleAdapterError("schedule_confirmed_change_invalid")
-        head_version = activity["headVersion"]
-        if isinstance(head_version, bool) or not isinstance(head_version, int) or head_version <= 0:
-            raise ScheduleAdapterError("schedule_confirmed_change_invalid")
+        head_version = _positive_integer(
+            activity["headVersion"], "schedule_confirmed_change_invalid"
+        )
         event = _exact_object(
             activity["activityEvent"],
             {
@@ -500,17 +537,34 @@ class ScheduleClient:
             raise ScheduleAdapterError("schedule_confirmed_change_invalid")
         _bounded_text(event["occurredAt"], 64, "schedule_confirmed_change_invalid")
         _local_date(event["localDate"])
-        _bounded_text(event["timeZone"], 128, "schedule_confirmed_change_invalid")
+        _bounded_text(event["timeZone"], 80, "schedule_confirmed_change_invalid")
         duration = event["durationMinutes"]
         if duration is not None and (
-            isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0
+            isinstance(duration, bool)
+            or not isinstance(duration, int)
+            or not (1 <= duration <= 43_200)
         ):
             raise ScheduleAdapterError("schedule_confirmed_change_invalid")
         if event["reason"] is not None:
             _bounded_text(
                 event["reason"], 500, "schedule_confirmed_change_invalid", allow_empty=True
             )
-        if not isinstance(event["metadata"], dict) or len(event["metadata"]) > 20:
+        if not isinstance(event["metadata"], dict) or len(event["metadata"]) > 8:
+            raise ScheduleAdapterError("schedule_confirmed_change_invalid")
+        for key, child in event["metadata"].items():
+            if (
+                not isinstance(key, str)
+                or not (1 <= len(key) <= 64)
+                or not key.strip()
+            ):
+                raise ScheduleAdapterError("schedule_confirmed_change_invalid")
+            if child is None or isinstance(child, bool):
+                continue
+            if isinstance(child, str) and len(child) <= 256:
+                continue
+            if isinstance(child, (int, float)) and not isinstance(child, bool):
+                if child == child and child not in {float("inf"), float("-inf")}:
+                    continue
             raise ScheduleAdapterError("schedule_confirmed_change_invalid")
         _bounded_text(event["recordedAt"], 64, "schedule_confirmed_change_invalid")
         return {

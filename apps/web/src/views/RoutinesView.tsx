@@ -22,7 +22,7 @@ import {
 
 import { api, ApiError, newIdempotencyKey } from "../api";
 import { Button, EmptyState, ErrorNotice, Field, PageHeader, PageSkeleton } from "../components/ui";
-import { formatDay, formatMinutes, formatTime, splitTags } from "../date";
+import { browserTimeZone, formatDay, formatMinutes, formatTime, splitTags } from "../date";
 import type {
   ActivityEvent,
   CadencePeriod,
@@ -32,6 +32,8 @@ import type {
   Routine,
   RoutineDurationInsight,
   RoutinePriority,
+  RoutineSelectionPreferenceKind,
+  RoutineSelectionPreferenceState,
   RoutineStatus,
   WorkspaceViewProps,
 } from "../types";
@@ -373,6 +375,26 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
   const durationInsightRequest = useRef(0);
   const durationInsightFeedbackRequest = useRef(0);
   const durationInsightHeadingRef = useRef<HTMLHeadingElement>(null);
+  const [selectionPreference, setSelectionPreference] =
+    useState<RoutineSelectionPreferenceState | null>(null);
+  const [selectionPreferenceLoading, setSelectionPreferenceLoading] = useState(false);
+  const [selectionPreferenceError, setSelectionPreferenceError] = useState<string | null>(null);
+  const [selectionPreferenceAction, setSelectionPreferenceAction] =
+    useState<RoutineSelectionPreferenceKind | null>(null);
+  const [selectionPreferenceRetryKind, setSelectionPreferenceRetryKind] =
+    useState<RoutineSelectionPreferenceKind | null>(null);
+  const [selectionPreferenceAnnouncement, setSelectionPreferenceAnnouncement] = useState<
+    string | null
+  >(null);
+  const [selectionPreferenceReload, setSelectionPreferenceReload] = useState(0);
+  const selectionPreferenceRequest = useRef(0);
+  const selectionPreferenceMutationRequest = useRef(0);
+  const pendingSelectionPreferenceCommand = useRef<{
+    readonly identity: string;
+    readonly idempotencyKey: string;
+  } | null>(null);
+  const selectionPreferenceHeadingRef = useRef<HTMLHeadingElement>(null);
+  const timeZone = useMemo(() => browserTimeZone(), []);
   const activeQueryKey = routinesQueryKey(workspace.id, activeStatus);
   const activeQueryKeyRef = useRef(activeQueryKey);
   activeQueryKeyRef.current = activeQueryKey;
@@ -394,6 +416,17 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
         ]);
   const durationInsightQueryKeyRef = useRef(durationInsightQueryKey);
   durationInsightQueryKeyRef.current = durationInsightQueryKey;
+  const selectionPreferenceQueryKey =
+    selectedRoutineInsightId === null
+      ? null
+      : JSON.stringify([
+          workspace.id,
+          selectedRoutineInsightId,
+          timeZone,
+          selectionPreferenceReload,
+        ]);
+  const selectionPreferenceQueryKeyRef = useRef(selectionPreferenceQueryKey);
+  selectionPreferenceQueryKeyRef.current = selectionPreferenceQueryKey;
 
   useEffect(() => {
     const requestId = durationInsightRequest.current + 1;
@@ -455,6 +488,55 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
   ]);
 
   useEffect(() => {
+    const requestId = selectionPreferenceRequest.current + 1;
+    selectionPreferenceRequest.current = requestId;
+    if (selectedRoutineInsightId === null || selectionPreferenceQueryKey === null) {
+      setSelectionPreference(null);
+      setSelectionPreferenceLoading(false);
+      setSelectionPreferenceError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const requestKey = selectionPreferenceQueryKey;
+    const requestActiveQueryKey = activeQueryKeyRef.current;
+    const requestIsActive = () =>
+      !controller.signal.aborted &&
+      selectionPreferenceRequest.current === requestId &&
+      selectionPreferenceQueryKeyRef.current === requestKey &&
+      activeQueryKeyRef.current === requestActiveQueryKey;
+
+    setSelectionPreference(null);
+    setSelectionPreferenceLoading(true);
+    setSelectionPreferenceError(null);
+    void (async () => {
+      try {
+        const result = await api.getRoutineSelectionPreference(
+          workspace.id,
+          selectedRoutineInsightId,
+          timeZone,
+          controller.signal,
+        );
+        if (!requestIsActive()) return;
+        if (result.routineId !== selectedRoutineInsightId) {
+          throw new Error("The future-plan preference response did not match this routine.");
+        }
+        setSelectionPreference(result);
+      } catch (error) {
+        if (requestIsActive() && !isAbortError(error)) {
+          setSelectionPreferenceError(
+            requestError(error, "The future-plan preference could not be loaded."),
+          );
+        }
+      } finally {
+        if (requestIsActive()) setSelectionPreferenceLoading(false);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [selectionPreferenceQueryKey, selectedRoutineInsightId, timeZone, workspace.id]);
+
+  useEffect(() => {
     if (durationInsightFocusPending && !durationInsightLoading && durationInsight !== null) {
       durationInsightHeadingRef.current?.focus();
       setDurationInsightFocusPending(false);
@@ -499,6 +581,15 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     setDurationInsightFeedbackError(null);
     setDurationInsightAnnouncement(null);
     setDurationInsightFocusPending(false);
+    selectionPreferenceRequest.current += 1;
+    selectionPreferenceMutationRequest.current += 1;
+    pendingSelectionPreferenceCommand.current = null;
+    setSelectionPreference(null);
+    setSelectionPreferenceLoading(false);
+    setSelectionPreferenceError(null);
+    setSelectionPreferenceAction(null);
+    setSelectionPreferenceRetryKind(null);
+    setSelectionPreferenceAnnouncement(null);
     activityRequest.current += 1;
     setActivityItems([]);
     setActivityCursor(null);
@@ -542,10 +633,23 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     setDurationInsightFocusPending(false);
   }
 
+  function resetSelectionPreference() {
+    selectionPreferenceRequest.current += 1;
+    selectionPreferenceMutationRequest.current += 1;
+    pendingSelectionPreferenceCommand.current = null;
+    setSelectionPreference(null);
+    setSelectionPreferenceLoading(false);
+    setSelectionPreferenceError(null);
+    setSelectionPreferenceAction(null);
+    setSelectionPreferenceRetryKind(null);
+    setSelectionPreferenceAnnouncement(null);
+  }
+
   function selectRoutine(routineId: string) {
     if (routineId !== selectedRoutineId) {
       resetActivity();
       resetDurationInsight();
+      resetSelectionPreference();
     }
     setSelectedRoutineId(routineId);
   }
@@ -869,6 +973,118 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     }
   }
 
+  async function refreshSelectionPreferenceAfterConflict(
+    routineId: string,
+    requestQueryKey: string,
+  ): Promise<void> {
+    const requestId = selectionPreferenceRequest.current + 1;
+    selectionPreferenceRequest.current = requestId;
+    setSelectionPreferenceLoading(true);
+    try {
+      const latest = await api.getRoutineSelectionPreference(workspace.id, routineId, timeZone);
+      if (
+        selectionPreferenceRequest.current !== requestId ||
+        selectionPreferenceQueryKeyRef.current !== requestQueryKey ||
+        latest.routineId !== routineId
+      ) {
+        return;
+      }
+      setSelectionPreference(latest);
+    } catch (error) {
+      if (
+        selectionPreferenceRequest.current === requestId &&
+        selectionPreferenceQueryKeyRef.current === requestQueryKey
+      ) {
+        setSelectionPreferenceError(
+          requestError(error, "The latest future-plan preference could not be loaded."),
+        );
+      }
+    } finally {
+      if (
+        selectionPreferenceRequest.current === requestId &&
+        selectionPreferenceQueryKeyRef.current === requestQueryKey
+      ) {
+        setSelectionPreferenceLoading(false);
+      }
+    }
+  }
+
+  async function changeSelectionPreference(kind: RoutineSelectionPreferenceKind): Promise<void> {
+    const routine = selectedRoutine;
+    const current = selectionPreference;
+    const requestQueryKey = selectionPreferenceQueryKey;
+    if (
+      routine === null ||
+      current === null ||
+      current.routineId !== routine.id ||
+      requestQueryKey === null ||
+      selectionPreferenceAction !== null
+    ) {
+      return;
+    }
+
+    const identity = JSON.stringify([
+      workspace.id,
+      routine.id,
+      kind,
+      current.feedbackVersion,
+      timeZone,
+    ]);
+    const pending = pendingSelectionPreferenceCommand.current;
+    const idempotencyKey =
+      pending?.identity === identity ? pending.idempotencyKey : newIdempotencyKey();
+    pendingSelectionPreferenceCommand.current = { identity, idempotencyKey };
+    const requestId = selectionPreferenceMutationRequest.current + 1;
+    selectionPreferenceMutationRequest.current = requestId;
+    const requestActiveQueryKey = activeQueryKeyRef.current;
+    const requestIsActive = () =>
+      selectionPreferenceMutationRequest.current === requestId &&
+      activeQueryKeyRef.current === requestActiveQueryKey &&
+      selectionPreferenceQueryKeyRef.current === requestQueryKey;
+
+    setSelectionPreferenceAction(kind);
+    setSelectionPreferenceRetryKind(null);
+    setSelectionPreferenceError(null);
+    setSelectionPreferenceAnnouncement(null);
+    try {
+      const result = await api.recordRoutineSelectionPreference(
+        workspace.id,
+        routine.id,
+        {
+          kind,
+          expectedFeedbackVersion: current.feedbackVersion,
+          timeZone,
+        },
+        idempotencyKey,
+      );
+      if (!requestIsActive()) return;
+      if (result.routineId !== routine.id) {
+        throw new Error("The saved future-plan preference did not match this routine.");
+      }
+      pendingSelectionPreferenceCommand.current = null;
+      setSelectionPreference(result);
+      setSelectionPreferenceAnnouncement("Saved for future plans. Today’s plan was not changed.");
+      if (kind === "reset") selectionPreferenceHeadingRef.current?.focus();
+    } catch (error) {
+      if (!requestIsActive()) return;
+      if (error instanceof ApiError && error.status === 409) {
+        pendingSelectionPreferenceCommand.current = null;
+        setSelectionPreferenceError(
+          "This preference changed elsewhere. The latest setting is shown; choose again if needed.",
+        );
+        await refreshSelectionPreferenceAfterConflict(routine.id, requestQueryKey);
+        if (requestIsActive()) selectionPreferenceHeadingRef.current?.focus();
+      } else {
+        setSelectionPreferenceRetryKind(kind);
+        setSelectionPreferenceError(
+          `${requestError(error, "The future-plan preference could not be saved.")} Retry to reuse the same request safely.`,
+        );
+      }
+    } finally {
+      if (requestIsActive()) setSelectionPreferenceAction(null);
+    }
+  }
+
   async function loadActivity(reset: boolean) {
     if (selectedRoutine === null || (activityLoaded && !reset && activityCursor === null)) return;
     const requestKey = activeQueryKey;
@@ -944,6 +1160,140 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
           </Button>
         ) : null}
       </div>
+    );
+  }
+
+  function selectionPreferenceSection(routine: Routine) {
+    const currentPreference =
+      selectionPreference?.routineId === routine.id ? selectionPreference : null;
+    const busy = selectionPreferenceAction !== null;
+    const loading =
+      selectionPreferenceLoading || (currentPreference === null && !selectionPreferenceError);
+    const directionalLabel =
+      currentPreference === null ||
+      (currentPreference.score === 0 && currentPreference.activeEventCount === 0)
+        ? null
+        : currentPreference.score > 0
+          ? "More often"
+          : currentPreference.score < 0
+            ? "Less often"
+            : "Neutral";
+    const scoreLabel =
+      currentPreference === null
+        ? null
+        : `${currentPreference.score > 0 ? "+" : ""}${currentPreference.score}`;
+
+    return (
+      <section
+        className="routines-selection-preference"
+        aria-labelledby="routine-selection-preference-heading"
+        aria-busy={loading || busy}
+      >
+        <div className="routines-selection-preference-heading">
+          <div>
+            <h3
+              id="routine-selection-preference-heading"
+              ref={selectionPreferenceHeadingRef}
+              tabIndex={-1}
+            >
+              Future selection
+            </h3>
+            <p>Set an explicit weight for this routine in future plans.</p>
+          </div>
+          {directionalLabel === null || scoreLabel === null ? null : (
+            <span aria-label={`${directionalLabel}, preference score ${scoreLabel}`}>
+              {directionalLabel} · {scoreLabel}
+            </span>
+          )}
+        </div>
+
+        {loading ? (
+          <p className="routines-selection-preference-loading" role="status" aria-live="polite">
+            Loading future-plan preference…
+          </p>
+        ) : null}
+
+        {currentPreference === null ||
+        currentPreference.score === 0 ||
+        currentPreference.reason === null ? null : (
+          <p className="routines-selection-preference-reason">{currentPreference.reason}</p>
+        )}
+
+        {selectionPreferenceError === null ? null : (
+          <ErrorNotice
+            message={selectionPreferenceError}
+            action={
+              selectionPreferenceRetryKind === null ? (
+                <Button
+                  type="button"
+                  variant="quiet"
+                  onClick={() => setSelectionPreferenceReload((current) => current + 1)}
+                >
+                  Refresh
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="quiet"
+                  onClick={() => void changeSelectionPreference(selectionPreferenceRetryKind)}
+                >
+                  Retry
+                </Button>
+              )
+            }
+          />
+        )}
+
+        {selectionPreferenceAnnouncement === null ? null : (
+          <p
+            className="routines-selection-preference-status"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {selectionPreferenceAnnouncement}
+          </p>
+        )}
+
+        <div
+          className="routines-selection-preference-actions"
+          role="group"
+          aria-label={`Future plan preference for ${routine.title}`}
+        >
+          <Button
+            type="button"
+            variant="quiet"
+            busy={selectionPreferenceAction === "more_often"}
+            disabled={loading || busy || currentPreference === null}
+            onClick={() => void changeSelectionPreference("more_often")}
+            aria-label={`Choose ${routine.title} more often in future plans`}
+          >
+            More often
+          </Button>
+          <Button
+            type="button"
+            variant="quiet"
+            busy={selectionPreferenceAction === "less_often"}
+            disabled={loading || busy || currentPreference === null}
+            onClick={() => void changeSelectionPreference("less_often")}
+            aria-label={`Choose ${routine.title} less often in future plans`}
+          >
+            Less often
+          </Button>
+          {currentPreference === null || currentPreference.activeEventCount === 0 ? null : (
+            <Button
+              type="button"
+              variant="quiet"
+              busy={selectionPreferenceAction === "reset"}
+              disabled={loading || busy}
+              onClick={() => void changeSelectionPreference("reset")}
+              aria-label={`Clear the future plan preference for ${routine.title}`}
+            >
+              Clear preference
+            </Button>
+          )}
+        </div>
+      </section>
     );
   }
 
@@ -1778,6 +2128,8 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
                   </dd>
                 </div>
               </dl>
+
+              {selectionPreferenceSection(selectedRoutine)}
 
               {durationInsightSection(selectedRoutine)}
 

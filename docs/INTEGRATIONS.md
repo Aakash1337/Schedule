@@ -156,9 +156,10 @@ notation, or noncanonical leading zero is accepted. For example, `limit=25` and 
 
 The response keeps the normal `schedule.integration/v1` no-store envelope. Its `data` is
 `{items,page}`, where `page` is `{limit,offset}` and each item is the public
-`IntegrationWorkItemDto`: `id`, `workspaceId`, `title`, `description`, `status`, `priority`,
-`planningDurationMinutes`, `dueOn`, `version`, `createdAt`, and `updatedAt`. Timestamps are ISO-8601
-UTC strings and `dueOn` is either `null` or the local `YYYY-MM-DD` value.
+`IntegrationWorkItemDto`: `id`, `workspaceId`, `parentWorkItemId`, `title`, `description`, `status`,
+`priority`, `planningDurationMinutes`, `dueOn`, `version`, `createdAt`, and `updatedAt`. Timestamps
+are ISO-8601 UTC strings, `parentWorkItemId` is either a same-workspace parent UUID or `null`, and
+`dueOn` is either `null` or the local `YYYY-MM-DD` value.
 
 Results use the repository's stable order for one query, but offset pagination is not a snapshot.
 Concurrent creates or updates can move later pages. An adapter should reconcile by ID, tolerate a
@@ -332,29 +333,36 @@ response; changing the key after an ambiguous successful response loses that rep
 rejected because the confirmation has already been consumed. A confirmation can be used only by the
 credential that prepared it and only before expiry.
 
-The successful response's `data` includes `receiptVersion: 1` and identifies the confirmation,
+New successful responses include `receiptVersion: 2` and identify the confirmation,
 normalized operation, command hash, and typed `outcome`. Work-item outcomes contain `workItem`,
 schedule-block outcomes contain `scheduleBlock`, and plan-item activity outcomes contain
 `planItemActivity`. A replay returns the same stored result rather than re-running the command.
-Unversioned durable receipts created before deadline support are replayed unchanged, so those legacy
-work-item results may omit both `receiptVersion` and `dueOn`; adapters must treat a missing legacy
-`dueOn` as `null`. Newly written receipts always include both fields, and versioned receipts retain
-strict exact-key validation.
+Unversioned durable receipts created before deadline support are replayed unchanged and may omit
+`receiptVersion`, `dueOn`, and `parentWorkItemId`. Version 1 receipts include `dueOn` but predate
+hierarchy and omit `parentWorkItemId`. Adapters must treat either missing legacy field as `null`.
+Version 2 work-item receipts always include both fields, and every version retains strict exact-key
+validation rather than being rewritten during replay.
 
 ### Commands
 
 Commands are strict JSON objects discriminated by `type`:
 
-| Type                    | Required fields                                                                                         | Optional fields                                                                  |
-| ----------------------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `work_item.create`      | `title`                                                                                                 | `description`, `status`, `priority`, `planningDurationMinutes`, `dueOn`          |
-| `work_item.update`      | `workItemId`, `expectedVersion`, and at least one change                                                | `title`, `description`, `status`, `priority`, `planningDurationMinutes`, `dueOn` |
-| `schedule_block.create` | `startsAt`, `endsAt`, `timeZone`                                                                        | `workItemId`, `title`                                                            |
-| `schedule_block.update` | `scheduleBlockId`, `expectedVersion`, and at least one change                                           | `workItemId`, `title`, `startsAt`, `endsAt`, `timeZone`                          |
-| `plan_item.activity`    | `date`, `itemId`, `expectedPlanId`, `expectedHeadVersion`, `activityType`, `occurredAt`, and `timeZone` | `durationMinutes`, `reason`, `metadata`                                          |
+| Type                    | Required fields                                                                                         | Optional fields                                                                                      |
+| ----------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `work_item.create`      | `title`                                                                                                 | `parentWorkItemId`, `description`, `status`, `priority`, `planningDurationMinutes`, `dueOn`          |
+| `work_item.update`      | `workItemId`, `expectedVersion`, and at least one change                                                | `parentWorkItemId`, `title`, `description`, `status`, `priority`, `planningDurationMinutes`, `dueOn` |
+| `schedule_block.create` | `startsAt`, `endsAt`, `timeZone`                                                                        | `workItemId`, `title`                                                                                |
+| `schedule_block.update` | `scheduleBlockId`, `expectedVersion`, and at least one change                                           | `workItemId`, `title`, `startsAt`, `endsAt`, `timeZone`                                              |
+| `plan_item.activity`    | `date`, `itemId`, `expectedPlanId`, `expectedHeadVersion`, `activityType`, `occurredAt`, and `timeZone` | `durationMinutes`, `reason`, `metadata`                                                              |
 
 The allowed work status, priority, timestamp, duration, metadata, and version values are the same as
-their corresponding routes in [API.md](./API.md). `dueOn` is optional, but if non-null it must be a
+their corresponding routes in [API.md](./API.md). On create, omitted or null `parentWorkItemId`
+means top-level. On update, omission preserves the parent and `null` detaches the item. A non-null
+parent must exist in the credential's workspace and cannot be the item or its descendant. Hierarchy
+mutations use the same graph lock, cycle errors, child-only version increment, and audit semantics as
+the local product API. The complete command is visible before confirmation, and discovery always
+returns the current parent so an adapter does not mistake a child for a root. `dueOn` is optional,
+but if non-null it must be a
 strict real Gregorian `YYYY-MM-DD` local date. Omit it on update to preserve the date, or send JSON
 `null` to clear it. The confirmation preview includes the resulting due-date change so a human can
 approve it explicitly. `activityType` is one of `started`, `completed`,
@@ -372,6 +380,14 @@ revoked, is expired, or has the wrong secret. Insufficient scope returns `403` w
 `integration.scope_denied`; conflicting prepare request IDs or confirmation receipts return `409`;
 expired or consumed confirmations return `410`; a missing or non-JSON mutation media type returns
 `415`; and rate limiting returns `429` with a positive `Retry-After` value.
+Hierarchy confirmation preserves the product error contract: a missing or cross-workspace parent is
+`404 work_item.not_found`, self-parenting is
+`422 work_item_hierarchy.self_reference_invalid`, and a cycle is
+`409 work_item_hierarchy.cycle_conflict`. The confirmation, request reservation, product mutation,
+hierarchy audit, and receipt all roll back together on rejection.
+Product and integration hierarchy writes share graph-then-notification lock order. Confirmation runs
+read committed so validation after a graph-lock wait observes the preceding writer's commit rather
+than accepting a reciprocal edge from a stale transaction snapshot.
 
 ## Example exchange
 
@@ -472,11 +488,13 @@ state. It contains only a workspace ID, local date, resulting Today `headVersion
 type, and timestamp. The exact body and subscription commands are specified in
 [WEBHOOKS.md](./WEBHOOKS.md#automatic-schedule-change-events).
 
-A Hermes-style adapter should authenticate and durably deduplicate the event, then call its
-credential-scoped `GET /v1/integrations/today?date=<YYYY-MM-DD>` route for the supplied date. The
-read response is authoritative: its `headVersion` may already be greater than the notification
-because delivery is at least once and unordered. The adapter should update its projection from that
-response, not infer a task change from the event or attach reminder semantics to it.
+An external Hermes-style refresh adapter—not the local Hermes Schedule plugin or the
+provider-neutral reminder-delivery runtime—may authenticate and durably deduplicate the event, then
+call its credential-scoped `GET /v1/integrations/today?date=<YYYY-MM-DD>` route for the supplied
+date. The read response is authoritative: its `headVersion` may already be greater than the
+notification because delivery is at least once and unordered. The adapter should update its
+projection from that response, not infer a task change from the event or attach reminder semantics
+to it.
 
 If the adapter also maintains a backlog or Kanban projection, it can poll the credential-scoped
 `GET /v1/integrations/work-items` route and reconcile item IDs and versions. The event never grants
@@ -600,6 +618,10 @@ security-sensitive recovery.
   structured commands, and require a separate HMAC-bound confirmation turn. Hermes still owns
   message ingestion and intent interpretation, while its platform connector supplies sender,
   session, and platform identity.
+- A separate tested reminder-delivery foundation consumes the `schedule:delivery` claim/receipt
+  contract with shared PostgreSQL dedupe and fail-safe loopback supervision. It has no standalone
+  provider bootstrap, concrete WhatsApp transport, provider reconciliation, or human/account
+  binding; its supervisor is disabled unless an operator control explicitly enables claims.
 - A disabled-by-default [outbound webhook substrate](./WEBHOOKS.md) can send operator-queued signed
   test events and explicitly subscribed `schedule.changed.v1` invalidations. It cannot send schedule
   contents, push-notification requests, reminders, or end-to-end phone delivery receipts. An adapter

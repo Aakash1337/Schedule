@@ -15,12 +15,16 @@ import type {
   ConfigureNotificationProfileCommand,
   CreateNotificationRuleCommand,
   CreateOneOffReminderCommand,
+  DismissDailyPlanFitInsightCommand,
   DismissRoutineDurationInsightCommand,
+  DailyPlanAlternativesResult,
   GenerateDailyPlanCommand,
   GetSchedulingAdviceCommand,
   GetCurrentDailyPlanQuery,
   GetDailyPlanQuery,
+  GetDailyPlanFitInsightQuery,
   GetRoutineQuery,
+  GetRoutineSelectionPreferenceStateQuery,
   GetRoutineDurationInsightQuery,
   GetScheduleBlockQuery,
   GetWorkItemQuery,
@@ -28,33 +32,49 @@ import type {
   ListRoutineActivityQuery,
   ListRoutinesQuery,
   ListNotificationIntentsQuery,
+  ListNotificationDeliveriesQuery,
+  NotificationDeliveryHistoryItem,
   ListOneOffRemindersQuery,
   MaterializeNotificationIntentsCommand,
   MaterializeNotificationIntentsResult,
   ListScheduleBlocksQuery,
   ListWorkItemDependenciesQuery,
+  ListWorkItemChildrenQuery,
   ListWorkItemsQuery,
   ListWorkspacesQuery,
   PlanItemLockResult,
   PlanItemActivityResult,
   RecordActivityEventCommand,
   RecordPlanItemActivityCommand,
+  RecordRoutineSelectionPreferenceFeedbackCommand,
   RegenerateDailyPlanCommand,
+  PreviewDailyPlanAlternativesCommand,
   ReplacePlanItemCommand,
   RemoveWorkItemDependencyCommand,
+  ResetDailyPlanFitInsightDismissalCommand,
   ResetRoutineDurationInsightDismissalCommand,
   ResetRoutinePlanningFeedbackCommand,
   SetPlanItemLockCommand,
+  SelectDailyPlanAlternativeCommand,
   UpdateRoutineCommand,
   UpdateNotificationRuleCommand,
   UpdateOneOffReminderCommand,
   CancelOneOffReminderCommand,
+  CancelNaturalLanguageProposalCommand,
+  ConfirmNaturalLanguageProposalCommand,
+  ConfirmNaturalLanguageProposalResult,
+  GenerateNaturalLanguageProposalCommand,
+  GenerateNaturalLanguageProposalResult,
+  PreparedNaturalLanguageProposal,
+  UpdateNaturalLanguageProposalCommand,
   UpdateScheduleBlockCommand,
   UpdateWorkItemCommand,
   DeleteScheduleBlockCommand,
   ScheduleBlockPage,
   SchedulingAdviceResult,
+  RoutineSelectionPreferenceStateView,
   WorkItemPage,
+  WorkItemChildrenPage,
   WorkItemDependencyPage,
   WorkspacePage,
 } from "@schedule/application";
@@ -65,6 +85,7 @@ import {
   createDurationRange,
   createStructuredTags,
   dailyPlanId,
+  dailyPlanFitInsightKeyPattern,
   isValidLocalDate,
   localDate,
   notificationRuleId,
@@ -77,6 +98,8 @@ import {
   workspaceId,
   type ActivityEvent,
   type DailyPlan,
+  type DailyPlanFitInsight,
+  type DailyPlanFitInsightFeedback,
   type JsonValue,
   type NotificationIntent,
   type NotificationProfile,
@@ -106,6 +129,9 @@ export interface ProductServices {
     command: AddWorkItemDependencyCommand,
   ): Promise<AddWorkItemDependencyResult>;
   approveRoutineDurationInsight(command: ApproveRoutineDurationInsightCommand): Promise<Routine>;
+  dismissDailyPlanFitInsight(
+    command: DismissDailyPlanFitInsightCommand,
+  ): Promise<DailyPlanFitInsightFeedback>;
   dismissRoutineDurationInsight(
     command: DismissRoutineDurationInsightCommand,
   ): Promise<RoutineDurationInsightFeedback>;
@@ -116,6 +142,7 @@ export interface ProductServices {
   createWorkItem(command: CreateWorkItemCommand): Promise<WorkItem>;
   getWorkItem(query: GetWorkItemQuery): Promise<WorkItem>;
   listWorkItems(query: ListWorkItemsQuery): Promise<WorkItemPage>;
+  listWorkItemChildren(query: ListWorkItemChildrenQuery): Promise<WorkItemChildrenPage>;
   listWorkItemDependencies(query: ListWorkItemDependenciesQuery): Promise<WorkItemDependencyPage>;
   removeWorkItemDependency(command: RemoveWorkItemDependencyCommand): Promise<void>;
   updateWorkItem(command: UpdateWorkItemCommand): Promise<WorkItem>;
@@ -125,7 +152,17 @@ export interface ProductServices {
   updateScheduleBlock(command: UpdateScheduleBlockCommand): Promise<ScheduleBlock>;
   deleteScheduleBlock(command: DeleteScheduleBlockCommand): Promise<void>;
   getRoutine(query: GetRoutineQuery): Promise<Routine>;
+  getRoutineSelectionPreferenceState(
+    query: GetRoutineSelectionPreferenceStateQuery,
+  ): Promise<RoutineSelectionPreferenceStateView>;
+  recordRoutineSelectionPreferenceFeedback(
+    command: RecordRoutineSelectionPreferenceFeedbackCommand,
+  ): Promise<RoutineSelectionPreferenceStateView>;
   getRoutineDurationInsight(query: GetRoutineDurationInsightQuery): Promise<RoutineDurationInsight>;
+  getDailyPlanFitInsight(query: GetDailyPlanFitInsightQuery): Promise<DailyPlanFitInsight>;
+  resetDailyPlanFitInsightDismissal(
+    command: ResetDailyPlanFitInsightDismissalCommand,
+  ): Promise<DailyPlanFitInsightFeedback>;
   resetRoutineDurationInsightDismissal(
     command: ResetRoutineDurationInsightDismissalCommand,
   ): Promise<RoutineDurationInsightFeedback>;
@@ -138,6 +175,10 @@ export interface ProductServices {
   getCurrentDailyPlan(query: GetCurrentDailyPlanQuery): Promise<CurrentDailyPlan>;
   setPlanItemLock(command: SetPlanItemLockCommand): Promise<PlanItemLockResult>;
   regenerateDailyPlan(command: RegenerateDailyPlanCommand): Promise<CurrentDailyPlan>;
+  previewDailyPlanAlternatives(
+    command: PreviewDailyPlanAlternativesCommand,
+  ): Promise<DailyPlanAlternativesResult>;
+  selectDailyPlanAlternative(command: SelectDailyPlanAlternativeCommand): Promise<CurrentDailyPlan>;
   replacePlanItem(command: ReplacePlanItemCommand): Promise<CurrentDailyPlan>;
   applyRoutineFeedback(command: ApplyRoutinePlanningFeedbackCommand): Promise<CurrentDailyPlan>;
   resetRoutineFeedback(command: ResetRoutinePlanningFeedbackCommand): Promise<CurrentDailyPlan>;
@@ -146,6 +187,19 @@ export interface ProductServices {
     command: GetSchedulingAdviceCommand,
     signal?: AbortSignal,
   ): Promise<SchedulingAdviceResult>;
+  generateNaturalLanguageProposal(
+    command: GenerateNaturalLanguageProposalCommand,
+    signal?: AbortSignal,
+  ): Promise<GenerateNaturalLanguageProposalResult>;
+  updateNaturalLanguageProposal(
+    command: UpdateNaturalLanguageProposalCommand,
+  ): Promise<PreparedNaturalLanguageProposal>;
+  cancelNaturalLanguageProposal(
+    command: CancelNaturalLanguageProposalCommand,
+  ): Promise<PreparedNaturalLanguageProposal>;
+  confirmNaturalLanguageProposal(
+    command: ConfirmNaturalLanguageProposalCommand,
+  ): Promise<ConfirmNaturalLanguageProposalResult>;
   configureNotificationProfile(
     command: ConfigureNotificationProfileCommand,
   ): Promise<NotificationProfile>;
@@ -160,9 +214,18 @@ export interface ProductServices {
   listNotificationIntents(
     query: ListNotificationIntentsQuery,
   ): Promise<readonly NotificationIntent[]>;
+  listNotificationDeliveries(
+    query: ListNotificationDeliveriesQuery,
+  ): Promise<readonly NotificationDeliveryHistoryItem[]>;
   materializeNotificationIntents(
     command: MaterializeNotificationIntentsCommand,
   ): Promise<MaterializeNotificationIntentsResult>;
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" && error !== null && "name" in error && error.name === "AbortError"
+  );
 }
 
 export interface ProductApiLimits {
@@ -176,6 +239,16 @@ const DEFAULT_PRODUCT_API_LIMITS: ProductApiLimits = {
 };
 
 export const SCHEDULING_ADVICE_ROUTE = "/v1/workspaces/:workspaceId/advisor/advice";
+export const DAILY_PLAN_ALTERNATIVE_PREVIEW_ROUTE =
+  "/v1/workspaces/:workspaceId/plans/:date/alternative-previews";
+export const NATURAL_LANGUAGE_PROPOSAL_ROUTE =
+  "/v1/workspaces/:workspaceId/natural-language/proposals";
+export const NATURAL_LANGUAGE_PROPOSAL_ITEM_ROUTE =
+  "/v1/workspaces/:workspaceId/natural-language/proposals/:proposalId";
+export const NATURAL_LANGUAGE_PROPOSAL_CANCELLATION_ROUTE =
+  "/v1/workspaces/:workspaceId/natural-language/proposals/:proposalId/cancellations";
+export const NATURAL_LANGUAGE_PROPOSAL_CONFIRMATION_ROUTE =
+  "/v1/workspaces/:workspaceId/natural-language/proposals/:proposalId/confirmations";
 
 function installRateLimit(app: FastifyInstance, requestsPerMinute: number): void {
   const buckets = new Map<string, { startedAt: number; count: number }>();
@@ -213,6 +286,7 @@ const localDateText = z
   .refine(isValidLocalDate, "Expected a valid Gregorian date in YYYY-MM-DD format.");
 const instant = z.string().datetime({ offset: true });
 const workspaceParams = z.strictObject({ workspaceId: uuid });
+const naturalLanguageProposalParams = z.strictObject({ workspaceId: uuid, proposalId: uuid });
 const routineParams = z.strictObject({ workspaceId: uuid, routineId: uuid });
 const workItemParams = z.strictObject({ workspaceId: uuid, workItemId: uuid });
 const workItemDependencyParams = z.strictObject({
@@ -246,6 +320,7 @@ const workItemStatus = z.enum([
 ]);
 const workItemPriority = z.enum(["none", "low", "medium", "high", "urgent"]);
 const workItemBody = z.strictObject({
+  parentWorkItemId: uuid.nullable().default(null),
   title: z.string().trim().min(1).max(240),
   description: z.string().max(4_000).nullable().default(null),
   status: workItemStatus.default("backlog"),
@@ -253,6 +328,7 @@ const workItemBody = z.strictObject({
   dueOn: localDateText.nullable().default(null),
   planningDurationMinutes: z.number().int().positive().max(43_200).nullable().default(null),
 });
+const subtaskBody = workItemBody.omit({ parentWorkItemId: true });
 const workItemQuery = z.strictObject({
   status: workItemStatus.optional(),
   priority: workItemPriority.optional(),
@@ -267,6 +343,7 @@ const workItemDependencyBody = z.strictObject({ prerequisiteWorkItemId: uuid });
 const updateWorkItemBody = z
   .strictObject({
     expectedVersion: z.number().int().positive().max(2_147_483_647),
+    parentWorkItemId: uuid.nullable().optional(),
     title: z.string().trim().min(1).max(240).optional(),
     description: z.string().max(4_000).nullable().optional(),
     status: workItemStatus.optional(),
@@ -276,6 +353,7 @@ const updateWorkItemBody = z
   })
   .refine(
     (body) =>
+      body.parentWorkItemId !== undefined ||
       body.title !== undefined ||
       body.description !== undefined ||
       body.status !== undefined ||
@@ -398,6 +476,10 @@ const notificationIntentQuery = notificationRangeQuery.extend({
   limit: z.coerce.number().int().min(1).max(500).default(100),
   offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
 });
+const notificationDeliveryQuery = notificationRangeQuery.extend({
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
 const notificationMaterializationBody = z.strictObject({
   from: instant,
   through: instant,
@@ -457,6 +539,16 @@ const routineQuery = z.strictObject({
   status: z.enum(["active", "paused", "archived"]).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(100),
   offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
+const routineSelectionPreferenceQuery = z.strictObject({
+  timeZone: z.string().trim().min(1).max(80),
+});
+const routineSelectionPreferenceBody = z.strictObject({
+  kind: z.enum(["more_often", "less_often", "reset"]),
+  expectedFeedbackVersion: z.number().int().nonnegative().max(2_147_483_647),
+  timeZone: z.string().trim().min(1).max(80),
+  sourcePlanId: uuid.nullable().optional(),
+  sourcePlanItemId: uuid.nullable().optional(),
 });
 
 const replacementTagsBody = z.strictObject({
@@ -519,6 +611,11 @@ const approveRoutineDurationInsightBody = z.strictObject({
 const routineDurationInsightFeedbackBody = z.strictObject({
   expectedVersion: z.number().int().positive().max(2_147_483_647),
   insightKey: z.string().regex(routineDurationInsightKeyPattern),
+});
+const dailyPlanFitInsightQuery = z.strictObject({ forDate: localDateText });
+const dailyPlanFitInsightFeedbackBody = z.strictObject({
+  forDate: localDateText,
+  insightKey: z.string().regex(dailyPlanFitInsightKeyPattern),
 });
 const activityHistoryQuery = z.strictObject({
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -612,10 +709,30 @@ const schedulingAdviceBody = z.strictObject({
   expectedPlanId: uuid,
   expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
 });
+const naturalLanguageProposalBody = z.strictObject({
+  version: z.literal("schedule.natural-language/v1"),
+  requestId: uuid,
+  prompt: z.string().min(1).max(2_000),
+});
+const updateNaturalLanguageProposalBody = z.strictObject({
+  expectedVersion: z.number().int().positive().max(2_147_483_647),
+  title: z.string().min(1).max(240),
+  userSelection: z.strictObject({
+    priority: workItemPriority,
+    dueOn: localDateText.nullable(),
+    planningDurationMinutes: z.number().int().positive().max(43_200).nullable(),
+  }),
+});
+const naturalLanguageProposalVersionBody = z.strictObject({
+  expectedVersion: z.number().int().positive().max(2_147_483_647),
+});
 const planMutationBody = z.strictObject({
   expectedPlanId: uuid,
   expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
   request: planMutationRequestBody,
+});
+const planAlternativeSelectionBody = planMutationBody.extend({
+  candidateKey: z.string().regex(/^[a-f0-9]{64}$/),
 });
 const routineFeedbackBody = planMutationBody.extend({
   kind: z.enum(["not_today", "not_this_week"]),
@@ -723,7 +840,14 @@ export async function registerProductRoutes(
   limits: ProductApiLimits = DEFAULT_PRODUCT_API_LIMITS,
 ): Promise<void> {
   app.addHook("onRequest", async (request, reply) => {
-    if (request.routeOptions.url === SCHEDULING_ADVICE_ROUTE) {
+    if (
+      request.routeOptions.url === SCHEDULING_ADVICE_ROUTE ||
+      request.routeOptions.url === DAILY_PLAN_ALTERNATIVE_PREVIEW_ROUTE ||
+      request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_ROUTE ||
+      request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_ITEM_ROUTE ||
+      request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_CANCELLATION_ROUTE ||
+      request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_CONFIRMATION_ROUTE
+    ) {
       reply.header("cache-control", "no-store");
     }
   });
@@ -790,11 +914,81 @@ export async function registerProductRoutes(
     }
   });
 
+  app.post(NATURAL_LANGUAGE_PROPOSAL_ROUTE, async (request, reply) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const body = parseRequest(naturalLanguageProposalBody, request.body);
+    const cancellation = new AbortController();
+    const abort = () => cancellation.abort();
+    const abortOnPrematureResponseClose = () => {
+      if (!reply.raw.writableEnded) abort();
+    };
+    request.raw.once("aborted", abort);
+    reply.raw.once("close", abortOnPrematureResponseClose);
+    if (request.raw.aborted || reply.raw.destroyed) abort();
+    try {
+      return await services.generateNaturalLanguageProposal(
+        {
+          version: body.version,
+          requestId: body.requestId,
+          workspaceId: workspaceId(params.workspaceId),
+          prompt: body.prompt,
+        },
+        cancellation.signal,
+      );
+    } catch (error) {
+      if (cancellation.signal.aborted && isAbortError(error)) return reply;
+      throw error;
+    } finally {
+      request.raw.off("aborted", abort);
+      reply.raw.off("close", abortOnPrematureResponseClose);
+    }
+  });
+
+  app.patch(NATURAL_LANGUAGE_PROPOSAL_ITEM_ROUTE, async (request) => {
+    const params = parseRequest(naturalLanguageProposalParams, request.params);
+    const body = parseRequest(updateNaturalLanguageProposalBody, request.body);
+    return services.updateNaturalLanguageProposal({
+      workspaceId: workspaceId(params.workspaceId),
+      proposalId: params.proposalId,
+      expectedVersion: body.expectedVersion,
+      title: body.title,
+      userSelection: {
+        priority: body.userSelection.priority,
+        dueOn: body.userSelection.dueOn === null ? null : localDate(body.userSelection.dueOn),
+        planningDurationMinutes: body.userSelection.planningDurationMinutes,
+      },
+    });
+  });
+
+  app.post(NATURAL_LANGUAGE_PROPOSAL_CANCELLATION_ROUTE, async (request) => {
+    const params = parseRequest(naturalLanguageProposalParams, request.params);
+    const body = parseRequest(naturalLanguageProposalVersionBody, request.body);
+    return services.cancelNaturalLanguageProposal({
+      workspaceId: workspaceId(params.workspaceId),
+      proposalId: params.proposalId,
+      expectedVersion: body.expectedVersion,
+    });
+  });
+
+  app.post(NATURAL_LANGUAGE_PROPOSAL_CONFIRMATION_ROUTE, async (request, reply) => {
+    const params = parseRequest(naturalLanguageProposalParams, request.params);
+    const body = parseRequest(naturalLanguageProposalVersionBody, request.body);
+    const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+    const result = await services.confirmNaturalLanguageProposal({
+      workspaceId: workspaceId(params.workspaceId),
+      proposalId: params.proposalId,
+      expectedVersion: body.expectedVersion,
+      idempotencyKey: key,
+    });
+    return reply.code(result.replayed ? 200 : 201).send(result);
+  });
+
   app.post("/v1/workspaces/:workspaceId/work-items", async (request, reply) => {
     const params = parseRequest(workspaceParams, request.params);
     const body = parseRequest(workItemBody, request.body);
     const created = await services.createWorkItem({
       workspaceId: workspaceId(params.workspaceId),
+      parentWorkItemId: body.parentWorkItemId === null ? null : workItemId(body.parentWorkItemId),
       title: body.title,
       description: body.description,
       status: body.status,
@@ -812,6 +1006,37 @@ export async function registerProductRoutes(
       workspaceId: workspaceId(params.workspaceId),
       ...(query.status === undefined ? {} : { status: query.status }),
       ...(query.priority === undefined ? {} : { priority: query.priority }),
+      limit: query.limit,
+      offset: query.offset,
+    });
+    return { items: page.items, page: { limit: page.limit, offset: page.offset } };
+  });
+
+  app.post(
+    "/v1/workspaces/:workspaceId/work-items/:workItemId/subtasks",
+    async (request, reply) => {
+      const params = parseRequest(workItemParams, request.params);
+      const body = parseRequest(subtaskBody, request.body);
+      const created = await services.createWorkItem({
+        workspaceId: workspaceId(params.workspaceId),
+        parentWorkItemId: workItemId(params.workItemId),
+        title: body.title,
+        description: body.description,
+        status: body.status,
+        priority: body.priority,
+        dueOn: body.dueOn === null ? null : localDate(body.dueOn),
+        planningDurationMinutes: body.planningDurationMinutes,
+      });
+      return reply.code(201).send(created);
+    },
+  );
+
+  app.get("/v1/workspaces/:workspaceId/work-items/:workItemId/subtasks", async (request) => {
+    const params = parseRequest(workItemParams, request.params);
+    const query = parseRequest(workItemDependencyQuery, request.query);
+    const page = await services.listWorkItemChildren({
+      workspaceId: workspaceId(params.workspaceId),
+      parentWorkItemId: workItemId(params.workItemId),
       limit: query.limit,
       offset: query.offset,
     });
@@ -871,6 +1096,12 @@ export async function registerProductRoutes(
       workspaceId: workspaceId(params.workspaceId),
       workItemId: workItemId(params.workItemId),
       expectedVersion: body.expectedVersion,
+      ...(body.parentWorkItemId === undefined
+        ? {}
+        : {
+            parentWorkItemId:
+              body.parentWorkItemId === null ? null : workItemId(body.parentWorkItemId),
+          }),
       ...(body.title === undefined ? {} : { title: body.title }),
       ...(body.description === undefined ? {} : { description: body.description }),
       ...(body.status === undefined ? {} : { status: body.status }),
@@ -1076,6 +1307,19 @@ export async function registerProductRoutes(
     return { items, page: { limit: query.limit, offset: query.offset } };
   });
 
+  app.get("/v1/workspaces/:workspaceId/notification-deliveries", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(notificationDeliveryQuery, request.query);
+    const items = await services.listNotificationDeliveries({
+      workspaceId: workspaceId(params.workspaceId),
+      fromInclusive: new Date(query.from),
+      throughExclusive: new Date(query.to),
+      limit: query.limit,
+      offset: query.offset,
+    });
+    return { items, page: { limit: query.limit, offset: query.offset } };
+  });
+
   app.post("/v1/workspaces/:workspaceId/notification-intents/materializations", async (request) => {
     const params = parseRequest(workspaceParams, request.params);
     const body = parseRequest(notificationMaterializationBody, request.body);
@@ -1132,6 +1376,46 @@ export async function registerProductRoutes(
       routineId: routineId(params.routineId),
     });
   });
+
+  app.get(
+    "/v1/workspaces/:workspaceId/routines/:routineId/selection-preference",
+    async (request) => {
+      const params = parseRequest(routineParams, request.params);
+      const query = parseRequest(routineSelectionPreferenceQuery, request.query);
+      return services.getRoutineSelectionPreferenceState({
+        workspaceId: workspaceId(params.workspaceId),
+        routineId: routineId(params.routineId),
+        timeZone: query.timeZone,
+      });
+    },
+  );
+
+  app.post(
+    "/v1/workspaces/:workspaceId/routines/:routineId/selection-preference",
+    async (request) => {
+      const params = parseRequest(routineParams, request.params);
+      const body = parseRequest(routineSelectionPreferenceBody, request.body);
+      const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+      const command: RecordRoutineSelectionPreferenceFeedbackCommand = {
+        workspaceId: workspaceId(params.workspaceId),
+        routineId: routineId(params.routineId),
+        kind: body.kind,
+        expectedFeedbackVersion: body.expectedFeedbackVersion,
+        timeZone: body.timeZone,
+        idempotencyKey: key,
+        ...(body.sourcePlanId === undefined
+          ? {}
+          : { sourcePlanId: body.sourcePlanId === null ? null : dailyPlanId(body.sourcePlanId) }),
+        ...(body.sourcePlanItemId === undefined
+          ? {}
+          : {
+              sourcePlanItemId:
+                body.sourcePlanItemId === null ? null : planItemId(body.sourcePlanItemId),
+            }),
+      };
+      return services.recordRoutineSelectionPreferenceFeedback(command);
+    },
+  );
 
   app.get("/v1/workspaces/:workspaceId/routines/:routineId/duration-insight", async (request) => {
     const params = parseRequest(routineParams, request.params);
@@ -1255,6 +1539,42 @@ export async function registerProductRoutes(
     );
   });
 
+  app.get("/v1/workspaces/:workspaceId/daily-plan-fit-insight", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(dailyPlanFitInsightQuery, request.query);
+    return services.getDailyPlanFitInsight({
+      workspaceId: workspaceId(params.workspaceId),
+      forDate: localDate(query.forDate),
+    });
+  });
+
+  app.post("/v1/workspaces/:workspaceId/daily-plan-fit-insight/dismissals", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const body = parseRequest(dailyPlanFitInsightFeedbackBody, request.body);
+    const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+    return services.dismissDailyPlanFitInsight({
+      workspaceId: workspaceId(params.workspaceId),
+      forDate: localDate(body.forDate),
+      insightKey: body.insightKey,
+      idempotencyKey: key,
+    });
+  });
+
+  app.post(
+    "/v1/workspaces/:workspaceId/daily-plan-fit-insight/dismissal-resets",
+    async (request) => {
+      const params = parseRequest(workspaceParams, request.params);
+      const body = parseRequest(dailyPlanFitInsightFeedbackBody, request.body);
+      const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+      return services.resetDailyPlanFitInsightDismissal({
+        workspaceId: workspaceId(params.workspaceId),
+        forDate: localDate(body.forDate),
+        insightKey: body.insightKey,
+        idempotencyKey: key,
+      });
+    },
+  );
+
   app.post("/v1/workspaces/:workspaceId/plans", async (request) => {
     const params = parseRequest(workspaceParams, request.params);
     const body = parseRequest(planBody, request.body);
@@ -1355,6 +1675,36 @@ export async function registerProductRoutes(
         expectedPlanId: dailyPlanId(body.expectedPlanId),
         expectedHeadVersion: body.expectedHeadVersion,
         request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
+        idempotencyKey: key,
+      });
+      return { ...publicPlan(result.plan), headVersion: result.headVersion };
+    });
+  });
+
+  app.post(DAILY_PLAN_ALTERNATIVE_PREVIEW_ROUTE, async (request) => {
+    const params = parseRequest(planParams, request.params);
+    const body = parseRequest(planMutationBody, request.body);
+    return runPlanningOperation(() =>
+      services.previewDailyPlanAlternatives({
+        workspaceId: workspaceId(params.workspaceId),
+        expectedPlanId: dailyPlanId(body.expectedPlanId),
+        expectedHeadVersion: body.expectedHeadVersion,
+        request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
+      }),
+    );
+  });
+
+  app.post("/v1/workspaces/:workspaceId/plans/:date/alternative-selections", async (request) => {
+    const params = parseRequest(planParams, request.params);
+    const body = parseRequest(planAlternativeSelectionBody, request.body);
+    const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+    return runPlanningOperation(async () => {
+      const result = await services.selectDailyPlanAlternative({
+        workspaceId: workspaceId(params.workspaceId),
+        expectedPlanId: dailyPlanId(body.expectedPlanId),
+        expectedHeadVersion: body.expectedHeadVersion,
+        request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
+        candidateKey: body.candidateKey,
         idempotencyKey: key,
       });
       return { ...publicPlan(result.plan), headVersion: result.headVersion };

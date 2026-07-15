@@ -1,8 +1,13 @@
+import { createHash } from "node:crypto";
+
+import { sql } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 
 import {
   activityEventId,
+  dailyPlanFitInsightMaximumItemsPerPlan,
+  dailyPlanFitInsightFeedbackId,
   dailyPlanId,
   localDate,
   planItemId,
@@ -13,6 +18,7 @@ import {
   workspaceId,
   type RoutinePlanningFeedback,
   type RoutineDurationInsightFeedback,
+  type DailyPlanFitInsightFeedback,
   type WorkItem,
   type WorkItemDependency,
 } from "@schedule/domain";
@@ -21,13 +27,20 @@ import type { DatabaseConnection } from "./database.js";
 import {
   PostgresIntegrationRequestRepository,
   PostgresIntegrationUnitOfWork,
+  PostgresNaturalLanguageProposalRepository,
+  PostgresNaturalLanguageProposalUnitOfWork,
+  PostgresDailyPlanFitInsightFeedbackRepository,
   PostgresRoutineDurationInsightFeedbackRepository,
   PostgresUnitOfWork,
   PostgresWorkItemDependencyRepository,
   PostgresActivityEventRepository,
   PostgresDailyPlanRepository,
 } from "./repositories.js";
-import { routineDurationInsightFeedbackEvents, routinePlanningFeedbackEvents } from "./schema.js";
+import {
+  dailyPlanFitInsightFeedbackEvents,
+  routineDurationInsightFeedbackEvents,
+  routinePlanningFeedbackEvents,
+} from "./schema.js";
 
 const requestIdentity = {
   id: "10000000-0000-4000-8000-000000000001",
@@ -63,6 +76,38 @@ const successfulResult = {
   },
 };
 
+const proposalCommandDisplay = '{"title":"Send the report","type":"work_item.create"}';
+const proposalRow = {
+  id: "60000000-0000-4000-8000-000000000006",
+  workspaceId: requestIdentity.workspaceId,
+  requestId: "70000000-0000-4000-8000-000000000007",
+  promptHash: "c".repeat(64),
+  commandHash: createHash("sha256").update(proposalCommandDisplay).digest("hex"),
+  reviewHash: "40ceef00dce6da430703dbbde48ccf4937f68efd7253a5415dbabc4e316b5f81",
+  commandDisplay: proposalCommandDisplay,
+  command: { type: "work_item.create", title: "Send the report" },
+  userSelection: {
+    priority: "medium" as const,
+    dueOn: localDate("2026-07-20"),
+    planningDurationMinutes: 45,
+  },
+  reviewPriority: "medium" as const,
+  reviewDueOn: "2026-07-20",
+  reviewPlanningDurationMinutes: 45,
+  provider: "ollama",
+  model: "gemma4:e4b",
+  status: "pending" as const,
+  expiresAt: new Date("2026-07-13T02:10:00.000Z"),
+  confirmationKeyHash: null,
+  resultWorkItemId: null,
+  confirmedAt: null,
+  cancelledAt: null,
+  version: 1,
+  createdAt: new Date("2026-07-13T02:00:00.000Z"),
+  updatedAt: new Date("2026-07-13T02:00:00.000Z"),
+  inserted: true,
+} as const;
+
 function requestRow(
   overrides: Readonly<Record<string, unknown>> = {},
 ): Readonly<Record<string, unknown>> {
@@ -79,6 +124,13 @@ function requestRow(
 }
 
 function reservationDatabase(row: Readonly<Record<string, unknown>>): DatabaseConnection["db"] {
+  const returning = vi.fn().mockResolvedValue([row]);
+  const onConflictDoUpdate = vi.fn().mockReturnValue({ returning });
+  const values = vi.fn().mockReturnValue({ onConflictDoUpdate });
+  return { insert: vi.fn().mockReturnValue({ values }) } as unknown as DatabaseConnection["db"];
+}
+
+function proposalInsertDatabase(row: Readonly<Record<string, unknown>>): DatabaseConnection["db"] {
   const returning = vi.fn().mockResolvedValue([row]);
   const onConflictDoUpdate = vi.fn().mockReturnValue({ returning });
   const values = vi.fn().mockReturnValue({ onConflictDoUpdate });
@@ -169,6 +221,7 @@ describe("PostgresUnitOfWork", () => {
     const item = {
       id: workItemId("50000000-0000-4000-8000-000000000005"),
       workspaceId: requestIdentity.workspaceId,
+      parentWorkItemId: null,
       title: "Submit the report",
       description: null,
       status: "backlog",
@@ -188,8 +241,12 @@ describe("PostgresUnitOfWork", () => {
       );
     });
 
-    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ dueOn: "2026-07-20" }));
-    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ dueOn: "2026-07-20" }));
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ dueOn: "2026-07-20", parentWorkItemId: null }),
+    );
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ dueOn: "2026-07-20", parentWorkItemId: null }),
+    );
   });
 
   it("maps nullable due dates from work item rows", async () => {
@@ -199,6 +256,7 @@ describe("PostgresUnitOfWork", () => {
         {
           id: "50000000-0000-4000-8000-000000000005",
           workspaceId: requestIdentity.workspaceId,
+          parentWorkItemId: "50000000-0000-4000-8000-000000000004",
           title: "Submit the report",
           description: null,
           status: "backlog",
@@ -214,6 +272,7 @@ describe("PostgresUnitOfWork", () => {
         {
           id: "50000000-0000-4000-8000-000000000005",
           workspaceId: requestIdentity.workspaceId,
+          parentWorkItemId: null,
           title: "Submit the report",
           description: null,
           status: "backlog",
@@ -237,10 +296,68 @@ describe("PostgresUnitOfWork", () => {
 
     await expect(
       unitOfWork.run(({ workItems }) => workItems.findById(requestIdentity.workspaceId, item)),
-    ).resolves.toMatchObject({ dueOn: "2026-07-20" });
+    ).resolves.toMatchObject({
+      dueOn: "2026-07-20",
+      parentWorkItemId: "50000000-0000-4000-8000-000000000004",
+    });
     await expect(
       unitOfWork.run(({ workItems }) => workItems.findById(requestIdentity.workspaceId, item)),
     ).resolves.toMatchObject({ dueOn: null });
+  });
+
+  it("directly excludes parent work items from planning candidates", async () => {
+    const parentId = workItemId("50000000-0000-4000-8000-000000000010");
+    const childId = workItemId("50000000-0000-4000-8000-000000000011");
+    const unrelatedLeafId = workItemId("50000000-0000-4000-8000-000000000012");
+    const candidateRow = (id: string, parentWorkItemId: string | null, title: string) => ({
+      id,
+      workspaceId: requestIdentity.workspaceId,
+      parentWorkItemId,
+      title,
+      description: null,
+      status: "backlog" as const,
+      priority: "medium" as const,
+      planningDurationMinutes: 30,
+      dueOn: null,
+      version: 1,
+      createdAt: new Date("2026-07-13T02:00:01.000Z"),
+      updatedAt: new Date("2026-07-13T02:00:01.000Z"),
+    });
+    const limit = vi
+      .fn()
+      .mockResolvedValue([
+        candidateRow(childId, parentId, "Child leaf"),
+        candidateRow(unrelatedLeafId, null, "Unrelated leaf"),
+      ]);
+    const orderBy = vi.fn().mockReturnValue({ limit });
+    const outerWhere = vi.fn().mockReturnValue({ orderBy });
+    const outerFrom = vi.fn().mockReturnValue({ where: outerWhere });
+    const childWhere = vi.fn().mockReturnValue({ getSQL: () => sql`select 1` });
+    const childFrom = vi.fn().mockReturnValue({ where: childWhere });
+    const select = vi
+      .fn()
+      .mockReturnValueOnce({ from: outerFrom })
+      .mockReturnValueOnce({ from: childFrom });
+    const transaction = vi.fn(async (operation: (database: unknown) => Promise<unknown>) =>
+      operation({ select }),
+    );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+
+    const candidates = await new PostgresUnitOfWork(connection).run(({ workItems }) =>
+      workItems.listPlanningCandidates(requestIdentity.workspaceId),
+    );
+
+    expect(candidates.map((candidate) => candidate.id)).toEqual([childId, unrelatedLeafId]);
+    expect(candidates).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: parentId })]),
+    );
+    expect(select).toHaveBeenCalledTimes(2);
+    expect(limit).toHaveBeenCalledWith(501);
+    const outerPredicate = new PgDialect().sqlToQuery(outerWhere.mock.calls[0]?.[0]);
+    const childPredicate = new PgDialect().sqlToQuery(childWhere.mock.calls[0]?.[0]);
+    expect(outerPredicate.sql).toContain("not exists (select 1)");
+    expect(childPredicate.sql).toContain('"planning_child_work_items"."parent_work_item_id"');
+    expect(childPredicate.sql).toContain('"work_items"."id"');
   });
 });
 
@@ -375,6 +492,7 @@ describe("PostgresWorkItemDependencyRepository", () => {
         payload: {
           id: dependencyDependent,
           workspaceId: dependencyWorkspace,
+          parentWorkItemId: null,
           title: "Publish release notes",
           description: null,
           status: "backlog",
@@ -408,6 +526,7 @@ describe("PostgresWorkItemDependencyRepository", () => {
     expect(graph.workItems).toEqual([
       expect.objectContaining({
         id: dependencyDependent,
+        parentWorkItemId: null,
         planningDurationMinutes: 30,
         dueOn: "2026-07-20",
         createdAt: new Date("2026-07-14T11:00:00.000Z"),
@@ -428,6 +547,7 @@ describe("PostgresWorkItemDependencyRepository", () => {
     expect(compiled.sql).toContain(
       "\"work_items\".\"status\" in ('backlog', 'planned', 'in_progress')",
     );
+    expect(compiled.sql).toContain('from "work_items" as planning_child_work_items');
     expect(compiled.sql).toContain("inner join candidate_work_items");
     expect(compiled.sql).toContain('inner join "work_items" as prerequisite_work_items');
     expect(compiled.sql).toContain('order by "rowGroup", "rowPosition"');
@@ -438,6 +558,7 @@ describe("PostgresWorkItemDependencyRepository", () => {
     const validWorkItemPayload = {
       id: dependencyDependent,
       workspaceId: dependencyWorkspace,
+      parentWorkItemId: null,
       title: "Publish release notes",
       description: null,
       status: "backlog",
@@ -629,6 +750,7 @@ describe("PostgresIntegrationUnitOfWork", () => {
       "notifications",
       "requests",
       "scheduleBlocks",
+      "workItemDependencies",
       "workItems",
       "workspaces",
     ]);
@@ -652,6 +774,124 @@ describe("PostgresIntegrationUnitOfWork", () => {
     ).resolves.toBe("committed");
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: "read committed",
+    });
+  });
+});
+
+describe("PostgresNaturalLanguageProposalUnitOfWork", () => {
+  it("retries serialization failures and exposes only proposal mutation repositories", async () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const serializationFailure = Object.assign(new Error("serialization failure"), {
+      code: "40001",
+    });
+    const transaction = vi
+      .fn()
+      .mockRejectedValueOnce(serializationFailure)
+      .mockImplementationOnce(async (operation: (transaction: unknown) => Promise<unknown>) =>
+        operation({}),
+      );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+
+    const repositories = await new PostgresNaturalLanguageProposalUnitOfWork(connection).run(
+      async (context) => Object.keys(context).sort(),
+    );
+
+    expect(repositories).toEqual(["auditEvents", "proposals", "workItems", "workspaces"]);
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(transaction).toHaveBeenLastCalledWith(expect.any(Function), {
+      isolationLevel: "serializable",
+    });
+    random.mockRestore();
+  });
+
+  it("rechecks cancellation after the operation and before transaction commit", async () => {
+    const controller = new AbortController();
+    const transaction = vi.fn(async (operation: (transaction: unknown) => Promise<unknown>) =>
+      operation({}),
+    );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+
+    await expect(
+      new PostgresNaturalLanguageProposalUnitOfWork(connection).run(async () => {
+        controller.abort();
+        return "must not commit";
+      }, controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(transaction).toHaveBeenCalledOnce();
+  });
+});
+
+describe("PostgresNaturalLanguageProposalRepository", () => {
+  it("atomically inserts or returns the request winner and validates its command digest", async () => {
+    const repository = new PostgresNaturalLanguageProposalRepository(
+      proposalInsertDatabase(proposalRow),
+    );
+
+    await expect(repository.insertOrFind(proposalRow)).resolves.toMatchObject({
+      kind: "inserted",
+      proposal: {
+        id: proposalRow.id,
+        workspaceId: proposalRow.workspaceId,
+        command: { type: "work_item.create", title: "Send the report" },
+        userSelection: {
+          priority: "medium",
+          dueOn: "2026-07-20",
+          planningDurationMinutes: 45,
+        },
+      },
+    });
+  });
+
+  it("fails closed when persisted command JSON does not match its canonical digest", async () => {
+    const repository = new PostgresNaturalLanguageProposalRepository(
+      proposalInsertDatabase({ ...proposalRow, command: { ...proposalRow.command, extra: true } }),
+    );
+
+    await expect(repository.insertOrFind(proposalRow)).rejects.toMatchObject({
+      code: "natural_language.confirmation_corrupt",
+    });
+  });
+
+  it.each([
+    ["priority", { reviewPriority: "critical" }],
+    ["due date", { reviewDueOn: "2026-02-30" }],
+    ["duration", { reviewPlanningDurationMinutes: 43_201 }],
+    ["digest", { reviewHash: "f".repeat(64) }],
+  ])("fails closed when a persisted review %s is invalid", async (_label, overrides) => {
+    const repository = new PostgresNaturalLanguageProposalRepository(
+      proposalInsertDatabase({ ...proposalRow, ...overrides }),
+    );
+
+    await expect(repository.insertOrFind(proposalRow)).rejects.toMatchObject({
+      code: "natural_language.confirmation_corrupt",
+    });
+  });
+
+  it("takes a tenant-scoped row lock before proposal mutation", async () => {
+    const forUpdate = vi.fn().mockResolvedValue([proposalRow]);
+    const limit = vi.fn().mockReturnValue({ for: forUpdate });
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockReturnValue({ where });
+    const repository = new PostgresNaturalLanguageProposalRepository({
+      select: vi.fn().mockReturnValue({ from }),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(
+      repository.findByIdForUpdate(proposalRow.workspaceId, proposalRow.id),
+    ).resolves.toMatchObject({ id: proposalRow.id });
+    expect(forUpdate).toHaveBeenCalledWith("update");
+  });
+
+  it("requires an exact expected version when saving", async () => {
+    const returning = vi.fn().mockResolvedValue([]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    const repository = new PostgresNaturalLanguageProposalRepository({
+      update: vi.fn().mockReturnValue({ set }),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(repository.save(proposalRow, 1)).rejects.toMatchObject({
+      code: "natural_language.version_conflict",
     });
   });
 });
@@ -988,6 +1228,153 @@ describe("PostgresDailyPlanRepository current-plan batches", () => {
       plan: { id: secondPlanId, date: secondDate, items: [] },
     });
     expect(current.has(missingDate)).toBe(false);
+  });
+});
+
+describe("PostgresDailyPlanRepository Daily Plan Fit evidence", () => {
+  it("rejects unbounded history requests before querying", async () => {
+    const execute = vi.fn();
+    const repository = new PostgresDailyPlanRepository({
+      execute,
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(
+      repository.listFitEvidence(
+        workspaceId("fit-evidence-workspace"),
+        localDate("2026-07-14"),
+        367,
+        90,
+      ),
+    ).rejects.toMatchObject({ code: "daily_plan_fit_insight.lookback_invalid" });
+    await expect(
+      repository.listFitEvidence(
+        workspaceId("fit-evidence-workspace"),
+        localDate("2026-07-14"),
+        90,
+        367,
+      ),
+    ).rejects.toMatchObject({ code: "daily_plan_fit_insight.candidate_limit_invalid" });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("maps one bounded current-head query and skips malformed target snapshots", async () => {
+    const workspace = workspaceId("fit-evidence-workspace");
+    const execute = vi.fn().mockResolvedValue([
+      {
+        planId: "fit-plan-1",
+        localDate: "2026-07-13",
+        targetMinutes: "180",
+        targetTaskCount: "4",
+        itemId: "fit-plan-1-item-1",
+        scheduledMinutes: 45,
+        activityState: "completed",
+        lastActivityEventId: "fit-plan-1-event-1",
+      },
+      {
+        planId: "fit-plan-1",
+        localDate: "2026-07-13",
+        targetMinutes: "180",
+        targetTaskCount: "4",
+        itemId: "fit-plan-1-item-2",
+        scheduledMinutes: 30,
+        activityState: "skipped",
+        lastActivityEventId: "fit-plan-1-event-2",
+      },
+      {
+        planId: "fit-plan-empty",
+        localDate: "2026-07-12",
+        targetMinutes: "60",
+        targetTaskCount: "2",
+        itemId: null,
+        scheduledMinutes: null,
+        activityState: null,
+        lastActivityEventId: null,
+      },
+      {
+        planId: "fit-plan-invalid",
+        localDate: "2026-07-11",
+        targetMinutes: "18.5",
+        targetTaskCount: "4",
+        itemId: null,
+        scheduledMinutes: null,
+        activityState: null,
+        lastActivityEventId: null,
+      },
+    ]);
+    const repository = new PostgresDailyPlanRepository({
+      execute,
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(
+      repository.listFitEvidence(workspace, localDate("2026-07-14"), 90, 90),
+    ).resolves.toEqual([
+      {
+        workspaceId: workspace,
+        planId: dailyPlanId("fit-plan-1"),
+        date: localDate("2026-07-13"),
+        targetMinutes: 180,
+        targetTaskCount: 4,
+        items: [
+          {
+            id: planItemId("fit-plan-1-item-1"),
+            scheduledMinutes: 45,
+            activityState: "completed",
+            lastActivityEventId: activityEventId("fit-plan-1-event-1"),
+          },
+          {
+            id: planItemId("fit-plan-1-item-2"),
+            scheduledMinutes: 30,
+            activityState: "skipped",
+            lastActivityEventId: activityEventId("fit-plan-1-event-2"),
+          },
+        ],
+      },
+      {
+        workspaceId: workspace,
+        planId: dailyPlanId("fit-plan-empty"),
+        date: localDate("2026-07-12"),
+        targetMinutes: 60,
+        targetTaskCount: 2,
+        items: [],
+      },
+    ]);
+    expect(execute).toHaveBeenCalledTimes(1);
+    const query = new PgDialect().sqlToQuery(execute.mock.calls[0]?.[0]);
+    expect(query.sql).toContain("with candidate_plans as materialized");
+    expect(query.sql).toContain('left join "daily_plan_items"');
+    expect(query.params).toEqual(
+      expect.arrayContaining([
+        workspace,
+        "2026-07-14",
+        90,
+        90 * dailyPlanFitInsightMaximumItemsPerPlan + 1,
+      ]),
+    );
+  });
+
+  it("fails closed when one current plan exceeds the item projection bound", async () => {
+    const rows = Array.from({ length: dailyPlanFitInsightMaximumItemsPerPlan + 1 }, (_, index) => ({
+      planId: "fit-plan-oversized",
+      localDate: "2026-07-13",
+      targetMinutes: "180",
+      targetTaskCount: "4",
+      itemId: `fit-plan-oversized-item-${index}`,
+      scheduledMinutes: 30,
+      activityState: "completed",
+      lastActivityEventId: `fit-plan-oversized-event-${index}`,
+    }));
+    const repository = new PostgresDailyPlanRepository({
+      execute: vi.fn().mockResolvedValue(rows),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(
+      repository.listFitEvidence(
+        workspaceId("fit-evidence-workspace"),
+        localDate("2026-07-14"),
+        90,
+        2,
+      ),
+    ).rejects.toMatchObject({ code: "daily_plan_fit_insight.item_limit_exceeded" });
   });
 });
 
@@ -1380,5 +1767,148 @@ describe("PostgresRoutineDurationInsightFeedbackRepository", () => {
     await expect(repository.append(durationFeedback())).rejects.toMatchObject({
       code: "routine_duration_insight.feedback_write_conflict",
     });
+  });
+});
+
+const planFitFeedbackWorkspace = workspaceId("94000000-0000-4000-8000-000000000001");
+const planFitFeedbackId = dailyPlanFitInsightFeedbackId("95000000-0000-4000-8000-000000000002");
+const planFitFeedbackKey = "c".repeat(64);
+
+function planFitFeedbackRow(
+  overrides: Readonly<Record<string, unknown>> = {},
+): Readonly<Record<string, unknown>> {
+  return {
+    id: planFitFeedbackId,
+    ingestedSequence: 31,
+    workspaceId: planFitFeedbackWorkspace,
+    forDate: "2026-07-14",
+    insightKey: planFitFeedbackKey,
+    kind: "dismissed",
+    sampleCount: 5,
+    typicalPlannedMinutes: 180,
+    typicalCompletedMinutes: 90,
+    typicalPlannedTaskCount: 4,
+    typicalCompletedTaskCount: 2,
+    suggestedTargetMinutes: 90,
+    suggestedTargetTaskCount: 2,
+    idempotencyKey: "plan-fit-feedback-db-test",
+    recordedAt: new Date("2026-07-14T15:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function planFitFeedback(
+  overrides: Partial<DailyPlanFitInsightFeedback> = {},
+): DailyPlanFitInsightFeedback {
+  return {
+    id: planFitFeedbackId,
+    ingestedSequence: 0,
+    workspaceId: planFitFeedbackWorkspace,
+    forDate: localDate("2026-07-14"),
+    insightKey: planFitFeedbackKey,
+    kind: "dismissed",
+    sampleCount: 5,
+    typicalPlannedMinutes: 180,
+    typicalCompletedMinutes: 90,
+    typicalPlannedTaskCount: 4,
+    typicalCompletedTaskCount: 2,
+    suggestedTargetMinutes: 90,
+    suggestedTargetTaskCount: 2,
+    idempotencyKey: "plan-fit-feedback-db-test",
+    recordedAt: new Date("2026-07-14T15:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+describe("PostgresDailyPlanFitInsightFeedbackRepository", () => {
+  it("uses one canonical workspace advisory lock across UUID casing", async () => {
+    const execute = vi.fn().mockResolvedValue([]);
+    const repository = new PostgresDailyPlanFitInsightFeedbackRepository({
+      execute,
+    } as unknown as DatabaseConnection["db"]);
+
+    await repository.lockWorkspace(workspaceId(planFitFeedbackWorkspace.toUpperCase()));
+
+    const statement = execute.mock.calls[0]?.[0] as { readonly queryChunks: readonly unknown[] };
+    expect(statement.queryChunks[1]).toBe(`${planFitFeedbackWorkspace}:daily-plan-fit-feedback`);
+  });
+
+  it("loads the latest exact key and bounded idempotency receipt", async () => {
+    const latest = latestDurationFeedbackDatabase([planFitFeedbackRow()]);
+    const latestRepository = new PostgresDailyPlanFitInsightFeedbackRepository(
+      latest.database as unknown as DatabaseConnection["db"],
+    );
+    await expect(
+      latestRepository.findLatestForKey(planFitFeedbackWorkspace, planFitFeedbackKey),
+    ).resolves.toMatchObject({
+      id: planFitFeedbackId,
+      ingestedSequence: 31,
+      forDate: "2026-07-14",
+      kind: "dismissed",
+    });
+    expect(latest.limit).toHaveBeenCalledWith(1);
+
+    const receipt = durationFeedbackByIdempotencyDatabase([planFitFeedbackRow()]);
+    const receiptRepository = new PostgresDailyPlanFitInsightFeedbackRepository(
+      receipt.database as unknown as DatabaseConnection["db"],
+    );
+    await expect(
+      receiptRepository.findByIdempotencyKey(planFitFeedbackWorkspace, "plan-fit-feedback-db-test"),
+    ).resolves.toMatchObject({ insightKey: planFitFeedbackKey });
+    expect(receipt.limit).toHaveBeenCalledWith(1);
+  });
+
+  it("lets PostgreSQL allocate the sequence and targets workspace idempotency", async () => {
+    const returning = vi.fn().mockResolvedValue([planFitFeedbackRow()]);
+    const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
+    const values = vi.fn().mockReturnValue({ onConflictDoNothing });
+    const repository = new PostgresDailyPlanFitInsightFeedbackRepository({
+      insert: vi.fn().mockReturnValue({ values }),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(repository.append(planFitFeedback())).resolves.toMatchObject({
+      id: planFitFeedbackId,
+      ingestedSequence: 31,
+    });
+    expect(values.mock.calls[0]?.[0]).not.toHaveProperty("ingestedSequence");
+    expect(onConflictDoNothing).toHaveBeenCalledWith({
+      target: [
+        dailyPlanFitInsightFeedbackEvents.workspaceId,
+        dailyPlanFitInsightFeedbackEvents.idempotencyKey,
+      ],
+    });
+  });
+
+  it("replays equivalent feedback but rejects changed semantics", async () => {
+    const databaseFor = (rows: readonly Readonly<Record<string, unknown>>[]) => {
+      const returning = vi.fn().mockResolvedValue([]);
+      const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
+      const values = vi.fn().mockReturnValue({ onConflictDoNothing });
+      const limit = vi.fn().mockResolvedValue(rows);
+      const where = vi.fn().mockReturnValue({ limit });
+      const from = vi.fn().mockReturnValue({ where });
+      return {
+        insert: vi.fn().mockReturnValue({ values }),
+        select: vi.fn().mockReturnValue({ from }),
+      };
+    };
+    const replay = new PostgresDailyPlanFitInsightFeedbackRepository(
+      databaseFor([planFitFeedbackRow()]) as unknown as DatabaseConnection["db"],
+    );
+    await expect(
+      replay.append(
+        planFitFeedback({
+          id: dailyPlanFitInsightFeedbackId("95000000-0000-4000-8000-000000000099"),
+          recordedAt: new Date("2026-07-14T15:05:00.000Z"),
+        }),
+      ),
+    ).resolves.toMatchObject({ id: planFitFeedbackId, ingestedSequence: 31 });
+
+    const conflict = new PostgresDailyPlanFitInsightFeedbackRepository(
+      databaseFor([planFitFeedbackRow()]) as unknown as DatabaseConnection["db"],
+    );
+    await expect(
+      conflict.append(planFitFeedback({ suggestedTargetMinutes: 120 })),
+    ).rejects.toMatchObject({ code: "daily_plan_fit_insight.idempotency_conflict" });
   });
 });

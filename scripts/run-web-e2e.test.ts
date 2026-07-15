@@ -11,6 +11,7 @@ import {
   reservePorts,
   runCommand,
   runCommandCapture,
+  startFakeOllamaServer,
 } from "./run-web-e2e.js";
 
 const openServers: ReturnType<typeof createServer>[] = [];
@@ -43,7 +44,7 @@ describe("browser E2E runner", () => {
 
   it("overrides inherited production and database settings with disposable loopback values", () => {
     const environment = buildTestEnvironment(
-      { postgres: 55_432, api: 44_000, web: 41_730 },
+      { postgres: 55_432, api: 44_000, web: 41_730, ollama: 41_731 },
       {
         NODE_ENV: "production",
         API_HOST: "0.0.0.0",
@@ -60,7 +61,59 @@ describe("browser E2E runner", () => {
       SCHEDULE_API_URL: "http://127.0.0.1:44000",
       E2E_API_PORT: "44000",
       E2E_WEB_PORT: "41730",
+      E2E_OLLAMA_PORT: "41731",
+      LOCAL_MODEL_PROPOSAL_MODE: "ollama",
+      LOCAL_MODEL_PROPOSAL_HMAC_KEY: "browser-e2e-natural-language-hmac-key-material",
+      LOCAL_MODEL_ADVISOR_URL: "http://127.0.0.1:41731",
+      LOCAL_MODEL_ADVISOR_MODEL: "gemma4:e4b",
     });
+  });
+
+  it("serves a strict loopback proposal response and releases its port", async () => {
+    const [port] = await reservePorts(1);
+    expect(port).toBeDefined();
+    const server = await startFakeOllamaServer(port!);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gemma4:e4b",
+          messages: [
+            { role: "system", content: "proposal" },
+            { role: "user", content: "untrusted" },
+          ],
+          stream: false,
+          think: false,
+          format: { properties: { command: { oneOf: [] } } },
+          options: { temperature: 0 },
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        done: true,
+        message: { role: "assistant" },
+      });
+      expect(server.requestCount()).toBe(1);
+
+      const rejected = await fetch(`http://127.0.0.1:${port}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gemma4:e4b",
+          messages: [{}, {}],
+          stream: false,
+          think: false,
+          tools: [],
+          format: { properties: { command: {} } },
+        }),
+      });
+      expect(rejected.status).toBe(400);
+      expect(server.requestCount()).toBe(1);
+    } finally {
+      await server.close();
+    }
+    await expect(requireReleasedPorts([port!], 250, 5)).resolves.toBeUndefined();
   });
 
   it("reserves distinct loopback ports and releases them before returning", async () => {

@@ -5,6 +5,13 @@ oracle, exercises a meaningful boundary or failure mode, and would fail if the c
 contract were materially broken. Line coverage helps find code that was never exercised, but it does
 not prove that ranking, concurrency, recovery, or user-visible behavior is correct.
 
+The CI-only `pnpm verify:oci-runtime` gate builds and executes the production API and worker OCI
+images against disposable PostgreSQL. It verifies the fixed non-root identity, read-only root
+filesystem from the root mount flags, empty inheritable/permitted/effective/bounding/ambient
+capability sets, `no-new-privileges`, migrations, live/ready health, fail-closed production product
+routes, worker loopback diagnostics, and graceful shutdown. It is provider neutral and does not
+count as evidence that public hosting or synchronization is implemented.
+
 ## Evidence model
 
 The machine-readable registry at [`evaluation/features.json`](../evaluation/features.json) connects
@@ -24,22 +31,24 @@ drill job results establish whether that evidence actually passed in a particula
 
 ## Commands
 
-| Command                               | Purpose                                                                     | Requires PostgreSQL             |
-| ------------------------------------- | --------------------------------------------------------------------------- | ------------------------------- |
-| `pnpm eval:features`                  | Validate feature-to-evidence traceability                                   | No                              |
-| `pnpm eval:planner`                   | Run deterministic planner quality scenarios                                 | No                              |
-| `pnpm test:coverage`                  | Run every unit/component test and enforce coverage floors                   | No                              |
-| `pnpm eval`                           | Validate traceability and run the covered test suite                        | No                              |
-| `pnpm verify:database`                | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
-| `pnpm verify:webhook-delivery`        | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback     | Yes, disposable only            |
-| `pnpm verify:notification-core`       | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
-| `pnpm verify:notification-delivery`   | Verify fenced claims/receipts, retries, expiry, and invalidation            | Yes, disposable only            |
-| `pnpm verify:notification-migrations` | Upgrade populated pre-0024 state through reminder migrations 0024-0026      | Yes, disposable only            |
-| `pnpm verify:local-model-advisor`     | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
-| `pnpm verify:backup-restore`          | Verify archive/schema/content/sequence fidelity                             | Yes                             |
-| `pnpm verify:recovery-state-machine`  | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
-| `pnpm verify:web-e2e`                 | Exercise the built browser, API, migrations, and PostgreSQL planning loop   | Own disposable Compose database |
-| `pnpm eval:full`                      | Run every evaluation layer above, including Chromium                        | Yes, with the recovery sentinel |
+| Command                                  | Purpose                                                                     | Requires PostgreSQL             |
+| ---------------------------------------- | --------------------------------------------------------------------------- | ------------------------------- |
+| `pnpm eval:features`                     | Validate feature-to-evidence traceability                                   | No                              |
+| `pnpm eval:planner`                      | Run deterministic planner quality scenarios                                 | No                              |
+| `pnpm test:coverage`                     | Run every unit/component test and enforce coverage floors                   | No                              |
+| `pnpm eval`                              | Validate traceability and run the covered test suite                        | No                              |
+| `pnpm verify:database`                   | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
+| `pnpm verify:natural-language-proposals` | Verify private persistence and concurrent exactly-once confirmation         | Yes                             |
+| `pnpm verify:webhook-delivery`           | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback     | Yes, disposable only            |
+| `pnpm verify:notification-core`          | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
+| `pnpm verify:notification-materializer`  | Verify bounded automatic ticks, replay, skips, and delivery separation      | Yes, disposable only            |
+| `pnpm verify:notification-delivery`      | Verify fenced claims/receipts, retries, expiry, and invalidation            | Yes, disposable only            |
+| `pnpm verify:notification-migrations`    | Upgrade populated reminder/delivery state through migration 0027            | Yes, disposable only            |
+| `pnpm verify:local-model-advisor`        | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
+| `pnpm verify:backup-restore`             | Verify archive/schema/content/sequence fidelity                             | Yes                             |
+| `pnpm verify:recovery-state-machine`     | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
+| `pnpm verify:web-e2e`                    | Exercise the built browser, API, migrations, and PostgreSQL planning loop   | Own disposable Compose database |
+| `pnpm eval:full`                         | Run every evaluation layer above, including Chromium                        | Yes, with the recovery sentinel |
 
 The destructive recovery command requires the explicit environment guards documented in
 [`OPERATIONS.md`](./OPERATIONS.md). CI supplies those guards only inside its disposable Compose
@@ -47,20 +56,20 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 72 test files and 1,034 runtime test cases. The 73rd
-test file is the Playwright specification, which contains four live Chromium integration scenarios.
-Parameterized state matrices expand into many cases, so this number must not be compared as though
-every case were an independent product feature.
+The package and script runners currently execute 81 test files and 1,196 runtime test cases. Three
+additional Playwright specifications contain eight live Chromium integration scenarios. Parameterized
+state matrices expand into many cases, so this number must not be compared as though every case were
+an independent product feature.
 
 ### Feature evidence
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      27 / 27 |
-| Critical implemented features with CI-registered integration or drills |      15 / 15 |
+| Implemented features with CI-registered evidence                       |      32 / 32 |
+| Critical implemented features with CI-registered integration or drills |      18 / 18 |
 | Partial features with an explicit limitation                           |        2 / 2 |
 | Deferred features explicitly tracked as not passing                    |        1 / 1 |
-| CI-registered evidence items                                           |          128 |
+| CI-registered evidence items                                           |          165 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -71,21 +80,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.82% |   71.42% |    67.60% | 60.13% |
+| Whole repository, measured |     59.17% |   70.46% |    67.22% | 59.58% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |     96.31% |   92.32% |    96.81% | 97.30% |
+| Domain, measured           |     96.52% |   92.21% |    97.14% | 97.56% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     90.84% |   84.11% |    99.69% | 91.61% |
+| Application, measured      |     90.54% |   84.47% |    99.24% | 91.28% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     87.55% |   78.52% |    77.25% | 88.72% |
+| API, measured              |     86.49% |   75.97% |    75.50% | 87.87% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.26% |   89.18% |    91.11% | 95.14% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     86.39% |   75.00% |    76.85% | 87.03% |
+| Web, measured              |     84.63% |   72.68% |    73.07% | 85.08% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 6,921 of 11,569 statements, 5,113 of 7,159 branches,
-1,544 of 2,284 functions, and 6,514 of 10,833 lines.
+The whole-repository totals are 8,351 of 14,112 statements, 6,154 of 8,733 branches,
+1,856 of 2,761 functions, and 7,883 of 13,230 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -144,7 +153,7 @@ interface behavior. Domain tests cover tenant-scoped edge construction, self-ref
 validation, mixed-case equality for persisted PostgreSQL UUIDs without folding arbitrary domain IDs,
 done-only satisfaction across every direct prerequisite, canonical ordering and snapshot hashing,
 prerequisite projections outside the candidate list, malformed and duplicate input, and dependency-
-aware replanning with explicit nonterminal anchors. Planner v5 reports
+aware replanning with explicit nonterminal anchors. Planner v6 reports
 `work_item_dependency_unsatisfied` without changing work-item status or deadline scoring.
 
 Application tests cover graph-lock call ordering, same-tenant endpoint validation, exact duplicate-add
@@ -219,6 +228,34 @@ and activity count do not change and PostgreSQL rejects direct feedback updates 
 Chromium flow applies **Not today**, verifies the hidden state survives reload, resets it, observes
 the routine return pending, and then continues through persisted activity and reversal behavior.
 
+### Explicit routine-selection-preference evidence
+
+This ranking signal has independent domain, command, persistence, transport, and planner oracles.
+Domain tests cover optional but internally consistent provenance, tenant and future filtering, the
+inclusive 90-local-day boundary, latest-reset behavior, the eight-event cap, input-order invariance,
+score clamping, duplicate-ID rejection, and canonical snapshot/hash neutrality for discarded
+history. Planner tests require the score to affect only its target routine, preserve eligibility,
+cadence, duration, and work-item scoring, and survive residual replanning.
+
+Application tests cover the independent version-0 state, one-step advancement, exact historical
+projection replay after newer events, semantic idempotency conflicts, stale versions, source-plan
+validation, the finite 1,000-event routine capacity, and the post-lock replay check. A workspace/key
+advisory lock closes the concurrent same-key race even when callers target different routines.
+Repository loading ranks and bounds rows per routine rather than applying one workspace-wide limit.
+The migration enforces tenant-bound optional plan/item provenance, unique routine versions,
+workspace-scoped idempotency, non-negative routine heads, a deliberately short sequence name, and
+an append-only update/delete trigger. The backup/restore verifier requires that table and sequence
+in a complete round trip.
+
+API tests require strict GET and POST objects, an explicit IANA time-zone input, a bounded
+`Idempotency-Key`, public-state-only causally stable mutation responses, and `409` conflict mapping.
+The fresh-PostgreSQL planner verifier applies every migration, proves exact replay, bad-provenance
+rollback, and stale rejection, checks that the current plan identity/hash/item state remains
+unchanged, observes the visible score in a later plan, and verifies that direct event updates fail
+with SQLSTATE `55000`. Live Chromium records more and less feedback, preserves the net-zero stream's
+clear action, resets and reloads it, checks 44px controls and 320px overflow, and proves no Today plan
+was created by the preference commands.
+
 ### Duration-calibration evidence
 
 The transparent duration slice has independent oracles at each boundary. Domain tests cover the
@@ -264,6 +301,63 @@ resurfacing after evidence changes, database rejection of feedback UPDATE/DELETE
 duration, Today-head, and planner state, and a queued routine edit winning before stale feedback can
 append. These are registered evidence targets, not a claim in this document that the checks have run.
 
+### Daily Plan Fit evidence
+
+Daily Plan Fit has separate deterministic calculation, feedback, persistence, transport, component,
+PostgreSQL, and browser oracles. Domain units require three fully resolved nonempty current heads,
+exclude whole plans with pending or started items, count only scheduled minutes and item count for
+completed work, cap evidence at the 28 most recent eligible samples, and remain invariant to input
+order and evaluation time. Domain and repository bounds fail closed above 512 items per plan and a
+candidate-derived total row ceiling. The calculation units verify half-up medians, the
+30-minute/20% and one-task/25%
+materiality thresholds, safe 30-minute/one-task floors, downward-only joint suggestions, canonical
+SHA-256 keys, and exact-key dismissal/reset resolution.
+
+Application units require tenant-first lookup, the bounded 90-day/90-candidate repository request,
+lowercase-canonical workspace locking, read-committed feedback transactions, evidence revalidation before append, exact
+idempotent replay before recalculation, semantic-key conflict rejection, and valid disposition
+transitions. Repository and schema tests cover one bounded current-head projection, malformed target
+exclusion, deterministic item grouping, tenant-bound append-only feedback, database-allocated
+ingestion order, and workspace-scoped idempotency. API units cover explicit local-date validation,
+strict lowercase SHA-256 feedback payloads, required idempotency, service delegation, and `409`
+mapping for stale evidence. Web API and Today component units cover all visible states, retry,
+stale-response protection, exact-key hide/restore, accessible focus and announcements, and the
+central authority rule: using a suggestion only prefills both fields and cannot generate a plan.
+
+The PostgreSQL verifier creates four real routines and three resolved current heads, derives the
+expected 90-minute/two-task suggestion from 180-minute/four-task plans, exercises dismiss/reset and
+exact replay, rejects semantic idempotency reuse and direct feedback UPDATE/DELETE, proves feedback
+does not mutate plan heads, proves mixed-case UUID spelling queues behind the same real PostgreSQL
+advisory lock, and changes terminal evidence so the old dismissal cannot hide the new key. The live
+Chromium flow repeats the visible lifecycle through built processes, real routes,
+migrations, and a disposable database, and confirms that plan creation occurs only after the user
+submits the prefilled form. These checks establish the implementation contract, not that its
+thresholds improve completion or wellbeing for a particular user.
+
+### Daily-plan alternative evidence
+
+Alternative comparison has independent domain, application, persistence, transport, component, and
+browser oracles. Domain tests require the ordinary primary plan to remain byte-equivalent, cap the
+projection at three distinct non-primary combinations, keep keys and ordering stable under reversed
+candidate input, and reject a key that is not in the recomputed offer. Keys hash versioned canonical
+planner input plus typed source placements and exclude generation time and ephemeral IDs.
+
+Application tests require a read-only preview with no revision, receipt, head advance, or notification
+invalidation. Selection must lock in the established workspace/day order, resolve an exact receipt
+before the optimistic fence, recompute candidates from bounded tenant-scoped routines, work,
+dependencies, activity, and feedback, preserve locked nonterminal anchors, and exclude terminal
+sources. They also cover exact replay after head advancement and fail-closed stale-key behavior before
+any write. Schema coverage registers `alternative_select` in the append-only mutation ledger.
+
+API tests cover strict complete preview/selection bodies, `Cache-Control: no-store`, mandatory
+selection idempotency, service dispatch, and public-plan snapshot redaction. Web API and Today
+component tests cover cancellable preview, current-versus-alternative cards, explicit-only selection,
+authoritative success rendering, and stale `409` refresh/discard behavior. The live PostgreSQL and
+Chromium checks are expected to prove migration, durable exactly-once selection, locked-anchor
+retention, reload persistence, and compare-again recovery through built processes. These checks
+establish deterministic choice and concurrency safety; they do not claim that presenting more options
+improves a user's completion rate.
+
 ### Local-model advisor evidence
 
 The implemented advisor scope is deliberately narrower than the broad feature name, so the registry
@@ -305,6 +399,38 @@ model reload in about 12.9 seconds; an earlier first-ever cold load exceeded the
 limit. That host-specific observation motivated the bounded 60-second default, but it is neither a
 benchmark nor a claim that every cold load behaves like the controlled reload. Operators may need a
 different bounded timeout for another allowlisted model or machine.
+
+### Natural-language proposal evidence
+
+The Work proposal path has independent authority, persistence, transport, API, component, and live
+browser oracles. Application units require keyed and domain-separated prompt fingerprints, no raw
+prompt persistence, one strict command, safe canonical title text, pending-only replay, versioned
+edit/cancel, expiration, tenant isolation, audit rollback, deterministic result identity, exact
+same-key replay, and conflict for another confirmation key. Provider units require a fixed tool-free
+schema, no thinking, strict response validation, and one concurrency budget shared with the Today
+advisor.
+
+Schema and repository tests cover request uniqueness, prompt/command/key digest shapes, separately
+persisted review fields, their independent digest, and duration bounds, bounded TTL,
+terminal timestamps, tenant-bound result identity, expiry indexes, canonical JSON revalidation,
+row locking, optimistic saves, and serializable retry. API tests cover strict caller authority,
+disconnect cancellation, complete no-store behavior, `201` first confirmation versus `200` replay,
+terminal `410` mappings, and redacted corrupt-state failures. Work component and web-client tests
+cover no mutation during review/cancel, encoded routes, abort propagation, complete user-authored
+snapshot edit before confirm,
+stable-key ambiguous retry, filter-safe insertion, focus transfer, and workspace-switch invalidation.
+
+`pnpm verify:natural-language-proposals` runs production repositories through independent real
+PostgreSQL connection pools. It asserts the schema has no prompt/summary/warnings columns, has the
+three bounded review columns, a prompt is not discoverable as an unkeyed SHA-256 value, no work
+exists before confirmation, concurrent same-key calls yield one exact root backlog creation with the
+reviewed priority/date/duration and one replay, competing keys yield one creation and one precise
+conflict, exactly one confirmation audit exists, and another workspace cannot address the proposal.
+The live Chromium scenario uses the built API and production adapter against a strict in-process
+IPv4-loopback Ollama double. It proves the card is absent during review, persists the edited title,
+confirms through the real HTTP/database path, moves focus to the result, and reloads it without
+browser interception. These checks establish model-command authority, user-field ownership, privacy,
+concurrency, and UI behavior; they do not score real-model title quality.
 
 ### Calendar-aware Today availability evidence
 
@@ -365,26 +491,77 @@ The audit deliberately leaves these visible instead of turning them into false g
   gateway and PostgreSQL lifecycle for least-privilege scope denial, exact claim and empty-claim
   replay, fresh database-clock leases after lock waits, row-locked revocation linearization,
   concurrent exclusion, retry/dead-letter, indexed expiry fencing/recovery, source invalidation,
-  bounded receipts, audits, occurrence uniqueness, and cross-tenant rejection. It has no periodic
-  materializer, external provider/account binding,
-  shared adapter dedupe store, or web settings/history interface yet;
-- four live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
+  bounded receipts, audits, occurrence uniqueness, cross-tenant rejection, and a workspace-scoped,
+  product-safe execution-history projection that omits claim, lease, credential, and provider data.
+  Its opt-in local materializer has unit evidence for disabled mode, bounded sequential cycles,
+  failure isolation, non-overlap, abort behavior, and sibling-service supervision, plus disposable
+  PostgreSQL evidence for catch-up boundaries, concurrent exact-once ticks, recreated-pool restart
+  replay, unconfigured-workspace skips, and no outbox/delivery side effects. It does not process-kill
+  a materialization mid-transaction; graceful shutdown waits for that transaction because the use
+  case has no cancellation signal. A separate dormant Hermes adapter foundation adds unit and
+  loopback-HTTP evidence for
+  claim/send/receipt ordering, delivered dedupe replay, lease-budget refusal, contention and
+  ambiguity without attempt consumption, bounded failure mapping, strict envelope validation, and
+  URL/error redaction. Its disposable PostgreSQL verifier additionally covers a shared digest-only
+  dedupe store, atomic multi-replica exclusion, payload binding, release/expiry takeover fencing,
+  full database-clock lease-budget checks, bounded lock waits, checksum/catalog migration
+  attestation including exact relation/function inventory, same-name definitions, function sources,
+  enabled triggers, and logged-table durability, execute-only security-definer runtime operations,
+  privilege and object-ownership drift rejection, immutable delivered transitions, denied runtime
+  table access, and restart durability. Its supervised runtime adds fail-safe default disablement,
+  per-claim operator control, single-flight polling, bounded full-jitter retry/failure budgets, fixed
+  fatal classifications, graceful in-flight shutdown, sibling-service supervision, and real
+  loopback live/ready HTTP evidence without private identifiers. Delivered tombstone cleanup remains
+  disabled until Schedule exposes an authoritative replay retention watermark. It still has no
+  concrete external provider/account binding, provider reconciliation, external provider bootstrap,
+  live phone verification, or dead-letter redrive control;
+- worker observability has unit and disposable-PostgreSQL evidence for loopback-only binding,
+  liveness/readiness separation, fixed-cardinality Prometheus text, live outbox/reminder queue
+  aggregates, materialization/outbox instrumentation, private-data exclusion, database-failure
+  `NaN` semantics, and graceful shutdown. It does not install a scraper, persist time-series data,
+  deliver alerts, expose a hosted dashboard, or monitor future browser authentication;
+- hosted identity persistence has domain, application, schema, adapter, populated-upgrade, and
+  disposable-PostgreSQL evidence for exact concurrent issuer/subject provisioning, digest-only
+  sessions, rotation replay resistance, user-disable revocation, binary membership isolation,
+  hosted workspace provisioning beyond the local cap, and user-deletion preservation of workspace
+  product data. A centralized hosted request boundary additionally has unit and disposable-
+  PostgreSQL evidence for request isolation, single authentication, spoof resistance,
+  enumeration-resistant membership denial, redacted failures, immutable workspace contexts, and
+  post-revocation fencing. Both remain dormant: there is no browser route, provider
+  verification, cookie/CSRF policy, transaction-coupled product mutation authorization, public
+  deployment, or synchronization;
+- eight live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
-  a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions. They do
-  not cover every browser, every responsive breakpoint, every validation branch, Calendar interaction,
-  or the duration-calibration approval flow;
+  a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a
+  320px subtask create/complete/reload/detach/reparent/overflow flow with leaf-only planning, plus
+  explicit reminder setup, rule/one-off changes, materialization, safe execution history, and
+  a 320px reminder layout, plus local proposal review/edit/confirm/replay/cancel/reload behavior
+  against a strict loopback model double. They do not cover every browser, every responsive breakpoint, every
+  validation branch, Calendar interaction, or the duration-calibration approval flow;
 - work-item dependencies have domain, application, repository, API, component, and real PostgreSQL
   evidence, including a two-request reciprocal-add concurrency drill and the 320px live browser flow;
   dependency management is not exposed through the authenticated integration gateway;
+- work-item hierarchy has domain, application, schema, API, component, authenticated Hermes,
+  PostgreSQL concurrency, and 320px live-browser evidence. The database drill forces product and
+  Hermes reciprocal writes to queue on the same graph lock and proves post-lock validation rejects
+  the second edge without consuming its confirmation. Projects, milestones, checklist rows, roll-up
+  status, and cascading completion remain distinct deferred concepts;
 - duration calibration has domain, component, API, repository, and real PostgreSQL evidence, and
   exact-key dismissal/reset now preserves reversible rejection memory. It still has no production
   outcome data, learned cadence/energy/preference model, automatic application, historical insight
   comparison, or local-model participation; and
+- Daily Plan Fit has deterministic cross-layer and live-browser evidence but no production outcome
+  data for its 90-day window, minimum sample, medians, thresholds, or acceptance rate. It does not
+  recommend increases, learn a per-user policy, apply automatically, compare historical suggestion
+  outcomes, or use a model; and
 - the local-model advisor has CI unit/component evidence for its configuration, application,
   transport, API, and UI boundaries, while a real Ollama/Gemma call remains an operator-run smoke
-  check. There is no CI model invocation, quality benchmark, natural-language creation or task
-  breakdown, automatic plan or calibration application, hosted provider, or integration between
-  model advice and the Hermes/reminder path; and
+  check. The separate Work capture supports one reviewed backlog title with CI and PostgreSQL/browser
+  evidence, but there is no CI real-model invocation, quality benchmark, natural-language routine or
+  multi-task creation, task breakdown, automatic plan or calibration application, hosted provider,
+  or connection between advisor output and either Hermes path. The deterministic stdout helper does
+  not invoke the advisor, the provider-neutral delivery runtime does not invoke a model, and live
+  WhatsApp delivery is not established; and
 - production outcome measures such as acceptance rate, completion rate, cadence attainment, and
   duration error need actual local usage data and are not CI release gates.
 

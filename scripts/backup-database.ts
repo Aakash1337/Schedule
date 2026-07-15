@@ -11,13 +11,17 @@ export const composeDatabaseUser = "schedule";
 export const expectedScheduleTables = [
   "activity_events",
   "audit_events",
+  "browser_sessions",
+  "daily_plan_fit_insight_feedback_events",
   "daily_plan_heads",
   "daily_plan_item_states",
   "daily_plan_items",
   "daily_plans",
+  "external_identities",
   "integration_confirmations",
   "integration_credentials",
   "integration_requests",
+  "natural_language_proposals",
   "notification_delivery_attempts",
   "notification_delivery_commands",
   "notification_delivery_requests",
@@ -31,6 +35,7 @@ export const expectedScheduleTables = [
   "recurrence_series",
   "routine_duration_insight_feedback_events",
   "routine_planning_feedback_events",
+  "routine_selection_preference_feedback_events",
   "routines",
   "schedule_blocks",
   "webhook_deliveries",
@@ -39,11 +44,17 @@ export const expectedScheduleTables = [
   "webhook_event_subscriptions",
   "work_item_dependencies",
   "work_items",
+  "workspace_memberships",
   "workspaces",
+  "users",
 ] as const;
 export const expectedScheduleSequences = [
   { schema: "drizzle", name: "__drizzle_migrations_id_seq" },
   { schema: "public", name: "activity_events_ingested_sequence_seq" },
+  {
+    schema: "public",
+    name: "daily_plan_fit_insight_feedback_events_ingested_sequence_seq",
+  },
   { schema: "public", name: "plan_interaction_events_ingested_sequence_seq" },
   {
     schema: "public",
@@ -52,6 +63,10 @@ export const expectedScheduleSequences = [
   {
     schema: "public",
     name: "routine_planning_feedback_events_ingested_sequence_seq",
+  },
+  {
+    schema: "public",
+    name: "routine_select_pref_events_ingested_sequence_seq",
   },
 ] as const;
 

@@ -36,6 +36,39 @@ class PluginRegistrationTests(unittest.TestCase):
         self.assertTrue(all(entry["toolset"] == "schedule" for entry in context.tools))
         self.assertEqual([name for name, _callback in context.hooks], ["pre_llm_call"])
 
+    def test_command_schemas_match_the_current_gateway_bounds_and_hierarchy_fields(self) -> None:
+        create = plugin.schemas.WORK_ITEM_CREATE["properties"]
+        update = plugin.schemas.WORK_ITEM_UPDATE["properties"]
+        activity = plugin.schemas.PLAN_ITEM_ACTIVITY["properties"]
+
+        self.assertEqual(create["parentWorkItemId"]["oneOf"][1], {"type": "null"})
+        self.assertEqual(update["parentWorkItemId"]["oneOf"][1], {"type": "null"})
+        self.assertEqual(create["description"]["maxLength"], 4_000)
+        self.assertEqual(
+            create["planningDurationMinutes"]["oneOf"][0]["maximum"], 43_200
+        )
+        self.assertEqual(plugin.schemas.TIME_ZONE["maxLength"], 80)
+        self.assertEqual(activity["metadata"]["maxProperties"], 8)
+        self.assertEqual(activity["metadata"]["propertyNames"]["maxLength"], 64)
+        self.assertEqual(activity["metadata"]["propertyNames"]["pattern"], r".*\S.*")
+        self.assertIn("[1-8]", plugin.schemas.UUID["pattern"])
+
+    def test_registration_isolates_schema_instances_from_consumer_mutation(self) -> None:
+        first = FakePluginContext()
+        plugin.register(first)
+        first_create = first.tools[2]["schema"]["parameters"]["properties"]["command"][
+            "oneOf"
+        ][0]
+        first_create["properties"]["title"]["maxLength"] = 1
+
+        second = FakePluginContext()
+        plugin.register(second)
+        second_create = second.tools[2]["schema"]["parameters"]["properties"]["command"][
+            "oneOf"
+        ][0]
+        self.assertEqual(second_create["properties"]["title"]["maxLength"], 240)
+        self.assertEqual(plugin.schemas.WORK_ITEM_CREATE["properties"]["title"]["maxLength"], 240)
+
 
 if __name__ == "__main__":
     unittest.main()

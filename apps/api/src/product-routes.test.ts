@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import type {
+  RecordRoutineSelectionPreferenceFeedbackCommand,
+  RoutineSelectionPreferenceStateView,
+} from "@schedule/application";
 import { DomainError } from "@schedule/domain";
 import {
   activityEventId,
@@ -11,7 +15,10 @@ import {
   createWorkItem,
   createWorkspace,
   dailyPlanId,
+  dailyPlanFitInsightFeedbackId,
   generateDailyPlan,
+  localDate,
+  planItemId,
   recordActivityEvent,
   routineId,
   routineDurationInsightFeedbackId,
@@ -22,6 +29,8 @@ import {
   workItemId,
   workspaceId,
   type DailyPlan,
+  type DailyPlanFitInsight,
+  type DailyPlanFitInsightFeedback,
   type RoutineDurationInsight,
   type RoutineDurationInsightFeedback,
   type WorkItemDependency,
@@ -43,7 +52,9 @@ const canonicalPrerequisiteWorkItemUuid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 const scheduleBlockUuid = "66666666-6666-4666-8666-666666666666";
 const durationFeedbackUuid = "77777777-7777-4777-8777-777777777777";
 const adviceRequestUuid = "88888888-8888-4888-8888-888888888888";
+const proposalUuid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const durationInsightKey = "a".repeat(64);
+const planFitInsightKey = "b".repeat(64);
 const workspace = createWorkspace({
   id: workspaceId(workspaceUuid),
   name: "Local workspace",
@@ -98,6 +109,45 @@ const durationInsightFeedback = {
   idempotencyKey: "dismiss-duration-insight",
   recordedAt: new Date("2026-07-15T12:02:00.000Z"),
 } satisfies RoutineDurationInsightFeedback;
+const planFitInsight = {
+  status: "suggested",
+  insightKey: planFitInsightKey,
+  disposition: "available",
+  dismissedAt: null,
+  forDate: localDate("2026-07-15"),
+  windowStartedOn: localDate("2026-04-16"),
+  windowEndedOn: localDate("2026-07-14"),
+  lookbackDays: 90,
+  sampleCount: 5,
+  minimumSamples: 3,
+  maximumSamples: 28,
+  evaluatedAt: new Date("2026-07-15T12:00:00.000Z"),
+  typicalPlannedMinutes: 180,
+  typicalCompletedMinutes: 90,
+  materialThresholdMinutes: 45,
+  typicalPlannedTaskCount: 4,
+  typicalCompletedTaskCount: 2,
+  materialThresholdTaskCount: 1,
+  suggestedTargetMinutes: 90,
+  suggestedTargetTaskCount: 2,
+} satisfies DailyPlanFitInsight;
+const planFitFeedback = {
+  id: dailyPlanFitInsightFeedbackId("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
+  ingestedSequence: 1,
+  workspaceId: workspace.id,
+  forDate: planFitInsight.forDate,
+  insightKey: planFitInsightKey,
+  kind: "dismissed",
+  sampleCount: 5,
+  typicalPlannedMinutes: 180,
+  typicalCompletedMinutes: 90,
+  typicalPlannedTaskCount: 4,
+  typicalCompletedTaskCount: 2,
+  suggestedTargetMinutes: 90,
+  suggestedTargetTaskCount: 2,
+  idempotencyKey: "dismiss-plan-fit",
+  recordedAt: new Date("2026-07-15T12:03:00.000Z"),
+} satisfies DailyPlanFitInsightFeedback;
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -108,6 +158,24 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
   let storedWorkItem: ReturnType<typeof createWorkItem> | null = null;
   let storedDependency: WorkItemDependency | null = null;
   let storedScheduleBlock: ReturnType<typeof createScheduleBlock> | null = null;
+  let selectionPreferenceState: RoutineSelectionPreferenceStateView = {
+    routineId: routine.id,
+    feedbackVersion: 0,
+    activeEventCount: 0,
+    score: 0,
+    reason: null,
+    updatedAt: null,
+  };
+  let selectionPreferenceMutationCount = 0;
+  const selectionPreferenceReceipts = new Map<
+    string,
+    {
+      readonly signature: string;
+      readonly receipt: Awaited<
+        ReturnType<ProductServices["recordRoutineSelectionPreferenceFeedback"]>
+      >;
+    }
+  >();
   const activity = recordActivityEvent({
     id: activityEventId(eventUuid),
     workspaceId: workspace.id,
@@ -135,6 +203,7 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
         duration: command.duration,
         now: new Date("2026-07-15T12:00:00.000Z"),
       }),
+    dismissDailyPlanFitInsight: async () => planFitFeedback,
     dismissRoutineDurationInsight: async () => durationInsightFeedback,
     createWorkspace: async (command) => createWorkspace({ ...command, id: workspace.id }),
     getWorkspace: async () => workspace,
@@ -166,6 +235,11 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       limit: query.limit ?? 100,
       offset: query.offset ?? 0,
     }),
+    listWorkItemChildren: async (query) => ({
+      items: storedWorkItem?.parentWorkItemId === query.parentWorkItemId ? [storedWorkItem] : [],
+      limit: query.limit ?? 100,
+      offset: query.offset ?? 0,
+    }),
     listWorkItemDependencies: async (query) => ({
       items: storedDependency === null ? [] : [storedDependency],
       limit: query.limit ?? 100,
@@ -177,6 +251,9 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
     updateWorkItem: async (command) => {
       if (storedWorkItem === null) throw new DomainError("work_item.not_found", "Missing.");
       storedWorkItem = applyWorkItemUpdate(storedWorkItem, {
+        ...(command.parentWorkItemId === undefined
+          ? {}
+          : { parentWorkItemId: command.parentWorkItemId }),
         ...(command.title === undefined ? {} : { title: command.title }),
         ...(command.description === undefined ? {} : { description: command.description }),
         ...(command.status === undefined ? {} : { status: command.status }),
@@ -234,7 +311,72 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       storedScheduleBlock = null;
     },
     getRoutine: async () => routine,
+    getRoutineSelectionPreferenceState: async () => selectionPreferenceState,
+    recordRoutineSelectionPreferenceFeedback: async (command) => {
+      const signature = JSON.stringify({
+        workspaceId: command.workspaceId,
+        routineId: command.routineId,
+        expectedFeedbackVersion: command.expectedFeedbackVersion,
+        kind: command.kind,
+        timeZone: command.timeZone,
+        sourcePlanId: command.sourcePlanId ?? null,
+        sourcePlanItemId: command.sourcePlanItemId ?? null,
+      });
+      const replay = selectionPreferenceReceipts.get(command.idempotencyKey);
+      if (replay !== undefined) {
+        if (replay.signature !== signature) {
+          throw new DomainError(
+            "planning.selection_preference_idempotency_conflict",
+            "This key belongs to another command.",
+          );
+        }
+        return replay.receipt;
+      }
+      if (command.expectedFeedbackVersion !== selectionPreferenceState.feedbackVersion) {
+        throw new DomainError(
+          "planning.selection_preference_version_conflict",
+          "Selection preference feedback changed.",
+        );
+      }
+      selectionPreferenceMutationCount += 1;
+      const recordedAt = new Date("2026-07-15T12:04:00.000Z");
+      const score =
+        command.kind === "reset"
+          ? 0
+          : Math.max(
+              -400,
+              Math.min(
+                400,
+                selectionPreferenceState.score + (command.kind === "more_often" ? 100 : -100),
+              ),
+            );
+      selectionPreferenceState = {
+        routineId: command.routineId,
+        feedbackVersion: selectionPreferenceState.feedbackVersion + 1,
+        activeEventCount:
+          command.kind === "reset" ? 0 : Math.min(selectionPreferenceState.activeEventCount + 1, 8),
+        score,
+        reason:
+          score > 0
+            ? `You asked to see this routine more often (+${score}).`
+            : score < 0
+              ? `You asked to see this routine less often (${score}).`
+              : null,
+        updatedAt: recordedAt,
+      };
+      selectionPreferenceReceipts.set(command.idempotencyKey, {
+        signature,
+        receipt: selectionPreferenceState,
+      });
+      return selectionPreferenceState;
+    },
     getRoutineDurationInsight: async () => durationInsight,
+    getDailyPlanFitInsight: async () => planFitInsight,
+    resetDailyPlanFitInsightDismissal: async () => ({
+      ...planFitFeedback,
+      kind: "reset",
+      idempotencyKey: "reset-plan-fit",
+    }),
     updateRoutine: async (command) =>
       applyRoutineUpdate(routine, {
         ...(command.title === undefined ? {} : { title: command.title }),
@@ -312,6 +454,15 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
       return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
     },
+    previewDailyPlanAlternatives: async (command) => ({
+      sourcePlanId: command.expectedPlanId,
+      sourceHeadVersion: command.expectedHeadVersion,
+      alternatives: [],
+    }),
+    selectDailyPlanAlternative: async (command) => {
+      if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
+      return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
+    },
     replacePlanItem: async (command) => {
       if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
       return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
@@ -353,7 +504,12 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
     }),
     ...overrides,
   };
-  return { services };
+  return {
+    services,
+    get selectionPreferenceMutationCount() {
+      return selectionPreferenceMutationCount;
+    },
+  };
 }
 
 async function appWith(services: ProductServices) {
@@ -480,6 +636,7 @@ describe("local product API", () => {
     expect(created.statusCode).toBe(201);
     expect(created.json()).toMatchObject({
       id: workItemUuid,
+      parentWorkItemId: null,
       title: "Ship the MVP",
       status: "planned",
       priority: "urgent",
@@ -499,6 +656,92 @@ describe("local product API", () => {
       version: 2,
     });
     expect(retrieved.json()).toEqual(updated.json());
+  });
+
+  it("creates, lists, reparents, and detaches direct subtasks", async () => {
+    const parentId = workItemId(prerequisiteWorkItemUuid);
+    const nextParentId = workItemId(canonicalPrerequisiteWorkItemUuid);
+    const childId = workItemId(workItemUuid);
+    const createCommands: unknown[] = [];
+    const listQueries: unknown[] = [];
+    let currentChild = createWorkItem({
+      id: childId,
+      workspaceId: workspace.id,
+      parentWorkItemId: parentId,
+      title: "Write release notes",
+      now: new Date("2026-07-15T12:00:00.000Z"),
+    });
+    const harness = createHarness();
+    const app = await appWith({
+      ...harness.services,
+      createWorkItem: async (command) => {
+        createCommands.push(command);
+        return currentChild;
+      },
+      listWorkItemChildren: async (query) => {
+        listQueries.push(query);
+        return { items: [currentChild], limit: query.limit ?? 100, offset: query.offset ?? 0 };
+      },
+      updateWorkItem: async (command) => {
+        currentChild = applyWorkItemUpdate(currentChild, {
+          ...(command.parentWorkItemId === undefined
+            ? {}
+            : { parentWorkItemId: command.parentWorkItemId }),
+          now: new Date("2026-07-15T12:01:00.000Z"),
+        });
+        return currentChild;
+      },
+    });
+    const path = `/v1/workspaces/${workspaceUuid}/work-items/${prerequisiteWorkItemUuid.toUpperCase()}/subtasks`;
+
+    const created = await app.inject({
+      method: "POST",
+      url: path,
+      payload: { title: currentChild.title },
+    });
+    const listed = await app.inject({ method: "GET", url: `${path}?limit=20&offset=0` });
+    const reparented = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+      payload: { expectedVersion: 1, parentWorkItemId: nextParentId },
+    });
+    const detached = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/work-items/${workItemUuid}`,
+      payload: { expectedVersion: 2, parentWorkItemId: null },
+    });
+    const conflictingBodyParent = await app.inject({
+      method: "POST",
+      url: path,
+      payload: { title: "Invalid nested request", parentWorkItemId: nextParentId },
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      id: childId,
+      parentWorkItemId: parentId,
+      title: currentChild.title,
+    });
+    expect(createCommands).toEqual([
+      expect.objectContaining({
+        workspaceId: workspace.id,
+        parentWorkItemId: parentId,
+        title: "Write release notes",
+      }),
+    ]);
+    expect(listed.json()).toMatchObject({
+      items: [{ id: childId, parentWorkItemId: parentId }],
+      page: { limit: 20, offset: 0 },
+    });
+    expect(listQueries).toEqual([
+      expect.objectContaining({ parentWorkItemId: parentId, limit: 20, offset: 0 }),
+    ]);
+    expect(reparented.json()).toMatchObject({ parentWorkItemId: nextParentId, version: 2 });
+    expect(detached.json()).toMatchObject({ parentWorkItemId: null, version: 3 });
+    expect(conflictingBodyParent.statusCode).toBe(400);
+    expect(conflictingBodyParent.json()).toMatchObject({
+      error: { code: "request.validation_failed" },
+    });
   });
 
   it("enforces planning-duration bounds for work-item create and update", async () => {
@@ -1032,6 +1275,313 @@ describe("local product API", () => {
     expect(empty.statusCode).toBe(400);
     expect(stale.statusCode).toBe(409);
     expect(stale.json()).toMatchObject({ error: { code: "routine.version_conflict" } });
+  });
+
+  it("returns the initial routine selection preference state for an explicit time zone", async () => {
+    const queries: unknown[] = [];
+    const app = await appWith(
+      createHarness({
+        getRoutineSelectionPreferenceState: async (query) => {
+          queries.push(query);
+          return {
+            routineId: query.routineId,
+            feedbackVersion: 0,
+            activeEventCount: 0,
+            score: 0,
+            reason: null,
+            updatedAt: null,
+          };
+        },
+      }).services,
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/selection-preference?timeZone=America%2FLa_Paz`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      routineId: routineUuid,
+      feedbackVersion: 0,
+      activeEventCount: 0,
+      score: 0,
+      reason: null,
+      updatedAt: null,
+    });
+    expect(queries).toEqual([
+      {
+        workspaceId: workspace.id,
+        routineId: routine.id,
+        timeZone: "America/La_Paz",
+      },
+    ]);
+  });
+
+  it("records a future-planning routine preference and returns only authoritative public state", async () => {
+    const harness = createHarness();
+    const commands: RecordRoutineSelectionPreferenceFeedbackCommand[] = [];
+    const record = harness.services.recordRoutineSelectionPreferenceFeedback;
+    harness.services.getRoutineSelectionPreferenceState = async () => {
+      throw new Error("POST must return its causally accepted state without a second read");
+    };
+    harness.services.recordRoutineSelectionPreferenceFeedback = async (command) => {
+      commands.push(command);
+      return record(command);
+    };
+    const app = await appWith(harness.services);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/selection-preference`,
+      headers: { "idempotency-key": "prefer-spanish-route" },
+      payload: {
+        kind: "more_often",
+        expectedFeedbackVersion: 0,
+        timeZone: "America/La_Paz",
+        sourcePlanId: planUuid,
+        sourcePlanItemId: eventUuid,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      routineId: routineUuid,
+      feedbackVersion: 1,
+      activeEventCount: 1,
+      score: 100,
+      reason: "You asked to see this routine more often (+100).",
+      updatedAt: "2026-07-15T12:04:00.000Z",
+    });
+    expect(response.body).not.toContain("prefer-spanish-route");
+    expect(response.body).not.toContain("idempotencyKey");
+    expect(commands).toEqual([
+      {
+        workspaceId: workspace.id,
+        routineId: routine.id,
+        kind: "more_often",
+        expectedFeedbackVersion: 0,
+        timeZone: "America/La_Paz",
+        sourcePlanId: dailyPlanId(planUuid),
+        sourcePlanItemId: planItemId(eventUuid),
+        idempotencyKey: "prefer-spanish-route",
+      },
+    ]);
+  });
+
+  it("replays an identical routine preference idempotently without advancing twice", async () => {
+    const harness = createHarness();
+    const app = await appWith(harness.services);
+    const request = {
+      method: "POST" as const,
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/selection-preference`,
+      headers: { "idempotency-key": "less-spanish-route" },
+      payload: {
+        kind: "less_often",
+        expectedFeedbackVersion: 0,
+        timeZone: "UTC",
+      },
+    };
+
+    const first = await app.inject(request);
+    const replay = await app.inject(request);
+
+    expect(first.statusCode).toBe(200);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toEqual(first.json());
+    expect(replay.json()).toMatchObject({ feedbackVersion: 1, score: -100 });
+    expect(harness.selectionPreferenceMutationCount).toBe(1);
+  });
+
+  it("strictly validates routine preference reads and writes before invoking services", async () => {
+    const app = await appWith(createHarness().services);
+    const path = `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/selection-preference`;
+    const invalidRequests = [
+      { method: "GET" as const, url: path },
+      { method: "GET" as const, url: `${path}?timeZone=UTC&extra=true` },
+      {
+        method: "POST" as const,
+        url: path,
+        headers: { "idempotency-key": "invalid-kind" },
+        payload: { kind: "sometimes", expectedFeedbackVersion: 0, timeZone: "UTC" },
+      },
+      {
+        method: "POST" as const,
+        url: path,
+        headers: { "idempotency-key": "negative-version" },
+        payload: { kind: "reset", expectedFeedbackVersion: -1, timeZone: "UTC" },
+      },
+      {
+        method: "POST" as const,
+        url: path,
+        headers: { "idempotency-key": "unknown-field" },
+        payload: {
+          kind: "reset",
+          expectedFeedbackVersion: 0,
+          timeZone: "UTC",
+          unexpected: true,
+        },
+      },
+      {
+        method: "POST" as const,
+        url: path,
+        headers: { "idempotency-key": "invalid-plan" },
+        payload: {
+          kind: "more_often",
+          expectedFeedbackVersion: 0,
+          timeZone: "UTC",
+          sourcePlanId: "not-a-uuid",
+        },
+      },
+    ];
+
+    for (const request of invalidRequests) {
+      const response = await app.inject(request);
+      expect(response.statusCode, `${request.method} ${request.url}`).toBe(400);
+      expect(response.json()).toMatchObject({ error: { code: "request.validation_failed" } });
+    }
+  });
+
+  it("requires a routine preference idempotency key and maps stale versions to conflict", async () => {
+    const harness = createHarness();
+    const app = await appWith(harness.services);
+    const path = `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/selection-preference`;
+    const payload = { kind: "reset", expectedFeedbackVersion: 0, timeZone: "UTC" };
+
+    const missingKey = await app.inject({ method: "POST", url: path, payload });
+    const accepted = await app.inject({
+      method: "POST",
+      url: path,
+      headers: { "idempotency-key": "first-reset" },
+      payload,
+    });
+    const stale = await app.inject({
+      method: "POST",
+      url: path,
+      headers: { "idempotency-key": "stale-reset" },
+      payload,
+    });
+    const reusedKey = await app.inject({
+      method: "POST",
+      url: path,
+      headers: { "idempotency-key": "first-reset" },
+      payload: { kind: "more_often", expectedFeedbackVersion: 0, timeZone: "UTC" },
+    });
+
+    expect(missingKey.statusCode).toBe(400);
+    expect(missingKey.json()).toMatchObject({ error: { code: "request.validation_failed" } });
+    expect(accepted.statusCode).toBe(200);
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toMatchObject({
+      error: { code: "planning.selection_preference_version_conflict" },
+    });
+    expect(reusedKey.statusCode).toBe(409);
+    expect(reusedKey.json()).toMatchObject({
+      error: { code: "planning.selection_preference_idempotency_conflict" },
+    });
+  });
+
+  it("serves and records exact-key Daily Plan Fit guidance for an explicit local date", async () => {
+    const commands: unknown[] = [];
+    const app = await appWith(
+      createHarness({
+        getDailyPlanFitInsight: async (query) => {
+          commands.push(query);
+          return planFitInsight;
+        },
+        dismissDailyPlanFitInsight: async (command) => {
+          commands.push(command);
+          return planFitFeedback;
+        },
+        resetDailyPlanFitInsightDismissal: async (command) => {
+          commands.push(command);
+          return { ...planFitFeedback, kind: "reset" };
+        },
+      }).services,
+    );
+
+    const read = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight?forDate=2026-07-15`,
+    });
+    const dismiss = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight/dismissals`,
+      headers: { "idempotency-key": "plan-fit-dismiss-route" },
+      payload: { forDate: "2026-07-15", insightKey: planFitInsightKey },
+    });
+    const reset = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight/dismissal-resets`,
+      headers: { "idempotency-key": "plan-fit-reset-route" },
+      payload: { forDate: "2026-07-15", insightKey: planFitInsightKey },
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toMatchObject({
+      status: "suggested",
+      forDate: "2026-07-15",
+      suggestedTargetMinutes: 90,
+      suggestedTargetTaskCount: 2,
+    });
+    expect(dismiss.statusCode).toBe(200);
+    expect(reset.statusCode).toBe(200);
+    expect(commands).toEqual([
+      { workspaceId: workspace.id, forDate: localDate("2026-07-15") },
+      {
+        workspaceId: workspace.id,
+        forDate: localDate("2026-07-15"),
+        insightKey: planFitInsightKey,
+        idempotencyKey: "plan-fit-dismiss-route",
+      },
+      {
+        workspaceId: workspace.id,
+        forDate: localDate("2026-07-15"),
+        insightKey: planFitInsightKey,
+        idempotencyKey: "plan-fit-reset-route",
+      },
+    ]);
+  });
+
+  it("validates Plan Fit payloads and maps stale evidence to conflict", async () => {
+    const app = await appWith(
+      createHarness({
+        dismissDailyPlanFitInsight: async () => {
+          throw new DomainError(
+            "daily_plan_fit_insight.evidence_conflict",
+            "The evidence changed.",
+          );
+        },
+      }).services,
+    );
+    const path = `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight`;
+
+    const invalidDate = await app.inject({ method: "GET", url: `${path}?forDate=2026-02-30` });
+    const missingHeader = await app.inject({
+      method: "POST",
+      url: `${path}/dismissals`,
+      payload: { forDate: "2026-07-15", insightKey: planFitInsightKey },
+    });
+    const unknownField = await app.inject({
+      method: "POST",
+      url: `${path}/dismissals`,
+      headers: { "idempotency-key": "unknown-field" },
+      payload: { forDate: "2026-07-15", insightKey: planFitInsightKey, apply: true },
+    });
+    const stale = await app.inject({
+      method: "POST",
+      url: `${path}/dismissals`,
+      headers: { "idempotency-key": "stale-plan-fit" },
+      payload: { forDate: "2026-07-15", insightKey: planFitInsightKey },
+    });
+
+    expect(invalidDate.statusCode).toBe(400);
+    expect(missingHeader.statusCode).toBe(400);
+    expect(unknownField.statusCode).toBe(400);
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toMatchObject({
+      error: { code: "daily_plan_fit_insight.evidence_conflict" },
+    });
   });
 
   it("returns a scoped routine duration insight and validates both path identifiers", async () => {
@@ -1655,6 +2205,139 @@ describe("local product API", () => {
     expect(locked.json()).toMatchObject({ itemId, locked: true, headVersion: 2 });
   });
 
+  it("previews and explicitly selects a head-bound daily-plan alternative", async () => {
+    const dispatched: unknown[] = [];
+    const candidateKey = "a".repeat(64);
+    const harness = createHarness({
+      previewDailyPlanAlternatives: async (command) => {
+        dispatched.push({ operation: "preview", command });
+        return {
+          sourcePlanId: command.expectedPlanId,
+          sourceHeadVersion: command.expectedHeadVersion,
+          alternatives: [],
+        };
+      },
+      selectDailyPlanAlternative: async (command) => {
+        dispatched.push({ operation: "select", command });
+        const current = await harness.services.getCurrentDailyPlan({
+          workspaceId: command.workspaceId,
+          date: command.request.date,
+        });
+        return { plan: current.plan, headVersion: command.expectedHeadVersion + 1 };
+      },
+    });
+    const app = await appWith(harness.services);
+    await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans`,
+      payload: {
+        date: "2026-07-15",
+        timeZone: "UTC",
+        targetMinutes: 30,
+        targetTaskCount: 1,
+        seed: "alternative-api-source",
+      },
+    });
+    const request = {
+      timeZone: "UTC",
+      availableWindows: [],
+      targetMinutes: 30,
+      targetTaskCount: 1,
+      seed: "alternative-api-next",
+    };
+    const preview = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/alternative-previews`,
+      payload: { expectedPlanId: planUuid, expectedHeadVersion: 1, request },
+    });
+    const malformedPreview = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/alternative-previews`,
+      headers: { "content-type": "application/json" },
+      payload: "{",
+    });
+    const missingKey = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/alternative-selections`,
+      payload: { expectedPlanId: planUuid, expectedHeadVersion: 1, candidateKey, request },
+    });
+    const selected = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/alternative-selections`,
+      headers: { "idempotency-key": "select-alternative-api" },
+      payload: { expectedPlanId: planUuid, expectedHeadVersion: 1, candidateKey, request },
+    });
+
+    expect(preview.statusCode).toBe(200);
+    expect(preview.headers["cache-control"]).toBe("no-store");
+    expect(malformedPreview.statusCode).toBe(400);
+    expect(malformedPreview.headers["cache-control"]).toBe("no-store");
+    expect(preview.json()).toEqual({
+      sourcePlanId: planUuid,
+      sourceHeadVersion: 1,
+      alternatives: [],
+    });
+    expect(missingKey.statusCode).toBe(400);
+    expect(selected.statusCode).toBe(200);
+    expect(selected.json()).toMatchObject({ id: planUuid, headVersion: 2 });
+    expect(dispatched).toMatchObject([
+      {
+        operation: "preview",
+        command: {
+          expectedPlanId: planUuid,
+          expectedHeadVersion: 1,
+          request: { requestRevision: 1, seed: "alternative-api-next" },
+        },
+      },
+      {
+        operation: "select",
+        command: {
+          expectedPlanId: planUuid,
+          expectedHeadVersion: 1,
+          candidateKey,
+          idempotencyKey: "select-alternative-api",
+          request: { requestRevision: 1, seed: "alternative-api-next" },
+        },
+      },
+    ]);
+  });
+
+  it("maps a no-longer-offered daily-plan alternative to 409", async () => {
+    const app = await appWith(
+      createHarness({
+        selectDailyPlanAlternative: async () => {
+          throw new DomainError(
+            "planning.alternative_stale",
+            "The selected daily-plan alternative is no longer available.",
+          );
+        },
+      }).services,
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/alternative-selections`,
+      headers: { "idempotency-key": "stale-alternative-api" },
+      payload: {
+        expectedPlanId: planUuid,
+        expectedHeadVersion: 1,
+        candidateKey: "b".repeat(64),
+        request: {
+          timeZone: "UTC",
+          availableWindows: [],
+          targetMinutes: 30,
+          targetTaskCount: 1,
+          seed: "stale-alternative",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: { code: "planning.alternative_stale" },
+    });
+  });
+
   it("records activity against an exact current-plan item", async () => {
     const app = await appWith(createHarness().services);
     const generated = await app.inject({
@@ -2162,6 +2845,75 @@ describe("local product API", () => {
     await aborted;
   });
 
+  it("treats a disconnected natural-language proposal as cancellation, not an API fault", async () => {
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let markAborted: (() => void) | undefined;
+    const aborted = new Promise<void>((resolve) => {
+      markAborted = resolve;
+    });
+    let reportedError = false;
+    const app = await appWith(
+      createHarness({
+        generateNaturalLanguageProposal: async (_command, signal) => {
+          markStarted?.();
+          await new Promise<void>((resolve, reject) => {
+            if (signal?.aborted === true) {
+              markAborted?.();
+              resolve();
+              return;
+            }
+            const timeout = setTimeout(
+              () => reject(new Error("The proposal request signal was not aborted.")),
+              2_000,
+            );
+            timeout.unref();
+            signal?.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timeout);
+                markAborted?.();
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          signal?.throwIfAborted();
+          throw new Error("The disconnected proposal unexpectedly continued.");
+        },
+      }).services,
+    );
+    app.addHook("onError", async () => {
+      reportedError = true;
+    });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (address === null || typeof address === "string") throw new Error("Expected a TCP address.");
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${String(address.port)}/v1/workspaces/${workspaceUuid}/natural-language/proposals`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          version: "schedule.natural-language/v1",
+          requestId: adviceRequestUuid,
+          prompt: "Add prepare quarterly report to my list",
+        }),
+        signal: controller.signal,
+      },
+    ).catch(() => undefined);
+
+    await started;
+    controller.abort();
+    await request;
+    await aborted;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(reportedError).toBe(false);
+  });
+
   it("bounds local request volume and body size without affecting health routes", async () => {
     const app = await buildApp({
       productServices: createHarness().services,
@@ -2292,6 +3044,240 @@ describe("local product API", () => {
       });
     }
     expect((await firstResponse).statusCode).toBe(200);
+  });
+
+  it("keeps natural-language capture proposal-only until an idempotent explicit confirmation", async () => {
+    const preparedProposal = {
+      id: proposalUuid,
+      requestId: adviceRequestUuid,
+      commandHash: "e".repeat(64),
+      commandDisplay: '{"title":"Prepare quarterly report","type":"work_item.create"}',
+      command: { type: "work_item.create" as const, title: "Prepare quarterly report" },
+      userSelection: {
+        priority: "none" as const,
+        dueOn: null,
+        planningDurationMinutes: null,
+      },
+      provider: "ollama",
+      model: "gemma4:e4b",
+      status: "pending" as const,
+      expiresAt: "2026-07-15T12:10:00.000Z",
+      version: 1,
+    };
+    const createdWorkItem = createWorkItem({
+      id: workItemId(proposalUuid),
+      workspaceId: workspace.id,
+      title: preparedProposal.command.title,
+      now: new Date("2026-07-15T12:00:01.000Z"),
+    });
+    let generatedCommand: unknown;
+    let generatedSignal: AbortSignal | undefined;
+    let editedCommand: unknown;
+    let cancelledCommand: unknown;
+    let confirmedCommand: unknown;
+    const app = await appWith(
+      createHarness({
+        generateNaturalLanguageProposal: async (command, signal) => {
+          generatedCommand = command;
+          generatedSignal = signal;
+          return {
+            version: "schedule.natural-language/v1",
+            requestId: command.requestId,
+            status: "proposal",
+            reason: null,
+            summary: "Review this title before creating it.",
+            warnings: [],
+            proposal: preparedProposal,
+            provenance: {
+              provider: "ollama",
+              model: "gemma4:e4b",
+              requestedAt: "2026-07-15T12:00:00.000Z",
+              completedAt: "2026-07-15T12:00:01.000Z",
+              latencyMs: 1_000,
+            },
+          };
+        },
+        updateNaturalLanguageProposal: async (command) => {
+          editedCommand = command;
+          return {
+            ...preparedProposal,
+            command: { ...preparedProposal.command, title: command.title },
+            userSelection: command.userSelection,
+            version: 2,
+          };
+        },
+        cancelNaturalLanguageProposal: async (command) => {
+          cancelledCommand = command;
+          return { ...preparedProposal, status: "cancelled", version: 2 };
+        },
+        confirmNaturalLanguageProposal: async (command) => {
+          confirmedCommand = command;
+          return {
+            proposalId: proposalUuid,
+            commandHash: preparedProposal.commandHash,
+            replayed: false,
+            workItem: createdWorkItem,
+          };
+        },
+      }).services,
+    );
+    const baseUrl = `/v1/workspaces/${workspaceUuid}/natural-language/proposals`;
+
+    const generated = await app.inject({
+      method: "POST",
+      url: baseUrl,
+      payload: {
+        version: "schedule.natural-language/v1",
+        requestId: adviceRequestUuid,
+        prompt: "Add prepare quarterly report to my list",
+      },
+    });
+    expect(generated.statusCode).toBe(200);
+    expect(generated.headers["cache-control"]).toBe("no-store");
+    expect(generated.json()).toMatchObject({ status: "proposal", proposal: { id: proposalUuid } });
+    expect(generatedCommand).toMatchObject({
+      workspaceId: workspace.id,
+      requestId: adviceRequestUuid,
+      prompt: "Add prepare quarterly report to my list",
+    });
+    expect(generatedSignal).toBeInstanceOf(AbortSignal);
+
+    const edited = await app.inject({
+      method: "PATCH",
+      url: `${baseUrl}/${proposalUuid}`,
+      payload: {
+        expectedVersion: 1,
+        title: "Prepare final quarterly report",
+        userSelection: {
+          priority: "high",
+          dueOn: "2026-07-20",
+          planningDurationMinutes: 60,
+        },
+      },
+    });
+    expect(edited.statusCode).toBe(200);
+    expect(edited.headers["cache-control"]).toBe("no-store");
+    expect(editedCommand).toMatchObject({
+      proposalId: proposalUuid,
+      expectedVersion: 1,
+      userSelection: {
+        priority: "high",
+        dueOn: "2026-07-20",
+        planningDurationMinutes: 60,
+      },
+    });
+
+    for (const invalidUserSelection of [
+      undefined,
+      { priority: "critical", dueOn: null, planningDurationMinutes: null },
+      { priority: "none", dueOn: "2026-02-30", planningDurationMinutes: null },
+      { priority: "none", dueOn: null, planningDurationMinutes: 43_201 },
+      { priority: "none", dueOn: null, planningDurationMinutes: null, modelChoice: true },
+    ]) {
+      const invalidEdit = await app.inject({
+        method: "PATCH",
+        url: `${baseUrl}/${proposalUuid}`,
+        payload: {
+          expectedVersion: 1,
+          title: "Prepare final quarterly report",
+          ...(invalidUserSelection === undefined ? {} : { userSelection: invalidUserSelection }),
+        },
+      });
+      expect(invalidEdit.statusCode).toBe(400);
+    }
+
+    const cancelled = await app.inject({
+      method: "POST",
+      url: `${baseUrl}/${proposalUuid}/cancellations`,
+      payload: { expectedVersion: 1 },
+    });
+    expect(cancelled.statusCode).toBe(200);
+    expect(cancelledCommand).toMatchObject({ proposalId: proposalUuid, expectedVersion: 1 });
+
+    const missingKey = await app.inject({
+      method: "POST",
+      url: `${baseUrl}/${proposalUuid}/confirmations`,
+      payload: { expectedVersion: 1 },
+    });
+    expect(missingKey.statusCode).toBe(400);
+    expect(missingKey.headers["cache-control"]).toBe("no-store");
+
+    const rejectedConfirmationFields = await app.inject({
+      method: "POST",
+      url: `${baseUrl}/${proposalUuid}/confirmations`,
+      headers: { "idempotency-key": "confirm-with-extra-fields" },
+      payload: { expectedVersion: 1, priority: "urgent" },
+    });
+    expect(rejectedConfirmationFields.statusCode).toBe(400);
+
+    const confirmed = await app.inject({
+      method: "POST",
+      url: `${baseUrl}/${proposalUuid}/confirmations`,
+      headers: { "idempotency-key": "confirm-proposal-once" },
+      payload: { expectedVersion: 1 },
+    });
+    expect(confirmed.statusCode).toBe(201);
+    expect(confirmed.json()).toMatchObject({ replayed: false, workItem: { id: proposalUuid } });
+    expect(confirmedCommand).toMatchObject({
+      proposalId: proposalUuid,
+      idempotencyKey: "confirm-proposal-once",
+    });
+
+    const rejectedCallerControls = await app.inject({
+      method: "POST",
+      url: baseUrl,
+      payload: {
+        version: "schedule.natural-language/v1",
+        requestId: adviceRequestUuid,
+        prompt: "Add a task",
+        model: "remote-model",
+      },
+    });
+    expect(rejectedCallerControls.statusCode).toBe(400);
+  });
+
+  it("maps terminal proposal state to gone and redacts corrupt persisted commands", async () => {
+    const expiredApp = await appWith(
+      createHarness({
+        updateNaturalLanguageProposal: async () => {
+          throw new DomainError("natural_language.proposal_expired", "private expiry detail");
+        },
+      }).services,
+    );
+    const expired = await expiredApp.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${workspaceUuid}/natural-language/proposals/${proposalUuid}`,
+      payload: {
+        expectedVersion: 1,
+        title: "Still valid",
+        userSelection: {
+          priority: "none",
+          dueOn: null,
+          planningDurationMinutes: null,
+        },
+      },
+    });
+    expect(expired.statusCode).toBe(410);
+    expect(expired.body).not.toContain("private expiry detail");
+
+    const corruptApp = await appWith(
+      createHarness({
+        confirmNaturalLanguageProposal: async () => {
+          throw new DomainError(
+            "natural_language.confirmation_corrupt",
+            "private persisted command",
+          );
+        },
+      }).services,
+    );
+    const corrupt = await corruptApp.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/natural-language/proposals/${proposalUuid}/confirmations`,
+      headers: { "idempotency-key": "corrupt-proposal" },
+      payload: { expectedVersion: 1 },
+    });
+    expect(corrupt.statusCode).toBe(500);
+    expect(corrupt.body).not.toContain("private persisted command");
   });
 
   it("redacts unexpected service errors", async () => {

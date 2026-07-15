@@ -12,10 +12,16 @@ export type ActivityEventId = BrandedId<"ActivityEventId">;
 export type DailyPlanId = BrandedId<"DailyPlanId">;
 export type PlanItemId = BrandedId<"PlanItemId">;
 export type RoutinePlanningFeedbackId = BrandedId<"RoutinePlanningFeedbackId">;
+export type RoutineSelectionPreferenceFeedbackId =
+  BrandedId<"RoutineSelectionPreferenceFeedbackId">;
 export type RoutineDurationInsightFeedbackId = BrandedId<"RoutineDurationInsightFeedbackId">;
+export type DailyPlanFitInsightFeedbackId = BrandedId<"DailyPlanFitInsightFeedbackId">;
 export type NotificationRuleId = BrandedId<"NotificationRuleId">;
 export type OneOffReminderId = BrandedId<"OneOffReminderId">;
 export type NotificationIntentId = BrandedId<"NotificationIntentId">;
+export type UserId = BrandedId<"UserId">;
+export type ExternalIdentityId = BrandedId<"ExternalIdentityId">;
+export type BrowserSessionId = BrandedId<"BrowserSessionId">;
 
 function toId<Name extends string>(value: string, label: Name): BrandedId<Name> {
   if (value.trim().length === 0) {
@@ -46,9 +52,17 @@ export const routinePlanningFeedbackId = (
   value: string = randomUUID(),
 ): RoutinePlanningFeedbackId => toId(value, "RoutinePlanningFeedbackId");
 
+export const routineSelectionPreferenceFeedbackId = (
+  value: string = randomUUID(),
+): RoutineSelectionPreferenceFeedbackId => toId(value, "RoutineSelectionPreferenceFeedbackId");
+
 export const routineDurationInsightFeedbackId = (
   value: string = randomUUID(),
 ): RoutineDurationInsightFeedbackId => toId(value, "RoutineDurationInsightFeedbackId");
+
+export const dailyPlanFitInsightFeedbackId = (
+  value: string = randomUUID(),
+): DailyPlanFitInsightFeedbackId => toId(value, "DailyPlanFitInsightFeedbackId");
 
 export const notificationRuleId = (value: string = randomUUID()): NotificationRuleId =>
   toId(value, "NotificationRuleId");
@@ -58,3 +72,11 @@ export const oneOffReminderId = (value: string = randomUUID()): OneOffReminderId
 
 export const notificationIntentId = (value: string = randomUUID()): NotificationIntentId =>
   toId(value, "NotificationIntentId");
+
+export const userId = (value: string = randomUUID()): UserId => toId(value, "UserId");
+
+export const externalIdentityId = (value: string = randomUUID()): ExternalIdentityId =>
+  toId(value, "ExternalIdentityId");
+
+export const browserSessionId = (value: string = randomUUID()): BrowserSessionId =>
+  toId(value, "BrowserSessionId");

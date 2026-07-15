@@ -1,5 +1,21 @@
 # Local operations
 
+## Production-image runtime smoke
+
+Run `pnpm verify:oci-runtime` before selecting or deploying to a cloud provider. The disposable
+verification builds the repository's API and worker OCI images, migrates a temporary PostgreSQL
+database from the built API image, and proves that the migration, API, and worker processes run as
+the fixed unprivileged identity `10001:10001` with a read-only root filesystem, empty inheritable,
+permitted, effective, bounding, and ambient Linux capability masks, and `no-new-privileges`. Each
+process receives only a bounded in-memory `/tmp` mount.
+The same drill proves production health/readiness, disabled product and integration routes,
+loopback-only worker diagnostics, and graceful worker shutdown. It uses no provider credentials or
+persistent volume and removes its uniquely named Compose project and images on completion.
+
+This is a hardened runtime portability gate, not a hosted deployment. It does not enable browser
+authentication, public product routes, managed backups, monitoring, TLS, synchronization, or any
+specific AWS, Cloudflare, Railway, Oracle, or other provider configuration.
+
 This guide covers backup, restore, rollback, and database verification for the loopback-only Docker
 Compose PostgreSQL service. These procedures protect the local MVP; they are not a substitute for
 managed backups, point-in-time recovery, encryption, and access controls in a hosted deployment.
@@ -261,6 +277,54 @@ Set `LOCAL_MODEL_ADVISOR_MODE=disabled` and restart the API for the kill switch.
 then returns a safe unavailable result without opening a network connection; the rest of Schedule is
 unchanged.
 
+## Local natural-language proposal drafting
+
+Proposal drafting is independently disabled. It uses the advisor's same strict loopback URL, model
+allowlist, timeouts, response limit, and shared concurrency permit, but it may be enabled while the
+Today advisor remains disabled. Configure a stable secret of at least 32 bytes and a lifetime from 60
+through 3,600 seconds:
+
+```dotenv
+LOCAL_MODEL_PROPOSAL_MODE=ollama
+LOCAL_MODEL_PROPOSAL_HMAC_KEY=replace-with-stable-random-secret-material
+LOCAL_MODEL_PROPOSAL_TTL_SECONDS=600
+LOCAL_MODEL_ADVISOR_URL=http://127.0.0.1:11434
+LOCAL_MODEL_ADVISOR_MODEL=gemma4:e4b
+```
+
+Generate the HMAC key with an operating-system secret generator and keep it outside source control,
+logs, backups of configuration text, and screenshots. Schedule uses it only for domain-separated
+prompt fingerprints; raw prompts and free-form model prose are not stored. Do not rotate the key
+while generation is enabled and pending proposals may exist: disable proposal mode, wait at least the
+configured TTL (at most one hour), rotate the secret, and restart. Existing confirmations do not
+need the original key, but replaying an old generation request after rotation cannot match its prior
+fingerprint.
+
+Migration `0028` creates `natural_language_proposals`; migration `0032` adds the separately stored
+user review fields and a bounded-duration constraint without changing the title-only model command.
+The table is part of the exact backup and restore catalog. Back up before migration. After applying
+it, run the real concurrency verifier:
+
+```powershell
+pnpm db:migrate
+pnpm verify:natural-language-proposals
+```
+
+The verifier does not call Ollama. It uses production PostgreSQL repositories from two independent
+connection pools and checks private persistence, the exact reviewed root result, tenant isolation,
+same-key replay, competing-key conflict, and exactly one result/audit. The browser verifier starts a strict loopback model double and
+exercises the production adapter and UI. A real provider can be checked manually through the Work
+view after Ollama itself is healthy; this is usability smoke testing, not a correctness or quality
+gate.
+
+Set `LOCAL_MODEL_PROPOSAL_MODE=disabled` and restart the API for the generation kill switch. Pending
+proposals remain short-lived rows but cannot be reached through a list/read API; ordinary structured
+capture and every deterministic feature remain available. If confirmation reports a conflict, do not
+change keys and retry blindly: refresh the Work board and verify whether the deterministic result
+already exists. Expired or cancelled proposals must be prepared again with a new request ID.
+
+See [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md) for the full authority and privacy boundary.
+
 ## Outbound webhook operations
 
 Outbound webhook delivery is disabled by default. Provision its external encryption keyring and
@@ -328,13 +392,23 @@ replacement, privacy-thin automatic event fan-out, immutable body and outbox lin
 dead-letter redrive, revocation, and transactional rollback. It is also part of
 `pnpm verify:database` and the PostgreSQL CI job. `schedule.changed.v1` is only an invalidation; it
 does not transport reminder commands. Reminder claim/receipt state uses a separate authenticated
-pull gateway. A successful webhook test or invalidation delivery does not verify the separate local
-Hermes plugin or imply that a reminder reached a phone. Verify the plugin's local/stdout and real
-integration-gateway boundary with `pnpm verify:hermes-adapter`. Live WhatsApp transport,
-provider/account binding, and end-to-end provider/phone receipts remain incomplete until the operator
-configures `WHATSAPP_HOME_CHANNEL` and completes the smoke described in [HERMES.md](./HERMES.md).
+pull gateway. The dormant [Hermes delivery adapter foundation](./HERMES.md) consumes that contract,
+but its
+shared PostgreSQL dedupe store and fail-safe supervised runtime do not make it a live provider:
+concrete transport and reconciliation, provider/account binding, external bootstrap and control
+wiring, and phone verification remain deferred. A successful webhook test or invalidation delivery
+also does not verify the separate local Hermes plugin or imply that a reminder reached a phone.
+Verify the plugin's local/stdout and real integration-gateway boundary with
+`pnpm verify:hermes-adapter`, and verify the delivery store with
+`pnpm verify:hermes-dedupe-store`. Live WhatsApp remains incomplete until the operator configures
+`WHATSAPP_HOME_CHANNEL` and completes the smoke described in [HERMES.md](./HERMES.md).
 
 ## Deterministic reminder operations
+
+Worker liveness, readiness, aggregate queue gauges, materialization counters, and initial alert
+guidance are specified in [Worker observability](./OBSERVABILITY.md). The surface is disabled by
+default, binds only to `127.0.0.1`, and deliberately exposes no workspace, content, destination, or
+provider labels.
 
 Migration `0024` adds `notification_profiles`, `notification_rules`, `one_off_reminders`, and
 `notification_intents`. The delivery migration adds `notification_delivery_commands`,
@@ -344,6 +418,7 @@ of the exact backup catalog and restore-content signal. Back up before applying 
 ```powershell
 pnpm db:migrate
 pnpm verify:notification-core
+pnpm verify:notification-materializer
 pnpm verify:notification-delivery
 pnpm verify:notification-migrations
 pnpm verify:backup-restore
@@ -362,13 +437,39 @@ invalidation, dead letter, receipt fencing, and a credential-revocation lock rac
 delivery verifiers also assert the partial expired-lease recovery index. These commands are also
 inside `verify:database`.
 
-There is currently no periodic materialization daemon to monitor. Materialization happens only when
-the local product API command is explicitly invoked. If an operator invokes it manually, use a window no
-longer than 31 days and inspect all three result groups: `created`, `existing`, and `suppressed`.
+Automatic local materialization is disabled by default. Leave
+`NOTIFICATION_MATERIALIZATION_MODE=disabled` while policy is being provisioned. To enable it, set
+the mode to `enabled`, keep `NOTIFICATION_MATERIALIZATION_INTERVAL_MS` between 10 seconds and one
+hour, keep `NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS` between one second and one hour, and restart
+the worker. The defaults are a 60-second interval and five-minute look-ahead. This switch creates
+Schedule intents only; it does not enable webhook transport, claim the delivery gateway, or contact
+a provider.
+
+Each tick processes at most 20 workspaces sequentially. It passes one captured look-ahead window to
+the application use case, which applies each profile's own bounded catch-up horizon. Monitor the
+structured `notification_materialization_tick_completed` count fields and the
+fixed `notification_materialization_workspace_list_failed` /
+`notification_materialization_workspace_failed` classifications. A
+`notification_materialization_workspace_limit_exceeded` classification means persisted data
+violates the 20-workspace local-installation cap; the tick intentionally creates no intents until the
+invariant is restored. Logs intentionally omit titles,
+policy contents, occurrence keys, destinations, and raw exceptions. A SIGINT/SIGTERM prevents the
+next workspace or tick and waits for an already-running materialization transaction to settle before
+the shared database pool closes. Disable the mode and restart the worker to stop new automatic
+ticks; persisted intents remain subject to normal policy/source invalidation.
+
+Manual materialization remains available through the local product API. Use a window no longer than
+31 days and inspect all three result groups: `created`, `existing`, and `suppressed`.
 Repeated or concurrent invocation is safe. Policy and target changes never rewrite an intent; they
 transactionally delete affected pending intents under the same workspace notification lock. Deleting
 a referenced daily plan, schedule block, or work item also invalidates its open delivery command and
 removes the source intent so it cannot later be claimed against a missing target.
+
+`verify:notification-materializer` creates and migrates a disposable database, runs two production
+cycles concurrently through independent pools, repeats a restart cycle, and proves exact-once
+intents, catch-up acceptance/suppression, safe unconfigured-workspace skips, and unchanged
+outbox/delivery-command counts. It drops
+the nonce database even on failure and is included in `verify:database`.
 
 The provider-neutral delivery routes are pull-based and require an explicitly `schedule:delivery`
 credential; the default credential scopes do not grant delivery. Each claim leases one command for
@@ -411,6 +512,14 @@ pnpm db:migrate
 pnpm verify:database
 pnpm verify:backup-restore
 ```
+
+`verify:database` includes the dormant hosted-identity persistence and populated migration drills.
+They prove exact concurrent identity provisioning, bounded exact identity keys, digest-only session
+storage, rotation and revocation boundaries, binary membership authorization including
+post-revocation fencing, hosted workspace provisioning beyond the local worker cap, and
+preservation of workspace/product data when a user is deleted. These checks do not enable hosted
+authentication or change the local API boundary; see [HOSTED_IDENTITY.md](./HOSTED_IDENTITY.md) and
+[HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md).
 
 Run the separately guarded `pnpm verify:recovery-state-machine` command from the preceding section
 when testing against a disposable PostgreSQL instance.

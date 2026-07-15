@@ -30,6 +30,7 @@ import type {
   ClaimedNotificationDelivery,
   ClaimNotificationDeliveryInput,
   CurrentDailyPlan,
+  DailyPlanFitInsightFeedbackRepository,
   DailyPlanRepository,
   ConfirmedIntegrationCommandResult,
   IntegrationCommand,
@@ -43,8 +44,14 @@ import type {
   IntegrationRequestReservationInput,
   IntegrationTransactionContext,
   IntegrationUnitOfWork,
+  NaturalLanguageProposalRecord,
+  NaturalLanguageProposalRepository,
+  NaturalLanguageProposalTransactionContext,
+  NaturalLanguageProposalUnitOfWork,
+  NaturalLanguageWorkItemCommand,
   NotificationRepository,
   NotificationDeliveryRepository,
+  NotificationDeliveryHistoryItem,
   NotificationDeliveryReceiptResult,
   NotificationDeliveryRequestRecord,
   NotificationDeliveryRequestRepository,
@@ -57,6 +64,7 @@ import type {
   PlanningWorkItemGraph,
   RecordPlanItemActivityInput,
   RoutineDurationInsightFeedbackRepository,
+  RoutineSelectionPreferenceFeedbackRepository,
   RoutineRepository,
   ScheduleBlockRepository,
   SetPlanItemLockInput,
@@ -70,23 +78,30 @@ import type {
 import {
   DomainError,
   activityEventId,
+  addLocalDays,
   createCadencePolicy,
   createDurationRange,
   createRoutine,
   createStructuredTags,
   createWorkItemDependency,
   dailyPlanId,
+  dailyPlanFitInsightMaximumItemsPerPlan,
+  dailyPlanFitInsightFeedbackId,
   localDate,
   notificationIntentId,
   notificationRuleId,
   oneOffReminderId,
   planItemId,
+  planItemActivityStates,
   isPlanItemActivityActionType,
   recordActivityEvent,
   reversePlanItemCompletion,
   routineId,
   routineDurationInsightFeedbackId,
   routinePlanningFeedbackId,
+  routineSelectionPreferenceFeedbackId,
+  ROUTINE_SELECTION_PREFERENCE_EVENT_LIMIT,
+  ROUTINE_SELECTION_PREFERENCE_LOOKBACK_DAYS,
   scheduleBlockId,
   transitionPlanItemActivity,
   workItemId,
@@ -95,6 +110,8 @@ import {
   workspaceId,
   type ActivityEvent,
   type DailyPlan,
+  type DailyPlanFitEvidencePlan,
+  type DailyPlanFitInsightFeedback,
   type JsonValue,
   type LocalDate,
   type LocalTimeResolution,
@@ -112,8 +129,10 @@ import {
   type PlanWarning,
   type PlanningWorkItemDependency,
   type Routine,
+  type RoutineId,
   type RoutineDurationInsightFeedback,
   type RoutinePlanningFeedback,
+  type RoutineSelectionPreferenceFeedback,
   type RoutineStatus,
   type ScheduleBlock,
   type ScheduleBlockId,
@@ -131,6 +150,7 @@ import { databaseErrorCode, databaseErrorConstraint } from "./database-errors.js
 import {
   activityEvents,
   auditEvents,
+  dailyPlanFitInsightFeedbackEvents,
   dailyPlanHeads,
   dailyPlanItemStates,
   dailyPlanItems,
@@ -144,11 +164,13 @@ import {
   notificationIntents,
   notificationProfiles,
   notificationRules,
+  naturalLanguageProposals,
   oneOffReminders,
   planInteractionEvents,
   planMutations,
   routineDurationInsightFeedbackEvents,
   routinePlanningFeedbackEvents,
+  routineSelectionPreferenceFeedbackEvents,
   routines,
   scheduleBlocks,
   workItemDependencies,
@@ -168,24 +190,40 @@ type RoutineRow = typeof routines.$inferSelect;
 type ActivityEventRow = typeof activityEvents.$inferSelect;
 type RoutineDurationInsightFeedbackEventRow =
   typeof routineDurationInsightFeedbackEvents.$inferSelect;
+type DailyPlanFitInsightFeedbackEventRow = typeof dailyPlanFitInsightFeedbackEvents.$inferSelect;
 type RoutinePlanningFeedbackEventRow = typeof routinePlanningFeedbackEvents.$inferSelect;
+type RoutineSelectionPreferenceFeedbackEventRow =
+  typeof routineSelectionPreferenceFeedbackEvents.$inferSelect;
 type DailyPlanRow = typeof dailyPlans.$inferSelect;
 type DailyPlanItemRow = typeof dailyPlanItems.$inferSelect;
 type DailyPlanItemStateRow = typeof dailyPlanItemStates.$inferSelect;
 type IntegrationCredentialRow = typeof integrationCredentials.$inferSelect;
 type IntegrationConfirmationRow = typeof integrationConfirmations.$inferSelect;
 type IntegrationRequestRow = typeof integrationRequests.$inferSelect;
+type NaturalLanguageProposalRow = typeof naturalLanguageProposals.$inferSelect;
 type NotificationDeliveryRequestRow = typeof notificationDeliveryRequests.$inferSelect;
 type NotificationProfileRow = typeof notificationProfiles.$inferSelect;
 type NotificationRuleRow = typeof notificationRules.$inferSelect;
 type OneOffReminderRow = typeof oneOffReminders.$inferSelect;
 type NotificationIntentRow = typeof notificationIntents.$inferSelect;
+type NotificationDeliveryCommandRow = typeof notificationDeliveryCommands.$inferSelect;
 
 interface PlanningGraphDatabaseRow {
   readonly rowGroup: number;
   readonly rowPosition: number;
   readonly rowKind: string;
   readonly payload: unknown;
+}
+
+interface DailyPlanFitEvidenceDatabaseRow {
+  readonly planId: string;
+  readonly localDate: string;
+  readonly targetMinutes: unknown;
+  readonly targetTaskCount: unknown;
+  readonly itemId: string | null;
+  readonly scheduledMinutes: number | null;
+  readonly activityState: string | null;
+  readonly lastActivityEventId: string | null;
 }
 
 const dependentWorkItems = alias(workItems, "dependent_work_items");
@@ -274,6 +312,28 @@ function mapNotificationIntent(row: NotificationIntentRow): NotificationIntent {
   };
 }
 
+function mapNotificationDeliveryHistory(
+  row: NotificationDeliveryCommandRow,
+): NotificationDeliveryHistoryItem {
+  return {
+    deliveryId: row.id,
+    intentId: row.intentId,
+    kind: row.kind as NotificationKind,
+    targetType: row.targetType as NotificationTargetType,
+    title: row.titleSnapshot,
+    scheduledFor: new Date(row.scheduledFor),
+    localDate: localDate(row.localDate),
+    priority: row.priority,
+    status: row.status,
+    attempts: row.attempts,
+    availableAt: new Date(row.availableAt),
+    completedAt: row.completedAt === null ? null : new Date(row.completedAt),
+    lastFailureCode: row.lastFailureCode,
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+  };
+}
+
 function mapIntegrationCredential(row: IntegrationCredentialRow): IntegrationCredential {
   return {
     id: row.id,
@@ -348,6 +408,92 @@ function mapIntegrationRequest(row: IntegrationRequestRow): IntegrationRequestRe
     result: result as unknown as ConfirmedIntegrationCommandResult | null,
     createdAt: new Date(row.createdAt),
     completedAt: row.completedAt === null ? null : new Date(row.completedAt),
+  };
+}
+
+function mapNaturalLanguageProposal(
+  row: NaturalLanguageProposalRow,
+): NaturalLanguageProposalRecord {
+  const command = row.command as Readonly<Record<string, unknown>>;
+  if (
+    command === null ||
+    typeof command !== "object" ||
+    Array.isArray(command) ||
+    Object.keys(command).sort().join("\0") !== "title\0type" ||
+    command.type !== "work_item.create" ||
+    typeof command.title !== "string"
+  ) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal command is invalid.",
+    );
+  }
+  const typedCommand: NaturalLanguageWorkItemCommand = {
+    type: "work_item.create",
+    title: command.title,
+  };
+  const canonicalCommand = `{"title":${JSON.stringify(typedCommand.title)},"type":"work_item.create"}`;
+  const commandHash = createHash("sha256").update(canonicalCommand, "utf8").digest("hex");
+  if (canonicalCommand !== row.commandDisplay || commandHash !== row.commandHash) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal command does not match its digest.",
+    );
+  }
+  if (
+    !workItemPriorities.some((priority) => priority === row.reviewPriority) ||
+    (row.reviewPlanningDurationMinutes !== null &&
+      (!Number.isInteger(row.reviewPlanningDurationMinutes) ||
+        row.reviewPlanningDurationMinutes < 1 ||
+        row.reviewPlanningDurationMinutes > 43_200))
+  ) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal review fields are invalid.",
+    );
+  }
+  let reviewDueOn: LocalDate | null;
+  try {
+    reviewDueOn = row.reviewDueOn === null ? null : localDate(row.reviewDueOn);
+  } catch {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal review fields are invalid.",
+    );
+  }
+  const reviewDisplay = `{"dueOn":${JSON.stringify(reviewDueOn)},"planningDurationMinutes":${JSON.stringify(row.reviewPlanningDurationMinutes)},"priority":${JSON.stringify(row.reviewPriority)}}`;
+  const reviewHash = createHash("sha256").update(reviewDisplay, "utf8").digest("hex");
+  if (reviewHash !== row.reviewHash) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal review fields do not match their digest.",
+    );
+  }
+  return {
+    id: row.id,
+    workspaceId: workspaceId(row.workspaceId),
+    requestId: row.requestId,
+    promptHash: row.promptHash,
+    commandHash: row.commandHash,
+    reviewHash: row.reviewHash,
+    commandDisplay: row.commandDisplay,
+    command: typedCommand,
+    userSelection: {
+      priority: row.reviewPriority,
+      dueOn: reviewDueOn,
+      planningDurationMinutes: row.reviewPlanningDurationMinutes,
+    },
+    provider: row.provider,
+    model: row.model,
+    status: row.status,
+    expiresAt: new Date(row.expiresAt),
+    confirmationKeyHash: row.confirmationKeyHash,
+    resultWorkItemId: row.resultWorkItemId,
+    confirmedAt: row.confirmedAt === null ? null : new Date(row.confirmedAt),
+    cancelledAt: row.cancelledAt === null ? null : new Date(row.cancelledAt),
+    version: row.version,
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
   };
 }
 
@@ -497,6 +643,7 @@ function mapWorkItem(row: WorkItemRow): WorkItem {
   return {
     id: workItemId(row.id),
     workspaceId: workspaceId(row.workspaceId),
+    parentWorkItemId: row.parentWorkItemId === null ? null : workItemId(row.parentWorkItemId),
     title: row.title,
     description: row.description,
     status: row.status,
@@ -546,6 +693,7 @@ function mapPlanningGraphWorkItem(payload: unknown): WorkItem {
     value.id.length === 0 ||
     typeof value.workspaceId !== "string" ||
     value.workspaceId.length === 0 ||
+    !(value.parentWorkItemId === null || typeof value.parentWorkItemId === "string") ||
     typeof value.title !== "string" ||
     !(value.description === null || typeof value.description === "string") ||
     !workItemStatuses.some((status) => status === value.status) ||
@@ -561,6 +709,8 @@ function mapPlanningGraphWorkItem(payload: unknown): WorkItem {
   return {
     id: workItemId(value.id),
     workspaceId: workspaceId(value.workspaceId),
+    parentWorkItemId:
+      value.parentWorkItemId === null ? null : workItemId(value.parentWorkItemId as string),
     title: value.title,
     description: value.description,
     status: value.status as WorkItemStatus,
@@ -701,6 +851,24 @@ function mapRoutinePlanningFeedback(row: RoutinePlanningFeedbackEventRow): Routi
   };
 }
 
+function mapRoutineSelectionPreferenceFeedback(
+  row: RoutineSelectionPreferenceFeedbackEventRow,
+): RoutineSelectionPreferenceFeedback {
+  return {
+    id: routineSelectionPreferenceFeedbackId(row.id),
+    ingestedSequence: row.ingestedSequence,
+    workspaceId: workspaceId(row.workspaceId),
+    routineId: routineId(row.routineId),
+    kind: row.kind,
+    effectiveOn: localDate(row.effectiveOn),
+    timeZone: row.timeZone,
+    sourcePlanId: row.sourcePlanId === null ? null : dailyPlanId(row.sourcePlanId),
+    sourcePlanItemId: row.sourcePlanItemId === null ? null : planItemId(row.sourcePlanItemId),
+    idempotencyKey: row.idempotencyKey,
+    recordedAt: new Date(row.recordedAt),
+  };
+}
+
 function mapRoutineDurationInsightFeedback(
   row: RoutineDurationInsightFeedbackEventRow,
 ): RoutineDurationInsightFeedback {
@@ -714,6 +882,28 @@ function mapRoutineDurationInsightFeedback(
     routineVersion: row.routineVersion,
     observedMedianMinutes: row.observedMedianMinutes,
     suggestedExpectedMinutes: row.suggestedExpectedMinutes,
+    idempotencyKey: row.idempotencyKey,
+    recordedAt: new Date(row.recordedAt),
+  };
+}
+
+function mapDailyPlanFitInsightFeedback(
+  row: DailyPlanFitInsightFeedbackEventRow,
+): DailyPlanFitInsightFeedback {
+  return {
+    id: dailyPlanFitInsightFeedbackId(row.id),
+    ingestedSequence: row.ingestedSequence,
+    workspaceId: workspaceId(row.workspaceId),
+    forDate: localDate(row.forDate),
+    insightKey: row.insightKey,
+    kind: row.kind,
+    sampleCount: row.sampleCount,
+    typicalPlannedMinutes: row.typicalPlannedMinutes,
+    typicalCompletedMinutes: row.typicalCompletedMinutes,
+    typicalPlannedTaskCount: row.typicalPlannedTaskCount,
+    typicalCompletedTaskCount: row.typicalCompletedTaskCount,
+    suggestedTargetMinutes: row.suggestedTargetMinutes,
+    suggestedTargetTaskCount: row.suggestedTargetTaskCount,
     idempotencyKey: row.idempotencyKey,
     recordedAt: new Date(row.recordedAt),
   };
@@ -841,6 +1031,7 @@ class PostgresWorkItemRepository implements WorkItemRepository {
     await this.database.insert(workItems).values({
       id: item.id,
       workspaceId: item.workspaceId,
+      parentWorkItemId: item.parentWorkItemId,
       title: item.title,
       description: item.description,
       status: item.status,
@@ -859,6 +1050,7 @@ class PostgresWorkItemRepository implements WorkItemRepository {
     priority: WorkItemPriority | undefined,
     limit: number,
     offset: number,
+    parentWorkItemId?: WorkItemId,
   ): Promise<readonly WorkItem[]> {
     const rows = await this.database
       .select()
@@ -868,6 +1060,9 @@ class PostgresWorkItemRepository implements WorkItemRepository {
           eq(workItems.workspaceId, workspace),
           status === undefined ? undefined : eq(workItems.status, status),
           priority === undefined ? undefined : eq(workItems.priority, priority),
+          parentWorkItemId === undefined
+            ? undefined
+            : eq(workItems.parentWorkItemId, parentWorkItemId),
         ),
       )
       .orderBy(asc(workItems.createdAt), asc(workItems.id))
@@ -877,6 +1072,7 @@ class PostgresWorkItemRepository implements WorkItemRepository {
   }
 
   async listPlanningCandidates(workspace: WorkspaceId): Promise<readonly WorkItem[]> {
+    const childWorkItems = alias(workItems, "planning_child_work_items");
     const rows = await this.database
       .select()
       .from(workItems)
@@ -885,6 +1081,17 @@ class PostgresWorkItemRepository implements WorkItemRepository {
           eq(workItems.workspaceId, workspace),
           isNotNull(workItems.planningDurationMinutes),
           inArray(workItems.status, ["backlog", "planned", "in_progress"]),
+          notExists(
+            this.database
+              .select({ id: childWorkItems.id })
+              .from(childWorkItems)
+              .where(
+                and(
+                  eq(childWorkItems.workspaceId, workItems.workspaceId),
+                  eq(childWorkItems.parentWorkItemId, workItems.id),
+                ),
+              ),
+          ),
         ),
       )
       .orderBy(asc(workItems.id))
@@ -896,6 +1103,7 @@ class PostgresWorkItemRepository implements WorkItemRepository {
     const updated = await this.database
       .update(workItems)
       .set({
+        parentWorkItemId: item.parentWorkItemId,
         title: item.title,
         description: item.description,
         status: item.status,
@@ -1027,6 +1235,7 @@ export class PostgresWorkItemDependencyRepository implements WorkItemDependencyR
           select
             ${workItems.id},
             ${workItems.workspaceId},
+            ${workItems.parentWorkItemId},
             ${workItems.title},
             ${workItems.description},
             ${workItems.status},
@@ -1041,6 +1250,12 @@ export class PostgresWorkItemDependencyRepository implements WorkItemDependencyR
           where ${workItems.workspaceId} = ${workspace}
             and ${workItems.planningDurationMinutes} is not null
             and ${workItems.status} in ('backlog', 'planned', 'in_progress')
+            and not exists (
+              select 1
+              from ${workItems} as planning_child_work_items
+              where planning_child_work_items.workspace_id = ${workItems.workspaceId}
+                and planning_child_work_items.parent_work_item_id = ${workItems.id}
+            )
           order by ${workItems.id}
           limit ${workItemLimit}
         ),
@@ -1078,6 +1293,7 @@ export class PostgresWorkItemDependencyRepository implements WorkItemDependencyR
           jsonb_build_object(
             'id', candidate_work_items.id,
             'workspaceId', candidate_work_items.workspace_id,
+            'parentWorkItemId', candidate_work_items.parent_work_item_id,
             'title', candidate_work_items.title,
             'description', candidate_work_items.description,
             'status', candidate_work_items.status,
@@ -1571,6 +1787,29 @@ export class PostgresNotificationRepository implements NotificationRepository {
       .limit(limit)
       .offset(offset);
     return rows.map(mapNotificationIntent);
+  }
+
+  async listDeliveryHistory(
+    workspace: WorkspaceId,
+    fromInclusive: Date,
+    throughExclusive: Date,
+    limit: number,
+    offset: number,
+  ): Promise<readonly NotificationDeliveryHistoryItem[]> {
+    const rows = await this.database
+      .select()
+      .from(notificationDeliveryCommands)
+      .where(
+        and(
+          eq(notificationDeliveryCommands.workspaceId, workspace),
+          gte(notificationDeliveryCommands.scheduledFor, fromInclusive),
+          lt(notificationDeliveryCommands.scheduledFor, throughExclusive),
+        ),
+      )
+      .orderBy(asc(notificationDeliveryCommands.scheduledFor), asc(notificationDeliveryCommands.id))
+      .limit(limit)
+      .offset(offset);
+    return rows.map(mapNotificationDeliveryHistory);
   }
 
   async insertIntent(intent: NotificationIntent): Promise<NotificationIntent> {
@@ -2752,7 +2991,315 @@ export class PostgresRoutineDurationInsightFeedbackRepository implements Routine
   }
 }
 
+export class PostgresDailyPlanFitInsightFeedbackRepository implements DailyPlanFitInsightFeedbackRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async lockWorkspace(workspace: WorkspaceId): Promise<void> {
+    const canonicalWorkspace = workspace.toLowerCase();
+    await this.database.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`${canonicalWorkspace}:daily-plan-fit-feedback`}, 0))`,
+    );
+  }
+
+  async findLatestForKey(
+    workspace: WorkspaceId,
+    insightKey: string,
+  ): Promise<DailyPlanFitInsightFeedback | null> {
+    const [row] = await this.database
+      .select()
+      .from(dailyPlanFitInsightFeedbackEvents)
+      .where(
+        and(
+          eq(dailyPlanFitInsightFeedbackEvents.workspaceId, workspace),
+          eq(dailyPlanFitInsightFeedbackEvents.insightKey, insightKey),
+        ),
+      )
+      .orderBy(
+        desc(dailyPlanFitInsightFeedbackEvents.ingestedSequence),
+        desc(dailyPlanFitInsightFeedbackEvents.id),
+      )
+      .limit(1);
+    return row === undefined ? null : mapDailyPlanFitInsightFeedback(row);
+  }
+
+  async findByIdempotencyKey(
+    workspace: WorkspaceId,
+    idempotencyKey: string,
+  ): Promise<DailyPlanFitInsightFeedback | null> {
+    const [row] = await this.database
+      .select()
+      .from(dailyPlanFitInsightFeedbackEvents)
+      .where(
+        and(
+          eq(dailyPlanFitInsightFeedbackEvents.workspaceId, workspace),
+          eq(dailyPlanFitInsightFeedbackEvents.idempotencyKey, idempotencyKey),
+        ),
+      )
+      .limit(1);
+    return row === undefined ? null : mapDailyPlanFitInsightFeedback(row);
+  }
+
+  async append(feedback: DailyPlanFitInsightFeedback): Promise<DailyPlanFitInsightFeedback> {
+    const [inserted] = await this.database
+      .insert(dailyPlanFitInsightFeedbackEvents)
+      .values({
+        id: feedback.id,
+        workspaceId: feedback.workspaceId,
+        forDate: feedback.forDate,
+        insightKey: feedback.insightKey,
+        kind: feedback.kind,
+        sampleCount: feedback.sampleCount,
+        typicalPlannedMinutes: feedback.typicalPlannedMinutes,
+        typicalCompletedMinutes: feedback.typicalCompletedMinutes,
+        typicalPlannedTaskCount: feedback.typicalPlannedTaskCount,
+        typicalCompletedTaskCount: feedback.typicalCompletedTaskCount,
+        suggestedTargetMinutes: feedback.suggestedTargetMinutes,
+        suggestedTargetTaskCount: feedback.suggestedTargetTaskCount,
+        idempotencyKey: feedback.idempotencyKey,
+        recordedAt: feedback.recordedAt,
+      })
+      .onConflictDoNothing({
+        target: [
+          dailyPlanFitInsightFeedbackEvents.workspaceId,
+          dailyPlanFitInsightFeedbackEvents.idempotencyKey,
+        ],
+      })
+      .returning();
+    if (inserted !== undefined) return mapDailyPlanFitInsightFeedback(inserted);
+
+    const existing = await this.findByIdempotencyKey(feedback.workspaceId, feedback.idempotencyKey);
+    if (existing === null) {
+      throw new DomainError(
+        "daily_plan_fit_insight.feedback_write_conflict",
+        "Daily Plan Fit feedback could not be appended or loaded.",
+      );
+    }
+    const sameFeedback =
+      existing.workspaceId === feedback.workspaceId &&
+      existing.forDate === feedback.forDate &&
+      existing.insightKey === feedback.insightKey &&
+      existing.kind === feedback.kind &&
+      existing.sampleCount === feedback.sampleCount &&
+      existing.typicalPlannedMinutes === feedback.typicalPlannedMinutes &&
+      existing.typicalCompletedMinutes === feedback.typicalCompletedMinutes &&
+      existing.typicalPlannedTaskCount === feedback.typicalPlannedTaskCount &&
+      existing.typicalCompletedTaskCount === feedback.typicalCompletedTaskCount &&
+      existing.suggestedTargetMinutes === feedback.suggestedTargetMinutes &&
+      existing.suggestedTargetTaskCount === feedback.suggestedTargetTaskCount;
+    if (!sameFeedback) {
+      throw new DomainError(
+        "daily_plan_fit_insight.idempotency_conflict",
+        "This Daily Plan Fit idempotency key already belongs to different feedback.",
+      );
+    }
+    return existing;
+  }
+}
+
 const MAXIMUM_CURRENT_PLAN_BATCH_DATES = 366;
+
+export class PostgresRoutineSelectionPreferenceFeedbackRepository implements RoutineSelectionPreferenceFeedbackRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async lockIdempotencyKey(workspace: WorkspaceId, idempotencyKey: string): Promise<void> {
+    await this.database.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`${workspace}:routine-selection-preference:${idempotencyKey}`}, 0))`,
+    );
+  }
+
+  async findCurrentState(
+    workspace: WorkspaceId,
+    routine: RoutineId,
+  ): Promise<{ readonly feedbackVersion: number; readonly updatedAt: Date | null } | null> {
+    const [routineRow] = await this.database
+      .select({ version: routines.selectionPreferenceVersion })
+      .from(routines)
+      .where(and(eq(routines.workspaceId, workspace), eq(routines.id, routine)))
+      .limit(1);
+    if (routineRow === undefined) return null;
+    if (routineRow.version === 0) return { feedbackVersion: 0, updatedAt: null };
+    const [event] = await this.database
+      .select({ recordedAt: routineSelectionPreferenceFeedbackEvents.recordedAt })
+      .from(routineSelectionPreferenceFeedbackEvents)
+      .where(
+        and(
+          eq(routineSelectionPreferenceFeedbackEvents.workspaceId, workspace),
+          eq(routineSelectionPreferenceFeedbackEvents.routineId, routine),
+          eq(routineSelectionPreferenceFeedbackEvents.feedbackVersion, routineRow.version),
+        ),
+      )
+      .limit(1);
+    if (event === undefined) {
+      throw new DomainError(
+        "planning.selection_preference_state_invalid",
+        "Routine selection preference state is missing its current event.",
+      );
+    }
+    return { feedbackVersion: routineRow.version, updatedAt: new Date(event.recordedAt) };
+  }
+
+  async findByIdempotencyKey(
+    workspace: WorkspaceId,
+    idempotencyKey: string,
+  ): Promise<{
+    readonly feedback: RoutineSelectionPreferenceFeedback;
+    readonly feedbackVersion: number;
+  } | null> {
+    const [row] = await this.database
+      .select()
+      .from(routineSelectionPreferenceFeedbackEvents)
+      .where(
+        and(
+          eq(routineSelectionPreferenceFeedbackEvents.workspaceId, workspace),
+          eq(routineSelectionPreferenceFeedbackEvents.idempotencyKey, idempotencyKey),
+        ),
+      )
+      .limit(1);
+    return row === undefined
+      ? null
+      : {
+          feedback: mapRoutineSelectionPreferenceFeedback(row),
+          feedbackVersion: row.feedbackVersion,
+        };
+  }
+
+  async lockAndGetCurrentVersion(workspace: WorkspaceId, routine: RoutineId): Promise<number> {
+    const [row] = await this.database
+      .select({ version: routines.selectionPreferenceVersion })
+      .from(routines)
+      .where(and(eq(routines.workspaceId, workspace), eq(routines.id, routine)))
+      .limit(1)
+      .for("update");
+    if (row === undefined) {
+      throw new DomainError("routine.not_found", "The routine does not exist.");
+    }
+    return row.version;
+  }
+
+  async listForPlanning(
+    workspace: WorkspaceId,
+    routineIds: readonly RoutineId[],
+    throughDate: LocalDate,
+  ): Promise<readonly RoutineSelectionPreferenceFeedback[]> {
+    if (routineIds.length === 0) return [];
+    const earliest = addLocalDays(throughDate, -(ROUTINE_SELECTION_PREFERENCE_LOOKBACK_DAYS - 1));
+    // Rank before bounding so one heavily-used routine cannot consume a
+    // workspace-wide LIMIT and hide another candidate's preference history.
+    // Nine newest rows/routine preserves the latest reset plus the eight
+    // directional rows that can affect the domain's canonical projection.
+    const rankedFeedback = this.database
+      .select({
+        ...getTableColumns(routineSelectionPreferenceFeedbackEvents),
+        preferenceRank: sql<number>`row_number() over (
+          partition by ${routineSelectionPreferenceFeedbackEvents.routineId}
+          order by
+            ${routineSelectionPreferenceFeedbackEvents.ingestedSequence} desc,
+            ${routineSelectionPreferenceFeedbackEvents.id} desc
+        )::integer`.as("preference_rank"),
+      })
+      .from(routineSelectionPreferenceFeedbackEvents)
+      .where(
+        and(
+          eq(routineSelectionPreferenceFeedbackEvents.workspaceId, workspace),
+          inArray(routineSelectionPreferenceFeedbackEvents.routineId, [...routineIds]),
+          gte(routineSelectionPreferenceFeedbackEvents.effectiveOn, earliest),
+          lte(routineSelectionPreferenceFeedbackEvents.effectiveOn, throughDate),
+        ),
+      )
+      .as("ranked_routine_selection_preference_feedback");
+    const rows = await this.database
+      .select()
+      .from(rankedFeedback)
+      .where(lte(rankedFeedback.preferenceRank, ROUTINE_SELECTION_PREFERENCE_EVENT_LIMIT + 1))
+      .orderBy(
+        asc(rankedFeedback.routineId),
+        desc(rankedFeedback.ingestedSequence),
+        desc(rankedFeedback.id),
+      );
+
+    return rows.map(mapRoutineSelectionPreferenceFeedback);
+  }
+
+  async listForPlanningThroughVersion(
+    workspace: WorkspaceId,
+    routine: RoutineId,
+    throughDate: LocalDate,
+    throughFeedbackVersion: number,
+  ): Promise<readonly RoutineSelectionPreferenceFeedback[]> {
+    const earliest = addLocalDays(throughDate, -(ROUTINE_SELECTION_PREFERENCE_LOOKBACK_DAYS - 1));
+    const rows = await this.database
+      .select()
+      .from(routineSelectionPreferenceFeedbackEvents)
+      .where(
+        and(
+          eq(routineSelectionPreferenceFeedbackEvents.workspaceId, workspace),
+          eq(routineSelectionPreferenceFeedbackEvents.routineId, routine),
+          lte(routineSelectionPreferenceFeedbackEvents.feedbackVersion, throughFeedbackVersion),
+          gte(routineSelectionPreferenceFeedbackEvents.effectiveOn, earliest),
+          lte(routineSelectionPreferenceFeedbackEvents.effectiveOn, throughDate),
+        ),
+      )
+      .orderBy(
+        desc(routineSelectionPreferenceFeedbackEvents.ingestedSequence),
+        desc(routineSelectionPreferenceFeedbackEvents.id),
+      )
+      // The latest reset plus eight directional events completely determine the projection.
+      .limit(ROUTINE_SELECTION_PREFERENCE_EVENT_LIMIT + 1);
+    return rows.map(mapRoutineSelectionPreferenceFeedback);
+  }
+
+  async appendAndAdvance(
+    feedback: RoutineSelectionPreferenceFeedback,
+    expectedFeedbackVersion: number,
+  ): Promise<{
+    readonly feedback: RoutineSelectionPreferenceFeedback;
+    readonly feedbackVersion: number;
+  }> {
+    const [advanced] = await this.database
+      .update(routines)
+      .set({ selectionPreferenceVersion: expectedFeedbackVersion + 1 })
+      .where(
+        and(
+          eq(routines.workspaceId, feedback.workspaceId),
+          eq(routines.id, feedback.routineId),
+          eq(routines.selectionPreferenceVersion, expectedFeedbackVersion),
+        ),
+      )
+      .returning({ version: routines.selectionPreferenceVersion });
+    if (advanced === undefined) {
+      throw new DomainError(
+        "planning.selection_preference_version_conflict",
+        "Routine selection preference feedback changed before this instruction was recorded.",
+      );
+    }
+    const [inserted] = await this.database
+      .insert(routineSelectionPreferenceFeedbackEvents)
+      .values({
+        id: feedback.id,
+        workspaceId: feedback.workspaceId,
+        routineId: feedback.routineId,
+        feedbackVersion: advanced.version,
+        kind: feedback.kind,
+        effectiveOn: feedback.effectiveOn,
+        timeZone: feedback.timeZone,
+        sourcePlanId: feedback.sourcePlanId,
+        sourcePlanItemId: feedback.sourcePlanItemId,
+        idempotencyKey: feedback.idempotencyKey,
+        recordedAt: feedback.recordedAt,
+      })
+      .returning();
+    if (inserted === undefined) {
+      throw new DomainError(
+        "planning.selection_preference_write_conflict",
+        "The selection preference event could not be appended.",
+      );
+    }
+    return {
+      feedback: mapRoutineSelectionPreferenceFeedback(inserted),
+      feedbackVersion: advanced.version,
+    };
+  }
+}
 
 export class PostgresDailyPlanRepository implements DailyPlanRepository {
   constructor(private readonly database: DatabaseExecutor) {}
@@ -3084,6 +3631,155 @@ export class PostgresDailyPlanRepository implements DailyPlanRepository {
       });
     }
     return currentByDate;
+  }
+
+  async listFitEvidence(
+    workspace: WorkspaceId,
+    forDate: LocalDate,
+    lookbackDays: number,
+    candidateLimit: number,
+  ): Promise<readonly DailyPlanFitEvidencePlan[]> {
+    if (!Number.isSafeInteger(lookbackDays) || lookbackDays < 1 || lookbackDays > 366) {
+      throw new DomainError(
+        "daily_plan_fit_insight.lookback_invalid",
+        "Daily Plan Fit lookback must be between 1 and 366 days.",
+      );
+    }
+    if (!Number.isSafeInteger(candidateLimit) || candidateLimit < 1 || candidateLimit > 366) {
+      throw new DomainError(
+        "daily_plan_fit_insight.candidate_limit_invalid",
+        "Daily Plan Fit candidate limit must be between 1 and 366 plans.",
+      );
+    }
+    const maximumRows = candidateLimit * dailyPlanFitInsightMaximumItemsPerPlan;
+    const rowLimit = maximumRows + 1;
+
+    const rows = (await this.database.execute(
+      sql<DailyPlanFitEvidenceDatabaseRow>`
+        with candidate_plans as materialized (
+          select
+            ${dailyPlans.id} as plan_id,
+            ${dailyPlanHeads.localDate} as local_date,
+            ${dailyPlans.inputSnapshot} #>> '{request,targetMinutes}' as target_minutes,
+            ${dailyPlans.inputSnapshot} #>> '{request,targetTaskCount}' as target_task_count
+          from ${dailyPlanHeads}
+          inner join ${dailyPlans}
+            on ${dailyPlans.workspaceId} = ${dailyPlanHeads.workspaceId}
+           and ${dailyPlans.id} = ${dailyPlanHeads.currentPlanId}
+          where ${dailyPlanHeads.workspaceId} = ${workspace}
+            and ${dailyPlanHeads.localDate} >= (${forDate}::date - ${lookbackDays}::integer)
+            and ${dailyPlanHeads.localDate} < ${forDate}::date
+          order by ${dailyPlanHeads.localDate} desc, ${dailyPlans.id} desc
+          limit ${candidateLimit}
+        )
+        select
+          candidate_plans.plan_id as "planId",
+          candidate_plans.local_date as "localDate",
+          candidate_plans.target_minutes as "targetMinutes",
+          candidate_plans.target_task_count as "targetTaskCount",
+          ${dailyPlanItems.id} as "itemId",
+          ${dailyPlanItems.scheduledMinutes} as "scheduledMinutes",
+          ${dailyPlanItemStates.activityState} as "activityState",
+          ${dailyPlanItemStates.lastActivityEventId} as "lastActivityEventId"
+        from candidate_plans
+        left join ${dailyPlanItems}
+          on ${dailyPlanItems.workspaceId} = ${workspace}
+         and ${dailyPlanItems.planId} = candidate_plans.plan_id
+        left join ${dailyPlanItemStates}
+          on ${dailyPlanItemStates.workspaceId} = ${dailyPlanItems.workspaceId}
+         and ${dailyPlanItemStates.planId} = ${dailyPlanItems.planId}
+         and ${dailyPlanItemStates.itemId} = ${dailyPlanItems.id}
+        order by candidate_plans.local_date desc, candidate_plans.plan_id desc,
+          ${dailyPlanItems.position} asc nulls last
+        limit ${rowLimit}
+      `,
+    )) as unknown as readonly DailyPlanFitEvidenceDatabaseRow[];
+    if (rows.length > maximumRows) {
+      throw new DomainError(
+        "daily_plan_fit_insight.item_pool_too_large",
+        "Daily Plan Fit evidence exceeds the bounded item pool.",
+      );
+    }
+
+    const positiveInteger = (value: unknown, maximum: number): number | null => {
+      const text = typeof value === "number" ? String(value) : value;
+      if (typeof text !== "string" || !/^[1-9][0-9]*$/.test(text)) return null;
+      const parsed = Number(text);
+      return Number.isSafeInteger(parsed) && parsed <= maximum ? parsed : null;
+    };
+    const byPlan = new Map<
+      string,
+      {
+        readonly evidence: {
+          workspaceId: WorkspaceId;
+          planId: DailyPlan["id"];
+          date: LocalDate;
+          targetMinutes: number;
+          targetTaskCount: number;
+          items: DailyPlanFitEvidencePlan["items"][number][];
+        };
+        readonly itemIds: Set<string>;
+        invalid: boolean;
+      }
+    >();
+    const invalidPlanIds = new Set<string>();
+
+    for (const row of rows) {
+      const targetMinutes = positiveInteger(row.targetMinutes, 43_200);
+      const targetTaskCount = positiveInteger(row.targetTaskCount, 512);
+      if (targetMinutes === null || targetTaskCount === null) {
+        invalidPlanIds.add(row.planId);
+        byPlan.delete(row.planId);
+        continue;
+      }
+      if (invalidPlanIds.has(row.planId)) continue;
+      let grouped = byPlan.get(row.planId);
+      if (grouped === undefined) {
+        grouped = {
+          evidence: {
+            workspaceId: workspace,
+            planId: dailyPlanId(row.planId),
+            date: localDate(row.localDate),
+            targetMinutes,
+            targetTaskCount,
+            items: [],
+          },
+          itemIds: new Set(),
+          invalid: false,
+        };
+        byPlan.set(row.planId, grouped);
+      }
+      if (row.itemId === null) continue;
+      if (
+        row.scheduledMinutes === null ||
+        !Number.isSafeInteger(row.scheduledMinutes) ||
+        row.scheduledMinutes < 1 ||
+        grouped.itemIds.has(row.itemId)
+      ) {
+        grouped.invalid = true;
+        continue;
+      }
+      if (grouped.itemIds.size >= dailyPlanFitInsightMaximumItemsPerPlan) {
+        throw new DomainError(
+          "daily_plan_fit_insight.item_limit_exceeded",
+          "A Plan Fit evidence plan exceeds the bounded item limit.",
+        );
+      }
+      grouped.itemIds.add(row.itemId);
+      const activityState = planItemActivityStates.some((state) => state === row.activityState)
+        ? (row.activityState as DailyPlanFitEvidencePlan["items"][number]["activityState"])
+        : "pending";
+      grouped.evidence.items.push({
+        id: planItemId(row.itemId),
+        scheduledMinutes: row.scheduledMinutes,
+        activityState,
+        lastActivityEventId:
+          row.lastActivityEventId === null ? null : activityEventId(row.lastActivityEventId),
+      });
+    }
+    return [...byPlan.values()]
+      .filter((grouped) => !grouped.invalid)
+      .map((grouped) => grouped.evidence);
   }
 
   async setItemLock(input: SetPlanItemLockInput): Promise<PlanItemLockResult> {
@@ -3996,6 +4692,134 @@ export class PostgresIntegrationRequestRepository implements IntegrationRequestR
   }
 }
 
+export class PostgresNaturalLanguageProposalRepository implements NaturalLanguageProposalRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async findByRequestId(
+    targetWorkspaceId: WorkspaceId,
+    requestId: string,
+  ): Promise<NaturalLanguageProposalRecord | null> {
+    const [row] = await this.database
+      .select()
+      .from(naturalLanguageProposals)
+      .where(
+        and(
+          eq(naturalLanguageProposals.workspaceId, targetWorkspaceId),
+          eq(naturalLanguageProposals.requestId, requestId),
+        ),
+      )
+      .limit(1);
+    return row === undefined ? null : mapNaturalLanguageProposal(row);
+  }
+
+  async findByIdForUpdate(
+    targetWorkspaceId: WorkspaceId,
+    proposalId: string,
+  ): Promise<NaturalLanguageProposalRecord | null> {
+    const [row] = await this.database
+      .select()
+      .from(naturalLanguageProposals)
+      .where(
+        and(
+          eq(naturalLanguageProposals.workspaceId, targetWorkspaceId),
+          eq(naturalLanguageProposals.id, proposalId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    return row === undefined ? null : mapNaturalLanguageProposal(row);
+  }
+
+  async insertOrFind(record: NaturalLanguageProposalRecord): Promise<{
+    readonly kind: "inserted" | "existing";
+    readonly proposal: NaturalLanguageProposalRecord;
+  }> {
+    const [row] = await this.database
+      .insert(naturalLanguageProposals)
+      .values({
+        id: record.id,
+        workspaceId: record.workspaceId,
+        requestId: record.requestId,
+        promptHash: record.promptHash,
+        commandHash: record.commandHash,
+        reviewHash: record.reviewHash,
+        commandDisplay: record.commandDisplay,
+        command: record.command as unknown as Record<string, unknown>,
+        reviewPriority: record.userSelection.priority,
+        reviewDueOn: record.userSelection.dueOn,
+        reviewPlanningDurationMinutes: record.userSelection.planningDurationMinutes,
+        provider: record.provider,
+        model: record.model,
+        status: record.status,
+        expiresAt: record.expiresAt,
+        confirmationKeyHash: record.confirmationKeyHash,
+        resultWorkItemId: record.resultWorkItemId,
+        confirmedAt: record.confirmedAt,
+        cancelledAt: record.cancelledAt,
+        version: record.version,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+      })
+      .onConflictDoUpdate({
+        target: [naturalLanguageProposals.workspaceId, naturalLanguageProposals.requestId],
+        // A no-op update serializes concurrent generation attempts and returns the winner.
+        set: { requestId: sql`${naturalLanguageProposals.requestId}` },
+      })
+      .returning({
+        ...getTableColumns(naturalLanguageProposals),
+        inserted: sql<boolean>`xmax = 0`.as("inserted"),
+      });
+    if (row === undefined) {
+      throw new DomainError(
+        "natural_language.proposal_write_conflict",
+        "The natural-language proposal could not be persisted.",
+      );
+    }
+    return {
+      kind: row.inserted ? "inserted" : "existing",
+      proposal: mapNaturalLanguageProposal(row),
+    };
+  }
+
+  async save(record: NaturalLanguageProposalRecord, expectedVersion: number): Promise<void> {
+    const updated = await this.database
+      .update(naturalLanguageProposals)
+      .set({
+        commandHash: record.commandHash,
+        reviewHash: record.reviewHash,
+        commandDisplay: record.commandDisplay,
+        command: record.command as unknown as Record<string, unknown>,
+        reviewPriority: record.userSelection.priority,
+        reviewDueOn: record.userSelection.dueOn,
+        reviewPlanningDurationMinutes: record.userSelection.planningDurationMinutes,
+        provider: record.provider,
+        model: record.model,
+        status: record.status,
+        expiresAt: record.expiresAt,
+        confirmationKeyHash: record.confirmationKeyHash,
+        resultWorkItemId: record.resultWorkItemId,
+        confirmedAt: record.confirmedAt,
+        cancelledAt: record.cancelledAt,
+        version: record.version,
+        updatedAt: record.updatedAt,
+      })
+      .where(
+        and(
+          eq(naturalLanguageProposals.id, record.id),
+          eq(naturalLanguageProposals.workspaceId, record.workspaceId),
+          eq(naturalLanguageProposals.version, expectedVersion),
+        ),
+      )
+      .returning({ id: naturalLanguageProposals.id });
+    if (updated.length === 0) {
+      throw new DomainError(
+        "natural_language.version_conflict",
+        "The natural-language proposal changed before it could be saved.",
+      );
+    }
+  }
+}
+
 function createTransactionContext(database: DatabaseExecutor): TransactionContext {
   return {
     workspaces: new PostgresWorkspaceRepository(database),
@@ -4006,6 +4830,10 @@ function createTransactionContext(database: DatabaseExecutor): TransactionContex
     routines: new PostgresRoutineRepository(database),
     activityEvents: new PostgresActivityEventRepository(database),
     routineDurationInsightFeedback: new PostgresRoutineDurationInsightFeedbackRepository(database),
+    dailyPlanFitInsightFeedback: new PostgresDailyPlanFitInsightFeedbackRepository(database),
+    routineSelectionPreferenceFeedback: new PostgresRoutineSelectionPreferenceFeedbackRepository(
+      database,
+    ),
     dailyPlans: new PostgresDailyPlanRepository(database),
     notifications: new PostgresNotificationRepository(database),
   };
@@ -4022,10 +4850,22 @@ function createIntegrationTransactionContext(
     notificationDeliveryRequests: new PostgresNotificationDeliveryRequestRepository(database),
     workspaces: new PostgresWorkspaceRepository(database),
     workItems: new PostgresWorkItemRepository(database),
+    workItemDependencies: new PostgresWorkItemDependencyRepository(database),
     scheduleBlocks: new PostgresScheduleBlockRepository(database),
     auditEvents: new PostgresAuditEventRepository(database),
     dailyPlans: new PostgresDailyPlanRepository(database),
     notifications: new PostgresNotificationRepository(database),
+  };
+}
+
+function createNaturalLanguageProposalTransactionContext(
+  database: DatabaseExecutor,
+): NaturalLanguageProposalTransactionContext {
+  return {
+    workspaces: new PostgresWorkspaceRepository(database),
+    workItems: new PostgresWorkItemRepository(database),
+    auditEvents: new PostgresAuditEventRepository(database),
+    proposals: new PostgresNaturalLanguageProposalRepository(database),
   };
 }
 
@@ -4081,6 +4921,37 @@ export class PostgresIntegrationUnitOfWork implements IntegrationUnitOfWork {
             isolationLevel:
               options?.isolationLevel === "read_committed" ? "read committed" : "serializable",
           },
+        );
+      } catch (error) {
+        if (databaseErrorCode(error) !== "40001" || retry >= serializationRetryLimit) throw error;
+        await waitForSerializationRetry(retry);
+        retry += 1;
+      }
+    }
+  }
+}
+
+export class PostgresNaturalLanguageProposalUnitOfWork implements NaturalLanguageProposalUnitOfWork {
+  constructor(private readonly connection: DatabaseConnection) {}
+
+  async run<Result>(
+    operation: (context: NaturalLanguageProposalTransactionContext) => Promise<Result>,
+    signal?: AbortSignal,
+  ): Promise<Result> {
+    let retry = 0;
+    while (true) {
+      try {
+        signal?.throwIfAborted();
+        return await this.connection.db.transaction(
+          async (transaction) => {
+            signal?.throwIfAborted();
+            const result = await operation(
+              createNaturalLanguageProposalTransactionContext(transaction),
+            );
+            signal?.throwIfAborted();
+            return result;
+          },
+          { isolationLevel: "serializable" },
         );
       } catch (error) {
         if (databaseErrorCode(error) !== "40001" || retry >= serializationRetryLimit) throw error;

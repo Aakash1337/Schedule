@@ -1,4 +1,4 @@
-export type AppSection = "today" | "work" | "routines" | "calendar";
+export type AppSection = "today" | "work" | "routines" | "calendar" | "reminders";
 
 export interface Workspace {
   readonly id: string;
@@ -14,17 +14,70 @@ export type WorkItemPriority = "none" | "low" | "medium" | "high" | "urgent";
 export interface WorkItem {
   readonly id: string;
   readonly workspaceId: string;
+  /** Null marks a root item; otherwise this is a direct subtask of the referenced work item. */
+  readonly parentWorkItemId: string | null;
   readonly title: string;
   readonly description: string | null;
   readonly status: WorkItemStatus;
   readonly priority: WorkItemPriority;
   /** Local calendar date in YYYY-MM-DD form, when the work has a deadline. */
   readonly dueOn: string | null;
-  /** A null duration keeps this one-time item out of automatic daily plans. */
+  /** A null duration keeps this one-time item out of automatic daily plans. Parents are containers. */
   readonly planningDurationMinutes: number | null;
   readonly version: number;
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+export interface NaturalLanguageWorkItemCommand {
+  readonly type: "work_item.create";
+  readonly title: string;
+}
+
+export type NaturalLanguageProposalStatus = "pending" | "confirmed" | "cancelled";
+
+export interface NaturalLanguageProposalUserSelection {
+  readonly priority: WorkItemPriority;
+  readonly dueOn: string | null;
+  readonly planningDurationMinutes: number | null;
+}
+
+export interface NaturalLanguageProposal {
+  readonly id: string;
+  readonly requestId: string;
+  readonly commandHash: string;
+  readonly commandDisplay: string;
+  readonly command: NaturalLanguageWorkItemCommand;
+  readonly userSelection: NaturalLanguageProposalUserSelection;
+  readonly provider: string;
+  readonly model: string | null;
+  readonly status: NaturalLanguageProposalStatus;
+  readonly expiresAt: string;
+  readonly version: number;
+}
+
+export interface NaturalLanguageProposalResult {
+  readonly version: "schedule.natural-language/v1";
+  readonly requestId: string;
+  readonly status: "proposal" | "no_proposal" | "unavailable";
+  readonly reason: string | null;
+  readonly summary: string | null;
+  readonly warnings: readonly string[];
+  readonly proposal: NaturalLanguageProposal | null;
+  readonly provenance: {
+    readonly provider: "disabled" | "ollama" | "unknown";
+    readonly model: string | null;
+    readonly requestedAt: string;
+    readonly completedAt: string;
+    readonly latencyMs: number;
+  };
+}
+
+export interface NaturalLanguageConfirmationResult {
+  readonly proposalId: string;
+  readonly commandHash: string;
+  readonly replayed: boolean;
+  readonly workItem: WorkItem;
 }
 
 /** A directed edge: the dependent waits for the prerequisite to be done. */
@@ -103,6 +156,18 @@ export interface Routine {
   readonly version: number;
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+export type RoutineSelectionPreferenceKind = "more_often" | "less_often" | "reset";
+
+/** Explicit, reversible influence on this routine's selection in future plans. */
+export interface RoutineSelectionPreferenceState {
+  readonly routineId: string;
+  readonly feedbackVersion: number;
+  readonly activeEventCount: number;
+  readonly score: number;
+  readonly reason: string | null;
+  readonly updatedAt: string | null;
 }
 
 export type RoutineDurationInsightStatus =
@@ -235,6 +300,84 @@ export interface CurrentDailyPlan extends DailyPlan {
   readonly headVersion: number;
 }
 
+export interface DailyPlanAlternativeItem {
+  readonly sourceType: "routine" | "work_item";
+  readonly routineId: string | null;
+  readonly workItemId: string | null;
+  readonly title: string;
+  readonly windowIndex: number;
+  readonly scheduledMinutes: number;
+  readonly partialSession: boolean;
+  readonly score: number;
+  readonly reasons: readonly string[];
+}
+
+export interface DailyPlanAlternative {
+  readonly candidateKey: string;
+  readonly items: readonly DailyPlanAlternativeItem[];
+  readonly totalMinutes: number;
+  readonly taskCount: number;
+  readonly fitness: number;
+  readonly warnings: readonly string[];
+  readonly deltaMinutes: number;
+  readonly deltaTaskCount: number;
+  readonly addedSourceKeys: readonly string[];
+  readonly removedSourceKeys: readonly string[];
+}
+
+export interface DailyPlanAlternativesResult {
+  readonly sourcePlanId: string;
+  readonly sourceHeadVersion: number;
+  readonly alternatives: readonly DailyPlanAlternative[];
+}
+
+export type DailyPlanFitInsightStatus = "insufficient_history" | "aligned" | "suggested";
+export type DailyPlanFitInsightDisposition = "available" | "dismissed";
+export type DailyPlanFitInsightFeedbackKind = "dismissed" | "reset";
+
+/** Deterministic, read-only target guidance derived from fully resolved past plans. */
+export interface DailyPlanFitInsight {
+  readonly status: DailyPlanFitInsightStatus;
+  readonly insightKey: string | null;
+  readonly disposition: DailyPlanFitInsightDisposition;
+  readonly dismissedAt: string | null;
+  readonly forDate: string;
+  readonly windowStartedOn: string;
+  readonly windowEndedOn: string;
+  readonly lookbackDays: number;
+  readonly sampleCount: number;
+  readonly minimumSamples: number;
+  readonly maximumSamples: number;
+  readonly evaluatedAt: string;
+  readonly typicalPlannedMinutes: number | null;
+  readonly typicalCompletedMinutes: number | null;
+  readonly materialThresholdMinutes: number | null;
+  readonly typicalPlannedTaskCount: number | null;
+  readonly typicalCompletedTaskCount: number | null;
+  readonly materialThresholdTaskCount: number | null;
+  readonly suggestedTargetMinutes: number | null;
+  readonly suggestedTargetTaskCount: number | null;
+}
+
+/** Immutable user feedback about one exact Daily Plan Fit evidence snapshot. */
+export interface DailyPlanFitInsightFeedback {
+  readonly id: string;
+  readonly ingestedSequence: number;
+  readonly workspaceId: string;
+  readonly forDate: string;
+  readonly insightKey: string;
+  readonly kind: DailyPlanFitInsightFeedbackKind;
+  readonly sampleCount: number;
+  readonly typicalPlannedMinutes: number;
+  readonly typicalCompletedMinutes: number;
+  readonly typicalPlannedTaskCount: number;
+  readonly typicalCompletedTaskCount: number;
+  readonly suggestedTargetMinutes: number;
+  readonly suggestedTargetTaskCount: number;
+  readonly idempotencyKey: string;
+  readonly recordedAt: string;
+}
+
 export type SchedulingAdviceUnavailableReason =
   | "disabled"
   | "busy"
@@ -295,6 +438,110 @@ export interface SchedulingAdviceResult {
       readonly backlog: boolean;
     };
   };
+}
+
+export type QuietHoursPolicy = "skip" | "next_allowed";
+export type NotificationRuleKind =
+  "daily_digest" | "daily_follow_up" | "plan_window_open" | "schedule_block_lead" | "work_item_due";
+export type NotificationKind = NotificationRuleKind | "one_off";
+export type NotificationTargetType =
+  "workspace" | "daily_plan" | "schedule_block" | "work_item" | "one_off";
+
+export interface NotificationProfile {
+  readonly workspaceId: string;
+  readonly enabled: boolean;
+  readonly timeZone: string;
+  readonly quietHoursStartMinute: number | null;
+  readonly quietHoursEndMinute: number | null;
+  readonly quietHoursPolicy: QuietHoursPolicy;
+  readonly catchUpWindowMinutes: number;
+  readonly dailyIntentLimit: number;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface NotificationRule {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly kind: NotificationRuleKind;
+  readonly enabled: boolean;
+  readonly localMinute: number | null;
+  readonly leadMinutes: number | null;
+  readonly cooldownMinutes: number;
+  readonly priority: number;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface OneOffReminder {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly title: string;
+  readonly scheduledFor: string;
+  readonly cancelledAt: string | null;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface NotificationIntent {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly ruleId: string | null;
+  readonly oneOffReminderId: string | null;
+  readonly kind: NotificationKind;
+  readonly occurrenceKey: string;
+  readonly targetType: NotificationTargetType;
+  readonly targetId: string | null;
+  readonly titleSnapshot: string | null;
+  readonly scheduledFor: string;
+  readonly localDate: string;
+  readonly priority: number;
+  readonly policySnapshot: Readonly<Record<string, string | number | boolean | null>>;
+  readonly localTimeResolution: "exact" | "gap_later" | "overlap_earlier";
+  readonly adjustedForQuietHours: boolean;
+  readonly caughtUp: boolean;
+  readonly createdAt: string;
+}
+
+export type NotificationSuppressionReason =
+  | "profile_disabled"
+  | "quiet_hours"
+  | "outside_catch_up"
+  | "outside_window"
+  | "cooldown"
+  | "daily_limit";
+
+export interface NotificationMaterializationResult {
+  readonly created: readonly NotificationIntent[];
+  readonly existing: readonly NotificationIntent[];
+  readonly suppressed: readonly {
+    readonly occurrenceKey: string;
+    readonly reason: NotificationSuppressionReason;
+  }[];
+}
+
+export type NotificationDeliveryStatus =
+  "pending" | "processing" | "delivered" | "dead_letter" | "invalidated";
+
+export interface NotificationDeliveryHistoryItem {
+  readonly deliveryId: string;
+  readonly intentId: string;
+  readonly kind: NotificationKind;
+  readonly targetType: NotificationTargetType;
+  readonly title: string | null;
+  readonly scheduledFor: string;
+  readonly localDate: string;
+  readonly priority: number;
+  readonly status: NotificationDeliveryStatus;
+  readonly attempts: number;
+  readonly availableAt: string;
+  readonly completedAt: string | null;
+  readonly lastFailureCode: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
 }
 
 export interface Page<T> {

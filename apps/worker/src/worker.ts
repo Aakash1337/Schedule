@@ -12,12 +12,14 @@ import {
 } from "@schedule/database";
 
 import { OutboxHandlerFailure, type OutboxDispatcher } from "./dispatcher.js";
+import type { OutboxWorkerTelemetry } from "./observability.js";
 
 export interface OutboxWorkerOptions {
   readonly leaseDurationMs?: number;
   readonly heartbeatIntervalMs?: number;
   readonly shutdownGracePeriodMs?: number;
   readonly excludedTopics?: readonly string[];
+  readonly telemetry?: OutboxWorkerTelemetry;
 }
 
 export const DEFAULT_OUTBOX_HEARTBEAT_INTERVAL_MS = Math.floor(
@@ -28,6 +30,16 @@ export const DEFAULT_OUTBOX_SHUTDOWN_GRACE_PERIOD_MS = 30_000;
 const HANDLER_FAILURE_DETAIL = "Outbox handler execution failed";
 const UNHANDLED_TOPIC_FAILURE_DETAIL = "No outbox handler is registered for this topic";
 const LEASE_LOSS_FAILURE_DETAIL = "outbox lease lost; worker restart required";
+
+const noOpTelemetry: OutboxWorkerTelemetry = {
+  recordOutboxClaimed: () => undefined,
+  recordOutboxCompleted: () => undefined,
+  recordOutboxRetried: () => undefined,
+  recordOutboxDeadLettered: () => undefined,
+  recordOutboxStaleClaim: () => undefined,
+  recordOutboxLeaseRenewalFailure: () => undefined,
+  recordOutboxShutdownDeadline: () => undefined,
+};
 
 const sleep = (milliseconds: number, signal: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
@@ -41,7 +53,12 @@ const sleep = (milliseconds: number, signal: AbortSignal): Promise<void> =>
     if (signal.aborted) finish();
   });
 
-const logStaleClaim = (event: ClaimedOutboxEvent, operation: string): void => {
+const logStaleClaim = (
+  event: ClaimedOutboxEvent,
+  operation: string,
+  telemetry: OutboxWorkerTelemetry,
+): void => {
+  telemetry.recordOutboxStaleClaim();
   console.error(
     JSON.stringify({
       level: "error",
@@ -57,7 +74,9 @@ const logStaleClaim = (event: ClaimedOutboxEvent, operation: string): void => {
 const logDeadLetter = (
   event: Pick<DeadLetteredOutboxEvent, "id" | "topic" | "attempts">,
   failureClass: "handler_error" | "unhandled_topic" | "expired_claim_recovery",
+  telemetry: OutboxWorkerTelemetry,
 ): void => {
+  telemetry.recordOutboxDeadLettered();
   console.error(
     JSON.stringify({
       level: "error",
@@ -89,6 +108,7 @@ const recordFailure = async (
   error: string,
   maxAttempts: number,
   source: "handler_error" | "unhandled_topic",
+  telemetry: OutboxWorkerTelemetry,
   failure?: OutboxHandlerFailure,
 ): Promise<void> => {
   if (source === "unhandled_topic") {
@@ -111,11 +131,12 @@ const recordFailure = async (
           ...(failure.retryDelayMs === undefined ? {} : { retryDelayMs: failure.retryDelayMs }),
         });
   if (result === "stale") {
-    logStaleClaim(event, "fail");
+    logStaleClaim(event, "fail", telemetry);
   } else if (result === "dead_lettered") {
-    logDeadLetter(event, source);
-  } else if (source === "handler_error") {
-    logRetry(event, source);
+    logDeadLetter(event, source, telemetry);
+  } else {
+    telemetry.recordOutboxRetried();
+    if (source === "handler_error") logRetry(event, source);
   }
 };
 
@@ -127,6 +148,7 @@ const processClaimedEvent = async (
   heartbeatIntervalMs: number,
   shutdownSignal: AbortSignal,
   shutdownGracePeriodMs: number,
+  telemetry: OutboxWorkerTelemetry,
 ): Promise<void> => {
   let currentEvent = initialEvent;
   const handlerController = new AbortController();
@@ -148,13 +170,14 @@ const processClaimedEvent = async (
           // handler to continue side effects, and do not wait indefinitely for
           // a non-cooperative one before allowing another worker to recover it.
           leaseLost = true;
-          logStaleClaim(currentEvent, "renew");
+          logStaleClaim(currentEvent, "renew", telemetry);
           handlerController.abort("outbox lease lost");
           resolveLeaseLoss?.();
           return;
         }
         currentEvent = renewal.event;
       } catch {
+        telemetry.recordOutboxLeaseRenewalFailure();
         console.error(
           JSON.stringify({
             level: "error",
@@ -192,6 +215,7 @@ const processClaimedEvent = async (
   if (shutdownTimer !== undefined) clearTimeout(shutdownTimer);
 
   if (outcome.kind === "shutdown_deadline") {
+    telemetry.recordOutboxShutdownDeadline();
     heartbeatController.abort("shutdown deadline reached");
     void heartbeat.catch(() => undefined);
     console.warn(
@@ -231,6 +255,7 @@ const processClaimedEvent = async (
       failure?.code ?? HANDLER_FAILURE_DETAIL,
       config.OUTBOX_MAX_ATTEMPTS,
       "handler_error",
+      telemetry,
       failure,
     );
     return;
@@ -243,12 +268,14 @@ const processClaimedEvent = async (
       UNHANDLED_TOPIC_FAILURE_DETAIL,
       config.OUTBOX_MAX_ATTEMPTS,
       "unhandled_topic",
+      telemetry,
     );
     return;
   }
 
   const result = await completeOutboxEvent(database, currentEvent);
-  if (result === "stale") logStaleClaim(currentEvent, "complete");
+  if (result === "stale") logStaleClaim(currentEvent, "complete", telemetry);
+  else telemetry.recordOutboxCompleted();
 };
 
 const resolveTiming = (
@@ -294,6 +321,7 @@ export async function runOutboxWorker(
   options: OutboxWorkerOptions = {},
 ): Promise<void> {
   const { leaseDurationMs, heartbeatIntervalMs, shutdownGracePeriodMs } = resolveTiming(options);
+  const telemetry = options.telemetry ?? noOpTelemetry;
 
   while (!signal.aborted) {
     let madeProgress = false;
@@ -309,14 +337,15 @@ export async function runOutboxWorker(
 
       for (const deadLettered of result.deadLettered) {
         madeProgress = true;
-        logDeadLetter(deadLettered, "expired_claim_recovery");
+        logDeadLetter(deadLettered, "expired_claim_recovery", telemetry);
       }
 
       if (!result.event) break;
+      telemetry.recordOutboxClaimed();
 
       if (signal.aborted) {
         const release = await releaseOutboxEvent(database, result.event);
-        if (release === "stale") logStaleClaim(result.event, "release");
+        if (release === "stale") logStaleClaim(result.event, "release", telemetry);
         return;
       }
 
@@ -330,6 +359,7 @@ export async function runOutboxWorker(
         heartbeatIntervalMs,
         signal,
         shutdownGracePeriodMs,
+        telemetry,
       );
     }
 

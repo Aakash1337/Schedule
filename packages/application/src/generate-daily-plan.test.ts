@@ -87,6 +87,9 @@ describe("GenerateDailyPlan", () => {
         append: async (event) => event,
         listHistory: async () => ({ items: [], nextCursor: null }),
       },
+      routineSelectionPreferenceFeedback: {
+        listForPlanning: async () => [],
+      } as TransactionContext["routineSelectionPreferenceFeedback"],
       dailyPlans: {
         findById: async () => stored ?? null,
         findByRevision: async (_workspaceId, _date, requestRevision) =>

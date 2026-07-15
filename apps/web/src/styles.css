@@ -617,10 +617,156 @@ textarea:focus {
   margin-bottom: 0;
 }
 
-.work-composer-heading > p {
+.work-composer-heading-actions {
+  display: grid;
+  justify-items: end;
+  gap: 9px;
+  max-width: 48ch;
+  text-align: right;
+}
+
+.work-composer-heading-actions > p {
+  margin: 0;
   max-width: 45ch;
   color: var(--ink-soft);
   line-height: 1.5;
+}
+
+.work-natural-language-panel {
+  display: grid;
+  gap: 16px;
+  margin: 0 0 20px;
+  padding: 18px;
+  background:
+    linear-gradient(135deg, oklch(0.96 0.025 105 / 0.78), transparent 72%), var(--paper-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 10px 28px oklch(0.25 0.025 70 / 0.06);
+}
+
+.work-natural-language-header,
+.work-natural-language-prompt-footer,
+.work-natural-language-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.work-natural-language-header h3,
+.work-natural-language-summary h4,
+.work-natural-language-header p,
+.work-natural-language-summary p,
+.work-natural-language-prompt-footer p,
+.work-natural-language-provenance,
+.work-natural-language-announcement {
+  margin: 0;
+}
+
+.work-natural-language-trust,
+.work-natural-language-no-mutation {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--ink-soft);
+  background: oklch(0.94 0.025 145 / 0.72);
+  border: 1px solid oklch(0.72 0.06 145 / 0.35);
+  border-radius: 9px;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.work-natural-language-trust svg,
+.work-natural-language-no-mutation svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.work-natural-language-prompt,
+.work-natural-language-review {
+  display: grid;
+  gap: 14px;
+}
+
+.work-natural-language-prompt textarea {
+  min-height: 104px;
+  resize: vertical;
+}
+
+.work-natural-language-prompt-footer p,
+.work-natural-language-provenance,
+.work-natural-language-announcement {
+  color: var(--ink-faint);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.work-natural-language-summary {
+  padding: 13px 14px;
+  background: var(--paper-muted);
+  border-radius: 9px;
+}
+
+.work-natural-language-summary h4 {
+  margin-top: 2px;
+  font-size: 1rem;
+}
+
+.work-natural-language-summary > p:not(.eyebrow) {
+  margin-top: 7px;
+  color: var(--ink-soft);
+}
+
+.work-natural-language-summary ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.work-natural-language-user-fields {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(190px, 1fr);
+  gap: 12px;
+  padding: 14px;
+  background: var(--paper-muted);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.work-natural-language-user-fields-heading,
+.work-natural-language-planning-fieldset {
+  grid-column: 1 / -1;
+}
+
+.work-natural-language-user-fields-heading p {
+  margin: 0;
+}
+
+.work-natural-language-user-fields-heading > p:last-child {
+  margin-top: 4px;
+  color: var(--ink-faint);
+  font-size: 0.78rem;
+}
+
+.work-natural-language-planning-fieldset {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.work-natural-language-actions {
+  justify-content: flex-end;
+}
+
+.work-natural-language-announcement {
+  margin-bottom: 14px;
+  color: var(--ink-soft);
 }
 
 .work-composer-form {
@@ -796,6 +942,11 @@ textarea:focus {
   transform: translateY(-1px);
 }
 
+.work-card:focus-visible {
+  outline: 3px solid var(--accent-soft);
+  outline-offset: 3px;
+}
+
 .work-card[aria-busy="true"] {
   opacity: 0.68;
 }
@@ -855,6 +1006,37 @@ textarea:focus {
   white-space: nowrap;
 }
 
+.work-plan-badge-container {
+  color: var(--ink-soft);
+  background: var(--paper-muted);
+}
+
+.work-subtask-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 9px 10px 9px 12px;
+  color: var(--ink-soft);
+  background: var(--paper-muted);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.work-subtask-context strong {
+  color: var(--ink);
+}
+
+.work-subtask-context .button {
+  flex: none;
+  min-height: 28px;
+  padding: 0 7px;
+  font-size: 0.7rem;
+}
+
 .work-priority-high,
 .work-priority-urgent {
   color: oklch(0.44 0.15 24);
@@ -875,6 +1057,159 @@ textarea:focus {
   line-height: 1.45;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+}
+
+.work-hierarchy {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+}
+
+.work-hierarchy-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 8px;
+  min-width: 0;
+}
+
+.work-hierarchy-level,
+.work-hierarchy-parent,
+.work-hierarchy-progress {
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.work-hierarchy-level {
+  font-weight: 690;
+}
+
+.work-hierarchy-parent {
+  min-width: 0;
+}
+
+.work-hierarchy-parent button,
+.work-subtask-list button {
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+  font: inherit;
+  text-align: left;
+}
+
+.work-hierarchy-parent button {
+  max-width: 100%;
+  padding: 0;
+  font-weight: 690;
+  overflow-wrap: anywhere;
+}
+
+.work-hierarchy-parent button:hover:not(:disabled),
+.work-subtask-list button:hover:not(:disabled) span {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.work-hierarchy-parent button:focus-visible,
+.work-subtask-list button:focus-visible {
+  border-radius: 3px;
+  outline: 3px solid var(--accent-soft);
+  outline-offset: 2px;
+}
+
+.work-hierarchy-progress {
+  font-variant-numeric: tabular-nums;
+}
+
+.work-add-subtask.button {
+  min-height: 26px;
+  margin-left: auto;
+  padding: 0 5px;
+  font-size: 0.67rem;
+}
+
+.work-subtask-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.work-subtask-list li {
+  min-width: 0;
+}
+
+.work-subtask-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  width: 100%;
+  min-width: 0;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.work-subtask-list button span {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 0.7rem;
+  font-weight: 620;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.work-subtask-list button small {
+  color: var(--ink-faint);
+  font-size: 0.61rem;
+  font-weight: 680;
+  text-transform: uppercase;
+}
+
+.work-hierarchy > p {
+  color: var(--ink-faint);
+  font-size: 0.65rem;
+  line-height: 1.4;
+}
+
+.work-subtask-overflow {
+  padding-top: 3px;
+}
+
+.work-subtask-overflow details,
+.work-subtask-overflow ul {
+  margin: 0;
+  padding: 0;
+}
+
+.work-subtask-overflow ul {
+  display: grid;
+  list-style: none;
+}
+
+.work-subtask-overflow summary {
+  width: fit-content;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 0.65rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.work-subtask-overflow summary:hover {
+  color: var(--ink-soft);
+}
+
+.work-subtask-overflow summary:focus-visible {
+  border-radius: 3px;
+  outline: 3px solid var(--accent-soft);
+  outline-offset: 2px;
+}
+
+.work-hierarchy > p {
+  margin: 0;
 }
 
 .work-dependencies {
@@ -1181,6 +1516,110 @@ textarea:focus {
   font-weight: 750;
 }
 
+.today-plan-fit {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 22px;
+  padding: 17px 18px;
+  background: linear-gradient(135deg, var(--accent-soft), var(--paper-raised) 72%);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 11px;
+}
+
+.today-plan-fit + .today-form-group {
+  padding-top: 21px;
+  border-top: 1px solid var(--line);
+}
+
+.today-plan-fit > p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.79rem;
+  line-height: 1.5;
+}
+
+.today-plan-fit-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.today-plan-fit-heading h3 {
+  margin: 3px 0 0;
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.today-plan-fit-heading h3:focus-visible {
+  border-radius: 4px;
+  outline: 3px solid var(--accent-soft);
+  outline-offset: 3px;
+}
+
+.today-plan-fit-heading > span {
+  flex: none;
+  padding: 4px 7px;
+  color: var(--ink-soft);
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.today-plan-fit-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.today-plan-fit-facts div {
+  min-width: 0;
+  padding: 9px 10px;
+  background: color-mix(in oklab, var(--paper-raised) 88%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.today-plan-fit-facts dt {
+  color: var(--ink-soft);
+  font-size: 0.67rem;
+  font-weight: 730;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.today-plan-fit-facts dd {
+  margin: 3px 0 0;
+  font-size: 0.78rem;
+  font-weight: 720;
+}
+
+.today-plan-fit .today-plan-fit-note {
+  font-size: 0.71rem;
+}
+
+.today-plan-fit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.today-plan-fit-status {
+  padding: 8px 9px;
+  color: var(--ink);
+  background: var(--paper-raised);
+  border-radius: 7px;
+}
+
+.today-plan-fit .notice {
+  margin: 0;
+}
+
 .today-form-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1348,6 +1787,84 @@ textarea:focus {
 .routines-facts dd {
   margin: 0;
   font-weight: 650;
+}
+
+.today-alternatives {
+  display: grid;
+  gap: 16px;
+  margin: 18px 0 22px;
+  padding: 18px;
+  background: linear-gradient(145deg, var(--paper-raised), var(--paper-muted));
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+}
+
+.today-alternatives .today-section-heading h2 {
+  margin-bottom: 4px;
+  font-size: 1rem;
+}
+
+.today-alternatives .today-section-heading p:last-child,
+.today-alternatives-empty {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.today-alternative-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.today-alternative-card {
+  display: grid;
+  align-content: start;
+  gap: 13px;
+  height: 100%;
+  padding: 15px;
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.today-alternative-current {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.today-alternative-card h3 {
+  margin: 0;
+  font-size: 0.94rem;
+}
+
+.today-alternative-card > ol {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink-soft);
+  font-size: 0.77rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.today-alternative-card .button {
+  justify-self: start;
+  margin-top: auto;
+}
+
+.today-alternative-delta {
+  margin: 4px 0 0;
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+}
+
+.today-alternative-error {
+  margin-top: 18px;
 }
 
 .today-advisor {
@@ -2172,6 +2689,70 @@ textarea:focus {
   line-height: 1.45;
 }
 
+.routines-selection-preference {
+  margin: -7px 0 24px;
+  padding: 0 0 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+.routines-selection-preference-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.routines-selection-preference-heading h3 {
+  margin: 0;
+}
+
+.routines-selection-preference-heading h3:focus-visible {
+  border-radius: 2px;
+  outline: 3px solid oklch(0.7 0.11 286 / 0.4);
+  outline-offset: 3px;
+}
+
+.routines-selection-preference-heading p,
+.routines-selection-preference-loading,
+.routines-selection-preference-reason {
+  max-width: 62ch;
+  margin: 5px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.routines-selection-preference-heading > span {
+  flex: none;
+  padding: 4px 8px;
+  color: var(--accent-hover);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.routines-selection-preference-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 13px;
+}
+
+.routines-selection-preference .notice {
+  margin-top: 11px;
+  margin-bottom: 0;
+}
+
+.routines-selection-preference-status {
+  max-width: 62ch;
+  margin: 11px 0 0;
+  color: oklch(0.4 0.1 148);
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
 .routines-duration-insight {
   margin: -7px 0 24px;
   padding: 0 0 22px;
@@ -2553,6 +3134,544 @@ textarea:focus {
   line-height: 1.45;
 }
 
+/* Reminder policy and delivery history */
+
+.reminders-view {
+  min-width: 0;
+}
+
+.reminder-boundary {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: -7px 0 22px;
+  padding: 15px 17px;
+  color: oklch(0.37 0.055 266);
+  background: oklch(0.955 0.025 266);
+  border: 1px solid oklch(0.84 0.05 266);
+  border-radius: 11px;
+}
+
+.reminder-boundary svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.reminder-boundary strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.reminder-boundary p {
+  max-width: 92ch;
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.reminder-success {
+  color: oklch(0.4 0.1 148);
+  background: var(--success-soft);
+  border-color: oklch(0.83 0.06 148);
+}
+
+.reminder-notice-dismiss {
+  min-height: 32px;
+  padding: 0 7px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  font-size: 0.76rem;
+  font-weight: 680;
+}
+
+.reminder-notice-dismiss:hover {
+  background: oklch(0.88 0.035 148 / 0.75);
+}
+
+.reminder-tabs {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(116px, 1fr));
+  gap: 4px;
+  max-width: 520px;
+  margin-bottom: 24px;
+  padding: 4px;
+  background: var(--paper-muted);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+}
+
+.reminder-tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 11px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 690;
+}
+
+.reminder-tabs button:hover {
+  color: var(--ink);
+}
+
+.reminder-tabs button[aria-selected="true"] {
+  color: var(--accent-hover);
+  background: var(--paper-raised);
+  box-shadow: 0 2px 8px oklch(0.28 0.02 65 / 0.06);
+}
+
+.reminder-tabs small {
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  color: var(--ink-soft);
+  background: var(--paper-muted);
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.reminder-tab-panel {
+  min-width: 0;
+}
+
+.reminder-policy-stack,
+.reminder-rule-list,
+.reminder-one-off-list,
+.reminder-record-list {
+  display: grid;
+  gap: 12px;
+}
+
+.reminder-panel {
+  min-width: 0;
+  padding: 22px;
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  box-shadow: 0 3px 16px oklch(0.28 0.02 65 / 0.04);
+}
+
+.reminder-section-heading,
+.reminder-list-heading,
+.reminder-rule-heading,
+.reminder-card-actions,
+.reminder-one-off-card,
+.reminder-record-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.reminder-section-heading h2,
+.reminder-section-heading .eyebrow,
+.reminder-list-heading h2,
+.reminder-list-heading .eyebrow,
+.reminder-rule-heading h3,
+.reminder-one-off-card h3,
+.reminder-record-title h3 {
+  margin-bottom: 0;
+}
+
+.reminder-section-copy {
+  max-width: 78ch;
+  margin: 8px 0 20px;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.reminder-state,
+.reminder-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-height: 25px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 0.69rem;
+  font-weight: 740;
+  white-space: nowrap;
+}
+
+.reminder-count {
+  min-width: 28px;
+  color: var(--ink-soft);
+  background: var(--paper-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.reminder-state-active,
+.reminder-delivery-delivered {
+  color: oklch(0.4 0.11 148);
+  background: var(--success-soft);
+}
+
+.reminder-state-paused,
+.reminder-delivery-invalidated {
+  color: var(--ink-soft);
+  background: var(--paper-muted);
+}
+
+.reminder-state-setup,
+.reminder-delivery-dead_letter {
+  color: oklch(0.47 0.12 58);
+  background: var(--warning-soft);
+}
+
+.reminder-state-planned,
+.reminder-delivery-pending {
+  color: var(--accent-hover);
+  background: var(--accent-soft);
+}
+
+.reminder-delivery-processing {
+  color: oklch(0.44 0.11 245);
+  background: oklch(0.94 0.04 245);
+}
+
+.reminder-profile-form {
+  display: grid;
+  grid-template-columns: 1.15fr repeat(2, minmax(150px, 0.7fr));
+  align-items: start;
+  gap: 15px;
+}
+
+.reminder-profile-enabled,
+.reminder-quiet-toggle,
+.reminder-form-actions,
+.reminder-validation-error {
+  grid-column: 1 / -1;
+}
+
+.reminder-validation-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.79rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.reminder-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  min-width: 0;
+  padding: 12px 13px;
+  background: var(--paper-muted);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.reminder-toggle input,
+.reminder-switch input {
+  width: 17px;
+  height: 17px;
+  min-height: 0;
+  margin: 1px 0 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.reminder-toggle span {
+  display: grid;
+  gap: 3px;
+}
+
+.reminder-toggle strong {
+  font-size: 0.82rem;
+}
+
+.reminder-toggle small {
+  color: var(--ink-soft);
+  line-height: 1.4;
+}
+
+.reminder-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding-top: 4px;
+}
+
+.reminder-form-actions > span,
+.reminder-card-actions > span,
+.reminder-version {
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+}
+
+.reminder-locked-sections {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 22px;
+  color: var(--ink-soft);
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+}
+
+.reminder-locked-sections svg {
+  flex: none;
+  color: var(--accent);
+}
+
+.reminder-locked-sections h2 {
+  margin-bottom: 5px;
+  color: var(--ink);
+}
+
+.reminder-locked-sections p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.reminder-policy-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.reminder-add-disclosure {
+  margin-bottom: 15px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.reminder-add-disclosure summary {
+  display: flex;
+  align-items: center;
+  min-height: 42px;
+  padding: 0 13px;
+  cursor: pointer;
+  color: var(--accent-hover);
+  font-size: 0.8rem;
+  font-weight: 720;
+}
+
+.reminder-add-rule-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 11px;
+  padding: 3px 13px 14px;
+}
+
+.reminder-add-rule-form .field:first-child,
+.reminder-add-rule-form .button {
+  grid-column: 1 / -1;
+}
+
+.reminder-rule-card {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 15px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.reminder-rule-heading p {
+  max-width: 54ch;
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.reminder-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  font-weight: 680;
+}
+
+.reminder-rule-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.reminder-card-actions {
+  align-items: center;
+  padding-top: 2px;
+}
+
+.reminder-one-off-create {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(210px, 1fr) auto;
+  align-items: end;
+  gap: 9px;
+  margin-bottom: 15px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.reminder-one-off-create .button {
+  min-width: 110px;
+  white-space: nowrap;
+}
+
+.reminder-one-off-card {
+  align-items: center;
+  min-width: 0;
+  padding: 13px 14px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.reminder-one-off-card.is-cancelled {
+  opacity: 0.68;
+}
+
+.reminder-one-off-card h3,
+.reminder-record-title h3 {
+  overflow-wrap: anywhere;
+}
+
+.reminder-one-off-card p {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.reminder-one-off-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+}
+
+.reminder-one-off-editor .reminder-card-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+}
+
+.reminder-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+
+.reminder-inline-empty {
+  margin: 3px 0;
+  color: var(--ink-faint);
+  font-size: 0.8rem;
+}
+
+.reminder-list-section {
+  max-width: 980px;
+}
+
+.reminder-list-heading {
+  padding: 3px 1px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.reminder-list-heading p:last-child {
+  margin: 6px 0 0;
+  color: var(--ink-soft);
+  line-height: 1.45;
+}
+
+.reminder-record-list {
+  gap: 0;
+  margin-bottom: 12px;
+}
+
+.reminder-record {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 12px;
+  padding: 15px 1px;
+  border-bottom: 1px solid var(--line);
+}
+
+.reminder-record-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  color: var(--ink-soft);
+  background: var(--paper-muted);
+  border-radius: 10px;
+}
+
+.reminder-record-icon-planned,
+.reminder-record-icon-pending {
+  color: var(--accent-hover);
+  background: var(--accent-soft);
+}
+
+.reminder-record-icon-processing {
+  color: oklch(0.44 0.11 245);
+  background: oklch(0.94 0.04 245);
+}
+
+.reminder-record-icon-delivered {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.reminder-record-icon-dead_letter {
+  color: oklch(0.47 0.12 58);
+  background: var(--warning-soft);
+}
+
+.reminder-record-main {
+  min-width: 0;
+}
+
+.reminder-record-title {
+  align-items: center;
+}
+
+.reminder-record-main > p {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.79rem;
+}
+
+.reminder-status-explanation {
+  max-width: 78ch;
+  line-height: 1.45;
+}
+
+.reminder-record-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.reminder-record-meta span {
+  padding: 3px 7px;
+  color: var(--ink-soft);
+  background: var(--paper-muted);
+  border-radius: 999px;
+  font-size: 0.67rem;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 1180px) {
   .work-composer-form {
     grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -2587,6 +3706,10 @@ textarea:focus {
   .calendar-editor {
     max-width: 680px;
   }
+
+  .reminder-policy-columns {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 920px) {
@@ -2617,6 +3740,10 @@ textarea:focus {
 
   .routines-advanced {
     grid-column: 1;
+  }
+
+  .reminder-profile-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -2691,6 +3818,28 @@ textarea:focus {
     min-height: 44px;
   }
 
+  .today-plan-fit-heading {
+    display: grid;
+    gap: 7px;
+  }
+
+  .today-plan-fit-heading > span {
+    justify-self: start;
+  }
+
+  .today-plan-fit-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .today-plan-fit-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .today-plan-fit-actions .button {
+    width: 100%;
+  }
+
   .icon-button,
   .work-card-edit-button,
   .routines-item-actions .button,
@@ -2723,7 +3872,7 @@ textarea:focus {
     bottom: 0;
     left: 0;
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     min-height: 66px;
     padding: 6px max(8px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom))
       max(8px, env(safe-area-inset-left));
@@ -2758,6 +3907,74 @@ textarea:focus {
     flex-wrap: wrap;
   }
 
+  .reminder-boundary,
+  .reminder-locked-sections {
+    padding: 13px;
+  }
+
+  .reminder-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+    max-width: none;
+  }
+
+  .reminder-tabs button {
+    min-width: 0;
+    min-height: 44px;
+    padding: 0 7px;
+  }
+
+  .reminder-panel {
+    padding: 17px;
+  }
+
+  .reminder-profile-form,
+  .reminder-add-rule-form,
+  .reminder-rule-fields,
+  .reminder-one-off-create,
+  .reminder-one-off-editor {
+    grid-template-columns: 1fr;
+  }
+
+  .reminder-form-actions,
+  .reminder-section-heading,
+  .reminder-rule-heading,
+  .reminder-one-off-card,
+  .reminder-record-title {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .reminder-record-title {
+    align-items: flex-start;
+  }
+
+  .reminder-record-title .reminder-state {
+    align-self: flex-start;
+  }
+
+  .reminder-one-off-editor .reminder-card-actions,
+  .reminder-add-rule-form .field:first-child,
+  .reminder-add-rule-form .button {
+    grid-column: auto;
+  }
+
+  .reminder-inline-actions,
+  .reminder-card-actions {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .reminder-inline-actions .button,
+  .reminder-one-off-create .button {
+    width: 100%;
+  }
+
+  .reminder-notice-dismiss {
+    min-height: 44px;
+  }
+
   .work-priority-filter {
     width: min(100%, 220px);
   }
@@ -2767,8 +3984,45 @@ textarea:focus {
     gap: 8px;
   }
 
+  .work-composer-heading-actions {
+    justify-items: start;
+    max-width: none;
+    text-align: left;
+  }
+
+  .work-natural-language-header,
+  .work-natural-language-prompt-footer,
+  .work-natural-language-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .work-natural-language-header .icon-button {
+    align-self: flex-end;
+    margin-top: -44px;
+  }
+
+  .work-natural-language-prompt-footer .button,
+  .work-natural-language-actions .button {
+    width: 100%;
+  }
+
+  .work-natural-language-user-fields {
+    grid-template-columns: 1fr;
+  }
+
   .work-composer-form {
     grid-template-columns: 1fr;
+  }
+
+  .work-subtask-context {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .work-subtask-context .button {
+    align-self: flex-start;
+    min-height: 44px;
   }
 
   .work-composer-title-field,
@@ -2782,6 +4036,22 @@ textarea:focus {
 
   .work-board {
     grid-auto-columns: minmax(260px, 82vw);
+  }
+
+  .work-hierarchy-summary {
+    align-items: flex-start;
+  }
+
+  .work-hierarchy-parent button,
+  .work-subtask-list button,
+  .work-subtask-overflow summary,
+  .work-add-subtask.button {
+    min-height: 44px;
+  }
+
+  .work-add-subtask.button {
+    width: 100%;
+    margin-left: 0;
   }
 
   .work-dependency-editor form {
@@ -2840,6 +4110,15 @@ textarea:focus {
   .today-summary-facts div {
     grid-template-columns: 80px 1fr;
     align-items: baseline;
+  }
+
+  .today-alternative-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .today-alternative-card .button {
+    width: 100%;
+    min-height: 44px;
   }
 
   .today-item-header {
@@ -2904,6 +4183,25 @@ textarea:focus {
   .routines-duration-insight-heading {
     display: grid;
     gap: 4px;
+  }
+
+  .routines-selection-preference-heading {
+    display: grid;
+    gap: 8px;
+  }
+
+  .routines-selection-preference-heading > span {
+    justify-self: start;
+  }
+
+  .routines-selection-preference-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .routines-selection-preference-actions .button {
+    width: 100%;
+    min-height: 44px;
   }
 
   .routines-duration-insight-actions {

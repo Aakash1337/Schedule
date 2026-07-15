@@ -6,10 +6,11 @@ gateway. Schedule still does **not** connect to WhatsApp, email, push, or a phon
 separately authenticated adapter claims Schedule-owned commands and reports bounded outcomes without
 being allowed to reinterpret policy or mutate scheduled work.
 
-The core is available through the local product API. Materialization is currently an explicit
-command; no periodic production worker invokes it yet. This boundary is intentional for the first
-slice: policy evaluation is explicit, while the delivery boundary can be verified independently of
-any particular messaging provider.
+The core is available through the local product API. Materialization remains available as an
+explicit command, and an opt-in local worker can invoke the same use case periodically. The worker
+is disabled by default, processes at most 20 local workspaces sequentially, and creates intents
+only. Provider polling and transport remain separate so policy evaluation can be verified
+independently of any messaging provider.
 
 ## Stored resources
 
@@ -166,9 +167,11 @@ the complete route table and payloads. The main flow is:
 3. Explicitly materialize a bounded window with
    `POST .../notification-intents/materializations`.
 4. Inspect immutable results with `GET .../notification-intents?from=...&to=...`.
-5. From an explicitly delivery-scoped integration credential, claim with
+5. Inspect the product-safe execution state with
+   `GET .../notification-deliveries?from=...&to=...`.
+6. From an explicitly delivery-scoped integration credential, claim with
    `POST /v1/integrations/reminder-deliveries/claim` and a unique `Idempotency-Key`.
-6. Report the fenced outcome with `POST /v1/integrations/reminder-deliveries/receipt` and a new
+7. Report the fenced outcome with `POST /v1/integrations/reminder-deliveries/receipt` and a new
    `Idempotency-Key`.
 
 The materialization window must be increasing and no longer than 31 days. One-off list requests are
@@ -180,12 +183,36 @@ and one invocation may produce at most 10,000 aggregate candidates; both limits 
 31-day request plus the maximum seven-day catch-up horizon is fully included in the bounded
 local-date scan.
 
+## Web interface
+
+The local **Reminders** view exposes three explicit surfaces:
+
+- **Policy** creates or version-updates the workspace profile, manages independently enabled rules,
+  and creates, edits, or cancels one-off reminders. A missing profile is a setup state; the browser
+  never silently saves a guessed default. The device time zone is only a prefilled suggestion until
+  the user saves it. Rule kind is immutable after creation, and cancelled one-offs cannot be revived.
+- **Planned** lists immutable intents and provides a manual materialization action. Refreshing this
+  view does not itself materialize. The action reports created, existing, and suppressed results
+  before reloading the list. When the optional worker mode is enabled, the same immutable intents
+  may also appear after a background tick.
+- **Execution** lists the product-safe delivery projection. Status copy distinguishes an
+  acknowledged Schedule result from a currently claimed command and explicitly says that a claim is
+  not proof of an external send. Claim tokens, leases, credentials, provider/channel/destination
+  fields, and provider payloads never cross this product route.
+
+The browser reads recent and upcoming activity through bounded 31-day, 50-row pages and offers an
+explicit **Show 50 more** action. A version conflict reloads authoritative policy before asking the
+user to retry. The view states that background intent planning is operator-controlled and separate
+from adapter polling and WhatsApp/email/push/phone transport, so the interface cannot be mistaken
+for a production notification provider.
+
 ## Verification and operational boundary
 
 With PostgreSQL running:
 
 ```powershell
 pnpm verify:notification-core
+pnpm verify:notification-materializer
 pnpm verify:notification-delivery
 pnpm verify:notification-migrations
 pnpm verify:backup-restore
@@ -196,18 +223,63 @@ two materializers concurrently, proves exact-once occurrence persistence, reject
 source and target references, rejects rule-kind mismatches and duplicate keys, proves policy and
 target edits invalidate pending intents, proves terminal activity performs selective cleanup, proves
 target deletion cascades, and confirms the outbox count does not change. The migration verifier
-upgrades populated pre-0024, pre-0025, and pre-0026 databases in isolation, checks the due-work and
-delivery-recovery indexes and new tenant constraints, and proves legacy data remains intact. The
-delivery verifier uses a nonce database and the real HTTP gateway to prove concurrent claim replay,
+upgrades populated pre-0024, pre-0025, pre-0026, and pre-0027 databases in isolation, checks the
+due-work, delivery-recovery, and workspace/schedule/id history indexes plus tenant constraints, and
+proves legacy command, credential, and message data remains intact. The delivery verifier uses a
+nonce database and the real HTTP gateway to prove the product-safe history projection as well as concurrent claim replay,
 post-lock lease freshness, revocation linearization, cross-tenant rejection, retry, dead-lettering,
 expiry fencing/recovery, source invalidation, empty claim replay, bounded receipts, audit records,
 and occurrence uniqueness.
-Backup/restore verification includes all seven reminder and delivery tables.
+Backup/restore verification includes all seven reminder and delivery tables. The automatic-worker
+verifier uses a disposable migrated database and two independent production connection pools. It
+proves bounded workspace discovery, catch-up acceptance and suppression boundaries, an
+unconfigured-workspace skip, concurrent exact-once materialization, a recreated-pool restart replay,
+safe count-only logs, and no outbox or delivery-command side effect.
+
+Optional worker health and fixed-cardinality reminder/outbox metrics are documented in
+[Worker observability](./OBSERVABILITY.md). They aggregate current intent/command state and durable
+receipt classifications without titles, occurrence keys, workspace IDs, or provider data. They do
+not deliver a reminder or prove that an adapter reached a phone.
+
+## Automatic local materialization
+
+The worker controls are independent of webhook transport:
+
+| Variable                                    | Default    | Bound                     |
+| ------------------------------------------- | ---------- | ------------------------- |
+| `NOTIFICATION_MATERIALIZATION_MODE`         | `disabled` | `disabled` or `enabled`   |
+| `NOTIFICATION_MATERIALIZATION_INTERVAL_MS`  | `60000`    | 10 seconds through 1 hour |
+| `NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS` | `300000`   | 1 second through 1 hour   |
+
+Each tick captures one clock instant and passes one `[tick, tick + look-ahead)` window to every
+workspace. The existing application use case expands its source scan by that workspace profile's
+bounded catch-up policy; the worker does not expand it a second time. It lists at most 20 local
+workspaces and awaits each workspace before starting the next. Discovery reads one extra sentinel;
+if persisted state somehow exceeds the product's 20-workspace local-installation cap, the whole tick
+fails visibly instead of permanently starving an undiscovered workspace. The next tick is scheduled
+only after the current one settles, so a slow tick never overlaps itself. Missing workspaces and
+workspaces without a profile are ordinary skips; an unexpected workspace failure is safely
+classified and does not block later workspaces. A failed workspace list skips the whole tick and
+retries after the interval.
+
+The worker and manual API share the workspace notification lock and occurrence-key uniqueness. Two
+processes, a restart, or a manual/background race therefore converge on the same intents. Shutdown
+prevents another workspace or tick from starting and waits for the current transaction to settle;
+the application use case does not currently cancel an already-running PostgreSQL transaction.
+Structured logs contain only event/failure classes, opaque workspace IDs, and counts—never titles,
+occurrence keys, policy contents, credentials, provider data, or raw exceptions.
+
+Enabling this mode does not claim, poll, or deliver an intent and does not enable
+`WEBHOOK_DELIVERY_MODE`. External reminder transport still requires a separately authenticated,
+deduplicating adapter using the claim/receipt gateway. The repository now contains a tested dormant
+[Hermes adapter foundation](./HERMES.md) with a shared PostgreSQL dedupe store, but it has no concrete
+transport/reconciliation or human/account binding. Its supervised polling boundary is fail-safe and
+disabled without an operator-provided control hook, and the repository does not provide the external
+Hermes/provider process bootstrap.
 
 Not yet implemented in this slice:
 
-- automatic periodic materialization;
-- a Hermes/WhatsApp, email, push, or other provider transport and human/account binding;
-- automatic worker polling of the delivery gateway;
-- reminder settings or intent-history screens in the web application;
+- a concrete Hermes/WhatsApp, email, push, or other provider transport and human/account binding;
+- provider reconciliation, external provider bootstrap, and an operator control source;
+- dead-letter redrive controls;
 - hosted-user authorization for these local product routes.

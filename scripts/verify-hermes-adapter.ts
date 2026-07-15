@@ -60,6 +60,17 @@ interface CleanupStep {
   readonly run: () => Promise<unknown>;
 }
 
+type VerificationPhase =
+  | "python-unit-tests"
+  | "database-create"
+  | "database-migrations"
+  | "application-startup"
+  | "workspace-and-credential"
+  | "adapter-prepare"
+  | "prepared-state"
+  | "adapter-confirm"
+  | "confirmed-state";
+
 const expectedVerificationChecks = [
   "python-unittest",
   "no-mutation-before-confirmation",
@@ -114,11 +125,12 @@ class LiveAdapterContract(unittest.TestCase):
                 "work_item.create",
                 os.environ["SCHEDULE_VERIFY_COMMAND_HASH"],
             )
-            self.assertEqual(confirmed["receiptVersion"], 1)
+            self.assertEqual(confirmed["receiptVersion"], 2)
             self.assertEqual(confirmed["confirmationId"], confirmation_id)
             self.assertEqual(confirmed["operation"], "work_item.create")
             self.assertEqual(confirmed["outcome"]["type"], "work_item.created")
             self.assertEqual(confirmed["outcome"]["workItem"]["status"], "planned")
+            self.assertIsNone(confirmed["outcome"]["workItem"]["parentWorkItemId"])
             self.assertNotIn("title", confirmed["outcome"]["workItem"])
             canonical = json.dumps(confirmed, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
             result = {
@@ -314,6 +326,7 @@ let app: Awaited<ReturnType<typeof buildApp>> | null = null;
 let hermesHome: string | null = null;
 let databaseCreated = false;
 let verificationFailure: unknown;
+let verificationPhase: VerificationPhase = "python-unit-tests";
 
 try {
   // EVIDENCE: hermes-adapter-python-unittest
@@ -321,10 +334,13 @@ try {
   await runPythonUnitTests(pythonExecutable);
   completedVerificationChecks.add("python-unittest");
 
+  verificationPhase = "database-create";
   await adminConnection.sql.unsafe(`create database ${quotedVerificationDatabase()}`);
   databaseCreated = true;
+  verificationPhase = "database-migrations";
   await applyCurrentMigrations(disposableDatabaseUrl);
 
+  verificationPhase = "application-startup";
   const activeConnection = createDatabase(disposableDatabaseUrl, 4);
   connection = activeConnection;
   const productUnitOfWork = new PostgresUnitOfWork(activeConnection);
@@ -340,6 +356,7 @@ try {
     integrationApiLimits: { requestsPerMinute: 1_000 },
   });
 
+  verificationPhase = "workspace-and-credential";
   const workspaceResponse = await app.inject({
     method: "POST",
     url: "/v1/workspaces",
@@ -373,12 +390,14 @@ try {
     SCHEDULE_VERIFY_WORK_TITLE: workItemTitle,
   };
 
+  verificationPhase = "adapter-prepare";
   const prepared = await runLiveHarness(pythonExecutable, {
     ...harnessEnvironment,
     SCHEDULE_VERIFY_PHASE: "prepare",
   });
   assert.equal(prepared.phase, "prepare");
 
+  verificationPhase = "prepared-state";
   // EVIDENCE: hermes-adapter-no-mutation-before-confirmation
   // The production Python client prepares against the real API, while product state stays unchanged.
   const [preparedState] = await activeConnection.sql<
@@ -421,12 +440,14 @@ try {
     SCHEDULE_VERIFY_CONFIRMATION_ID: prepared.confirmationId,
     SCHEDULE_VERIFY_COMMAND_HASH: prepared.commandHash,
   };
+  verificationPhase = "adapter-confirm";
   const firstConfirmation = await runLiveHarness(pythonExecutable, confirmEnvironment);
   const replayedConfirmation = await runLiveHarness(pythonExecutable, confirmEnvironment);
   assert.equal(firstConfirmation.phase, "confirm");
   assert.equal(replayedConfirmation.phase, "confirm");
   assert.deepEqual(replayedConfirmation, firstConfirmation);
 
+  verificationPhase = "confirmed-state";
   // EVIDENCE: hermes-adapter-exact-once-confirmation
   // Separate Python client processes replay one durable receipt and produce one mutation and audit.
   const [confirmedState] = await activeConnection.sql<
@@ -502,7 +523,7 @@ if (hermesHome !== null) {
 const cleanupFailures = await collectCleanupFailures(cleanupSteps);
 
 if (verificationFailure !== undefined) {
-  throw new Error("Hermes adapter verification failed safely.");
+  throw new Error(`Hermes adapter verification failed safely during ${verificationPhase}.`);
 }
 if (cleanupFailures.length > 0) {
   throw new Error(`Hermes adapter verification cleanup failed for: ${cleanupFailures.join(", ")}.`);

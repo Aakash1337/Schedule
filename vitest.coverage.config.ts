@@ -16,6 +16,7 @@ export default defineConfig({
       "packages/application",
       "packages/database",
       "apps/api",
+      "apps/hermes-reminders",
       "apps/worker",
       "apps/web/vite.config.ts",
     ],

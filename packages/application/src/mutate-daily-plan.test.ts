@@ -107,6 +107,9 @@ describe("MutateDailyPlan", () => {
         append: async (event) => event,
         listHistory: async () => ({ items: [], nextCursor: null }),
       },
+      routineSelectionPreferenceFeedback: {
+        listForPlanning: async () => [],
+      } as TransactionContext["routineSelectionPreferenceFeedback"],
       dailyPlans: {
         findById: async (_workspace, id) => (current?.id === id ? current : null),
         findByRevision: async () => null,

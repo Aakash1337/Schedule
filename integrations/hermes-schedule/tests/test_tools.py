@@ -92,7 +92,7 @@ class _FakeClient:
         if self.fail_first_confirmation and len(self.confirm_calls) == 1:
             raise ScheduleAdapterError("schedule_unavailable", retryable=True)
         return {
-            "receiptVersion": 1,
+            "receiptVersion": 2,
             "confirmationId": confirmation_id,
             "operation": expected_operation,
             "commandHash": expected_command_hash,
@@ -100,6 +100,7 @@ class _FakeClient:
                 "type": "work_item.created",
                 "workItem": {
                     "id": self.work_item_id,
+                    "parentWorkItemId": None,
                     "status": "planned",
                     "priority": "none",
                     "planningDurationMinutes": None,

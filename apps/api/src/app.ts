@@ -6,6 +6,10 @@ import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastif
 import { installErrorHandler } from "./http-errors.js";
 import {
   registerProductRoutes,
+  NATURAL_LANGUAGE_PROPOSAL_CANCELLATION_ROUTE,
+  NATURAL_LANGUAGE_PROPOSAL_CONFIRMATION_ROUTE,
+  NATURAL_LANGUAGE_PROPOSAL_ITEM_ROUTE,
+  NATURAL_LANGUAGE_PROPOSAL_ROUTE,
   SCHEDULING_ADVICE_ROUTE,
   type ProductApiLimits,
   type ProductServices,
@@ -121,7 +125,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   if (options.productServices !== undefined) {
     await app.register(async (productApp) => {
       productApp.addHook("onRequest", async (request, reply) => {
-        if (request.routeOptions.url === SCHEDULING_ADVICE_ROUTE) {
+        if (
+          request.routeOptions.url === SCHEDULING_ADVICE_ROUTE ||
+          request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_ROUTE ||
+          request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_ITEM_ROUTE ||
+          request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_CANCELLATION_ROUTE ||
+          request.routeOptions.url === NATURAL_LANGUAGE_PROPOSAL_CONFIRMATION_ROUTE
+        ) {
           reply.header("cache-control", "no-store");
         }
         if (isAllowedLocalProductHost(request.headers.host)) return;

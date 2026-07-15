@@ -6,13 +6,21 @@ from __future__ import annotations
 LOCAL_DATE = {"type": "string", "pattern": r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
 UUID = {
     "type": "string",
-    "pattern": r"^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$",
+    "pattern": r"^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$",
 }
 PRIORITY = {"type": "string", "enum": ["none", "low", "medium", "high", "urgent"]}
 STATUS = {
     "type": "string",
     "enum": ["backlog", "planned", "in_progress", "blocked", "done", "cancelled"],
 }
+POSITIVE_VERSION = {"type": "integer", "minimum": 1, "maximum": 2_147_483_647}
+POSITIVE_DURATION = {
+    "oneOf": [
+        {"type": "integer", "minimum": 1, "maximum": 43_200},
+        {"type": "null"},
+    ]
+}
+TIME_ZONE = {"type": "string", "minLength": 1, "maxLength": 80}
 
 
 def _strict(properties: dict, required: list[str]) -> dict:
@@ -28,10 +36,11 @@ WORK_ITEM_CREATE = _strict(
     {
         "type": {"const": "work_item.create"},
         "title": {"type": "string", "minLength": 1, "maxLength": 240},
-        "description": {"type": ["string", "null"], "maxLength": 10_000},
+        "parentWorkItemId": {"oneOf": [UUID, {"type": "null"}]},
+        "description": {"type": ["string", "null"], "maxLength": 4_000},
         "status": STATUS,
         "priority": PRIORITY,
-        "planningDurationMinutes": {"type": ["integer", "null"], "minimum": 1},
+        "planningDurationMinutes": POSITIVE_DURATION,
         "dueOn": {"oneOf": [LOCAL_DATE, {"type": "null"}]},
     },
     ["type", "title"],
@@ -40,12 +49,13 @@ WORK_ITEM_UPDATE = _strict(
     {
         "type": {"const": "work_item.update"},
         "workItemId": UUID,
-        "expectedVersion": {"type": "integer", "minimum": 1},
+        "expectedVersion": POSITIVE_VERSION,
+        "parentWorkItemId": {"oneOf": [UUID, {"type": "null"}]},
         "title": {"type": "string", "minLength": 1, "maxLength": 240},
-        "description": {"type": ["string", "null"], "maxLength": 10_000},
+        "description": {"type": ["string", "null"], "maxLength": 4_000},
         "status": STATUS,
         "priority": PRIORITY,
-        "planningDurationMinutes": {"type": ["integer", "null"], "minimum": 1},
+        "planningDurationMinutes": POSITIVE_DURATION,
         "dueOn": {"oneOf": [LOCAL_DATE, {"type": "null"}]},
     },
     ["type", "workItemId", "expectedVersion"],
@@ -57,7 +67,7 @@ SCHEDULE_BLOCK_CREATE = _strict(
         "title": {"type": ["string", "null"], "maxLength": 240},
         "startsAt": {"type": "string", "maxLength": 64},
         "endsAt": {"type": "string", "maxLength": 64},
-        "timeZone": {"type": "string", "minLength": 1, "maxLength": 128},
+        "timeZone": TIME_ZONE,
     },
     ["type", "startsAt", "endsAt", "timeZone"],
 )
@@ -65,12 +75,12 @@ SCHEDULE_BLOCK_UPDATE = _strict(
     {
         "type": {"const": "schedule_block.update"},
         "scheduleBlockId": UUID,
-        "expectedVersion": {"type": "integer", "minimum": 1},
+        "expectedVersion": POSITIVE_VERSION,
         "workItemId": {"oneOf": [UUID, {"type": "null"}]},
         "title": {"type": ["string", "null"], "maxLength": 240},
         "startsAt": {"type": "string", "maxLength": 64},
         "endsAt": {"type": "string", "maxLength": 64},
-        "timeZone": {"type": "string", "minLength": 1, "maxLength": 128},
+        "timeZone": TIME_ZONE,
     },
     ["type", "scheduleBlockId", "expectedVersion"],
 )
@@ -80,7 +90,7 @@ PLAN_ITEM_ACTIVITY = _strict(
         "date": LOCAL_DATE,
         "expectedPlanId": UUID,
         "itemId": UUID,
-        "expectedHeadVersion": {"type": "integer", "minimum": 0},
+        "expectedHeadVersion": POSITIVE_VERSION,
         "activityType": {
             "type": "string",
             "enum": [
@@ -93,10 +103,27 @@ PLAN_ITEM_ACTIVITY = _strict(
             ],
         },
         "occurredAt": {"type": "string", "maxLength": 64},
-        "timeZone": {"type": "string", "minLength": 1, "maxLength": 128},
-        "durationMinutes": {"type": ["integer", "null"], "minimum": 1},
+        "timeZone": TIME_ZONE,
+        "durationMinutes": POSITIVE_DURATION,
         "reason": {"type": ["string", "null"], "maxLength": 500},
-        "metadata": {"type": "object", "maxProperties": 20},
+        "metadata": {
+            "type": "object",
+            "maxProperties": 8,
+            "propertyNames": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": r".*\S.*",
+            },
+            "additionalProperties": {
+                "oneOf": [
+                    {"type": "string", "maxLength": 256},
+                    {"type": "number"},
+                    {"type": "boolean"},
+                    {"type": "null"},
+                ]
+            },
+        },
     },
     [
         "type",

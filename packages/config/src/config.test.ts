@@ -11,7 +11,11 @@ describe("runtime configuration", () => {
     expect(config.API_PORT).toBe(4_000);
     expect(config.API_TRUSTED_PROXIES).toEqual([]);
     expect(config.PRODUCT_API_MODE).toBe("local_unauthenticated");
+    expect(config.PRODUCT_RATE_LIMIT_PER_MINUTE).toBe(240);
     expect(config.LOCAL_MODEL_ADVISOR_MODE).toBe("disabled");
+    expect(config.LOCAL_MODEL_PROPOSAL_MODE).toBe("disabled");
+    expect(config.LOCAL_MODEL_PROPOSAL_HMAC_KEY).toBeUndefined();
+    expect(config.LOCAL_MODEL_PROPOSAL_TTL_SECONDS).toBe(600);
     expect(config.LOCAL_MODEL_ADVISOR_URL).toBe("http://127.0.0.1:11434");
     expect(config.LOCAL_MODEL_ADVISOR_MODEL).toBe("gemma4:e4b");
     expect(config.LOCAL_MODEL_ADVISOR_CONNECT_TIMEOUT_MS).toBe(2_000);
@@ -63,6 +67,28 @@ describe("runtime configuration", () => {
     expect(config.LOCAL_MODEL_ADVISOR_REQUEST_TIMEOUT_MS).toBe(120_000);
     expect(config.LOCAL_MODEL_ADVISOR_MAX_RESPONSE_BYTES).toBe(65_536);
     expect(config.LOCAL_MODEL_ADVISOR_MAX_CONCURRENT).toBe(4);
+  });
+
+  it("enables proposal-only Ollama access only with a durable prompt-fingerprint key", () => {
+    const config = loadApiConfig({
+      LOCAL_MODEL_PROPOSAL_MODE: "ollama",
+      LOCAL_MODEL_PROPOSAL_HMAC_KEY: "a-secure-test-key-with-more-than-32-bytes",
+      LOCAL_MODEL_PROPOSAL_TTL_SECONDS: "3600",
+    });
+
+    expect(config.LOCAL_MODEL_PROPOSAL_MODE).toBe("ollama");
+    expect(config.LOCAL_MODEL_PROPOSAL_TTL_SECONDS).toBe(3_600);
+    expect(() => loadApiConfig({ LOCAL_MODEL_PROPOSAL_MODE: "ollama" })).toThrow(
+      /LOCAL_MODEL_PROPOSAL_HMAC_KEY/,
+    );
+    expect(() =>
+      loadApiConfig({
+        LOCAL_MODEL_PROPOSAL_MODE: "ollama",
+        LOCAL_MODEL_PROPOSAL_HMAC_KEY: "too-short",
+      }),
+    ).toThrow(/LOCAL_MODEL_PROPOSAL_HMAC_KEY/);
+    expect(() => loadApiConfig({ LOCAL_MODEL_PROPOSAL_TTL_SECONDS: "59" })).toThrow();
+    expect(() => loadApiConfig({ LOCAL_MODEL_PROPOSAL_TTL_SECONDS: "3601" })).toThrow();
   });
 
   it.each(["gemma4:e2b", "gemma4:e4b", "gemma4:26b", "gemma4:31b"] as const)(
@@ -149,6 +175,11 @@ describe("runtime configuration", () => {
 
   it("keeps outbound webhook delivery disabled with an immutable empty keyring by default", () => {
     const config = loadWorkerConfig({});
+    expect(config.WORKER_OBSERVABILITY_MODE).toBe("disabled");
+    expect(config.WORKER_OBSERVABILITY_PORT).toBe(9_464);
+    expect(config.NOTIFICATION_MATERIALIZATION_MODE).toBe("disabled");
+    expect(config.NOTIFICATION_MATERIALIZATION_INTERVAL_MS).toBe(60_000);
+    expect(config.NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS).toBe(300_000);
     expect(config.WEBHOOK_DELIVERY_MODE).toBe("disabled");
     expect(config.WEBHOOK_MASTER_KEYS).toEqual([]);
     expect(config.WEBHOOK_MASTER_KEYS_BY_ID.size).toBe(0);
@@ -160,6 +191,38 @@ describe("runtime configuration", () => {
     expect(config.WEBHOOK_MAX_DELIVERY_AGE_MS).toBe(604_800_000);
     expect(Object.isFrozen(config.WEBHOOK_MASTER_KEYS)).toBe(true);
     expect(Object.isFrozen(config.WEBHOOK_MASTER_KEYS_BY_ID)).toBe(true);
+  });
+
+  it("enables only a bounded loopback worker observability port", () => {
+    const config = loadWorkerConfig({
+      WORKER_OBSERVABILITY_MODE: "loopback",
+      WORKER_OBSERVABILITY_PORT: "10001",
+    });
+    expect(config.WORKER_OBSERVABILITY_MODE).toBe("loopback");
+    expect(config.WORKER_OBSERVABILITY_PORT).toBe(10_001);
+    expect(() => loadWorkerConfig({ WORKER_OBSERVABILITY_PORT: "0" })).toThrow();
+    expect(() => loadWorkerConfig({ WORKER_OBSERVABILITY_PORT: "65536" })).toThrow();
+    expect(() => loadWorkerConfig({ WORKER_OBSERVABILITY_MODE: "public" })).toThrow();
+  });
+
+  it("coerces bounded automatic notification materialization controls", () => {
+    const config = loadWorkerConfig({
+      NOTIFICATION_MATERIALIZATION_MODE: "enabled",
+      NOTIFICATION_MATERIALIZATION_INTERVAL_MS: "10000",
+      NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS: "1000",
+    });
+
+    expect(config.NOTIFICATION_MATERIALIZATION_MODE).toBe("enabled");
+    expect(config.NOTIFICATION_MATERIALIZATION_INTERVAL_MS).toBe(10_000);
+    expect(config.NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS).toBe(1_000);
+    expect(() => loadWorkerConfig({ NOTIFICATION_MATERIALIZATION_INTERVAL_MS: "9999" })).toThrow();
+    expect(() =>
+      loadWorkerConfig({ NOTIFICATION_MATERIALIZATION_INTERVAL_MS: "3600001" }),
+    ).toThrow();
+    expect(() => loadWorkerConfig({ NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS: "999" })).toThrow();
+    expect(() =>
+      loadWorkerConfig({ NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS: "3600001" }),
+    ).toThrow();
   });
 
   it("parses a canonical keyring and requires an active configured key before enabling delivery", () => {
@@ -327,5 +390,13 @@ describe("runtime configuration", () => {
     expect(() => loadApiConfig({ INTEGRATION_CONFIRMATION_TTL_SECONDS: "3601" })).toThrow();
     expect(() => loadApiConfig({ INTEGRATION_RATE_LIMIT_PER_MINUTE: "0" })).toThrow();
     expect(() => loadApiConfig({ INTEGRATION_RATE_LIMIT_PER_MINUTE: "1001" })).toThrow();
+  });
+
+  it("coerces the bounded local product rate limit from an environment string", () => {
+    expect(
+      loadApiConfig({ PRODUCT_RATE_LIMIT_PER_MINUTE: "1000" }).PRODUCT_RATE_LIMIT_PER_MINUTE,
+    ).toBe(1_000);
+    expect(() => loadApiConfig({ PRODUCT_RATE_LIMIT_PER_MINUTE: "0" })).toThrow();
+    expect(() => loadApiConfig({ PRODUCT_RATE_LIMIT_PER_MINUTE: "10001" })).toThrow();
   });
 });

@@ -14,10 +14,13 @@ not authorize these product routes.
 - CORS is disabled, JSON bodies are limited to 256 KiB, request objects reject unknown fields, and error responses do not include stack traces.
 - Product routes reject missing, malformed, or non-loopback `Host` authorities before routing. This protects the unauthenticated loopback service from browser DNS-rebinding attacks; `localhost`, IPv4 `127.0.0.0/8`, and IPv6 loopback (`[::1]`) are accepted with an optional valid port. Health and system-information endpoints remain outside this product-route guard for local process and container diagnostics.
 - Accepted UUID values in product-route paths and bodies are canonicalized to lowercase before service dispatch and identity comparison; responses therefore use the canonical spelling.
-- Product routes are limited to 240 requests per minute per source address and two concurrent plan generations per API process.
+- Product routes are limited to `PRODUCT_RATE_LIMIT_PER_MINUTE` requests per minute per source address (240 by default; bounded from 1 through 10,000) and two concurrent plan generations per API process.
 - The optional advisor is independently disabled by default. When enabled, its adapter accepts only
   one exact raw `http://127.0.0.1:<port>` Ollama origin and an allowlisted local Gemma model; it does
   not use DNS, redirects, proxies, tools, or credentials.
+- Natural-language proposals are separately disabled by default, use that same transport policy,
+  persist no prompt or free-form model prose, and cannot create work without a versioned,
+  idempotent confirmation request.
 - Local mode caps an installation at 20 workspaces; each workspace is capped at 500 routines, 5,000 activity events, 2,000 plan revisions, and 50 revisions for one date. Planning reads at most 2,001 dependency rows whose dependents are active opted-in candidates and fails closed with `planning.work_item_dependency_pool_too_large` when more than 2,000 relevant rows exist.
 - Plan responses expose the original planning request, input hash, and algorithm versions, but not routine snapshots or activity history from the complete persisted input snapshot.
 
@@ -32,6 +35,12 @@ not authorize these product routes.
 | `GET`    | `/v1/workspaces/{workspaceId}/work-items`                                                      | List a bounded work-item page                          |
 | `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Retrieve one work item                                 |
 | `PATCH`  | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Version-checked work-item update                       |
+| `POST`   | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/subtasks`                                | Create a direct child (`201`)                          |
+| `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/subtasks`                                | List a bounded direct-child page                       |
+| `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals`                                      | Prepare one review-only backlog-title proposal         |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}`                         | Replace the version-checked reviewed work snapshot     |
+| `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}/cancellations`           | Cancel a pending proposal without creating work        |
+| `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}/confirmations`           | Idempotently confirm and create the exact work item    |
 | `GET`    | `/v1/workspaces/{workspaceId}/work-item-dependencies`                                          | List a bounded dependency page                         |
 | `POST`   | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/prerequisites`                           | Add one direct prerequisite (`201` or `200`)           |
 | `DELETE` | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/prerequisites/{prerequisiteWorkItemId}`  | Idempotently remove a prerequisite (`204`)             |
@@ -51,16 +60,22 @@ not authorize these product routes.
 | `POST`   | `/v1/workspaces/{workspaceId}/one-off-reminders/{oneOffReminderId}/cancellations`              | Cancel an explicit reminder                            |
 | `GET`    | `/v1/workspaces/{workspaceId}/notification-intents?from={instant}&to={instant}`                | List insert-only materialized intents                  |
 | `POST`   | `/v1/workspaces/{workspaceId}/notification-intents/materializations`                           | Materialize a bounded policy window                    |
+| `GET`    | `/v1/workspaces/{workspaceId}/notification-deliveries?from={instant}&to={instant}`             | List product-safe delivery execution history           |
 | `POST`   | `/v1/integrations/reminder-deliveries/claim`                                                   | Claim one due reminder with `schedule:delivery`        |
 | `POST`   | `/v1/integrations/reminder-deliveries/receipt`                                                 | Record one fenced, bounded delivery outcome            |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines`                                                        | Create a routine (`201`)                               |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`                       | List a bounded routine page (`200`)                    |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Retrieve one routine (`200` or `404`)                  |
 | `PATCH`  | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Version-checked partial update (`200` or `409`)        |
+| `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/selection-preference?timeZone={iana}`       | Read explicit future-plan preference state             |
+| `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/selection-preference`                       | Append a versioned future-plan preference              |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight`                           | Derive a read-only insight (`200` or `404`)            |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/approve`                   | Atomically approve an insight (`200` or `409`)         |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissals`                | Dismiss one exact insight (`200` or `409`)             |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissal-resets`          | Restore one exact insight (`200` or `409`)             |
+| `GET`    | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight?forDate={YYYY-MM-DD}`                     | Derive read-only joint target guidance                 |
+| `POST`   | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/dismissals`                               | Dismiss one exact target suggestion                    |
+| `POST`   | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/dismissal-resets`                         | Restore one exact target suggestion                    |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | List stable, cursor-paginated history (`200`)          |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | Idempotently record activity (`200`)                   |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans`                                                           | Create revision 1 or retry an exact revision           |
@@ -70,13 +85,41 @@ not authorize these product routes.
 | `PATCH`  | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/lock`                          | Idempotently lock or unlock a current plan item        |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/activity-events`               | Record a current item action                           |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/regenerations`                                | Regenerate around locked items                         |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/alternative-previews`                         | Preview up to three distinct plans without writing     |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/alternative-selections`                       | Select one still-current alternative idempotently      |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/replacement`                   | Replace one unlocked item                              |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/routine-feedback`              | Suppress one pending routine and replan                |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/routines/{routineId}/routine-feedback-resets` | Reset routine feedback and replan                      |
 
 Activity requests require an `Idempotency-Key` header containing 1–160 characters. Reusing a key with identical event content returns the original event. Reusing it for different content returns `409 activity.idempotency_conflict`. Public event responses omit the key because the caller already owns it and it is retry metadata, not activity history.
 
-Work items provide the initial backlog and status-column Kanban model through `backlog`, `planned`, `in_progress`, `blocked`, `done`, and `cancelled`. `planningDurationMinutes` is nullable: `null` keeps normal work out of Today, while a positive value (up to 43,200) opts it into the planner. `dueOn` is independently nullable and, when present, must be a strict real Gregorian `YYYY-MM-DD` local date. Create may omit it or send `null`; update omission preserves it, while update `null` clears it. Only opted-in `backlog`, `planned`, and `in_progress` work is eligible, and a due date never overrides status, duration, window, time-budget, or task-count constraints. List requests accept optional `status` and `priority` filters plus `limit` from 1–200 and `offset` from 0–1,000,000. Ordering is stable by creation time and ID. Updates require `expectedVersion`, increment exactly once for a real semantic change, and preserve the version for a normalized no-op. Work-item hard deletion and manual card ranking are not part of this MVP surface; cancellation is the removal workflow, and clients group items by status. A completion from a stale plan never auto-transitions `blocked` or `cancelled` work to `done`.
+Work items provide the initial backlog and status-column Kanban model through `backlog`, `planned`,
+`in_progress`, `blocked`, `done`, and `cancelled`. Every response includes nullable
+`parentWorkItemId`; `null` is a top-level item. `planningDurationMinutes` is nullable: `null` keeps
+normal work out of Today, while a positive value up to 43,200 opts a leaf item into the planner.
+`dueOn` is independently nullable and, when present, must be a strict real Gregorian `YYYY-MM-DD`
+local date. Create may omit either nullable field or send `null`; update omission preserves it, while
+update `null` clears it. Only opted-in `backlog`, `planned`, and `in_progress` leaf work is eligible.
+A parent with children is excluded even when it retains a positive duration, and becomes eligible
+again only after every child is detached. A due date never overrides status, duration, hierarchy,
+window, time-budget, or task-count constraints.
+
+The root create route accepts optional `parentWorkItemId`. The nested `POST .../{parentId}/subtasks`
+route derives the parent from its path and rejects a conflicting body field. Its `GET` companion
+returns only direct children as `{items,page:{limit,offset}}`, with `limit` from 1–200 and `offset`
+from 0–1,000,000. Hierarchy supports arbitrary depth, remains same-workspace and acyclic, and never
+cascades status. `PATCH` may set `parentWorkItemId` to another work-item UUID or `null` to detach.
+The child's current `expectedVersion` is required; a real move increments only the child. A missing
+or cross-workspace parent returns `404 work_item.not_found`, self-parenting returns
+`422 work_item_hierarchy.self_reference_invalid`, and a direct or transitive cycle returns
+`409 work_item_hierarchy.cycle_conflict`. Concurrent graph changes share one workspace lock.
+
+General list requests accept optional `status` and `priority` filters plus the same pagination
+bounds. Ordering is stable by creation time and ID. Updates increment exactly once for a real
+semantic change and preserve the version for a normalized no-op. Work-item hard deletion and manual
+card ranking are not part of this MVP surface; cancellation is the removal workflow, and clients
+group items by status. The parent foreign key restricts deletion while children remain. A completion
+from a stale plan never auto-transitions `blocked` or `cancelled` work to `done`.
 
 Work-item prerequisites are directed same-workspace edges. The `POST .../work-items/{dependentWorkItemId}/prerequisites` route accepts the strict body
 `{"prerequisiteWorkItemId":"<uuid>"}`. A new edge returns `201`; an exact existing edge returns the
@@ -161,6 +204,15 @@ their own. Schedule-block/work-item edits, plan replacement, and terminal item a
 the affected pending target intents transactionally. No mutation rewrites a previously accepted
 intent in place.
 
+Delivery-history reads use the same maximum 31-day range, `limit` 1–500, and a nonnegative bounded
+`offset`. They are workspace-scoped and ordered by scheduled instant then delivery ID. The response
+contains only product-facing lifecycle facts: delivery and intent IDs, reminder kind and target
+class, bounded title, schedule/local date/priority, status, attempt count, availability and
+completion instants, a bounded last-failure code, and record timestamps. It never returns claim
+tokens, lease details, credentials, dedupe internals, destinations, providers, channels, recipients,
+or provider payloads. A `processing` command means Schedule has granted a fenced claim; it is not
+proof that any external message was sent.
+
 The two `/v1/integrations/reminder-deliveries/*` routes are not local product routes. They require
 the integration bearer-token boundary, the explicit `schedule:delivery` scope, JSON, and an
 `Idempotency-Key`. Claim returns at most one privacy-bounded command; receipt accepts only a fenced
@@ -168,6 +220,23 @@ the integration bearer-token boundary, the explicit `schedule:delivery` scope, J
 [INTEGRATIONS.md](./INTEGRATIONS.md#reminder-delivery) for the wire contract and adapter obligations.
 
 Routine updates require `expectedVersion`. Scalar fields are partial; if `tags`, `duration`, or `cadence` is supplied, that nested object is a complete replacement. A real change increments the routine version once. A semantic no-op returns the current routine without writing or incrementing its version. A stale version returns `409 routine.version_conflict`. The update takes the same per-routine advisory lock used by activity and duration-insight commands, then reloads and saves under read committed so a manual edit cannot race an approval, dismissal, reset, or evidence append. This generic `PATCH` is still the manual editing path; it does not assert that a duration-insight suggestion is current.
+
+Routine selection preference is a separate append-only stream. `GET .../selection-preference`
+requires an explicit IANA `timeZone` and returns only `routineId`, `feedbackVersion`,
+`activeEventCount`, bounded `score`, human-readable `reason`, and nullable `updatedAt`. The active
+count distinguishes a quiet untouched/reset state from directional events that currently cancel to
+a zero score. Version 0 has count and score 0, no reason, and no update time.
+
+`POST .../selection-preference` requires an `Idempotency-Key` header and a strict body containing
+`kind` (`more_often`, `less_often`, or `reset`), non-negative `expectedFeedbackVersion`, and
+`timeZone`. Optional nullable `sourcePlanId` and `sourcePlanItemId` preserve Today provenance; a
+source item requires its source plan, and reset cannot identify an item. Success returns the same
+public projection accepted by that mutation; a concurrent later instruction cannot change its
+response. Exact retries replay that projection without advancing. Source provenance is validated
+against the same workspace and routine. Semantic key reuse or a stale preference version returns
+`409`; nonexistent provenance returns `404`. Each routine has a finite 1,000-event append-only
+history, after which new instructions return `422`. The command never edits the routine or current
+plan. A later explicit generation or regeneration is a new planning run and may consume the signal.
 
 The routine `duration-insight` route is a read-only calculation over same-workspace, same-routine
 activity. It considers completed sessions whose occurrence lies in the inclusive interval from
@@ -266,6 +335,57 @@ These feedback commands only change the insight's disposition. They never edit t
 duration, approve a suggestion, mutate Today or its head, regenerate a plan, or change planner input,
 scoring, and selection.
 
+The workspace-level `daily-plan-fit-insight` route requires an explicit real Gregorian `forDate`
+query value. It derives deterministic guidance from the current heads of fully resolved, nonempty
+plans in the preceding 90 local dates. Every item must be completed, skipped, deferred, or dismissed;
+a pending or started item excludes that plan from the sample. At most the 28 most recent eligible
+plans are used, at most 512 items are accepted in one evidence plan, and at least three samples are
+required. Completed workload is the scheduled minutes and count of items marked complete, not
+optional stopwatch duration. Oversized or over-ceiling evidence fails closed instead of deriving a
+partial recommendation.
+
+The response contains `status`, nullable `insightKey`, `disposition`, nullable `dismissedAt`,
+`forDate`, `windowStartedOn`, `windowEndedOn`, `lookbackDays`, `sampleCount`, `minimumSamples`,
+`maximumSamples`, `evaluatedAt`, the four nullable `typicalPlanned*` and `typicalCompleted*` medians,
+both nullable materiality thresholds, and nullable `suggestedTargetMinutes` and
+`suggestedTargetTaskCount`. Status is one of:
+
+- `insufficient_history`: fewer than three fully resolved current heads;
+- `aligned`: the median completed workload does not support a material downward adjustment; or
+- `suggested`: at least one dimension supports a material decrease and both proposed target values
+  are returned.
+
+Version 1 rounds proposed minutes to the nearest 15 with a 30-minute floor and uses a one-task floor.
+The minute threshold is the larger of 30 minutes or 20% of the planned median rounded up to 15; the
+task threshold is the larger of one task or 25% of the planned median rounded up. It does not
+recommend targets above the user's typical plan. `insufficient_history` and `aligned` are
+informational and have no key. A `suggested` result receives a lowercase SHA-256 key over the policy,
+requested date, evidence window, and canonical selected evidence; evaluation time and repository
+ordering are excluded.
+
+Dismiss and reset use strict bodies containing exactly the requested date and key, plus a required
+`Idempotency-Key` header of 1–160 characters:
+
+```json
+{
+  "forDate": "2026-07-14",
+  "insightKey": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+```
+
+The server takes a lowercase-canonical workspace-scoped advisory lock, resolves an exact accepted
+replay first, and then recalculates current evidence before appending an immutable `dismissed` or
+`reset` event. Exact retry
+returns the original event. Semantic key reuse returns
+`409 daily_plan_fit_insight.idempotency_conflict`; changed evidence returns
+`409 daily_plan_fit_insight.evidence_conflict`; and an invalid disposition transition returns
+`409 daily_plan_fit_insight.disposition_conflict`. A changed evidence snapshot has a different key,
+so it can surface as available despite an older dismissal.
+
+Neither the read nor feedback routes edit planning targets, create a plan revision, mutate a Today
+head, or affect planner input and scoring. Copying a suggestion into editable target fields is a
+client action; the ordinary explicit plan-generation request remains the only creation step.
+
 Routine activity history is ordered by newest ingestion first and accepts `limit` from 1–200 (default 50) plus an opaque, integrity-protected `cursor`. The cursor is bound to its workspace and routine. The first page captures a high-water mark, so later appends do not shift subsequent pages. A non-null `page.nextCursor` retrieves the next page. Local cursor signing keys are process-bound, so clients should restart pagination after an API restart.
 
 A plan is identified by workspace, real Gregorian local date, and positive request revision. Generic `POST /plans` creates only the initial revision 1. It may also retry an already persisted exact generic revision: the server recomputes the deterministic input and returns the persisted plan when the input hash is unchanged. Planner input includes routines, opted-in eligible work items, activity history, and canonical routine planning feedback. If any input has changed, retrying that revision returns `409 planning.revision_conflict`.
@@ -283,6 +403,76 @@ Every plan item has a stable UUID, a typed source identity (`sourceType` plus ex
 Current plan items also expose `activityState`, `lastActivityEventId`, and `activityUpdatedAt`. An item activity request uses the same optimistic identity and idempotency requirements as locking, and supports `started`, `completed`, `skipped`, `deferred`, `dismissed`, or `completion_reversed`. A pending item may enter any direct action state; a started item may enter any terminal state. Terminal states cannot transition again, except that reversing a completion reopens it as pending. Only completion may include an actual `durationMinutes`. The resulting activity event records the plan, plan item, and typed source identity, advances the Today head once, and feeds later planner history. Completing a work-derived item marks its source work item `done` only from an active work status. Its reversal restores the saved prior status only if no later accepted completion or work-item edit has advanced the completion ownership version; otherwise the newer state wins unchanged. Lock state remains independent, and an action does not automatically regenerate the plan.
 
 Generic routine activity may still be recorded outside a plan. Item completion reversal uses the item endpoint so its append-only event, Today projection, conditional work-status restoration, and head version change atomically; generic reversal remains appropriate for routine activity recorded outside a plan.
+
+### Natural-language proposal lifecycle
+
+Natural-language capture is an explicit proposal-then-confirm flow. It is independently disabled by
+default and accepts only one versioned prompt request:
+
+```json
+{
+  "version": "schedule.natural-language/v1",
+  "requestId": "11111111-1111-4111-8111-111111111111",
+  "prompt": "Turn my launch notes into one checklist task"
+}
+```
+
+The caller cannot supply a command, provider, model, options, tools, destination ID, priority, date,
+duration, tags, or other mutation fields. A successful `200` response contains transient summary and
+warning text plus either one pending `work_item.create` title, `no_proposal`, or a bounded unavailable
+reason. Preparing a proposal does not create a work item or hold a database transaction open during
+inference. Reusing the same request UUID and normalized prompt returns the still-pending stored
+proposal without another provider call; reusing it for different text returns
+`409 natural_language.request_conflict`.
+
+The response's proposal has an ID, request ID, exact canonical title-only command and command hash,
+provider/model identifiers, `pending` status, expiration instant, positive optimistic version, and
+`userSelection` initialized to `none`/`null`/`null` for priority, due date, and planning duration.
+The prompt, provider summary, warnings, raw envelope, and provider errors are not persisted. Schedule
+stores only a deployment-keyed prompt fingerprint for request-conflict detection. Every response in
+this route family, including validation and errors, uses `Cache-Control: no-store`.
+
+Editing sends the complete reviewed snapshot to the proposal item route:
+
+```json
+{
+  "expectedVersion": 1,
+  "title": "Reviewed title",
+  "userSelection": {
+    "priority": "high",
+    "dueOn": "2026-07-20",
+    "planningDurationMinutes": 60
+  }
+}
+```
+
+`userSelection` is authored by the user after inference; it is not extracted or suggested by the
+model. Priority is `none`, `low`, `medium`, `high`, or `urgent`; due date is a real local Gregorian
+date or `null`; duration is a whole number from 1 through 43,200 or `null`.
+Cancellation sends only `{ "expectedVersion": 1 }` to its dedicated route. Both lock the exact
+tenant-scoped proposal and reject terminal state. An edit with a mismatched version conflicts unless
+the requested title and all three review fields already equal the stored winner and the expected
+version is not from the future; this exact semantic replay returns the current version without
+another audit and lets a client recover when the original successful response was lost. An accepted change increments its
+version and appends an audit event. Cancellation requires the exact current version. Neither command
+creates work.
+
+Confirmation sends `{ "expectedVersion": 2 }` and requires an `Idempotency-Key`. The first accepted
+call returns `201` with the proposal ID, command hash, `replayed: false`, and the created backlog work
+item. The exact same key returns the original result with `200` and `replayed: true`; a different key
+after confirmation returns `409 natural_language.confirmation_conflict`. One serializable
+transaction locks and revalidates the proposal, expiration, version, canonical command digest,
+reviewed fields, and deterministic result identity before creating one root backlog work item with
+the reviewed priority, due date, and duration, marking confirmation, and auditing it.
+The review fields have a separate canonical digest; the title-only model command hash is never
+repurposed. Same-key replay also verifies that the stored result identity is the proposal-derived ID.
+Concurrent confirmations therefore create one work item and one confirmation audit. Missing
+proposals return `404`; expired, cancelled, or already-consumed proposal operations return `410`;
+corrupt stored commands fail as a redacted `500`.
+
+There is intentionally no proposal-list or proposal-read route in version 1. Pending proposals are
+short-lived interaction state, not a prompt or model-output history. See
+[NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md) for the complete trust and persistence contract.
 
 The advisor route is an explicit read operation with no automatic retry. It requires
 a current plan and accepts this complete strict body; unknown fields, including `prompt`, `model`,
@@ -374,6 +564,22 @@ the loopback request, and releases its bounded concurrency permit. The route per
 write, audit append, plan regeneration, or readiness check against Ollama.
 
 Regeneration and replacement require the same optimistic identity and idempotency header plus a complete planning request with a new seed. The server allocates the next revision. Regeneration carries locked non-terminal items exactly and plans only residual capacity. Replacement anchors every sibling, rejects a locked target, excludes the removed typed source, and fills the released capacity. Terminal sources are not replanned. Prior revisions remain immutable and mutation provenance is retained for replay. A retry resolves to the same immutable plan revision and recorded head version; its projected lock and activity fields reflect the latest state for that revision.
+
+Alternative preview accepts the same strict planning request and exact `expectedPlanId` and
+`expectedHeadVersion`, but performs no insert, head advance, notification invalidation, or audit
+write. It returns at most three deterministic, structurally distinct non-primary candidates with an
+opaque lowercase SHA-256 `candidateKey`, projected items, totals, fitness, warnings, and differences
+from the current plan. Candidate keys bind the canonical planner input and placements; they exclude
+generated timestamps and disposable UUIDs. Responses use `Cache-Control: no-store`.
+
+Alternative selection sends the identical request and chosen `candidateKey`, plus an
+`Idempotency-Key`. Under the existing workspace/day lock order, the server resolves an earlier
+receipt before checking the head, reloads tenant-scoped planner inputs, and recomputes the bounded
+candidate set. A missing key returns `409 planning.alternative_stale` without writing. An accepted
+choice preserves locked nonterminal anchors, excludes terminal sources, stores exactly one immutable
+next revision and `alternative_select` receipt, advances the head once, and invalidates notification
+intents for the superseded plan. Exact retries return that recorded revision even after the head has
+advanced; semantic key reuse returns `409 planning.idempotency_conflict`.
 
 Routine feedback is a separate plan mutation, not an item activity. Applying feedback posts the same
 strict mutation body plus `kind: "not_today" | "not_this_week"` to the item route. The item must be a

@@ -6,7 +6,11 @@ import {
   derivePlanItemId,
   generateDailyPlan,
   planSourceKey,
+  previewDailyPlanAlternatives,
+  selectDailyPlanAlternative,
   type DailyPlan,
+  type DailyPlanAlternative,
+  type DailyPlanAlternativesPreview,
   type DailyPlanningRequest,
   type GenerateDailyPlanInput,
   type JsonValue,
@@ -18,7 +22,8 @@ import type { RoutineId } from "./ids.js";
 import type { WorkItemId } from "./ids.js";
 import { isTerminalPlanItemActivityState } from "./plan-item-activity.js";
 
-export type PlanMutationKind = "regenerate" | "replace" | "feedback" | "feedback_reset";
+export type PlanMutationKind =
+  "regenerate" | "replace" | "feedback" | "feedback_reset" | "alternative_select";
 
 export interface ReplanDailyPlanInput extends Pick<
   GenerateDailyPlanInput,
@@ -26,6 +31,7 @@ export interface ReplanDailyPlanInput extends Pick<
   | "routines"
   | "events"
   | "routineFeedback"
+  | "routineSelectionPreferenceFeedback"
   | "workItemDependencies"
   | "config"
   | "generatedAt"
@@ -39,6 +45,8 @@ export interface ReplanDailyPlanInput extends Pick<
   /** Preferred typed exclusion API; legacy id arrays remain supported. */
   readonly excludedSources?: readonly PlanSource[];
   readonly kind: PlanMutationKind;
+  /** Opaque key returned by previewReplanDailyPlanAlternatives. */
+  readonly selectedAlternativeKey?: string;
 }
 
 function windowMinutes(request: DailyPlanningRequest, index: number): number {
@@ -90,7 +98,10 @@ function immutableAnchorSnapshot(item: PlanItem): JsonValue {
   };
 }
 
-export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
+function replanDailyPlanInternal(
+  input: ReplanDailyPlanInput,
+  collectResidualPreview?: (preview: DailyPlanAlternativesPreview) => void,
+): DailyPlan {
   invariant(
     input.sourcePlan.workspaceId === input.request.workspaceId &&
       input.sourcePlan.date === input.request.date,
@@ -207,7 +218,7 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
     residualWorkItemIds.has(dependency.dependentWorkItemId),
   );
   const resultId = input.id;
-  const residual = generateDailyPlan({
+  const residualInput = {
     ...(resultId === undefined ? {} : { id: resultId }),
     request: residualRequest,
     routines:
@@ -218,9 +229,21 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
     workItemDependencies: residualWorkItemDependencies,
     events: input.events,
     ...(input.routineFeedback === undefined ? {} : { routineFeedback: input.routineFeedback }),
+    ...(input.routineSelectionPreferenceFeedback === undefined
+      ? {}
+      : { routineSelectionPreferenceFeedback: input.routineSelectionPreferenceFeedback }),
     ...(input.config === undefined ? {} : { config: input.config }),
     ...(input.generatedAt === undefined ? {} : { generatedAt: input.generatedAt }),
-  });
+  };
+  const residual = (() => {
+    if (input.selectedAlternativeKey !== undefined) {
+      return selectDailyPlanAlternative(residualInput, input.selectedAlternativeKey);
+    }
+    if (collectResidualPreview === undefined) return generateDailyPlan(residualInput);
+    const preview = previewDailyPlanAlternatives(residualInput);
+    collectResidualPreview(preview);
+    return preview.primary;
+  })();
   const usedPositions = new Set(input.anchoredItems.map((item) => item.position));
   let nextPosition = 0;
   const items = [
@@ -282,4 +305,103 @@ export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
     inputSnapshot: mutationSnapshot,
     warnings: finalWarnings(residual.warnings, input.request, totalMinutes, items.length),
   };
+}
+
+export function replanDailyPlan(input: ReplanDailyPlanInput): DailyPlan {
+  return replanDailyPlanInternal(input);
+}
+
+function describeReplanAlternative(
+  candidateKey: string,
+  baseline: DailyPlan,
+  candidate: DailyPlan,
+): DailyPlanAlternative {
+  const baselineSources = new Map(baseline.items.map((item) => [planSourceKey(item), item]));
+  const candidateSources = new Map(candidate.items.map((item) => [planSourceKey(item), item]));
+  const addedSourceKeys = [...candidateSources.keys()]
+    .filter((key) => !baselineSources.has(key))
+    .sort((left, right) => left.localeCompare(right, "en"));
+  const removedSourceKeys = [...baselineSources.keys()]
+    .filter((key) => !candidateSources.has(key))
+    .sort((left, right) => left.localeCompare(right, "en"));
+  const changedPlacements = [...candidateSources.entries()]
+    .flatMap(([key, item]) => {
+      const baselineItem = baselineSources.get(key);
+      if (
+        baselineItem === undefined ||
+        (baselineItem.windowIndex === item.windowIndex &&
+          baselineItem.scheduledMinutes === item.scheduledMinutes &&
+          baselineItem.partialSession === item.partialSession)
+      ) {
+        return [];
+      }
+      return [
+        {
+          sourceType: item.sourceType,
+          routineId: item.routineId,
+          workItemId: item.workItemId,
+          fromWindowIndex: baselineItem.windowIndex,
+          toWindowIndex: item.windowIndex,
+          fromScheduledMinutes: baselineItem.scheduledMinutes,
+          toScheduledMinutes: item.scheduledMinutes,
+          fromPartialSession: baselineItem.partialSession,
+          toPartialSession: item.partialSession,
+        },
+      ];
+    })
+    .sort((left, right) => planSourceKey(left).localeCompare(planSourceKey(right), "en"));
+  return {
+    candidateKey,
+    items: candidate.items.map((item) => ({
+      sourceType: item.sourceType,
+      routineId: item.routineId,
+      workItemId: item.workItemId,
+      title: item.title,
+      windowIndex: item.windowIndex,
+      scheduledMinutes: item.scheduledMinutes,
+      partialSession: item.partialSession,
+      score: item.score,
+      reasons: item.reasons,
+    })),
+    totalMinutes: candidate.totalMinutes,
+    taskCount: candidate.items.length,
+    fitness: candidate.fitness,
+    warnings: candidate.warnings,
+    deltaMinutes: candidate.totalMinutes - baseline.totalMinutes,
+    deltaTaskCount: candidate.items.length - baseline.items.length,
+    addedSourceKeys,
+    removedSourceKeys,
+    changedPlacements,
+  };
+}
+
+export function previewReplanDailyPlanAlternatives(
+  input: ReplanDailyPlanInput,
+): DailyPlanAlternativesPreview {
+  invariant(
+    input.selectedAlternativeKey === undefined,
+    "planning.alternative_preview_invalid",
+    "An alternative preview cannot preselect a candidate.",
+  );
+  let residualPreview: DailyPlanAlternativesPreview | null = null;
+  const primary = replanDailyPlanInternal(input, (preview) => {
+    residualPreview = preview;
+  });
+  invariant(
+    residualPreview !== null,
+    "planning.alternative_preview_invalid",
+    "The planner did not produce an alternative preview.",
+  );
+  const alternatives = (residualPreview as DailyPlanAlternativesPreview).alternatives.map(
+    (alternative) =>
+      describeReplanAlternative(
+        alternative.candidateKey,
+        input.sourcePlan,
+        replanDailyPlanInternal({
+          ...input,
+          selectedAlternativeKey: alternative.candidateKey,
+        }),
+      ),
+  );
+  return { primary, alternatives };
 }

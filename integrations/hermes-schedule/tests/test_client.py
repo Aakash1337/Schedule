@@ -139,6 +139,7 @@ class ScheduleClientTests(unittest.TestCase):
                 {
                     "id": item_id,
                     "workspaceId": workspace_id,
+                    "parentWorkItemId": None,
                     "title": "Bounded work",
                     "description": None,
                     "status": "planned",
@@ -203,7 +204,7 @@ class ScheduleClientTests(unittest.TestCase):
             "expiresAt": "2026-07-15T07:01:00.000Z",
         }
         confirmed = {
-            "receiptVersion": 1,
+            "receiptVersion": 2,
             "confirmationId": confirmation_id,
             "operation": "work_item.create",
             "commandHash": hashlib.sha256(
@@ -216,6 +217,7 @@ class ScheduleClientTests(unittest.TestCase):
                 "workItem": {
                     "id": work_item_id,
                     "workspaceId": workspace_id,
+                    "parentWorkItemId": None,
                     "title": "Prepare only",
                     "description": "RECEIPT_DESCRIPTION_MUST_NOT_ESCAPE",
                     "status": "planned",
@@ -247,6 +249,7 @@ class ScheduleClientTests(unittest.TestCase):
                 "type": "work_item.created",
                 "workItem": {
                     "id": work_item_id,
+                    "parentWorkItemId": None,
                     "status": "planned",
                     "priority": "none",
                     "planningDurationMinutes": None,
@@ -270,6 +273,71 @@ class ScheduleClientTests(unittest.TestCase):
             json.loads(confirm_request["body"]),
             {"version": INTEGRATION_VERSION, "confirmationId": confirmation_id},
         )
+
+    def test_accepts_strict_version_one_and_unversioned_legacy_work_item_receipts(self) -> None:
+        confirmation_id = str(uuid4())
+        idempotency_key = str(uuid4())
+        command_hash = "a" * 64
+        base_item = {
+            "id": str(uuid4()),
+            "workspaceId": str(uuid4()),
+            "title": "Legacy item",
+            "description": None,
+            "status": "planned",
+            "priority": "medium",
+            "planningDurationMinutes": 30,
+            "version": 1,
+            "createdAt": "2026-07-15T07:00:00.000Z",
+            "updatedAt": "2026-07-15T07:00:00.000Z",
+        }
+        variants = (
+            ({"receiptVersion": 1}, {**base_item, "dueOn": None}, 1),
+            ({}, base_item, None),
+        )
+
+        for version_fields, item, expected_version in variants:
+            receipt = {
+                **version_fields,
+                "confirmationId": confirmation_id,
+                "operation": "work_item.create",
+                "commandHash": command_hash,
+                "outcome": {"type": "work_item.created", "workItem": item},
+            }
+            with self.subTest(receipt_version=expected_version):
+                with _server(_json_response(200, _envelope(receipt))) as (port, _fixture):
+                    client = ScheduleClient(ScheduleClientConfig(port=port, token=self.token))
+                    safe = client.confirm_change(
+                        confirmation_id,
+                        idempotency_key,
+                        "work_item.create",
+                        command_hash,
+                    )
+                if expected_version is None:
+                    self.assertNotIn("receiptVersion", safe)
+                else:
+                    self.assertEqual(safe["receiptVersion"], expected_version)
+                self.assertEqual(safe["outcome"]["workItem"]["dueOn"], None)
+                self.assertEqual(safe["outcome"]["workItem"]["parentWorkItemId"], None)
+
+    def test_requires_the_current_hierarchy_shape_for_work_item_discovery(self) -> None:
+        item = {
+            "id": str(uuid4()),
+            "workspaceId": str(uuid4()),
+            "title": "Missing current parent field",
+            "description": None,
+            "status": "planned",
+            "priority": "medium",
+            "planningDurationMinutes": 30,
+            "dueOn": None,
+            "version": 1,
+            "createdAt": "2026-07-15T07:00:00.000Z",
+            "updatedAt": "2026-07-15T07:00:00.000Z",
+        }
+        page = {"items": [item], "page": {"limit": 100, "offset": 0}}
+        with _server(_json_response(200, _envelope(page))) as (port, _fixture):
+            client = ScheduleClient(ScheduleClientConfig(port=port, token=self.token))
+            with self.assertRaisesRegex(ScheduleAdapterError, "^schedule_work_items_invalid$"):
+                client.list_work_items()
 
     def test_rejects_prepare_integrity_drift_before_exposing_a_confirmation(self) -> None:
         request_id = str(uuid4())
@@ -339,6 +407,7 @@ class ScheduleClientTests(unittest.TestCase):
         work_item = {
             "id": str(uuid4()),
             "workspaceId": str(uuid4()),
+            "parentWorkItemId": None,
             "title": "Bounded title",
             "description": None,
             "status": "planned",
@@ -350,7 +419,7 @@ class ScheduleClientTests(unittest.TestCase):
             "updatedAt": "2026-07-15T07:00:00.000Z",
         }
         valid = {
-            "receiptVersion": 1,
+            "receiptVersion": 2,
             "confirmationId": confirmation_id,
             "operation": "work_item.create",
             "commandHash": command_hash,
@@ -358,6 +427,10 @@ class ScheduleClientTests(unittest.TestCase):
         }
         invalid_receipts = (
             {**valid, "receiptVersion": True},
+            {**valid, "receiptVersion": None},
+            {**valid, "receiptVersion": "2"},
+            {**valid, "receiptVersion": 0},
+            {**valid, "receiptVersion": 3},
             {**valid, "confirmationId": str(uuid4())},
             {**valid, "operation": "work_item.update"},
             {**valid, "commandHash": "b" * 64},
@@ -367,6 +440,43 @@ class ScheduleClientTests(unittest.TestCase):
                 "outcome": {
                     "type": "work_item.created",
                     "workItem": {**work_item, "providerSecret": "MUST_NOT_ESCAPE"},
+                },
+            },
+            {
+                **valid,
+                "outcome": {
+                    "type": "work_item.created",
+                    "workItem": {**work_item, "version": 2_147_483_648},
+                },
+            },
+            {
+                **valid,
+                "outcome": {
+                    "type": "work_item.created",
+                    "workItem": {
+                        **work_item,
+                        "id": "00000000-0000-9000-8000-000000000000",
+                    },
+                },
+            },
+            {
+                **valid,
+                "outcome": {
+                    "type": "work_item.created",
+                    "workItem": {
+                        key: value for key, value in work_item.items() if key != "parentWorkItemId"
+                    },
+                },
+            },
+            {
+                **{key: value for key, value in valid.items() if key != "receiptVersion"},
+                "outcome": {
+                    "type": "work_item.created",
+                    "workItem": {
+                        key: value
+                        for key, value in work_item.items()
+                        if key != "parentWorkItemId"
+                    },
                 },
             },
         )
@@ -416,6 +526,10 @@ class ScheduleClientTests(unittest.TestCase):
             lambda: client.list_work_items(status="PLANNED"),
             lambda: client.list_work_items(limit=True),
             lambda: client.prepare_change("not-a-uuid", {"type": "work_item.create"}),
+            lambda: client.prepare_change(
+                str(uuid4()),
+                {"type": "plan_item.activity", "metadata": {"invalid": float("nan")}},
+            ),
             lambda: client.confirm_change(
                 str(uuid4()), "not-a-uuid", "work_item.create", "a" * 64
             ),

@@ -2,7 +2,20 @@ import type {
   ActivityPage,
   CurrentDailyPlan,
   DailyPlan,
+  DailyPlanAlternativesResult,
+  DailyPlanFitInsight,
+  DailyPlanFitInsightFeedback,
   GeneratePlanInput,
+  NaturalLanguageConfirmationResult,
+  NaturalLanguageProposal,
+  NaturalLanguageProposalResult,
+  NotificationDeliveryHistoryItem,
+  NotificationIntent,
+  NotificationMaterializationResult,
+  NotificationProfile,
+  NotificationRule,
+  NotificationRuleKind,
+  OneOffReminder,
   Page,
   PlanItemActivityState,
   PlanSettings,
@@ -10,6 +23,8 @@ import type {
   RoutineDurationInsight,
   RoutineDurationInsightFeedback,
   RoutinePlanningFeedbackSuppressionKind,
+  RoutineSelectionPreferenceKind,
+  RoutineSelectionPreferenceState,
   RoutineStatus,
   ScheduleBlock,
   SchedulingAdviceResult,
@@ -21,7 +36,7 @@ import type {
 } from "./types";
 
 interface RequestOptions {
-  readonly method?: "GET" | "POST" | "PATCH" | "DELETE";
+  readonly method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly json?: unknown;
   readonly idempotencyKey?: string;
   readonly signal?: AbortSignal;
@@ -218,6 +233,7 @@ export const api = {
     workspaceId: string,
     input: {
       title: string;
+      parentWorkItemId?: string | null;
       description: string | null;
       status: WorkItemStatus;
       priority: WorkItemPriority;
@@ -230,11 +246,121 @@ export const api = {
       json: input,
     }),
 
+  createSubtask: (
+    workspaceId: string,
+    parentWorkItemId: string,
+    input: {
+      title: string;
+      description: string | null;
+      status: WorkItemStatus;
+      priority: WorkItemPriority;
+      dueOn: string | null;
+      planningDurationMinutes: number | null;
+    },
+  ) =>
+    request<WorkItem>(
+      workspacePath(workspaceId, `/work-items/${encodeURIComponent(parentWorkItemId)}/subtasks`),
+      { method: "POST", json: input },
+    ),
+
+  listWorkItemChildren: (workspaceId: string, parentWorkItemId: string, signal?: AbortSignal) =>
+    listAllOffsetPages<WorkItem>(
+      workspacePath(workspaceId, `/work-items/${encodeURIComponent(parentWorkItemId)}/subtasks`),
+      {},
+      signal,
+    ),
+
+  generateNaturalLanguageProposal: async (
+    workspaceId: string,
+    input: {
+      readonly version: "schedule.natural-language/v1";
+      readonly requestId: string;
+      readonly prompt: string;
+    },
+    signal?: AbortSignal,
+  ) => {
+    const result = await request<NaturalLanguageProposalResult>(
+      workspacePath(workspaceId, "/natural-language/proposals"),
+      {
+        method: "POST",
+        json: input,
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+    if (result.version !== "schedule.natural-language/v1" || result.requestId !== input.requestId) {
+      throw new ApiError(
+        502,
+        "natural_language.response_mismatch",
+        "The local model returned a mismatched proposal response.",
+        null,
+      );
+    }
+    return result;
+  },
+
+  updateNaturalLanguageProposal: (
+    workspaceId: string,
+    proposalId: string,
+    input: {
+      readonly expectedVersion: number;
+      readonly title: string;
+      readonly userSelection: {
+        readonly priority: WorkItemPriority;
+        readonly dueOn: string | null;
+        readonly planningDurationMinutes: number | null;
+      };
+    },
+    signal?: AbortSignal,
+  ) =>
+    request<NaturalLanguageProposal>(
+      workspacePath(workspaceId, `/natural-language/proposals/${encodeURIComponent(proposalId)}`),
+      { method: "PATCH", json: input, ...(signal === undefined ? {} : { signal }) },
+    ),
+
+  cancelNaturalLanguageProposal: (
+    workspaceId: string,
+    proposalId: string,
+    expectedVersion: number,
+    signal?: AbortSignal,
+  ) =>
+    request<NaturalLanguageProposal>(
+      workspacePath(
+        workspaceId,
+        `/natural-language/proposals/${encodeURIComponent(proposalId)}/cancellations`,
+      ),
+      {
+        method: "POST",
+        json: { expectedVersion },
+        ...(signal === undefined ? {} : { signal }),
+      },
+    ),
+
+  confirmNaturalLanguageProposal: (
+    workspaceId: string,
+    proposalId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ) =>
+    request<NaturalLanguageConfirmationResult>(
+      workspacePath(
+        workspaceId,
+        `/natural-language/proposals/${encodeURIComponent(proposalId)}/confirmations`,
+      ),
+      {
+        method: "POST",
+        json: { expectedVersion },
+        idempotencyKey,
+        ...(signal === undefined ? {} : { signal }),
+      },
+    ),
+
   updateWorkItem: (
     workspaceId: string,
     itemId: string,
     input: {
       expectedVersion: number;
+      parentWorkItemId?: string | null;
       title?: string;
       description?: string | null;
       status?: WorkItemStatus;
@@ -289,6 +415,84 @@ export const api = {
     request<Routine>(
       workspacePath(workspaceId, `/routines/${encodeURIComponent(routineId)}`),
       signal === undefined ? {} : { signal },
+    ),
+
+  getRoutineSelectionPreference: (
+    workspaceId: string,
+    routineId: string,
+    timeZone: string,
+    signal?: AbortSignal,
+  ) =>
+    request<RoutineSelectionPreferenceState>(
+      queryPath(
+        workspacePath(
+          workspaceId,
+          `/routines/${encodeURIComponent(routineId)}/selection-preference`,
+        ),
+        { timeZone },
+      ),
+      signal === undefined ? {} : { signal },
+    ),
+
+  recordRoutineSelectionPreference: (
+    workspaceId: string,
+    routineId: string,
+    input: {
+      readonly kind: RoutineSelectionPreferenceKind;
+      readonly expectedFeedbackVersion: number;
+      readonly timeZone: string;
+      readonly sourcePlanId?: string | null;
+      readonly sourcePlanItemId?: string | null;
+    },
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ) =>
+    request<RoutineSelectionPreferenceState>(
+      workspacePath(workspaceId, `/routines/${encodeURIComponent(routineId)}/selection-preference`),
+      {
+        method: "POST",
+        json: input,
+        idempotencyKey,
+        ...(signal === undefined ? {} : { signal }),
+      },
+    ),
+
+  getDailyPlanFitInsight: (workspaceId: string, forDate: string, signal?: AbortSignal) =>
+    request<DailyPlanFitInsight>(
+      queryPath(workspacePath(workspaceId, "/daily-plan-fit-insight"), { forDate }),
+      signal === undefined ? {} : { signal },
+    ),
+
+  dismissDailyPlanFitInsight: (
+    workspaceId: string,
+    input: { readonly forDate: string; readonly insightKey: string },
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ) =>
+    request<DailyPlanFitInsightFeedback>(
+      workspacePath(workspaceId, "/daily-plan-fit-insight/dismissals"),
+      {
+        method: "POST",
+        json: input,
+        idempotencyKey,
+        ...(signal === undefined ? {} : { signal }),
+      },
+    ),
+
+  resetDailyPlanFitInsightDismissal: (
+    workspaceId: string,
+    input: { readonly forDate: string; readonly insightKey: string },
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ) =>
+    request<DailyPlanFitInsightFeedback>(
+      workspacePath(workspaceId, "/daily-plan-fit-insight/dismissal-resets"),
+      {
+        method: "POST",
+        json: input,
+        idempotencyKey,
+        ...(signal === undefined ? {} : { signal }),
+      },
     ),
 
   getRoutineDurationInsight: (workspaceId: string, routineId: string, signal?: AbortSignal) =>
@@ -430,6 +634,133 @@ export const api = {
       json: { expectedVersion },
     }),
 
+  getNotificationProfile: (workspaceId: string, signal?: AbortSignal) =>
+    request<NotificationProfile>(
+      workspacePath(workspaceId, "/notification-profile"),
+      signal === undefined ? {} : { signal },
+    ),
+
+  configureNotificationProfile: (
+    workspaceId: string,
+    input: {
+      expectedVersion: number | null;
+      enabled: boolean;
+      timeZone: string;
+      quietHoursStartMinute: number | null;
+      quietHoursEndMinute: number | null;
+      quietHoursPolicy: "skip" | "next_allowed";
+      catchUpWindowMinutes: number;
+      dailyIntentLimit: number;
+    },
+  ) =>
+    request<NotificationProfile>(workspacePath(workspaceId, "/notification-profile"), {
+      method: "PUT",
+      json: input,
+    }),
+
+  listNotificationRules: (workspaceId: string, signal?: AbortSignal) =>
+    request<{ readonly items: readonly NotificationRule[] }>(
+      workspacePath(workspaceId, "/notification-rules"),
+      signal === undefined ? {} : { signal },
+    ),
+
+  createNotificationRule: (
+    workspaceId: string,
+    input: {
+      kind: NotificationRuleKind;
+      enabled: boolean;
+      localMinute: number | null;
+      leadMinutes: number | null;
+      cooldownMinutes: number;
+      priority: number;
+    },
+  ) =>
+    request<NotificationRule>(workspacePath(workspaceId, "/notification-rules"), {
+      method: "POST",
+      json: input,
+    }),
+
+  updateNotificationRule: (
+    workspaceId: string,
+    ruleId: string,
+    input: {
+      expectedVersion: number;
+      enabled?: boolean;
+      localMinute?: number | null;
+      leadMinutes?: number | null;
+      cooldownMinutes?: number;
+      priority?: number;
+    },
+  ) =>
+    request<NotificationRule>(
+      workspacePath(workspaceId, `/notification-rules/${encodeURIComponent(ruleId)}`),
+      { method: "PATCH", json: input },
+    ),
+
+  listOneOffReminders: (workspaceId: string, from: string, to: string, signal?: AbortSignal) =>
+    request<{ readonly items: readonly OneOffReminder[] }>(
+      queryPath(workspacePath(workspaceId, "/one-off-reminders"), { from, to }),
+      signal === undefined ? {} : { signal },
+    ),
+
+  createOneOffReminder: (
+    workspaceId: string,
+    input: { readonly title: string; readonly scheduledFor: string },
+  ) =>
+    request<OneOffReminder>(workspacePath(workspaceId, "/one-off-reminders"), {
+      method: "POST",
+      json: input,
+    }),
+
+  updateOneOffReminder: (
+    workspaceId: string,
+    reminderId: string,
+    input: {
+      readonly expectedVersion: number;
+      readonly title?: string;
+      readonly scheduledFor?: string;
+    },
+  ) =>
+    request<OneOffReminder>(
+      workspacePath(workspaceId, `/one-off-reminders/${encodeURIComponent(reminderId)}`),
+      { method: "PATCH", json: input },
+    ),
+
+  cancelOneOffReminder: (workspaceId: string, reminderId: string, expectedVersion: number) =>
+    request<OneOffReminder>(
+      workspacePath(
+        workspaceId,
+        `/one-off-reminders/${encodeURIComponent(reminderId)}/cancellations`,
+      ),
+      { method: "POST", json: { expectedVersion } },
+    ),
+
+  listNotificationIntents: (workspaceId: string, from: string, to: string, signal?: AbortSignal) =>
+    listAllOffsetPages<NotificationIntent>(
+      workspacePath(workspaceId, "/notification-intents"),
+      { from, to },
+      signal,
+    ),
+
+  materializeNotificationIntents: (workspaceId: string, from: string, through: string) =>
+    request<NotificationMaterializationResult>(
+      workspacePath(workspaceId, "/notification-intents/materializations"),
+      { method: "POST", json: { from, through } },
+    ),
+
+  listNotificationDeliveries: (
+    workspaceId: string,
+    from: string,
+    to: string,
+    signal?: AbortSignal,
+  ) =>
+    listAllOffsetPagesBy<NotificationDeliveryHistoryItem>(
+      workspacePath(workspaceId, "/notification-deliveries"),
+      { from, to },
+      (item) => item.deliveryId,
+      signal,
+    ),
+
   getCurrentPlan: (workspaceId: string, date: string, signal?: AbortSignal) =>
     request<CurrentDailyPlan>(
       workspacePath(workspaceId, `/plans/${date}/current`),
@@ -526,6 +857,38 @@ export const api = {
     idempotencyKey: string,
   ) =>
     request<CurrentDailyPlan>(workspacePath(workspaceId, `/plans/${date}/regenerations`), {
+      method: "POST",
+      json: input,
+      idempotencyKey,
+    }),
+
+  previewDailyPlanAlternatives: (
+    workspaceId: string,
+    date: string,
+    input: { expectedPlanId: string; expectedHeadVersion: number; request: PlanSettings },
+    signal?: AbortSignal,
+  ) =>
+    request<DailyPlanAlternativesResult>(
+      workspacePath(workspaceId, `/plans/${date}/alternative-previews`),
+      {
+        method: "POST",
+        json: input,
+        ...(signal === undefined ? {} : { signal }),
+      },
+    ),
+
+  selectDailyPlanAlternative: (
+    workspaceId: string,
+    date: string,
+    input: {
+      expectedPlanId: string;
+      expectedHeadVersion: number;
+      candidateKey: string;
+      request: PlanSettings;
+    },
+    idempotencyKey: string,
+  ) =>
+    request<CurrentDailyPlan>(workspacePath(workspaceId, `/plans/${date}/alternative-selections`), {
       method: "POST",
       json: input,
       idempotencyKey,

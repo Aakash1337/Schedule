@@ -1,6 +1,7 @@
 import {
   Check,
   Clock3,
+  GitCompareArrows,
   Lock,
   MessageSquareText,
   Play,
@@ -9,7 +10,15 @@ import {
   Shuffle,
   Unlock,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type RefObject,
+} from "react";
 
 import { api, ApiError, newIdempotencyKey } from "../api";
 import {
@@ -33,6 +42,9 @@ import {
 } from "../date";
 import type {
   CurrentDailyPlan,
+  DailyPlanAlternative,
+  DailyPlanAlternativesResult,
+  DailyPlanFitInsight,
   EnergyLevel,
   PlanExclusion,
   PlanItem,
@@ -66,6 +78,208 @@ interface CommandSuccess {
 
 type AdvisorPhase = "idle" | "loading";
 type CalendarAvailabilityPhase = "idle" | "loading" | "ready" | "error";
+type PlanFitFeedbackAction = "dismiss" | "restore" | null;
+type AlternativePreviewPhase = "idle" | "loading" | "ready";
+
+interface LoadedAlternativePreview extends DailyPlanAlternativesResult {
+  readonly request: PlanSettings;
+}
+
+interface DailyPlanFitPanelProps {
+  readonly insight: DailyPlanFitInsight | null;
+  readonly loading: boolean;
+  readonly loadError: string | null;
+  readonly feedbackError: string | null;
+  readonly feedbackAction: PlanFitFeedbackAction;
+  readonly announcement: string | null;
+  readonly headingRef: RefObject<HTMLHeadingElement | null>;
+  readonly onRetry: () => void;
+  readonly onApply: () => void;
+  readonly onDismiss: () => void;
+  readonly onRestore: () => void;
+}
+
+function planCountLabel(count: number): string {
+  return `${count} resolved ${count === 1 ? "plan" : "plans"}`;
+}
+
+function DailyPlanFitPanel({
+  insight,
+  loading,
+  loadError,
+  feedbackError,
+  feedbackAction,
+  announcement,
+  headingRef,
+  onRetry,
+  onApply,
+  onDismiss,
+  onRestore,
+}: DailyPlanFitPanelProps) {
+  if (loading && insight === null) {
+    return (
+      <section
+        className="today-plan-fit"
+        aria-labelledby="today-plan-fit-heading"
+        aria-busy="true"
+        aria-live="polite"
+        role="status"
+      >
+        <p className="eyebrow">Deterministic Plan Fit</p>
+        <h3 id="today-plan-fit-heading">Checking your resolved plans…</h3>
+        <p>No targets will change while this evidence is loaded.</p>
+      </section>
+    );
+  }
+
+  if (loadError !== null) {
+    return (
+      <section className="today-plan-fit" aria-labelledby="today-plan-fit-heading">
+        <p className="eyebrow">Deterministic Plan Fit</p>
+        <h3 id="today-plan-fit-heading">Plan Fit is unavailable</h3>
+        <ErrorNotice
+          message={loadError}
+          action={
+            <Button type="button" variant="quiet" onClick={onRetry}>
+              Retry
+            </Button>
+          }
+        />
+      </section>
+    );
+  }
+
+  if (insight === null) return null;
+
+  const hasEvidence =
+    insight.typicalPlannedMinutes !== null &&
+    insight.typicalCompletedMinutes !== null &&
+    insight.typicalPlannedTaskCount !== null &&
+    insight.typicalCompletedTaskCount !== null;
+  const hasSuggestion =
+    insight.status === "suggested" &&
+    insight.insightKey !== null &&
+    insight.suggestedTargetMinutes !== null &&
+    insight.suggestedTargetTaskCount !== null;
+  const remainingSamples = Math.max(0, insight.minimumSamples - insight.sampleCount);
+  const title =
+    insight.status === "insufficient_history"
+      ? "Plan Fit is learning"
+      : insight.status === "aligned"
+        ? "Your recent targets fit"
+        : insight.disposition === "dismissed"
+          ? "Plan Fit suggestion paused"
+          : `Try ${insight.suggestedTargetMinutes} minutes and ${insight.suggestedTargetTaskCount} tasks`;
+
+  return (
+    <section className="today-plan-fit" aria-labelledby="today-plan-fit-heading">
+      <div className="today-plan-fit-heading">
+        <div>
+          <p className="eyebrow">Deterministic Plan Fit</p>
+          <h3 id="today-plan-fit-heading" ref={headingRef} tabIndex={-1}>
+            {title}
+          </h3>
+        </div>
+        <span>{planCountLabel(insight.sampleCount)}</span>
+      </div>
+
+      {insight.status === "insufficient_history" ? (
+        <p>
+          Resolve {remainingSamples} more {remainingSamples === 1 ? "plan" : "plans"} to get a
+          target recommendation. A plan counts after every item is completed, skipped, deferred, or
+          dismissed.
+        </p>
+      ) : insight.status === "aligned" ? (
+        <p>
+          Your typical completed workload is close to what you planned, so there is nothing to
+          adjust right now.
+        </p>
+      ) : insight.disposition === "dismissed" ? (
+        <p>
+          This exact evidence snapshot is hidden. New resolved-plan evidence will create a new
+          suggestion automatically.
+        </p>
+      ) : (
+        <p>
+          Recent resolved plans suggest a smaller joint target. Using it only prefills both fields;
+          you still review the values and choose when to generate.
+        </p>
+      )}
+
+      {hasEvidence ? (
+        <dl className="today-plan-fit-facts">
+          <div>
+            <dt>Typical plan</dt>
+            <dd>
+              {formatMinutes(insight.typicalPlannedMinutes!)} · {insight.typicalPlannedTaskCount}{" "}
+              {insight.typicalPlannedTaskCount === 1 ? "task" : "tasks"}
+            </dd>
+          </div>
+          <div>
+            <dt>Typical completed</dt>
+            <dd>
+              {formatMinutes(insight.typicalCompletedMinutes!)} ·{" "}
+              {insight.typicalCompletedTaskCount}{" "}
+              {insight.typicalCompletedTaskCount === 1 ? "task" : "tasks"}
+            </dd>
+          </div>
+        </dl>
+      ) : null}
+
+      {hasEvidence ? (
+        <p className="today-plan-fit-note">
+          Completed time is the scheduled time on items marked complete—not optional stopwatch data.
+          The calculation uses at most {insight.maximumSamples} resolved plans from the prior{" "}
+          {insight.lookbackDays} days.
+        </p>
+      ) : null}
+
+      {feedbackError === null ? null : <ErrorNotice message={feedbackError} />}
+      {announcement === null ? null : (
+        <p className="today-plan-fit-status" role="status" aria-live="polite">
+          {announcement}
+        </p>
+      )}
+
+      {hasSuggestion ? (
+        <div className="today-plan-fit-actions">
+          {insight.disposition === "available" ? (
+            <>
+              <Button
+                type="button"
+                variant="quiet"
+                disabled={feedbackAction !== null}
+                onClick={onApply}
+              >
+                Use {insight.suggestedTargetMinutes} minutes and {insight.suggestedTargetTaskCount}{" "}
+                tasks
+              </Button>
+              <Button
+                type="button"
+                variant="quiet"
+                busy={feedbackAction === "dismiss"}
+                disabled={feedbackAction !== null}
+                onClick={onDismiss}
+              >
+                Not now
+              </Button>
+            </>
+          ) : (
+            <Button
+              type="button"
+              variant="quiet"
+              busy={feedbackAction === "restore"}
+              disabled={feedbackAction !== null}
+              onClick={onRestore}
+            >
+              Show again
+            </Button>
+          )}
+        </div>
+      ) : null}
+    </section>
+  );
+}
 
 const ADVISOR_UNAVAILABLE_MESSAGES: Readonly<Record<SchedulingAdviceUnavailableReason, string>> = {
   disabled: "Local advice is turned off in the server configuration.",
@@ -511,10 +725,23 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const [calendarError, setCalendarError] = useState<string | null>(null);
   const [targetMinutes, setTargetMinutes] = useState("180");
   const [targetTaskCount, setTargetTaskCount] = useState("4");
+  const [planFitInsight, setPlanFitInsight] = useState<DailyPlanFitInsight | null>(null);
+  const [planFitLoading, setPlanFitLoading] = useState(true);
+  const [planFitLoadError, setPlanFitLoadError] = useState<string | null>(null);
+  const [planFitFeedbackError, setPlanFitFeedbackError] = useState<string | null>(null);
+  const [planFitFeedbackAction, setPlanFitFeedbackAction] = useState<PlanFitFeedbackAction>(null);
+  const [planFitAnnouncement, setPlanFitAnnouncement] = useState<string | null>(null);
+  const [planFitFocusPending, setPlanFitFocusPending] = useState(false);
+  const [planFitTargetFocusPending, setPlanFitTargetFocusPending] = useState(false);
   const [fitPreference, setFitPreference] = useState<PlanningFitPreference>("balanced");
   const [energy, setEnergy] = useState<EnergyLevel | "">("");
   const [contexts, setContexts] = useState("");
   const [durationByItem, setDurationByItem] = useState<Readonly<Record<string, string>>>({});
+  const [alternativePhase, setAlternativePhase] = useState<AlternativePreviewPhase>("idle");
+  const [alternativePreview, setAlternativePreview] = useState<LoadedAlternativePreview | null>(
+    null,
+  );
+  const [alternativeError, setAlternativeError] = useState<string | null>(null);
   const pendingCommandsRef = useRef(new Map<string, PendingIdempotentCommand>());
   const recentFeedbackRef = useRef<HTMLDivElement>(null);
   const shouldFocusRecentFeedbackUndoRef = useRef(false);
@@ -522,6 +749,13 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const advisorControllerRef = useRef<AbortController | null>(null);
   const calendarControllerRef = useRef<AbortController | null>(null);
   const generationControllerRef = useRef<AbortController | null>(null);
+  const planFitControllerRef = useRef<AbortController | null>(null);
+  const planFitFeedbackControllerRef = useRef<AbortController | null>(null);
+  const planFitFeedbackCommandsRef = useRef(new Map<string, string>());
+  const planFitHeadingRef = useRef<HTMLHeadingElement>(null);
+  const targetMinutesRef = useRef<HTMLInputElement>(null);
+  const planSummaryHeadingRef = useRef<HTMLHeadingElement>(null);
+  const alternativeControllerRef = useRef<AbortController | null>(null);
   const advisorEpochRef = useRef(0);
   const shouldRestoreAdvisorFocusRef = useRef(false);
   const activeQueryKey = planQueryKey(workspace.id, date);
@@ -583,14 +817,25 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     setAdvisorError(null);
   }, []);
 
+  const clearAlternativePreview = useCallback(() => {
+    alternativeControllerRef.current?.abort();
+    alternativeControllerRef.current = null;
+    setAlternativePhase("idle");
+    setAlternativePreview(null);
+    setAlternativeError(null);
+  }, []);
+
   const acceptLoadedPlan = useCallback(
     (current: CurrentDailyPlan | null) => {
       const nextSnapshotKey = current === null ? null : planSnapshotKey(current);
-      if (planSnapshotKeyRef.current !== nextSnapshotKey) invalidateAdvisor();
+      if (planSnapshotKeyRef.current !== nextSnapshotKey) {
+        invalidateAdvisor();
+        clearAlternativePreview();
+      }
       planSnapshotKeyRef.current = nextSnapshotKey;
       setPlan(current);
     },
-    [invalidateAdvisor],
+    [clearAlternativePreview, invalidateAdvisor],
   );
 
   const loadCurrentPlan = useCallback(
@@ -616,6 +861,30 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     },
     [acceptLoadedPlan, date, workspace.id],
   );
+
+  const loadPlanFitInsight = useCallback(async () => {
+    planFitControllerRef.current?.abort();
+    const controller = new AbortController();
+    planFitControllerRef.current = controller;
+    const requestKey = planQueryKey(workspace.id, date);
+    const requestIsActive = () =>
+      !controller.signal.aborted &&
+      planFitControllerRef.current === controller &&
+      activeQueryKeyRef.current === requestKey;
+
+    setPlanFitLoading(true);
+    setPlanFitLoadError(null);
+    try {
+      const insight = await api.getDailyPlanFitInsight(workspace.id, date, controller.signal);
+      if (requestIsActive()) setPlanFitInsight(insight);
+    } catch (error) {
+      if (!requestIsActive() || isAbortError(error)) return;
+      setPlanFitLoadError(messageForError(error));
+    } finally {
+      if (requestIsActive()) setPlanFitLoading(false);
+      if (planFitControllerRef.current === controller) planFitControllerRef.current = null;
+    }
+  }, [date, workspace.id]);
 
   const loadCalendarAvailability = useCallback(async () => {
     calendarControllerRef.current?.abort();
@@ -671,6 +940,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     generationControllerRef.current?.abort();
     generationControllerRef.current = null;
     invalidateAdvisor();
+    clearAlternativePreview();
     planSnapshotKeyRef.current = null;
     setPlan(null);
     setCommandError(null);
@@ -683,8 +953,39 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
       controller.abort();
       advisorControllerRef.current?.abort();
       generationControllerRef.current?.abort();
+      alternativeControllerRef.current?.abort();
     };
-  }, [invalidateAdvisor, loadCurrentPlan]);
+  }, [clearAlternativePreview, invalidateAdvisor, loadCurrentPlan]);
+
+  useEffect(() => {
+    planFitControllerRef.current?.abort();
+    planFitFeedbackControllerRef.current?.abort();
+    setPlanFitInsight(null);
+    setPlanFitLoadError(null);
+    setPlanFitFeedbackError(null);
+    setPlanFitFeedbackAction(null);
+    setPlanFitAnnouncement(null);
+    setPlanFitFocusPending(false);
+    setPlanFitTargetFocusPending(false);
+    planFitFeedbackCommandsRef.current.clear();
+    void loadPlanFitInsight();
+    return () => {
+      planFitControllerRef.current?.abort();
+      planFitFeedbackControllerRef.current?.abort();
+    };
+  }, [loadPlanFitInsight]);
+
+  useEffect(() => {
+    if (!planFitFocusPending || planFitLoading || planFitInsight === null) return;
+    planFitHeadingRef.current?.focus();
+    setPlanFitFocusPending(false);
+  }, [planFitFocusPending, planFitInsight, planFitLoading]);
+
+  useEffect(() => {
+    if (!planFitTargetFocusPending) return;
+    targetMinutesRef.current?.focus();
+    setPlanFitTargetFocusPending(false);
+  }, [planFitTargetFocusPending, targetMinutes, targetTaskCount]);
 
   useEffect(() => {
     if (plan === null) {
@@ -695,6 +996,17 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
       Object.fromEntries(plan.items.map((item) => [item.id, current[item.id] ?? ""])),
     );
   }, [plan]);
+
+  useEffect(() => {
+    if (
+      alternativePreview !== null &&
+      (plan === null ||
+        alternativePreview.sourcePlanId !== plan.id ||
+        alternativePreview.sourceHeadVersion !== plan.headVersion)
+    ) {
+      clearAlternativePreview();
+    }
+  }, [alternativePreview, clearAlternativePreview, plan]);
 
   async function refreshPlan(requestKey = activeQueryKey): Promise<boolean> {
     if (activeQueryKeyRef.current !== requestKey) return false;
@@ -707,10 +1019,13 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   async function handleCommandFailure(error: unknown, requestKey: string): Promise<void> {
     if (activeQueryKeyRef.current !== requestKey) return;
     if (error instanceof ApiError && error.status === 409) {
+      if (error.code === "planning.alternative_stale") clearAlternativePreview();
       const conflictMessage =
         error.code === "planning.feedback_head_conflict"
           ? "Newer planning feedback exists for this routine on another plan date. Use that newer plan to change it."
-          : "This plan changed in another action. The latest version is now shown.";
+          : error.code === "planning.alternative_stale"
+            ? "This plan changed. The latest plan is shown; compare again."
+            : "This plan changed in another action. The latest version is now shown.";
       try {
         const refreshed = await refreshPlan(requestKey);
         if (!refreshed) return;
@@ -760,6 +1075,99 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     const command = { key: newIdempotencyKey(), occurredAt: new Date().toISOString() };
     pendingCommandsRef.current.set(identity, command);
     return command;
+  }
+
+  function applyPlanFitSuggestion(): void {
+    const insight = planFitInsight;
+    if (
+      insight === null ||
+      insight.status !== "suggested" ||
+      insight.disposition !== "available" ||
+      insight.suggestedTargetMinutes === null ||
+      insight.suggestedTargetTaskCount === null
+    ) {
+      return;
+    }
+    setTargetMinutes(String(insight.suggestedTargetMinutes));
+    setTargetTaskCount(String(insight.suggestedTargetTaskCount));
+    setPlanFitAnnouncement(
+      `Prefilled ${insight.suggestedTargetMinutes} minutes and ${insight.suggestedTargetTaskCount} tasks. Review both targets, then generate when you are ready.`,
+    );
+    setPlanFitTargetFocusPending(true);
+  }
+
+  async function mutatePlanFitFeedback(kind: "dismissed" | "reset"): Promise<void> {
+    const insight = planFitInsight;
+    if (
+      insight === null ||
+      insight.status !== "suggested" ||
+      insight.insightKey === null ||
+      (kind === "dismissed" && insight.disposition !== "available") ||
+      (kind === "reset" && insight.disposition !== "dismissed")
+    ) {
+      return;
+    }
+
+    planFitFeedbackControllerRef.current?.abort();
+    const controller = new AbortController();
+    planFitFeedbackControllerRef.current = controller;
+    const requestKey = activeQueryKey;
+    const identity = `${kind}:${insight.forDate}:${insight.insightKey}`;
+    const existingKey = planFitFeedbackCommandsRef.current.get(identity);
+    const idempotencyKey = existingKey ?? newIdempotencyKey();
+    planFitFeedbackCommandsRef.current.set(identity, idempotencyKey);
+    const requestIsActive = () =>
+      !controller.signal.aborted &&
+      planFitFeedbackControllerRef.current === controller &&
+      activeQueryKeyRef.current === requestKey;
+
+    setPlanFitFeedbackAction(kind === "dismissed" ? "dismiss" : "restore");
+    setPlanFitFeedbackError(null);
+    setPlanFitAnnouncement(null);
+    try {
+      const input = { forDate: insight.forDate, insightKey: insight.insightKey };
+      if (kind === "dismissed") {
+        await api.dismissDailyPlanFitInsight(
+          workspace.id,
+          input,
+          idempotencyKey,
+          controller.signal,
+        );
+      } else {
+        await api.resetDailyPlanFitInsightDismissal(
+          workspace.id,
+          input,
+          idempotencyKey,
+          controller.signal,
+        );
+      }
+      if (!requestIsActive()) return;
+      planFitFeedbackCommandsRef.current.delete(identity);
+      setPlanFitAnnouncement(
+        kind === "dismissed"
+          ? "This exact Plan Fit suggestion is hidden. New evidence can still produce a new suggestion."
+          : "This Plan Fit suggestion is available again.",
+      );
+      setPlanFitFocusPending(true);
+      await loadPlanFitInsight();
+    } catch (error) {
+      if (!requestIsActive() || isAbortError(error)) return;
+      if (error instanceof ApiError && error.status === 409) {
+        planFitFeedbackCommandsRef.current.delete(identity);
+        setPlanFitAnnouncement(
+          "Recent resolved-plan evidence changed. The current Plan Fit result is now shown; no old suggestion was applied.",
+        );
+        setPlanFitFocusPending(true);
+        await loadPlanFitInsight();
+      } else {
+        setPlanFitFeedbackError(messageForError(error));
+      }
+    } finally {
+      if (requestIsActive()) setPlanFitFeedbackAction(null);
+      if (planFitFeedbackControllerRef.current === controller) {
+        planFitFeedbackControllerRef.current = null;
+      }
+    }
   }
 
   async function generate(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -1036,6 +1444,96 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     );
   }
 
+  async function compareAlternatives(): Promise<void> {
+    if (plan === null) return;
+    const settings = retainedSettings(plan);
+    if (settings === null) {
+      setAlternativeError(
+        "This plan does not include the settings needed to compare alternatives.",
+      );
+      return;
+    }
+    alternativeControllerRef.current?.abort();
+    const controller = new AbortController();
+    alternativeControllerRef.current = controller;
+    const requestKey = activeQueryKey;
+    const sourceSnapshot = planSnapshotKey(plan);
+    const request = settingsWithFreshSeed(plan, settings, newIdempotencyKey());
+    setAlternativePhase("loading");
+    setAlternativePreview(null);
+    setAlternativeError(null);
+    try {
+      const preview = await api.previewDailyPlanAlternatives(
+        workspace.id,
+        date,
+        {
+          expectedPlanId: plan.id,
+          expectedHeadVersion: plan.headVersion,
+          request,
+        },
+        controller.signal,
+      );
+      if (
+        controller.signal.aborted ||
+        alternativeControllerRef.current !== controller ||
+        activeQueryKeyRef.current !== requestKey
+      ) {
+        return;
+      }
+      if (planSnapshotKeyRef.current !== sourceSnapshot) {
+        clearAlternativePreview();
+        return;
+      }
+      setAlternativePreview({ ...preview, request });
+      setAlternativePhase("ready");
+    } catch (error) {
+      if (controller.signal.aborted || isAbortError(error)) return;
+      if (error instanceof ApiError && error.status === 409) {
+        clearAlternativePreview();
+        await handleCommandFailure(error, requestKey);
+        return;
+      }
+      setAlternativeError(messageForError(error));
+      setAlternativePhase("idle");
+    } finally {
+      if (alternativeControllerRef.current === controller) {
+        alternativeControllerRef.current = null;
+      }
+    }
+  }
+
+  async function selectAlternative(
+    candidate: DailyPlanAlternative,
+    alternativeNumber: number,
+  ): Promise<void> {
+    if (plan === null || alternativePreview === null) return;
+    const sourcePlan = plan;
+    const preview = alternativePreview;
+    const retryIdentity = `${sourcePlan.id}:${sourcePlan.headVersion}:alternative:${candidate.candidateKey}`;
+    const command = pendingCommand(retryIdentity);
+    await runCommand(
+      `alternative:${candidate.candidateKey}`,
+      async (requestKey) => {
+        const current = await api.selectDailyPlanAlternative(
+          workspace.id,
+          date,
+          {
+            expectedPlanId: sourcePlan.id,
+            expectedHeadVersion: sourcePlan.headVersion,
+            candidateKey: candidate.candidateKey,
+            request: preview.request,
+          },
+          command.key,
+        );
+        if (activeQueryKeyRef.current !== requestKey) return false;
+        acceptLoadedPlan(current);
+        globalThis.setTimeout(() => planSummaryHeadingRef.current?.focus(), 0);
+      },
+      `Alternative ${String(alternativeNumber)} is now today's plan.`,
+      retryIdentity,
+    );
+  }
+
   async function replace(item: PlanItem): Promise<void> {
     if (plan === null) return;
     const settings = retainedSettings(plan);
@@ -1299,6 +1797,18 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
               </Button>
               <Button
                 type="button"
+                variant="quiet"
+                busy={alternativePhase === "loading"}
+                disabled={commandInProgress || plan.request === null}
+                aria-expanded={alternativePreview !== null}
+                aria-controls="today-plan-alternatives"
+                onClick={() => void compareAlternatives()}
+              >
+                <GitCompareArrows size={15} aria-hidden="true" />
+                Compare alternatives
+              </Button>
+              <Button
+                type="button"
                 busy={busyAction === "regenerate"}
                 disabled={commandInProgress || plan.request === null}
                 onClick={() => void regenerate()}
@@ -1395,11 +1905,26 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
               />
             </fieldset>
 
+            <DailyPlanFitPanel
+              insight={planFitInsight}
+              loading={planFitLoading}
+              loadError={planFitLoadError}
+              feedbackError={planFitFeedbackError}
+              feedbackAction={planFitFeedbackAction}
+              announcement={planFitAnnouncement}
+              headingRef={planFitHeadingRef}
+              onRetry={() => void loadPlanFitInsight()}
+              onApply={applyPlanFitSuggestion}
+              onDismiss={() => void mutatePlanFitFeedback("dismissed")}
+              onRestore={() => void mutatePlanFitFeedback("reset")}
+            />
+
             <fieldset className="today-form-group">
               <legend>Plan targets</legend>
               <div className="today-form-row">
                 <Field label="Target minutes" hint="Total focused time for this plan.">
                   <input
+                    ref={targetMinutesRef}
                     type="number"
                     required
                     min={1}
@@ -1483,7 +2008,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
           <section className="today-plan-summary" aria-labelledby="today-plan-summary-heading">
             <div>
               <p className="eyebrow">Plan revision {plan.requestRevision}</p>
-              <h2 id="today-plan-summary-heading">
+              <h2 ref={planSummaryHeadingRef} id="today-plan-summary-heading" tabIndex={-1}>
                 {formatMinutes(plan.totalMinutes)} across {plan.items.length}{" "}
                 {plan.items.length === 1 ? "item" : "items"}
               </h2>
@@ -1511,6 +2036,121 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
               </div>
             </dl>
           </section>
+
+          {alternativeError === null ? null : (
+            <div className="today-alternative-error">
+              <ErrorNotice
+                message={alternativeError}
+                onDismiss={() => setAlternativeError(null)}
+                action={
+                  <Button
+                    type="button"
+                    variant="quiet"
+                    disabled={commandInProgress}
+                    onClick={() => void compareAlternatives()}
+                  >
+                    Retry comparison
+                  </Button>
+                }
+              />
+            </div>
+          )}
+
+          {alternativePhase === "loading" ? (
+            <section
+              id="today-plan-alternatives"
+              className="today-alternatives"
+              aria-labelledby="today-alternatives-heading"
+              aria-busy="true"
+              role="status"
+            >
+              <div className="today-section-heading">
+                <p className="eyebrow">Plan comparison</p>
+                <h2 id="today-alternatives-heading">Finding distinct options…</h2>
+              </div>
+            </section>
+          ) : null}
+
+          {alternativePreview === null ? null : (
+            <section
+              id="today-plan-alternatives"
+              className="today-alternatives"
+              aria-labelledby="today-alternatives-heading"
+            >
+              <div className="today-section-heading">
+                <p className="eyebrow">Plan comparison</p>
+                <h2 id="today-alternatives-heading">Compare before changing Today</h2>
+                <p>Nothing changes until you explicitly choose an alternative.</p>
+              </div>
+              {alternativePreview.alternatives.length === 0 ? (
+                <p className="today-alternatives-empty" role="status">
+                  No distinct alternative fits the current limits. Your plan is unchanged.
+                </p>
+              ) : (
+                <ul className="today-alternative-grid">
+                  <li>
+                    <article className="today-alternative-card today-alternative-current">
+                      <div>
+                        <p className="eyebrow">Current plan</p>
+                        <h3>
+                          {formatMinutes(plan.totalMinutes)} · {plan.items.length}{" "}
+                          {plan.items.length === 1 ? "item" : "items"}
+                        </h3>
+                      </div>
+                      <ol>
+                        {sortedItems.map((item) => (
+                          <li key={item.id}>{item.title}</li>
+                        ))}
+                      </ol>
+                    </article>
+                  </li>
+                  {alternativePreview.alternatives.map((candidate, index) => {
+                    const number = index + 1;
+                    const selectKey = `alternative:${candidate.candidateKey}`;
+                    return (
+                      <li key={candidate.candidateKey}>
+                        <article className="today-alternative-card">
+                          <div>
+                            <p className="eyebrow">Alternative {number}</p>
+                            <h3>
+                              {formatMinutes(candidate.totalMinutes)} · {candidate.taskCount}{" "}
+                              {candidate.taskCount === 1 ? "item" : "items"}
+                            </h3>
+                            <p className="today-alternative-delta">
+                              {candidate.deltaMinutes === 0
+                                ? "Same total time"
+                                : `${candidate.deltaMinutes > 0 ? "+" : "−"}${formatMinutes(Math.abs(candidate.deltaMinutes))}`}
+                              {" · "}
+                              {candidate.deltaTaskCount === 0
+                                ? "same item count"
+                                : `${candidate.deltaTaskCount > 0 ? "+" : "−"}${String(Math.abs(candidate.deltaTaskCount))} ${Math.abs(candidate.deltaTaskCount) === 1 ? "item" : "items"}`}
+                            </p>
+                          </div>
+                          <ol>
+                            {candidate.items.map((item) => (
+                              <li key={`${item.sourceType}:${item.routineId ?? item.workItemId}`}>
+                                {item.title} · {formatMinutes(item.scheduledMinutes)}
+                              </li>
+                            ))}
+                          </ol>
+                          <Button
+                            type="button"
+                            variant="primary"
+                            aria-label={`Use alternative ${String(number)} as today's plan`}
+                            busy={busyAction === selectKey}
+                            disabled={commandInProgress}
+                            onClick={() => void selectAlternative(candidate, number)}
+                          >
+                            Use this plan
+                          </Button>
+                        </article>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          )}
 
           <SchedulingAdvisorPanel
             phase={advisorPhase}

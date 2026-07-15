@@ -2,6 +2,8 @@ import type {
   ActivityEvent,
   ActivityMetadataValue,
   DailyPlan,
+  DailyPlanFitEvidencePlan,
+  DailyPlanFitInsightFeedback,
   LocalDate,
   NotificationIntent,
   NotificationKind,
@@ -15,6 +17,7 @@ import type {
   RoutineDurationInsightFeedback,
   RoutineId,
   RoutinePlanningFeedback,
+  RoutineSelectionPreferenceFeedback,
   RoutineStatus,
   PlanItemId,
   PlanItemActivityState,
@@ -104,6 +107,8 @@ export interface WorkItemRepository {
     priority: WorkItemPriority | undefined,
     limit: number,
     offset: number,
+    /** When supplied, returns direct children of this parent only. */
+    parentWorkItemId?: WorkItemId,
   ): Promise<readonly WorkItem[]>;
   /** Returns only work items that may be considered by the daily planner. */
   listPlanningCandidates(workspaceId: WorkspaceId): Promise<readonly WorkItem[]>;
@@ -118,7 +123,7 @@ export interface PlanningWorkItemGraph {
 }
 
 export interface WorkItemDependencyRepository {
-  /** Serializes workspace-wide DAG mutations and their validation reads. */
+  /** Serializes workspace-wide work-item graph mutations and their validation reads. */
   lockWorkspace(workspaceId: WorkspaceId): Promise<void>;
   find(
     workspaceId: WorkspaceId,
@@ -273,6 +278,14 @@ export interface NotificationRepository {
     limit: number,
     offset: number,
   ): Promise<readonly NotificationIntent[]>;
+  /** Lists the safe, provider-neutral delivery projection for product history screens. */
+  listDeliveryHistory(
+    workspaceId: WorkspaceId,
+    fromInclusive: Date,
+    throughExclusive: Date,
+    limit: number,
+    offset: number,
+  ): Promise<readonly NotificationDeliveryHistoryItem[]>;
   /** Inserts the immutable intent, or returns the existing natural-key winner. */
   insertIntent(intent: NotificationIntent): Promise<NotificationIntent>;
   /** Invalidates all not-yet-delivered intents after a workspace policy change. */
@@ -295,6 +308,28 @@ export interface NotificationRepository {
   ): Promise<number>;
 }
 
+/**
+ * Product-safe delivery history. Claim fencing, leases, credentials, provider payloads, and
+ * recipients deliberately do not cross this boundary.
+ */
+export interface NotificationDeliveryHistoryItem {
+  readonly deliveryId: string;
+  readonly intentId: string;
+  readonly kind: NotificationKind;
+  readonly targetType: NotificationTargetType;
+  readonly title: string | null;
+  readonly scheduledFor: Date;
+  readonly localDate: LocalDate;
+  readonly priority: number;
+  readonly status: NotificationDeliveryStatus;
+  readonly attempts: number;
+  readonly availableAt: Date;
+  readonly completedAt: Date | null;
+  readonly lastFailureCode: string | null;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+}
+
 /** Immutable user dispositions for one exact, evidence-derived duration insight. */
 export interface RoutineDurationInsightFeedbackRepository {
   /** Returns the latest disposition for this exact insight key. */
@@ -312,6 +347,69 @@ export interface RoutineDurationInsightFeedbackRepository {
   append(feedback: RoutineDurationInsightFeedback): Promise<RoutineDurationInsightFeedback>;
 }
 
+/** Immutable exact-key feedback for workspace-level Daily Plan Fit guidance. */
+export interface DailyPlanFitInsightFeedbackRepository {
+  /** Serializes dismiss/reset commands without coupling history writers to presentation feedback. */
+  lockWorkspace(workspaceId: WorkspaceId): Promise<void>;
+  findLatestForKey(
+    workspaceId: WorkspaceId,
+    insightKey: string,
+  ): Promise<DailyPlanFitInsightFeedback | null>;
+  findByIdempotencyKey(
+    workspaceId: WorkspaceId,
+    idempotencyKey: string,
+  ): Promise<DailyPlanFitInsightFeedback | null>;
+  append(feedback: DailyPlanFitInsightFeedback): Promise<DailyPlanFitInsightFeedback>;
+}
+
+/**
+ * Append-only routine ranking preferences. The routine-local version is a
+ * separate fence so preference commands never mutate routine policy or a
+ * current daily plan.
+ */
+export interface RoutineSelectionPreferenceFeedbackReceipt {
+  readonly feedback: RoutineSelectionPreferenceFeedback;
+  readonly feedbackVersion: number;
+}
+
+export interface RoutineSelectionPreferenceFeedbackState {
+  readonly feedbackVersion: number;
+  readonly updatedAt: Date | null;
+}
+
+export interface RoutineSelectionPreferenceFeedbackRepository {
+  /** Serializes one workspace-scoped idempotency identity across routine streams. */
+  lockIdempotencyKey(workspaceId: WorkspaceId, idempotencyKey: string): Promise<void>;
+  findCurrentState(
+    workspaceId: WorkspaceId,
+    routineId: RoutineId,
+  ): Promise<RoutineSelectionPreferenceFeedbackState | null>;
+  findByIdempotencyKey(
+    workspaceId: WorkspaceId,
+    idempotencyKey: string,
+  ): Promise<RoutineSelectionPreferenceFeedbackReceipt | null>;
+  /** Takes the routine-local preference lock and returns its current version. */
+  lockAndGetCurrentVersion(workspaceId: WorkspaceId, routineId: RoutineId): Promise<number>;
+  /** Loads the bounded canonical event input for the provided planner candidates. */
+  listForPlanning(
+    workspaceId: WorkspaceId,
+    routineIds: readonly RoutineId[],
+    throughDate: LocalDate,
+  ): Promise<readonly RoutineSelectionPreferenceFeedback[]>;
+  /** Reconstructs the bounded stream exactly as it stood at an accepted mutation version. */
+  listForPlanningThroughVersion(
+    workspaceId: WorkspaceId,
+    routineId: RoutineId,
+    throughDate: LocalDate,
+    throughFeedbackVersion: number,
+  ): Promise<readonly RoutineSelectionPreferenceFeedback[]>;
+  /** Appends exactly one event and advances the routine-local version atomically. */
+  appendAndAdvance(
+    feedback: RoutineSelectionPreferenceFeedback,
+    expectedFeedbackVersion: number,
+  ): Promise<RoutineSelectionPreferenceFeedbackReceipt>;
+}
+
 export interface DailyPlanRepository {
   findById(workspaceId: WorkspaceId, id: DailyPlan["id"]): Promise<DailyPlan | null>;
   findByRevision(
@@ -327,6 +425,13 @@ export interface DailyPlanRepository {
     workspaceId: WorkspaceId,
     dates: readonly LocalDate[],
   ): Promise<ReadonlyMap<LocalDate, CurrentDailyPlan>>;
+  /** Returns at most `candidateLimit` current-head projections in the prior local-date window. */
+  listFitEvidence(
+    workspaceId: WorkspaceId,
+    forDate: LocalDate,
+    lookbackDays: number,
+    candidateLimit: number,
+  ): Promise<readonly DailyPlanFitEvidencePlan[]>;
   setItemLock(input: SetPlanItemLockInput): Promise<PlanItemLockResult>;
   recordItemActivity(input: RecordPlanItemActivityInput): Promise<RecordedPlanItemActivityResult>;
   lockDay(workspaceId: WorkspaceId, date: LocalDate): Promise<void>;
@@ -361,14 +466,16 @@ export interface TransactionContext {
   readonly routines: RoutineRepository;
   readonly activityEvents: ActivityEventRepository;
   readonly routineDurationInsightFeedback: RoutineDurationInsightFeedbackRepository;
+  readonly dailyPlanFitInsightFeedback: DailyPlanFitInsightFeedbackRepository;
+  readonly routineSelectionPreferenceFeedback: RoutineSelectionPreferenceFeedbackRepository;
   readonly dailyPlans: DailyPlanRepository;
   readonly notifications: NotificationRepository;
 }
 
 export interface UnitOfWorkOptions {
   /**
-   * Serializable remains the default. Read committed is reserved for operations that first
-   * acquire an advisory lock and must observe commits made by an earlier lock holder.
+   * Serializable remains the default. Read committed is reserved for operations that wait on an
+   * advisory lock and must observe commits made by the preceding lock holder afterward.
    */
   readonly isolationLevel?: "serializable" | "read_committed";
 }
@@ -430,6 +537,8 @@ export type IntegrationCommand =
   | {
       readonly type: "work_item.create";
       readonly title: string;
+      /** Undefined or null creates a top-level item. */
+      readonly parentWorkItemId?: string | null;
       readonly description?: string | null;
       readonly status?: WorkItemStatus;
       readonly priority?: WorkItemPriority;
@@ -441,6 +550,8 @@ export type IntegrationCommand =
       readonly type: "work_item.update";
       readonly workItemId: string;
       readonly expectedVersion: number;
+      /** Undefined preserves the parent; null makes the item top-level. */
+      readonly parentWorkItemId?: string | null;
       readonly title?: string;
       readonly description?: string | null;
       readonly status?: WorkItemStatus;
@@ -540,6 +651,8 @@ export type IntegrationCommandOutcome =
 export interface IntegrationWorkItemDto {
   readonly id: string;
   readonly workspaceId: string;
+  /** Omitted only when replaying a receipt written before hierarchy support. */
+  readonly parentWorkItemId?: string | null;
   readonly title: string;
   readonly description: string | null;
   readonly status: WorkItemStatus;
@@ -593,8 +706,8 @@ export interface IntegrationPlanItemActivityDto {
 }
 
 export interface ConfirmedIntegrationCommandResult {
-  /** Present on all newly written receipts; omitted only by legacy durable replays. */
-  readonly receiptVersion?: 1;
+  /** Version 2 adds work-item hierarchy fields; omitted only by legacy durable replays. */
+  readonly receiptVersion?: 1 | 2;
   readonly confirmationId: string;
   readonly operation: IntegrationCommand["type"];
   readonly commandHash: string;
@@ -773,6 +886,7 @@ export interface IntegrationTransactionContext {
   readonly notificationDeliveryRequests: NotificationDeliveryRequestRepository;
   readonly workspaces: WorkspaceRepository;
   readonly workItems: WorkItemRepository;
+  readonly workItemDependencies: WorkItemDependencyRepository;
   readonly scheduleBlocks: ScheduleBlockRepository;
   readonly auditEvents: AuditEventRepository;
   readonly dailyPlans: DailyPlanRepository;

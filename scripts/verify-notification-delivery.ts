@@ -211,6 +211,19 @@ try {
       `the recovery index must include ${fragment}`,
     );
   }
+  const [historyIndex] = await activeConnection.sql<{ indexdef: string }[]>`
+    select indexdef from pg_indexes
+    where schemaname = 'public'
+      and indexname = 'notification_delivery_commands_workspace_schedule_idx'
+  `;
+  assert.ok(historyIndex !== undefined, "the product delivery-history index must be installed");
+  assert.ok(
+    historyIndex.indexdef
+      .toLowerCase()
+      .replaceAll('"', "")
+      .includes("using btree (workspace_id, scheduled_for, id)"),
+    "the history index must preserve workspace/schedule/id key order",
+  );
 
   const provision = async (
     targetWorkspaceId: string,
@@ -693,6 +706,103 @@ try {
   assert.equal(state.lease_expired_attempts, 2);
   assert.equal(state.duplicate_occurrences, 0);
   assert.equal(state.raw_receipt_fields, 0);
+
+  const historyFrom = new Date(now.getTime() - 60 * 60_000).toISOString();
+  const historyTo = new Date(now.getTime() + 60 * 60_000).toISOString();
+  const historyQuery = `from=${encodeURIComponent(historyFrom)}&to=${encodeURIComponent(
+    historyTo,
+  )}&limit=100&offset=0`;
+  const historyResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${primaryWorkspaceId}/notification-deliveries?${historyQuery}`,
+  });
+  assert.equal(historyResponse.statusCode, 200, historyResponse.body);
+  const history = historyResponse.json<{
+    readonly items: readonly Readonly<Record<string, unknown>>[];
+    readonly page: { readonly limit: number; readonly offset: number };
+  }>();
+  assert.deepEqual(history.page, { limit: 100, offset: 0 });
+  assert.equal(history.items.length, 6);
+  assert.deepEqual(history.items.map((item) => item.status).sort(), [
+    "dead_letter",
+    "delivered",
+    "delivered",
+    "delivered",
+    "invalidated",
+    "invalidated",
+  ]);
+  for (const item of history.items) {
+    assert.deepEqual(
+      Object.keys(item).sort(),
+      [
+        "attempts",
+        "availableAt",
+        "completedAt",
+        "createdAt",
+        "deliveryId",
+        "intentId",
+        "kind",
+        "lastFailureCode",
+        "localDate",
+        "priority",
+        "scheduledFor",
+        "status",
+        "targetType",
+        "title",
+        "updatedAt",
+      ],
+      "product history must expose only the safe delivery projection",
+    );
+  }
+
+  const isolatedHistoryResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/notification-deliveries?${historyQuery}`,
+  });
+  assert.equal(isolatedHistoryResponse.statusCode, 200, isolatedHistoryResponse.body);
+  assert.deepEqual(
+    isolatedHistoryResponse.json<{ readonly items: readonly unknown[] }>().items,
+    [],
+    "product history must not expose another workspace's delivery commands",
+  );
+
+  const reversedHistoryResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${primaryWorkspaceId}/notification-deliveries?from=${encodeURIComponent(
+      historyTo,
+    )}&to=${encodeURIComponent(historyFrom)}&limit=100&offset=0`,
+  });
+  assert.equal(reversedHistoryResponse.statusCode, 422, reversedHistoryResponse.body);
+  assert.equal(
+    reversedHistoryResponse.json<{ readonly error: { readonly code: string } }>().error.code,
+    "notification_delivery.range_invalid",
+  );
+
+  const oversizedHistoryResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${primaryWorkspaceId}/notification-deliveries?from=${encodeURIComponent(
+      historyFrom,
+    )}&to=${encodeURIComponent(
+      new Date(new Date(historyFrom).getTime() + 32 * 24 * 60 * 60_000).toISOString(),
+    )}&limit=100&offset=0`,
+  });
+  assert.equal(oversizedHistoryResponse.statusCode, 422, oversizedHistoryResponse.body);
+  assert.equal(
+    oversizedHistoryResponse.json<{ readonly error: { readonly code: string } }>().error.code,
+    "notification_delivery.range_too_large",
+  );
+
+  const invalidPaginationResponse = await app.inject({
+    method: "GET",
+    url: `/v1/workspaces/${primaryWorkspaceId}/notification-deliveries?from=${encodeURIComponent(
+      historyFrom,
+    )}&to=${encodeURIComponent(historyTo)}&limit=501&offset=1000001`,
+  });
+  assert.equal(invalidPaginationResponse.statusCode, 400, invalidPaginationResponse.body);
+  assert.equal(
+    invalidPaginationResponse.json<{ readonly error: { readonly code: string } }>().error.code,
+    "request.validation_failed",
+  );
 
   const [auditState] = await activeConnection.sql<
     { claim_audits: number; receipt_audits: number; request_count: number }[]
