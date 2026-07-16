@@ -136,6 +136,41 @@ cannot omit nonce validation. An exchange or verification failure starts a new l
 transaction is never reopened. The current opaque-proof lifecycle is not wired to this continuation
 and must not be described as an authorization-code implementation.
 
+## Dormant OIDC ID-token verifier
+
+`JoseOidcIdTokenVerifier` is the concrete, still-unwired verifier for an ID token returned by that
+future authorization-code callback. Its input requires one compact signed token plus the exact
+issuer, client identifier, and 256-bit nonce recovered from the consumed login transaction. The
+caller cannot use a convenience overload that omits nonce verification. The token is bounded to 16
+KiB before JOSE parsing.
+
+Every verifier instance requires an explicit subset of asymmetric `RS*`, `PS*`, `ES*`, or `EdDSA`
+algorithms. Symmetric `HS*` and unsecured tokens are not available. The protected header requires a
+bounded `kid`; it rejects token-controlled `jku`, `x5u`, `jwk`, and `x5c` key material or locations,
+critical or unencoded-payload extensions, and unrelated `typ` values before calling the injected
+key resolver. The resolver itself has a hard 100–10,000 ms deadline, defaulting to five seconds.
+
+After signature verification, the adapter requires exact issuer and audience matching, `sub`,
+`exp`, `iat`, and `nonce`, validates optional `nbf`, caps accepted token age at the login-transaction
+TTL, and applies at most two minutes of explicitly configured clock tolerance. An `azp` claim, when
+present, must equal the exact client identifier; it is mandatory when `aud` contains more than one
+unique bounded value. The nonce comparison uses fixed-length digests and constant-time equality.
+Only a printable ASCII subject of at most 255 characters whose combined issuer/subject UTF-8 key
+fits the persistence bound can become `{ issuer, subject }`; email, name, and all other claims are
+discarded.
+
+Malformed, expired, mismatched, wrongly signed, unknown-key, and ambiguous-key credentials return
+the same `null`. Resolver failures, deadlines, invalid trusted continuation metadata, clock failure,
+and invalid verifier policy throw one stable operational error with no cause, token, claim, key,
+endpoint, or provider error text. A future route must preserve that distinction as generic `401`
+versus redacted `503` behavior.
+
+The injected resolver is trusted deployment composition, not discovery logic. Future wiring must
+derive its HTTPS JWKS location from the exact configured issuer and validated provider metadata,
+apply SSRF and redirect policy, cache bounded keys across rotation, and avoid logging private token
+data. The verifier does not import into `buildApp`, `server.ts`, configuration, or a route; it cannot
+make the dormant hosted surface reachable.
+
 ## Preflight transaction limit
 
 The read-side membership decision uses one exact indexed statement at `read committed`. A committed
@@ -181,10 +216,10 @@ membership loss is the same generic `404`; unexpected adapter/database failures 
 
 ## Deliberately absent
 
-There is still no OIDC discovery, authorization endpoint, callback or code exchange, concrete
-identity-provider verifier, production-registered authentication route, browser-binding cookie,
-enabling hosted configuration, public workspace route, hosted CORS policy, account-management API,
-role model, synchronization protocol, or cloud deployment.
+There is still no OIDC discovery or remote-JWKS composition, authorization endpoint, callback or
+code exchange, production-registered authentication route, browser-binding cookie, enabling hosted
+configuration, public workspace route, hosted CORS policy, account-management API, role model,
+synchronization protocol, or cloud deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. The dormant work-item create is the only transaction-coupled hosted product mutation;
 all other product routes remain local-only and require their own transaction authority before any
@@ -217,3 +252,7 @@ routes at `404`.
 and browser binding, authenticated PKCE recovery, exact provider/redirect binding, twelve-way
 single-use consumption, database-clock expiry, corruption rollback and redaction, and bounded
 cleanup through the production PostgreSQL adapter.
+`pnpm verify:oidc-id-token` runs the focused generated-key suite for exact transaction binding,
+signature and asymmetric-algorithm policy, OIDC claim/time validation, hostile protected headers,
+key selection, malformed and oversized tokens, operational deadlines, and error redaction. The same
+suite is part of `pnpm check`; the existing runtime gate proves the module remains unreachable.

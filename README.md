@@ -245,7 +245,9 @@ public hosting or browser authentication is enabled. Provider-neutral login/sess
 transaction-coupled hosted work-item-create registrars now exercise the hardened browser boundary in
 isolation. A separate dormant login-transaction foundation provides digest-only state/browser
 binding, nonce and exact redirect binding, protected PKCE recovery, authoritative expiry, and
-single-use consumption. A disabled-only hosted runtime gate rejects premature companion
-configuration; the registrars and transaction services remain absent from `buildApp` and production
-server wiring until a complete authorization-code adapter and intentionally selected public hosted
-surface exist.
+single-use consumption. A nonce-bound OIDC ID-token verifier additionally enforces explicit
+asymmetric algorithms, exact transaction claims, bounded key resolution, and redacted failures with
+generated-key tests. A disabled-only hosted runtime gate rejects premature companion configuration;
+the registrars, transaction services, and verifier remain absent from `buildApp` and production
+server wiring until provider discovery, a complete authorization-code adapter, and an intentionally
+selected public hosted surface exist.

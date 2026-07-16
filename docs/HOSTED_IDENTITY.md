@@ -81,9 +81,10 @@ seam, but no production route issues or consumes them.
 
 The centralized request-authentication and workspace-authorization seam now exists but is not wired
 into `buildApp`; see [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md). The dormant browser-session
-and CSRF transport, a replay-safe login-transaction foundation, and one transaction-coupled hosted
-work-item create now sit behind that seam. Provider verification, authorization-code transport, and
-the broader hosted product surface remain absent while production routes stay closed by default.
+and CSRF transport, a replay-safe login-transaction foundation, a nonce-bound OIDC ID-token
+verifier, and one transaction-coupled hosted work-item create now sit behind that seam. Provider
+discovery and key-resolver composition, authorization-code transport, and the broader hosted product
+surface remain absent while production routes stay closed by default.
 
 ## Verification
 
@@ -93,6 +94,7 @@ Run:
 pnpm verify:hosted-identity
 pnpm verify:hosted-identity-migrations
 pnpm verify:hosted-login-transactions
+pnpm verify:oidc-id-token
 ```
 
 The first command migrates a nonce database and drives the production application and PostgreSQL
@@ -102,5 +104,7 @@ disablement, and deletion preservation.
 The second upgrades a populated pre-`0031` database, validates exact binding uniqueness and cascade
 direction, and proves legacy workspace/work-item data survives. The third independently exercises
 the pre-authentication unit of work through concurrent exactly-once consumption, protected PKCE
-recovery, expiry, rollback, and cleanup. All three commands drop their disposable databases and are
-included in `pnpm verify:database`.
+recovery, expiry, rollback, and cleanup. Those three database commands drop their disposable
+databases and are included in `pnpm verify:database`. The final command independently verifies the
+dormant ID-token adapter with generated signing keys and no network access; it is included in
+`pnpm check`.

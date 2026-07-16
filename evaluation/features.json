@@ -24,6 +24,7 @@
     "worker-observability": { "command": "pnpm verify:database", "ci": true },
     "hosted-identity": { "command": "pnpm verify:database", "ci": true },
     "hosted-login-transactions": { "command": "pnpm verify:database", "ci": true },
+    "oidc-id-token-verifier": { "command": "pnpm check", "ci": true },
     "hosted-runtime-gate": { "command": "pnpm verify:database", "ci": true },
     "hosted-mutation-authorization": { "command": "pnpm verify:database", "ci": true },
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
@@ -2552,6 +2553,49 @@
           "command": "hosted-login-transactions",
           "anchors": [
             "Hosted login transaction verification passed digest-only state and browser binding, protected PKCE recovery, exact provider and redirect binding, concurrent single-use consumption, database-clock expiry, corruption rollback, redaction, and bounded cleanup"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "oidc-id-token-verifier-foundation",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Dormant OIDC ID-token verifier"
+      },
+      "limitations": [
+        "The verifier is dormant and has no discovery, remote-JWKS construction, authorization endpoint, callback, code exchange, browser-binding cookie, runtime configuration, or production route composition.",
+        "A future provider adapter must construct the injected key resolver only from the exact configured issuer and trusted discovery metadata, with bounded HTTPS retrieval, caching and rotation; untrusted token headers never select a network location."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/oidc-id-token-verifier.test.ts",
+          "command": "oidc-id-token-verifier",
+          "anchors": [
+            "returns only the exact verified issuer and subject",
+            "rejects a token with %s",
+            "rejects a token with %s before resolving a key",
+            "rejects symmetric and unsecured algorithms before resolving a key",
+            "maps a signing-key resolver outage to a stable redacted operational failure",
+            "bounds a stalled signing-key resolver with the same stable operational failure",
+            "fails closed on invalid verifier policy: %s"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
           ]
         }
       ]
