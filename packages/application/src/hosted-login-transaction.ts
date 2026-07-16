@@ -294,6 +294,10 @@ function assertIssuedMaterial(
 }
 
 export interface IssuedHostedLoginTransaction {
+  /** Exact provider binding copied from the validated persisted transaction. */
+  readonly issuer: string;
+  readonly clientId: string;
+  readonly redirectUri: string;
   readonly state: string;
   readonly browserBinding: string;
   readonly nonce: string;
@@ -337,6 +341,9 @@ export class StartHostedLoginTransaction {
       });
       await transactions.insert(transaction);
       return Object.freeze({
+        issuer: transaction.issuer,
+        clientId: transaction.clientId,
+        redirectUri: transaction.redirectUri,
         state: material.state,
         browserBinding: material.browserBinding,
         nonce: material.nonce,

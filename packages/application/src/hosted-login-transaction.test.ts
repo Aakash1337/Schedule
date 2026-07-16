@@ -150,6 +150,23 @@ describe("hosted login transaction application foundation", () => {
     expect(harness.stored.size).toBe(0);
   });
 
+  it("returns exact validated provider bindings for authorization request construction", async () => {
+    const { harness, codec, protector } = dependencies();
+
+    const issued = await new StartHostedLoginTransaction(
+      harness.unitOfWork,
+      codec,
+      protector,
+    ).execute(startInput);
+
+    expect(issued).toMatchObject({
+      issuer: startInput.issuer,
+      clientId: startInput.clientId,
+      redirectUri: startInput.redirectUri,
+      pkceMethod: "S256",
+    });
+  });
+
   it("persists no plaintext bearer values and consumes the exact transaction once", async () => {
     const { harness, codec, protector } = dependencies();
     const issued = await new StartHostedLoginTransaction(

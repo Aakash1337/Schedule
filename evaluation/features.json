@@ -25,6 +25,7 @@
     "hosted-identity": { "command": "pnpm verify:database", "ci": true },
     "hosted-login-transactions": { "command": "pnpm verify:database", "ci": true },
     "oidc-id-token-verifier": { "command": "pnpm check", "ci": true },
+    "oidc-authorization-request": { "command": "pnpm check", "ci": true },
     "hosted-runtime-gate": { "command": "pnpm verify:database", "ci": true },
     "hosted-mutation-authorization": { "command": "pnpm verify:database", "ci": true },
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
@@ -2582,6 +2583,59 @@
             "maps a signing-key resolver outage to a stable redacted operational failure",
             "bounds a stalled signing-key resolver with the same stable operational failure",
             "fails closed on invalid verifier policy: %s"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "oidc-authorization-request-foundation",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Dormant OIDC authorization-request builder"
+      },
+      "limitations": [
+        "The deterministic builder is dormant. It performs no discovery or network I/O and has no authorization-start route, browser-binding cookie serializer, redirect response, callback, code exchange, provider key resolver, runtime configuration, or production composition.",
+        "Provider discovery remains absent. Only bounded, non-reserved query parameters already present in the trusted authorization endpoint are retained; request-time arbitrary provider parameters are not accepted."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/hosted-login-transaction.test.ts",
+          "command": "oidc-authorization-request",
+          "anchors": [
+            "returns exact validated provider bindings for authorization request construction"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/oidc-authorization-request.test.ts",
+          "command": "oidc-authorization-request",
+          "anchors": [
+            "builds one deterministic authorization-code request from exact transaction values",
+            "percent-encodes trusted values without allowing parameter injection",
+            "retains trusted non-reserved authorization endpoint query parameters",
+            "rejects invalid trusted configuration: %s",
+            "rejects inconsistent issued transaction material: %s",
+            "bounds the final percent-encoded authorization URL",
+            "requires the transaction to remain usable at the exact trusted clock boundary",
+            "maps clock and hostile getter failures to the stable redacted error",
+            "never exposes supplied configuration or transaction values in its failure"
           ]
         },
         {

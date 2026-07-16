@@ -171,6 +171,38 @@ apply SSRF and redirect policy, cache bounded keys across rotation, and avoid lo
 data. The verifier does not import into `buildApp`, `server.ts`, configuration, or a route; it cannot
 make the dormant hosted surface reachable.
 
+## Dormant OIDC authorization-request builder
+
+`StrictOidcAuthorizationRequestBuilder` converts one freshly issued login transaction into a
+deterministic authorization-code URL without performing network I/O. The application transaction
+result now carries the exact validated issuer, client identifier, and redirect URI copied from its
+persisted record, alongside state, browser binding, nonce, S256 challenge, method, and expiry. These
+provider bindings are in-process coordination values; a future route must never serialize the raw
+transaction object.
+
+The builder snapshots one trusted provider configuration at construction and requires the issued
+transaction's issuer, client identifier, and redirect URI to match it byte for byte. The issuer,
+authorization endpoint, and redirect URI are bounded HTTPS URLs without credentials or fragments.
+Raw whitespace, controls, and backslashes are rejected. The endpoint may retain at most 16 bounded
+trusted query parameters, but none may collide with a protocol parameter. Client identifiers are
+bounded and control-free.
+
+The output appends exactly one of each fixed parameter, in a canonical order:
+`response_type=code`, `client_id`, `redirect_uri`, `scope`, `state`, `nonce`, `code_challenge`, and
+`code_challenge_method=S256`. `URLSearchParams` performs form encoding; values cannot inject another
+parameter. Bounded non-reserved parameters already present in the trusted provider endpoint are
+preserved; request-time arbitrary provider parameters are not accepted. Scopes follow the OAuth
+visible-ASCII token grammar, are unique and bounded, require lowercase `openid` exactly once, and
+are emitted as `openid` followed by the remaining tokens in bytewise order. The final encoded URL
+is capped at 8 KiB.
+
+Malformed trusted configuration, altered provider bindings, malformed transaction secrets, a
+non-S256 method, expiry at the exact trusted clock boundary, invalid clock behavior, hostile runtime
+getters, and an oversized final URL all throw one stable redacted configuration error. The builder
+does not import into `buildApp`, `server.ts`, configuration, or a route. Provider discovery,
+request-time endpoint extensions, browser-binding cookie transport, redirects, code exchange,
+callback processing, and session issuance remain separate work.
+
 ## Preflight transaction limit
 
 The read-side membership decision uses one exact indexed statement at `read committed`. A committed
@@ -216,10 +248,10 @@ membership loss is the same generic `404`; unexpected adapter/database failures 
 
 ## Deliberately absent
 
-There is still no OIDC discovery or remote-JWKS composition, authorization endpoint, callback or
-code exchange, production-registered authentication route, browser-binding cookie, enabling hosted
-configuration, public workspace route, hosted CORS policy, account-management API, role model,
-synchronization protocol, or cloud deployment.
+There is still no OIDC discovery or remote-JWKS composition, hosted authorization-start endpoint,
+callback or code exchange, production-registered authentication route, browser-binding cookie,
+enabling hosted configuration, public workspace route, hosted CORS policy, account-management API,
+role model, synchronization protocol, or cloud deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. The dormant work-item create is the only transaction-coupled hosted product mutation;
 all other product routes remain local-only and require their own transaction authority before any
@@ -256,3 +288,7 @@ cleanup through the production PostgreSQL adapter.
 signature and asymmetric-algorithm policy, OIDC claim/time validation, hostile protected headers,
 key selection, malformed and oversized tokens, operational deadlines, and error redaction. The same
 suite is part of `pnpm check`; the existing runtime gate proves the module remains unreachable.
+`pnpm verify:oidc-authorization-request` rebuilds the core packages, proves exact provider bindings
+leave the transaction service, and runs the builder's canonical encoding, injection, scope,
+configuration, transaction-integrity, size, and redaction cases. It performs no external requests;
+the same tests and dormant-route evidence run in `pnpm check`.
