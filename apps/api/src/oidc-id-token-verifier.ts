@@ -249,6 +249,17 @@ function credentialJoseFailure(error: unknown): boolean {
   );
 }
 
+function trustedCurrentDate(clock: () => Date): Date {
+  let value: Date;
+  try {
+    value = clock();
+  } catch {
+    throw unavailable();
+  }
+  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) throw unavailable();
+  return new Date(value.getTime());
+}
+
 /**
  * Verifies an OIDC ID token against exact transaction metadata. This adapter is intentionally not
  * registered by buildApp or the production server; a later callback slice must compose it with a
@@ -319,15 +330,7 @@ export class JoseOidcIdTokenVerifier {
     }
     if (!trustedProtectedHeader(decodedHeader, this.#algorithmSet)) return null;
 
-    let currentDate: Date;
-    try {
-      currentDate = this.#clock();
-    } catch {
-      throw unavailable();
-    }
-    if (!(currentDate instanceof Date) || !Number.isFinite(currentDate.getTime())) {
-      throw unavailable();
-    }
+    const currentDate = trustedCurrentDate(this.#clock);
 
     const guardedKeyResolver: JWTVerifyGetKey = async (protectedHeader, token) => {
       let timeout: NodeJS.Timeout | undefined;
@@ -337,7 +340,10 @@ export class JoseOidcIdTokenVerifier {
           timeout = setTimeout(() => reject(unavailable()), this.#keyResolutionTimeoutMilliseconds);
           timeout.unref();
         });
-        return await Promise.race([resolution, deadline]);
+        const key = await Promise.race([resolution, deadline]);
+        const refreshed = trustedCurrentDate(this.#clock);
+        currentDate.setTime(Math.max(currentDate.getTime(), refreshed.getTime()));
+        return key;
       } catch (error) {
         if (
           error instanceof errors.JWKSNoMatchingKey ||

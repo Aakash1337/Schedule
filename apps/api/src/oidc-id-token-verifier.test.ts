@@ -326,6 +326,38 @@ describe("JoseOidcIdTokenVerifier", () => {
     expect(performance.now() - startedAt).toBeLessThan(1_000);
   });
 
+  it("re-samples time after a slow key lookup and rejects a token that expires while waiting", async () => {
+    const events: string[] = [];
+    const afterExpiry = new Date(NOW.getTime() + 2_000);
+    const clock = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        events.push("clock-before");
+        return new Date(NOW);
+      })
+      .mockImplementationOnce(() => {
+        events.push("clock-after");
+        return afterExpiry;
+      });
+    const delayedResolver: JWTVerifyGetKey = async (header, token) => {
+      events.push("resolver-start");
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      events.push("resolver-end");
+      return keyResolver(header, token);
+    };
+    const token = await sign({ exp: NOW_SECONDS + 1 });
+
+    await expect(
+      createVerifier({
+        keyResolver: delayedResolver,
+        clock,
+        clockToleranceSeconds: 0,
+      }).verify(verificationInput(token)),
+    ).resolves.toBeNull();
+    expect(events).toEqual(["clock-before", "resolver-start", "resolver-end", "clock-after"]);
+    expect(clock).toHaveBeenCalledTimes(2);
+  });
+
   it("maps an invalid resolver key and a failing clock to stable operational failures", async () => {
     const token = await sign();
     const invalidKeyResolver = (async () => ({ kty: "RSA" }) as JWK) as JWTVerifyGetKey;
