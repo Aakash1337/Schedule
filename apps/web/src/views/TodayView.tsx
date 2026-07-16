@@ -211,6 +211,8 @@ function formatBasisPoints(value: number | null): string {
   return value === null ? "Not available" : `${String(value / 100)}%`;
 }
 
+const minimumPlanFitEffectivenessSamples = 3;
+
 interface DailyPlanFitEffectivenessSummaryProps {
   readonly effectiveness: DailyPlanFitEffectiveness | null;
   readonly loading: boolean;
@@ -224,6 +226,10 @@ function DailyPlanFitEffectivenessSummary({
   error,
   onRetry,
 }: DailyPlanFitEffectivenessSummaryProps) {
+  const remainingSamples =
+    effectiveness === null
+      ? minimumPlanFitEffectivenessSamples
+      : Math.max(0, minimumPlanFitEffectivenessSamples - effectiveness.eligibleResolvedUseCount);
   return (
     <div
       className="today-plan-fit-effectiveness"
@@ -253,6 +259,13 @@ function DailyPlanFitEffectivenessSummary({
           No settled, unrevised plan is available for rate comparison yet. Recorded uses include{" "}
           {effectiveness.pendingUseCount} pending, {effectiveness.revisedUseCount} revised, and{" "}
           {effectiveness.notEvaluableUseCount} not evaluable.
+        </p>
+      ) : effectiveness.eligibleResolvedUseCount < minimumPlanFitEffectivenessSamples ? (
+        <p>
+          {effectiveness.eligibleResolvedUseCount} of {minimumPlanFitEffectivenessSamples} settled,
+          unrevised uses {effectiveness.eligibleResolvedUseCount === 1 ? "is" : "are"} available.
+          Rates appear after {remainingSamples} more comparable{" "}
+          {remainingSamples === 1 ? "use" : "uses"}.
         </p>
       ) : (
         <>

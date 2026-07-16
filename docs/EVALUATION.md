@@ -317,7 +317,8 @@ completion, distinguish pending/resolved/not-evaluable plans, and identify a lat
 Aggregate units partition every use by status and exact-versus-edited provenance, exclude revised or
 unsettled outcomes from weighted totals, keep target-fill and plan-completion denominators separate,
 round half-up basis points, remain permutation invariant, and fail closed on duplicate, cross-tenant,
-or malformed resolved evidence.
+or malformed resolved evidence. Today component evidence withholds those rates until three settled,
+unrevised uses are available.
 
 Application units require tenant-first lookup, the bounded 90-day/90-candidate repository request,
 lowercase-canonical workspace locking, a physical SSI guard for serializable waiters, read-committed
@@ -349,8 +350,8 @@ direct mutation of the used receipt. At the same points it proves empty, pending
 aggregate projections, exact-versus-edited counts, weighted integer rates, and exclusion of a later
 revision from all totals. The live Chromium flow repeats that lifecycle through built
 processes, real routes, migrations, and a disposable database: prefill leaves history empty, stale
-generation fails closed, exact retry stays singular, resolved history and summary rates render, and a
-later revision is disclosed and excluded from comparison. These checks establish the implementation
+generation fails closed, exact retry stays singular, resolved history and the low-sample summary gate
+render, and a later revision is disclosed and excluded from comparison. These checks establish the implementation
 contract, not that its thresholds or suggestions improve completion or wellbeing for a particular
 user.
 
@@ -601,7 +602,7 @@ The audit deliberately leaves these visible instead of turning them into false g
 - Daily Plan Fit has deterministic cross-layer and live-browser evidence plus local descriptive use
   receipts, pending, resolved, and not-evaluable outcome history with later revision disclosed
   separately, and bounded descriptive aggregate rates, but no production evidence for its 90-day
-  window, minimum sample, medians, thresholds, acceptance rate, or causal effect. It does not
+  window, three-use display threshold, medians, acceptance rate, or causal effect. It does not
   recommend increases, infer improvement or causal effectiveness, learn a per-user policy, apply
   automatically, feed outcomes into scoring, or use a model; and
 - the local-model advisor has CI unit/component evidence for its configuration, application,
