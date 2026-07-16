@@ -21,9 +21,9 @@ The staged object is immutable configuration only. It cannot register the login 
 workspace boundary, or work-item route; `buildApp` has no hosted runtime input and `/v1/system/info`
 always reports `hostedEndpointsEnabled: false`.
 
-This gate records an explicit production posture, not an enabling mechanism. A later provider slice
-must add bounded secret and lifetime policy, concrete adapter construction, and intentional route
-composition before the accepted mode can be widened.
+This gate records an explicit production posture, not an enabling mechanism. A later deployment
+slice must source the factory's bounded secrets from a secret manager, construct it in the server,
+and intentionally register routes before the accepted mode can be widened.
 
 ## Boundary contract
 
@@ -234,7 +234,8 @@ failures remain redacted availability failures.
 Exact URL binding and response bounds are not by themselves a production SSRF boundary. The direct
 OIDC HTTPS transport now supplies the required proxy, DNS-answer, address-pinning, rebinding, and TLS
 controls, but no concrete resolver construction is registered with the dormant callback or
-production server.
+production server. The unregistered complete factory does construct this resolver for its frozen
+dependency graph.
 
 ## Dormant trusted OIDC discovery/provider metadata
 
@@ -272,9 +273,10 @@ endpoint authentication is reduced to the deterministic supported subset of
 `client_secret_basic` when the field is absent. Extra metadata is ignored and never enters the
 trusted snapshot.
 
-This adapter is still dormant. A production DNS/IP/proxy/TLS transport now exists, but the snapshot
-and transport are not constructed with the authorization builder, token exchanger, JWKS resolver,
-ID-token verifier, runtime configuration, routes, callback, or server.
+This adapter is still dormant. The unregistered complete factory constructs its frozen snapshot and
+direct transport with the authorization builder, token exchanger, JWKS resolver, and ID-token
+verifier, but runtime secret configuration, routes, callback exposure, and server construction are
+absent.
 
 ## Dormant OIDC authorization-request builder
 
@@ -346,11 +348,10 @@ responses, redirects, ambiguous
 timeouts, and client-authentication failures become one stable redacted availability error.
 
 This exchanger remains dormant. The tested lifecycle invokes it after consuming the state/browser
-transaction and before verification, provisioning, and session issuance, but there is no production
-connection-safe transport, runtime/client-secret configuration, concrete adapter construction,
-server registration, or retry facility. The provider metadata integration test composes discovery,
-authorization request, exchange, JWKS resolution, and ID-token verification only through injected
-transports; it does not expose production HTTP.
+transaction and before verification, provisioning, and session issuance. The complete factory
+constructs it with the direct connection-safe transport, but runtime client-secret configuration,
+server registration, and retry remain absent. The provider composition tests do not expose
+production HTTP.
 
 ## Preflight transaction limit
 
@@ -405,6 +406,28 @@ Integration credentials remain a separate machine boundary and cannot authentica
 principal. The dormant work-item create is the only transaction-coupled hosted product mutation;
 all other product routes remain local-only and require their own transaction authority before any
 future hosted exposure.
+
+## Dormant concrete OIDC composition
+
+`createDormantHostedOidcComposition` is one async factory for the complete authentication dependency
+graph. It accepts the validated non-secret registration, a database connection, explicit login and
+session peppers, a rotating PKCE key ring, the selected provider-advertised token authentication
+method, and (only for strict tests) an alternate transport. Production defaults to the direct,
+DNS-pinned HTTPS transport.
+
+Before provider I/O, the factory snapshots the registration and client authentication, verifies the
+exact derived callback binding, constructs the HMAC codecs and AES-GCM protector, and creates the
+PostgreSQL login and identity units of work. It then performs one bounded discovery, freezes that
+metadata snapshot, and uses the same issuer, endpoints, signing algorithms, client, redirect, and
+transport to build the authorization request, token exchange, remote-JWKS, ID-token verification,
+identity provisioning, session issue/resolve/revoke, browser authentication, and CSRF components.
+The fixed dormant policy is a five-minute login, one-hour idle session, one-day absolute session,
+`openid` scope, and `/` continuation.
+
+The factory returns only a frozen `HostedAuthLifecycleDependencies` object. It never creates a
+Fastify app, registers the lifecycle, changes `HOSTED_API_MODE`, or starts cleanup work. No production
+configuration accepts its peppers, key ring, or client secret yet; a future secret-manager slice must
+provide those values and explicit rotation/reload behavior before server construction is permitted.
 
 ## Verification
 
@@ -471,3 +494,13 @@ start, exact state/code/browser binding, optional issuer binding, consume-before
 mandatory nonce handoff,
 fixed-origin local redirects, hardened cookie transitions, generic failure classification, and no
 retry. It performs no external request and does not register production routes.
+`pnpm verify:hosted-oidc-composition` rebuilds the core packages and runs the concrete factory with
+a strict in-process provider transport plus the lifecycle, discovery, direct-HTTPS, token, JWKS, and
+verifier compatibility suites. It proves single-snapshot wiring, fixed policy, exact endpoint and
+client propagation, secret snapshot isolation, local-failure-before-I/O ordering, and redaction. It
+makes no external request and does not register a production route.
+`pnpm verify:hosted-oidc-composition-db` uses the migrated configured PostgreSQL database plus a
+strict in-process signed OIDC provider, registers the returned graph only in a private Fastify test
+instance, and completes login, persisted one-shot callback, JWKS verification, identity provisioning,
+session bootstrap, authenticated session lookup, and CSRF-protected logout. It cleans its nonce-bound
+rows and makes no external network request.

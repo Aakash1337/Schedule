@@ -39,6 +39,8 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:oidc-token-exchange`        | Verify the dormant one-shot OIDC code/token boundary and verifier handoff   | No                              |
 | `pnpm verify:oidc-direct-https`          | Verify DNS-pinned, proxy-free direct OIDC HTTPS egress                      | No                              |
 | `pnpm verify:hosted-oidc-lifecycle`      | Verify dormant OIDC start/callback composition and hardened browser binding | No                              |
+| `pnpm verify:hosted-oidc-composition`    | Verify the unregistered concrete hosted OIDC dependency graph               | No                              |
+| `pnpm verify:hosted-oidc-composition-db` | Drive that graph through login/callback/session/logout on PostgreSQL        | Yes                             |
 | `pnpm eval`                              | Validate traceability and run the covered test suite                        | No                              |
 | `pnpm verify:database`                   | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
 | `pnpm verify:natural-language-proposals` | Verify private persistence and concurrent exactly-once confirmation         | Yes                             |
@@ -59,7 +61,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 117 test files and 1,989 runtime test cases. Three
+The package and script runners currently execute 118 test files and 1,999 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -68,11 +70,11 @@ an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      45 / 45 |
-| Critical implemented features with CI-registered integration or drills |      29 / 29 |
+| Implemented features with CI-registered evidence                       |      46 / 46 |
+| Critical implemented features with CI-registered integration or drills |      30 / 30 |
 | Partial features with an explicit limitation                           |        5 / 5 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          258 |
+| CI-registered evidence items                                           |          262 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -83,21 +85,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.32% |   70.66% |    66.88% | 59.85% |
+| Whole repository, measured |     58.97% |   70.44% |    66.74% | 59.49% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     94.75% |   91.41% |    93.35% | 95.79% |
 | Domain, required           |        91% |      82% |       92% |    93% |
 | Application, measured      |     89.81% |   83.27% |    98.61% | 90.78% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     90.82% |   87.85% |    85.16% | 92.32% |
+| API, measured              |     90.70% |   87.60% |    85.32% | 92.37% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.01% |   88.02% |    93.25% | 94.63% |
 | Worker, required           |        85% |      87% |       89% |    87% |
 | Web, measured              |     82.38% |   73.83% |    77.38% | 85.49% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 11,438 of 19,280 statements, 8,402 of 11,890 branches,
-2,476 of 3,702 functions, and 10,801 of 18,046 lines.
+The whole-repository totals are 11,478 of 19,462 statements, 8,433 of 11,971 branches,
+2,481 of 3,717 functions, and 10,839 of 18,218 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global

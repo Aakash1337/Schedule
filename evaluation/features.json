@@ -31,6 +31,8 @@
     "oidc-token-exchange": { "command": "pnpm check", "ci": true },
     "oidc-direct-https": { "command": "pnpm check", "ci": true },
     "hosted-oidc-lifecycle": { "command": "pnpm check", "ci": true },
+    "hosted-oidc-composition": { "command": "pnpm check", "ci": true },
+    "hosted-oidc-composition-db": { "command": "pnpm verify:database", "ci": true },
     "hosted-runtime-gate": { "command": "pnpm verify:database", "ci": true },
     "hosted-mutation-authorization": { "command": "pnpm verify:database", "ci": true },
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
@@ -2498,7 +2500,7 @@
         "anchor": "## Dormant login transaction foundation"
       },
       "limitations": [
-        "A dormant tested lifecycle now composes transaction start/consume with the authorization-request, token-exchange, verifier, and browser-binding cookie ports. Production adapter construction, secret configuration, enabling configuration, and server registration remain absent.",
+        "A dormant tested factory now constructs transaction start/consume with the authorization-request, token-exchange, verifier, and browser-binding dependencies. Production secret-manager configuration, enabling configuration, and server registration remain absent.",
         "A future hosted deployment must source the HMAC pepper and AES-GCM key ring from a secret manager and pass the consumed expectedNonce into a verifier contract that cannot omit nonce validation."
       ],
       "evidence": [
@@ -2575,7 +2577,7 @@
       },
       "limitations": [
         "The dormant callback invokes the verifier after one token exchange using the consumed issuer/client/nonce. Concrete provider-metadata/JWKS/verifier construction, runtime configuration, and production route composition remain absent.",
-        "The separate discovery, token-exchange, and remote-JWKS adapters are composed only in tests. A future provider adapter must bind them to the exact configured issuer through a connection-safe transport; untrusted token headers never select a network location."
+        "The dormant complete factory binds discovery, token exchange, and remote JWKS to one exact configured issuer and the direct connection-safe transport. It is not constructed by the production server; untrusted token headers never select a network location."
       ],
       "evidence": [
         {
@@ -2617,7 +2619,7 @@
         "anchor": "## Dormant OIDC authorization-request builder"
       },
       "limitations": [
-        "The dormant login route invokes the deterministic builder after transaction creation and emits the separate browser-binding cookie. It still performs no discovery or network I/O, and concrete provider construction, provider key resolution, runtime configuration, and production composition remain absent.",
+        "The dormant login route invokes the deterministic builder after transaction creation and emits the separate browser-binding cookie. The complete factory constructs it from one discovered provider snapshot, but runtime secret configuration and production server composition remain absent.",
         "Separate trusted provider-metadata and token-exchange adapters now exist but are composed with the builder only in tests. Only bounded, non-reserved query parameters already present in its validated authorization endpoint are retained; request-time arbitrary provider parameters are not accepted."
       ],
       "evidence": [
@@ -2715,8 +2717,8 @@
         "anchor": "## Dormant pinned remote-JWKS resolver"
       },
       "limitations": [
-        "The provider-scoped resolver is dormant and is composed with the separate discovery and token-exchange adapters only in tests. A production direct HTTPS transport exists, but runtime configuration, concrete construction, authorization route, callback, and server composition remain absent.",
-        "Exact URL binding, redirect denial, and response bounds in this adapter are not a complete SSRF defense by themselves. Future composition must inject the direct transport that enforces DNS, resolved-IP, proxy, rebinding, and TLS policy."
+        "The provider-scoped resolver is constructed by the dormant complete factory with discovery, token exchange, and the production direct HTTPS transport. Runtime secret configuration, route registration, callback exposure, and server composition remain absent.",
+        "Exact URL binding, redirect denial, and response bounds in this adapter are not a complete SSRF defense by themselves. The dormant factory injects the direct transport that enforces DNS, resolved-IP, proxy, rebinding, and TLS policy."
       ],
       "evidence": [
         {
@@ -2762,7 +2764,7 @@
       },
       "limitations": [
         "The immutable provider-metadata adapter is dormant. A production direct HTTPS transport exists, but runtime configuration, concrete client registration, authorization route, callback, server composition, and automatic metadata refresh remain absent.",
-        "Discovery output and the direct transport are composed with the authorization builder, token exchanger, remote-JWKS resolver, and ID-token verifier only in tests, not production."
+        "The dormant complete factory composes discovery output and the direct transport with the authorization builder, token exchanger, remote-JWKS resolver, and ID-token verifier, but production server construction remains absent."
       ],
       "evidence": [
         {
@@ -2818,7 +2820,7 @@
         "anchor": "## Dormant OIDC authorization-code token exchange"
       },
       "limitations": [
-        "The dormant callback invokes the strict exchanger after consuming state/browser binding and before verifier, provisioning, and session ports. A production direct HTTPS transport exists, but runtime client/secret configuration, concrete adapter construction, and server composition remain absent.",
+        "The dormant callback invokes the strict exchanger after consuming state/browser binding and before verifier, provisioning, and session ports. The complete factory constructs it with the direct HTTPS transport, but runtime client-secret configuration and server composition remain absent.",
         "Each consumed code is attempted at most once per invocation and is never retried after an ambiguous failure. The returned compact ID token remains untrusted; only the separately configured nonce-bound verifier may turn it into an issuer/subject identity. Access and refresh tokens are discarded."
       ],
       "evidence": [
@@ -2878,7 +2880,7 @@
         "anchor": "## Dormant authentication lifecycle contract"
       },
       "limitations": [
-        "The start/callback composition is tested but dormant: buildApp and server.ts do not register it, HOSTED_API_MODE remains disabled-only, and the production OIDC egress transport has no concrete runtime adapter construction.",
+        "The start/callback composition and complete dependency factory are tested but dormant: buildApp and server.ts do not construct or register them, HOSTED_API_MODE remains disabled-only, and secret-manager configuration is absent.",
         "A consumed authorization code is attempted once and never retried. Public hosted routes, account management, synchronization, and the broader hosted product surface remain deferred."
       ],
       "evidence": [
@@ -2918,6 +2920,55 @@
       ]
     },
     {
+      "id": "hosted-oidc-concrete-dormant-composition",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Dormant concrete OIDC composition"
+      },
+      "limitations": [
+        "The factory accepts explicit secret inputs but no production configuration or secret manager supplies them. It is not imported by buildApp or server.ts and cannot register a hosted route.",
+        "Provider discovery occurs once during async construction and freezes the complete provider snapshot. A future reload must replace the whole dependency graph; periodic expired-login pruning remains a separate operations responsibility."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/dormant-hosted-oidc-composition.test.ts",
+          "command": "hosted-oidc-composition",
+          "anchors": [
+            "constructs one frozen complete dependency graph from one provider snapshot",
+            "feeds the discovered authorization and token endpoints into their concrete adapters",
+            "rejects invalid local %s before provider discovery",
+            "snapshots registration and client authentication across asynchronous discovery",
+            "redacts incompatible provider metadata without exposing configured secrets"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-oidc-composition.ts",
+          "command": "hosted-oidc-composition-db",
+          "anchors": [
+            "Hosted OIDC composition verification passed one provider snapshot, persisted login, verified callback, session bootstrap, and CSRF-protected logout"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
       "id": "hosted-identity-persistence-foundation",
       "status": "partial",
       "risk": "critical",
@@ -2926,7 +2977,7 @@
         "anchor": "# Hosted identity persistence foundation"
       },
       "limitations": [
-        "The foundation is dormant: strict cookie and CSRF transport plus an injectable authentication lifecycle exist, but buildApp registers no browser route; the disabled-only runtime gate cannot expose them, and no concrete identity provider or enabling configuration exists.",
+        "The foundation and complete provider/identity/session dependency factory are dormant: buildApp registers no browser route, the disabled-only runtime gate cannot expose them, and production secret-manager/server construction is absent.",
         "Public hosted authentication and synchronization remain deferred, and machine integration credentials remain a separate trust boundary."
       ],
       "evidence": [
@@ -3003,7 +3054,7 @@
         "anchor": "# Dormant hosted request authorization seam"
       },
       "limitations": [
-        "The seam, cookie/CSRF/login-binding transport, OIDC authentication lifecycle, and one transaction-coupled work-item-create registrar are not registered in buildApp: the disabled-only runtime gate cannot expose them, while production OIDC adapter construction, enabling configuration, a broader public end-user product surface, and synchronization remain unimplemented.",
+        "The seam, cookie/CSRF/login-binding transport, complete OIDC dependency factory, authentication lifecycle, and one transaction-coupled work-item-create registrar are not registered in buildApp: the disabled-only runtime gate cannot expose them, while secret-manager/server construction, enabling configuration, a broader public end-user product surface, and synchronization remain unimplemented.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [

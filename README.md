@@ -262,5 +262,7 @@ hosted runtime gate rejects premature companion configuration. The dormant regis
 transaction start/consume, authorization redirect, code exchange, nonce-bound verification,
 provisioning, and session issuance with a hardened browser-binding cookie, but it remains absent from
 `buildApp` and production server wiring. A direct HTTPS transport now provides connection-level DNS,
-IP, proxy, and TLS enforcement behind the dormant adapters; concrete runtime configuration,
-provider construction, and an intentionally selected public hosted surface remain absent.
+IP, proxy, and TLS enforcement behind the dormant adapters. An unregistered async factory composes
+the complete provider, persistence, identity, and session dependency graph from explicit secret
+inputs; secret-manager configuration, server construction, and an intentionally selected public
+hosted surface remain absent.
