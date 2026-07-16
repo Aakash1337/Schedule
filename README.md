@@ -137,8 +137,9 @@ rejects non-loopback product-route `Host` headers. `HOSTED_API_MODE` defaults to
 is accepted only with the complete immutable registration, secret-backed preflight, and local
 unauthenticated product routes disabled. The enabled surface provides login, callback, session,
 logout, automatic first-login default-workspace membership, and one membership-authorized work-item
-create route with bounded per-source throttling. It does not yet provide a hosted web shell,
-workspace discovery/administration, the broader product API, or synchronization.
+create route with bounded per-source throttling. An authenticated read returns only the caller's
+active workspace page. It does not yet provide a hosted web shell, workspace administration, the
+broader product API, or synchronization.
 Partial sets and non-empty mixed-case aliases or unknown companions fail startup without disclosing values.
 Health and system-information endpoints
 intentionally remain available independently of the product Host guard for local diagnostics.
@@ -254,5 +255,5 @@ JWKS, and token exchange use bounded direct HTTPS with pinned address policy; fa
 the database and exits before listening. Disabled mode remains route-closed.
 
 These are provider-neutral runtime prerequisites, not a hosted release. TLS ingress, deployment
-manifests, managed secrets/backups, monitoring, workspace discovery, the broader product surface,
-synchronization, and a hosted web shell remain to be implemented and verified.
+manifests, managed secrets/backups, monitoring, workspace administration, the broader product
+surface, synchronization, and a hosted web shell remain to be implemented and verified.

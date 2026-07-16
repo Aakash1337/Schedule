@@ -192,6 +192,9 @@ describe("database schema", () => {
     expect(memberships.primaryKeys.map((constraint) => constraint.getName())).toContain(
       "workspace_memberships_pk",
     );
+    expect(memberships.indexes.map((constraint) => constraint.config.name)).toContain(
+      "workspace_memberships_user_status_workspace_idx",
+    );
     expect(memberships.checks.map((constraint) => constraint.name)).toContain(
       "workspace_memberships_lifecycle_valid",
     );
@@ -210,6 +213,15 @@ describe("database schema", () => {
     expect(migration).toContain('CREATE UNIQUE INDEX "external_identities_exact_binding_uq"');
     expect(migration).toContain('"issuer" collate "C"');
     expect(migration).not.toContain('ALTER TABLE "workspaces" ADD COLUMN "user_id"');
+  });
+
+  it("migrates the bounded hosted membership discovery index", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0037_spooky_maelstrom.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain('CREATE INDEX "workspace_memberships_user_status_workspace_idx"');
+    expect(migration).toContain('("user_id","status","workspace_id")');
   });
 
   it("enforces a tenant-scoped, non-cascading work-item hierarchy", () => {

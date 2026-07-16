@@ -5,9 +5,9 @@ surface is closed by default. With complete `HOSTED_API_MODE=oidc` configuration
 uses it for login, session, logout, first-login workspace bootstrap, and one transaction-authorized
 work-item create route. The local unauthenticated product boundary remains separate.
 
-This is a narrow hosted API foundation, not a complete hosted product. There is no hosted web shell,
-workspace listing or administration, broad product route set, synchronization protocol, or cloud
-deployment manifest yet.
+This is a narrow hosted API foundation, not a complete hosted product. It can list the signed-in
+user's active workspaces, but has no hosted web shell, workspace administration, broad product route
+set, synchronization protocol, or cloud deployment manifest yet.
 
 ## Persisted model
 
@@ -31,6 +31,8 @@ coordination. It has no user or workspace foreign key. State and browser-binding
 represented only by purpose-separated HMAC digests; the PKCE verifier is authenticated ciphertext;
 exact issuer, client ID, redirect URI, nonce, S256 challenge, expiry, and one-time consumption are
 explicit. See [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md#login-transaction-foundation).
+Migration `0037` adds only the user/status/workspace membership index used by bounded hosted
+discovery; it changes no identity or workspace data.
 
 Identity deletion cascades through external identities, sessions, and memberships. It does not
 delete a workspace or any task, plan, reminder, or audit data in that workspace. Workspace lifecycle
@@ -72,10 +74,11 @@ workspaces.
 ## Deliberately absent
 
 The activated slice has no refresh token, password, WebFinger issuer discovery, email-link,
-identity/profile response, workspace list or administration route, collaboration roles, or account
-management. It does not bind a WhatsApp account, replace integration credentials, or enable
-synchronization. `HOSTED_API_MODE=disabled` keeps every hosted route closed; `oidc` is accepted only
-with complete secret-manager-fed configuration and leaves the local product routes disabled. See
+identity/profile response, workspace administration route, collaboration roles, or account
+management. The workspace list exposes only active memberships. It does not bind a WhatsApp account,
+replace integration credentials, or enable synchronization. `HOSTED_API_MODE=disabled` keeps every
+hosted route closed; `oidc` is accepted only with complete secret-manager-fed configuration and
+leaves the local product routes disabled. See
 [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md) for the exact gate and route contract.
 
 ## Verification
@@ -97,8 +100,9 @@ pnpm verify:hosted-oidc-composition-db
 
 The first command migrates a nonce database and drives the production application and PostgreSQL
 adapters through concurrent exact provisioning with one default workspace, digest-only issuance,
-rotation replay resistance, disable/resolve/rotation lock races, membership isolation, 21 additional
-hosted workspace provisions, user disablement, and deletion preservation.
+active membership discovery, rotation replay resistance, disable/resolve/rotation lock races,
+membership isolation, 21 additional hosted workspace provisions, user disablement, and deletion
+preservation.
 The second upgrades a populated pre-`0031` database, validates exact binding uniqueness and cascade
 direction, and proves legacy workspace/work-item data survives. The third independently exercises
 the pre-authentication unit of work through concurrent exactly-once consumption, protected PKCE

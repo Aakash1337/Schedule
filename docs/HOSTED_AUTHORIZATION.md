@@ -387,12 +387,26 @@ A committed logout, disabled user, expired session, missing workspace, cross-ten
 membership likewise denies the write. Authentication loss is a generic `401`; workspace or
 membership loss is the same generic `404`; unexpected adapter/database failures remain redacted.
 
+## Authenticated workspace discovery
+
+`GET /v1/hosted/workspaces?limit=20&offset=0` crosses the same cookie, CSRF, and principal boundary
+without accepting identity from headers or query input. It returns a stable page of workspace
+records joined only through the caller's active memberships, ordered by workspace ID. The limit is
+1–20 and the offset is 0–1,000; unknown query fields are rejected. The response contains
+no user ID, session ID, membership state, role, inactive workspace, or total count and always uses
+`Cache-Control: no-store`.
+
+The join is one `read committed` statement backed by the bounded
+`(user_id, status, workspace_id)` access path. A membership revocation committed before that
+statement is excluded; a concurrent revocation cannot retract an already-authorized read. The
+endpoint is discovery only: it does not create, rename, delete, invite, or grant access to a
+workspace.
+
 ## Deliberately absent
 
-There is still no WebFinger issuer discovery, public workspace listing or administration, hosted
-web shell, broad hosted product route set, account-management API, role model, synchronization
-protocol, or cloud deployment. First login creates one default workspace internally, but the narrow
-surface does not yet expose a workspace-discovery route.
+There is still no WebFinger issuer discovery, public workspace provisioning or administration,
+hosted web shell, broad hosted product route set, account-management API, role model,
+synchronization protocol, or cloud deployment. The authenticated workspace list is discovery only.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. Work-item create is the only transaction-coupled hosted product mutation;
 all other product routes remain local-only and require their own transaction authority before any
@@ -455,9 +469,9 @@ ordering, single authentication, spoof resistance, generic negative responses, r
 redaction, non-overridable private caching, inconsistent adapter rejection, scoped-route
 registration, disabled-mode HTTP closure across safe and unsafe methods, bounded source tracking,
 and active/revoked application membership decisions.
-`pnpm verify:hosted-identity` drives the production PostgreSQL adapter through active authorization
-plus concurrent authorization/revocation (where either valid linearization is allowed) and proves
-the committed revocation fences the next decision.
+`pnpm verify:hosted-identity` drives the production PostgreSQL adapter through active membership
+discovery and authorization plus concurrent authorization/revocation (where either valid
+linearization is allowed) and proves the committed revocation fences the next decision and list.
 `pnpm verify:hosted-mutation-authorization` provisions disposable hosted identities, sessions,
 workspaces, and memberships, then drives the production hosted/product transaction adapter through
 an authorized create, cross-tenant combinations, committed membership/session/user/expiry denial,
@@ -470,7 +484,7 @@ mode must report hosted capabilities off and keep representative authentication 
 routes at `404`.
 `pnpm verify:hosted-oidc-composition-db` parses complete enabled configuration, builds the production
 hosted route graph with a strict in-process provider, and drives login, callback, one-time replay
-denial, default-workspace provisioning, authenticated transaction-coupled work creation, session
+denial, default-workspace discovery, authenticated transaction-coupled work creation, session
 bootstrap, CSRF denial, logout, and cleanup against PostgreSQL. It also proves the local
 unauthenticated workspace routes are absent.
 `pnpm verify:hosted-login-transactions` migrates a disposable database and proves digest-only state

@@ -106,6 +106,7 @@ describe("API infrastructure", () => {
     const callbackResponse = await app.inject({ method: "GET", url: "/v1/auth/callback" });
     expect(callbackResponse.statusCode).toBe(404);
     for (const url of [
+      "/v1/hosted/workspaces",
       "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/probe",
       "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items",
     ]) {
@@ -153,6 +154,7 @@ describe("API infrastructure", () => {
         csrfGuard,
         authorizer: { execute: vi.fn(async () => null) },
       },
+      workspaces: { listWorkspaces: vi.fn() },
       workItems: { createWorkItem: vi.fn() },
       requestsPerMinute: 2,
     } as unknown as HostedApiOptions;
@@ -183,6 +185,12 @@ describe("API infrastructure", () => {
     });
     expect(protectedMutation.statusCode).toBe(401);
     expect(hostedApi.workItems.createWorkItem).not.toHaveBeenCalled();
+    const protectedWorkspaceList = await protectedApp.inject({
+      method: "GET",
+      url: "/v1/hosted/workspaces",
+    });
+    expect(protectedWorkspaceList.statusCode).toBe(401);
+    expect(hostedApi.workspaces.listWorkspaces).not.toHaveBeenCalled();
   });
 
   it("bounds rate-limit client tracking under source churn", async () => {

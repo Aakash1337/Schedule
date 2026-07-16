@@ -29,10 +29,15 @@ import {
   type HostedWorkItemServices,
 } from "./hosted-work-item-routes.js";
 import type { HostedWorkspaceBoundaryDependencies } from "./hosted-auth-boundary.js";
+import {
+  registerHostedWorkspaceRoutes,
+  type HostedWorkspaceServices,
+} from "./hosted-workspace-routes.js";
 
 export interface HostedApiOptions {
   readonly auth: HostedAuthLifecycleDependencies;
   readonly boundary: HostedWorkspaceBoundaryDependencies;
+  readonly workspaces: HostedWorkspaceServices;
   readonly workItems: HostedWorkItemServices;
   readonly requestsPerMinute: number;
 }
@@ -174,6 +179,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     await app.register(async (hostedApp) => {
       installIpRateLimit(hostedApp, options.hostedApi!.requestsPerMinute);
       await registerHostedAuthLifecycle(hostedApp, options.hostedApi!.auth);
+      await registerHostedWorkspaceRoutes(
+        hostedApp,
+        options.hostedApi!.boundary,
+        options.hostedApi!.workspaces,
+      );
       await registerHostedWorkItemBoundary(
         hostedApp,
         options.hostedApi!.boundary,

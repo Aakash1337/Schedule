@@ -518,14 +518,15 @@ manager and set `HOSTED_OIDC_PREFLIGHT_MODE=enabled`:
 Startup parses and freezes the complete set, performs one bounded provider discovery, constructs the
 dependency graph, and only then builds the API app. Failure exits before listening through a stable
 redacted error. Disabled mode logs only the preflight result and keeps routes closed. OIDC mode
-registers login, callback, session, logout, and the single hosted work-item create route, reports the
-capability, and throttles the hosted surface with `HOSTED_RATE_LIMIT_PER_MINUTE`. Source tracking is
-bounded to 4,096 least-recently used client addresses per API process.
+registers login, callback, session, logout, active workspace discovery, and the single hosted
+work-item create route, reports the capability, and throttles the hosted surface with
+`HOSTED_RATE_LIMIT_PER_MINUTE`. Source tracking is bounded to 4,096 least-recently used client
+addresses per API process.
 
 Do not enable OIDC mode until TLS ingress, trusted proxy ranges, secret injection, migrations, and
 database backups are in place. First login atomically creates one `My Schedule` workspace and active
-membership. The current slice has no hosted workspace discovery/administration, web shell, broad
-product API, or sync protocol.
+membership. The current slice can discover active memberships but has no hosted workspace
+administration, web shell, broad product API, or sync protocol.
 
 Rotate PKCE by adding the new key, selecting it as primary, restarting, and retaining old keys for at
 least the five-minute login lifetime plus deployment skew before a later restart removes them.

@@ -15,6 +15,7 @@ import {
   type HostedOidcCompositionTransport,
 } from "../apps/api/src/dormant-hosted-oidc-composition.js";
 import { prepareHostedApiApp } from "../apps/api/src/hosted-api-runtime.js";
+import { HOSTED_WORKSPACE_LIST_ROUTE } from "../apps/api/src/hosted-workspace-routes.js";
 import {
   HOSTED_CSRF_COOKIE_NAME,
   HOSTED_CSRF_HEADER_NAME,
@@ -219,6 +220,29 @@ try {
   assert.ok(sessionCookie);
   assert.ok(csrfCookie);
 
+  const workspaceList = await app.inject({
+    method: "GET",
+    url: HOSTED_WORKSPACE_LIST_ROUTE,
+    headers: { cookie: cookiePair(sessionCookie) },
+  });
+  assert.equal(workspaceList.statusCode, 200, workspaceList.body);
+  assert.equal(workspaceList.headers["cache-control"], "no-store");
+  const discovered = workspaceList.json<{
+    items: { id: string; name: string }[];
+    limit: number;
+    offset: number;
+  }>();
+  assert.deepEqual(
+    {
+      names: discovered.items.map(({ name }) => name),
+      limit: discovered.limit,
+      offset: discovered.offset,
+    },
+    { names: ["My Schedule"], limit: 20, offset: 0 },
+  );
+  const discoveredWorkspaceId = discovered.items[0]?.id;
+  assert.ok(discoveredWorkspaceId);
+
   const [hostedAccount] = await database.sql<
     { userId: string; workspaceId: string; workspaceName: string; membershipStatus: string }[]
   >`
@@ -233,6 +257,7 @@ try {
     where identity.issuer = ${issuer} and identity.subject = ${subject}
   `;
   assert.ok(hostedAccount);
+  assert.equal(hostedAccount.workspaceId, discoveredWorkspaceId);
   assert.deepEqual(
     {
       workspaceName: hostedAccount.workspaceName,
@@ -370,7 +395,7 @@ try {
   assert.deepEqual(requestCounts, { discovery: 1, token: 1, jwks: 1 });
 
   console.log(
-    "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace bootstrap, transaction-authorized work creation, and CSRF-protected logout.",
+    "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout.",
   );
 } catch (error) {
   verificationError = error;

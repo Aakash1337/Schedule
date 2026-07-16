@@ -1,4 +1,8 @@
-import { AuthorizeHostedWorkspace, CreateHostedWorkItem } from "@schedule/application";
+import {
+  AuthorizeHostedWorkspace,
+  CreateHostedWorkItem,
+  ListHostedWorkspaces,
+} from "@schedule/application";
 import type { ApiConfig } from "@schedule/config";
 import {
   PostgresHostedMutationUnitOfWork,
@@ -27,6 +31,7 @@ function hostedApiOptions(
     throw new Error("Hosted OIDC activation failed.");
   }
   const identityUnitOfWork = new PostgresIdentityUnitOfWork(database);
+  const listWorkspaces = new ListHostedWorkspaces(identityUnitOfWork);
   const createWorkItem = new CreateHostedWorkItem(new PostgresHostedMutationUnitOfWork(database), {
     now: () => new Date(),
   });
@@ -36,6 +41,9 @@ function hostedApiOptions(
       authenticator: composition.authenticator,
       csrfGuard: composition.csrfGuard,
       authorizer: new AuthorizeHostedWorkspace(identityUnitOfWork),
+    },
+    workspaces: {
+      listWorkspaces: (input) => listWorkspaces.execute(input),
     },
     workItems: {
       createWorkItem: ({ authorization, command }) =>

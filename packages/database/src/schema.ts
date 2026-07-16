@@ -384,6 +384,11 @@ export const workspaceMemberships = pgTable(
       table.status,
       table.userId,
     ),
+    index("workspace_memberships_user_status_workspace_idx").on(
+      table.userId,
+      table.status,
+      table.workspaceId,
+    ),
     check(
       "workspace_memberships_lifecycle_valid",
       sql`(

@@ -702,8 +702,10 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
 - Implemented security boundary: exact-Origin double-submit CSRF, host-only cookies, generic tenant
   denial, bounded client-address throttling, direct pinned OIDC HTTPS, startup preflight/cleanup, and
   same-transaction user/session/workspace/membership reauthorization.
-- Deferred: hosted workspace discovery/administration, the broader product API and web shell,
-  account management, provider-specific production verification, collaboration roles, and sync.
+- Implemented narrow hosted read: a signed-in principal can list only active workspace memberships
+  through a bounded, no-store page without identity or role metadata.
+- Deferred: hosted workspace administration, the broader product API and web shell, account
+  management, provider-specific production verification, collaboration roles, and sync.
 - Cloud deployment selected from measured operational needs
 - Offline-capable synchronization and conflict handling, if required
 - Managed backup retention, point-in-time recovery, monitoring, and deployment automation

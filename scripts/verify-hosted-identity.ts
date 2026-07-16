@@ -10,6 +10,7 @@ import {
   FindOrProvisionHostedUser,
   HmacBrowserSessionTokenCodec,
   IssueBrowserSession,
+  ListHostedWorkspaces,
   ProvisionHostedWorkspace,
   ReactivateWorkspaceMembership,
   ResolveBrowserSession,
@@ -195,6 +196,22 @@ try {
     );
   }
   assert.equal(hostedWorkspaces.length, 21);
+  const listHostedWorkspaces = new ListHostedWorkspaces(unitOfWork);
+  const firstWorkspacePage = await listHostedWorkspaces.execute({
+    userId: primaryUser.id,
+    limit: 20,
+  });
+  const secondWorkspacePage = await listHostedWorkspaces.execute({
+    userId: primaryUser.id,
+    limit: 20,
+    offset: 20,
+  });
+  assert.equal(firstWorkspacePage.items.length, 20);
+  assert.equal(secondWorkspacePage.items.length, 2);
+  assert.equal(
+    new Set([...firstWorkspacePage.items, ...secondWorkspacePage.items].map(({ id }) => id)).size,
+    22,
+  );
   const firstWorkspace = hostedWorkspaces[0];
   assert.ok(firstWorkspace);
   await connection.sql`
@@ -217,6 +234,15 @@ try {
     revokeMembership.execute(primaryUser.id, firstWorkspace.workspace.id),
   ]);
   assert.equal(revokedMembership.status, "revoked");
+  const activeAfterRevocation = [
+    ...(await listHostedWorkspaces.execute({ userId: primaryUser.id, limit: 20 })).items,
+    ...(await listHostedWorkspaces.execute({ userId: primaryUser.id, limit: 20, offset: 20 }))
+      .items,
+  ];
+  assert.equal(
+    activeAfterRevocation.some(({ id }) => id === firstWorkspace.workspace.id),
+    false,
+  );
   assert.ok(
     authorizationRacingRevocation === null ||
       (authorizationRacingRevocation.userId === primaryUser.id &&
@@ -293,7 +319,7 @@ try {
   });
 
   console.log(
-    `Hosted identity verification passed exact concurrent provisioning with one default workspace, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation in ${verificationDatabase}`,
+    `Hosted identity verification passed exact concurrent provisioning with one default workspace, active membership discovery, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation in ${verificationDatabase}`,
   );
 } finally {
   await connection?.close().catch(() => undefined);

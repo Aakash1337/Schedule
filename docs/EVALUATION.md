@@ -40,7 +40,7 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:oidc-direct-https`          | Verify DNS-pinned, proxy-free direct OIDC HTTPS egress                      | No                              |
 | `pnpm verify:hosted-oidc-lifecycle`      | Verify OIDC start/callback composition and hardened browser binding         | No                              |
 | `pnpm verify:hosted-oidc-composition`    | Verify the concrete hosted OIDC dependency graph                            | No                              |
-| `pnpm verify:hosted-oidc-composition-db` | Drive enabled production assembly through login and authorized work create  | Yes                             |
+| `pnpm verify:hosted-oidc-composition-db` | Drive login, workspace discovery, and authorized work create                | Yes                             |
 | `pnpm verify:hosted-runtime-preflight`   | Verify secret parsing, startup construction, cleanup, and route gating      | No                              |
 | `pnpm eval`                              | Validate traceability and run the covered test suite                        | No                              |
 | `pnpm verify:database`                   | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
@@ -551,12 +551,14 @@ The audit deliberately leaves these visible instead of turning them into false g
   evidence for exact concurrent identity plus default-workspace provisioning, digest-only sessions,
   hardened cookies, exact-Origin CSRF, single-use login/PKCE, nonce-bound verification, pinned
   metadata/JWKS/token HTTPS, bounded client tracking, generic tenant denial, and transaction-coupled
-  work creation. The enabled composition verifier parses production configuration, builds the real
-  route graph with a strict in-process provider, proves local product routes absent, drives login and
-  one authorized create, then checks logout and cleanup. Disabled-mode route closure and redacted
-  startup failure remain independently verified. This evidence does not cover a real external
-  provider, TLS ingress, a hosted web shell, workspace discovery/administration, the broader product
-  API, public deployment, or synchronization;
+  work creation. Active workspace discovery has application, route, and database evidence for
+  bounded self-membership filtering without identity or role metadata. The enabled composition
+  verifier parses production configuration, builds the real route graph with a strict in-process
+  provider, proves local product routes absent, drives login, discovery, and one authorized create,
+  then checks logout and cleanup. Disabled-mode route closure and redacted startup failure remain
+  independently verified. This evidence does not cover a real external provider, TLS ingress, a
+  hosted web shell, workspace administration, the broader product API, public deployment, or
+  synchronization;
 - ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a

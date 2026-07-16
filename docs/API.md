@@ -17,8 +17,9 @@ not authorize these product routes.
   applies `HOSTED_RATE_LIMIT_PER_MINUTE`, and reports `hostedEndpointsEnabled: true`. Partial,
   malformed, mixed-case, and unknown non-empty `HOSTED_*` values fail startup without disclosure.
 - Hosted mode is still a narrow API slice, not a complete public product: workspace provisioning,
-  listing, and administration are not public routes. First login creates one default workspace and
-  active membership atomically, but workspace reads, most product routes, the web shell,
+  and administration are not public routes. First login creates one default workspace and active
+  membership atomically; `GET /v1/hosted/workspaces?limit=20&offset=0` returns only the authenticated
+  principal's active workspace page. Workspace detail reads, most product routes, the web shell,
   synchronization, ingress/TLS, and deployment automation remain separate requirements.
 - CORS is disabled, JSON bodies are limited to 256 KiB, request objects reject unknown fields, and error responses do not include stack traces.
 - Product routes reject missing, malformed, or non-loopback `Host` authorities before routing. This protects the unauthenticated loopback service from browser DNS-rebinding attacks; `localhost`, IPv4 `127.0.0.0/8`, and IPv6 loopback (`[::1]`) are accepted with an optional valid port. Health and system-information endpoints remain outside this product-route guard for local process and container diagnostics.

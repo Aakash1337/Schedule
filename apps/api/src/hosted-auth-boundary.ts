@@ -22,6 +22,23 @@ export interface HostedRequestCsrfGuard {
   verify(request: FastifyRequest): Promise<boolean> | boolean;
 }
 
+export interface HostedPrincipalBoundaryDependencies {
+  readonly authenticator: HostedRequestAuthenticator;
+  readonly csrfGuard: HostedRequestCsrfGuard;
+}
+
+export interface HostedPrincipalRequestAccess {
+  /** Available only after this boundary has authenticated the request. */
+  principal(
+    request: FastifyRequest,
+  ): Readonly<Pick<BrowserSessionPrincipal, "userId" | "sessionId">>;
+}
+
+export type HostedPrincipalRouteRegistrar = (
+  app: FastifyInstance,
+  access: HostedPrincipalRequestAccess,
+) => Promise<void> | void;
+
 export interface HostedWorkspaceAuthorizer {
   execute(
     principal: Pick<BrowserSessionPrincipal, "userId" | "sessionId">,
@@ -34,9 +51,7 @@ export interface HostedWorkspaceRequestAccess {
   authorization(request: FastifyRequest): HostedWorkspaceAuthorization;
 }
 
-export interface HostedWorkspaceBoundaryDependencies {
-  readonly authenticator: HostedRequestAuthenticator;
-  readonly csrfGuard: HostedRequestCsrfGuard;
+export interface HostedWorkspaceBoundaryDependencies extends HostedPrincipalBoundaryDependencies {
   readonly authorizer: HostedWorkspaceAuthorizer;
 }
 
@@ -97,35 +112,28 @@ function publicFailure(
   };
 }
 
-/**
- * Encapsulates hosted workspace routes behind one deny-by-default boundary. The production app
- * installs it only when the explicit hosted OIDC runtime gate succeeds.
- */
-export async function registerHostedWorkspaceBoundary(
+/** Authenticates hosted routes without exposing transport or session details to handlers. */
+export async function registerHostedPrincipalBoundary(
   app: FastifyInstance,
-  dependencies: HostedWorkspaceBoundaryDependencies,
-  registerRoutes: HostedWorkspaceRouteRegistrar,
+  dependencies: HostedPrincipalBoundaryDependencies,
+  registerRoutes: HostedPrincipalRouteRegistrar,
 ): Promise<void> {
   await app.register(async (hostedApp) => {
-    const authenticationByRequest = new WeakMap<
+    const principalByRequest = new WeakMap<
       FastifyRequest,
-      Promise<BrowserSessionPrincipal | null>
+      Readonly<Pick<BrowserSessionPrincipal, "userId" | "sessionId">>
     >();
-    const authorizationByRequest = new WeakMap<FastifyRequest, HostedWorkspaceAuthorization>();
-    const access: HostedWorkspaceRequestAccess = Object.freeze({
-      authorization(request: FastifyRequest): HostedWorkspaceAuthorization {
-        const authorization = authorizationByRequest.get(request);
-        if (authorization === undefined) {
-          throw new Error("Hosted workspace authorization is unavailable for this request.");
+    const access: HostedPrincipalRequestAccess = Object.freeze({
+      principal(request: FastifyRequest) {
+        const principal = principalByRequest.get(request);
+        if (principal === undefined) {
+          throw new Error("Hosted principal is unavailable for this request.");
         }
-        return authorization;
+        return principal;
       },
     });
 
     hostedApp.addHook("onRoute", (route) => {
-      if (!WORKSPACE_PARAMETER_SEGMENT.test(route.url)) {
-        throw new Error("Every hosted workspace route must include a :workspaceId parameter.");
-      }
       const existing = route.onSend;
       route.onSend =
         existing === undefined
@@ -146,17 +154,9 @@ export async function registerHostedWorkspaceBoundary(
         return reply.code(503).send(publicFailure(request, 503));
       }
 
-      let authentication = authenticationByRequest.get(request);
-      if (authentication === undefined) {
-        authentication = Promise.resolve().then(() =>
-          dependencies.authenticator.authenticate(request),
-        );
-        authenticationByRequest.set(request, authentication);
-      }
-
       let principal: BrowserSessionPrincipal | null;
       try {
-        principal = await authentication;
+        principal = await dependencies.authenticator.authenticate(request);
       } catch {
         request.log.error("hosted request authentication failed internally");
         return reply.code(503).send(publicFailure(request, 503));
@@ -164,6 +164,45 @@ export async function registerHostedWorkspaceBoundary(
       if (!principalIsWellFormed(principal)) {
         return reply.code(401).send(publicFailure(request, 401));
       }
+      principalByRequest.set(
+        request,
+        Object.freeze({ userId: principal.userId, sessionId: principal.sessionId }),
+      );
+    });
+
+    await registerRoutes(hostedApp, access);
+  });
+}
+
+/**
+ * Adds exact workspace membership authorization to the hosted principal boundary. The production
+ * app installs it only when the explicit hosted OIDC runtime gate succeeds.
+ */
+export async function registerHostedWorkspaceBoundary(
+  app: FastifyInstance,
+  dependencies: HostedWorkspaceBoundaryDependencies,
+  registerRoutes: HostedWorkspaceRouteRegistrar,
+): Promise<void> {
+  await registerHostedPrincipalBoundary(app, dependencies, async (hostedApp, principalAccess) => {
+    const authorizationByRequest = new WeakMap<FastifyRequest, HostedWorkspaceAuthorization>();
+    const access: HostedWorkspaceRequestAccess = Object.freeze({
+      authorization(request: FastifyRequest): HostedWorkspaceAuthorization {
+        const authorization = authorizationByRequest.get(request);
+        if (authorization === undefined) {
+          throw new Error("Hosted workspace authorization is unavailable for this request.");
+        }
+        return authorization;
+      },
+    });
+
+    hostedApp.addHook("onRoute", (route) => {
+      if (!WORKSPACE_PARAMETER_SEGMENT.test(route.url)) {
+        throw new Error("Every hosted workspace route must include a :workspaceId parameter.");
+      }
+    });
+
+    hostedApp.addHook("onRequest", async (request, reply) => {
+      const principal = principalAccess.principal(request);
 
       const requestedWorkspace = workspaceFromRequest(request);
       if (requestedWorkspace === null) {

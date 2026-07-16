@@ -26,6 +26,7 @@ import {
 } from "@schedule/domain";
 
 import type { UnitOfWorkOptions } from "./ports.js";
+import type { WorkspacePage } from "./list-workspaces.js";
 
 const BROWSER_SESSION_TOKEN_VERSION = "schedule.browser-session/v1";
 const BROWSER_SESSION_SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
@@ -78,6 +79,7 @@ export interface WorkspaceMembershipRepository {
 /** Hosted provisioning deliberately bypasses the local installation's 20-workspace cap. */
 export interface HostedWorkspaceRepository {
   insert(workspace: Workspace): Promise<void>;
+  listActiveForUser(userId: UserId, limit: number, offset: number): Promise<readonly Workspace[]>;
 }
 
 export interface IdentityTimeRepository {
@@ -246,6 +248,39 @@ export class ProvisionHostedWorkspace {
       await memberships.insert(membership);
       return { workspace, membership };
     });
+  }
+}
+
+export class ListHostedWorkspaces {
+  constructor(private readonly unitOfWork: IdentityUnitOfWork) {}
+
+  execute(input: {
+    readonly userId: UserId;
+    readonly limit?: number;
+    readonly offset?: number;
+  }): Promise<WorkspacePage> {
+    const limit = input.limit ?? 20;
+    const offset = input.offset ?? 0;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
+      throw new DomainError(
+        "hosted_workspace.limit_invalid",
+        "Hosted workspace limit must be from 1 to 20.",
+      );
+    }
+    if (!Number.isInteger(offset) || offset < 0 || offset > 1_000) {
+      throw new DomainError(
+        "hosted_workspace.offset_invalid",
+        "Hosted workspace offset must be from 0 to 1,000.",
+      );
+    }
+    return this.unitOfWork.run(
+      async ({ workspaces }) => ({
+        items: await workspaces.listActiveForUser(input.userId, limit, offset),
+        limit,
+        offset,
+      }),
+      { isolationLevel: "read_committed" },
+    );
   }
 }
 

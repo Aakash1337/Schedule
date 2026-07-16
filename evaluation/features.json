@@ -2952,7 +2952,7 @@
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
           "anchors": [
-            "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace bootstrap, transaction-authorized work creation, and CSRF-protected logout"
+            "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
           ]
         },
         {
@@ -3024,7 +3024,7 @@
       },
       "limitations": [
         "The identity/session factory is active only in explicit OIDC mode; disabled mode remains route-closed and first login creates one default workspace membership.",
-        "Hosted workspace discovery, the broader product surface, synchronization, and public deployment remain deferred. Machine integration credentials remain a separate trust boundary."
+        "Hosted workspace administration, the broader product surface, synchronization, and public deployment remain deferred. Machine integration credentials remain a separate trust boundary."
       ],
       "evidence": [
         {
@@ -3078,7 +3078,7 @@
           "file": "scripts/verify-hosted-identity.ts",
           "command": "hosted-identity",
           "anchors": [
-            "Hosted identity verification passed exact concurrent provisioning with one default workspace, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
+            "Hosted identity verification passed exact concurrent provisioning with one default workspace, active membership discovery, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
           ]
         },
         {
@@ -3100,7 +3100,7 @@
         "anchor": "# Hosted request authorization and OIDC runtime"
       },
       "limitations": [
-        "Explicit OIDC mode registers the seam, browser lifecycle, and one transaction-coupled work-item create. Workspace discovery, a broader public end-user product surface, and synchronization remain unimplemented.",
+        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery, and one transaction-coupled work-item create. Workspace administration, a broader public end-user product surface, and synchronization remain unimplemented.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [
@@ -3174,7 +3174,7 @@
           "file": "scripts/verify-hosted-identity.ts",
           "command": "hosted-identity",
           "anchors": [
-            "Hosted identity verification passed exact concurrent provisioning with one default workspace, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
+            "Hosted identity verification passed exact concurrent provisioning with one default workspace, active membership discovery, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
           ]
         },
         {
@@ -3182,7 +3182,59 @@
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
           "anchors": [
-            "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace bootstrap, transaction-authorized work creation, and CSRF-protected logout"
+            "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-workspace-discovery",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Authenticated workspace discovery"
+      },
+      "limitations": [
+        "The endpoint lists only the authenticated principal's active memberships. Workspace creation, detail reads, administration, roles, and totals remain absent."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/hosted-identity.test.ts",
+          "command": "unit",
+          "anchors": ["lists only the principal's active hosted workspaces with bounded paging"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-workspace-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "lists only the authenticated principal's bounded workspace page",
+            "rejects unauthenticated and malformed requests before workspace reads",
+            "redacts workspace repository failures"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": ["migrates the bounded hosted membership discovery index"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-identity.ts",
+          "command": "hosted-identity",
+          "anchors": [
+            "Hosted identity verification passed exact concurrent provisioning with one default workspace, active membership discovery, bounded identity keys"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-oidc-composition.ts",
+          "command": "hosted-oidc-composition-db",
+          "anchors": [
+            "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
           ]
         }
       ]
@@ -3254,7 +3306,7 @@
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
           "anchors": [
-            "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace bootstrap, transaction-authorized work creation, and CSRF-protected logout"
+            "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
           ]
         }
       ]
