@@ -504,12 +504,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   effect but before acknowledgement; future external consumers must still enforce event-ID
   idempotency at their own durability boundary;
 - the inbound integration gateway verifier covers real authenticated HTTP routes, credential-scoped
-  Today and backlog/Kanban work-item discovery, all five command kinds, digest-only credentials,
+  Today and backlog/Kanban work-item discovery, the five work/block/activity command kinds, digest-only credentials,
   idempotent replay, tenant isolation, pagination/filter behavior, and atomic rollback against
   disposable PostgreSQL; it also proves bounded retention cleanup deletes only
   eligible old receipts/confirmations while preserving fresh, processing, referenced, and audit
   rows. The separate Hermes adapter verifier covers deterministic plugin tests, runtime-only bundle
-  installation into a temporary Hermes home, and a disposable PostgreSQL/real Fastify
+  installation into a temporary Hermes home, and a disposable PostgreSQL/real Fastify one-off-reminder
   prepare-and-confirm flow, including no mutation before confirmation and exact idempotent
   execution. Neither verifier loads a live Hermes runtime or exercises a WhatsApp account, phone
   delivery, provider receipt, or natural-language quality benchmark;

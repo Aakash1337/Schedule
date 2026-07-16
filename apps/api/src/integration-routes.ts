@@ -65,7 +65,7 @@ const uuid = z.string().uuid();
 const localDateText = z
   .string()
   .refine(isValidLocalDate, "Expected a valid Gregorian date in YYYY-MM-DD format.");
-const instant = z.string().datetime({ offset: true });
+const instant = z.string().max(64).datetime({ offset: true });
 const version = z.literal(INTEGRATION_API_VERSION);
 const expectedVersion = z.number().int().positive().max(2_147_483_647);
 const workItemStatus = z.enum([
@@ -144,6 +144,16 @@ const updateScheduleBlockCommand = z
     { message: "At least one schedule block change is required." },
   );
 
+const createOneOffReminderCommand = z.strictObject({
+  type: z.literal("one_off_reminder.create"),
+  title: z
+    .string()
+    .min(1)
+    .max(240)
+    .refine((value) => value === value.trim(), "Title must not have surrounding whitespace."),
+  scheduledFor: instant,
+});
+
 const metadataValue = z.union([z.string().max(256), z.number().finite(), z.boolean(), z.null()]);
 const activityMetadata = z
   .record(z.string().min(1).max(64), metadataValue)
@@ -184,6 +194,7 @@ const integrationCommand = z.union([
   updateWorkItemCommand,
   createScheduleBlockCommand,
   updateScheduleBlockCommand,
+  createOneOffReminderCommand,
   planItemActivityCommand,
 ]);
 const prepareBody = z.strictObject({

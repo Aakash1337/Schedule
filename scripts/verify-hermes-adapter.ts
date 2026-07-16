@@ -33,7 +33,8 @@ const verificationDatabasePattern = /^schedule_hermes_verify_[a-f0-9]{32}$/;
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pluginRoot = path.join(repositoryRoot, "integrations", "hermes-schedule");
 const pepper = "hermes-adapter-verification-pepper-32-characters";
-const workItemTitle = "Hermes adapter verification item";
+const reminderTitle = "Hermes adapter verification reminder";
+const reminderScheduledFor = "2026-07-16T12:00:00.000Z";
 const subprocessOutputLimitBytes = 64 * 1024;
 const subprocessTimeoutMs = 60_000;
 
@@ -51,8 +52,8 @@ interface HarnessConfirmResult {
   readonly phase: "confirm";
   readonly confirmationId: string;
   readonly receiptHash: string;
-  readonly outcomeType: "work_item.created";
-  readonly workItemId: string;
+  readonly outcomeType: "one_off_reminder.created";
+  readonly reminderId: string;
 }
 
 interface CleanupStep {
@@ -99,17 +100,14 @@ class LiveAdapterContract(unittest.TestCase):
             prepared = client.prepare_change(
                 request_id,
                 {
-                    "type": "work_item.create",
-                    "title": os.environ["SCHEDULE_VERIFY_WORK_TITLE"],
-                    "status": "planned",
-                    "priority": "medium",
-                    "planningDurationMinutes": 30,
-                    "dueOn": "2026-07-16",
+                    "type": "one_off_reminder.create",
+                    "title": os.environ["SCHEDULE_VERIFY_REMINDER_TITLE"],
+                    "scheduledFor": os.environ["SCHEDULE_VERIFY_REMINDER_SCHEDULED_FOR"],
                 },
             )
             self.assertEqual(prepared["requestId"], request_id)
-            self.assertEqual(prepared["command"]["type"], "work_item.create")
-            self.assertEqual(prepared["command"]["title"], os.environ["SCHEDULE_VERIFY_WORK_TITLE"])
+            self.assertEqual(prepared["command"]["type"], "one_off_reminder.create")
+            self.assertEqual(prepared["command"]["title"], os.environ["SCHEDULE_VERIFY_REMINDER_TITLE"])
             self.assertEqual(len(prepared["commandHash"]), 64)
             self.assertTrue(prepared["confirmationId"])
             result = {
@@ -122,23 +120,25 @@ class LiveAdapterContract(unittest.TestCase):
             confirmed = client.confirm_change(
                 confirmation_id,
                 os.environ["SCHEDULE_VERIFY_IDEMPOTENCY_KEY"],
-                "work_item.create",
+                "one_off_reminder.create",
                 os.environ["SCHEDULE_VERIFY_COMMAND_HASH"],
             )
             self.assertEqual(confirmed["receiptVersion"], 2)
             self.assertEqual(confirmed["confirmationId"], confirmation_id)
-            self.assertEqual(confirmed["operation"], "work_item.create")
-            self.assertEqual(confirmed["outcome"]["type"], "work_item.created")
-            self.assertEqual(confirmed["outcome"]["workItem"]["status"], "planned")
-            self.assertIsNone(confirmed["outcome"]["workItem"]["parentWorkItemId"])
-            self.assertNotIn("title", confirmed["outcome"]["workItem"])
+            self.assertEqual(confirmed["operation"], "one_off_reminder.create")
+            self.assertEqual(confirmed["outcome"]["type"], "one_off_reminder.created")
+            self.assertEqual(
+                confirmed["outcome"]["oneOffReminder"]["scheduledFor"],
+                os.environ["SCHEDULE_VERIFY_REMINDER_SCHEDULED_FOR"],
+            )
+            self.assertNotIn("title", confirmed["outcome"]["oneOffReminder"])
             canonical = json.dumps(confirmed, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
             result = {
                 "phase": "confirm",
                 "confirmationId": confirmed["confirmationId"],
                 "receiptHash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
                 "outcomeType": confirmed["outcome"]["type"],
-                "workItemId": confirmed["outcome"]["workItem"]["id"],
+                "reminderId": confirmed["outcome"]["oneOffReminder"]["id"],
             }
         else:
             self.fail("unsupported verification phase")
@@ -275,16 +275,16 @@ function parseHarnessResult(stdout: string): HarnessPrepareResult | HarnessConfi
     "outcomeType",
     "phase",
     "receiptHash",
-    "workItemId",
+    "reminderId",
   ]);
   assert.match(
     String(record.confirmationId),
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
   );
   assert.match(String(record.receiptHash), /^[a-f0-9]{64}$/u);
-  assert.equal(record.outcomeType, "work_item.created");
+  assert.equal(record.outcomeType, "one_off_reminder.created");
   assert.match(
-    String(record.workItemId),
+    String(record.reminderId),
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
   );
   return record as unknown as HarnessConfirmResult;
@@ -387,7 +387,8 @@ try {
     SCHEDULE_INTEGRATION_TOKEN: token,
     SCHEDULE_VERIFY_IDEMPOTENCY_KEY: idempotencyKey,
     SCHEDULE_VERIFY_REQUEST_ID: requestId,
-    SCHEDULE_VERIFY_WORK_TITLE: workItemTitle,
+    SCHEDULE_VERIFY_REMINDER_TITLE: reminderTitle,
+    SCHEDULE_VERIFY_REMINDER_SCHEDULED_FOR: reminderScheduledFor,
   };
 
   verificationPhase = "adapter-prepare";
@@ -404,7 +405,7 @@ try {
     {
       confirmation_count: number;
       request_count: number;
-      work_item_count: number;
+      reminder_count: number;
       prepared_audit_count: number;
       confirmed_audit_count: number;
     }[]
@@ -412,7 +413,7 @@ try {
     select
       (select count(*)::int from integration_confirmations where id = ${prepared.confirmationId}) as confirmation_count,
       (select count(*)::int from integration_requests where credential_id = ${credential.id}) as request_count,
-      (select count(*)::int from work_items where workspace_id = ${targetWorkspaceId}) as work_item_count,
+      (select count(*)::int from one_off_reminders where workspace_id = ${targetWorkspaceId}) as reminder_count,
       (
         select count(*)::int from audit_events
         where workspace_id = ${targetWorkspaceId}
@@ -428,11 +429,59 @@ try {
   assert.deepEqual(preparedState, {
     confirmation_count: 1,
     request_count: 0,
-    work_item_count: 0,
+    reminder_count: 0,
     prepared_audit_count: 1,
     confirmed_audit_count: 0,
   });
   completedVerificationChecks.add("no-mutation-before-confirmation");
+
+  const missingProfileResponse = await app.inject({
+    method: "POST",
+    url: "/v1/integrations/commands/confirm",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "idempotency-key": "hermes-reminder-profile-required",
+    },
+    payload: {
+      version: "schedule.integration/v1",
+      confirmationId: prepared.confirmationId,
+    },
+  });
+  assert.equal(missingProfileResponse.statusCode, 404);
+  assert.equal(
+    missingProfileResponse.json<{ error: { code: string } }>().error.code,
+    "notification_profile.not_found",
+  );
+  const [rollbackState] = await activeConnection.sql<
+    {
+      consumed_confirmation_count: number;
+      request_count: number;
+      reminder_count: number;
+      created_audit_count: number;
+      confirmed_audit_count: number;
+    }[]
+  >`
+    select
+      (select count(*)::int from integration_confirmations where id = ${prepared.confirmationId} and consumed_at is not null) as consumed_confirmation_count,
+      (select count(*)::int from integration_requests where credential_id = ${credential.id}) as request_count,
+      (select count(*)::int from one_off_reminders where workspace_id = ${targetWorkspaceId}) as reminder_count,
+      (select count(*)::int from audit_events where workspace_id = ${targetWorkspaceId} and action = 'one_off_reminder.created') as created_audit_count,
+      (select count(*)::int from audit_events where workspace_id = ${targetWorkspaceId} and action = 'integration.command_confirmed') as confirmed_audit_count
+  `;
+  assert.deepEqual(rollbackState, {
+    consumed_confirmation_count: 0,
+    request_count: 0,
+    reminder_count: 0,
+    created_audit_count: 0,
+    confirmed_audit_count: 0,
+  });
+
+  const profileResponse = await app.inject({
+    method: "PUT",
+    url: `/v1/workspaces/${targetWorkspaceId}/notification-profile`,
+    payload: { expectedVersion: null, enabled: true, timeZone: "UTC" },
+  });
+  assert.equal(profileResponse.statusCode, 200, "verification reminder policy setup failed");
 
   const confirmEnvironment = {
     ...harnessEnvironment,
@@ -455,7 +504,9 @@ try {
       confirmation_count: number;
       consumed_confirmation_count: number;
       succeeded_request_count: number;
-      work_item_count: number;
+      total_reminder_count: number;
+      reminder_count: number;
+      reminder_created_audit_count: number;
       confirmed_audit_count: number;
     }[]
   >`
@@ -472,11 +523,21 @@ try {
           and status = 'succeeded'
       ) as succeeded_request_count,
       (
-        select count(*)::int from work_items
+        select count(*)::int from one_off_reminders
         where workspace_id = ${targetWorkspaceId}
-          and id = ${firstConfirmation.workItemId}
-          and title = ${workItemTitle}
-      ) as work_item_count,
+      ) as total_reminder_count,
+      (
+        select count(*)::int from one_off_reminders
+        where workspace_id = ${targetWorkspaceId}
+          and id = ${firstConfirmation.reminderId}
+          and title = ${reminderTitle}
+          and scheduled_for = ${reminderScheduledFor}::timestamptz
+      ) as reminder_count,
+      (
+        select count(*)::int from audit_events
+        where workspace_id = ${targetWorkspaceId}
+          and action = 'one_off_reminder.created'
+      ) as reminder_created_audit_count,
       (
         select count(*)::int from audit_events
         where workspace_id = ${targetWorkspaceId}
@@ -488,7 +549,9 @@ try {
     confirmation_count: 1,
     consumed_confirmation_count: 1,
     succeeded_request_count: 1,
-    work_item_count: 1,
+    total_reminder_count: 1,
+    reminder_count: 1,
+    reminder_created_audit_count: 1,
     confirmed_audit_count: 1,
   });
   completedVerificationChecks.add("exact-once-confirmation");

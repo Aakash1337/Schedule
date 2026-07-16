@@ -700,6 +700,11 @@ describe("integration gateway routes", () => {
       endsAt: "2026-07-13T15:30:00-04:00",
     },
     {
+      type: "one_off_reminder.create",
+      title: "Call the clinic",
+      scheduledFor: "2026-07-13T09:30:00-04:00",
+    },
+    {
       type: "plan_item.activity",
       date: "2026-07-13",
       expectedPlanId: PLAN_ID,
@@ -781,6 +786,27 @@ describe("integration gateway routes", () => {
         parentWorkItemId: "not-a-uuid",
       }),
       preparePayload({ type: "work_item.create", title: "Task", dueOn: "2027-02-29" }),
+      preparePayload({
+        type: "one_off_reminder.create",
+        title: "Reminder",
+        scheduledFor: "2026-07-13 09:30",
+      }),
+      preparePayload({
+        type: "one_off_reminder.create",
+        title: " Reminder ",
+        scheduledFor: "2026-07-13T09:30:00-04:00",
+      }),
+      preparePayload({
+        type: "one_off_reminder.create",
+        title: "Reminder",
+        scheduledFor: "2026-02-30T09:30:00-04:00",
+      }),
+      preparePayload({
+        type: "one_off_reminder.create",
+        title: "Reminder",
+        scheduledFor: "2026-07-13T09:30:00-04:00",
+        recipient: "someone-else",
+      }),
       preparePayload({
         type: "work_item.update",
         workItemId: RESOURCE_ID,

@@ -347,13 +347,14 @@ validation rather than being rewritten during replay.
 
 Commands are strict JSON objects discriminated by `type`:
 
-| Type                    | Required fields                                                                                         | Optional fields                                                                                      |
-| ----------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `work_item.create`      | `title`                                                                                                 | `parentWorkItemId`, `description`, `status`, `priority`, `planningDurationMinutes`, `dueOn`          |
-| `work_item.update`      | `workItemId`, `expectedVersion`, and at least one change                                                | `parentWorkItemId`, `title`, `description`, `status`, `priority`, `planningDurationMinutes`, `dueOn` |
-| `schedule_block.create` | `startsAt`, `endsAt`, `timeZone`                                                                        | `workItemId`, `title`                                                                                |
-| `schedule_block.update` | `scheduleBlockId`, `expectedVersion`, and at least one change                                           | `workItemId`, `title`, `startsAt`, `endsAt`, `timeZone`                                              |
-| `plan_item.activity`    | `date`, `itemId`, `expectedPlanId`, `expectedHeadVersion`, `activityType`, `occurredAt`, and `timeZone` | `durationMinutes`, `reason`, `metadata`                                                              |
+| Type                      | Required fields                                                                                         | Optional fields                                                                                      |
+| ------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `work_item.create`        | `title`                                                                                                 | `parentWorkItemId`, `description`, `status`, `priority`, `planningDurationMinutes`, `dueOn`          |
+| `work_item.update`        | `workItemId`, `expectedVersion`, and at least one change                                                | `parentWorkItemId`, `title`, `description`, `status`, `priority`, `planningDurationMinutes`, `dueOn` |
+| `schedule_block.create`   | `startsAt`, `endsAt`, `timeZone`                                                                        | `workItemId`, `title`                                                                                |
+| `schedule_block.update`   | `scheduleBlockId`, `expectedVersion`, and at least one change                                           | `workItemId`, `title`, `startsAt`, `endsAt`, `timeZone`                                              |
+| `one_off_reminder.create` | `title`, `scheduledFor`                                                                                 | none                                                                                                 |
+| `plan_item.activity`      | `date`, `itemId`, `expectedPlanId`, `expectedHeadVersion`, `activityType`, `occurredAt`, and `timeZone` | `durationMinutes`, `reason`, `metadata`                                                              |
 
 The allowed work status, priority, timestamp, duration, metadata, and version values are the same as
 their corresponding routes in [API.md](./API.md). On create, omitted or null `parentWorkItemId`
@@ -370,6 +371,10 @@ approve it explicitly. `activityType` is one of `started`, `completed`,
 `null` when clearing a value; a non-null `durationMinutes` is accepted only for `completed`. Omitting a
 field means to leave it unchanged where updates allow that. Unknown fields and unknown command types
 are rejected.
+
+`one_off_reminder.create` requires an existing workspace reminder profile and an ISO timestamp with
+an explicit offset. Confirmation creates only the versioned one-off source. The normal materializer
+still decides when to create its delivery intent; confirmation does not contact Hermes or WhatsApp.
 
 ### Errors
 
@@ -518,7 +523,7 @@ pnpm check
 
 The live gateway verifier requires PostgreSQL access with permission to create and drop a disposable
 database. It creates a nonce-named database, applies current migrations, exercises real Fastify
-routes and all five commands, checks rollback, workspace isolation, and four-way concurrent
+routes and the five work/block/activity commands, checks rollback, workspace isolation, and four-way concurrent
 prepare/confirm exclusion, then removes the database:
 
 ```powershell
@@ -539,7 +544,7 @@ transitions, stale-token fencing, indexed expiry recovery, source invalidation, 
 privacy-field exclusion, and empty-claim replay.
 
 The separate Hermes adapter verifier exercises the native plugin boundary plus a disposable
-PostgreSQL and real Fastify prepare/confirm flow:
+PostgreSQL and real Fastify one-off-reminder prepare/confirm flow:
 
 ```powershell
 pnpm verify:hermes-adapter

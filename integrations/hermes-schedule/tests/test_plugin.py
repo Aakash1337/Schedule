@@ -40,6 +40,7 @@ class PluginRegistrationTests(unittest.TestCase):
         create = plugin.schemas.WORK_ITEM_CREATE["properties"]
         update = plugin.schemas.WORK_ITEM_UPDATE["properties"]
         activity = plugin.schemas.PLAN_ITEM_ACTIVITY["properties"]
+        reminder = plugin.schemas.ONE_OFF_REMINDER_CREATE
 
         self.assertEqual(create["parentWorkItemId"]["oneOf"][1], {"type": "null"})
         self.assertEqual(update["parentWorkItemId"]["oneOf"][1], {"type": "null"})
@@ -52,6 +53,12 @@ class PluginRegistrationTests(unittest.TestCase):
         self.assertEqual(activity["metadata"]["propertyNames"]["maxLength"], 64)
         self.assertEqual(activity["metadata"]["propertyNames"]["pattern"], r".*\S.*")
         self.assertIn("[1-8]", plugin.schemas.UUID["pattern"])
+        self.assertIn(reminder, plugin.schemas.INTEGRATION_COMMAND["oneOf"])
+        self.assertEqual(reminder["required"], ["type", "title", "scheduledFor"])
+        self.assertFalse(reminder["additionalProperties"])
+        self.assertEqual(reminder["properties"]["title"]["maxLength"], 240)
+        self.assertEqual(reminder["properties"]["title"]["pattern"], r"^(?:\S|\S.*\S)$")
+        self.assertEqual(reminder["properties"]["scheduledFor"], plugin.schemas.INSTANT)
 
     def test_registration_isolates_schema_instances_from_consumer_mutation(self) -> None:
         first = FakePluginContext()

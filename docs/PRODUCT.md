@@ -696,7 +696,8 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   transport/reconciliation, external bootstrap/control wiring, and human/account binding remain
   follow-on work
 - Implemented local adapter: disabled-by-default Hermes tools for authenticated Today/work-item
-  reads and sender/session/platform-bound confirmed mutations, plus a deterministic stdout reminder
+  reads and sender/session/platform-bound confirmed mutations, including strict one-off reminder
+  creation, plus a deterministic stdout reminder
   helper and a checked runtime-only installer; it is separate from the delivery-claim runtime, and
   live WhatsApp still requires the operator's `WHATSAPP_HOME_CHANNEL` and self-chat smoke
 - Implemented narrow hosted runtime: complete `HOSTED_API_MODE=oidc` configuration activates exact

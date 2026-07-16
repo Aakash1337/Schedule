@@ -22,6 +22,78 @@ from .client import ScheduleAdapterError
 _CHALLENGE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 _HASH = re.compile(r"[a-f0-9]{64}\Z")
 _CLAIM_RETRY_AFTER = timedelta(seconds=60)
+_OPERATIONS = frozenset(
+    {
+        "work_item.create",
+        "work_item.update",
+        "schedule_block.create",
+        "schedule_block.update",
+        "plan_item.activity",
+        "one_off_reminder.create",
+    }
+)
+_PENDING_COLUMNS = (
+    "session_hash",
+    "binding_hash",
+    "prepare_turn_sequence",
+    "confirmation_id",
+    "command_hash",
+    "operation",
+    "request_id",
+    "idempotency_key",
+    "challenge",
+    "expires_at",
+    "claim_token",
+    "claimed_at",
+    "created_at",
+)
+_PENDING_TABLE_SQL = """
+CREATE TABLE {qualifier}{table} (
+  session_hash TEXT PRIMARY KEY
+    REFERENCES schedule_turns(session_hash) ON DELETE CASCADE,
+  binding_hash TEXT NOT NULL CHECK(length(binding_hash) = 64),
+  prepare_turn_sequence INTEGER NOT NULL CHECK(prepare_turn_sequence > 0),
+  confirmation_id TEXT NOT NULL UNIQUE,
+  command_hash TEXT NOT NULL CHECK(length(command_hash) = 64),
+  operation TEXT NOT NULL CHECK(length(operation) BETWEEN 1 AND 64),
+  request_id TEXT NOT NULL UNIQUE,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  challenge TEXT NOT NULL CHECK(length(challenge) = 8),
+  expires_at TEXT NOT NULL,
+  claim_token TEXT UNIQUE,
+  claimed_at TEXT,
+  created_at TEXT NOT NULL,
+  CHECK (
+    (claim_token IS NULL AND claimed_at IS NULL)
+    OR (claim_token IS NOT NULL AND claimed_at IS NOT NULL)
+  )
+)
+"""
+
+
+def _pending_schema_signature(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", value.strip())
+    return re.sub(
+        r'\ACREATE TABLE(?: IF NOT EXISTS)? (?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)',
+        "CREATE TABLE <pending>",
+        normalized,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+
+_CURRENT_PENDING_SCHEMA = _pending_schema_signature(
+    _PENDING_TABLE_SQL.format(qualifier="", table="schedule_pending_confirmations")
+)
+_LEGACY_PENDING_SCHEMA = _pending_schema_signature(
+    _PENDING_TABLE_SQL.replace(
+        "CHECK(length(operation) BETWEEN 1 AND 64)",
+        """CHECK(operation IN (
+          'work_item.create', 'work_item.update', 'schedule_block.create',
+          'schedule_block.update', 'plan_item.activity'
+        ))""",
+    ).format(qualifier="", table="schedule_pending_confirmations")
+)
 
 
 @dataclass(frozen=True)
@@ -245,13 +317,7 @@ class ConfirmationState:
         context = self._context_for_session(session_id, turn_context)
         if _HASH.fullmatch(command_hash) is None:
             raise ScheduleAdapterError("schedule_prepared_change_invalid")
-        if operation not in {
-            "work_item.create",
-            "work_item.update",
-            "schedule_block.create",
-            "schedule_block.update",
-            "plan_item.activity",
-        }:
+        if operation not in _OPERATIONS:
             raise ScheduleAdapterError("schedule_prepared_change_invalid")
         self._parse_instant(expires_at, "schedule_prepared_change_invalid")
         challenge = "".join(secrets.choice(_CHALLENGE_ALPHABET) for _ in range(8))
@@ -540,32 +606,77 @@ class ConfirmationState:
                   request_id TEXT NOT NULL UNIQUE,
                   created_at TEXT NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS schedule_pending_confirmations (
-                  session_hash TEXT PRIMARY KEY
-                    REFERENCES schedule_turns(session_hash) ON DELETE CASCADE,
-                  binding_hash TEXT NOT NULL CHECK(length(binding_hash) = 64),
-                  prepare_turn_sequence INTEGER NOT NULL CHECK(prepare_turn_sequence > 0),
-                  confirmation_id TEXT NOT NULL UNIQUE,
-                  command_hash TEXT NOT NULL CHECK(length(command_hash) = 64),
-                  operation TEXT NOT NULL CHECK(operation IN (
-                    'work_item.create', 'work_item.update', 'schedule_block.create',
-                    'schedule_block.update', 'plan_item.activity'
-                  )),
-                  request_id TEXT NOT NULL UNIQUE,
-                  idempotency_key TEXT NOT NULL UNIQUE,
-                  challenge TEXT NOT NULL CHECK(length(challenge) = 8),
-                  expires_at TEXT NOT NULL,
-                  claim_token TEXT UNIQUE,
-                  claimed_at TEXT,
-                  created_at TEXT NOT NULL,
-                  CHECK (
-                    (claim_token IS NULL AND claimed_at IS NULL)
-                    OR (claim_token IS NOT NULL AND claimed_at IS NOT NULL)
-                  )
-                );
                 """
             )
+            connection.execute(
+                _PENDING_TABLE_SQL.format(
+                    qualifier="IF NOT EXISTS ", table="schedule_pending_confirmations"
+                )
+            )
+            self._upgrade_pending_table(connection)
         self._restrict_permissions(self._path, 0o600)
+
+    @staticmethod
+    def _upgrade_pending_table(connection: sqlite3.Connection) -> None:
+        schema = ConfirmationState._pending_schema(connection)
+        if _pending_schema_signature(schema) == _CURRENT_PENDING_SCHEMA:
+            return
+
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            schema = ConfirmationState._pending_schema(connection)
+            if _pending_schema_signature(schema) == _CURRENT_PENDING_SCHEMA:
+                connection.commit()
+                return
+            temporary_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                ("schedule_pending_confirmations_next",),
+            ).fetchone()
+            if (
+                _pending_schema_signature(schema) != _LEGACY_PENDING_SCHEMA
+                or temporary_exists is not None
+            ):
+                raise ScheduleAdapterError("schedule_state_schema_invalid")
+
+            connection.execute(
+                _PENDING_TABLE_SQL.format(
+                    qualifier="", table="schedule_pending_confirmations_next"
+                )
+            )
+            column_list = ", ".join(_PENDING_COLUMNS)
+            connection.execute(
+                f"INSERT INTO schedule_pending_confirmations_next ({column_list}) "
+                f"SELECT {column_list} FROM schedule_pending_confirmations"
+            )
+            connection.execute("DROP TABLE schedule_pending_confirmations")
+            connection.execute(
+                "ALTER TABLE schedule_pending_confirmations_next "
+                "RENAME TO schedule_pending_confirmations"
+            )
+            if (
+                _pending_schema_signature(ConfirmationState._pending_schema(connection))
+                != _CURRENT_PENDING_SCHEMA
+            ):
+                raise ScheduleAdapterError("schedule_state_schema_invalid")
+            if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise ScheduleAdapterError("schedule_state_schema_invalid")
+            connection.commit()
+        except ScheduleAdapterError:
+            connection.rollback()
+            raise
+        except sqlite3.DatabaseError as error:
+            connection.rollback()
+            raise ScheduleAdapterError("schedule_state_schema_invalid") from error
+
+    @staticmethod
+    def _pending_schema(connection: sqlite3.Connection) -> str:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("schedule_pending_confirmations",),
+        ).fetchone()
+        if row is None or not isinstance(row[0], str):
+            raise ScheduleAdapterError("schedule_state_schema_invalid")
+        return row[0]
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:

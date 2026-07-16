@@ -186,8 +186,8 @@ reads/DML and DDL, restart durability, and exact cleanup of the nonce database a
 
 The Hermes Schedule plugin is the local, opt-in adapter between a Hermes conversation and
 Schedule's authenticated integration gateway. It can read the authoritative Today plan and work
-items, prepare one of Schedule's strict structured commands, and confirm that exact command only
-after a separate human turn. A companion script produces a deterministic daily-plan reminder on
+items, prepare one of Schedule's strict structured commands—including one-off reminder creation—and
+confirm that exact command only after a separate human turn. A companion script produces a deterministic daily-plan reminder on
 standard output without invoking an LLM.
 
 This is not a public webhook receiver or a hosted integration. Version 1 accepts only a canonical
@@ -288,6 +288,9 @@ the operation type, one-use challenge, expiry, idempotency identity, and an opti
 raw sender IDs, raw messages, the bearer token, or the prepared command. Back up or delete this state
 only while Hermes is stopped. Deleting it cancels the adapter's local recovery path but does not
 revoke the Schedule credential or undo an operation that may already have committed.
+On first start after this command was added, the plugin transactionally widens the operation field in
+that dedicated state database while preserving pending and in-flight confirmations. An unfamiliar
+pending-confirmation table schema fails closed instead of being rewritten.
 
 ### Conversation contract
 
@@ -305,6 +308,11 @@ Hermes may interpret a natural-language request, but Schedule does not receive o
 WhatsApp message. The model must select a command from the versioned vocabulary in
 [INTEGRATIONS.md](./INTEGRATIONS.md#commands). Schedule validates that command using the same domain
 and optimistic-concurrency rules as every other integration client.
+
+For “remind me” requests, Hermes may propose only the strict `one_off_reminder.create` command with a
+title and explicit-offset `scheduledFor` instant. The workspace reminder profile must already exist.
+The separate confirmation turn creates the Schedule reminder source exactly once; it neither sends a
+message immediately nor bypasses normal materialization and delivery policy.
 
 Preparation must occur inside a captured Hermes turn. On success, the plugin verifies Schedule's
 canonical command display and SHA-256 command hash, stores the pending exchange, and returns the
@@ -330,8 +338,8 @@ of executing the mutation again. A stale in-flight claim can be retried but neve
 pending exchange is consumed only after a strict successful response.
 
 The adapter validates the returned operation and command hash, accepts only the expected typed
-outcome schema, and returns a reduced receipt containing bounded identifiers, status/version fields,
-and no work description, activity reason, or metadata. If the user changes their mind before a
+outcome schema, and returns a reduced receipt containing bounded identifiers, time/status/version fields,
+and no reminder title, work description, activity reason, or metadata. If the user changes their mind before a
 confirmation is in flight, Hermes should invoke `schedule_cancel_change`; a changed command requires
 a new preparation and challenge.
 
@@ -441,8 +449,8 @@ pnpm verify:hermes-adapter
 ```
 
 It runs deterministic Python tests plus a disposable PostgreSQL and real Fastify integration flow.
-The gate verifies the local plugin/provider boundary, including no mutation before confirmation and
-idempotent single execution after confirmation. It does not contact WhatsApp and does not prove
+The gate verifies a one-off reminder command through the production Python client, including no
+mutation before confirmation and idempotent single execution after confirmation. It does not contact WhatsApp and does not prove
 phone delivery.
 
 Use this rollout order:

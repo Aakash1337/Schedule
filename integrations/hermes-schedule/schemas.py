@@ -21,6 +21,12 @@ POSITIVE_DURATION = {
     ]
 }
 TIME_ZONE = {"type": "string", "minLength": 1, "maxLength": 80}
+INSTANT = {
+    "type": "string",
+    "minLength": 20,
+    "maxLength": 64,
+    "pattern": r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+}
 
 
 def _strict(properties: dict, required: list[str]) -> dict:
@@ -136,6 +142,19 @@ PLAN_ITEM_ACTIVITY = _strict(
         "timeZone",
     ],
 )
+ONE_OFF_REMINDER_CREATE = _strict(
+    {
+        "type": {"const": "one_off_reminder.create"},
+        "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "pattern": r"^(?:\S|\S.*\S)$",
+        },
+        "scheduledFor": INSTANT,
+    },
+    ["type", "title", "scheduledFor"],
+)
 
 INTEGRATION_COMMAND = {
     "oneOf": [
@@ -144,6 +163,7 @@ INTEGRATION_COMMAND = {
         SCHEDULE_BLOCK_CREATE,
         SCHEDULE_BLOCK_UPDATE,
         PLAN_ITEM_ACTIVITY,
+        ONE_OFF_REMINDER_CREATE,
     ]
 }
 
