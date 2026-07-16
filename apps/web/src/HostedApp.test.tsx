@@ -205,6 +205,8 @@ describe("hosted capture shell", () => {
     );
     expect(screen.getByRole("button", { name: "Retry backlog" })).toBeEnabled();
     expect(apiMocks.listWorkItems).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Retry backlog" }));
+    await waitFor(() => expect(apiMocks.listWorkItems).toHaveBeenCalledTimes(2));
   });
 
   it("refreshes Today after the browser crosses local midnight", async () => {
