@@ -56,7 +56,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 115 test files and 1,803 runtime test cases. Three
+The package and script runners currently execute 115 test files and 1,809 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -80,21 +80,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     58.62% |   69.84% |    66.33% | 59.13% |
+| Whole repository, measured |     58.64% |   69.87% |    66.33% | 59.14% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     94.75% |   91.40% |    93.35% | 95.79% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     89.81% |   83.27% |    98.61% | 90.77% |
+| Application, measured      |     89.88% |   83.35% |    98.61% | 90.81% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     90.65% |   86.24% |    83.54% | 91.94% |
+| API, measured              |     90.66% |   86.30% |    83.54% | 91.94% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.00% |   88.01% |    93.25% | 94.62% |
 | Worker, required           |        85% |      87% |       89% |    87% |
 | Web, measured              |     84.92% |   71.84% |    74.26% | 85.38% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 11,065 of 18,874 statements, 8,020 of 11,483 branches,
-2,410 of 3,633 functions, and 10,455 of 17,679 lines.
+The whole-repository totals are 11,069 of 18,876 statements, 8,028 of 11,489 branches,
+2,410 of 3,633 functions, and 10,458 of 17,681 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global

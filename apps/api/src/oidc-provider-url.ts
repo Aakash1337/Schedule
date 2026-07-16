@@ -26,6 +26,8 @@ export function parseExactOidcProviderUrl(value: unknown, allowQuery: boolean): 
 
   try {
     const parsed = new URL(value);
+    const hasBareQueryDelimiter = parsed.search.length === 0 && value.includes("?");
+    const hasBareFragmentDelimiter = parsed.hash.length === 0 && value.includes("#");
     if (
       parsed.protocol !== "https:" ||
       parsed.hostname.length === 0 ||
@@ -33,6 +35,8 @@ export function parseExactOidcProviderUrl(value: unknown, allowQuery: boolean): 
       parsed.password.length > 0 ||
       parsed.port.length > 0 ||
       parsed.hash.length > 0 ||
+      hasBareQueryDelimiter ||
+      hasBareFragmentDelimiter ||
       (!allowQuery && parsed.search.length > 0)
     ) {
       return null;

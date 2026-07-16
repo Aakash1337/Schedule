@@ -184,10 +184,16 @@ describe("createOidcRemoteJwksResolver", () => {
     ["non-object options", null],
     ["HTTP issuer", { issuer: "http://issuer.schedule.test", jwksUri: JWKS_URI }],
     ["issuer query", { issuer: `${ISSUER}?tenant=other`, jwksUri: JWKS_URI }],
+    ["bare issuer query delimiter", { issuer: `${ISSUER}?`, jwksUri: JWKS_URI }],
     ["issuer fragment", { issuer: `${ISSUER}#fragment`, jwksUri: JWKS_URI }],
     ["issuer credentials", { issuer: "https://user:pass@issuer.schedule.test", jwksUri: JWKS_URI }],
     ["HTTP JWKS URI", { issuer: ISSUER, jwksUri: "http://keys.schedule.test/jwks.json" }],
     ["JWKS fragment", { issuer: ISSUER, jwksUri: `${JWKS_URI}#fragment` }],
+    [
+      "bare JWKS query delimiter",
+      { issuer: ISSUER, jwksUri: "https://keys.schedule.test/oidc/jwks.json?" },
+    ],
+    ["bare JWKS fragment delimiter", { issuer: ISSUER, jwksUri: `${JWKS_URI}#` }],
     ["JWKS credentials", { issuer: ISSUER, jwksUri: "https://user@keys.schedule.test/jwks.json" }],
     [
       "noncanonical default port",
@@ -211,6 +217,12 @@ describe("createOidcRemoteJwksResolver", () => {
   it("allows the interoperable root issuer spelling without a trailing slash", () => {
     const resolver = createResolver(transportFrom(), { issuer: "https://issuer.schedule.test" });
     expect(resolver.issuer).toBe("https://issuer.schedule.test");
+  });
+
+  it("preserves a trusted JWKS query value ending in a question mark", () => {
+    const jwksUri = "https://keys.schedule.test/oidc/jwks.json?hint=why?";
+    const resolver = createResolver(transportFrom(), { jwksUri });
+    expect(resolver.jwksUri).toBe(jwksUri);
   });
 
   it("makes one exact, credential-free GET and caches a valid key", async () => {
