@@ -51,6 +51,7 @@
     "verify:hosted-login-transactions": "tsx scripts/verify-hosted-login-transactions.ts",
     "verify:oidc-id-token": "pnpm --filter @schedule/api exec vitest run src/oidc-id-token-verifier.test.ts",
     "verify:oidc-authorization-request": "pnpm build:packages && pnpm --filter @schedule/application exec vitest run src/hosted-login-transaction.test.ts && pnpm --filter @schedule/api exec vitest run src/oidc-authorization-request.test.ts",
+    "verify:oidc-remote-jwks": "pnpm build:packages && pnpm --filter @schedule/api exec vitest run src/oidc-remote-jwks-resolver.test.ts src/oidc-id-token-verifier.test.ts",
     "verify:hosted-runtime-gate": "tsx scripts/verify-hosted-runtime-gate.ts",
     "verify:hosted-mutation-authorization": "tsx scripts/verify-hosted-mutation-authorization.ts",
     "verify:hosted-identity-migrations": "tsx scripts/verify-hosted-identity-migrations.ts",

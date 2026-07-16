@@ -165,11 +165,42 @@ and invalid verifier policy throw one stable operational error with no cause, to
 endpoint, or provider error text. A future route must preserve that distinction as generic `401`
 versus redacted `503` behavior.
 
-The injected resolver is trusted deployment composition, not discovery logic. Future wiring must
-derive its HTTPS JWKS location from the exact configured issuer and validated provider metadata,
-apply SSRF and redirect policy, cache bounded keys across rotation, and avoid logging private token
-data. The verifier does not import into `buildApp`, `server.ts`, configuration, or a route; it cannot
-make the dormant hosted surface reachable.
+The injected resolver is trusted deployment composition, not discovery logic. The dormant pinned
+resolver below now supplies one bounded implementation, but future wiring must still derive its
+HTTPS JWKS location from the exact configured issuer and validated provider metadata and provide a
+connection-safe transport. The verifier does not import into `buildApp`, `server.ts`, configuration,
+or a route; it cannot make the dormant hosted surface reachable.
+
+## Dormant pinned remote-JWKS resolver
+
+`createOidcRemoteJwksResolver` binds one exact issuer to one deployment-controlled HTTPS JWKS URI
+and returns a frozen provider snapshot plus a JOSE signing-key resolver. Configuration is copied
+once so later mutation and accessor-backed time-of-check/time-of-use changes cannot retarget the
+provider. The issuer and JWKS URI are capped at 2 KiB, use only default-port HTTPS, and reject raw
+whitespace, controls, backslashes, credentials, fragments, and silently normalized spellings. The
+issuer cannot contain a query. A bounded query may remain in the pinned JWKS URI because it is
+trusted provider metadata, never token or request input.
+
+There is deliberately no implicit global `fetch`. Construction requires an injected transport. The
+adapter calls it only for the exact canonical JWKS URI with `GET`, manual redirects, an abort signal,
+identity encoding, and no authorization, cookie, proxy-authorization, forwarding, or request-derived
+headers. Redirects and every status other than `200` fail closed. Only JSON or JWK-set JSON is
+accepted. Both declared and streamed decoded bodies are capped at 64 KiB before a fatal UTF-8 decode
+and JSON parse; the document must contain between one and 32 plain-object keys. Provider response,
+endpoint, and transport exception details are never propagated through the verifier's operational
+error contract.
+
+One resolver instance keeps JOSE's in-memory cache and single-flight refresh behavior. Retrieval is
+bounded to three seconds, an unknown key cannot trigger another reload for 30 seconds, and a
+successful set is refreshed after five minutes. Matching cached keys avoid network access; an
+unknown or ambiguous key remains an invalid credential, while transport and malformed-response
+failures remain redacted availability failures.
+
+This is not by itself a production SSRF boundary. The mandatory transport must disable or explicitly
+govern proxies, resolve and vet every connected address, reject local/private/reserved destinations,
+resist DNS rebinding, and preserve TLS hostname and certificate verification. No such production
+transport, discovery adapter, configuration, route, callback, or server registration exists in this
+slice.
 
 ## Dormant OIDC authorization-request builder
 
@@ -248,10 +279,10 @@ membership loss is the same generic `404`; unexpected adapter/database failures 
 
 ## Deliberately absent
 
-There is still no OIDC discovery or remote-JWKS composition, hosted authorization-start endpoint,
-callback or code exchange, production-registered authentication route, browser-binding cookie,
-enabling hosted configuration, public workspace route, hosted CORS policy, account-management API,
-role model, synchronization protocol, or cloud deployment.
+There is still no OIDC discovery, production remote-JWKS transport or composition, hosted
+authorization-start endpoint, callback or code exchange, production-registered authentication
+route, browser-binding cookie, enabling hosted configuration, public workspace route, hosted CORS
+policy, account-management API, role model, synchronization protocol, or cloud deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. The dormant work-item create is the only transaction-coupled hosted product mutation;
 all other product routes remain local-only and require their own transaction authority before any
@@ -292,3 +323,8 @@ suite is part of `pnpm check`; the existing runtime gate proves the module remai
 leave the transaction service, and runs the builder's canonical encoding, injection, scope,
 configuration, transaction-integrity, size, and redaction cases. It performs no external requests;
 the same tests and dormant-route evidence run in `pnpm check`.
+`pnpm verify:oidc-remote-jwks` rebuilds the core packages and runs the generated-key resolver and
+ID-token suites. Injected transports prove exact request shape, bounded streaming and parsing,
+redirect and malformed-response denial, cache reuse, unknown-key cooldown, rotation refresh,
+concurrent single-flight behavior, error redaction, and rejection of token-controlled key URLs. The
+command performs no external network request; the same evidence runs in `pnpm check`.

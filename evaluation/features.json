@@ -26,6 +26,7 @@
     "hosted-login-transactions": { "command": "pnpm verify:database", "ci": true },
     "oidc-id-token-verifier": { "command": "pnpm check", "ci": true },
     "oidc-authorization-request": { "command": "pnpm check", "ci": true },
+    "oidc-remote-jwks": { "command": "pnpm check", "ci": true },
     "hosted-runtime-gate": { "command": "pnpm verify:database", "ci": true },
     "hosted-mutation-authorization": { "command": "pnpm verify:database", "ci": true },
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
@@ -2636,6 +2637,51 @@
             "requires the transaction to remain usable at the exact trusted clock boundary",
             "maps clock and hostile getter failures to the stable redacted error",
             "never exposes supplied configuration or transaction values in its failure"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "oidc-remote-jwks-foundation",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Dormant pinned remote-JWKS resolver"
+      },
+      "limitations": [
+        "The provider-scoped resolver is dormant and has no discovery, production transport, runtime configuration, authorization route, callback, token exchange, or server composition.",
+        "The mandatory injected transport remains responsible for connection-level DNS, resolved-IP, proxy, and TLS egress enforcement. Exact URL binding, redirect denial, and response bounds in this adapter are not a complete SSRF defense by themselves."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/oidc-remote-jwks-resolver.test.ts",
+          "command": "oidc-remote-jwks",
+          "anchors": [
+            "binds an exact provider snapshot to a frozen cached resolver",
+            "reads accessor-backed configuration exactly once",
+            "makes one exact, credential-free GET and caches a valid key",
+            "maps %s to one redacted verifier availability error",
+            "treats an unknown key as invalid credentials without attacker-driven reloads during cooldown",
+            "refreshes once after cooldown and accepts provider key rotation",
+            "refreshes a matching cached key set after its five-minute maximum age",
+            "shares one in-flight JWKS request across concurrent verification",
+            "rejects token-controlled jku before the resolver can reach transport"
           ]
         },
         {

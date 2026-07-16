@@ -248,8 +248,11 @@ binding, nonce and exact redirect binding, protected PKCE recovery, authoritativ
 single-use consumption. A nonce-bound OIDC ID-token verifier additionally enforces explicit
 asymmetric algorithms, exact transaction claims, bounded key resolution, and redacted failures with
 generated-key tests. A strict authorization-request builder preserves the issued transaction's exact
-provider bindings and emits only canonical, injection-safe code-flow parameters. A disabled-only
-hosted runtime gate rejects premature companion configuration; the registrars, transaction services,
-verifier, and request builder remain absent from `buildApp` and production server wiring until
-provider discovery, a complete authorization-code adapter, and an intentionally selected public
-hosted surface exist.
+provider bindings and emits only canonical, injection-safe code-flow parameters. A pinned
+remote-JWKS resolver adds exact endpoint binding, bounded streamed responses, cache reuse,
+single-flight refresh, rotation, and redacted failure classification through a mandatory injected
+transport. A disabled-only hosted runtime gate rejects premature companion configuration; the
+registrars, transaction services, verifier, request builder, and resolver remain absent from
+`buildApp` and production server wiring until trusted discovery, connection-level JWKS egress
+enforcement, a complete authorization-code adapter, and an intentionally selected public hosted
+surface exist.
