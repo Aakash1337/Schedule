@@ -202,6 +202,7 @@ describe("runtime configuration", () => {
         HOSTED_PUBLIC_ORIGIN: "",
         HOSTED_OIDC_ISSUER: "",
         HOSTED_OIDC_CLIENT_ID: "",
+        HOSTED_OIDC_TOKEN_AUTH_METHOD: "",
         HOSTED_SESSION_PEPPER: "",
       }).HOSTED_OIDC_REGISTRATION,
     ).toBeUndefined();

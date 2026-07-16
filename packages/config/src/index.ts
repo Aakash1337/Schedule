@@ -524,11 +524,18 @@ export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): Api
     (environment.HOSTED_OIDC_PREFLIGHT_MODE !== undefined &&
       !HOSTED_OIDC_PREFLIGHT_MODES.has(environment.HOSTED_OIDC_PREFLIGHT_MODE)) ||
     (environment.HOSTED_OIDC_TOKEN_AUTH_METHOD !== undefined &&
+      environment.HOSTED_OIDC_TOKEN_AUTH_METHOD !== "" &&
       !HOSTED_OIDC_TOKEN_AUTH_METHODS.has(environment.HOSTED_OIDC_TOKEN_AUTH_METHOD))
   ) {
     invalidHostedOidcPreflight();
   }
-  const parsed = apiSchema.parse(environment);
+  const parsed = apiSchema.parse({
+    ...environment,
+    HOSTED_OIDC_TOKEN_AUTH_METHOD:
+      environment.HOSTED_OIDC_TOKEN_AUTH_METHOD === ""
+        ? undefined
+        : environment.HOSTED_OIDC_TOKEN_AUTH_METHOD,
+  });
   const {
     HOSTED_PUBLIC_ORIGIN,
     HOSTED_OIDC_ISSUER,
