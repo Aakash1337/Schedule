@@ -23,6 +23,7 @@ import type {
   GetSchedulingAdviceCommand,
   GetCurrentDailyPlanQuery,
   GetDailyPlanQuery,
+  GetPlanningOutcomesQuery,
   GetDailyPlanFitInsightQuery,
   GetRoutineQuery,
   GetRoutineSelectionPreferenceStateQuery,
@@ -109,6 +110,7 @@ import {
   type NotificationProfile,
   type NotificationRule,
   type OneOffReminder,
+  type PlanningOutcomes,
   type Routine,
   type RoutineDurationInsight,
   type RoutineDurationInsightFeedback,
@@ -183,6 +185,7 @@ export interface ProductServices {
   recordPlanItemActivity(command: RecordPlanItemActivityCommand): Promise<PlanItemActivityResult>;
   generateDailyPlan(command: GenerateDailyPlanCommand): Promise<DailyPlan>;
   getCurrentDailyPlan(query: GetCurrentDailyPlanQuery): Promise<CurrentDailyPlan>;
+  getPlanningOutcomes(query: GetPlanningOutcomesQuery): Promise<PlanningOutcomes>;
   setPlanItemLock(command: SetPlanItemLockCommand): Promise<PlanItemLockResult>;
   regenerateDailyPlan(command: RegenerateDailyPlanCommand): Promise<CurrentDailyPlan>;
   previewDailyPlanAlternatives(
@@ -634,6 +637,7 @@ const routineDurationInsightFeedbackBody = z.strictObject({
   insightKey: z.string().regex(routineDurationInsightKeyPattern),
 });
 const dailyPlanFitInsightQuery = z.strictObject({ forDate: localDateText });
+const planningOutcomesQuery = z.strictObject({ forDate: localDateText });
 const dailyPlanFitUsageOutcomesQuery = z.strictObject({
   limit: z.coerce.number().int().min(1).max(maximumDailyPlanFitUsageOutcomes).default(5),
 });
@@ -1575,6 +1579,15 @@ export async function registerProductRoutes(
     const params = parseRequest(workspaceParams, request.params);
     const query = parseRequest(dailyPlanFitInsightQuery, request.query);
     return services.getDailyPlanFitInsight({
+      workspaceId: workspaceId(params.workspaceId),
+      forDate: localDate(query.forDate),
+    });
+  });
+
+  app.get("/v1/workspaces/:workspaceId/planning-outcomes", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(planningOutcomesQuery, request.query);
+    return services.getPlanningOutcomes({
       workspaceId: workspaceId(params.workspaceId),
       forDate: localDate(query.forDate),
     });

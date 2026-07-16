@@ -21,6 +21,7 @@ import type {
   Page,
   PlanItemActivityState,
   PlanSettings,
+  PlanningOutcomes,
   Routine,
   RoutineDurationInsight,
   RoutineDurationInsightFeedback,
@@ -474,6 +475,12 @@ export const api = {
   getDailyPlanFitEffectiveness: (workspaceId: string, limit = 28, signal?: AbortSignal) =>
     request<DailyPlanFitEffectiveness>(
       queryPath(workspacePath(workspaceId, "/daily-plan-fit-insight/effectiveness"), { limit }),
+      signal === undefined ? {} : { signal },
+    ),
+
+  getPlanningOutcomes: (workspaceId: string, forDate: string, signal?: AbortSignal) =>
+    request<PlanningOutcomes>(
+      queryPath(workspacePath(workspaceId, "/planning-outcomes"), { forDate }),
       signal === undefined ? {} : { signal },
     ),
 

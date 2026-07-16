@@ -9,6 +9,7 @@ import type {
   DailyPlanFitEffectiveness,
   DailyPlanFitInsight,
   DailyPlanFitUsageOutcome,
+  PlanningOutcomes,
   ScheduleBlock,
   SchedulingAdviceResult,
   SchedulingAdviceUnavailableReason,
@@ -23,6 +24,7 @@ const apiMocks = vi.hoisted(() => ({
   getCurrentPlan: vi.fn(),
   getDailyPlanFitEffectiveness: vi.fn(),
   getDailyPlanFitInsight: vi.fn(),
+  getPlanningOutcomes: vi.fn(),
   listDailyPlanFitUsageOutcomes: vi.fn(),
   getSchedulingAdvice: vi.fn(),
   listScheduleBlocks: vi.fn(),
@@ -223,6 +225,23 @@ function planFitEffectiveness(
   };
 }
 
+function planningOutcomes(overrides: Partial<PlanningOutcomes> = {}): PlanningOutcomes {
+  return {
+    forDate: todayKey(),
+    windowStartedOn: "2026-06-16",
+    windowEndedOn: "2026-07-15",
+    plansConsidered: 0,
+    plannedTaskCount: 0,
+    completedTaskCount: 0,
+    plannedMinutes: 0,
+    completedMinutes: 0,
+    additionalPlanRevisionCount: 0,
+    completionTasksRateBasisPoints: null,
+    completionMinutesRateBasisPoints: null,
+    ...overrides,
+  };
+}
+
 function availableAdvice(overrides: Partial<SchedulingAdviceResult> = {}): SchedulingAdviceResult {
   return {
     version: "schedule.advisor/v1",
@@ -306,6 +325,7 @@ beforeEach(() => {
   apiMocks.getDailyPlanFitInsight.mockResolvedValue(planFitInsight());
   apiMocks.listDailyPlanFitUsageOutcomes.mockResolvedValue({ items: [] });
   apiMocks.getDailyPlanFitEffectiveness.mockResolvedValue(planFitEffectiveness());
+  apiMocks.getPlanningOutcomes.mockResolvedValue(planningOutcomes());
   apiMocks.listScheduleBlocks.mockResolvedValue({
     items: [],
     page: { limit: 200, offset: 0 },
@@ -816,6 +836,49 @@ describe("Today commands", () => {
       28,
       expect.any(AbortSignal),
     );
+  });
+
+  it("shows weighted prior-plan outcomes without changing planning", async () => {
+    apiMocks.getPlanningOutcomes.mockResolvedValue(
+      planningOutcomes({
+        plansConsidered: 4,
+        plannedTaskCount: 10,
+        completedTaskCount: 7,
+        plannedMinutes: 300,
+        completedMinutes: 210,
+        additionalPlanRevisionCount: 2,
+        completionTasksRateBasisPoints: 7_000,
+        completionMinutesRateBasisPoints: 7_000,
+      }),
+    );
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByRole("heading", { name: "Planning outcomes" })).toBeVisible();
+    expect(screen.getByText(/current final revision for 4 prior plan days/i)).toBeVisible();
+    expect(screen.getByText("70% time · 70% tasks")).toBeVisible();
+    expect(screen.getByText("3h 30m of 5h · 7 of 10 tasks")).toBeVisible();
+    expect(screen.getByText(/2 additional plan revisions after initial generation/i)).toBeVisible();
+    expect(apiMocks.getPlanningOutcomes).toHaveBeenCalledWith(
+      workspace.id,
+      todayKey(),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("recovers planning outcomes only after explicit retry", async () => {
+    const user = userEvent.setup();
+    apiMocks.getPlanningOutcomes
+      .mockRejectedValueOnce(new Error("outcomes failed"))
+      .mockResolvedValueOnce(planningOutcomes({ plansConsidered: 1 }));
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText("outcomes failed")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Retry outcomes" }));
+    expect(await screen.findByText(/1 of 3 prior plan days is available/i)).toBeVisible();
+    expect(screen.getByText(/Rates appear after 2 more days/i)).toBeVisible();
+    expect(apiMocks.getPlanningOutcomes).toHaveBeenCalledTimes(2);
   });
 
   it("withholds Plan Fit outcome rates until three comparable uses settle", async () => {
@@ -1443,6 +1506,7 @@ describe("Today commands", () => {
     expect(await screen.findByText("Listen to a podcast")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("replaced");
     expect(apiMocks.listDailyPlanFitUsageOutcomes).toHaveBeenCalledTimes(3);
+    expect(apiMocks.getPlanningOutcomes).toHaveBeenCalledTimes(1);
   });
 
   it("reuses the same idempotency key and timestamp after an ambiguous failure", async () => {

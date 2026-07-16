@@ -90,6 +90,7 @@ describe("createProductServices", () => {
       "getDailyPlanFitEffectiveness",
       "getDailyPlanFitInsight",
       "getNotificationProfile",
+      "getPlanningOutcomes",
       "getRoutine",
       "getRoutineDurationInsight",
       "getRoutineSelectionPreferenceState",

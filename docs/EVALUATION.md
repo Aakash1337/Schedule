@@ -361,6 +361,16 @@ render, and a later revision is disclosed and excluded from comparison. These ch
 contract, not that its thresholds or suggestions improve completion or wellbeing for a particular
 user.
 
+### Planning-outcomes evidence
+
+The general planning-outcomes read has domain, application, API, client, and Today component oracles.
+They require exactly the 30 local dates before the selected date, one authoritative current head per
+date, weighted task and scheduled-minute totals, current completed-state projection, half-up basis
+points, explicit zero-denominator handling, and an additional-revision count. Invalid dates,
+cross-workspace plans, duplicate dates, inconsistent totals, retry, and the three-plan display gate
+are covered. The implementation reuses an existing bounded repository projection and adds no schema,
+telemetry, or planner input; it is not evidence of causal improvement or a planner-version comparison.
+
 ### Daily-plan alternative evidence
 
 Alternative comparison has independent domain, application, persistence, transport, component, and

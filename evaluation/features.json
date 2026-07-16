@@ -536,7 +536,7 @@
             "canonicalizes uppercase dependency UUID params and bodies before dispatch",
             "canonicalizes mixed-case self dependencies before domain validation",
             "maps dependency self-reference, cycle, and missing-item errors",
-            "redacts and code-only logs corrupt planning work-item graphs"
+            "redacts and code-only logs corrupt planning projections"
           ]
         },
         {
@@ -1841,7 +1841,7 @@
           "file": "apps/api/src/product-routes.test.ts",
           "command": "unit",
           "anchors": [
-            "serves and records exact-key Daily Plan Fit guidance for an explicit local date",
+            "serves planning outcomes and exact-key Daily Plan Fit guidance for one local date",
             "validates Plan Fit payloads and maps stale evidence to conflict",
             "generates and retrieves an exact plan revision without exposing its input snapshot"
           ]
@@ -1894,6 +1894,70 @@
             "resolved unrevised uses must expose weighted target-fill and completion rates",
             "a later current revision must remain visible but cannot enter descriptive rates",
             "retries, outcome reads, activity, and revision must not duplicate the immutable use event"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/planning-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": ["derives, prefills, and explicitly restores a Daily Plan Fit suggestion"]
+        }
+      ]
+    },
+    {
+      "id": "planning-outcomes-summary",
+      "status": "implemented",
+      "risk": "normal",
+      "contract": {
+        "file": "docs/PLANNER.md",
+        "anchor": "## Planning outcomes"
+      },
+      "limitations": [
+        "The fixed prior-30-day summary uses authoritative current heads and scheduled rather than stopwatch duration; its revision count means only additional revisions beyond each initial plan.",
+        "The descriptive aggregate may span planner versions and is not telemetry, causal comparison, planner input, model input, or automatic adaptation."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/planning-outcomes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns an explicit empty prior-30-day window",
+            "uses weighted current-head task and minute totals",
+            "rejects duplicate, cross-workspace, out-of-window, or inconsistent plans"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/get-planning-outcomes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "loads one fixed prior-30-day current-head window",
+            "rejects invalid dates before opening a transaction and missing workspaces inside it"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "serves planning outcomes and exact-key Daily Plan Fit guidance for one local date",
+            "validates Plan Fit payloads and maps stale evidence to conflict"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/api.test.ts",
+          "command": "unit",
+          "anchors": ["retrieves planning outcomes for the dates before one local date"]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/TodayView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "shows weighted prior-plan outcomes without changing planning",
+            "recovers planning outcomes only after explicit retry"
           ]
         },
         {

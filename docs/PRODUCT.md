@@ -582,6 +582,8 @@ Local evaluation should support replaying historical days against a new algorith
 Current executable evidence, coverage floors, planner contract metrics, and known evaluation gaps are
 maintained in [EVALUATION.md](./EVALUATION.md). Feature evidence is CI-gated; production outcome
 metrics remain non-gating until real local usage provides a defined denominator and sufficient sample.
+The implemented Today summary is narrower: it reports weighted planned/completed scheduled workload
+and additional revisions over the prior 30 current plan heads, without telemetry or adaptation.
 
 Separately, the local worker has an opt-in loopback operational surface for liveness, database
 readiness, outbox/reminder queue age and state, and fixed-cardinality failure counters. It contains
@@ -645,6 +647,8 @@ Success is not simply "more tasks completed." Useful measures include realistic 
   pending, resolved, and not-evaluable outcome history, separate later-revision disclosure, and
   descriptive target-fill and plan-completion rates that exclude later revisions and stay hidden
   until three comparable uses settle
+- Implemented: a general read-only prior-30-day planning-outcomes summary using final current heads,
+  weighted task/time completion totals, and a transparent additional-revision count
 - Implemented: explicit append-only **More often**, **Less often**, and resettable routine ranking
   preferences for future plans, with bounded visible score contribution and no current-plan mutation
 - Deferred: inferred cadence, day/time, energy, preference, and category-balance signals

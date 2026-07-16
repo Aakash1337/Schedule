@@ -85,8 +85,10 @@ not authorize these product routes.
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissal-resets`          | Restore one exact insight (`200` or `409`)             |
 | `GET`    | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight?forDate={YYYY-MM-DD}`                     | Derive read-only joint target guidance                 |
 | `GET`    | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/usages?limit=5`                           | List bounded explicit-use outcomes                     |
+| `GET`    | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/effectiveness?limit=28`                   | Summarize bounded explicit-use outcomes                |
 | `POST`   | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/dismissals`                               | Dismiss one exact target suggestion                    |
 | `POST`   | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/dismissal-resets`                         | Restore one exact target suggestion                    |
+| `GET`    | `/v1/workspaces/{workspaceId}/planning-outcomes?forDate={YYYY-MM-DD}`                          | Summarize the prior 30 current plan heads              |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | List stable, cursor-paginated history (`200`)          |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | Idempotently record activity (`200`)                   |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans`                                                           | Create revision 1 or retry an exact revision           |
@@ -422,6 +424,13 @@ completed totals divided by scheduled totals. Rates are half-up integer basis po
 without an eligible denominator. Pending, not-evaluable, and later-revised outcomes remain counted but
 are excluded from every rate. The summary is descriptive current-head reporting, not a causal effect,
 improvement score, planner input, learned policy, or model signal.
+
+`GET .../planning-outcomes` requires one real Gregorian `forDate` and summarizes the preceding 30
+local dates. It uses at most one authoritative current head per date and returns the window bounds,
+plan-day count, weighted planned/completed task and scheduled-minute totals, additional revisions
+beyond revision 1, and half-up completion rates in integer basis points. Rates are `null` when their
+planned denominator is zero. The route is read-only and does not write telemetry, compare planner
+versions, infer causality, or influence planning or model input.
 
 Routine activity history is ordered by newest ingestion first and accepts `limit` from 1–200 (default 50) plus an opaque, integrity-protected `cursor`. The cursor is bound to its workspace and routine. The first page captures a high-water mark, so later appends do not shift subsequent pages. A non-null `page.nextCursor` retrieves the next page. Local cursor signing keys are process-bound, so clients should restart pagination after an API restart.
 

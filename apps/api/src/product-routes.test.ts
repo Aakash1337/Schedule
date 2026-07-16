@@ -33,6 +33,7 @@ import {
   type DailyPlanFitInsight,
   type DailyPlanFitInsightFeedback,
   type DailyPlanFitUsageOutcome,
+  type PlanningOutcomes,
   type RoutineDurationInsight,
   type RoutineDurationInsightFeedback,
   type WorkItemDependency,
@@ -195,6 +196,19 @@ const planFitEffectiveness = {
   completionMinutesRateBasisPoints: 6_667,
   completionTasksRateBasisPoints: 5_000,
 } satisfies DailyPlanFitEffectiveness;
+const planningOutcomes = {
+  forDate: localDate("2026-07-15"),
+  windowStartedOn: localDate("2026-06-15"),
+  windowEndedOn: localDate("2026-07-14"),
+  plansConsidered: 4,
+  plannedTaskCount: 10,
+  completedTaskCount: 7,
+  plannedMinutes: 300,
+  completedMinutes: 210,
+  additionalPlanRevisionCount: 2,
+  completionTasksRateBasisPoints: 7_000,
+  completionMinutesRateBasisPoints: 7_000,
+} satisfies PlanningOutcomes;
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -421,6 +435,7 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
     getDailyPlanFitInsight: async () => planFitInsight,
     listDailyPlanFitUsageOutcomes: async () => [planFitUsageOutcome],
     getDailyPlanFitEffectiveness: async () => planFitEffectiveness,
+    getPlanningOutcomes: async () => planningOutcomes,
     resetDailyPlanFitInsightDismissal: async () => ({
       ...planFitFeedback,
       kind: "reset",
@@ -1530,7 +1545,7 @@ describe("local product API", () => {
     });
   });
 
-  it("serves and records exact-key Daily Plan Fit guidance for an explicit local date", async () => {
+  it("serves planning outcomes and exact-key Daily Plan Fit guidance for one local date", async () => {
     const commands: unknown[] = [];
     const app = await appWith(
       createHarness({
@@ -1545,6 +1560,10 @@ describe("local product API", () => {
         getDailyPlanFitEffectiveness: async (query) => {
           commands.push(query);
           return planFitEffectiveness;
+        },
+        getPlanningOutcomes: async (query) => {
+          commands.push(query);
+          return planningOutcomes;
         },
         dismissDailyPlanFitInsight: async (command) => {
           commands.push(command);
@@ -1568,6 +1587,10 @@ describe("local product API", () => {
     const effectiveness = await app.inject({
       method: "GET",
       url: `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight/effectiveness`,
+    });
+    const outcomes = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/planning-outcomes?forDate=2026-07-15`,
     });
     const dismiss = await app.inject({
       method: "POST",
@@ -1602,12 +1625,15 @@ describe("local product API", () => {
     });
     expect(effectiveness.statusCode).toBe(200);
     expect(effectiveness.json()).toEqual(planFitEffectiveness);
+    expect(outcomes.statusCode).toBe(200);
+    expect(outcomes.json()).toEqual(planningOutcomes);
     expect(dismiss.statusCode).toBe(200);
     expect(reset.statusCode).toBe(200);
     expect(commands).toEqual([
       { workspaceId: workspace.id, forDate: localDate("2026-07-15") },
       { workspaceId: workspace.id, limit: 3 },
       { workspaceId: workspace.id, limit: 28 },
+      { workspaceId: workspace.id, forDate: localDate("2026-07-15") },
       {
         workspaceId: workspace.id,
         forDate: localDate("2026-07-15"),
@@ -1641,6 +1667,10 @@ describe("local product API", () => {
       method: "GET",
       url: `${path}/effectiveness?limit=29`,
     });
+    const invalidPlanningOutcomesDate = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/planning-outcomes?forDate=2026-02-30`,
+    });
     const missingHeader = await app.inject({
       method: "POST",
       url: `${path}/dismissals`,
@@ -1661,6 +1691,7 @@ describe("local product API", () => {
 
     expect(invalidDate.statusCode).toBe(400);
     expect(invalidEffectivenessLimit.statusCode).toBe(400);
+    expect(invalidPlanningOutcomesDate.statusCode).toBe(400);
     expect(missingHeader.statusCode).toBe(400);
     expect(unknownField.statusCode).toBe(400);
     expect(stale.statusCode).toBe(409);
@@ -3386,7 +3417,7 @@ describe("local product API", () => {
     expect(response.body).not.toContain("password");
   });
 
-  it("redacts and code-only logs corrupt planning work-item graphs", async () => {
+  it("redacts and code-only logs corrupt planning projections", async () => {
     const logLines: string[] = [];
     const app = await buildApp({
       logger: {
@@ -3404,34 +3435,47 @@ describe("local product API", () => {
             "private graph row contents must never leave the server",
           );
         },
+        getPlanningOutcomes: async () => {
+          throw new DomainError(
+            "planning.outcomes_plan_total_mismatch",
+            "private plan row contents must never leave the server",
+          );
+        },
       }).services,
     });
     apps.push(app);
 
-    const response = await app.inject({
-      method: "GET",
-      url: `/v1/workspaces/${workspaceUuid}/work-item-dependencies`,
-    });
+    const responses = await Promise.all([
+      app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${workspaceUuid}/work-item-dependencies`,
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${workspaceUuid}/planning-outcomes?forDate=2026-07-15`,
+      }),
+    ]);
     const logRecords = logLines.map(
       (line) => JSON.parse(line) as Readonly<Record<string, unknown>>,
     );
-    const invariantLogs = logRecords.filter(
-      (record) => record.code === "planning.work_item_graph_corrupt",
-    );
+    const invariantLogs = logRecords.filter((record) => record.msg === "planning invariant failed");
 
-    expect(response.statusCode).toBe(500);
-    expect(response.json().error).toEqual({
-      code: "internal.unexpected_error",
-      message: "An unexpected error occurred.",
-    });
-    expect(response.body).not.toContain("private graph row contents");
-    expect(invariantLogs).toHaveLength(1);
-    expect(invariantLogs[0]).toMatchObject({
-      level: 50,
-      code: "planning.work_item_graph_corrupt",
-      msg: "planning invariant failed",
-    });
-    expect(invariantLogs[0]).not.toHaveProperty("err");
-    expect(logLines.join("\n")).not.toContain("private graph row contents");
+    for (const response of responses) {
+      expect(response.statusCode).toBe(500);
+      expect(response.json().error).toEqual({
+        code: "internal.unexpected_error",
+        message: "An unexpected error occurred.",
+      });
+      expect(response.body).not.toContain("private");
+    }
+    expect(invariantLogs.map((record) => record.code).sort()).toEqual([
+      "planning.outcomes_plan_total_mismatch",
+      "planning.work_item_graph_corrupt",
+    ]);
+    for (const record of invariantLogs) {
+      expect(record).toMatchObject({ level: 50, msg: "planning invariant failed" });
+      expect(record).not.toHaveProperty("err");
+    }
+    expect(logLines.join("\n")).not.toContain("private");
   });
 });

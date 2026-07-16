@@ -35,6 +35,7 @@ export * from "./get-daily-plan.js";
 export * from "./get-current-daily-plan.js";
 export * from "./get-daily-plan-fit-insight.js";
 export * from "./get-daily-plan-fit-effectiveness.js";
+export * from "./get-planning-outcomes.js";
 export * from "./list-daily-plan-fit-usage-outcomes.js";
 export {
   DismissDailyPlanFitInsight,

@@ -18,6 +18,7 @@ export * from "./routine-duration-insight-feedback.js";
 export * from "./routine-planning-feedback.js";
 export * from "./routine-selection-preference-feedback.js";
 export * from "./plan-regeneration.js";
+export * from "./planning-outcomes.js";
 export * from "./plan-item-activity.js";
 export * from "./schedule-block.js";
 export * from "./structured-tags.js";

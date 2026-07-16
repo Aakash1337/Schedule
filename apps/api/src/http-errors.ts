@@ -164,7 +164,10 @@ function isInternalIntegrationFailure(error: DomainError): boolean {
 }
 
 function isInternalPlanningFailure(error: DomainError): boolean {
-  return INTERNAL_PLANNING_FAILURES.has(error.code);
+  return (
+    INTERNAL_PLANNING_FAILURES.has(error.code) ||
+    (error.code.startsWith("planning.outcomes_") && error.code !== "planning.outcomes_date_invalid")
+  );
 }
 
 function isInternalNaturalLanguageFailure(error: DomainError): boolean {

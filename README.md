@@ -67,6 +67,10 @@ not-evaluable outcomes, with later revisions disclosed separately. A separate wo
 reports weighted target-fill and plan-completion rates only for settled, unrevised uses. Both views
 are descriptive and never feed planner scoring, model prompts, or automatic adaptation.
 
+A separate compact Today summary reports weighted completed-versus-planned scheduled time and tasks
+across the prior 30 current plan heads, plus additional revisions. The read-only local view adds no
+telemetry table, schema change, or adaptive feedback loop.
+
 The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface. Work items support arbitrary-depth, acyclic same-workspace subtasks plus directed prerequisites. Parent and child statuses remain independent, only leaf work is eligible for Today, and a dependent is newly selectable only when every direct prerequisite is `done`.
 
 The Work view can optionally ask the same loopback-only Ollama/Gemma boundary to prepare one backlog

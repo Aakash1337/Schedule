@@ -435,6 +435,21 @@ export interface DailyPlanFitEffectiveness {
   readonly completionTasksRateBasisPoints: number | null;
 }
 
+/** Current-head completion totals for the 30 dates before the selected local date. */
+export interface PlanningOutcomes {
+  readonly forDate: string;
+  readonly windowStartedOn: string;
+  readonly windowEndedOn: string;
+  readonly plansConsidered: number;
+  readonly plannedTaskCount: number;
+  readonly completedTaskCount: number;
+  readonly plannedMinutes: number;
+  readonly completedMinutes: number;
+  readonly additionalPlanRevisionCount: number;
+  readonly completionTasksRateBasisPoints: number | null;
+  readonly completionMinutesRateBasisPoints: number | null;
+}
+
 export type SchedulingAdviceUnavailableReason =
   | "disabled"
   | "busy"

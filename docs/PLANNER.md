@@ -272,6 +272,25 @@ No language model, Hermes adapter, or provider participates in the calculation, 
 outcome projection. Automatic application, generation, target changes, and outcome-driven adaptation
 remain outside this boundary.
 
+## Planning outcomes
+
+Planning outcomes is a read-only workspace summary for an explicit local `forDate`. It reuses the
+authoritative current-plan projection for each of the preceding 30 local dates and counts at most one
+final head per date. Every item contributes its scheduled minutes and one task to the planned totals;
+only items whose current activity state is `completed` contribute to completed totals. Empty plan
+heads still count as plan days but add no workload.
+
+The two completion rates divide weighted completed totals by weighted planned totals and use half-up
+integer basis points. A rate is unavailable when its denominator is zero; Today withholds both rates
+until three prior plan days exist. The summary also adds `requestRevision - 1` across the current
+heads and labels the result **additional plan revisions**. That count is not a replacement-frequency
+or causality claim.
+
+The read writes no telemetry, activity, plan, or model state and never enters planner scoring,
+guidance, prompts, or automatic adaptation. It uses scheduled rather than stopwatch duration and may
+span planner versions, so it is a compact description of current local history—not an algorithm
+comparison or claim that the planner improved an outcome.
+
 ## Duration-calibration boundary
 
 Routine-duration calibration is a read-only interpretation of activity history, not another planner

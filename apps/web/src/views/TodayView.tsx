@@ -52,6 +52,7 @@ import type {
   PlanItem,
   PlanItemActivityState,
   PlanSettings,
+  PlanningOutcomes,
   PlanningFitPreference,
   RoutinePlanningFeedbackSuppressionKind,
   ScheduleBlock,
@@ -209,6 +210,82 @@ function DailyPlanFitUsageHistory({
 
 function formatBasisPoints(value: number | null): string {
   return value === null ? "Not available" : `${String(value / 100)}%`;
+}
+
+const minimumPlanningOutcomePlans = 3;
+
+interface PlanningOutcomesSummaryProps {
+  readonly outcomes: PlanningOutcomes | null;
+  readonly loading: boolean;
+  readonly error: string | null;
+  readonly onRetry: () => void;
+}
+
+function PlanningOutcomesSummary({
+  outcomes,
+  loading,
+  error,
+  onRetry,
+}: PlanningOutcomesSummaryProps) {
+  const remaining = Math.max(0, minimumPlanningOutcomePlans - (outcomes?.plansConsidered ?? 0));
+  return (
+    <section className="today-plan-fit" aria-labelledby="today-planning-outcomes-heading">
+      <div className="today-plan-fit-history-heading">
+        <h2 id="today-planning-outcomes-heading">Planning outcomes</h2>
+        <span>Prior 30 days · read-only</span>
+      </div>
+      {loading && outcomes === null ? (
+        <p role="status" aria-live="polite">
+          Summarizing prior plans…
+        </p>
+      ) : error !== null ? (
+        <ErrorNotice
+          message={error}
+          action={
+            <Button type="button" variant="quiet" onClick={onRetry}>
+              Retry outcomes
+            </Button>
+          }
+        />
+      ) : outcomes === null || outcomes.plansConsidered === 0 ? (
+        <p>No prior plan is available to summarize yet.</p>
+      ) : outcomes.plansConsidered < minimumPlanningOutcomePlans ? (
+        <p>
+          {outcomes.plansConsidered} of {minimumPlanningOutcomePlans} prior plan days{" "}
+          {outcomes.plansConsidered === 1 ? "is" : "are"} available. Rates appear after {remaining}{" "}
+          more {remaining === 1 ? "day" : "days"}.
+        </p>
+      ) : outcomes.plannedTaskCount === 0 ? (
+        <p>{outcomes.plansConsidered} prior plan days contained no planned items.</p>
+      ) : (
+        <>
+          <p>Based on the current final revision for {outcomes.plansConsidered} prior plan days.</p>
+          <dl className="today-plan-fit-effectiveness-rates">
+            <div>
+              <dt>Completed</dt>
+              <dd>
+                {formatBasisPoints(outcomes.completionMinutesRateBasisPoints)} time ·{" "}
+                {formatBasisPoints(outcomes.completionTasksRateBasisPoints)} tasks
+              </dd>
+            </div>
+            <div>
+              <dt>Totals</dt>
+              <dd>
+                {formatMinutes(outcomes.completedMinutes)} of{" "}
+                {formatMinutes(outcomes.plannedMinutes)} · {outcomes.completedTaskCount} of{" "}
+                {outcomes.plannedTaskCount} tasks
+              </dd>
+            </div>
+          </dl>
+          <p className="today-plan-fit-note">
+            {outcomes.additionalPlanRevisionCount} additional plan{" "}
+            {outcomes.additionalPlanRevisionCount === 1 ? "revision" : "revisions"} after initial{" "}
+            generation.
+          </p>
+        </>
+      )}
+    </section>
+  );
 }
 
 const minimumPlanFitEffectivenessSamples = 3;
@@ -1037,6 +1114,9 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     useState<DailyPlanFitEffectiveness | null>(null);
   const [planFitEffectivenessLoading, setPlanFitEffectivenessLoading] = useState(true);
   const [planFitEffectivenessError, setPlanFitEffectivenessError] = useState<string | null>(null);
+  const [planningOutcomes, setPlanningOutcomes] = useState<PlanningOutcomes | null>(null);
+  const [planningOutcomesLoading, setPlanningOutcomesLoading] = useState(true);
+  const [planningOutcomesError, setPlanningOutcomesError] = useState<string | null>(null);
   const [planFitFocusPending, setPlanFitFocusPending] = useState(false);
   const [planFitTargetFocusPending, setPlanFitTargetFocusPending] = useState(false);
   const [fitPreference, setFitPreference] = useState<PlanningFitPreference>("balanced");
@@ -1058,6 +1138,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
   const planFitControllerRef = useRef<AbortController | null>(null);
   const planFitHistoryControllerRef = useRef<AbortController | null>(null);
   const planFitEffectivenessControllerRef = useRef<AbortController | null>(null);
+  const planningOutcomesControllerRef = useRef<AbortController | null>(null);
   const planFitFeedbackControllerRef = useRef<AbortController | null>(null);
   const planFitFeedbackCommandsRef = useRef(new Map<string, string>());
   const planFitHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -1251,6 +1332,32 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     }
   }, [date, workspace.id]);
 
+  const loadPlanningOutcomes = useCallback(async () => {
+    planningOutcomesControllerRef.current?.abort();
+    const controller = new AbortController();
+    planningOutcomesControllerRef.current = controller;
+    const requestKey = planQueryKey(workspace.id, date);
+    const requestIsActive = () =>
+      !controller.signal.aborted &&
+      planningOutcomesControllerRef.current === controller &&
+      activeQueryKeyRef.current === requestKey;
+
+    setPlanningOutcomesLoading(true);
+    setPlanningOutcomesError(null);
+    try {
+      const summary = await api.getPlanningOutcomes(workspace.id, date, controller.signal);
+      if (requestIsActive()) setPlanningOutcomes(summary);
+    } catch (error) {
+      if (!requestIsActive() || isAbortError(error)) return;
+      setPlanningOutcomesError(messageForError(error));
+    } finally {
+      if (requestIsActive()) setPlanningOutcomesLoading(false);
+      if (planningOutcomesControllerRef.current === controller) {
+        planningOutcomesControllerRef.current = null;
+      }
+    }
+  }, [date, workspace.id]);
+
   const refreshPlanFitOutcomeEvidence = useCallback(async () => {
     await Promise.all([loadPlanFitUsageOutcomes(), loadPlanFitEffectiveness()]);
   }, [loadPlanFitEffectiveness, loadPlanFitUsageOutcomes]);
@@ -1334,6 +1441,7 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     planFitControllerRef.current?.abort();
     planFitHistoryControllerRef.current?.abort();
     planFitEffectivenessControllerRef.current?.abort();
+    planningOutcomesControllerRef.current?.abort();
     planFitFeedbackControllerRef.current?.abort();
     setPlanFitInsight(null);
     setPlanFitLoadError(null);
@@ -1347,18 +1455,23 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
     setPlanFitEffectiveness(null);
     setPlanFitEffectivenessError(null);
     setPlanFitEffectivenessLoading(true);
+    setPlanningOutcomes(null);
+    setPlanningOutcomesError(null);
+    setPlanningOutcomesLoading(true);
     setPlanFitFocusPending(false);
     setPlanFitTargetFocusPending(false);
     planFitFeedbackCommandsRef.current.clear();
     void loadPlanFitInsight();
     void refreshPlanFitOutcomeEvidence();
+    void loadPlanningOutcomes();
     return () => {
       planFitControllerRef.current?.abort();
       planFitHistoryControllerRef.current?.abort();
       planFitEffectivenessControllerRef.current?.abort();
+      planningOutcomesControllerRef.current?.abort();
       planFitFeedbackControllerRef.current?.abort();
     };
-  }, [loadPlanFitInsight, refreshPlanFitOutcomeEvidence]);
+  }, [loadPlanFitInsight, loadPlanningOutcomes, refreshPlanFitOutcomeEvidence]);
 
   useEffect(() => {
     if (!planFitFocusPending || planFitLoading || planFitInsight === null) return;
@@ -2278,6 +2391,15 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
             }
           />
         </div>
+      ) : null}
+
+      {!loading && loadError === null ? (
+        <PlanningOutcomesSummary
+          outcomes={planningOutcomes}
+          loading={planningOutcomesLoading}
+          error={planningOutcomesError}
+          onRetry={() => void loadPlanningOutcomes()}
+        />
       ) : null}
 
       {!loading && loadError === null && plan === null ? (
