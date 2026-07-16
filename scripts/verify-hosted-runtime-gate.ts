@@ -186,7 +186,11 @@ try {
   };
   for (const request of [
     { method: "GET", route: "/v1/auth/session" },
-    { method: "POST", route: "/v1/auth/login", body: { proof: "unreachable-provider-proof" } },
+    { method: "GET", route: "/v1/auth/login" },
+    {
+      method: "GET",
+      route: `/v1/auth/callback?code=unreachable-code&state=${"S".repeat(43)}`,
+    },
     { method: "POST", route: "/v1/auth/logout", body: {} },
     {
       method: "POST",

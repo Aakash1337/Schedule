@@ -1,8 +1,10 @@
 import type {
   BrowserSessionPrincipal,
+  ConsumeHostedLoginTransaction,
   FindOrProvisionHostedUser,
   IssueBrowserSession,
   RevokeBrowserSession,
+  StartHostedLoginTransaction,
 } from "@schedule/application";
 import { MAX_EXTERNAL_IDENTITY_KEY_BYTES } from "@schedule/domain";
 import type { FastifyInstance, FastifyReply, FastifyRequest, onSendHookHandler } from "fastify";
@@ -10,18 +12,27 @@ import type { FastifyInstance, FastifyReply, FastifyRequest, onSendHookHandler }
 import type { HostedRequestAuthenticator, HostedRequestCsrfGuard } from "./hosted-auth-boundary.js";
 import {
   clearHostedCsrfCookie,
+  clearHostedLoginBindingCookie,
   clearHostedSessionCookie,
+  hostedLoginBindingFromRequest,
   hostedSessionTokenFromRequest,
   issueHostedCsrfProtection,
+  serializeHostedLoginBindingCookie,
   serializeHostedSessionCookie,
 } from "./hosted-browser-session.js";
+import type { OidcAuthorizationRequestBuilder } from "./oidc-authorization-request.js";
+import type { OidcAuthorizationCodeTokenExchanger } from "./oidc-authorization-code-token-exchange.js";
+import type { OidcIdTokenVerificationInput } from "./oidc-id-token-verifier.js";
 
 export const HOSTED_LOGIN_ROUTE = "/v1/auth/login";
+export const HOSTED_CALLBACK_ROUTE = "/v1/auth/callback";
 export const HOSTED_SESSION_ROUTE = "/v1/auth/session";
 export const HOSTED_LOGOUT_ROUTE = "/v1/auth/logout";
 
-const MAX_LOGIN_BODY_BYTES = 16 * 1_024;
-const MAX_IDENTITY_PROOF_BYTES = 12 * 1_024;
+const MAX_CALLBACK_URL_BYTES = 4 * 1_024;
+const OPAQUE_VALUE_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+const AUTHORIZATION_CODE_PATTERN = /^[\x21-\x7e]{1,2048}$/u;
+const LOCAL_RETURN_PATH_PATTERN = /^\/(?!\/)[^\\#]{0,2047}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 const enforcePrivateCaching: onSendHookHandler = (_request, reply, payload, done) => {
@@ -36,9 +47,20 @@ export interface VerifiedHostedIdentity {
   readonly subject: string;
 }
 
-export interface HostedIdentityProofVerifier {
-  /** A provider adapter must validate the proof completely before returning an identity. */
-  verify(proof: string): Promise<VerifiedHostedIdentity | null>;
+export interface HostedOidcIdentityVerifier {
+  verify(input: OidcIdTokenVerificationInput): Promise<VerifiedHostedIdentity | null>;
+}
+
+interface HostedLoginTransactionStarter {
+  execute(
+    input: Parameters<StartHostedLoginTransaction["execute"]>[0],
+  ): ReturnType<StartHostedLoginTransaction["execute"]>;
+}
+
+interface HostedLoginTransactionConsumer {
+  execute(
+    input: Parameters<ConsumeHostedLoginTransaction["execute"]>[0],
+  ): ReturnType<ConsumeHostedLoginTransaction["execute"]>;
 }
 
 interface HostedIdentityProvisioner {
@@ -63,13 +85,25 @@ interface HostedBrowserSessionRevoker {
 export interface HostedAuthLifecycleDependencies {
   readonly authenticator: HostedRequestAuthenticator;
   readonly csrfGuard: HostedRequestCsrfGuard;
-  readonly identityVerifier: HostedIdentityProofVerifier;
+  readonly loginTransactionStarter: HostedLoginTransactionStarter;
+  readonly loginTransactionConsumer: HostedLoginTransactionConsumer;
+  readonly authorizationRequestBuilder: OidcAuthorizationRequestBuilder;
+  readonly tokenExchanger: OidcAuthorizationCodeTokenExchanger;
+  readonly identityVerifier: HostedOidcIdentityVerifier;
   readonly identityProvisioner: HostedIdentityProvisioner;
   readonly sessionIssuer: HostedBrowserSessionIssuer;
   readonly sessionRevoker: HostedBrowserSessionRevoker;
   readonly sessionPolicy: {
     readonly idleTimeoutSeconds: number;
     readonly absoluteTtlSeconds: number;
+  };
+  readonly loginPolicy: {
+    readonly hostedOrigin: string;
+    readonly issuer: string;
+    readonly clientId: string;
+    readonly redirectUri: string;
+    readonly returnToPath: string;
+    readonly ttlSeconds: number;
   };
 }
 
@@ -101,15 +135,83 @@ function publicFailure(
   };
 }
 
-function loginProof(body: unknown): string | null {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
-  const keys = Object.keys(body);
-  if (keys.length !== 1 || keys[0] !== "proof") return null;
-  const proof = (body as { readonly proof?: unknown }).proof;
-  return typeof proof === "string" &&
-    proof.length > 0 &&
-    Buffer.byteLength(proof, "utf8") <= MAX_IDENTITY_PROOF_BYTES
-    ? proof
+function containsAsciiControl(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function validLocalReturnPath(value: string): boolean {
+  return LOCAL_RETURN_PATH_PATTERN.test(value) && !containsAsciiControl(value);
+}
+
+function snapshotLoginPolicy(value: HostedAuthLifecycleDependencies["loginPolicy"]) {
+  const policy = Object.freeze({ ...value });
+  let origin: URL;
+  try {
+    origin = new URL(policy.hostedOrigin);
+  } catch {
+    throw new TypeError("The hosted OIDC login policy is invalid.");
+  }
+  if (
+    origin.protocol !== "https:" ||
+    origin.origin !== policy.hostedOrigin ||
+    policy.redirectUri !== `${policy.hostedOrigin}${HOSTED_CALLBACK_ROUTE}` ||
+    typeof policy.returnToPath !== "string" ||
+    !validLocalReturnPath(policy.returnToPath) ||
+    !Number.isSafeInteger(policy.ttlSeconds) ||
+    policy.ttlSeconds < 60 ||
+    policy.ttlSeconds > 900
+  ) {
+    throw new TypeError("The hosted OIDC login policy is invalid.");
+  }
+  return policy;
+}
+
+function authorizationRedirect(value: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return null;
+  }
+  return parsed.protocol === "https:" &&
+    parsed.username === "" &&
+    parsed.password === "" &&
+    parsed.hash === ""
+    ? value
+    : null;
+}
+
+function callbackCredentials(request: FastifyRequest): {
+  readonly code: string;
+  readonly state: string;
+} | null {
+  const rawUrl = request.raw.url;
+  if (typeof rawUrl !== "string" || Buffer.byteLength(rawUrl, "utf8") > MAX_CALLBACK_URL_BYTES) {
+    return null;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl, "https://callback.invalid");
+  } catch {
+    return null;
+  }
+  const entries = [...parsed.searchParams];
+  if (
+    parsed.pathname !== HOSTED_CALLBACK_ROUTE ||
+    entries.length !== 2 ||
+    parsed.searchParams.getAll("code").length !== 1 ||
+    parsed.searchParams.getAll("state").length !== 1
+  ) {
+    return null;
+  }
+  const code = parsed.searchParams.get("code") ?? "";
+  const state = parsed.searchParams.get("state") ?? "";
+  return AUTHORIZATION_CODE_PATTERN.test(code) && OPAQUE_VALUE_PATTERN.test(state)
+    ? Object.freeze({ code, state })
     : null;
 }
 
@@ -163,7 +265,8 @@ function activeProvisionedUser(
 
 function setAuthenticationCookies(reply: FastifyReply, sessionCookie: string): void {
   const csrf = issueHostedCsrfProtection();
-  reply.header("set-cookie", [sessionCookie, csrf.setCookie]);
+  reply.removeHeader("set-cookie");
+  reply.header("set-cookie", [sessionCookie, csrf.setCookie, clearHostedLoginBindingCookie()]);
 }
 
 /**
@@ -175,6 +278,7 @@ export async function registerHostedAuthLifecycle(
   dependencies: HostedAuthLifecycleDependencies,
 ): Promise<void> {
   const sessionPolicy = Object.freeze({ ...dependencies.sessionPolicy });
+  const loginPolicy = snapshotLoginPolicy(dependencies.loginPolicy);
 
   await app.register(async (hostedAuth) => {
     hostedAuth.addHook("onSend", enforcePrivateCaching);
@@ -207,50 +311,98 @@ export async function registerHostedAuthLifecycle(
       }
     });
 
-    hostedAuth.post(
-      HOSTED_LOGIN_ROUTE,
-      { bodyLimit: MAX_LOGIN_BODY_BYTES, onRequest: verifyCsrf },
-      async (request, reply) => {
-        const proof = loginProof(request.body);
-        if (proof === null) return reply.code(401).send(publicFailure(request, 401));
+    hostedAuth.get(HOSTED_LOGIN_ROUTE, async (request, reply) => {
+      reply.header("referrer-policy", "no-referrer");
+      if (request.raw.url !== HOSTED_LOGIN_ROUTE) {
+        return reply.code(401).send(publicFailure(request, 401));
+      }
+      try {
+        const transaction = await dependencies.loginTransactionStarter.execute({
+          issuer: loginPolicy.issuer,
+          clientId: loginPolicy.clientId,
+          redirectUri: loginPolicy.redirectUri,
+          returnToPath: loginPolicy.returnToPath,
+          ttlSeconds: loginPolicy.ttlSeconds,
+        });
+        const authorization = dependencies.authorizationRequestBuilder.build(transaction);
+        const redirect = authorizationRedirect(authorization.url);
+        if (redirect === null) throw new TypeError("The hosted authorization redirect is invalid.");
+        reply.header("set-cookie", serializeHostedLoginBindingCookie(transaction.browserBinding));
+        return reply.code(303).redirect(redirect);
+      } catch {
+        request.log.error("hosted OIDC authorization start failed internally");
+        return reply.code(503).send(publicFailure(request, 503));
+      }
+    });
 
-        let identity: VerifiedHostedIdentity | null;
-        try {
-          identity = await dependencies.identityVerifier.verify(proof);
-        } catch {
-          request.log.error("hosted identity proof verification failed internally");
+    hostedAuth.get(HOSTED_CALLBACK_ROUTE, async (request, reply) => {
+      reply.header("referrer-policy", "no-referrer");
+      reply.header("set-cookie", clearHostedLoginBindingCookie());
+      const credentials = callbackCredentials(request);
+      const browserBinding = hostedLoginBindingFromRequest(request);
+      if (credentials === null || browserBinding === null) {
+        return reply.code(401).send(publicFailure(request, 401));
+      }
+
+      try {
+        const transaction = await dependencies.loginTransactionConsumer.execute({
+          state: credentials.state,
+          browserBinding,
+        });
+        if (transaction === null) return reply.code(401).send(publicFailure(request, 401));
+        if (
+          transaction.issuer !== loginPolicy.issuer ||
+          transaction.clientId !== loginPolicy.clientId ||
+          transaction.redirectUri !== loginPolicy.redirectUri
+        ) {
+          request.log.error("hosted login transaction returned inconsistent provider binding");
           return reply.code(503).send(publicFailure(request, 503));
         }
+        const returnUrl = new URL(transaction.returnToPath, loginPolicy.hostedOrigin);
+        if (
+          returnUrl.origin !== loginPolicy.hostedOrigin ||
+          !validLocalReturnPath(transaction.returnToPath)
+        ) {
+          request.log.error("hosted login transaction returned an invalid local continuation");
+          return reply.code(503).send(publicFailure(request, 503));
+        }
+
+        const exchanged = await dependencies.tokenExchanger.exchange({
+          code: credentials.code,
+          transaction,
+        });
+        if (exchanged === null) return reply.code(401).send(publicFailure(request, 401));
+        const identity = await dependencies.identityVerifier.verify({
+          idToken: exchanged.idToken,
+          issuer: transaction.issuer,
+          clientId: transaction.clientId,
+          expectedNonce: transaction.expectedNonce,
+        });
         if (identity === null) return reply.code(401).send(publicFailure(request, 401));
-        if (!verifiedIdentityIsWellFormed(identity)) {
+        if (!verifiedIdentityIsWellFormed(identity) || identity.issuer !== transaction.issuer) {
           request.log.error("hosted identity verifier returned an invalid identity");
           return reply.code(503).send(publicFailure(request, 503));
         }
 
-        try {
-          const provisioned = await dependencies.identityProvisioner.execute(identity);
-          const userState = activeProvisionedUser(provisioned, identity);
-          if (userState === "disabled") {
-            return reply.code(401).send(publicFailure(request, 401));
-          }
-          if (userState === "invalid") {
-            request.log.error("hosted identity provisioner returned an invalid user");
-            return reply.code(503).send(publicFailure(request, 503));
-          }
-
-          const issued = await dependencies.sessionIssuer.execute({
-            userId: provisioned.user.id,
-            idleTimeoutSeconds: sessionPolicy.idleTimeoutSeconds,
-            absoluteTtlSeconds: sessionPolicy.absoluteTtlSeconds,
-          });
-          setAuthenticationCookies(reply, serializeHostedSessionCookie(issued.token));
-          return reply.code(204).send();
-        } catch {
-          request.log.error("hosted identity provisioning or session issuance failed internally");
+        const provisioned = await dependencies.identityProvisioner.execute(identity);
+        const userState = activeProvisionedUser(provisioned, identity);
+        if (userState === "disabled") return reply.code(401).send(publicFailure(request, 401));
+        if (userState === "invalid") {
+          request.log.error("hosted identity provisioner returned an invalid user");
           return reply.code(503).send(publicFailure(request, 503));
         }
-      },
-    );
+        const issued = await dependencies.sessionIssuer.execute({
+          userId: provisioned.user.id,
+          idleTimeoutSeconds: sessionPolicy.idleTimeoutSeconds,
+          absoluteTtlSeconds: sessionPolicy.absoluteTtlSeconds,
+        });
+        setAuthenticationCookies(reply, serializeHostedSessionCookie(issued.token));
+        return reply.code(303).redirect(returnUrl.toString());
+      } catch {
+        request.log.error("hosted OIDC callback failed internally");
+        return reply.code(503).send(publicFailure(request, 503));
+      }
+    });
 
     hostedAuth.post(HOSTED_LOGOUT_ROUTE, { onRequest: verifyCsrf }, async (request, reply) => {
       reply.header("set-cookie", [clearHostedSessionCookie(), clearHostedCsrfCookie()]);

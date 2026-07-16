@@ -94,9 +94,7 @@ describe("API infrastructure", () => {
           method,
           url,
           headers: browserHeaders,
-          ...(method === "GET" || method === "HEAD"
-            ? {}
-            : { payload: { proof: "unreachable-provider-proof" } }),
+          ...(method === "GET" || method === "HEAD" ? {} : { payload: {} }),
         });
         expect(response.statusCode, `${method} ${url}`).toBe(404);
       }

@@ -29,6 +29,7 @@
     "oidc-remote-jwks": { "command": "pnpm check", "ci": true },
     "oidc-provider-metadata": { "command": "pnpm check", "ci": true },
     "oidc-token-exchange": { "command": "pnpm check", "ci": true },
+    "hosted-oidc-lifecycle": { "command": "pnpm check", "ci": true },
     "hosted-runtime-gate": { "command": "pnpm verify:database", "ci": true },
     "hosted-mutation-authorization": { "command": "pnpm verify:database", "ci": true },
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
@@ -2494,7 +2495,7 @@
         "anchor": "## Dormant login transaction foundation"
       },
       "limitations": [
-        "This is a dormant, provider-neutral pre-authentication transaction foundation. The separate authorization-request, token-exchange, and verifier adapters are not runtime-composed with it; no callback, browser-binding cookie, enabling configuration, or route calls it.",
+        "A dormant tested lifecycle now composes transaction start/consume with the authorization-request, token-exchange, verifier, and browser-binding cookie ports. Production adapter construction, secret configuration, enabling configuration, and server registration remain absent.",
         "A future hosted deployment must source the HMAC pepper and AES-GCM key ring from a secret manager and pass the consumed expectedNonce into a verifier contract that cannot omit nonce validation."
       ],
       "evidence": [
@@ -2570,7 +2571,7 @@
         "anchor": "## Dormant OIDC ID-token verifier"
       },
       "limitations": [
-        "The verifier is dormant and has no provider-metadata/JWKS/token-exchange composition, authorization endpoint, callback, browser-binding cookie, runtime configuration, or production route composition.",
+        "The dormant callback invokes the verifier after one token exchange using the consumed issuer/client/nonce. Concrete provider-metadata/JWKS/verifier construction, runtime configuration, and production route composition remain absent.",
         "The separate discovery, token-exchange, and remote-JWKS adapters are composed only in tests. A future provider adapter must bind them to the exact configured issuer through a connection-safe transport; untrusted token headers never select a network location."
       ],
       "evidence": [
@@ -2613,7 +2614,7 @@
         "anchor": "## Dormant OIDC authorization-request builder"
       },
       "limitations": [
-        "The deterministic builder is dormant. It performs no discovery or network I/O and has no authorization-start route, browser-binding cookie serializer, redirect response, callback, token-exchange composition, provider key resolver, runtime configuration, or production composition.",
+        "The dormant login route invokes the deterministic builder after transaction creation and emits the separate browser-binding cookie. It still performs no discovery or network I/O, and concrete provider construction, provider key resolution, runtime configuration, and production composition remain absent.",
         "Separate trusted provider-metadata and token-exchange adapters now exist but are composed with the builder only in tests. Only bounded, non-reserved query parameters already present in its validated authorization endpoint are retained; request-time arbitrary provider parameters are not accepted."
       ],
       "evidence": [
@@ -2769,7 +2770,7 @@
         "anchor": "## Dormant OIDC authorization-code token exchange"
       },
       "limitations": [
-        "The strict exchanger is dormant and has no production DNS/IP/proxy/TLS transport, runtime client or secret configuration, authorization-start route, callback parser, browser-binding cookie, session issuance, account provisioning, or server composition.",
+        "The dormant callback invokes the strict exchanger after consuming state/browser binding and before verifier, provisioning, and session ports. Production DNS/IP/proxy/TLS transport, runtime client/secret configuration, concrete adapter construction, and server composition remain absent.",
         "Each consumed code is attempted at most once per invocation and is never retried after an ambiguous failure. The returned compact ID token remains untrusted; only the separately configured nonce-bound verifier may turn it into an issuer/subject identity. Access and refresh tokens are discarded."
       ],
       "evidence": [
@@ -2803,6 +2804,54 @@
           "anchors": [
             "feeds only validated frozen values into authorization, token, and JWKS boundaries"
           ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-oidc-lifecycle-composition",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Dormant authentication lifecycle contract"
+      },
+      "limitations": [
+        "The start/callback composition is tested but dormant: buildApp and server.ts do not register it, HOSTED_API_MODE remains disabled-only, and no production OIDC egress transport or concrete runtime adapter construction exists.",
+        "A consumed authorization code is attempted once and never retried. Public hosted routes, account management, synchronization, and the broader hosted product surface remain deferred."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-auth-lifecycle.test.ts",
+          "command": "unit",
+          "anchors": [
+            "starts one exact transaction and redirects with one hardened browser binding",
+            "consumes, exchanges, verifies, provisions, and redirects exactly once",
+            "rejects %s before consuming the transaction",
+            "maps a deterministic %s rejection to one generic 401 without session issuance",
+            "rejects an inconsistent consumed %s before code exchange",
+            "redacts an internal %s callback failure and clears the binding"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-browser-session.test.ts",
+          "command": "unit",
+          "anchors": ["round-trips one hardened OIDC login-binding cookie"]
         },
         {
           "level": "unit",
@@ -2906,7 +2955,7 @@
         "anchor": "# Dormant hosted request authorization seam"
       },
       "limitations": [
-        "The seam, cookie/CSRF transport, provider-neutral authentication lifecycle, and one transaction-coupled work-item-create registrar are not registered in buildApp: the disabled-only runtime gate cannot expose them, while concrete provider verification, enabling configuration, a broader public end-user product surface, and synchronization remain unimplemented.",
+        "The seam, cookie/CSRF/login-binding transport, OIDC authentication lifecycle, and one transaction-coupled work-item-create registrar are not registered in buildApp: the disabled-only runtime gate cannot expose them, while production OIDC adapter construction, enabling configuration, a broader public end-user product surface, and synchronization remain unimplemented.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [
@@ -2924,6 +2973,7 @@
           "command": "unit",
           "anchors": [
             "resolves exactly one bounded canonical session cookie without trusting spoofed headers",
+            "round-trips one hardened OIDC login-binding cookie",
             "serializes and clears a host-only server-expiring browser session",
             "accepts only the exact configured origin and matching double-submit proof",
             "issues independent script-readable host-only CSRF cookies and clears them exactly"
@@ -2949,12 +2999,13 @@
           "command": "unit",
           "anchors": [
             "reports an %s session without exposing identity",
-            "provisions an exact verified identity and issues only hardened browser cookies",
-            "rejects a provisioner binding with a %s",
-            "enforces the route body limit before provider or database work",
-            "rejects %s before credential or revocation work when CSRF fails",
+            "starts one exact transaction and redirects with one hardened browser binding",
+            "consumes, exchanges, verifies, provisions, and redirects exactly once",
+            "rejects %s before consuming the transaction",
+            "maps a deterministic %s rejection to one generic 401 without session issuance",
+            "rejects a provisioned identity with a mismatched %s",
             "revokes the exact presented session and clears both browser cookies",
-            "redacts internal %s failures"
+            "redacts an internal %s callback failure and clears the binding"
           ]
         },
         {

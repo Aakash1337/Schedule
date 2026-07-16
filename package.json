@@ -54,6 +54,7 @@
     "verify:oidc-remote-jwks": "pnpm build:packages && pnpm --filter @schedule/api exec vitest run src/oidc-remote-jwks-resolver.test.ts src/oidc-id-token-verifier.test.ts",
     "verify:oidc-provider-metadata": "pnpm build:packages && pnpm --filter @schedule/api exec vitest run src/oidc-bounded-json-fetch.test.ts src/oidc-provider-metadata.test.ts src/oidc-authorization-request.test.ts src/oidc-remote-jwks-resolver.test.ts",
     "verify:oidc-token-exchange": "pnpm build:packages && pnpm --filter @schedule/api exec vitest run src/oidc-authorization-code-token-exchange.test.ts src/oidc-bounded-json-fetch.test.ts src/oidc-provider-metadata.test.ts src/oidc-id-token-verifier.test.ts",
+    "verify:hosted-oidc-lifecycle": "pnpm build:packages && pnpm --filter @schedule/api exec vitest run src/hosted-auth-lifecycle.test.ts src/hosted-browser-session.test.ts src/oidc-authorization-request.test.ts src/oidc-authorization-code-token-exchange.test.ts src/oidc-id-token-verifier.test.ts",
     "verify:hosted-runtime-gate": "tsx scripts/verify-hosted-runtime-gate.ts",
     "verify:hosted-mutation-authorization": "tsx scripts/verify-hosted-mutation-authorization.ts",
     "verify:hosted-identity-migrations": "tsx scripts/verify-hosted-identity-migrations.ts",

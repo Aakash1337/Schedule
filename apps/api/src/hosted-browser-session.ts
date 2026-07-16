@@ -9,6 +9,7 @@ import type { FastifyRequest } from "fastify";
 
 export const HOSTED_SESSION_COOKIE_NAME = "__Host-schedule_session";
 export const HOSTED_CSRF_COOKIE_NAME = "__Host-schedule_csrf";
+export const HOSTED_LOGIN_BINDING_COOKIE_NAME = "__Host-schedule_login";
 export const HOSTED_CSRF_HEADER_NAME = "x-schedule-csrf";
 
 const MAX_COOKIE_HEADER_BYTES = 4_096;
@@ -153,6 +154,14 @@ export function hostedSessionTokenFromRequest(request: FastifyRequest): BrowserS
   return value === null ? null : parseSessionCookieValue(value);
 }
 
+/** Parse the single opaque browser binding used only by the OIDC login transaction. */
+export function hostedLoginBindingFromRequest(request: FastifyRequest): string | null {
+  const header = cookieHeader(request);
+  if (header === null) return null;
+  const value = namedCookieValue(header, HOSTED_LOGIN_BINDING_COOKIE_NAME);
+  return value !== null && TOKEN_PATTERN.test(value) ? value : null;
+}
+
 export class HostedBrowserCsrfGuard {
   private readonly allowedOrigin: string;
 
@@ -181,6 +190,15 @@ export function serializeHostedSessionCookie(token: BrowserSessionToken): string
 
 export function clearHostedSessionCookie(): string {
   return `${HOSTED_SESSION_COOKIE_NAME}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0; Expires=${EXPIRED_COOKIE_DATE}`;
+}
+
+export function serializeHostedLoginBindingCookie(binding: string): string {
+  if (!TOKEN_PATTERN.test(binding)) throw new TypeError("The hosted login binding is malformed.");
+  return `${HOSTED_LOGIN_BINDING_COOKIE_NAME}=${binding}; Path=/; Secure; HttpOnly; SameSite=Lax`;
+}
+
+export function clearHostedLoginBindingCookie(): string {
+  return `${HOSTED_LOGIN_BINDING_COOKIE_NAME}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0; Expires=${EXPIRED_COOKIE_DATE}`;
 }
 
 export interface IssuedHostedCsrfProtection {

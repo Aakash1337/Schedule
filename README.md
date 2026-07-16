@@ -256,7 +256,8 @@ requires exact issuer and code-flow capabilities, and freezes one endpoint/algor
 the same injected transport boundary. A strict authorization-code exchanger now binds that snapshot
 to one consumed transaction, one advertised client-authentication method, one form-encoded PKCE
 `POST`, and one bounded token response without exposing access or refresh tokens. A disabled-only
-hosted runtime gate rejects premature companion configuration; the registrars, transaction services,
-verifier, request builder, resolver, metadata loader, and exchanger remain absent from `buildApp`
-and production server wiring until connection-level OIDC egress enforcement, callback composition,
-and an intentionally selected public hosted surface exist.
+hosted runtime gate rejects premature companion configuration. The dormant registrar now composes
+transaction start/consume, authorization redirect, code exchange, nonce-bound verification,
+provisioning, and session issuance with a hardened browser-binding cookie, but it remains absent from
+`buildApp` and production server wiring until connection-level OIDC egress enforcement, concrete
+runtime adapter construction, and an intentionally selected public hosted surface exist.

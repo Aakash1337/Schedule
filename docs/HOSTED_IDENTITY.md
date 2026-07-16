@@ -71,23 +71,23 @@ workspaces.
 
 ## Deliberately absent
 
-This foundation has no login, callback, logout, refresh, password, WebFinger issuer discovery,
-email-link,
-browser principal route, or public membership route. It does not read identity claims, bind a
+This foundation has no production login, callback, logout, refresh, password, WebFinger issuer
+discovery, email-link, browser principal route, or public membership route. It does not read identity claims, bind a
 WhatsApp account, replace integration credentials, or enable synchronization. No environment flag
 can expose it: `HOSTED_API_MODE` accepts only `disabled`, and non-empty companion `HOSTED_*`
 configuration fails startup without disclosing the configured value. Strict session-cookie
 serialization/parsing and double-submit CSRF transport now exist behind the centralized request
-seam, but no production route issues or consumes them.
+seam. A tested dormant lifecycle issues and consumes them, but no production route does.
 
 The centralized request-authentication and workspace-authorization seam now exists but is not wired
 into `buildApp`; see [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md). The dormant browser-session
 and CSRF transport, a replay-safe login-transaction foundation, a nonce-bound OIDC ID-token
 verifier, a strict authorization-request builder, a pinned bounded remote-JWKS resolver, a trusted
-immutable provider-metadata loader, a strict dormant authorization-code exchanger, and one
-transaction-coupled hosted work-item create now sit behind that seam. WebFinger issuer discovery,
-connection-level production metadata/JWKS/token transport, callback composition, and the broader
-hosted product surface remain absent while production routes stay closed by default.
+immutable provider-metadata loader, a strict dormant authorization-code exchanger, a tested dormant
+start/callback composition, and one transaction-coupled hosted work-item create now sit behind that
+seam. WebFinger issuer discovery, connection-level production metadata/JWKS/token transport,
+concrete runtime adapter construction, and the broader hosted product surface remain absent while
+production routes stay closed by default.
 
 ## Verification
 
@@ -102,6 +102,7 @@ pnpm verify:oidc-authorization-request
 pnpm verify:oidc-remote-jwks
 pnpm verify:oidc-provider-metadata
 pnpm verify:oidc-token-exchange
+pnpm verify:hosted-oidc-lifecycle
 ```
 
 The first command migrates a nonce database and drives the production application and PostgreSQL

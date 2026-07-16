@@ -4,19 +4,24 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   clearHostedCsrfCookie,
+  clearHostedLoginBindingCookie,
   clearHostedSessionCookie,
+  hostedLoginBindingFromRequest,
   HostedBrowserCsrfGuard,
   HostedBrowserSessionAuthenticator,
   HOSTED_CSRF_COOKIE_NAME,
   HOSTED_CSRF_HEADER_NAME,
+  HOSTED_LOGIN_BINDING_COOKIE_NAME,
   HOSTED_SESSION_COOKIE_NAME,
   issueHostedCsrfProtection,
+  serializeHostedLoginBindingCookie,
   serializeHostedSessionCookie,
 } from "./hosted-browser-session.js";
 
 const SELECTOR = "a0000000-0000-4000-8000-000000000201";
 const SECRET = "A".repeat(43);
 const CSRF_TOKEN = "B".repeat(43);
+const LOGIN_BINDING = "C".repeat(43);
 const ORIGIN = "https://hosted.schedule.test";
 const SESSION_COOKIE = `${HOSTED_SESSION_COOKIE_NAME}=${SELECTOR}.${SECRET}`;
 const CSRF_COOKIE = `${HOSTED_CSRF_COOKIE_NAME}=${CSRF_TOKEN}`;
@@ -50,6 +55,35 @@ function requestFor(
 }
 
 describe("dormant hosted browser-session transport", () => {
+  it("round-trips one hardened OIDC login-binding cookie", () => {
+    expect(
+      hostedLoginBindingFromRequest(
+        requestFor([
+          ["Cookie", `theme=dark; ${HOSTED_LOGIN_BINDING_COOKIE_NAME}=${LOGIN_BINDING}`],
+        ]),
+      ),
+    ).toBe(LOGIN_BINDING);
+    expect(
+      hostedLoginBindingFromRequest(
+        requestFor([
+          [
+            "Cookie",
+            `${HOSTED_LOGIN_BINDING_COOKIE_NAME}=${LOGIN_BINDING}; ${HOSTED_LOGIN_BINDING_COOKIE_NAME}=${LOGIN_BINDING}`,
+          ],
+        ]),
+      ),
+    ).toBeNull();
+    expect(serializeHostedLoginBindingCookie(LOGIN_BINDING)).toBe(
+      `${HOSTED_LOGIN_BINDING_COOKIE_NAME}=${LOGIN_BINDING}; Path=/; Secure; HttpOnly; SameSite=Lax`,
+    );
+    expect(() => serializeHostedLoginBindingCookie("malformed")).toThrow(
+      "hosted login binding is malformed",
+    );
+    expect(clearHostedLoginBindingCookie()).toBe(
+      `${HOSTED_LOGIN_BINDING_COOKIE_NAME}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
+    );
+  });
+
   it("resolves exactly one bounded canonical session cookie without trusting spoofed headers", async () => {
     const execute = vi.fn(async () => principal);
     const authenticator = new HostedBrowserSessionAuthenticator({ execute });

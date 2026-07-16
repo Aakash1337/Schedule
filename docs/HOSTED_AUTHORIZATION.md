@@ -70,46 +70,49 @@ headers fail closed.
 
 ## Dormant authentication lifecycle contract
 
-`registerHostedAuthLifecycle` composes those transport helpers with injected identity and session
-application ports. It is a registrar, not production wiring: no call site in `buildApp`, the server,
-configuration, or deployment manifests installs it. Direct registrar tests exercise three routes:
+`registerHostedAuthLifecycle` composes those transport helpers with the existing login-transaction,
+OIDC, identity, and session application ports. It is a registrar, not production wiring: no call
+site in `buildApp`, the server,
+configuration, or deployment manifests installs it. Direct registrar tests exercise four routes:
 
 - `GET /v1/auth/session` resolves only the hardened session cookie, returns exactly
   `{ "authenticated": true | false }`, and emits a fresh CSRF cookie even when there is no active
   session. It never returns a user, provider, workspace, or session identifier.
-- `POST /v1/auth/login` requires exact Origin and double-submit CSRF proof before body, provider, or
-  database work. It accepts one strict `{ "proof": string }` object, bounds the JSON body to 16 KiB
-  and the opaque proof to 12 KiB, and passes the unchanged proof to an injected verifier. Only an
-  exact, bounded issuer/subject pair returned by that verifier may reach
-  `FindOrProvisionHostedUser`; the lifecycle then requires the provisioner to return that same exact
-  identity bound to the same active user before a session may be issued under an injected lifetime
-  policy. Success is an empty `204` with hardened session and fresh CSRF cookies.
+- `GET /v1/auth/login` accepts no query input. It creates one fixed-policy transaction, builds the
+  authorization URL from that exact result, emits the opaque browser binding only in the hardened
+  `__Host-schedule_login` cookie, and returns a `303` provider redirect with `no-store` and
+  `no-referrer` response policy.
+- `GET /v1/auth/callback` accepts exactly one bounded visible-ASCII `code` and one 256-bit `state`,
+  plus exactly one valid browser-binding cookie. It consumes the transaction before making one code
+  exchange, passes the consumed issuer/client/nonce into the ID-token verifier, accepts only a
+  bounded exact issuer/subject identity, provisions that identity, and issues the session. Success
+  clears the login binding, emits hardened session and fresh CSRF cookies, and returns a `303` only
+  to the consumed bounded local path under the fixed hosted origin.
 - `POST /v1/auth/logout` applies the same CSRF check first, parses the canonical session token once,
   requests `signed_out` revocation when possible, and clears both host cookies. Missing, malformed,
   unknown, already-revoked, and successful sessions all produce the same empty `204`; an internal
   revocation outage is a redacted `503`, but local cookies are still cleared.
 
-All lifecycle responses receive `Cache-Control: no-store`. Invalid credentials and disabled users
-share one generic `401`; CSRF denial is one generic `403`; verifier, persistence, session, and
-contract failures are logged without private values and returned as one generic `503`. The verifier
-port is intentionally not an identity provider implementation. A future adapter must verify its
-protocol completely—including exact issuer allowlisting, signatures and algorithm policy,
-audience/authorized-party claims, timestamps, nonce, and the state/redirect/PKCE rules of any code
-flow—before returning issuer and subject. Email, display name, or other claims can never substitute
-for that exact provider identity.
+All lifecycle responses receive `Cache-Control: no-store`. Login and callback redirects additionally
+receive `Referrer-Policy: no-referrer`. Malformed, missing, duplicate, provider-rejected, replayed,
+or wrong-browser callback credentials and disabled users share one generic `401`; CSRF denial is one
+generic `403`; verifier, persistence, session, and
+contract failures are logged without private values and returned as one generic `503`. A consumed
+transaction is never reopened and exchange is never retried. Email, display name, or other claims
+can never substitute for the exact provider identity returned by the nonce-bound verifier.
 
 ## Dormant login transaction foundation
 
 `StartHostedLoginTransaction` and `ConsumeHostedLoginTransaction` establish the server-side
-transaction that a future authorization-code flow must use. They are application services only:
-there is no start route, callback route, browser-binding cookie serializer, provider adapter, or
-runtime configuration that can call them.
+transaction used by the dormant authorization-code lifecycle. The tested registrar and binding
+cookie transport now call them, but production runtime configuration and route registration remain
+absent.
 
 Starting a transaction generates four independent 256-bit base64url values:
 
 - authorization `state`, sent to and returned by the identity provider;
-- a browser-binding bearer value intended for a future host-only, secure, HttpOnly, SameSite cookie;
-- the OIDC nonce that a future ID-token verifier must match exactly; and
+- a browser-binding bearer value emitted only in the host-only, secure, HttpOnly, SameSite cookie;
+- the OIDC nonce that the callback's ID-token verifier must match exactly; and
 - a PKCE verifier whose SHA-256 challenge is the only verifier-derived value sent to the provider.
 
 Migration `0036` adds `hosted_login_transactions`. It persists purpose-separated peppered
@@ -130,16 +133,15 @@ ciphertext fails before consumption and rolls back. Cleanup deletes only expired
 expiry and UUID, with `FOR UPDATE SKIP LOCKED` and a caller limit of at most 1,000.
 
 Successful consumption returns a short-lived in-process continuation containing the exact provider
-and redirect bindings, `expectedNonce`, and recovered PKCE verifier. A future callback must consume
-this transaction before invoking the dormant exchanger below and must pass `expectedNonce` into a
-verifier contract that cannot omit nonce validation. An exchange or verification failure starts a
-new login; a consumed transaction is never reopened or retried. The current opaque-proof lifecycle
-is not wired to this continuation and must not be described as an authorization-code route.
+and redirect bindings, `expectedNonce`, and recovered PKCE verifier. The callback consumes this
+transaction before invoking the exchanger below and passes `expectedNonce` into a verifier contract
+that cannot omit nonce validation. An exchange or verification failure requires a new login; a
+consumed transaction is never reopened or retried.
 
 ## Dormant OIDC ID-token verifier
 
-`JoseOidcIdTokenVerifier` is the concrete, still-unwired verifier for an ID token returned by that
-future authorization-code callback. Its input requires one compact signed token plus the exact
+`JoseOidcIdTokenVerifier` is the concrete verifier accepted by the dormant callback's structural
+port. Its input requires one compact signed token plus the exact
 issuer, client identifier, and 256-bit nonce recovered from the consumed login transaction. The
 caller cannot use a convenience overload that omits nonce verification. The token is bounded to 16
 KiB before JOSE parsing.
@@ -199,8 +201,8 @@ failures remain redacted availability failures.
 This is not by itself a production SSRF boundary. The mandatory transport must disable or explicitly
 govern proxies, resolve and vet every connected address, reject local/private/reserved destinations,
 resist DNS rebinding, and preserve TLS hostname and certificate verification. No such production
-transport, discovery composition, configuration, route, callback, or server registration exists in
-this slice.
+transport or concrete resolver construction is registered with the dormant callback or production
+server.
 
 ## Dormant trusted OIDC discovery/provider metadata
 
@@ -270,10 +272,9 @@ is capped at 8 KiB.
 Malformed trusted configuration, altered provider bindings, malformed transaction secrets, a
 non-S256 method, expiry at the exact trusted clock boundary, invalid clock behavior, hostile runtime
 getters, and an oversized final URL all throw one stable redacted configuration error. The builder
-does not import into `buildApp`, `server.ts`, configuration, or a route. The separate provider
-metadata snapshot and token exchanger are not composed with it; request-time endpoint extensions,
-browser-binding cookie transport, redirects, callback processing, and session issuance remain
-separate work.
+does not import into `buildApp`, `server.ts`, or configuration. The dormant lifecycle now invokes an
+injected builder after transaction creation, but production provider metadata, construction, route
+registration, and connection-safe transport remain separate work.
 
 ## Dormant OIDC authorization-code token exchange
 
@@ -312,11 +313,12 @@ nonce-bound verifier is the sole path from that value to `{ issuer, subject }`. 
 responses, redirects, ambiguous
 timeouts, and client-authentication failures become one stable redacted availability error.
 
-This exchanger remains dormant. It has no production connection-safe transport, runtime/client
-secret configuration, authorization-start route, callback parser, browser-binding cookie, session
-issuance, account provisioning, server registration, or retry facility. The provider metadata
-integration test composes discovery, authorization request, exchange, JWKS resolution, and ID-token
-verification only through injected transports; it does not expose HTTP.
+This exchanger remains dormant. The tested lifecycle invokes it after consuming the state/browser
+transaction and before verification, provisioning, and session issuance, but there is no production
+connection-safe transport, runtime/client-secret configuration, concrete adapter construction,
+server registration, or retry facility. The provider metadata integration test composes discovery,
+authorization request, exchange, JWKS resolution, and ID-token verification only through injected
+transports; it does not expose production HTTP.
 
 ## Preflight transaction limit
 
@@ -363,9 +365,9 @@ membership loss is the same generic `404`; unexpected adapter/database failures 
 
 ## Deliberately absent
 
-There is still no WebFinger issuer discovery, production metadata/JWKS/token transport or
-composition, hosted authorization-start endpoint or callback, production-registered authentication
-route, browser-binding cookie, enabling hosted configuration, public workspace route, hosted CORS
+There is still no WebFinger issuer discovery, production metadata/JWKS/token transport or concrete
+adapter composition, production-registered authentication route, enabling hosted configuration,
+public workspace route, hosted CORS
 policy, account-management API, role model, synchronization protocol, or cloud deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. The dormant work-item create is the only transaction-coupled hosted product mutation;
@@ -375,9 +377,11 @@ future hosted exposure.
 ## Verification
 
 `pnpm check` covers bounded and duplicate-safe cookie parsing, exact Origin and double-submit CSRF
-proof, cookie issue/clear attributes, strict and bounded login input, exact verified-identity
-provisioning and binding consistency, session bootstrap without identity disclosure, disabled-user
-denial, logout idempotency and revocation, request isolation, verification-before-credential-work
+proof, cookie issue/clear attributes, query-free login start, exact callback query and browser
+binding, consume-before-exchange ordering, nonce-bound verification handoff, fixed-origin local
+redirects, no retry, exact verified-identity provisioning and binding consistency, session bootstrap
+without identity disclosure, disabled-user denial, logout idempotency and revocation, request
+isolation, verification-before-credential-work
 ordering, single authentication, spoof resistance, generic negative responses, response and log
 redaction, non-overridable private caching, inconsistent adapter rejection, scoped-route
 registration, dormant HTTP closure across safe and unsafe methods, and active/revoked application
@@ -424,3 +428,8 @@ form/authentication-method matrix, parameter-injection and endpoint-query collis
 transaction binding, no retry, abort/deadline behavior across transport and body, response/header/
 cache bounds, OAuth rejection classification, secret/token redaction, and mandatory verifier
 handoff. It performs no external request; the runtime gate continues to prove HTTP closure.
+`pnpm verify:hosted-oidc-lifecycle` rebuilds the core packages and runs the dormant start/callback,
+browser-cookie, authorization-request, token-exchange, and ID-token suites. It proves query-free
+start, exact state/code/browser binding, consume-before-exchange ordering, mandatory nonce handoff,
+fixed-origin local redirects, hardened cookie transitions, generic failure classification, and no
+retry. It performs no external request and does not register production routes.

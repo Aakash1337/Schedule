@@ -261,9 +261,9 @@ function trustedCurrentDate(clock: () => Date): Date {
 }
 
 /**
- * Verifies an OIDC ID token against exact transaction metadata. This adapter is intentionally not
- * registered by buildApp or the production server; a later callback slice must compose it with a
- * provider-scoped key resolver and the single-use hosted login transaction flow.
+ * Verifies an OIDC ID token against exact transaction metadata. The dormant callback accepts this
+ * adapter's contract, but buildApp and the production server intentionally do not construct or
+ * register it with a provider-scoped key resolver.
  */
 export class JoseOidcIdTokenVerifier {
   readonly #keyResolver: JWTVerifyGetKey;
