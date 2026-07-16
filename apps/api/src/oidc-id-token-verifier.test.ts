@@ -161,6 +161,15 @@ describe("JoseOidcIdTokenVerifier", () => {
     });
   });
 
+  it("accepts a token at the exact configured age boundary", async () => {
+    const token = await sign({ iat: NOW_SECONDS - 900 });
+
+    await expect(createVerifier().verify(verificationInput(token))).resolves.toEqual({
+      issuer: ISSUER,
+      subject: SUBJECT,
+    });
+  });
+
   it.each([
     ["missing issuer", { iss: undefined }],
     ["wrong issuer", { iss: `${ISSUER}/other` }],
@@ -180,7 +189,7 @@ describe("JoseOidcIdTokenVerifier", () => {
     ["missing expiration", { exp: undefined }],
     ["expired beyond tolerance", { exp: NOW_SECONDS - 61 }],
     ["missing issued-at", { iat: undefined }],
-    ["issued too long ago", { iat: NOW_SECONDS - 1_001 }],
+    ["issued beyond the hard age cap despite clock tolerance", { iat: NOW_SECONDS - 901 }],
     ["issued in the future beyond tolerance", { iat: NOW_SECONDS + 61 }],
     ["zero-lifetime token", { iat: NOW_SECONDS + 30, exp: NOW_SECONDS + 30 }],
     ["future not-before beyond tolerance", { nbf: NOW_SECONDS + 61 }],

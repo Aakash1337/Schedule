@@ -207,8 +207,14 @@ function validAudienceAndAuthorizedParty(payload: JWTPayload, clientId: string):
   return audiences.length === 1 || authorizedParty === clientId;
 }
 
-function validClaims(payload: JWTPayload, input: OidcIdTokenVerificationInput): boolean {
+function validClaims(
+  payload: JWTPayload,
+  input: OidcIdTokenVerificationInput,
+  currentDate: Date,
+  maxTokenAgeSeconds: number,
+): boolean {
   const subject = payload.sub;
+  const currentSeconds = Math.floor(currentDate.getTime() / 1_000);
   if (
     payload.iss !== input.issuer ||
     typeof subject !== "string" ||
@@ -217,6 +223,7 @@ function validClaims(payload: JWTPayload, input: OidcIdTokenVerificationInput): 
     !exactNonceMatches(payload.nonce, input.expectedNonce) ||
     !validNumericDate(payload.exp) ||
     !validNumericDate(payload.iat) ||
+    currentSeconds - payload.iat > maxTokenAgeSeconds ||
     payload.exp <= payload.iat ||
     (payload.nbf !== undefined && (!validNumericDate(payload.nbf) || payload.nbf > payload.exp))
   ) {
@@ -356,7 +363,7 @@ export class JoseOidcIdTokenVerifier {
       });
       if (
         !trustedProtectedHeader(protectedHeader, this.#algorithmSet) ||
-        !validClaims(payload, input)
+        !validClaims(payload, input, currentDate, this.#maxTokenAgeSeconds)
       ) {
         return null;
       }
