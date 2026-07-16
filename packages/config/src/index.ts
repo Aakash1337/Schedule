@@ -528,6 +528,7 @@ export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): Api
   }
   const parsed = apiSchema.parse({
     ...environment,
+    API_PORT: environment.API_PORT ?? environment.PORT,
     HOSTED_OIDC_TOKEN_AUTH_METHOD:
       environment.HOSTED_OIDC_TOKEN_AUTH_METHOD === ""
         ? undefined

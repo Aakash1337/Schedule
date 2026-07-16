@@ -21,6 +21,8 @@ Durable product and engineering specifications live here so the repository root 
 - [Local web application](./WEB.md): interface architecture, local runtime, reminder management,
   and interaction contract.
 - [Local operations](./OPERATIONS.md): verified backup, staged restore, automated recovery state-machine checks, and database maintenance.
+- [Hosted deployment](./DEPLOYMENT.md): provider-neutral topology, the lean Railway adapter,
+  release ordering, secrets, health checks, backups, rollback, and staging acceptance.
 - [Worker observability](./OBSERVABILITY.md): loopback health, fixed-cardinality metrics, privacy
   boundaries, queue signals, alert guidance, and verification.
 - [Hosted identity foundation](./HOSTED_IDENTITY.md): dormant exact provider bindings, digest-only

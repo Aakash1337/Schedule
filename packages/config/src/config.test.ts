@@ -46,6 +46,12 @@ describe("runtime configuration", () => {
     expect(config.INTEGRATION_RATE_LIMIT_PER_MINUTE).toBe(120);
   });
 
+  it("uses a platform port only when API_PORT is absent", () => {
+    expect(loadApiConfig({ PORT: "4312" }).API_PORT).toBe(4_312);
+    expect(loadApiConfig({ API_PORT: "4001", PORT: "4312" }).API_PORT).toBe(4_001);
+    expect(() => loadApiConfig({ PORT: "70000" })).toThrow();
+  });
+
   it("keeps the unauthenticated product API disabled by default in production", () => {
     const config = loadApiConfig({ NODE_ENV: "production" });
     expect(config.PRODUCT_API_MODE).toBe("disabled");
