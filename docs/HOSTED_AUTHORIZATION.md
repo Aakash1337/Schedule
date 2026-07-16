@@ -166,10 +166,10 @@ endpoint, or provider error text. A future route must preserve that distinction 
 versus redacted `503` behavior.
 
 The injected resolver is trusted deployment composition, not discovery logic. The dormant pinned
-resolver below now supplies one bounded implementation, but future wiring must still derive its
-HTTPS JWKS location from the exact configured issuer and validated provider metadata and provide a
-connection-safe transport. The verifier does not import into `buildApp`, `server.ts`, configuration,
-or a route; it cannot make the dormant hosted surface reachable.
+resolver and provider-metadata loader below now supply bounded implementations, but future wiring
+must still bind them to the same exact configured issuer and provide a connection-safe transport.
+The verifier does not import into `buildApp`, `server.ts`, configuration, or a route; it cannot make
+the dormant hosted surface reachable.
 
 ## Dormant pinned remote-JWKS resolver
 
@@ -199,8 +199,48 @@ failures remain redacted availability failures.
 This is not by itself a production SSRF boundary. The mandatory transport must disable or explicitly
 govern proxies, resolve and vet every connected address, reject local/private/reserved destinations,
 resist DNS rebinding, and preserve TLS hostname and certificate verification. No such production
-transport, discovery adapter, configuration, route, callback, or server registration exists in this
-slice.
+transport, discovery composition, configuration, route, callback, or server registration exists in
+this slice.
+
+## Dormant trusted OIDC discovery/provider metadata
+
+`OidcProviderMetadataDiscovery` starts from one deployment-controlled issuer rather than an
+end-user identifier. Following OpenID Connect Discovery 1.0, it removes one terminating issuer
+slash and appends `/.well-known/openid-configuration`; root and path issuers therefore produce one
+deterministic default-port HTTPS document URL. The original issuer spelling remains the trust key.
+The returned metadata `issuer` must match it byte for byte without Unicode normalization, and the
+same value must later match the ID token's `iss` claim. WebFinger issuer discovery is not part of
+this adapter.
+
+Construction snapshots the exact issuer and mandatory injected transport once. A cold `discover()`
+uses the shared bounded OIDC JSON loader for one `GET` with manual redirects, an abort signal,
+identity encoding, and no credential or forwarding headers. A separate hard deadline fails even a
+transport that ignores cancellation after three seconds. Only `200 application/json` is accepted;
+the final response URL must remain exact, and declared plus streamed decoded content is capped at 64
+KiB before fatal UTF-8 decoding and JSON parsing. Concurrent cold calls share one request. A failed
+request is not cached; the first successful result becomes one immutable process-lifetime snapshot,
+so authorization, token, and key endpoints cannot be mixed across metadata versions. A deliberate
+configuration reload must construct a new discovery object.
+
+The document must provide the OIDC-required exact issuer, authorization endpoint, token endpoint,
+JWKS URI, response types, subject types, and ID-token signing algorithms. Every published endpoint
+is a bounded canonical default-port HTTPS URL without credentials or fragments. The authorization
+endpoint may retain only the same bounded non-reserved query parameters accepted by the request
+builder. Response types must contain `code`; subject types are limited to `public` and `pairwise`;
+the provider algorithm list must include the specification-required `RS256`; and the exported
+algorithm policy is the deterministic asymmetric subset supported by the ID-token verifier.
+
+For this application's authorization-code policy, advertised grant types, response modes, and
+scopes must support `authorization_code`, `query`, and `openid` when present (the specification
+defaults are applied when omitted). The provider must explicitly advertise PKCE `S256`. Token
+endpoint authentication is reduced to the deterministic supported subset of
+`client_secret_basic`, `client_secret_post`, and `none`, with the specification default of
+`client_secret_basic` when the field is absent. Extra metadata is ignored and never enters the
+trusted snapshot.
+
+This adapter is still dormant. Its required transport has no production DNS/IP/proxy/TLS
+implementation, and the snapshot is not registered with the authorization builder, JWKS resolver,
+ID-token verifier, runtime configuration, routes, callback, token exchange, or server.
 
 ## Dormant OIDC authorization-request builder
 
@@ -230,9 +270,10 @@ is capped at 8 KiB.
 Malformed trusted configuration, altered provider bindings, malformed transaction secrets, a
 non-S256 method, expiry at the exact trusted clock boundary, invalid clock behavior, hostile runtime
 getters, and an oversized final URL all throw one stable redacted configuration error. The builder
-does not import into `buildApp`, `server.ts`, configuration, or a route. Provider discovery,
-request-time endpoint extensions, browser-binding cookie transport, redirects, code exchange,
-callback processing, and session issuance remain separate work.
+does not import into `buildApp`, `server.ts`, configuration, or a route. The separate provider
+metadata snapshot is not composed with it; request-time endpoint extensions, browser-binding cookie
+transport, redirects, code exchange, callback processing, and session issuance remain separate
+work.
 
 ## Preflight transaction limit
 
@@ -279,10 +320,11 @@ membership loss is the same generic `404`; unexpected adapter/database failures 
 
 ## Deliberately absent
 
-There is still no OIDC discovery, production remote-JWKS transport or composition, hosted
-authorization-start endpoint, callback or code exchange, production-registered authentication
-route, browser-binding cookie, enabling hosted configuration, public workspace route, hosted CORS
-policy, account-management API, role model, synchronization protocol, or cloud deployment.
+There is still no WebFinger issuer discovery, production metadata/JWKS transport or composition,
+hosted authorization-start endpoint, callback or code exchange, production-registered
+authentication route, browser-binding cookie, enabling hosted configuration, public workspace
+route, hosted CORS policy, account-management API, role model, synchronization protocol, or cloud
+deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. The dormant work-item create is the only transaction-coupled hosted product mutation;
 all other product routes remain local-only and require their own transaction authority before any
@@ -328,3 +370,9 @@ ID-token suites. Injected transports prove exact request shape, bounded streamin
 redirect and malformed-response denial, cache reuse, unknown-key cooldown, rotation refresh,
 concurrent single-flight behavior, error redaction, and rejection of token-controlled key URLs. The
 command performs no external network request; the same evidence runs in `pnpm check`.
+`pnpm verify:oidc-provider-metadata` rebuilds the core packages and runs provider discovery plus its
+authorization-request and remote-JWKS compatibility suites. Injected transports prove the official
+root/path discovery URL, exact issuer equality, required metadata and local S256 policy, immutable
+successful snapshots, shared cold requests, retry after failure, hard timeout, bounded JSON,
+endpoint/query compatibility, and redacted failure. It performs no external request; dormant-route
+and runtime-gate evidence remains part of `pnpm check`.

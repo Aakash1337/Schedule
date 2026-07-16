@@ -83,14 +83,17 @@ function createResolver(
   });
 }
 
-function createVerifier(keyResolver: ReturnType<typeof createResolver>["keyResolver"]) {
+function createVerifier(
+  keyResolver: ReturnType<typeof createResolver>["keyResolver"],
+  keyResolutionTimeoutMilliseconds = 1_000,
+) {
   return new JoseOidcIdTokenVerifier({
     keyResolver,
     algorithms: ["RS256"],
     clock: () => new Date(NOW),
     clockToleranceSeconds: 60,
     maxTokenAgeSeconds: 900,
-    keyResolutionTimeoutMilliseconds: 1_000,
+    keyResolutionTimeoutMilliseconds,
   });
 }
 
@@ -241,6 +244,24 @@ describe("createOidcRemoteJwksResolver", () => {
       async () =>
         jwksResponse(undefined, { status: 302, headers: { location: "https://evil.test" } }),
     ],
+    [
+      "redirected successful response",
+      async () => {
+        const response = jwksResponse();
+        Object.defineProperty(response, "redirected", { value: true });
+        return response;
+      },
+    ],
+    [
+      "mismatched final response URL",
+      async () => {
+        const response = jwksResponse();
+        Object.defineProperty(response, "url", {
+          value: "https://keys.schedule.test/other/jwks.json",
+        });
+        return response;
+      },
+    ],
     ["no content", async () => new Response(null, { status: 204 })],
     ["server error", async () => jwksResponse(undefined, { status: 503 })],
     [
@@ -322,6 +343,40 @@ describe("createOidcRemoteJwksResolver", () => {
       jwksResponse(undefined, { headers: { "content-type": "application/json; charset=utf-8" } }),
     );
     await expect(verifyWith(transport)).resolves.toEqual({ issuer: ISSUER, subject: SUBJECT });
+  });
+
+  it("hard-bounds an abort-ignoring transport and allows a later retry", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    let observedAbort = false;
+    const transport = transportFrom(async (_resource, options) => {
+      calls += 1;
+      if (calls > 1) return jwksResponse();
+      options.signal.addEventListener("abort", () => {
+        observedAbort = true;
+      });
+      return new Promise<Response>(() => undefined);
+    });
+    const resolver = createResolver(transport);
+    const verifier = createVerifier(resolver.keyResolver, 5_000);
+    const input = {
+      idToken: await sign(),
+      issuer: ISSUER,
+      clientId: CLIENT_ID,
+      expectedNonce: NONCE,
+    };
+    const pending = verifier.verify(input);
+    const rejection = expect(pending).rejects.toEqual(
+      new OidcIdTokenVerificationUnavailableError(),
+    );
+
+    await vi.advanceTimersByTimeAsync(3_001);
+
+    await rejection;
+    expect(observedAbort).toBe(true);
+    expect(transport).toHaveBeenCalledTimes(1);
+    await expect(verifier.verify(input)).resolves.toEqual({ issuer: ISSUER, subject: SUBJECT });
+    expect(transport).toHaveBeenCalledTimes(2);
   });
 
   it("treats an unknown key as invalid credentials without attacker-driven reloads during cooldown", async () => {

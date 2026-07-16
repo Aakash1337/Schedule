@@ -56,7 +56,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 113 test files and 1,721 runtime test cases. Three
+The package and script runners currently execute 115 test files and 1,803 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -65,11 +65,11 @@ an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      41 / 41 |
-| Critical implemented features with CI-registered integration or drills |      25 / 25 |
+| Implemented features with CI-registered evidence                       |      42 / 42 |
+| Critical implemented features with CI-registered integration or drills |      26 / 26 |
 | Partial features with an explicit limitation                           |        5 / 5 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          243 |
+| CI-registered evidence items                                           |          247 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -80,21 +80,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     58.30% |   69.58% |    65.99% | 58.82% |
+| Whole repository, measured |     58.62% |   69.84% |    66.33% | 59.13% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     94.75% |   91.40% |    93.35% | 95.79% |
 | Domain, required           |        91% |      82% |       92% |    93% |
 | Application, measured      |     89.81% |   83.27% |    98.61% | 90.77% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     90.17% |   85.40% |    81.91% | 91.38% |
+| API, measured              |     90.65% |   86.24% |    83.54% | 91.94% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.00% |   88.01% |    93.25% | 94.62% |
 | Worker, required           |        85% |      87% |       89% |    87% |
 | Web, measured              |     84.92% |   71.84% |    74.26% | 85.38% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 10,913 of 18,716 statements, 7,906 of 11,362 branches,
-2,374 of 3,597 functions, and 10,316 of 17,538 lines.
+The whole-repository totals are 11,065 of 18,874 statements, 8,020 of 11,483 branches,
+2,410 of 3,633 functions, and 10,455 of 17,679 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -571,10 +571,14 @@ The audit deliberately leaves these visible instead of turning them into false g
   query retention, strict transaction expiry, and redacted configuration/runtime failure. A pinned
   remote-JWKS adapter now has generated-key and injected-transport evidence for exact endpoint and
   request binding, bounded streaming and parsing, redirect denial, cache reuse, unknown-key
-  cooldown, rotation refresh, concurrent single-flight retrieval, and redacted failures. None has
-  HTTP composition: there is still no discovery, connection-safe production JWKS transport,
-  authorization-start endpoint, callback/code exchange, enabling hosted configuration, broader
-  hosted product surface, public deployment, or synchronization;
+  cooldown, rotation refresh, concurrent single-flight retrieval, and redacted failures. A separate
+  trusted provider-metadata adapter has injected-transport evidence for the official root/path
+  discovery URL, exact issuer response binding, required OIDC and local S256 capabilities, bounded
+  JSON, hard timeouts, shared cold retrieval, immutable successful snapshots, and downstream
+  authorization/JWKS compatibility. None has HTTP composition: there is still no WebFinger issuer
+  discovery, connection-safe production metadata/JWKS transport, authorization-start endpoint,
+  callback/code exchange, enabling hosted configuration, broader hosted product surface, public
+  deployment, or synchronization;
 - ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a

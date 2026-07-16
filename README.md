@@ -251,8 +251,10 @@ generated-key tests. A strict authorization-request builder preserves the issued
 provider bindings and emits only canonical, injection-safe code-flow parameters. A pinned
 remote-JWKS resolver adds exact endpoint binding, bounded streamed responses, cache reuse,
 single-flight refresh, rotation, and redacted failure classification through a mandatory injected
-transport. A disabled-only hosted runtime gate rejects premature companion configuration; the
-registrars, transaction services, verifier, request builder, and resolver remain absent from
-`buildApp` and production server wiring until trusted discovery, connection-level JWKS egress
-enforcement, a complete authorization-code adapter, and an intentionally selected public hosted
-surface exist.
+transport. A trusted provider-metadata loader derives the official issuer-specific discovery URL,
+requires exact issuer and code-flow capabilities, and freezes one endpoint/algorithm snapshot behind
+the same injected transport boundary. A disabled-only hosted runtime gate rejects premature
+companion configuration; the registrars, transaction services, verifier, request builder, resolver,
+and metadata loader remain absent from `buildApp` and production server wiring until
+connection-level OIDC egress enforcement, a complete authorization-code adapter, and an
+intentionally selected public hosted surface exist.

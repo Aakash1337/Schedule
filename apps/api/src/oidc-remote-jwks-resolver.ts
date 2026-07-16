@@ -5,24 +5,14 @@ import {
   type JWTVerifyGetKey,
 } from "jose";
 
-const MAXIMUM_PROVIDER_URL_BYTES = 2_048;
+import { fetchBoundedOidcJson } from "./oidc-bounded-json-fetch.js";
+import { parseExactOidcProviderUrl } from "./oidc-provider-url.js";
+
 const MAXIMUM_JWKS_BODY_BYTES = 64 * 1_024;
 const MAXIMUM_JWKS_KEYS = 32;
 const REQUEST_TIMEOUT_MILLISECONDS = 3_000;
 const UNKNOWN_KEY_COOLDOWN_MILLISECONDS = 30_000;
 const CACHE_MAX_AGE_MILLISECONDS = 300_000;
-const FORBIDDEN_RAW_URL_CHARACTER = /[\s\\]/u;
-const JSON_CONTENT_TYPE = /^(?:application\/json|application\/jwk-set\+json)(?:\s*;.*)?$/iu;
-const FORBIDDEN_REQUEST_HEADERS = new Set([
-  "authorization",
-  "cookie",
-  "forwarded",
-  "proxy-authorization",
-  "proxy-connection",
-  "x-forwarded-for",
-  "x-forwarded-host",
-  "x-forwarded-proto",
-]);
 
 export interface OidcRemoteJwksResolverOptions {
   /** Exact provider issuer to bind to this resolver. */
@@ -67,52 +57,6 @@ function unavailable(): OidcRemoteJwksUnavailableError {
   return new OidcRemoteJwksUnavailableError();
 }
 
-function validRawUrl(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    Buffer.byteLength(value, "utf8") <= MAXIMUM_PROVIDER_URL_BYTES &&
-    !FORBIDDEN_RAW_URL_CHARACTER.test(value) &&
-    !containsAsciiControl(value)
-  );
-}
-
-function containsAsciiControl(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f) return true;
-  }
-  return false;
-}
-
-function parseProviderUrl(value: unknown, allowQuery: boolean): URL | null {
-  if (!validRawUrl(value)) return null;
-
-  try {
-    const parsed = new URL(value);
-    if (
-      parsed.protocol !== "https:" ||
-      parsed.hostname.length === 0 ||
-      parsed.username.length > 0 ||
-      parsed.password.length > 0 ||
-      parsed.port.length > 0 ||
-      parsed.hash.length > 0 ||
-      (!allowQuery && parsed.search.length > 0)
-    ) {
-      return null;
-    }
-
-    // Preserve the interoperable root-issuer spelling without a trailing slash. Otherwise reject
-    // spellings that URL would silently normalize (IDNs, redundant ports, or dot segments).
-    if (parsed.href !== value && !(parsed.pathname === "/" && parsed.href === `${value}/`)) {
-      return null;
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return (
     typeof value === "object" &&
@@ -122,59 +66,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   );
 }
 
-function safeContentLength(headers: Headers): number | null {
-  const raw = headers.get("content-length");
-  if (raw === null) return null;
-  if (!/^(?:0|[1-9][0-9]*)$/u.test(raw)) throw unavailable();
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value > MAXIMUM_JWKS_BODY_BYTES) throw unavailable();
-  return value;
-}
-
-async function readBoundedBody(response: Response): Promise<Uint8Array> {
-  const declaredLength = safeContentLength(response.headers);
-  if (response.body === null) throw unavailable();
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      const chunk = next.value;
-      total += chunk.byteLength;
-      if (total > MAXIMUM_JWKS_BODY_BYTES) {
-        await reader.cancel().catch(() => undefined);
-        throw unavailable();
-      }
-      chunks.push(chunk);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  if (declaredLength !== null && declaredLength !== total) throw unavailable();
-  const body = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return body;
-}
-
-function parseBoundedJwks(
-  body: Uint8Array,
-): Readonly<{ keys: readonly Record<string, unknown>[] }> {
-  let parsed: unknown;
-  try {
-    const json = new TextDecoder("utf-8", { fatal: true }).decode(body);
-    parsed = JSON.parse(json) as unknown;
-  } catch {
-    throw unavailable();
-  }
-
+function parseBoundedJwks(parsed: unknown): Readonly<{ keys: readonly Record<string, unknown>[] }> {
   if (!isPlainObject(parsed) || !Object.hasOwn(parsed, "keys")) throw unavailable();
   const keys = parsed.keys;
   if (
@@ -189,25 +81,6 @@ function parseBoundedJwks(
   return { keys: keys.map((key) => ({ ...key })) };
 }
 
-function trustedRequestHeaders(headers: Headers): Headers {
-  const snapshot = new Headers(headers);
-  let headerCount = 0;
-  for (const [name, value] of snapshot) {
-    headerCount += 1;
-    if (
-      headerCount > 8 ||
-      FORBIDDEN_REQUEST_HEADERS.has(name.toLowerCase()) ||
-      name.toLowerCase().startsWith("x-forwarded-") ||
-      Buffer.byteLength(name, "utf8") > 128 ||
-      Buffer.byteLength(value, "utf8") > 1_024
-    ) {
-      throw unavailable();
-    }
-  }
-  snapshot.set("accept-encoding", "identity");
-  return snapshot;
-}
-
 function boundedFetch(pinnedJwksUri: string, transport: FetchImplementation): FetchImplementation {
   return async (resource, options) => {
     try {
@@ -215,24 +88,17 @@ function boundedFetch(pinnedJwksUri: string, transport: FetchImplementation): Fe
         throw unavailable();
       }
 
-      const response = await transport(resource, {
-        method: "GET",
-        redirect: "manual",
-        signal: options.signal,
-        headers: trustedRequestHeaders(options.headers),
-      });
-      if (
-        !(response instanceof Response) ||
-        response.status !== 200 ||
-        response.redirected ||
-        (response.url.length > 0 && response.url !== pinnedJwksUri)
-      ) {
-        throw unavailable();
-      }
-      const contentType = response.headers.get("content-type");
-      if (contentType === null || !JSON_CONTENT_TYPE.test(contentType)) throw unavailable();
-
-      const jwks = parseBoundedJwks(await readBoundedBody(response));
+      const jwks = parseBoundedJwks(
+        await fetchBoundedOidcJson({
+          url: pinnedJwksUri,
+          transport,
+          signal: options.signal,
+          timeoutMilliseconds: REQUEST_TIMEOUT_MILLISECONDS,
+          requestHeaders: options.headers,
+          maximumBodyBytes: MAXIMUM_JWKS_BODY_BYTES,
+          acceptedContentTypes: ["application/json", "application/jwk-set+json"],
+        }),
+      );
       const normalized = JSON.stringify(jwks);
       if (Buffer.byteLength(normalized, "utf8") > MAXIMUM_JWKS_BODY_BYTES) throw unavailable();
       return new Response(normalized, {
@@ -258,8 +124,8 @@ export function createOidcRemoteJwksResolver(
     const issuerValue: unknown = options.issuer;
     const jwksUriValue: unknown = options.jwksUri;
     const transportValue: unknown = options.transport;
-    const issuer = parseProviderUrl(issuerValue, false);
-    const jwksUri = parseProviderUrl(jwksUriValue, true);
+    const issuer = parseExactOidcProviderUrl(issuerValue, false);
+    const jwksUri = parseExactOidcProviderUrl(jwksUriValue, true);
     if (issuer === null || jwksUri === null || typeof transportValue !== "function") {
       throw invalidConfiguration();
     }
