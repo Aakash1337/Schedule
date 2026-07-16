@@ -147,7 +147,7 @@ describe("hosted login transaction application foundation", () => {
         startInput,
       ),
     ).rejects.toMatchObject({ code: "hosted_login_transaction.secret_material_invalid" });
-    expect(harness.stored).toHaveLength(0);
+    expect(harness.stored.size).toBe(0);
   });
 
   it("persists no plaintext bearer values and consumes the exact transaction once", async () => {
@@ -209,7 +209,7 @@ describe("hosted login transaction application foundation", () => {
       }),
     ).resolves.toBeNull();
     await expect(new PruneHostedLoginTransactions(harness.unitOfWork).execute(1)).resolves.toBe(1);
-    expect(harness.stored).toHaveLength(1);
+    expect(harness.stored.size).toBe(1);
     expect(harness.isolationLevels.at(-1)).toBe("read_committed");
   });
 

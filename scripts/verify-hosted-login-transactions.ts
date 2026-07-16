@@ -225,14 +225,17 @@ try {
     `Hosted login transaction verification passed digest-only state and browser binding, protected PKCE recovery, exact provider and redirect binding, concurrent single-use consumption, database-clock expiry, corruption rollback, redaction, and bounded cleanup in ${verificationDatabase}`,
   );
 } finally {
-  await connection?.close().catch(() => undefined);
-  if (databaseCreated) {
-    await adminConnection.sql`
-      select pg_terminate_backend(pid)
-      from pg_stat_activity
-      where datname = ${verificationDatabase} and pid <> pg_backend_pid()
-    `.catch(() => undefined);
-    await adminConnection.sql.unsafe(`drop database if exists ${quotedVerificationDatabase()}`);
+  try {
+    await connection?.close().catch(() => undefined);
+    if (databaseCreated) {
+      await adminConnection.sql`
+        select pg_terminate_backend(pid)
+        from pg_stat_activity
+        where datname = ${verificationDatabase} and pid <> pg_backend_pid()
+      `.catch(() => undefined);
+      await adminConnection.sql.unsafe(`drop database if exists ${quotedVerificationDatabase()}`);
+    }
+  } finally {
+    await adminConnection.close();
   }
-  await adminConnection.close();
 }
