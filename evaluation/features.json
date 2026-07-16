@@ -1172,6 +1172,17 @@
         },
         {
           "level": "unit",
+          "file": "integrations/hermes-schedule/tests/test_install.py",
+          "command": "hermes-adapter",
+          "anchors": [
+            "test_installs_only_runtime_and_reminder_files",
+            "test_requires_explicit_replace_for_changed_files",
+            "test_check_does_not_create_the_hermes_home",
+            "test_rejects_an_incomplete_source_bundle"
+          ]
+        },
+        {
+          "level": "unit",
           "file": "scripts/hermes-verification-safety.test.ts",
           "command": "unit",
           "anchors": [

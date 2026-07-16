@@ -9,8 +9,8 @@ authenticated automation boundary is in
 the [integration gateway guide](./docs/INTEGRATIONS.md). Local data protection and recovery
 procedures are in the [operations guide](./docs/OPERATIONS.md). Behavioral confidence and known test
 limitations are tracked in the [evaluation guide](./docs/EVALUATION.md). The two distinct opt-in
-Hermes paths—one local conversational plugin and one provider-neutral reminder-delivery adapter
-foundation—are documented in the [Hermes guide](./docs/HERMES.md).
+Hermes paths—one locally installable conversational plugin and one provider-neutral
+reminder-delivery adapter foundation—are documented in the [Hermes guide](./docs/HERMES.md).
 The optional loopback worker health and metrics contract is in
 [docs/OBSERVABILITY.md](./docs/OBSERVABILITY.md).
 The opt-in hosted OIDC and workspace-authorization boundary is in
@@ -78,8 +78,9 @@ An optional integration gateway gives a workspace-scoped machine credential read
 Today and a two-step, idempotent structured-command flow. It is disabled by default. Schedule stays
 authoritative; Hermes or another messaging agent calls this boundary instead of writing the
 database. The repository includes an opt-in local Hermes plugin that adds sender/session/platform-
-bound later-turn confirmation and a deterministic stdout reminder helper. It remains local-only and
-does not silently enable a cron job or WhatsApp delivery.
+bound later-turn confirmation and a deterministic stdout reminder helper. A checked installer copies
+only their runtime files into Hermes; it remains local-only and does not silently enable the plugin,
+create a cron job, or send a WhatsApp message.
 
 A separate outbound webhook substrate can deliver signed, workspace-bound test events and explicitly
 subscribed privacy-thin Today-change invalidations through the existing durable outbox. It is also
@@ -158,9 +159,10 @@ content. This webhook is not used as a reminder. Reminder policy decisions, dura
 provider-neutral supervised delivery polling are implemented, with polling disabled by default.
 Provider/account binding, reconciliation, external bootstrap, and a concrete Hermes/WhatsApp
 transport are not part of this release. Separately, the opt-in local Hermes plugin calls the
-authenticated read/write gateway when invoked and offers a deterministic stdout Today helper; live
-WhatsApp delivery remains incomplete until the operator configures `WHATSAPP_HOME_CHANNEL` and
-verifies an operator-owned self-chat. Automatic
+authenticated read/write gateway when invoked and offers a deterministic stdout Today helper; its
+installer is dry with respect to secrets, plugin enablement, cron, and messaging. Live WhatsApp
+delivery remains incomplete until the operator configures `WHATSAPP_HOME_CHANNEL` and verifies an
+operator-owned self-chat. Automatic
 local intent materialization is available but disabled by default; set
 `NOTIFICATION_MATERIALIZATION_MODE=enabled` only after reminder policy is configured. This does not
 enable delivery. The least-privilege claim/receipt gateway is implemented for an external adapter.

@@ -12,7 +12,7 @@ Durable product and engineering specifications live here so the repository root 
   lifecycle, exactly-once confirmation, and deliberate command limits.
 - [Integration gateway](./INTEGRATIONS.md): authenticated automation credentials, versioned
   commands, confirmation, idempotency, reminder claims/receipts, and the external-adapter boundary.
-- [Hermes integrations](./HERMES.md): local plugin installation and sender-bound confirmation plus
+- [Hermes integrations](./HERMES.md): checked local installation and sender-bound confirmation plus
   the separate provider-neutral polling, lease, durable dedupe, health, and shutdown boundary;
   includes WhatsApp prerequisites, privacy, limitations, and safe rollout.
 - [Outbound webhook delivery](./WEBHOOKS.md): encrypted endpoint secrets, signed delivery, opt-in

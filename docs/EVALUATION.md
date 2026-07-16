@@ -498,10 +498,11 @@ The audit deliberately leaves these visible instead of turning them into false g
   idempotent replay, tenant isolation, pagination/filter behavior, and atomic rollback against
   disposable PostgreSQL; it also proves bounded retention cleanup deletes only
   eligible old receipts/confirmations while preserving fresh, processing, referenced, and audit
-  rows. The separate Hermes adapter verifier covers deterministic plugin tests and a disposable
-  PostgreSQL/real Fastify prepare-and-confirm flow, including no mutation before confirmation and
-  exact idempotent execution. Neither verifier exercises a live WhatsApp account, phone delivery,
-  provider receipt, or natural-language quality benchmark;
+  rows. The separate Hermes adapter verifier covers deterministic plugin tests, runtime-only bundle
+  installation into a temporary Hermes home, and a disposable PostgreSQL/real Fastify
+  prepare-and-confirm flow, including no mutation before confirmation and exact idempotent
+  execution. Neither verifier loads a live Hermes runtime or exercises a WhatsApp account, phone
+  delivery, provider receipt, or natural-language quality benchmark;
 - the outbound webhook verifier covers real PostgreSQL endpoint/secret lifecycles, workspace
   isolation, default-empty and replacement subscription state, privacy-thin automatic Today-change
   fan-out, deterministic event identity, immutable delivery/outbox linkage, dead-letter metadata,
