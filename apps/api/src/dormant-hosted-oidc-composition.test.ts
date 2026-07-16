@@ -276,13 +276,11 @@ describe("dormant hosted OIDC composition", () => {
       }),
     ) as HostedOidcCompositionTransport & ReturnType<typeof vi.fn>;
 
-    try {
-      await createDormantHostedOidcComposition(options(transport));
-      expect.unreachable("expected provider incompatibility");
-    } catch (error) {
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).not.toContain(CLIENT_SECRET);
-      expect((error as Error).message).not.toContain(TOKEN_ENDPOINT);
-    }
+    const error = await createDormantHostedOidcComposition(options(transport)).catch(
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain(CLIENT_SECRET);
+    expect((error as Error).message).not.toContain(TOKEN_ENDPOINT);
   });
 });
