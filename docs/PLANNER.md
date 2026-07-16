@@ -263,7 +263,8 @@ and exact-versus-edited submission, counts later revisions separately, and admit
 unrevised current heads to weighted totals. **Target scheduled** is scheduled workload divided by the
 submitted editable target; **Plan completed** is completed workload divided by scheduled workload.
 Minute and task rates remain separate, use half-up integer basis points, and are unavailable without
-an eligible denominator. Per-plan percentages are never averaged. The projection is a descriptive
+an eligible denominator. Today withholds rate display until three settled, unrevised uses are
+available. Per-plan percentages are never averaged. The projection is a descriptive
 read model only: no value flows into eligibility, ranking, target generation, a model prompt, or
 automatic adaptation, and it cannot establish that Plan Fit caused an outcome.
 
