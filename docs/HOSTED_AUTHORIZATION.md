@@ -4,8 +4,9 @@ Schedule contains a centralized, provider-neutral request boundary for future ho
 routes, a provider-neutral browser authentication lifecycle registrar, and one transaction-coupled
 hosted work-item-create registrar. A separate pre-authentication foundation now coordinates bounded
 state, browser binding, nonce, and PKCE material. All are implemented and tested, but deliberately
-have no production registration: `buildApp` and the server do not install them, no browser route is
-reachable, and the local and machine-integration trust boundaries are unchanged.
+have no production route registration: the server may preflight the complete graph, but `buildApp`
+never receives or installs it, no browser route is reachable, and the local and machine-integration
+trust boundaries are unchanged.
 
 ## Disabled runtime configuration gate
 
@@ -13,17 +14,18 @@ reachable, and the local and machine-integration trust boundaries are unchanged.
 non-secret registration made of `HOSTED_PUBLIC_ORIGIN`, `HOSTED_OIDC_ISSUER`, and
 `HOSTED_OIDC_CLIENT_ID`. The origin and issuer must be bounded exact canonical default-port HTTPS
 values, the client ID is bounded and control-free, and the callback URI is derived rather than
-configured. All three absent or empty is inert; a partial set fails startup. Secrets, mixed-case
-aliases, and every other non-empty `HOSTED_*` value are rejected without echoing a variable name or
-value that may contain credentials.
+configured. All three absent or empty is inert; a partial set fails startup. The separate
+`HOSTED_OIDC_PREFLIGHT_MODE` defaults to `disabled`; its secret companions are accepted only as one
+complete set when explicitly `enabled`. Mixed-case aliases and every unknown non-empty `HOSTED_*`
+value are rejected without echoing a variable name or value that may contain credentials.
 
-The staged object is immutable configuration only. It cannot register the login lifecycle,
-workspace boundary, or work-item route; `buildApp` has no hosted runtime input and `/v1/system/info`
-always reports `hostedEndpointsEnabled: false`.
+The staged registration and optional preflight are immutable configuration only. They cannot
+register the login lifecycle, workspace boundary, or work-item route; `buildApp` has no hosted
+runtime input and `/v1/system/info` always reports `hostedEndpointsEnabled: false`.
 
 This gate records an explicit production posture, not an enabling mechanism. A later deployment
-slice must source the factory's bounded secrets from a secret manager, construct it in the server,
-and intentionally register routes before the accepted mode can be widened.
+slice must intentionally register routes and widen the accepted API mode; successful preflight alone
+never authorizes exposure.
 
 ## Boundary contract
 
@@ -233,9 +235,8 @@ failures remain redacted availability failures.
 
 Exact URL binding and response bounds are not by themselves a production SSRF boundary. The direct
 OIDC HTTPS transport now supplies the required proxy, DNS-answer, address-pinning, rebinding, and TLS
-controls, but no concrete resolver construction is registered with the dormant callback or
-production server. The unregistered complete factory does construct this resolver for its frozen
-dependency graph.
+controls. The complete factory constructs this resolver for its frozen dependency graph, and the
+production preflight may retain it; no callback or route is registered.
 
 ## Dormant trusted OIDC discovery/provider metadata
 
@@ -275,8 +276,8 @@ trusted snapshot.
 
 This adapter is still dormant. The unregistered complete factory constructs its frozen snapshot and
 direct transport with the authorization builder, token exchanger, JWKS resolver, and ID-token
-verifier, but runtime secret configuration, routes, callback exposure, and server construction are
-absent.
+verifier. Production preflight can retain that graph, but routes, callback exposure, and hot metadata
+refresh are absent.
 
 ## Dormant OIDC authorization-request builder
 
@@ -349,9 +350,9 @@ timeouts, and client-authentication failures become one stable redacted availabi
 
 This exchanger remains dormant. The tested lifecycle invokes it after consuming the state/browser
 transaction and before verification, provisioning, and session issuance. The complete factory
-constructs it with the direct connection-safe transport, but runtime client-secret configuration,
-server registration, and retry remain absent. The provider composition tests do not expose
-production HTTP.
+constructs it with the direct connection-safe transport, and production preflight may inject its
+client authentication. Route registration and retry remain absent. The provider composition tests
+do not expose production HTTP.
 
 ## Preflight transaction limit
 
@@ -425,9 +426,32 @@ The fixed dormant policy is a five-minute login, one-hour idle session, one-day 
 `openid` scope, and `/` continuation.
 
 The factory returns only a frozen `HostedAuthLifecycleDependencies` object. It never creates a
-Fastify app, registers the lifecycle, changes `HOSTED_API_MODE`, or starts cleanup work. No production
-configuration accepts its peppers, key ring, or client secret yet; a future secret-manager slice must
-provide those values and explicit rotation/reload behavior before server construction is permitted.
+Fastify app, registers the lifecycle, changes `HOSTED_API_MODE`, or starts cleanup work. Production
+preflight may supply its bounded secrets and retain the result, but cannot make that result reachable.
+
+## Dormant production runtime preflight
+
+`HOSTED_OIDC_PREFLIGHT_MODE=enabled` requires the complete non-secret registration plus an explicit
+token authentication method, optional method-appropriate client secret, independent login and
+session HMAC peppers, a primary PKCE key identifier, and one to sixteen canonical AES-256-GCM keys.
+The accepted secret variables are `HOSTED_OIDC_TOKEN_AUTH_METHOD`, `HOSTED_OIDC_CLIENT_SECRET`,
+`HOSTED_LOGIN_TRANSACTION_PEPPER`, `HOSTED_SESSION_PEPPER`, `HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID`, and
+`HOSTED_LOGIN_PKCE_KEYS` (`key-id:base64url-32-byte-key` entries). Operators must inject these values
+through their hosting platform's secret manager; source control and plain deployment manifests are
+not acceptable secret stores.
+
+Parsing is bounded, rejects control and Unicode formatting characters, canonicalizes every key,
+requires the primary key to exist, and produces one deeply frozen preflight object. The production
+server constructs it before building the normal Fastify app. Construction performs one bounded
+provider discovery and fails startup through one redacted error; even cleanup failure cannot replace
+that error. The graph is retained for the process lifetime but is never passed to `buildApp`, so all
+hosted routes remain `404` and capability reporting remains false.
+
+Rotation is restart-based. New PKCE transactions use the primary key; old keys may overlap for at
+least the five-minute login lifetime before removal. The current HMAC codecs accept one pepper each:
+rotating the login pepper invalidates outstanding logins, while rotating the session pepper
+intentionally signs out existing browser sessions. Provider metadata and secrets are not hot-reloaded;
+a change requires construction of a new process graph.
 
 ## Verification
 
@@ -499,6 +523,10 @@ a strict in-process provider transport plus the lifecycle, discovery, direct-HTT
 verifier compatibility suites. It proves single-snapshot wiring, fixed policy, exact endpoint and
 client propagation, secret snapshot isolation, local-failure-before-I/O ordering, and redaction. It
 makes no external request and does not register a production route.
+`pnpm verify:hosted-runtime-preflight` validates the complete immutable secret set, public-client and
+confidential-client authentication modes, PKCE rotation overlap, bounds and redaction, stable startup
+failure mapping, preflight-before-app ordering, false hosted capability reporting, and route closure.
+It injects the factory in-process and performs no external network request.
 `pnpm verify:hosted-oidc-composition-db` uses the migrated configured PostgreSQL database plus a
 strict in-process signed OIDC provider, registers the returned graph only in a private Fastify test
 instance, and completes login, persisted one-shot callback, JWKS verification, identity provisioning,

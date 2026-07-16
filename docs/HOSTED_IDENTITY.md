@@ -87,8 +87,9 @@ verifier, a strict authorization-request builder, a pinned bounded remote-JWKS r
 immutable provider-metadata loader, a strict dormant authorization-code exchanger, a tested dormant
 start/callback composition, one unregistered complete dependency factory, and one
 transaction-coupled hosted work-item create now sit behind that seam. WebFinger issuer discovery,
-secret-manager and server construction, runtime enabling configuration, and the broader hosted
-product surface remain absent while production routes stay closed by default.
+dormant-to-public runtime enabling, and the broader hosted product surface remain absent. An
+explicit secret-manager-fed production preflight may construct the graph, but production routes
+stay closed by default.
 
 ## Verification
 

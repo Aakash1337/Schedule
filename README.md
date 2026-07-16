@@ -261,8 +261,9 @@ to one consumed transaction, one advertised client-authentication method, one fo
 hosted runtime gate rejects premature companion configuration. The dormant registrar now composes
 transaction start/consume, authorization redirect, code exchange, nonce-bound verification,
 provisioning, and session issuance with a hardened browser-binding cookie, but it remains absent from
-`buildApp` and production server wiring. A direct HTTPS transport now provides connection-level DNS,
+`buildApp` and production server route wiring. A direct HTTPS transport now provides connection-level DNS,
 IP, proxy, and TLS enforcement behind the dormant adapters. An unregistered async factory composes
-the complete provider, persistence, identity, and session dependency graph from explicit secret
-inputs; secret-manager configuration, server construction, and an intentionally selected public
-hosted surface remain absent.
+the complete provider, persistence, identity, and session dependency graph. An explicit dormant
+preflight accepts bounded secret-manager-injected values and lets the production server construct
+and retain that graph before building the normal app; `HOSTED_API_MODE` remains disabled, capability
+reporting remains false, and an intentionally selected public hosted surface remains absent.

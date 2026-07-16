@@ -500,6 +500,32 @@ rules, or one-offs and cannot retract an in-flight provider side effect. Externa
 its own adapter-side kill switch when implemented. See
 [REMINDERS.md](./REMINDERS.md).
 
+## Dormant hosted OIDC preflight
+
+Hosted routes remain disabled. To validate production OIDC configuration and provider reachability
+before a later route-enablement deployment, inject these values through the platform secret manager
+and set `HOSTED_OIDC_PREFLIGHT_MODE=enabled`:
+
+- the complete non-secret `HOSTED_PUBLIC_ORIGIN`, `HOSTED_OIDC_ISSUER`, and
+  `HOSTED_OIDC_CLIENT_ID` registration;
+- `HOSTED_OIDC_TOKEN_AUTH_METHOD` plus `HOSTED_OIDC_CLIENT_SECRET` unless the method is `none`;
+- independent `HOSTED_LOGIN_TRANSACTION_PEPPER` and `HOSTED_SESSION_PEPPER` values of at least 32
+  UTF-8 bytes;
+- `HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID` and one to sixteen comma-delimited
+  `key-id:base64url-32-byte-key` entries in `HOSTED_LOGIN_PKCE_KEYS`.
+
+Startup parses and freezes the complete set, performs one bounded provider discovery, constructs the
+dependency graph, and only then builds the normal API app. Failure exits before listening through a
+stable redacted error. Success logs only `dormant hosted OIDC preflight complete`; it does not change
+`HOSTED_API_MODE`, capability reporting, readiness data, or route registration.
+
+Rotate PKCE by adding the new key, selecting it as primary, restarting, and retaining old keys for at
+least the five-minute login lifetime plus deployment skew before a later restart removes them.
+Changing the login pepper invalidates outstanding logins; changing the session pepper signs out all
+browser sessions. Provider metadata and secrets do not hot-reload. Disable preflight or change its
+configuration only through a controlled restart. Run `pnpm verify:hosted-runtime-preflight` before
+deploying a changed secret layout.
+
 ## Routine verification
 
 For an existing database, preserve the backup-before-migration order:

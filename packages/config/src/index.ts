@@ -17,6 +17,15 @@ const apiSchema = baseSchema.extend({
   HOSTED_PUBLIC_ORIGIN: z.string().optional(),
   HOSTED_OIDC_ISSUER: z.string().optional(),
   HOSTED_OIDC_CLIENT_ID: z.string().optional(),
+  HOSTED_OIDC_PREFLIGHT_MODE: z.enum(["disabled", "enabled"]).default("disabled"),
+  HOSTED_OIDC_TOKEN_AUTH_METHOD: z
+    .enum(["none", "client_secret_basic", "client_secret_post"])
+    .optional(),
+  HOSTED_OIDC_CLIENT_SECRET: z.string().optional(),
+  HOSTED_LOGIN_TRANSACTION_PEPPER: z.string().optional(),
+  HOSTED_SESSION_PEPPER: z.string().optional(),
+  HOSTED_LOGIN_PKCE_KEYS: z.string().optional(),
+  HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID: z.string().optional(),
   PRODUCT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(240),
   LOCAL_MODEL_ADVISOR_MODE: z.enum(["disabled", "ollama"]).default("disabled"),
   LOCAL_MODEL_PROPOSAL_MODE: z.enum(["disabled", "ollama"]).default("disabled"),
@@ -92,16 +101,38 @@ export type ApiConfig = Omit<
   | "HOSTED_PUBLIC_ORIGIN"
   | "HOSTED_OIDC_ISSUER"
   | "HOSTED_OIDC_CLIENT_ID"
+  | "HOSTED_OIDC_TOKEN_AUTH_METHOD"
+  | "HOSTED_OIDC_CLIENT_SECRET"
+  | "HOSTED_LOGIN_TRANSACTION_PEPPER"
+  | "HOSTED_SESSION_PEPPER"
+  | "HOSTED_LOGIN_PKCE_KEYS"
+  | "HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID"
 > & {
   readonly PRODUCT_API_MODE: "disabled" | "local_unauthenticated";
   readonly API_TRUSTED_PROXIES: string[];
   readonly HOSTED_OIDC_REGISTRATION: HostedOidcRegistration | undefined;
+  readonly HOSTED_OIDC_PREFLIGHT: HostedOidcPreflight | undefined;
 };
 export type HostedOidcRegistration = Readonly<{
   publicOrigin: string;
   issuer: string;
   clientId: string;
   redirectUri: string;
+}>;
+export type HostedOidcPreflight = Readonly<{
+  registration: HostedOidcRegistration;
+  loginTransactionPepper: string;
+  browserSessionPepper: string;
+  pkceKeyRing: Readonly<{
+    primaryKeyId: string;
+    keys: Readonly<Record<string, string>>;
+  }>;
+  tokenEndpointAuthentication:
+    | Readonly<{ method: "none" }>
+    | Readonly<{
+        method: "client_secret_basic" | "client_secret_post";
+        clientSecret: string;
+      }>;
 }>;
 export type WebhookMasterKey = Readonly<{
   /** Conservative, canonical key identifier; never derived from a secret. */
@@ -265,10 +296,26 @@ function parseLocalModelAdvisorUrl(value: string): string {
 
 const MAXIMUM_HOSTED_URL_BYTES = 2_048;
 const MAXIMUM_HOSTED_CLIENT_ID_BYTES = 512;
+const MAXIMUM_HOSTED_SECRET_BYTES = 1_024;
+const MAXIMUM_HOSTED_PKCE_KEYS_BYTES = 1_231;
+const HOSTED_PKCE_KEY_ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/u;
+const HOSTED_OIDC_PREFLIGHT_MODES = new Set(["disabled", "enabled"]);
+const HOSTED_OIDC_TOKEN_AUTH_METHODS = new Set([
+  "none",
+  "client_secret_basic",
+  "client_secret_post",
+]);
 const STAGED_HOSTED_VARIABLES = new Set([
   "HOSTED_PUBLIC_ORIGIN",
   "HOSTED_OIDC_ISSUER",
   "HOSTED_OIDC_CLIENT_ID",
+  "HOSTED_OIDC_PREFLIGHT_MODE",
+  "HOSTED_OIDC_TOKEN_AUTH_METHOD",
+  "HOSTED_OIDC_CLIENT_SECRET",
+  "HOSTED_LOGIN_TRANSACTION_PEPPER",
+  "HOSTED_SESSION_PEPPER",
+  "HOSTED_LOGIN_PKCE_KEYS",
+  "HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID",
 ]);
 
 function containsControl(value: string): boolean {
@@ -276,7 +323,7 @@ function containsControl(value: string): boolean {
     const code = value.charCodeAt(index);
     if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return true;
   }
-  return false;
+  return /[\p{Cf}\p{Zl}\p{Zp}]/u.test(value);
 }
 
 function parseExactHostedHttpsUrl(value: string, originOnly: boolean): string | null {
@@ -345,6 +392,110 @@ function parseHostedOidcRegistration(input: {
   return Object.freeze({ publicOrigin, issuer, clientId, redirectUri });
 }
 
+function invalidHostedOidcPreflight(): never {
+  throw new Error("Hosted OIDC preflight configuration is invalid.");
+}
+
+function validHostedSecret(value: string | undefined, minimumBytes: number): value is string {
+  if (value === undefined) return false;
+  const bytes = Buffer.byteLength(value, "utf8");
+  return bytes >= minimumBytes && bytes <= MAXIMUM_HOSTED_SECRET_BYTES && !containsControl(value);
+}
+
+function parseHostedPkceKeys(value: string | undefined): Readonly<Record<string, string>> {
+  if (value === undefined || Buffer.byteLength(value, "utf8") > MAXIMUM_HOSTED_PKCE_KEYS_BYTES) {
+    invalidHostedOidcPreflight();
+  }
+  const sourceEntries = value.split(",");
+  if (sourceEntries.length < 1 || sourceEntries.length > 16) invalidHostedOidcPreflight();
+  const entries: Array<readonly [string, string]> = [];
+  const ids = new Set<string>();
+  for (const entry of sourceEntries) {
+    const separator = entry.indexOf(":");
+    if (separator <= 0 || separator !== entry.lastIndexOf(":")) invalidHostedOidcPreflight();
+    const id = entry.slice(0, separator);
+    const material = entry.slice(separator + 1);
+    if (
+      !HOSTED_PKCE_KEY_ID_PATTERN.test(id) ||
+      ids.has(id) ||
+      !/^[A-Za-z0-9_-]{43}$/u.test(material)
+    ) {
+      invalidHostedOidcPreflight();
+    }
+    const decoded = Buffer.from(material, "base64url");
+    if (decoded.length !== 32 || decoded.toString("base64url") !== material) {
+      invalidHostedOidcPreflight();
+    }
+    ids.add(id);
+    entries.push([id, material]);
+  }
+  return Object.freeze(Object.fromEntries(entries));
+}
+
+function parseHostedOidcPreflight(
+  registration: HostedOidcRegistration | undefined,
+  input: {
+    readonly HOSTED_OIDC_PREFLIGHT_MODE: "disabled" | "enabled";
+    readonly HOSTED_OIDC_TOKEN_AUTH_METHOD:
+      "none" | "client_secret_basic" | "client_secret_post" | undefined;
+    readonly HOSTED_OIDC_CLIENT_SECRET: string | undefined;
+    readonly HOSTED_LOGIN_TRANSACTION_PEPPER: string | undefined;
+    readonly HOSTED_SESSION_PEPPER: string | undefined;
+    readonly HOSTED_LOGIN_PKCE_KEYS: string | undefined;
+    readonly HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID: string | undefined;
+  },
+): HostedOidcPreflight | undefined {
+  const companionValues = [
+    input.HOSTED_OIDC_TOKEN_AUTH_METHOD,
+    input.HOSTED_OIDC_CLIENT_SECRET,
+    input.HOSTED_LOGIN_TRANSACTION_PEPPER,
+    input.HOSTED_SESSION_PEPPER,
+    input.HOSTED_LOGIN_PKCE_KEYS,
+    input.HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID,
+  ];
+  if (input.HOSTED_OIDC_PREFLIGHT_MODE === "disabled") {
+    if (companionValues.some((value) => value !== undefined && value !== "")) {
+      invalidHostedOidcPreflight();
+    }
+    return undefined;
+  }
+  if (
+    registration === undefined ||
+    !validHostedSecret(input.HOSTED_LOGIN_TRANSACTION_PEPPER, 32) ||
+    !validHostedSecret(input.HOSTED_SESSION_PEPPER, 32)
+  ) {
+    invalidHostedOidcPreflight();
+  }
+  const keys = parseHostedPkceKeys(input.HOSTED_LOGIN_PKCE_KEYS);
+  const primaryKeyId = input.HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID;
+  if (
+    primaryKeyId === undefined ||
+    !HOSTED_PKCE_KEY_ID_PATTERN.test(primaryKeyId) ||
+    !Object.hasOwn(keys, primaryKeyId)
+  ) {
+    invalidHostedOidcPreflight();
+  }
+  const method = input.HOSTED_OIDC_TOKEN_AUTH_METHOD;
+  const clientSecret = input.HOSTED_OIDC_CLIENT_SECRET;
+  const tokenEndpointAuthentication =
+    method === "none"
+      ? clientSecret === undefined || clientSecret === ""
+        ? Object.freeze({ method })
+        : invalidHostedOidcPreflight()
+      : method === "client_secret_basic" || method === "client_secret_post"
+        ? validHostedSecret(clientSecret, 1)
+          ? Object.freeze({ method, clientSecret })
+          : invalidHostedOidcPreflight()
+        : invalidHostedOidcPreflight();
+  return Object.freeze({
+    registration,
+    loginTransactionPepper: input.HOSTED_LOGIN_TRANSACTION_PEPPER,
+    browserSessionPepper: input.HOSTED_SESSION_PEPPER,
+    pkceKeyRing: Object.freeze({ primaryKeyId, keys }),
+    tokenEndpointAuthentication,
+  });
+}
+
 export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): ApiConfig => {
   const hasPrematureHostedConfiguration = Object.entries(environment).some(([name, value]) => {
     const normalizedName = name.toUpperCase();
@@ -363,16 +514,47 @@ export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): Api
       "Hosted companion configuration is not accepted while HOSTED_API_MODE is disabled.",
     );
   }
+  if (environment.HOSTED_API_MODE !== undefined && environment.HOSTED_API_MODE !== "disabled") {
+    throw new Error("HOSTED_API_MODE must remain disabled.");
+  }
+  if (
+    (environment.HOSTED_OIDC_PREFLIGHT_MODE !== undefined &&
+      !HOSTED_OIDC_PREFLIGHT_MODES.has(environment.HOSTED_OIDC_PREFLIGHT_MODE)) ||
+    (environment.HOSTED_OIDC_TOKEN_AUTH_METHOD !== undefined &&
+      !HOSTED_OIDC_TOKEN_AUTH_METHODS.has(environment.HOSTED_OIDC_TOKEN_AUTH_METHOD))
+  ) {
+    invalidHostedOidcPreflight();
+  }
   const parsed = apiSchema.parse(environment);
-  const { HOSTED_PUBLIC_ORIGIN, HOSTED_OIDC_ISSUER, HOSTED_OIDC_CLIENT_ID, ...publicConfig } =
-    parsed;
+  const {
+    HOSTED_PUBLIC_ORIGIN,
+    HOSTED_OIDC_ISSUER,
+    HOSTED_OIDC_CLIENT_ID,
+    HOSTED_OIDC_TOKEN_AUTH_METHOD,
+    HOSTED_OIDC_CLIENT_SECRET,
+    HOSTED_LOGIN_TRANSACTION_PEPPER,
+    HOSTED_SESSION_PEPPER,
+    HOSTED_LOGIN_PKCE_KEYS,
+    HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID,
+    ...publicConfig
+  } = parsed;
+  const hostedOidcRegistration = parseHostedOidcRegistration({
+    HOSTED_PUBLIC_ORIGIN,
+    HOSTED_OIDC_ISSUER,
+    HOSTED_OIDC_CLIENT_ID,
+  });
   const config: ApiConfig = {
     ...publicConfig,
     API_TRUSTED_PROXIES: parseTrustedProxies(parsed.API_TRUSTED_PROXIES),
-    HOSTED_OIDC_REGISTRATION: parseHostedOidcRegistration({
-      HOSTED_PUBLIC_ORIGIN,
-      HOSTED_OIDC_ISSUER,
-      HOSTED_OIDC_CLIENT_ID,
+    HOSTED_OIDC_REGISTRATION: hostedOidcRegistration,
+    HOSTED_OIDC_PREFLIGHT: parseHostedOidcPreflight(hostedOidcRegistration, {
+      HOSTED_OIDC_PREFLIGHT_MODE: parsed.HOSTED_OIDC_PREFLIGHT_MODE,
+      HOSTED_OIDC_TOKEN_AUTH_METHOD,
+      HOSTED_OIDC_CLIENT_SECRET,
+      HOSTED_LOGIN_TRANSACTION_PEPPER,
+      HOSTED_SESSION_PEPPER,
+      HOSTED_LOGIN_PKCE_KEYS,
+      HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID,
     }),
     LOCAL_MODEL_ADVISOR_URL: parseLocalModelAdvisorUrl(parsed.LOCAL_MODEL_ADVISOR_URL),
     PRODUCT_API_MODE:

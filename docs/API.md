@@ -12,9 +12,11 @@ not authorize these product routes.
 - Production is always `disabled`; configuration rejects attempts to enable unauthenticated routes in production or on a non-loopback application bind.
 - `HOSTED_API_MODE` is a separate disabled-only gate. Its sole accepted value is `disabled`.
   `HOSTED_PUBLIC_ORIGIN`, `HOSTED_OIDC_ISSUER`, and `HOSTED_OIDC_CLIENT_ID` may be staged only as one
-  complete validated non-secret set; partial sets, secrets, mixed-case aliases, and unknown
-  non-empty `HOSTED_*` variables fail startup. `/v1/system/info` still reports
-  `hostedEndpointsEnabled: false`.
+  complete validated non-secret set. `HOSTED_OIDC_PREFLIGHT_MODE=enabled` may additionally construct
+  the dormant dependency graph from one complete bounded secret set before app creation. Partial,
+  malformed, premature, mixed-case, and unknown non-empty `HOSTED_*` values fail startup without
+  disclosure. The graph is not passed to `buildApp`; `/v1/system/info` still reports
+  `hostedEndpointsEnabled: false`, and hosted routes remain absent.
 - This mode must not be exposed to an untrusted network. Authentication and authorization are required before public hosting.
 - CORS is disabled, JSON bodies are limited to 256 KiB, request objects reject unknown fields, and error responses do not include stack traces.
 - Product routes reject missing, malformed, or non-loopback `Host` authorities before routing. This protects the unauthenticated loopback service from browser DNS-rebinding attacks; `localhost`, IPv4 `127.0.0.0/8`, and IPv6 loopback (`[::1]`) are accepted with an optional valid port. Health and system-information endpoints remain outside this product-route guard for local process and container diagnostics.

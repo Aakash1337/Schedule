@@ -3,6 +3,19 @@ import { describe, expect, it } from "vitest";
 import { loadApiConfig, loadWorkerConfig } from "./index.js";
 
 const webhookKeyMaterial = (byte: number) => Buffer.alloc(32, byte).toString("base64url");
+const hostedPreflightEnvironment = (overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
+  HOSTED_PUBLIC_ORIGIN: "https://schedule.example.com",
+  HOSTED_OIDC_ISSUER: "https://login.example.com/tenant",
+  HOSTED_OIDC_CLIENT_ID: "schedule-browser",
+  HOSTED_OIDC_PREFLIGHT_MODE: "enabled",
+  HOSTED_OIDC_TOKEN_AUTH_METHOD: "client_secret_basic",
+  HOSTED_OIDC_CLIENT_SECRET: "provider-secret",
+  HOSTED_LOGIN_TRANSACTION_PEPPER: "login-transaction-pepper-with-32-bytes",
+  HOSTED_SESSION_PEPPER: "browser-session-pepper-with-32-bytes",
+  HOSTED_LOGIN_PKCE_KEYS: `primary:${webhookKeyMaterial(31)}`,
+  HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID: "primary",
+  ...overrides,
+});
 
 describe("runtime configuration", () => {
   it("provides safe local defaults", () => {
@@ -13,6 +26,8 @@ describe("runtime configuration", () => {
     expect(config.PRODUCT_API_MODE).toBe("local_unauthenticated");
     expect(config.HOSTED_API_MODE).toBe("disabled");
     expect(config.HOSTED_OIDC_REGISTRATION).toBeUndefined();
+    expect(config.HOSTED_OIDC_PREFLIGHT_MODE).toBe("disabled");
+    expect(config.HOSTED_OIDC_PREFLIGHT).toBeUndefined();
     expect(config.PRODUCT_RATE_LIMIT_PER_MINUTE).toBe(240);
     expect(config.LOCAL_MODEL_ADVISOR_MODE).toBe("disabled");
     expect(config.LOCAL_MODEL_PROPOSAL_MODE).toBe("disabled");
@@ -58,6 +73,43 @@ describe("runtime configuration", () => {
       redirectUri: "https://schedule.example.com/v1/auth/callback",
     });
     expect(Object.isFrozen(config.HOSTED_OIDC_REGISTRATION)).toBe(true);
+  });
+
+  it("loads one immutable dormant hosted OIDC preflight with rotating PKCE keys", () => {
+    const primary = webhookKeyMaterial(31);
+    const previous = webhookKeyMaterial(30);
+    const config = loadApiConfig(
+      hostedPreflightEnvironment({
+        HOSTED_LOGIN_PKCE_KEYS: `previous:${previous},primary:${primary}`,
+      }),
+    );
+
+    expect(config.HOSTED_API_MODE).toBe("disabled");
+    expect(config.HOSTED_OIDC_PREFLIGHT).toEqual({
+      registration: config.HOSTED_OIDC_REGISTRATION,
+      loginTransactionPepper: "login-transaction-pepper-with-32-bytes",
+      browserSessionPepper: "browser-session-pepper-with-32-bytes",
+      pkceKeyRing: { primaryKeyId: "primary", keys: { previous, primary } },
+      tokenEndpointAuthentication: {
+        method: "client_secret_basic",
+        clientSecret: "provider-secret",
+      },
+    });
+    expect(Object.isFrozen(config.HOSTED_OIDC_PREFLIGHT)).toBe(true);
+    expect(Object.isFrozen(config.HOSTED_OIDC_PREFLIGHT?.pkceKeyRing)).toBe(true);
+    expect(Object.isFrozen(config.HOSTED_OIDC_PREFLIGHT?.pkceKeyRing.keys)).toBe(true);
+    expect(Object.isFrozen(config.HOSTED_OIDC_PREFLIGHT?.tokenEndpointAuthentication)).toBe(true);
+  });
+
+  it("accepts explicit public-client preflight without a client secret", () => {
+    const config = loadApiConfig(
+      hostedPreflightEnvironment({
+        HOSTED_OIDC_TOKEN_AUTH_METHOD: "none",
+        HOSTED_OIDC_CLIENT_SECRET: undefined,
+      }),
+    );
+
+    expect(config.HOSTED_OIDC_PREFLIGHT?.tokenEndpointAuthentication).toEqual({ method: "none" });
   });
 
   it.each([
@@ -125,24 +177,23 @@ describe("runtime configuration", () => {
     },
   );
 
-  it("rejects hosted secrets and unknown companions without disclosing them", () => {
+  it("rejects unknown hosted companions without disclosing them", () => {
     const secret = "https://issuer.example/tenant?credential=private-value";
     for (const environment of [
-      { HOSTED_SESSION_PEPPER: secret },
-      { HOSTED_OIDC_CLIENT_SECRET: " " },
       { Hosted_Oidc_Client_Secret: secret },
       { Hosted_Public_Origin: secret },
       { Hosted_Api_Mode: "enabled" },
     ]) {
+      let error: unknown;
       try {
         loadApiConfig(environment);
-        expect.unreachable("expected premature hosted configuration to fail");
-      } catch (error) {
-        expect(error).toBeInstanceOf(Error);
-        expect((error as Error).message).toMatch(/Hosted companion configuration/);
-        expect((error as Error).message).not.toContain(secret);
-        expect((error as Error).message).not.toContain("private-value");
+      } catch (reason) {
+        error = reason;
       }
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/Hosted companion configuration/);
+      expect((error as Error).message).not.toContain(secret);
+      expect((error as Error).message).not.toContain("private-value");
     }
 
     expect(
@@ -155,6 +206,53 @@ describe("runtime configuration", () => {
       }).HOSTED_OIDC_REGISTRATION,
     ).toBeUndefined();
   });
+
+  it.each([
+    { HOSTED_SESSION_PEPPER: "session-secret-with-more-than-32-bytes" },
+    { HOSTED_OIDC_PREFLIGHT_MODE: "enabled" },
+    hostedPreflightEnvironment({
+      HOSTED_OIDC_CLIENT_SECRET: "bad\nsecret",
+    }),
+    hostedPreflightEnvironment({ HOSTED_OIDC_CLIENT_SECRET: "bad\u202esecret" }),
+    { HOSTED_OIDC_PREFLIGHT_MODE: "private-mode-sentinel" },
+    hostedPreflightEnvironment({
+      HOSTED_OIDC_TOKEN_AUTH_METHOD: "private-method-sentinel",
+    }),
+    hostedPreflightEnvironment({
+      HOSTED_OIDC_TOKEN_AUTH_METHOD: "none",
+      HOSTED_OIDC_CLIENT_SECRET: "must-not-be-present",
+    }),
+    hostedPreflightEnvironment({
+      HOSTED_LOGIN_TRANSACTION_PEPPER: "short",
+    }),
+    hostedPreflightEnvironment({
+      HOSTED_SESSION_PEPPER: `${"x".repeat(32)}\u2028`,
+    }),
+    hostedPreflightEnvironment({
+      HOSTED_LOGIN_PKCE_KEYS: `duplicate:${webhookKeyMaterial(30)},duplicate:${webhookKeyMaterial(31)}`,
+      HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID: "duplicate",
+    }),
+    hostedPreflightEnvironment({ HOSTED_LOGIN_PKCE_KEYS: "x,".repeat(616) }),
+  ])(
+    "rejects an invalid or premature hosted preflight without disclosing values",
+    (environment) => {
+      const serialized = JSON.stringify(environment);
+      let error: unknown;
+      try {
+        loadApiConfig(environment);
+      } catch (reason) {
+        error = reason;
+      }
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("Hosted OIDC preflight configuration is invalid.");
+      for (const value of Object.values(environment)) {
+        if (typeof value === "string" && value.length > 8) {
+          expect((error as Error).message).not.toContain(value);
+        }
+      }
+      expect((error as Error).message).not.toContain(serialized);
+    },
+  );
 
   it("rejects attempts to expose the unauthenticated product API", () => {
     expect(() =>
