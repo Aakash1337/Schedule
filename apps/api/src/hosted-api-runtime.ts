@@ -2,11 +2,13 @@ import {
   AuthorizeHostedWorkspace,
   CreateHostedWorkItem,
   ListHostedWorkspaces,
+  ListWorkItems,
 } from "@schedule/application";
 import type { ApiConfig } from "@schedule/config";
 import {
   PostgresHostedMutationUnitOfWork,
   PostgresIdentityUnitOfWork,
+  PostgresUnitOfWork,
   type DatabaseConnection,
 } from "@schedule/database";
 
@@ -34,6 +36,7 @@ async function hostedApiOptions(
   }
   const identityUnitOfWork = new PostgresIdentityUnitOfWork(database);
   const listWorkspaces = new ListHostedWorkspaces(identityUnitOfWork);
+  const listWorkItems = new ListWorkItems(new PostgresUnitOfWork(database));
   const createWorkItem = new CreateHostedWorkItem(new PostgresHostedMutationUnitOfWork(database), {
     now: () => new Date(),
   });
@@ -54,6 +57,13 @@ async function hostedApiOptions(
       listWorkspaces: (input) => listWorkspaces.execute(input),
     },
     workItems: {
+      listWorkItems: ({ authorization }) =>
+        listWorkItems.execute({
+          workspaceId: authorization.workspaceId,
+          status: "backlog",
+          limit: 20,
+          offset: 0,
+        }),
       createWorkItem: ({ authorization, command }) =>
         createWorkItem.execute(authorization, command),
     },

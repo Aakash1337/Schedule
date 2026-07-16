@@ -1,9 +1,10 @@
 import type {
   CreateHostedWorkItemCommand,
   HostedWorkspaceAuthorization,
+  WorkItemPage,
 } from "@schedule/application";
 import { DomainError, localDate, workItemId, workspaceId, type WorkItem } from "@schedule/domain";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import {
@@ -19,16 +20,47 @@ const canonicalUuid = z
   .uuid()
   .transform((value) => value.toLowerCase());
 const hostedWorkspaceParams = z.strictObject({ workspaceId: canonicalUuid });
+const emptyQuery = z.strictObject({});
 
-export const HOSTED_WORK_ITEM_CREATE_ROUTE = "/v1/hosted/workspaces/:workspaceId/work-items";
+export const HOSTED_WORK_ITEM_COLLECTION_ROUTE = "/v1/hosted/workspaces/:workspaceId/work-items";
 
 export interface HostedCreateWorkItemInput {
   readonly authorization: HostedWorkspaceAuthorization;
   readonly command: CreateHostedWorkItemCommand;
 }
 
+export interface HostedListWorkItemsInput {
+  readonly authorization: HostedWorkspaceAuthorization;
+}
+
 export interface HostedWorkItemServices {
   createWorkItem(input: HostedCreateWorkItemInput): Promise<WorkItem>;
+  listWorkItems(input: HostedListWorkItemsInput): Promise<WorkItemPage>;
+}
+
+function requestAuthorization(
+  request: FastifyRequest,
+  access: HostedWorkspaceRequestAccess,
+): HostedWorkspaceAuthorization {
+  const params = parseRequest(hostedWorkspaceParams, request.params);
+  const authorization = access.authorization(request);
+  if (authorization.workspaceId !== workspaceId(params.workspaceId)) {
+    throw new DomainError("workspace.not_found", "The requested workspace does not exist.");
+  }
+  return authorization;
+}
+
+async function withWorkspaceNotFoundRedacted<Result>(
+  operation: () => Promise<Result>,
+): Promise<Result> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof DomainError && error.code === "workspace.not_found") {
+      throw new DomainError("workspace.not_found", "The requested workspace does not exist.");
+    }
+    throw error;
+  }
 }
 
 async function registerHostedWorkItemRoutes(
@@ -36,17 +68,24 @@ async function registerHostedWorkItemRoutes(
   access: HostedWorkspaceRequestAccess,
   services: HostedWorkItemServices,
 ): Promise<void> {
-  app.post(HOSTED_WORK_ITEM_CREATE_ROUTE, async (request, reply) => {
-    const params = parseRequest(hostedWorkspaceParams, request.params);
-    const authorization = access.authorization(request);
-    const requestedWorkspaceId = workspaceId(params.workspaceId);
-    if (authorization.workspaceId !== requestedWorkspaceId) {
-      throw new DomainError("workspace.not_found", "The requested workspace does not exist.");
-    }
+  app.get(HOSTED_WORK_ITEM_COLLECTION_ROUTE, async (request) => {
+    parseRequest(emptyQuery, request.query);
+    const authorization = requestAuthorization(request, access);
+    const page = await withWorkspaceNotFoundRedacted(() =>
+      services.listWorkItems({ authorization }),
+    );
+    return {
+      items: page.items.map(({ id, title }) => ({ id, title })),
+      limit: page.limit,
+      offset: page.offset,
+    };
+  });
+
+  app.post(HOSTED_WORK_ITEM_COLLECTION_ROUTE, async (request, reply) => {
+    const authorization = requestAuthorization(request, access);
     const body = parseRequest(workItemCreateBodySchema, request.body);
-    let created: WorkItem;
-    try {
-      created = await services.createWorkItem({
+    const created = await withWorkspaceNotFoundRedacted(() =>
+      services.createWorkItem({
         authorization,
         command: {
           parentWorkItemId:
@@ -58,13 +97,8 @@ async function registerHostedWorkItemRoutes(
           dueOn: body.dueOn === null ? null : localDate(body.dueOn),
           planningDurationMinutes: body.planningDurationMinutes,
         },
-      });
-    } catch (error) {
-      if (error instanceof DomainError && error.code === "workspace.not_found") {
-        throw new DomainError("workspace.not_found", "The requested workspace does not exist.");
-      }
-      throw error;
-    }
+      }),
+    );
     return reply.code(201).send(created);
   });
 }

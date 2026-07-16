@@ -144,8 +144,8 @@ unauthenticated product routes disabled. The enabled surface provides login, cal
 logout, automatic first-login default-workspace membership, and one membership-authorized work-item
 create route with bounded per-source throttling. An authenticated read returns only the caller's
 active workspace page. A same-origin hosted capture shell can sign in, select one active workspace,
-and add one title to its backlog through that authorized mutation. It does not provide workspace
-administration, work-item reads or edits, the broader product API, or synchronization.
+review the first 20 backlog titles, and add one title through that authorized mutation. It does not
+provide workspace administration, work-item editing, the broader product API, or synchronization.
 Partial sets and non-empty mixed-case aliases or unknown companions fail startup without disclosing values.
 Health and system-information endpoints
 intentionally remain available independently of the product Host guard for local diagnostics.
@@ -201,8 +201,8 @@ confirmation key, cancel, focus, and reload natural-language work proposals with
 interception.
 
 Run `pnpm verify:hosted-web-e2e` for the separate built OIDC capture entry. Its strict browser double
-checks signed-out and authenticated states, workspace choice, exact CSRF forwarding, title-only
-capture, and 360-pixel layout; the PostgreSQL composition verifier covers the real hosted server
+checks signed-out and authenticated states, workspace choice, bounded backlog refresh, exact CSRF
+forwarding, title-only capture, and 360-pixel layout; the PostgreSQL composition verifier covers the real hosted server
 boundary.
 
 With PostgreSQL running, verify backlog/Kanban, hierarchy, work-item prerequisites, and calendar

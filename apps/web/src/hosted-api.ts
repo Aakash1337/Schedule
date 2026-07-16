@@ -7,6 +7,17 @@ interface HostedWorkspacePage {
   readonly items: readonly HostedWorkspace[];
 }
 
+export interface HostedWorkItem {
+  readonly id: string;
+  readonly title: string;
+}
+
+export interface HostedWorkItemPage {
+  readonly items: readonly HostedWorkItem[];
+  readonly limit: number;
+  readonly offset: number;
+}
+
 export class HostedApiError extends Error {
   constructor(
     readonly status: number,
@@ -71,10 +82,15 @@ export const hostedApi = {
   signInPath: "/v1/auth/login",
   session: () => request<{ readonly authenticated: boolean }>("/v1/auth/session"),
   listWorkspaces: () => request<HostedWorkspacePage>("/v1/hosted/workspaces?limit=20&offset=0"),
-  createWorkItem: (workspaceId: string, title: string) =>
-    request<{ readonly id: string; readonly title: string }>(
+  listWorkItems: (workspaceId: string) =>
+    request<HostedWorkItemPage>(
       `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/work-items`,
-      { method: "POST", json: { title }, csrf: true },
     ),
+  createWorkItem: (workspaceId: string, title: string) =>
+    request<HostedWorkItem>(`/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/work-items`, {
+      method: "POST",
+      json: { title },
+      csrf: true,
+    }),
   logout: () => request<void>("/v1/auth/logout", { method: "POST", csrf: true }),
 };

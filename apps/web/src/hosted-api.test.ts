@@ -9,11 +9,17 @@ afterEach(() => {
 });
 
 describe("hosted web API client", () => {
-  it("uses only the same-origin session and workspace discovery routes", async () => {
+  it("uses only the same-origin session and bounded hosted read routes", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ authenticated: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [], limit: 20, offset: 0 }), {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
@@ -28,6 +34,7 @@ describe("hosted web API client", () => {
 
     await expect(hostedApi.session()).resolves.toEqual({ authenticated: true });
     await expect(hostedApi.listWorkspaces()).resolves.toMatchObject({ items: [] });
+    await expect(hostedApi.listWorkItems("workspace/one")).resolves.toMatchObject({ items: [] });
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       "/v1/auth/session",
@@ -36,6 +43,11 @@ describe("hosted web API client", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "/v1/hosted/workspaces?limit=20&offset=0",
+      expect.objectContaining({ method: "GET", credentials: "same-origin" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/v1/hosted/workspaces/workspace%2Fone/work-items",
       expect.objectContaining({ method: "GET", credentials: "same-origin" }),
     );
   });

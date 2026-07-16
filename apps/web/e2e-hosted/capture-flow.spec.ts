@@ -9,6 +9,12 @@ const workspaces = [
 test("captures one hosted backlog item with responsive request verification", async ({ page }) => {
   let capturedBody: unknown;
   let capturedCsrf: string | undefined;
+  const existing = {
+    id: "00000000-0000-4000-8000-000000000009",
+    title: `Review-${"outline".repeat(24)}`,
+  };
+  const created = { id: "00000000-0000-4000-8000-000000000010", title: "Prepare release" };
+  let backlog = [existing];
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -25,16 +31,18 @@ test("captures one hosted backlog item with responsive request verification", as
       await route.fulfill({ json: { items: workspaces, limit: 20, offset: 0 } });
       return;
     }
+    if (request.method() === "GET" && url.pathname.endsWith("/work-items")) {
+      await route.fulfill({ json: { items: backlog, limit: 20, offset: 0 } });
+      return;
+    }
     if (
       request.method() === "POST" &&
       url.pathname === `/v1/hosted/workspaces/${workspaces[1]!.id}/work-items`
     ) {
       capturedBody = request.postDataJSON();
       capturedCsrf = request.headers()["x-schedule-csrf"];
-      await route.fulfill({
-        status: 201,
-        json: { id: "00000000-0000-4000-8000-000000000010", title: "Prepare release" },
-      });
+      backlog = [...backlog, created];
+      await route.fulfill({ status: 201, json: created });
       return;
     }
     await route.fulfill({ status: 404, json: { error: { code: "test.unexpected" } } });
@@ -42,11 +50,15 @@ test("captures one hosted backlog item with responsive request verification", as
 
   await page.goto("/hosted.html");
   await expect(page.getByRole("heading", { name: "What needs doing?" })).toBeVisible();
+  await expect(page.getByText(existing.title)).toBeVisible();
   await page.getByRole("combobox", { name: "Workspace" }).selectOption(workspaces[1]!.id);
   await page.getByRole("textbox", { name: "Work item" }).fill("Prepare release");
   await page.getByRole("button", { name: "Add to backlog" }).click();
 
-  await expect(page.getByRole("status")).toContainText("Added “Prepare release” to Studio.");
+  await expect(
+    page.getByRole("status").filter({ hasText: "Added “Prepare release” to Studio." }),
+  ).toBeVisible();
+  await expect(page.locator(".hosted-backlog-list li", { hasText: created.title })).toBeVisible();
   expect(capturedBody).toEqual({ title: "Prepare release" });
   expect(capturedCsrf).toBe(csrfToken);
 

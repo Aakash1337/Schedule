@@ -562,12 +562,14 @@ The audit deliberately leaves these visible instead of turning them into false g
   evidence for exact concurrent identity plus default-workspace provisioning, digest-only sessions,
   hardened cookies, exact-Origin CSRF, single-use login/PKCE, nonce-bound verification, pinned
   metadata/JWKS/token HTTPS, bounded client tracking, generic tenant denial, and transaction-coupled
-  work creation. Active workspace discovery has application, route, and database evidence for
-  bounded self-membership filtering without identity or role metadata. The enabled composition
+  work creation. Active workspace discovery and the fixed first-20 backlog projection have route,
+  component, browser, and database evidence for bounded membership-scoped reads without identity,
+  role, description, or planning metadata. The enabled composition
   verifier parses production configuration, builds the real route graph with a strict in-process
   provider, proves local product routes absent, drives login, the hardened same-origin capture
-  shell, discovery, and one authorized create, then checks logout and cleanup. A separate built
-  Chromium flow covers signed-out/authenticated capture, exact CSRF forwarding, and 360-pixel
+  shell, discovery, one bounded backlog read, and one authorized create, then checks logout and
+  cleanup. A separate built Chromium flow covers signed-out/authenticated capture, backlog refresh,
+  exact CSRF forwarding, and 360-pixel
   layout. Disabled-mode route closure and redacted startup failure remain independently verified.
   This evidence does not cover a real external provider, TLS ingress, workspace administration, the
   broader product API/interface, public deployment, or synchronization;

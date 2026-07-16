@@ -402,6 +402,21 @@ statement is excluded; a concurrent revocation cannot retract an already-authori
 endpoint is discovery only: it does not create, rename, delete, invite, or grant access to a
 workspace.
 
+## Bounded hosted backlog read
+
+`GET /v1/hosted/workspaces/:workspaceId/work-items` crosses the existing hosted cookie and
+workspace-membership preflight and accepts no query fields. It reuses the product work-item list
+inside a separate read transaction with fixed `status=backlog`, `limit=20`, and `offset=0`. The
+response is the stable first page ordered by creation time and ID and projects only each item's
+`id` and `title`, plus the fixed page bounds. It omits descriptions, hierarchy, priorities, due
+dates, durations, versions, identity data, and totals and always uses `Cache-Control: no-store`.
+
+This is a read-side operation under the preflight transaction limit above: a committed revocation
+fences the next request but cannot retract an already-authorized in-flight read. Path/context
+mismatch, deletion after preflight, and membership denial all remain the same generic `404` without
+private repository detail. The endpoint adds no update, completion, planning, filter, paging, or
+synchronization authority.
+
 ## Hosted capture shell
 
 Explicit OIDC mode also serves one same-origin capture page at `/`. The production API loads the
@@ -415,13 +430,14 @@ wildcard fallback, so it cannot shadow `/v1`, `/health`, or future product route
 framing denial, and MIME sniffing denial. Fingerprinted assets are immutable for one year. Static
 requests sit outside the hosted API's per-source request budget.
 
-The browser reads only `{ authenticated }`, the active workspace page, and the created work item.
-It never receives provider tokens, user or session identifiers, membership state, or roles. A
-signed-in user may choose one discovered workspace and submit one title. The script copies the
-exact host-only CSRF cookie into the existing header and calls the transaction-authorized hosted
-create route; the server remains authoritative for identity, membership, defaults, and validation.
-The page cannot list, edit, complete, schedule, or synchronize work and offers no workspace or
-account administration.
+The browser reads only `{ authenticated }`, the active workspace page, the first 20 backlog item
+IDs/titles, and the created work item. It never receives provider tokens, user or session
+identifiers, membership state, or roles. A signed-in user may choose one discovered workspace,
+review that bounded snapshot, and submit one title. The script copies the exact host-only CSRF
+cookie into the existing header and calls the transaction-authorized hosted create route; the
+server remains authoritative for identity, membership, defaults, and validation. The page cannot
+page, filter, edit, complete, schedule, or synchronize work and offers no workspace or account
+administration.
 
 ## Deliberately absent
 
@@ -429,9 +445,9 @@ There is still no WebFinger issuer discovery, public workspace provisioning or a
 broader hosted product interface or route set, account-management API, role model, synchronization
 protocol, or verified public deployment. The authenticated workspace list is discovery only.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
-principal. Work-item create is the only transaction-coupled hosted product mutation;
-all other product routes remain local-only and require their own transaction authority before any
-future hosted exposure.
+principal. Work-item create is the only transaction-coupled hosted product mutation. The bounded
+backlog snapshot is the only hosted product-data read; all other product routes remain local-only
+and require their own authority before future hosted exposure.
 
 ## Concrete OIDC composition
 

@@ -9,7 +9,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  HOSTED_WORK_ITEM_CREATE_ROUTE,
+  HOSTED_WORK_ITEM_COLLECTION_ROUTE,
   registerHostedWorkItemBoundary,
   type HostedWorkItemServices,
 } from "./hosted-work-item-routes.js";
@@ -38,7 +38,19 @@ afterEach(async () => {
   await Promise.all(apps.splice(0).map(async (app) => app.close()));
 });
 
-async function createHostedApp(services: HostedWorkItemServices): Promise<FastifyInstance> {
+function servicesWith(overrides: Partial<HostedWorkItemServices> = {}): HostedWorkItemServices {
+  return {
+    createWorkItem: vi.fn(async () => {
+      throw new Error("Unexpected hosted work-item create.");
+    }),
+    listWorkItems: vi.fn(async () => ({ items: [], limit: 20, offset: 0 })),
+    ...overrides,
+  };
+}
+
+async function createHostedApp(
+  services: Partial<HostedWorkItemServices>,
+): Promise<FastifyInstance> {
   const app = Fastify();
   apps.push(app);
   installErrorHandler(app);
@@ -54,7 +66,7 @@ async function createHostedApp(services: HostedWorkItemServices): Promise<Fastif
             : null,
       },
     },
-    services,
+    servicesWith(services),
   );
   await app.ready();
   return app;
@@ -75,7 +87,7 @@ describe("dormant hosted work-item routes", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: HOSTED_WORK_ITEM_CREATE_ROUTE.replace(":workspaceId", WORKSPACE_ID.toUpperCase()),
+      url: HOSTED_WORK_ITEM_COLLECTION_ROUTE.replace(":workspaceId", WORKSPACE_ID.toUpperCase()),
       headers: { "x-user-id": OTHER_USER_ID, "x-workspace-id": OTHER_WORKSPACE_ID },
       payload: {
         title: "  Hosted task  ",
@@ -103,6 +115,46 @@ describe("dormant hosted work-item routes", () => {
     expect(Object.isFrozen(createWorkItemService.mock.calls[0]?.[0].authorization)).toBe(true);
   });
 
+  it("returns one redacted fixed backlog page from canonical authority", async () => {
+    const first = createWorkItem({
+      workspaceId: WORKSPACE_ID,
+      title: "Visible backlog title",
+      description: "private description",
+      now: new Date("2026-07-15T09:00:00.000Z"),
+    });
+    const listWorkItems = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [first], limit: 20, offset: 0 })
+      .mockRejectedValueOnce(new DomainError("workspace.not_found", "private membership detail"));
+    const app = await createHostedApp({ listWorkItems });
+    const path = HOSTED_WORK_ITEM_COLLECTION_ROUTE.replace(
+      ":workspaceId",
+      WORKSPACE_ID.toUpperCase(),
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: path,
+      headers: { "x-user-id": OTHER_USER_ID, "x-workspace-id": OTHER_WORKSPACE_ID },
+    });
+    const malformed = await app.inject({ method: "GET", url: `${path}?limit=100` });
+    const revoked = await app.inject({ method: "GET", url: path });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({
+      items: [{ id: first.id, title: first.title }],
+      limit: 20,
+      offset: 0,
+    });
+    expect(response.body).not.toContain("private description");
+    expect(listWorkItems).toHaveBeenNthCalledWith(1, { authorization });
+    expect(malformed.statusCode).toBe(400);
+    expect(revoked.statusCode).toBe(404);
+    expect(revoked.body).not.toContain("private membership detail");
+    expect(listWorkItems).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects identity-bearing and malformed bodies before calling the service", async () => {
     const createWorkItemService = vi.fn();
     const app = await createHostedApp({ createWorkItem: createWorkItemService });
@@ -114,7 +166,7 @@ describe("dormant hosted work-item routes", () => {
     ]) {
       const response = await app.inject({
         method: "POST",
-        url: HOSTED_WORK_ITEM_CREATE_ROUTE.replace(":workspaceId", WORKSPACE_ID),
+        url: HOSTED_WORK_ITEM_COLLECTION_ROUTE.replace(":workspaceId", WORKSPACE_ID),
         payload,
       });
       expect(response.statusCode).toBe(400);
@@ -144,7 +196,7 @@ describe("dormant hosted work-item routes", () => {
 
       const response = await app.inject({
         method: "POST",
-        url: HOSTED_WORK_ITEM_CREATE_ROUTE.replace(":workspaceId", WORKSPACE_ID),
+        url: HOSTED_WORK_ITEM_COLLECTION_ROUTE.replace(":workspaceId", WORKSPACE_ID),
         payload: { title: "Denied" },
       });
 
@@ -167,7 +219,7 @@ describe("dormant hosted work-item routes", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: HOSTED_WORK_ITEM_CREATE_ROUTE.replace(":workspaceId", WORKSPACE_ID),
+      url: HOSTED_WORK_ITEM_COLLECTION_ROUTE.replace(":workspaceId", WORKSPACE_ID),
       payload: { title: "Unavailable" },
     });
 
@@ -193,13 +245,13 @@ describe("dormant hosted work-item routes", () => {
           execute: async () => Object.freeze({ ...authorization, workspaceId: OTHER_WORKSPACE_ID }),
         },
       },
-      { createWorkItem: createWorkItemService },
+      servicesWith({ createWorkItem: createWorkItemService }),
     );
     await app.ready();
 
     const response = await app.inject({
       method: "POST",
-      url: HOSTED_WORK_ITEM_CREATE_ROUTE.replace(":workspaceId", WORKSPACE_ID),
+      url: HOSTED_WORK_ITEM_COLLECTION_ROUTE.replace(":workspaceId", WORKSPACE_ID),
       payload: { title: "Mismatched" },
     });
 

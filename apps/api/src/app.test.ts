@@ -156,7 +156,7 @@ describe("API infrastructure", () => {
         authorizer: { execute: vi.fn(async () => null) },
       },
       workspaces: { listWorkspaces: vi.fn() },
-      workItems: { createWorkItem: vi.fn() },
+      workItems: { createWorkItem: vi.fn(), listWorkItems: vi.fn() },
       webShell: {
         html: '<!doctype html><div id="root"></div><script src="/assets/hosted.js"></script>',
         icon: Buffer.from("<svg></svg>"),
@@ -202,6 +202,12 @@ describe("API infrastructure", () => {
     });
     expect(protectedMutation.statusCode).toBe(401);
     expect(hostedApi.workItems.createWorkItem).not.toHaveBeenCalled();
+    const protectedWorkList = await protectedApp.inject({
+      method: "GET",
+      url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items",
+    });
+    expect(protectedWorkList.statusCode).toBe(401);
+    expect(hostedApi.workItems.listWorkItems).not.toHaveBeenCalled();
     const protectedWorkspaceList = await protectedApp.inject({
       method: "GET",
       url: "/v1/hosted/workspaces",

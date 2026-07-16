@@ -2,7 +2,7 @@ import { CheckCircle2, CircleDotDashed, LogOut, Plus } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { Button, ErrorNotice, Field, PageSkeleton } from "./components/ui";
-import { hostedApi, HostedApiError, type HostedWorkspace } from "./hosted-api";
+import { hostedApi, HostedApiError, type HostedWorkItem, type HostedWorkspace } from "./hosted-api";
 
 const selectedWorkspaceKey = "schedule.hostedWorkspace";
 
@@ -25,6 +25,10 @@ export function HostedApp() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<string | null>(null);
+  const [backlogItems, setBacklogItems] = useState<readonly HostedWorkItem[]>([]);
+  const [backlogLoading, setBacklogLoading] = useState(true);
+  const [backlogError, setBacklogError] = useState<string | null>(null);
+  const [backlogRefresh, setBacklogRefresh] = useState(0);
 
   const load = useCallback(async () => {
     setMode("loading");
@@ -56,6 +60,39 @@ export function HostedApp() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    if (mode !== "ready" || selectedWorkspaceId === null) {
+      setBacklogItems([]);
+      setBacklogLoading(false);
+      setBacklogError(null);
+      return;
+    }
+    let active = true;
+    setBacklogItems([]);
+    setBacklogLoading(true);
+    setBacklogError(null);
+    void hostedApi
+      .listWorkItems(selectedWorkspaceId)
+      .then((page) => {
+        if (active) setBacklogItems(page.items);
+      })
+      .catch((listError: unknown) => {
+        if (!active) return;
+        if (listError instanceof HostedApiError && listError.status === 401) {
+          setMode("signed-out");
+          setError(publicError(listError));
+          return;
+        }
+        setBacklogError(publicError(listError));
+      })
+      .finally(() => {
+        if (active) setBacklogLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [backlogRefresh, mode, selectedWorkspaceId]);
+
   const selectedWorkspace = useMemo(
     () => workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
     [selectedWorkspaceId, workspaces],
@@ -66,6 +103,9 @@ export function HostedApp() {
     setSelectedWorkspaceId(id);
     setConfirmation(null);
     setError(null);
+    setBacklogItems([]);
+    setBacklogLoading(true);
+    setBacklogError(null);
   }
 
   async function capture(event: FormEvent<HTMLFormElement>) {
@@ -79,6 +119,7 @@ export function HostedApp() {
       await hostedApi.createWorkItem(selectedWorkspace.id, capturedTitle);
       setTitle("");
       setConfirmation(`Added “${capturedTitle}” to ${selectedWorkspace.name}.`);
+      setBacklogRefresh((value) => value + 1);
     } catch (captureError) {
       if (captureError instanceof HostedApiError && captureError.status === 401) {
         setMode("signed-out");
@@ -194,6 +235,7 @@ export function HostedApp() {
               <Field label="Workspace" className="hosted-workspace-field">
                 <select
                   value={selectedWorkspace.id}
+                  disabled={busy}
                   onChange={(event) => selectWorkspace(event.target.value)}
                 >
                   {workspaces.map((workspace) => (
@@ -232,6 +274,38 @@ export function HostedApp() {
                 <span>{confirmation}</span>
               </p>
             )}
+            <div className="hosted-backlog" aria-labelledby="hosted-backlog-title">
+              <div className="hosted-backlog-heading">
+                <h2 id="hosted-backlog-title">Backlog snapshot</h2>
+                <span>First 20</span>
+              </div>
+              {backlogLoading ? (
+                <p className="hosted-backlog-state" role="status">
+                  Loading backlog…
+                </p>
+              ) : backlogError !== null ? (
+                <ErrorNotice
+                  message={backlogError}
+                  action={
+                    <Button
+                      type="button"
+                      variant="quiet"
+                      onClick={() => setBacklogRefresh((value) => value + 1)}
+                    >
+                      Retry backlog
+                    </Button>
+                  }
+                />
+              ) : backlogItems.length === 0 ? (
+                <p className="hosted-backlog-state">No backlog items yet.</p>
+              ) : (
+                <ul className="hosted-backlog-list">
+                  {backlogItems.map((item) => (
+                    <li key={item.id}>{item.title}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </section>
         )}
       </main>

@@ -27,14 +27,17 @@ pnpm dev
 
 The same package builds a separate `hosted.html` entry for explicit OIDC mode. It reuses the product
 controls and visual tokens but includes only session bootstrap, active-workspace discovery, sign
-in/out, and one title-only backlog form. The API serves that build from the same origin, so the
+in/out, one fixed first-page backlog snapshot, and one title-only backlog form. The API serves that
+build from the same origin, so the
 browser never needs CORS, provider tokens, or a second frontend service. The local application and
 its unauthenticated routes are not bundled into the hosted entry.
 
 The hosted shell shows a workspace selector only when more than one active membership exists. It
 stores only that selection in browser storage, sends the exact script-readable CSRF proof on
 mutations, and treats session, access, throttling, and availability failures as bounded states. It
-does not list or edit work and does not imply synchronization.
+shows only the first 20 backlog titles, refreshes that snapshot after capture, and keeps a failed
+read independent from the form. It cannot page, filter, or edit work and does not imply
+synchronization.
 
 ## Information architecture
 

@@ -321,6 +321,18 @@ try {
   });
   assert.equal(createdWorkItem.statusCode, 201, createdWorkItem.body);
   assert.equal(createdWorkItem.json().workspaceId, hostedAccount.workspaceId);
+  const listedWorkItems = await app.inject({
+    method: "GET",
+    url: `/v1/hosted/workspaces/${hostedAccount.workspaceId}/work-items`,
+    headers: { cookie: cookiePair(sessionCookie) },
+  });
+  assert.equal(listedWorkItems.statusCode, 200, listedWorkItems.body);
+  assert.equal(listedWorkItems.headers["cache-control"], "no-store");
+  assert.deepEqual(listedWorkItems.json(), {
+    items: [{ id: createdWorkItem.json().id, title: "Verified hosted work item" }],
+    limit: 20,
+    offset: 0,
+  });
 
   const [persisted] = await database.sql<
     {
@@ -417,7 +429,7 @@ try {
   assert.deepEqual(requestCounts, { discovery: 1, token: 1, jwks: 1 });
 
   console.log(
-    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout.",
+    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read.",
   );
 } catch (error) {
   verificationError = error;

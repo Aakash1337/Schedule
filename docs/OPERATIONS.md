@@ -519,14 +519,15 @@ Startup parses and freezes the complete set, performs one bounded provider disco
 dependency graph, and only then builds the API app. Failure exits before listening through a stable
 redacted error. Disabled mode logs only the preflight result and keeps routes closed. OIDC mode
 registers login, callback, session, logout, active workspace discovery, and the single hosted
-work-item create route, reports the capability, and throttles the hosted surface with
+work-item read/create collection, reports the capability, and throttles the hosted surface with
 `HOSTED_RATE_LIMIT_PER_MINUTE`. Source tracking is bounded to 4,096 least-recently used client
 addresses per API process.
 
 Do not enable OIDC mode until TLS ingress, trusted proxy ranges, secret injection, migrations, and
 database backups are in place. First login atomically creates one `My Schedule` workspace and active
 membership. The current slice can discover active memberships but has no hosted workspace
-administration, web shell, broad product API, or sync protocol.
+administration, broad product API, or sync protocol. Its same-origin shell can read only the first
+20 backlog IDs/titles and create one backlog title.
 
 Rotate PKCE by adding the new key, selecting it as primary, restarting, and retaining old keys for at
 least the five-minute login lifetime plus deployment skew before a later restart removes them.
@@ -535,7 +536,8 @@ browser sessions. Provider metadata and secrets do not hot-reload. Disable prefl
 configuration only through a controlled restart. Run `pnpm verify:hosted-runtime-preflight` before
 deploying a changed secret layout. Run `pnpm verify:hosted-oidc-composition-db` to exercise enabled
 configuration, production route assembly, first-login provisioning, authenticated work creation,
-logout, and cleanup against PostgreSQL without contacting an external provider.
+bounded backlog reading, logout, and cleanup against PostgreSQL without contacting an external
+provider.
 
 ## Routine verification
 
