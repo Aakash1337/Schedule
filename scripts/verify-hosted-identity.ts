@@ -122,11 +122,19 @@ try {
   );
 
   const identityCounts = await connection.sql<
-    { users: number; identities: number; orphans: number }[]
+    {
+      users: number;
+      identities: number;
+      workspaces: number;
+      memberships: number;
+      orphans: number;
+    }[]
   >`
     select
       (select count(*)::integer from users) as users,
       (select count(*)::integer from external_identities) as identities,
+      (select count(*)::integer from workspaces) as workspaces,
+      (select count(*)::integer from workspace_memberships) as memberships,
       (
         select count(*)::integer
         from users as "user"
@@ -135,7 +143,13 @@ try {
         )
       ) as orphans
   `;
-  assert.deepEqual(identityCounts[0], { users: 3, identities: 3, orphans: 0 });
+  assert.deepEqual(identityCounts[0], {
+    users: 3,
+    identities: 3,
+    workspaces: 3,
+    memberships: 3,
+    orphans: 0,
+  });
 
   const tokenCodec = new HmacBrowserSessionTokenCodec("identity-verifier-pepper-material-32-bytes");
   const issueSession = new IssueBrowserSession(unitOfWork, tokenCodec);
@@ -279,7 +293,7 @@ try {
   });
 
   console.log(
-    `Hosted identity verification passed exact concurrent provisioning, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation in ${verificationDatabase}`,
+    `Hosted identity verification passed exact concurrent provisioning with one default workspace, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation in ${verificationDatabase}`,
   );
 } finally {
   await connection?.close().catch(() => undefined);

@@ -13,6 +13,8 @@ Hermes paths—one local conversational plugin and one provider-neutral reminder
 foundation—are documented in the [Hermes guide](./docs/HERMES.md).
 The optional loopback worker health and metrics contract is in
 [docs/OBSERVABILITY.md](./docs/OBSERVABILITY.md).
+The opt-in hosted OIDC and workspace-authorization boundary is in
+[docs/HOSTED_AUTHORIZATION.md](./docs/HOSTED_AUTHORIZATION.md).
 The local model's explicit, review-before-write capture contract is documented in
 [docs/NATURAL_LANGUAGE.md](./docs/NATURAL_LANGUAGE.md).
 
@@ -131,10 +133,13 @@ database readiness.
 
 Local unauthenticated product routes are enabled only for non-production loopback development.
 Configuration rejects attempts to enable them in production or on a non-loopback bind, and the API
-rejects non-loopback product-route `Host` headers. `HOSTED_API_MODE` defaults to and accepts only
-`disabled`. One complete non-secret registration triad—public origin, issuer, and client ID—may be
-validated and staged while routes remain closed; partial sets, secrets, and non-empty mixed-case
-aliases or unknown companions fail startup so staged credentials cannot be mistaken for an enabled deployment.
+rejects non-loopback product-route `Host` headers. `HOSTED_API_MODE` defaults to `disabled`; `oidc`
+is accepted only with the complete immutable registration, secret-backed preflight, and local
+unauthenticated product routes disabled. The enabled surface provides login, callback, session,
+logout, automatic first-login default-workspace membership, and one membership-authorized work-item
+create route with bounded per-source throttling. It does not yet provide a hosted web shell,
+workspace discovery/administration, the broader product API, or synchronization.
+Partial sets and non-empty mixed-case aliases or unknown companions fail startup without disclosing values.
 Health and system-information endpoints
 intentionally remain available independently of the product Host guard for local diagnostics.
 
@@ -242,28 +247,12 @@ The API and worker are ordinary OCI-compatible Node processes. PostgreSQL is the
 Core packages do not depend on a hosting provider, queue vendor, or cloud SDK. The production
 runtime images use a fixed non-root identity; the executable OCI smoke gate additionally enforces a
 read-only root filesystem, dropped Linux capabilities, and `no-new-privileges` for migrations, the
-API, and the worker. These controls are a provider-neutral deployment prerequisite, not evidence that
-public hosting or browser authentication is enabled. Provider-neutral login/session/logout and
-transaction-coupled hosted work-item-create registrars now exercise the hardened browser boundary in
-isolation. A separate dormant login-transaction foundation provides digest-only state/browser
-binding, nonce and exact redirect binding, protected PKCE recovery, authoritative expiry, and
-single-use consumption. A nonce-bound OIDC ID-token verifier additionally enforces explicit
-asymmetric algorithms, exact transaction claims, bounded key resolution, and redacted failures with
-generated-key tests. A strict authorization-request builder preserves the issued transaction's exact
-provider bindings and emits only canonical, injection-safe code-flow parameters. A pinned
-remote-JWKS resolver adds exact endpoint binding, bounded streamed responses, cache reuse,
-single-flight refresh, rotation, and redacted failure classification through a mandatory injected
-transport. A trusted provider-metadata loader derives the official issuer-specific discovery URL,
-requires exact issuer and code-flow capabilities, and freezes one endpoint/algorithm snapshot behind
-the same injected transport boundary. A strict authorization-code exchanger now binds that snapshot
-to one consumed transaction, one advertised client-authentication method, one form-encoded PKCE
-`POST`, and one bounded token response without exposing access or refresh tokens. A disabled-only
-hosted runtime gate rejects premature companion configuration. The dormant registrar now composes
-transaction start/consume, authorization redirect, code exchange, nonce-bound verification,
-provisioning, and session issuance with a hardened browser-binding cookie, but it remains absent from
-`buildApp` and production server route wiring. A direct HTTPS transport now provides connection-level DNS,
-IP, proxy, and TLS enforcement behind the dormant adapters. An unregistered async factory composes
-the complete provider, persistence, identity, and session dependency graph. An explicit dormant
-preflight accepts bounded secret-manager-injected values and lets the production server construct
-and retain that graph before building the normal app; `HOSTED_API_MODE` remains disabled, capability
-reporting remains false, and an intentionally selected public hosted surface remains absent.
+API, and the worker. Complete secret-manager-fed `HOSTED_API_MODE=oidc` configuration now activates
+the hardened authorization-code lifecycle, nonce-bound verification, browser sessions, first-login
+workspace bootstrap, and one transaction-authorized hosted work-item mutation. Provider discovery,
+JWKS, and token exchange use bounded direct HTTPS with pinned address policy; failed preflight closes
+the database and exits before listening. Disabled mode remains route-closed.
+
+These are provider-neutral runtime prerequisites, not a hosted release. TLS ingress, deployment
+manifests, managed secrets/backups, monitoring, workspace discovery, the broader product surface,
+synchronization, and a hosted web shell remain to be implemented and verified.

@@ -69,7 +69,7 @@ async function registerHostedWorkItemRoutes(
   });
 }
 
-/** Dormant, inseparable composition of the hosted boundary and its work-item routes. */
+/** Inseparable composition of the hosted boundary and its work-item routes. */
 export async function registerHostedWorkItemBoundary(
   app: FastifyInstance,
   boundary: HostedWorkspaceBoundaryDependencies,

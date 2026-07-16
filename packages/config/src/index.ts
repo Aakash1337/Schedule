@@ -13,7 +13,8 @@ const apiSchema = baseSchema.extend({
   API_PORT: z.coerce.number().int().min(1).max(65_535).default(4_000),
   API_TRUSTED_PROXIES: z.string().max(16_384).default(""),
   PRODUCT_API_MODE: z.enum(["disabled", "local_unauthenticated"]).optional(),
-  HOSTED_API_MODE: z.literal("disabled").default("disabled"),
+  HOSTED_API_MODE: z.enum(["disabled", "oidc"]).default("disabled"),
+  HOSTED_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(120),
   HOSTED_PUBLIC_ORIGIN: z.string().optional(),
   HOSTED_OIDC_ISSUER: z.string().optional(),
   HOSTED_OIDC_CLIENT_ID: z.string().optional(),
@@ -309,6 +310,7 @@ const STAGED_HOSTED_VARIABLES = new Set([
   "HOSTED_PUBLIC_ORIGIN",
   "HOSTED_OIDC_ISSUER",
   "HOSTED_OIDC_CLIENT_ID",
+  "HOSTED_RATE_LIMIT_PER_MINUTE",
   "HOSTED_OIDC_PREFLIGHT_MODE",
   "HOSTED_OIDC_TOKEN_AUTH_METHOD",
   "HOSTED_OIDC_CLIENT_SECRET",
@@ -513,12 +515,7 @@ export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): Api
   });
   if (hasPrematureHostedConfiguration) {
     // Do not echo names or values: future companion variables may contain credentials.
-    throw new Error(
-      "Hosted companion configuration is not accepted while HOSTED_API_MODE is disabled.",
-    );
-  }
-  if (environment.HOSTED_API_MODE !== undefined && environment.HOSTED_API_MODE !== "disabled") {
-    throw new Error("HOSTED_API_MODE must remain disabled.");
+    throw new Error("Hosted companion configuration is not accepted.");
   }
   if (
     (environment.HOSTED_OIDC_PREFLIGHT_MODE !== undefined &&
@@ -553,24 +550,33 @@ export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): Api
     HOSTED_OIDC_ISSUER,
     HOSTED_OIDC_CLIENT_ID,
   });
+  const hostedOidcPreflight = parseHostedOidcPreflight(hostedOidcRegistration, {
+    HOSTED_OIDC_PREFLIGHT_MODE: parsed.HOSTED_OIDC_PREFLIGHT_MODE,
+    HOSTED_OIDC_TOKEN_AUTH_METHOD,
+    HOSTED_OIDC_CLIENT_SECRET,
+    HOSTED_LOGIN_TRANSACTION_PEPPER,
+    HOSTED_SESSION_PEPPER,
+    HOSTED_LOGIN_PKCE_KEYS,
+    HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID,
+  });
   const config: ApiConfig = {
     ...publicConfig,
     API_TRUSTED_PROXIES: parseTrustedProxies(parsed.API_TRUSTED_PROXIES),
     HOSTED_OIDC_REGISTRATION: hostedOidcRegistration,
-    HOSTED_OIDC_PREFLIGHT: parseHostedOidcPreflight(hostedOidcRegistration, {
-      HOSTED_OIDC_PREFLIGHT_MODE: parsed.HOSTED_OIDC_PREFLIGHT_MODE,
-      HOSTED_OIDC_TOKEN_AUTH_METHOD,
-      HOSTED_OIDC_CLIENT_SECRET,
-      HOSTED_LOGIN_TRANSACTION_PEPPER,
-      HOSTED_SESSION_PEPPER,
-      HOSTED_LOGIN_PKCE_KEYS,
-      HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID,
-    }),
+    HOSTED_OIDC_PREFLIGHT: hostedOidcPreflight,
     LOCAL_MODEL_ADVISOR_URL: parseLocalModelAdvisorUrl(parsed.LOCAL_MODEL_ADVISOR_URL),
     PRODUCT_API_MODE:
       parsed.PRODUCT_API_MODE ??
-      (parsed.NODE_ENV === "production" ? "disabled" : "local_unauthenticated"),
+      (parsed.NODE_ENV === "production" || parsed.HOSTED_API_MODE === "oidc"
+        ? "disabled"
+        : "local_unauthenticated"),
   };
+  if (config.HOSTED_API_MODE === "oidc" && hostedOidcPreflight === undefined) {
+    throw new Error("HOSTED_API_MODE=oidc requires complete enabled OIDC configuration.");
+  }
+  if (config.HOSTED_API_MODE === "oidc" && config.PRODUCT_API_MODE !== "disabled") {
+    throw new Error("Hosted OIDC mode cannot expose the local unauthenticated product API.");
+  }
   if (
     config.PRODUCT_API_MODE === "local_unauthenticated" &&
     (config.NODE_ENV === "production" ||

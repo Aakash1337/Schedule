@@ -98,8 +98,8 @@ function publicFailure(
 }
 
 /**
- * Encapsulates future hosted workspace routes behind one deny-by-default boundary. This function
- * is intentionally not wired into buildApp: defining the seam must not expose a production route.
+ * Encapsulates hosted workspace routes behind one deny-by-default boundary. The production app
+ * installs it only when the explicit hosted OIDC runtime gate succeeds.
  */
 export async function registerHostedWorkspaceBoundary(
   app: FastifyInstance,

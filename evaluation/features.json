@@ -2459,7 +2459,7 @@
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "## Disabled runtime configuration gate"
+        "anchor": "## Runtime configuration gate"
       },
       "evidence": [
         {
@@ -2467,7 +2467,8 @@
           "file": "packages/config/src/config.test.ts",
           "command": "unit",
           "anchors": [
-            "accepts only the explicit disabled hosted API mode",
+            "provides safe local defaults",
+            "requires complete preflight configuration before enabling hosted OIDC",
             "stages one immutable complete non-secret hosted OIDC registration",
             "rejects a partial hosted OIDC registration",
             "rejects unknown hosted companions without disclosing them",
@@ -2499,11 +2500,11 @@
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "## Dormant login transaction foundation"
+        "anchor": "## Login transaction foundation"
       },
       "limitations": [
-        "A dormant tested factory now constructs transaction start/consume with the authorization-request, token-exchange, verifier, and browser-binding dependencies. The server may preflight this graph, but enabling configuration and route registration remain absent.",
-        "A future hosted deployment must source the HMAC pepper and AES-GCM key ring from a secret manager and pass the consumed expectedNonce into a verifier contract that cannot omit nonce validation."
+        "The transaction services are reachable only through complete HOSTED_API_MODE=oidc configuration; disabled mode retains route closure.",
+        "A hosted deployment must source the HMAC pepper and AES-GCM key ring from a secret manager. Rotation remains restart-based."
       ],
       "evidence": [
         {
@@ -2575,11 +2576,11 @@
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "## Dormant OIDC ID-token verifier"
+        "anchor": "## OIDC ID-token verifier"
       },
       "limitations": [
-        "The dormant callback invokes the verifier after one token exchange using the consumed issuer/client/nonce. The preflight may construct the concrete verifier graph, but production route composition remains absent.",
-        "The dormant complete factory binds discovery, token exchange, and remote JWKS to one exact configured issuer and the direct connection-safe transport. The production server may retain that graph without routing it; untrusted token headers never select a network location."
+        "The enabled callback invokes the verifier after one token exchange using the consumed issuer/client/nonce; disabled mode keeps the callback unreachable.",
+        "The complete factory binds discovery, token exchange, and remote JWKS to one exact configured issuer and direct connection-safe transport; untrusted token headers never select a network location."
       ],
       "evidence": [
         {
@@ -2618,10 +2619,10 @@
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "## Dormant OIDC authorization-request builder"
+        "anchor": "## OIDC authorization-request builder"
       },
       "limitations": [
-        "The dormant login route invokes the deterministic builder after transaction creation and emits the separate browser-binding cookie. The production preflight may construct it from one discovered provider snapshot, but route composition remains absent.",
+        "The enabled login route invokes the deterministic builder after transaction creation and emits the separate browser-binding cookie; disabled mode keeps the route unreachable.",
         "Separate trusted provider-metadata and token-exchange adapters now exist but are composed with the builder only in tests. Only bounded, non-reserved query parameters already present in its validated authorization endpoint are retained; request-time arbitrary provider parameters are not accepted."
       ],
       "evidence": [
@@ -2671,10 +2672,10 @@
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "## Dormant direct OIDC HTTPS transport"
+        "anchor": "## Direct OIDC HTTPS transport"
       },
       "limitations": [
-        "The direct transport is production-grade but dormant: the preflight graph may construct it for discovery, JWKS, and token exchange, but buildApp and server.ts do not register any consumer route.",
+        "Enabled OIDC startup and callbacks use the direct transport for discovery, JWKS, and token exchange; disabled mode registers no consumer route.",
         "The existing bounded OIDC callers own hard deadlines, status/content/cache/body validation, and retry policy. This transport performs one DNS lookup and one pinned direct HTTPS attempt, never follows redirects, and adds no retry."
       ],
       "evidence": [
@@ -2716,11 +2717,11 @@
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "## Dormant pinned remote-JWKS resolver"
+        "anchor": "## Pinned remote-JWKS resolver"
       },
       "limitations": [
-        "The provider-scoped resolver is constructed by the dormant complete factory with discovery, token exchange, and the production direct HTTPS transport. Runtime preflight can retain it, but route registration and callback exposure remain absent.",
-        "Exact URL binding, redirect denial, and response bounds in this adapter are not a complete SSRF defense by themselves. The dormant factory injects the direct transport that enforces DNS, resolved-IP, proxy, rebinding, and TLS policy."
+        "The provider-scoped resolver is used by the enabled OIDC composition and remains unreachable while hosted mode is disabled.",
+        "Exact URL binding, redirect denial, and response bounds in this adapter are not a complete SSRF defense by themselves. The production factory injects the direct transport that enforces DNS, resolved-IP, proxy, rebinding, and TLS policy."
       ],
       "evidence": [
         {
@@ -2762,11 +2763,11 @@
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "## Dormant trusted OIDC discovery/provider metadata"
+        "anchor": "## Trusted OIDC discovery/provider metadata"
       },
       "limitations": [
-        "The immutable provider-metadata adapter is dormant. Runtime preflight can construct it with the direct HTTPS transport, but client route registration, authorization exposure, callback exposure, and automatic metadata refresh remain absent.",
-        "The dormant complete factory composes discovery output and the direct transport with the authorization builder, token exchanger, remote-JWKS resolver, and ID-token verifier; the production server retains the graph without passing it to buildApp."
+        "Enabled startup freezes one provider-metadata snapshot through the direct HTTPS transport; automatic metadata refresh remains absent.",
+        "The complete factory composes discovery with authorization, token exchange, remote JWKS, and ID-token verification; disabled mode keeps the graph unreachable."
       ],
       "evidence": [
         {
@@ -2819,10 +2820,10 @@
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "## Dormant OIDC authorization-code token exchange"
+        "anchor": "## OIDC authorization-code token exchange"
       },
       "limitations": [
-        "The dormant callback invokes the strict exchanger after consuming state/browser binding and before verifier, provisioning, and session ports. Runtime preflight can construct it with injected client authentication and the direct HTTPS transport, but route composition remains absent.",
+        "The enabled callback invokes the strict exchanger after consuming state/browser binding and before verifier, provisioning, and session ports. Disabled mode keeps it unreachable.",
         "Each consumed code is attempted at most once per invocation and is never retried after an ambiguous failure. The returned compact ID token remains untrusted; only the separately configured nonce-bound verifier may turn it into an issuer/subject identity. Access and refresh tokens are discarded."
       ],
       "evidence": [
@@ -2879,11 +2880,11 @@
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "## Dormant authentication lifecycle contract"
+        "anchor": "## Authentication lifecycle contract"
       },
       "limitations": [
-        "The start/callback composition and complete dependency factory are tested but dormant: server.ts may preflight the graph, buildApp never receives or registers it, and HOSTED_API_MODE remains disabled-only.",
-        "A consumed authorization code is attempted once and never retried. Public hosted routes, account management, synchronization, and the broader hosted product surface remain deferred."
+        "The start/callback composition is installed only after complete HOSTED_API_MODE=oidc preflight; disabled mode remains route-closed.",
+        "A consumed authorization code is attempted once and never retried. Account management, synchronization, and the broader hosted product surface remain deferred."
       ],
       "evidence": [
         {
@@ -2922,15 +2923,15 @@
       ]
     },
     {
-      "id": "hosted-oidc-concrete-dormant-composition",
+      "id": "hosted-oidc-concrete-composition",
       "status": "implemented",
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "## Dormant concrete OIDC composition"
+        "anchor": "## Concrete OIDC composition"
       },
       "limitations": [
-        "The production server may construct and retain the factory output only under the explicit dormant preflight mode, but never passes it to buildApp and cannot register a hosted route.",
+        "The production server passes the factory output to buildApp only in explicit OIDC mode; disabled preflight retains it without route exposure.",
         "Provider discovery occurs once during async construction and freezes the complete provider snapshot. A future reload must replace the whole dependency graph; periodic expired-login pruning remains a separate operations responsibility."
       ],
       "evidence": [
@@ -2951,7 +2952,7 @@
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
           "anchors": [
-            "Hosted OIDC composition verification passed one provider snapshot, persisted login, verified callback, session bootstrap, and CSRF-protected logout"
+            "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace bootstrap, transaction-authorized work creation, and CSRF-protected logout"
           ]
         },
         {
@@ -2971,16 +2972,16 @@
       ]
     },
     {
-      "id": "hosted-oidc-dormant-runtime-preflight",
+      "id": "hosted-oidc-runtime-preflight",
       "status": "implemented",
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "## Dormant production runtime preflight"
+        "anchor": "## Production runtime preflight"
       },
       "limitations": [
         "The operator must inject the accepted values through a platform secret manager. Configuration is immutable for one process lifetime: PKCE key overlap supports restart-based rotation, while either single HMAC pepper rotation intentionally invalidates its corresponding login or session credentials.",
-        "HOSTED_API_MODE still accepts only disabled. The server retains the preflight graph but does not pass it to buildApp, capability reporting remains false, and every hosted route remains absent."
+        "HOSTED_API_MODE=oidc requires complete preflight, disables the local product surface, and registers only the narrow hosted route set; disabled mode reports the capability off and keeps every hosted route absent."
       ],
       "evidence": [
         {
@@ -2988,7 +2989,7 @@
           "file": "packages/config/src/config.test.ts",
           "command": "hosted-runtime-preflight",
           "anchors": [
-            "loads one immutable dormant hosted OIDC preflight with rotating PKCE keys",
+            "loads one immutable hosted OIDC preflight with rotating PKCE keys",
             "accepts explicit public-client preflight without a client secret",
             "rejects an invalid or premature hosted preflight without disclosing values"
           ]
@@ -2999,6 +3000,7 @@
           "command": "hosted-runtime-preflight",
           "anchors": [
             "maps construction failures to one stable error without secret disclosure",
+            "closes the shared database when activated preflight fails",
             "preflights before building the normal route-closed app"
           ]
         },
@@ -3014,15 +3016,15 @@
     },
     {
       "id": "hosted-identity-persistence-foundation",
-      "status": "partial",
+      "status": "implemented",
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_IDENTITY.md",
         "anchor": "# Hosted identity persistence foundation"
       },
       "limitations": [
-        "The foundation and complete provider/identity/session dependency factory are dormant: the server may preflight the graph, but buildApp registers no browser route and the disabled-only runtime gate cannot expose it.",
-        "Public hosted authentication and synchronization remain deferred, and machine integration credentials remain a separate trust boundary."
+        "The identity/session factory is active only in explicit OIDC mode; disabled mode remains route-closed and first login creates one default workspace membership.",
+        "Hosted workspace discovery, the broader product surface, synchronization, and public deployment remain deferred. Machine integration credentials remain a separate trust boundary."
       ],
       "evidence": [
         {
@@ -3041,7 +3043,7 @@
           "file": "packages/application/src/hosted-identity.test.ts",
           "command": "unit",
           "anchors": [
-            "provisions an exact identity once under read-committed lock semantics",
+            "provisions an exact identity and default workspace once under read-committed lock semantics",
             "locks the user before the session after a non-locking ownership probe",
             "rotates without extending absolute lifetime and rejects replay of the old token",
             "revokes one membership without revoking the user's global session and can reactivate it"
@@ -3076,7 +3078,7 @@
           "file": "scripts/verify-hosted-identity.ts",
           "command": "hosted-identity",
           "anchors": [
-            "Hosted identity verification passed exact concurrent provisioning, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
+            "Hosted identity verification passed exact concurrent provisioning with one default workspace, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
           ]
         },
         {
@@ -3095,10 +3097,10 @@
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "# Dormant hosted request authorization seam"
+        "anchor": "# Hosted request authorization and OIDC runtime"
       },
       "limitations": [
-        "The seam, cookie/CSRF/login-binding transport, complete OIDC dependency factory, authentication lifecycle, and one transaction-coupled work-item-create registrar are not registered in buildApp: dormant server preflight cannot expose them, while enabling configuration, a broader public end-user product surface, and synchronization remain unimplemented.",
+        "Explicit OIDC mode registers the seam, browser lifecycle, and one transaction-coupled work-item create. Workspace discovery, a broader public end-user product surface, and synchronization remain unimplemented.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [
@@ -3155,14 +3157,32 @@
           "level": "unit",
           "file": "apps/api/src/app.test.ts",
           "command": "unit",
-          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+          "anchors": [
+            "keeps the dormant hosted identity foundation unreachable over HTTP",
+            "registers the hosted lifecycle and protected workspace surface only when supplied",
+            "bounds rate-limit client tracking under source churn"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/api/src/dormant-hosted-oidc-runtime.test.ts",
+          "command": "hosted-runtime-preflight",
+          "anchors": ["closes the shared database when activated preflight fails"]
         },
         {
           "level": "integration",
           "file": "scripts/verify-hosted-identity.ts",
           "command": "hosted-identity",
           "anchors": [
-            "Hosted identity verification passed exact concurrent provisioning, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
+            "Hosted identity verification passed exact concurrent provisioning with one default workspace, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-oidc-composition.ts",
+          "command": "hosted-oidc-composition-db",
+          "anchors": [
+            "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace bootstrap, transaction-authorized work creation, and CSRF-protected logout"
           ]
         }
       ]
@@ -3173,7 +3193,7 @@
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "## Dormant transaction-coupled work-item create"
+        "anchor": "## Transaction-coupled work-item create"
       },
       "evidence": [
         {
@@ -3227,6 +3247,14 @@
           "command": "hosted-mutation-authorization",
           "anchors": [
             "Hosted mutation verification passed exact user/session/workspace/membership locking, cross-tenant denial, logout/disable/expiry fencing, both revocation linearizations, and rollback isolation"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-oidc-composition.ts",
+          "command": "hosted-oidc-composition-db",
+          "anchors": [
+            "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace bootstrap, transaction-authorized work creation, and CSRF-protected logout"
           ]
         }
       ]

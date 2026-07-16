@@ -11,6 +11,7 @@ import {
   NATURAL_LANGUAGE_PROPOSAL_ITEM_ROUTE,
   NATURAL_LANGUAGE_PROPOSAL_ROUTE,
   SCHEDULING_ADVICE_ROUTE,
+  installIpRateLimit,
   type ProductApiLimits,
   type ProductServices,
 } from "./product-routes.js";
@@ -19,6 +20,22 @@ import {
   type IntegrationApiLimits,
   type IntegrationServices,
 } from "./integration-routes.js";
+import {
+  registerHostedAuthLifecycle,
+  type HostedAuthLifecycleDependencies,
+} from "./hosted-auth-lifecycle.js";
+import {
+  registerHostedWorkItemBoundary,
+  type HostedWorkItemServices,
+} from "./hosted-work-item-routes.js";
+import type { HostedWorkspaceBoundaryDependencies } from "./hosted-auth-boundary.js";
+
+export interface HostedApiOptions {
+  readonly auth: HostedAuthLifecycleDependencies;
+  readonly boundary: HostedWorkspaceBoundaryDependencies;
+  readonly workItems: HostedWorkItemServices;
+  readonly requestsPerMinute: number;
+}
 
 export interface BuildAppOptions {
   readonly logger?: FastifyServerOptions["logger"];
@@ -29,6 +46,7 @@ export interface BuildAppOptions {
   readonly productApiLimits?: ProductApiLimits;
   readonly integrationServices?: IntegrationServices;
   readonly integrationApiLimits?: IntegrationApiLimits;
+  readonly hostedApi?: HostedApiOptions;
 }
 
 function validOptionalPort(value: string): boolean {
@@ -109,7 +127,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     architecture: "modular-monolith",
     productEndpointsEnabled: options.productServices !== undefined,
     integrationEndpointsEnabled: options.integrationServices !== undefined,
-    hostedEndpointsEnabled: false,
+    hostedEndpointsEnabled: options.hostedApi !== undefined,
   }));
 
   const integrationServices = options.integrationServices;
@@ -148,6 +166,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         productApp,
         options.productServices as ProductServices,
         options.productApiLimits,
+      );
+    });
+  }
+
+  if (options.hostedApi !== undefined) {
+    await app.register(async (hostedApp) => {
+      installIpRateLimit(hostedApp, options.hostedApi!.requestsPerMinute);
+      await registerHostedAuthLifecycle(hostedApp, options.hostedApi!.auth);
+      await registerHostedWorkItemBoundary(
+        hostedApp,
+        options.hostedApi!.boundary,
+        options.hostedApi!.workItems,
       );
     });
   }

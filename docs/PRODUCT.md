@@ -695,15 +695,15 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   reads and sender/session/platform-bound confirmed mutations, plus a deterministic stdout reminder
   helper; it is separate from the delivery-claim runtime, and live WhatsApp still requires the
   operator's `WHATSAPP_HOME_CHANNEL` and self-chat smoke
-- Implemented foundation: dormant provider-neutral users, exact issuer/subject bindings,
-  digest-only revocable browser sessions, and binary workspace memberships with deletion-safe
-  workspace preservation
-- Implemented foundation: a centralized, enumeration-resistant hosted request and workspace
-  authorization seam with request isolation and explicit revocation/transaction semantics, plus
-  strict host-only session-cookie and exact-Origin double-submit CSRF adapters, and an injectable
-  provider-neutral login/session/logout lifecycle; none is registered in production, and no
-  concrete identity provider or browser route is exposed
-- Authentication and secure workspace isolation
+- Implemented narrow hosted runtime: complete `HOSTED_API_MODE=oidc` configuration activates exact
+  issuer/subject provisioning, digest-only revocable browser sessions, first-login default-workspace
+  membership, login/session/logout, and one transaction-authorized work-item create route. Disabled
+  mode remains route-closed, and local unauthenticated product routes cannot coexist with OIDC mode.
+- Implemented security boundary: exact-Origin double-submit CSRF, host-only cookies, generic tenant
+  denial, bounded client-address throttling, direct pinned OIDC HTTPS, startup preflight/cleanup, and
+  same-transaction user/session/workspace/membership reauthorization.
+- Deferred: hosted workspace discovery/administration, the broader product API and web shell,
+  account management, provider-specific production verification, collaboration roles, and sync.
 - Cloud deployment selected from measured operational needs
 - Offline-capable synchronization and conflict handling, if required
 - Managed backup retention, point-in-time recovery, monitoring, and deployment automation

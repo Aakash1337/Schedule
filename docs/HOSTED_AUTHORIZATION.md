@@ -1,16 +1,14 @@
-# Dormant hosted request authorization seam
+# Hosted request authorization and OIDC runtime
 
-Schedule contains a centralized, provider-neutral request boundary for future hosted workspace
-routes, a provider-neutral browser authentication lifecycle registrar, and one transaction-coupled
-hosted work-item-create registrar. A separate pre-authentication foundation now coordinates bounded
-state, browser binding, nonce, and PKCE material. All are implemented and tested, but deliberately
-have no production route registration: the server may preflight the complete graph, but `buildApp`
-never receives or installs it, no browser route is reachable, and the local and machine-integration
-trust boundaries are unchanged.
+Schedule contains a centralized browser authentication lifecycle and workspace-authorization
+boundary. It is closed by default. With `HOSTED_API_MODE=oidc`, the server preflights one trusted
+provider, installs login/callback/session/logout, and exposes one transaction-authorized work-item
+create route. Local unauthenticated product routes remain disabled and machine integration credentials
+remain a separate trust boundary.
 
-## Disabled runtime configuration gate
+## Runtime configuration gate
 
-`HOSTED_API_MODE` defaults to and accepts only `disabled`. Configuration may stage one complete
+`HOSTED_API_MODE` defaults to `disabled` and accepts `oidc` only with one complete
 non-secret registration made of `HOSTED_PUBLIC_ORIGIN`, `HOSTED_OIDC_ISSUER`, and
 `HOSTED_OIDC_CLIENT_ID`. The origin and issuer must be bounded exact canonical default-port HTTPS
 values, the client ID is bounded and control-free, and the callback URI is derived rather than
@@ -19,13 +17,13 @@ configured. All three absent or empty is inert; a partial set fails startup. The
 complete set when explicitly `enabled`. Mixed-case aliases and every unknown non-empty `HOSTED_*`
 value are rejected without echoing a variable name or value that may contain credentials.
 
-The staged registration and optional preflight are immutable configuration only. They cannot
-register the login lifecycle, workspace boundary, or work-item route; `buildApp` has no hosted
-runtime input and `/v1/system/info` always reports `hostedEndpointsEnabled: false`.
-
-This gate records an explicit production posture, not an enabling mechanism. A later deployment
-slice must intentionally register routes and widen the accepted API mode; successful preflight alone
-never authorizes exposure.
+Preflight alone does not expose routes. OIDC mode additionally requires the complete preflight,
+forces `PRODUCT_API_MODE=disabled`, installs the hosted surface only after successful discovery, and
+reports `hostedEndpointsEnabled: true`. `HOSTED_RATE_LIMIT_PER_MINUTE` bounds the complete hosted
+route group per resolved client address. The in-process bucket map is capped at 4,096 least-recently
+used addresses so source churn cannot grow memory without bound. Disabled mode keeps capability
+reporting false and every hosted route absent even when operators stage and validate the provider
+graph.
 
 ## Boundary contract
 
@@ -53,7 +51,7 @@ membership enumeration oracle. Invalid Origin or CSRF proof receives one generic
 authentication or authorization. Internal adapter failures and inconsistent contexts are logged
 but redacted behind one `503`. Every response crossing this seam receives `Cache-Control: no-store`.
 
-## Dormant browser transport contract
+## Browser transport contract
 
 `HostedBrowserSessionAuthenticator` accepts only one bounded raw `Cookie` header and exactly one
 canonical `__Host-schedule_session=<selector>.<secret>` pair. The selector is a lowercase UUID and
@@ -76,12 +74,11 @@ a script-readable `Path=/; Secure; SameSite=Lax` host cookie; it intentionally o
 same-origin browser client can copy the token into the header. Duplicate Origin, Cookie, or proof
 headers fail closed.
 
-## Dormant authentication lifecycle contract
+## Authentication lifecycle contract
 
-`registerHostedAuthLifecycle` composes those transport helpers with the existing login-transaction,
-OIDC, identity, and session application ports. It is a registrar, not production wiring: no call
-site in `buildApp`, the server,
-configuration, or deployment manifests installs it. Direct registrar tests exercise four routes:
+`registerHostedAuthLifecycle` composes those transport helpers with the login-transaction, OIDC,
+identity, and session application ports. The production app installs it only after the explicit
+runtime gate succeeds. Direct registrar tests exercise four routes:
 
 - `GET /v1/auth/session` resolves only the hardened session cookie, returns exactly
   `{ "authenticated": true | false }`, and emits a fresh CSRF cookie even when there is no active
@@ -95,9 +92,10 @@ configuration, or deployment manifests installs it. Direct registrar tests exerc
   OAuth requires; when the provider supplies RFC 9207 `iss`, it accepts one bounded value and binds
   it exactly to the consumed transaction issuer. It consumes the transaction before making one code
   exchange, passes the consumed issuer/client/nonce into the ID-token verifier, accepts only a
-  bounded exact issuer/subject identity, provisions that identity, and issues the session. Success
-  clears the login binding, emits hardened session and fresh CSRF cookies, and returns a `303` only
-  to the consumed bounded local path under the fixed hosted origin.
+  bounded exact issuer/subject identity, provisions that identity, and issues the session. A first
+  identity provision atomically creates one `My Schedule` workspace and active membership; a replay
+  creates neither again. Success clears the login binding, emits hardened session and fresh CSRF
+  cookies, and returns a `303` only to the consumed bounded local path under the fixed hosted origin.
 - `POST /v1/auth/logout` applies the same CSRF check first, parses the canonical session token once,
   requests `signed_out` revocation when possible, and clears both host cookies. Missing, malformed,
   unknown, already-revoked, and successful sessions all produce the same empty `204`; an internal
@@ -111,12 +109,11 @@ contract failures are logged without private values and returned as one generic 
 transaction is never reopened and exchange is never retried. Email, display name, or other claims
 can never substitute for the exact provider identity returned by the nonce-bound verifier.
 
-## Dormant login transaction foundation
+## Login transaction foundation
 
 `StartHostedLoginTransaction` and `ConsumeHostedLoginTransaction` establish the server-side
-transaction used by the dormant authorization-code lifecycle. The tested registrar and binding
-cookie transport now call them, but production runtime configuration and route registration remain
-absent.
+transaction used by the authorization-code lifecycle. The enabled registrar and binding-cookie
+transport call them directly.
 
 Starting a transaction generates four independent 256-bit base64url values:
 
@@ -148,9 +145,9 @@ transaction before invoking the exchanger below and passes `expectedNonce` into 
 that cannot omit nonce validation. An exchange or verification failure requires a new login; a
 consumed transaction is never reopened or retried.
 
-## Dormant OIDC ID-token verifier
+## OIDC ID-token verifier
 
-`JoseOidcIdTokenVerifier` is the concrete verifier accepted by the dormant callback's structural
+`JoseOidcIdTokenVerifier` is the concrete verifier accepted by the callback's structural
 port. Its input requires one compact signed token plus the exact
 issuer, client identifier, and 256-bit nonce recovered from the consumed login transaction. The
 caller cannot use a convenience overload that omits nonce verification. The token is bounded to 16
@@ -174,16 +171,14 @@ discarded.
 Malformed, expired, mismatched, wrongly signed, unknown-key, and ambiguous-key credentials return
 the same `null`. Resolver failures, deadlines, invalid trusted continuation metadata, clock failure,
 and invalid verifier policy throw one stable operational error with no cause, token, claim, key,
-endpoint, or provider error text. A future route must preserve that distinction as generic `401`
+endpoint, or provider error text. The lifecycle preserves that distinction as generic `401`
 versus redacted `503` behavior.
 
-The injected resolver is trusted deployment composition, not discovery logic. The dormant pinned
-resolver and provider-metadata loader below now supply bounded implementations, but future wiring
-must still bind them to the same exact configured issuer and provide a connection-safe transport.
-The verifier does not import into `buildApp`, `server.ts`, configuration, or a route; it cannot make
-the dormant hosted surface reachable.
+The injected resolver is trusted deployment composition, not discovery logic. The pinned resolver,
+provider-metadata loader, and direct transport below bind it to the exact configured issuer when
+OIDC mode is enabled.
 
-## Dormant direct OIDC HTTPS transport
+## Direct OIDC HTTPS transport
 
 `directOidcHttpsFetch` is the production connection-level transport shared by the future discovery,
 remote-JWKS, and token clients. It accepts only the exact canonical default-port HTTPS URLs already
@@ -205,10 +200,9 @@ one stable availability error. Responses retain the exact requested URL and stre
 bounded OIDC readers, which continue to own status, content type, cache, header, body, and hard-time
 limits. The transport adds no retry and no provider/runtime configuration.
 
-This adapter remains dormant: production configuration does not construct it with provider clients,
-and `buildApp` and `server.ts` register no hosted route.
+The enabled production composition uses this adapter for discovery, JWKS, and token exchange.
 
-## Dormant pinned remote-JWKS resolver
+## Pinned remote-JWKS resolver
 
 `createOidcRemoteJwksResolver` binds one exact issuer to one deployment-controlled HTTPS JWKS URI
 and returns a frozen provider snapshot plus a JOSE signing-key resolver. Configuration is copied
@@ -235,10 +229,10 @@ failures remain redacted availability failures.
 
 Exact URL binding and response bounds are not by themselves a production SSRF boundary. The direct
 OIDC HTTPS transport now supplies the required proxy, DNS-answer, address-pinning, rebinding, and TLS
-controls. The complete factory constructs this resolver for its frozen dependency graph, and the
-production preflight may retain it; no callback or route is registered.
+controls. The complete factory constructs this resolver for its frozen dependency graph before any
+enabled callback or workspace route is registered.
 
-## Dormant trusted OIDC discovery/provider metadata
+## Trusted OIDC discovery/provider metadata
 
 `OidcProviderMetadataDiscovery` starts from one deployment-controlled issuer rather than an
 end-user identifier. Following OpenID Connect Discovery 1.0, it removes one terminating issuer
@@ -274,18 +268,17 @@ endpoint authentication is reduced to the deterministic supported subset of
 `client_secret_basic` when the field is absent. Extra metadata is ignored and never enters the
 trusted snapshot.
 
-This adapter is still dormant. The unregistered complete factory constructs its frozen snapshot and
-direct transport with the authorization builder, token exchanger, JWKS resolver, and ID-token
-verifier. Production preflight can retain that graph, but routes, callback exposure, and hot metadata
-refresh are absent.
+The complete factory constructs this frozen snapshot and direct transport with the authorization
+builder, token exchanger, JWKS resolver, and ID-token verifier. Enabled routes share that one
+process-lifetime snapshot; hot metadata refresh remains absent.
 
-## Dormant OIDC authorization-request builder
+## OIDC authorization-request builder
 
 `StrictOidcAuthorizationRequestBuilder` converts one freshly issued login transaction into a
 deterministic authorization-code URL without performing network I/O. The application transaction
 result now carries the exact validated issuer, client identifier, and redirect URI copied from its
 persisted record, alongside state, browser binding, nonce, S256 challenge, method, and expiry. These
-provider bindings are in-process coordination values; a future route must never serialize the raw
+provider bindings are in-process coordination values; the route never serializes the raw
 transaction object.
 
 The builder snapshots one trusted provider configuration at construction and requires the issued
@@ -307,11 +300,10 @@ is capped at 8 KiB.
 Malformed trusted configuration, altered provider bindings, malformed transaction secrets, a
 non-S256 method, expiry at the exact trusted clock boundary, invalid clock behavior, hostile runtime
 getters, and an oversized final URL all throw one stable redacted configuration error. The builder
-does not import into `buildApp`, `server.ts`, or configuration. The dormant lifecycle now invokes an
-injected builder after transaction creation, but production provider metadata, construction, route
-registration, and connection-safe transport remain separate work.
+is invoked by the lifecycle after transaction creation. Production composition supplies provider
+metadata and the connection-safe transport before routes are registered.
 
-## Dormant OIDC authorization-code token exchange
+## OIDC authorization-code token exchange
 
 `StrictOidcAuthorizationCodeTokenExchanger` redeems one opaque authorization code only after the
 server-side login transaction has been consumed. Construction snapshots one validated provider
@@ -348,11 +340,9 @@ nonce-bound verifier is the sole path from that value to `{ issuer, subject }`. 
 responses, redirects, ambiguous
 timeouts, and client-authentication failures become one stable redacted availability error.
 
-This exchanger remains dormant. The tested lifecycle invokes it after consuming the state/browser
-transaction and before verification, provisioning, and session issuance. The complete factory
-constructs it with the direct connection-safe transport, and production preflight may inject its
-client authentication. Route registration and retry remain absent. The provider composition tests
-do not expose production HTTP.
+The lifecycle invokes the exchanger after consuming the state/browser transaction and before
+verification, provisioning, and session issuance. The complete factory constructs it with the
+direct transport and configured client authentication. Ambiguous exchange remains non-retryable.
 
 ## Preflight transaction limit
 
@@ -366,7 +356,7 @@ mutation must reauthorize inside the same database transaction as the product wr
 documented common lock order), or provide an equivalent database-enforced tenant boundary. It is
 never sufficient to call the separate identity and local-product units of work in sequence.
 
-## Dormant transaction-coupled work-item create
+## Transaction-coupled work-item create
 
 `registerHostedWorkItemBoundary` inseparably composes the hosted authentication, CSRF, and workspace
 authorization boundary with one route:
@@ -374,7 +364,7 @@ authorization boundary with one route:
 the local create route, derives workspace authority only from the immutable hosted boundary context,
 ignores identity-shaped headers, rejects identity fields in the body, and returns `201` for a
 successful create. A path/context mismatch fails as the same generic `workspace.not_found` response.
-The registrar is not installed by `buildApp`, the server, configuration, or deployment manifests.
+The registrar is installed only in OIDC mode.
 
 `CreateHostedWorkItem` adapts a specialized hosted mutation unit of work to the existing product
 create use case without nesting transactions. In one PostgreSQL transaction the adapter locks and
@@ -399,16 +389,16 @@ membership loss is the same generic `404`; unexpected adapter/database failures 
 
 ## Deliberately absent
 
-There is still no WebFinger issuer discovery, production metadata/JWKS/token transport or concrete
-adapter composition, production-registered authentication route, enabling hosted configuration,
-public workspace route, hosted CORS
-policy, account-management API, role model, synchronization protocol, or cloud deployment.
+There is still no WebFinger issuer discovery, public workspace listing or administration, hosted
+web shell, broad hosted product route set, account-management API, role model, synchronization
+protocol, or cloud deployment. First login creates one default workspace internally, but the narrow
+surface does not yet expose a workspace-discovery route.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
-principal. The dormant work-item create is the only transaction-coupled hosted product mutation;
+principal. Work-item create is the only transaction-coupled hosted product mutation;
 all other product routes remain local-only and require their own transaction authority before any
 future hosted exposure.
 
-## Dormant concrete OIDC composition
+## Concrete OIDC composition
 
 `createDormantHostedOidcComposition` is one async factory for the complete authentication dependency
 graph. It accepts the validated non-secret registration, a database connection, explicit login and
@@ -422,14 +412,13 @@ PostgreSQL login and identity units of work. It then performs one bounded discov
 metadata snapshot, and uses the same issuer, endpoints, signing algorithms, client, redirect, and
 transport to build the authorization request, token exchange, remote-JWKS, ID-token verification,
 identity provisioning, session issue/resolve/revoke, browser authentication, and CSRF components.
-The fixed dormant policy is a five-minute login, one-hour idle session, one-day absolute session,
+The fixed policy is a five-minute login, one-hour idle session, one-day absolute session,
 `openid` scope, and `/` continuation.
 
 The factory returns only a frozen `HostedAuthLifecycleDependencies` object. It never creates a
-Fastify app, registers the lifecycle, changes `HOSTED_API_MODE`, or starts cleanup work. Production
-preflight may supply its bounded secrets and retain the result, but cannot make that result reachable.
+Fastify app or changes `HOSTED_API_MODE`; enabled server composition owns route registration.
 
-## Dormant production runtime preflight
+## Production runtime preflight
 
 `HOSTED_OIDC_PREFLIGHT_MODE=enabled` requires the complete non-secret registration plus an explicit
 token authentication method, optional method-appropriate client secret, independent login and
@@ -444,8 +433,9 @@ Parsing is bounded, rejects control and Unicode formatting characters, canonical
 requires the primary key to exist, and produces one deeply frozen preflight object. The production
 server constructs it before building the normal Fastify app. Construction performs one bounded
 provider discovery and fails startup through one redacted error; even cleanup failure cannot replace
-that error. The graph is retained for the process lifetime but is never passed to `buildApp`, so all
-hosted routes remain `404` and capability reporting remains false.
+that error. A preflight or app-construction failure closes the shared database connection before the
+error is rethrown. Disabled mode retains the graph without exposure. OIDC mode passes it to
+`buildApp`, registers the hosted route group, and reports the capability.
 
 Rotation is restart-based. New PKCE transactions use the primary key; old keys may overlap for at
 least the five-minute login lifetime before removal. The current HMAC codecs accept one pepper each:
@@ -463,8 +453,8 @@ without identity disclosure, disabled-user denial, logout idempotency and revoca
 isolation, verification-before-credential-work
 ordering, single authentication, spoof resistance, generic negative responses, response and log
 redaction, non-overridable private caching, inconsistent adapter rejection, scoped-route
-registration, dormant HTTP closure across safe and unsafe methods, and active/revoked application
-membership decisions.
+registration, disabled-mode HTTP closure across safe and unsafe methods, bounded source tracking,
+and active/revoked application membership decisions.
 `pnpm verify:hosted-identity` drives the production PostgreSQL adapter through active authorization
 plus concurrent authorization/revocation (where either valid linearization is allowed) and proves
 the committed revocation fences the next decision.
@@ -478,6 +468,11 @@ after the forced rollback probes that its authorization locks were released.
 configuration must fail before listening without disclosing its value, while the explicit disabled
 mode must report hosted capabilities off and keep representative authentication and workspace
 routes at `404`.
+`pnpm verify:hosted-oidc-composition-db` parses complete enabled configuration, builds the production
+hosted route graph with a strict in-process provider, and drives login, callback, one-time replay
+denial, default-workspace provisioning, authenticated transaction-coupled work creation, session
+bootstrap, CSRF denial, logout, and cleanup against PostgreSQL. It also proves the local
+unauthenticated workspace routes are absent.
 `pnpm verify:hosted-login-transactions` migrates a disposable database and proves digest-only state
 and browser binding, authenticated PKCE recovery, exact provider/redirect binding, twelve-way
 single-use consumption, database-clock expiry, corruption rollback and redaction, and bounded
@@ -489,7 +484,7 @@ suite is part of `pnpm check`; the existing runtime gate proves the module remai
 `pnpm verify:oidc-authorization-request` rebuilds the core packages, proves exact provider bindings
 leave the transaction service, and runs the builder's canonical encoding, injection, scope,
 configuration, transaction-integrity, size, and redaction cases. It performs no external requests;
-the same tests and dormant-route evidence run in `pnpm check`.
+the same tests and disabled-route evidence run in `pnpm check`.
 `pnpm verify:oidc-remote-jwks` rebuilds the core packages and runs the generated-key resolver and
 ID-token suites. Injected transports prove exact request shape, bounded streaming and parsing,
 redirect and malformed-response denial, cache reuse, unknown-key cooldown, rotation refresh,
@@ -499,7 +494,7 @@ command performs no external network request; the same evidence runs in `pnpm ch
 authorization-request and remote-JWKS compatibility suites. Injected transports prove the official
 root/path discovery URL, exact issuer equality, required metadata and local S256 policy, immutable
 successful snapshots, shared cold requests, retry after failure, hard timeout, bounded JSON,
-endpoint/query compatibility, and redacted failure. It performs no external request; dormant-route
+endpoint/query compatibility, and redacted failure. It performs no external request; disabled-route
 and runtime-gate evidence remains part of `pnpm check`.
 `pnpm verify:oidc-token-exchange` rebuilds the core packages and runs the exchanger, shared bounded
 JSON, provider-metadata composition, and generated-key ID-token suites. It proves the exact POST and
@@ -512,20 +507,21 @@ with discovery, remote-JWKS, token-exchange, and bounded-response compatibility 
 and HTTPS seams prove all-answer validation, private/mixed-set denial, address pinning, hostname and
 certificate preservation, proxy/redirect/framing denial, abort behavior, streamed exact-URL
 responses, and redacted failures without making an external request.
-`pnpm verify:hosted-oidc-lifecycle` rebuilds the core packages and runs the dormant start/callback,
+`pnpm verify:hosted-oidc-lifecycle` rebuilds the core packages and runs the start/callback,
 browser-cookie, authorization-request, token-exchange, and ID-token suites. It proves query-free
 start, exact state/code/browser binding, optional issuer binding, consume-before-exchange ordering,
 mandatory nonce handoff,
 fixed-origin local redirects, hardened cookie transitions, generic failure classification, and no
-retry. It performs no external request and does not register production routes.
+retry. It performs no external request.
 `pnpm verify:hosted-oidc-composition` rebuilds the core packages and runs the concrete factory with
 a strict in-process provider transport plus the lifecycle, discovery, direct-HTTPS, token, JWKS, and
 verifier compatibility suites. It proves single-snapshot wiring, fixed policy, exact endpoint and
 client propagation, secret snapshot isolation, local-failure-before-I/O ordering, and redaction. It
-makes no external request and does not register a production route.
+makes no external request.
 `pnpm verify:hosted-runtime-preflight` validates the complete immutable secret set, public-client and
 confidential-client authentication modes, PKCE rotation overlap, bounds and redaction, stable startup
-failure mapping, preflight-before-app ordering, false hosted capability reporting, and route closure.
+failure mapping, preflight-before-app ordering, default route closure, enabled registration, and
+capability reporting.
 It injects the factory in-process and performs no external network request.
 `pnpm verify:hosted-oidc-composition-db` uses the migrated configured PostgreSQL database plus a
 strict in-process signed OIDC provider, registers the returned graph only in a private Fastify test

@@ -1,15 +1,13 @@
 # Hosted identity persistence foundation
 
-Schedule contains a dormant, provider-neutral persistence foundation for future hosted browser
-authentication. It establishes identity, session, and workspace-membership invariants without
-opening an HTTP route, selecting an identity provider, or changing the local product's trust
-boundary. A separate dormant transport can serialize the session into a hardened cookie, but no
-runtime currently calls it.
+Schedule has a provider-neutral identity, browser-session, and workspace-membership model. The
+surface is closed by default. With complete `HOSTED_API_MODE=oidc` configuration, the production API
+uses it for login, session, logout, first-login workspace bootstrap, and one transaction-authorized
+work-item create route. The local unauthenticated product boundary remains separate.
 
-This is deliberately not a claim that hosted authentication is complete. Production remains closed
-until later slices add provider verification, route-level login/session lifecycle, transaction-
-coupled product authorization, and deployment configuration. The centralized request seam and
-cookie/CSRF policy are implemented but unreachable.
+This is a narrow hosted API foundation, not a complete hosted product. There is no hosted web shell,
+workspace listing or administration, broad product route set, synchronization protocol, or cloud
+deployment manifest yet.
 
 ## Persisted model
 
@@ -32,7 +30,7 @@ Migration `0036` separately adds `hosted_login_transactions` for unauthenticated
 coordination. It has no user or workspace foreign key. State and browser-binding bearer values are
 represented only by purpose-separated HMAC digests; the PKCE verifier is authenticated ciphertext;
 exact issuer, client ID, redirect URI, nonce, S256 challenge, expiry, and one-time consumption are
-explicit. See [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md#dormant-login-transaction-foundation).
+explicit. See [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md#login-transaction-foundation).
 
 Identity deletion cascades through external identities, sessions, and memberships. It does not
 delete a workspace or any task, plan, reminder, or audit data in that workspace. Workspace lifecycle
@@ -41,17 +39,19 @@ must remain an explicit product action rather than an authentication side effect
 ## Provisioning and concurrency
 
 `PostgresIdentityUnitOfWork` is separate from the local product and machine-integration transaction
-contexts. Future hosted callers must use this boundary rather than widening every local repository
-operation with optional identity state.
+contexts. Hosted callers use this boundary rather than widening every local repository operation
+with optional identity state.
 
 External identity provisioning runs at `read committed`, obtains a transaction-scoped advisory lock
 for an injective serialization of the exact issuer/subject pair, then re-reads the binding. Concurrent
-first login therefore creates one user and one identity. The database's exact unique index remains
-the durable final constraint; a hash collision can only serialize unrelated provisioning attempts.
+first login therefore creates exactly one user, one identity, one `My Schedule` workspace, and one
+active membership in the same transaction. Replay returns the existing binding without creating
+another workspace. The database's exact unique index remains the durable final constraint; a hash
+collision can only serialize unrelated provisioning attempts.
 
-Hosted workspace provisioning writes the workspace and first membership atomically. It deliberately
-does not use the local installation's 20-workspace operational cap, which belongs to the single-user
-materialization worker rather than hosted account authorization.
+Additional hosted workspace provisioning writes a workspace and membership atomically. Hosted
+provisioning deliberately does not use the local installation's 20-workspace operational cap, which
+belongs to the single-user materialization worker rather than hosted account authorization.
 
 ## Session contract
 
@@ -71,25 +71,12 @@ workspaces.
 
 ## Deliberately absent
 
-This foundation has no production login, callback, logout, refresh, password, WebFinger issuer
-discovery, email-link, browser principal route, or public membership route. It does not read identity claims, bind a
-WhatsApp account, replace integration credentials, or enable synchronization. No environment flag
-can expose it: `HOSTED_API_MODE` accepts only `disabled`. One complete non-secret origin/issuer/client
-registration may be staged, but partial registration, secrets, and non-empty unknown hosted
-configuration fail startup without disclosing the configured value. Strict session-cookie
-serialization/parsing and double-submit CSRF transport now exist behind the centralized request
-seam. A tested dormant lifecycle issues and consumes them, but no production route does.
-
-The centralized request-authentication and workspace-authorization seam now exists but is not wired
-into `buildApp`; see [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md). The dormant browser-session
-and CSRF transport, a replay-safe login-transaction foundation, a nonce-bound OIDC ID-token
-verifier, a strict authorization-request builder, a pinned bounded remote-JWKS resolver, a trusted
-immutable provider-metadata loader, a strict dormant authorization-code exchanger, a tested dormant
-start/callback composition, one unregistered complete dependency factory, and one
-transaction-coupled hosted work-item create now sit behind that seam. WebFinger issuer discovery,
-dormant-to-public runtime enabling, and the broader hosted product surface remain absent. An
-explicit secret-manager-fed production preflight may construct the graph, but production routes
-stay closed by default.
+The activated slice has no refresh token, password, WebFinger issuer discovery, email-link,
+identity/profile response, workspace list or administration route, collaboration roles, or account
+management. It does not bind a WhatsApp account, replace integration credentials, or enable
+synchronization. `HOSTED_API_MODE=disabled` keeps every hosted route closed; `oidc` is accepted only
+with complete secret-manager-fed configuration and leaves the local product routes disabled. See
+[HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md) for the exact gate and route contract.
 
 ## Verification
 
@@ -105,18 +92,19 @@ pnpm verify:oidc-remote-jwks
 pnpm verify:oidc-provider-metadata
 pnpm verify:oidc-token-exchange
 pnpm verify:hosted-oidc-lifecycle
+pnpm verify:hosted-oidc-composition-db
 ```
 
 The first command migrates a nonce database and drives the production application and PostgreSQL
-adapters through concurrent exact provisioning, digest-only issuance, rotation replay resistance,
-disable/resolve/rotation lock races, membership isolation, 21 hosted workspace provisions, user
-disablement, and deletion preservation.
+adapters through concurrent exact provisioning with one default workspace, digest-only issuance,
+rotation replay resistance, disable/resolve/rotation lock races, membership isolation, 21 additional
+hosted workspace provisions, user disablement, and deletion preservation.
 The second upgrades a populated pre-`0031` database, validates exact binding uniqueness and cascade
 direction, and proves legacy workspace/work-item data survives. The third independently exercises
 the pre-authentication unit of work through concurrent exactly-once consumption, protected PKCE
 recovery, expiry, rollback, and cleanup. Those three database commands drop their disposable
 databases and are included in `pnpm verify:database`. The ID-token command independently verifies
-the dormant verifier with generated signing keys and no network access; it is included in
+the verifier with generated signing keys and no network access; it is included in
 `pnpm check`. The authorization-request command proves exact issued provider bindings and canonical,
 injection-safe authorization URL construction. The remote-JWKS command composes the verifier with a
 mandatory fake transport to prove bounded retrieval, caching, rotation, and failure classification.
@@ -124,5 +112,7 @@ The provider-metadata command proves official issuer-path derivation, exact resp
 required code-flow capabilities, immutable snapshots, hard retrieval bounds, and compatibility with
 the authorization and key boundaries. The token-exchange command proves exact transaction-bound
 PKCE redemption, all supported client-authentication methods, no retry, strict token-response
-bounds, access/refresh-token discard, and handoff to the nonce-bound verifier. None performs an
-external network request.
+bounds, access/refresh-token discard, and handoff to the nonce-bound verifier. The composition
+command then parses enabled configuration and drives the production route assembly against a strict
+in-process provider plus PostgreSQL, including first-login workspace bootstrap and an authenticated
+work-item create. None performs an external network request.

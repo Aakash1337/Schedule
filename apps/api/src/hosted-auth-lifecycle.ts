@@ -277,8 +277,7 @@ function setAuthenticationCookies(reply: FastifyReply, sessionCookie: string): v
 }
 
 /**
- * Defines a complete provider-neutral browser lifecycle without making it reachable. Callers must
- * explicitly register this function; buildApp and the production server intentionally do not.
+ * Defines the provider-neutral browser lifecycle installed only by the explicit hosted OIDC gate.
  */
 export async function registerHostedAuthLifecycle(
   app: FastifyInstance,

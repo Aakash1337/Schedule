@@ -36,12 +36,12 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm eval:features`                     | Validate feature-to-evidence traceability                                   | No                              |
 | `pnpm eval:planner`                      | Run deterministic planner quality scenarios                                 | No                              |
 | `pnpm test:coverage`                     | Run every unit/component test and enforce coverage floors                   | No                              |
-| `pnpm verify:oidc-token-exchange`        | Verify the dormant one-shot OIDC code/token boundary and verifier handoff   | No                              |
+| `pnpm verify:oidc-token-exchange`        | Verify the one-shot OIDC code/token boundary and verifier handoff           | No                              |
 | `pnpm verify:oidc-direct-https`          | Verify DNS-pinned, proxy-free direct OIDC HTTPS egress                      | No                              |
-| `pnpm verify:hosted-oidc-lifecycle`      | Verify dormant OIDC start/callback composition and hardened browser binding | No                              |
-| `pnpm verify:hosted-oidc-composition`    | Verify the unregistered concrete hosted OIDC dependency graph               | No                              |
-| `pnpm verify:hosted-oidc-composition-db` | Drive that graph through login/callback/session/logout on PostgreSQL        | Yes                             |
-| `pnpm verify:hosted-runtime-preflight`   | Verify secret parsing, startup construction, and continued route closure    | No                              |
+| `pnpm verify:hosted-oidc-lifecycle`      | Verify OIDC start/callback composition and hardened browser binding         | No                              |
+| `pnpm verify:hosted-oidc-composition`    | Verify the concrete hosted OIDC dependency graph                            | No                              |
+| `pnpm verify:hosted-oidc-composition-db` | Drive enabled production assembly through login and authorized work create  | Yes                             |
+| `pnpm verify:hosted-runtime-preflight`   | Verify secret parsing, startup construction, cleanup, and route gating      | No                              |
 | `pnpm eval`                              | Validate traceability and run the covered test suite                        | No                              |
 | `pnpm verify:database`                   | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
 | `pnpm verify:natural-language-proposals` | Verify private persistence and concurrent exactly-once confirmation         | Yes                             |
@@ -547,50 +547,16 @@ The audit deliberately leaves these visible instead of turning them into false g
   aggregates, materialization/outbox instrumentation, private-data exclusion, database-failure
   `NaN` semantics, and graceful shutdown. It does not install a scraper, persist time-series data,
   deliver alerts, expose a hosted dashboard, or monitor future browser authentication;
-- hosted identity persistence has domain, application, schema, adapter, populated-upgrade, and
-  disposable-PostgreSQL evidence for exact concurrent issuer/subject provisioning, digest-only
-  sessions, rotation replay resistance, user-disable revocation, binary membership isolation,
-  hosted workspace provisioning beyond the local cap, and user-deletion preservation of workspace
-  product data. A centralized hosted request boundary additionally has unit and disposable-
-  PostgreSQL evidence for request isolation, single authentication, spoof resistance,
-  enumeration-resistant membership denial, redacted failures, immutable workspace contexts, and
-  post-revocation fencing. The dormant browser transport additionally has unit evidence for bounded
-  duplicate-safe session cookies, host-only issue/clear attributes, exact-Origin constant-time
-  double-submit CSRF proof, and safe/unsafe production-route closure. A separately injectable
-  lifecycle registrar has unit evidence for identity-private session bootstrap, query-free login
-  start, exact callback credentials, optional provider-issuer binding, browser binding,
-  consume-before-exchange ordering,
-  nonce-bound verification handoff, fixed-origin local redirects, exact issuer/subject provisioning
-  with returned-binding consistency checks, disabled-user denial, hardened cookie issuance,
-  idempotent signed-out revocation, and redacted failures. One separately dormant work-item-create
-  registrar has application, API, adapter, and disposable-PostgreSQL evidence for same-transaction
-  user/session/workspace/membership locking, exact-context authority, cross-tenant denial,
-  logout/disable/expiry fencing, both membership-revocation linearizations, and rollback isolation.
-  The stack remains dormant: neither registrar is installed. A disabled-only runtime gate rejects
-  premature hosted companion configuration and reports hosted endpoints disabled. A separate
-  pre-authentication foundation has domain, application, migration, adapter, and disposable-
-  PostgreSQL evidence for digest-only state/browser binding, transaction-bound encrypted PKCE,
-  exact issuer/client/redirect/nonce binding, concurrent single-use consumption, authoritative
-  expiry, corruption rollback, and bounded cleanup. A separate dormant OIDC adapter has generated-
-  key unit evidence for explicit asymmetric algorithms, exact issuer/audience/authorized-party/
-  nonce binding, bounded claim and header handling, timestamp policy, resolver deadlines, and
-  redacted credential-versus-operational failure classification. A deterministic authorization-
-  request adapter also has unit evidence for exact issued provider bindings, fixed parameter and
-  S256 construction, canonical bounded scopes, form-encoding injection resistance, trusted endpoint
-  query retention, strict transaction expiry, and redacted configuration/runtime failure. A pinned
-  remote-JWKS adapter now has generated-key and injected-transport evidence for exact endpoint and
-  request binding, bounded streaming and parsing, redirect denial, cache reuse, unknown-key
-  cooldown, rotation refresh, concurrent single-flight retrieval, and redacted failures. A separate
-  trusted provider-metadata adapter has injected-transport evidence for the official root/path
-  discovery URL, exact issuer response binding, required OIDC and local S256 capabilities, bounded
-  JSON, hard timeouts, shared cold retrieval, immutable successful snapshots, and downstream
-  authorization/JWKS compatibility. A strict token exchanger adds exact consumed-transaction and
-  endpoint binding, all three supported client-authentication methods, injection-safe PKCE form
-  encoding, one-shot deadline-bound transport, bounded non-cacheable responses, token discard, and
-  verifier handoff. The dormant registrar now composes these ports over tested HTTP start/callback
-  routes, but there is still no WebFinger issuer discovery, connection-safe production
-  metadata/JWKS/token transport, concrete runtime adapter construction, enabling hosted
-  configuration, broader hosted product surface, public deployment, or synchronization;
+- hosted OIDC has domain, application, schema, adapter, component, and disposable-PostgreSQL
+  evidence for exact concurrent identity plus default-workspace provisioning, digest-only sessions,
+  hardened cookies, exact-Origin CSRF, single-use login/PKCE, nonce-bound verification, pinned
+  metadata/JWKS/token HTTPS, bounded client tracking, generic tenant denial, and transaction-coupled
+  work creation. The enabled composition verifier parses production configuration, builds the real
+  route graph with a strict in-process provider, proves local product routes absent, drives login and
+  one authorized create, then checks logout and cleanup. Disabled-mode route closure and redacted
+  startup failure remain independently verified. This evidence does not cover a real external
+  provider, TLS ingress, a hosted web shell, workspace discovery/administration, the broader product
+  API, public deployment, or synchronization;
 - ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a

@@ -7,6 +7,7 @@ import {
   constructDormantHostedOidcPreflight,
   prepareAppAfterDormantHostedOidcPreflight,
 } from "./dormant-hosted-oidc-runtime.js";
+import { prepareHostedApiApp } from "./hosted-api-runtime.js";
 
 const database = {} as DatabaseConnection;
 const secret = "provider-client-secret";
@@ -68,6 +69,28 @@ describe("dormant hosted OIDC runtime preflight", () => {
     await expect(promise).rejects.not.toThrow(secret);
   });
 
+  it("closes the shared database when activated preflight fails", async () => {
+    const close = vi.fn(async () => undefined);
+    const failingDatabase = { close } as unknown as DatabaseConnection;
+    const factory = vi.fn(async () => {
+      throw new Error(`provider rejected ${secret}`);
+    });
+
+    await expect(
+      prepareHostedApiApp(
+        {
+          HOSTED_API_MODE: "oidc",
+          HOSTED_OIDC_PREFLIGHT: preflight,
+          HOSTED_RATE_LIMIT_PER_MINUTE: 120,
+        },
+        failingDatabase,
+        {},
+        factory,
+      ),
+    ).rejects.toThrow("Hosted OIDC preflight failed.");
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("preflights before building the normal route-closed app", async () => {
     const order: string[] = [];
     const factory = vi.fn(async () => {
@@ -77,8 +100,9 @@ describe("dormant hosted OIDC runtime preflight", () => {
     const prepared = await prepareAppAfterDormantHostedOidcPreflight(
       { HOSTED_OIDC_PREFLIGHT: preflight } as Pick<ApiConfig, "HOSTED_OIDC_PREFLIGHT">,
       database,
-      async () => {
+      async (composition) => {
         order.push("app");
+        expect(composition).toEqual({ marker: true });
         return buildApp({ logger: false });
       },
       factory,

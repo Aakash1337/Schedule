@@ -25,6 +25,7 @@ describe("runtime configuration", () => {
     expect(config.API_TRUSTED_PROXIES).toEqual([]);
     expect(config.PRODUCT_API_MODE).toBe("local_unauthenticated");
     expect(config.HOSTED_API_MODE).toBe("disabled");
+    expect(config.HOSTED_RATE_LIMIT_PER_MINUTE).toBe(120);
     expect(config.HOSTED_OIDC_REGISTRATION).toBeUndefined();
     expect(config.HOSTED_OIDC_PREFLIGHT_MODE).toBe("disabled");
     expect(config.HOSTED_OIDC_PREFLIGHT).toBeUndefined();
@@ -52,10 +53,23 @@ describe("runtime configuration", () => {
     expect(config.HOSTED_API_MODE).toBe("disabled");
   });
 
-  it("accepts only the explicit disabled hosted API mode", () => {
+  it("requires complete preflight configuration before enabling hosted OIDC", () => {
     expect(loadApiConfig({ HOSTED_API_MODE: "disabled" }).HOSTED_API_MODE).toBe("disabled");
     expect(() => loadApiConfig({ HOSTED_API_MODE: "enabled" })).toThrow(/HOSTED_API_MODE/);
-    expect(() => loadApiConfig({ HOSTED_API_MODE: "oidc" })).toThrow(/HOSTED_API_MODE/);
+    expect(() => loadApiConfig({ HOSTED_API_MODE: "oidc" })).toThrow(/complete enabled OIDC/);
+
+    const config = loadApiConfig(hostedPreflightEnvironment({ HOSTED_API_MODE: "oidc" }));
+    expect(config.HOSTED_API_MODE).toBe("oidc");
+    expect(config.PRODUCT_API_MODE).toBe("disabled");
+    expect(config.HOSTED_OIDC_PREFLIGHT).toBeDefined();
+    expect(() =>
+      loadApiConfig(
+        hostedPreflightEnvironment({
+          HOSTED_API_MODE: "oidc",
+          PRODUCT_API_MODE: "local_unauthenticated",
+        }),
+      ),
+    ).toThrow(/local unauthenticated product API/);
   });
 
   it("stages one immutable complete non-secret hosted OIDC registration", () => {
@@ -75,7 +89,7 @@ describe("runtime configuration", () => {
     expect(Object.isFrozen(config.HOSTED_OIDC_REGISTRATION)).toBe(true);
   });
 
-  it("loads one immutable dormant hosted OIDC preflight with rotating PKCE keys", () => {
+  it("loads one immutable hosted OIDC preflight with rotating PKCE keys", () => {
     const primary = webhookKeyMaterial(31);
     const previous = webhookKeyMaterial(30);
     const config = loadApiConfig(

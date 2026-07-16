@@ -260,7 +260,11 @@ export const NATURAL_LANGUAGE_PROPOSAL_CANCELLATION_ROUTE =
 export const NATURAL_LANGUAGE_PROPOSAL_CONFIRMATION_ROUTE =
   "/v1/workspaces/:workspaceId/natural-language/proposals/:proposalId/confirmations";
 
-function installRateLimit(app: FastifyInstance, requestsPerMinute: number): void {
+export function installIpRateLimit(
+  app: FastifyInstance,
+  requestsPerMinute: number,
+  maxTrackedClients = 4_096,
+): void {
   const buckets = new Map<string, { startedAt: number; count: number }>();
   let requestCount = 0;
   app.addHook("onRequest", async (request, reply) => {
@@ -270,7 +274,19 @@ function installRateLimit(app: FastifyInstance, requestsPerMinute: number): void
       current === undefined || now - current.startedAt >= 60_000
         ? { startedAt: now, count: 0 }
         : current;
+
+    if (current === undefined && buckets.size >= maxTrackedClients) {
+      for (const [address, candidate] of buckets) {
+        if (now - candidate.startedAt >= 60_000) buckets.delete(address);
+      }
+      if (buckets.size >= maxTrackedClients) {
+        const leastRecentlyUsedAddress = buckets.keys().next().value as string | undefined;
+        if (leastRecentlyUsedAddress !== undefined) buckets.delete(leastRecentlyUsedAddress);
+      }
+    }
+
     bucket.count += 1;
+    buckets.delete(request.ip);
     buckets.set(request.ip, bucket);
     if (bucket.count > requestsPerMinute) {
       const retryAfterSeconds = Math.max(1, Math.ceil((60_000 - (now - bucket.startedAt)) / 1_000));
@@ -872,7 +888,7 @@ export async function registerProductRoutes(
       reply.header("cache-control", "no-store");
     }
   });
-  installRateLimit(app, limits.requestsPerMinute);
+  installIpRateLimit(app, limits.requestsPerMinute);
   const cursorSigningKey = randomBytes(32);
   let concurrentPlans = 0;
   const runPlanningOperation = async <Result>(

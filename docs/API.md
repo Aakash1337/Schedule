@@ -10,14 +10,16 @@ not authorize these product routes.
 
 - Development defaults to `local_unauthenticated` and binds to `127.0.0.1`.
 - Production is always `disabled`; configuration rejects attempts to enable unauthenticated routes in production or on a non-loopback application bind.
-- `HOSTED_API_MODE` is a separate disabled-only gate. Its sole accepted value is `disabled`.
-  `HOSTED_PUBLIC_ORIGIN`, `HOSTED_OIDC_ISSUER`, and `HOSTED_OIDC_CLIENT_ID` may be staged only as one
-  complete validated non-secret set. `HOSTED_OIDC_PREFLIGHT_MODE=enabled` may additionally construct
-  the dormant dependency graph from one complete bounded secret set before app creation. Partial,
-  malformed, premature, mixed-case, and unknown non-empty `HOSTED_*` values fail startup without
-  disclosure. The graph is not passed to `buildApp`; `/v1/system/info` still reports
-  `hostedEndpointsEnabled: false`, and hosted routes remain absent.
-- This mode must not be exposed to an untrusted network. Authentication and authorization are required before public hosting.
+- `HOSTED_API_MODE` is a separate fail-closed gate. It defaults to `disabled`; `oidc` requires one
+  complete validated registration, `HOSTED_OIDC_PREFLIGHT_MODE=enabled`, the complete bounded secret
+  set, and `PRODUCT_API_MODE=disabled`. Enabled startup completes provider discovery before listening,
+  installs the four browser lifecycle routes and the membership-authorized hosted work-item create,
+  applies `HOSTED_RATE_LIMIT_PER_MINUTE`, and reports `hostedEndpointsEnabled: true`. Partial,
+  malformed, mixed-case, and unknown non-empty `HOSTED_*` values fail startup without disclosure.
+- Hosted mode is still a narrow API slice, not a complete public product: workspace provisioning,
+  listing, and administration are not public routes. First login creates one default workspace and
+  active membership atomically, but workspace reads, most product routes, the web shell,
+  synchronization, ingress/TLS, and deployment automation remain separate requirements.
 - CORS is disabled, JSON bodies are limited to 256 KiB, request objects reject unknown fields, and error responses do not include stack traces.
 - Product routes reject missing, malformed, or non-loopback `Host` authorities before routing. This protects the unauthenticated loopback service from browser DNS-rebinding attacks; `localhost`, IPv4 `127.0.0.0/8`, and IPv6 loopback (`[::1]`) are accepted with an optional valid port. Health and system-information endpoints remain outside this product-route guard for local process and container diagnostics.
 - Accepted UUID values in product-route paths and bodies are canonicalized to lowercase before service dispatch and identity comparison; responses therefore use the canonical spelling.

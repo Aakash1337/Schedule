@@ -7,7 +7,7 @@ import {
 } from "./dormant-hosted-oidc-composition.js";
 import type { HostedAuthLifecycleDependencies } from "./hosted-auth-lifecycle.js";
 
-type CompositionFactory = (
+export type HostedOidcCompositionFactory = (
   options: DormantHostedOidcCompositionOptions,
 ) => Promise<HostedAuthLifecycleDependencies>;
 
@@ -15,7 +15,7 @@ type CompositionFactory = (
 export async function constructDormantHostedOidcPreflight(
   config: Pick<ApiConfig, "HOSTED_OIDC_PREFLIGHT">,
   database: DatabaseConnection,
-  factory: CompositionFactory = createDormantHostedOidcComposition,
+  factory: HostedOidcCompositionFactory = createDormantHostedOidcComposition,
 ): Promise<HostedAuthLifecycleDependencies | undefined> {
   const preflight = config.HOSTED_OIDC_PREFLIGHT;
   if (preflight === undefined) return undefined;
@@ -29,8 +29,8 @@ export async function constructDormantHostedOidcPreflight(
 export async function prepareAppAfterDormantHostedOidcPreflight<App>(
   config: Pick<ApiConfig, "HOSTED_OIDC_PREFLIGHT">,
   database: DatabaseConnection,
-  buildApp: () => Promise<App>,
-  factory: CompositionFactory = createDormantHostedOidcComposition,
+  buildApp: (composition: HostedAuthLifecycleDependencies | undefined) => Promise<App>,
+  factory: HostedOidcCompositionFactory = createDormantHostedOidcComposition,
 ): Promise<
   Readonly<{
     app: App;
@@ -38,6 +38,6 @@ export async function prepareAppAfterDormantHostedOidcPreflight<App>(
   }>
 > {
   const composition = await constructDormantHostedOidcPreflight(config, database, factory);
-  const app = await buildApp();
+  const app = await buildApp(composition);
   return Object.freeze({ app, composition });
 }

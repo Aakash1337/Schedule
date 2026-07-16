@@ -8,8 +8,7 @@ import {
   PostgresUnitOfWork,
 } from "@schedule/database";
 
-import { buildApp } from "./app.js";
-import { prepareAppAfterDormantHostedOidcPreflight } from "./dormant-hosted-oidc-runtime.js";
+import { prepareHostedApiApp } from "./hosted-api-runtime.js";
 import { createIntegrationServices } from "./integration-services.js";
 import { DisabledSchedulingAdvisor, OllamaSchedulingAdvisor } from "./local-model-advisor.js";
 import { createNaturalLanguagePromptHasher } from "./natural-language-runtime.js";
@@ -60,49 +59,37 @@ if (config.INTEGRATION_API_MODE === "enabled") {
     config.INTEGRATION_CONFIRMATION_TTL_SECONDS,
   );
 }
-const buildConfiguredApp = () =>
-  buildApp({
-    trustProxy: config.API_TRUSTED_PROXIES.length === 0 ? false : [...config.API_TRUSTED_PROXIES],
-    logger:
-      config.NODE_ENV === "development"
-        ? {
-            level: config.LOG_LEVEL,
-            transport: { target: "pino-pretty", options: { colorize: true } },
-          }
-        : { level: config.LOG_LEVEL },
-    readinessCheck: () => healthCheckDatabase(database),
-    ...(config.PRODUCT_API_MODE === "local_unauthenticated"
+const { app, composition: hostedOidcComposition } = await prepareHostedApiApp(config, database, {
+  trustProxy: config.API_TRUSTED_PROXIES.length === 0 ? false : [...config.API_TRUSTED_PROXIES],
+  logger:
+    config.NODE_ENV === "development"
       ? {
-          productServices,
-          productApiLimits: {
-            requestsPerMinute: config.PRODUCT_RATE_LIMIT_PER_MINUTE,
-            maxConcurrentPlans: 2,
-          },
+          level: config.LOG_LEVEL,
+          transport: { target: "pino-pretty", options: { colorize: true } },
         }
-      : {}),
-    ...(integrationServices === undefined
-      ? {}
-      : {
-          integrationServices,
-          integrationApiLimits: {
-            requestsPerMinute: config.INTEGRATION_RATE_LIMIT_PER_MINUTE,
-          },
-        }),
-  });
-async function prepareConfiguredApp() {
-  try {
-    return await prepareAppAfterDormantHostedOidcPreflight(config, database, buildConfiguredApp);
-  } catch (error) {
-    try {
-      await database.close();
-    } catch {
-      // Preserve the already-redacted startup failure.
-    }
-    throw error;
-  }
-}
-const { app, composition: dormantHostedOidcComposition } = await prepareConfiguredApp();
-if (dormantHostedOidcComposition !== undefined) {
+      : { level: config.LOG_LEVEL },
+  readinessCheck: () => healthCheckDatabase(database),
+  ...(config.PRODUCT_API_MODE === "local_unauthenticated"
+    ? {
+        productServices,
+        productApiLimits: {
+          requestsPerMinute: config.PRODUCT_RATE_LIMIT_PER_MINUTE,
+          maxConcurrentPlans: 2,
+        },
+      }
+    : {}),
+  ...(integrationServices === undefined
+    ? {}
+    : {
+        integrationServices,
+        integrationApiLimits: {
+          requestsPerMinute: config.INTEGRATION_RATE_LIMIT_PER_MINUTE,
+        },
+      }),
+});
+if (config.HOSTED_API_MODE === "oidc") {
+  app.log.info("hosted OIDC routes enabled");
+} else if (hostedOidcComposition !== undefined) {
   app.log.info("dormant hosted OIDC preflight complete");
 }
 

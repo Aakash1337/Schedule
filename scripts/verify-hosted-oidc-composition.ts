@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 
+import { loadApiConfig } from "../packages/config/src/index.js";
 import { createDatabase } from "../packages/database/src/index.js";
 import {
   exportJWK,
-  Fastify,
   generateKeyPair,
   SignJWT,
   type JWK,
@@ -14,6 +14,7 @@ import {
   createDormantHostedOidcComposition,
   type HostedOidcCompositionTransport,
 } from "../apps/api/src/dormant-hosted-oidc-composition.js";
+import { prepareHostedApiApp } from "../apps/api/src/hosted-api-runtime.js";
 import {
   HOSTED_CSRF_COOKIE_NAME,
   HOSTED_CSRF_HEADER_NAME,
@@ -24,7 +25,6 @@ import {
   HOSTED_LOGIN_ROUTE,
   HOSTED_LOGOUT_ROUTE,
   HOSTED_SESSION_ROUTE,
-  registerHostedAuthLifecycle,
 } from "../apps/api/src/hosted-auth-lifecycle.js";
 
 const databaseUrl =
@@ -43,6 +43,22 @@ const keyId = `key-${nonce}`;
 const clientSecret = `composition-client-secret-${nonce}`;
 const loginPepper = `composition-login-pepper-${nonce}`;
 const sessionPepper = `composition-session-pepper-${nonce}`;
+const pkceKey = Buffer.alloc(32, 17).toString("base64url");
+const config = loadApiConfig({
+  NODE_ENV: "test",
+  DATABASE_URL: databaseUrl,
+  HOSTED_API_MODE: "oidc",
+  HOSTED_PUBLIC_ORIGIN: origin,
+  HOSTED_OIDC_ISSUER: issuer,
+  HOSTED_OIDC_CLIENT_ID: clientId,
+  HOSTED_OIDC_PREFLIGHT_MODE: "enabled",
+  HOSTED_OIDC_TOKEN_AUTH_METHOD: "client_secret_basic",
+  HOSTED_OIDC_CLIENT_SECRET: clientSecret,
+  HOSTED_LOGIN_TRANSACTION_PEPPER: loginPepper,
+  HOSTED_SESSION_PEPPER: sessionPepper,
+  HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID: "verification",
+  HOSTED_LOGIN_PKCE_KEYS: `verification:${pkceKey}`,
+});
 
 class ExactUrlResponse extends Response {
   constructor(url: string, body: string, init: ResponseInit) {
@@ -147,25 +163,27 @@ const transport = (async (resource: string, options: RequestInit) => {
 const database = createDatabase(databaseUrl, 4, {
   applicationName: "schedule-hosted-oidc-composition-verifier",
 });
-const app = Fastify({ logger: false });
+let app: Awaited<ReturnType<typeof prepareHostedApiApp>>["app"] | null = null;
 let verificationError: unknown;
 let cleanupFailed = false;
 
 try {
-  const dependencies = await createDormantHostedOidcComposition({
-    database,
-    registration: { publicOrigin: origin, issuer, clientId, redirectUri },
-    loginTransactionPepper: loginPepper,
-    browserSessionPepper: sessionPepper,
-    pkceKeyRing: {
-      primaryKeyId: "verification",
-      keys: { verification: Buffer.alloc(32, 17).toString("base64url") },
-    },
-    tokenEndpointAuthentication: { method: "client_secret_basic", clientSecret },
-    transport,
-  });
-  await registerHostedAuthLifecycle(app, dependencies);
+  const prepared = await prepareHostedApiApp(config, database, { logger: false }, (options) =>
+    createDormantHostedOidcComposition({ ...options, transport }),
+  );
+  app = prepared.app;
   await app.ready();
+
+  const systemInfo = await app.inject({ method: "GET", url: "/v1/system/info" });
+  assert.deepEqual(systemInfo.json(), {
+    service: "schedule-api",
+    version: "0.1.0",
+    architecture: "modular-monolith",
+    productEndpointsEnabled: false,
+    integrationEndpointsEnabled: false,
+    hostedEndpointsEnabled: true,
+  });
+  assert.equal((await app.inject({ method: "GET", url: "/v1/workspaces" })).statusCode, 404);
 
   const login = await app.inject({ method: "GET", url: HOSTED_LOGIN_ROUTE });
   assert.equal(login.statusCode, 303);
@@ -201,6 +219,31 @@ try {
   assert.ok(sessionCookie);
   assert.ok(csrfCookie);
 
+  const [hostedAccount] = await database.sql<
+    { userId: string; workspaceId: string; workspaceName: string; membershipStatus: string }[]
+  >`
+    select
+      identity.user_id as "userId",
+      membership.workspace_id as "workspaceId",
+      workspace.name as "workspaceName",
+      membership.status::text as "membershipStatus"
+    from external_identities as identity
+    join workspace_memberships as membership on membership.user_id = identity.user_id
+    join workspaces as workspace on workspace.id = membership.workspace_id
+    where identity.issuer = ${issuer} and identity.subject = ${subject}
+  `;
+  assert.ok(hostedAccount);
+  assert.deepEqual(
+    {
+      workspaceName: hostedAccount.workspaceName,
+      membershipStatus: hostedAccount.membershipStatus,
+    },
+    {
+      workspaceName: "My Schedule",
+      membershipStatus: "active",
+    },
+  );
+
   const replay = await app.inject({
     method: "GET",
     url: `${HOSTED_CALLBACK_ROUTE}?code=verified-code&state=${state}`,
@@ -217,8 +260,31 @@ try {
   assert.equal(authenticated.statusCode, 200);
   assert.deepEqual(authenticated.json(), { authenticated: true });
 
+  const csrfToken = cookiePair(csrfCookie).split("=", 2)[1];
+  assert.match(csrfToken ?? "", /^[A-Za-z0-9_-]{43}$/u);
+  const createdWorkItem = await app.inject({
+    method: "POST",
+    url: `/v1/hosted/workspaces/${hostedAccount.workspaceId}/work-items`,
+    headers: {
+      origin,
+      cookie: `${cookiePair(sessionCookie)}; ${cookiePair(csrfCookie)}`,
+      [HOSTED_CSRF_HEADER_NAME]: csrfToken!,
+    },
+    payload: { title: "Verified hosted work item" },
+  });
+  assert.equal(createdWorkItem.statusCode, 201, createdWorkItem.body);
+  assert.equal(createdWorkItem.json().workspaceId, hostedAccount.workspaceId);
+
   const [persisted] = await database.sql<
-    { users: number; identities: number; sessions: number; consumed: number }[]
+    {
+      users: number;
+      identities: number;
+      sessions: number;
+      workspaces: number;
+      memberships: number;
+      workItems: number;
+      consumed: number;
+    }[]
   >`
     select
       (select count(*)::integer from users as u
@@ -229,13 +295,23 @@ try {
       (select count(*)::integer from browser_sessions as s
         join external_identities as i on i.user_id = s.user_id
         where i.issuer = ${issuer} and i.subject = ${subject} and s.revoked_at is null) as sessions,
+      (select count(*)::integer from workspaces where id = ${hostedAccount.workspaceId}) as workspaces,
+      (select count(*)::integer from workspace_memberships
+        where user_id = ${hostedAccount.userId} and workspace_id = ${hostedAccount.workspaceId}) as memberships,
+      (select count(*)::integer from work_items
+        where workspace_id = ${hostedAccount.workspaceId}) as "workItems",
       (select count(*)::integer from hosted_login_transactions
         where issuer = ${issuer} and client_id = ${clientId} and consumed_at is not null) as consumed
   `;
-  assert.deepEqual(persisted, { users: 1, identities: 1, sessions: 1, consumed: 1 });
-
-  const csrfToken = cookiePair(csrfCookie).split("=", 2)[1];
-  assert.match(csrfToken ?? "", /^[A-Za-z0-9_-]{43}$/u);
+  assert.deepEqual(persisted, {
+    users: 1,
+    identities: 1,
+    sessions: 1,
+    workspaces: 1,
+    memberships: 1,
+    workItems: 1,
+    consumed: 1,
+  });
   const deniedLogout = await app.inject({
     method: "POST",
     url: HOSTED_LOGOUT_ROUTE,
@@ -294,26 +370,28 @@ try {
   assert.deepEqual(requestCounts, { discovery: 1, token: 1, jwks: 1 });
 
   console.log(
-    "Hosted OIDC composition verification passed one provider snapshot, persisted login, verified callback, session bootstrap, and CSRF-protected logout.",
+    "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace bootstrap, transaction-authorized work creation, and CSRF-protected logout.",
   );
 } catch (error) {
   verificationError = error;
 } finally {
   try {
-    await app.close();
+    await app?.close();
   } catch {
     cleanupFailed = true;
   }
-  let users: { userId: string }[] = [];
+  let accounts: { userId: string; workspaceId: string | null }[] = [];
   try {
-    users = await database.sql<{ userId: string }[]>`
-      select user_id as "userId" from external_identities
-      where issuer = ${issuer} and subject = ${subject}
+    accounts = await database.sql<{ userId: string; workspaceId: string | null }[]>`
+      select identity.user_id as "userId", membership.workspace_id as "workspaceId"
+      from external_identities as identity
+      left join workspace_memberships as membership on membership.user_id = identity.user_id
+      where identity.issuer = ${issuer} and identity.subject = ${subject}
     `;
   } catch {
     cleanupFailed = true;
   }
-  for (const { userId } of users) {
+  for (const userId of new Set(accounts.map((account) => account.userId))) {
     for (const operation of [
       () => database.sql`delete from browser_sessions where user_id = ${userId}`,
       () => database.sql`delete from external_identities where user_id = ${userId}`,
@@ -339,18 +417,43 @@ try {
       cleanupFailed = true;
     }
   }
+  for (const workspaceId of new Set(accounts.flatMap(({ workspaceId }) => workspaceId ?? []))) {
+    for (const operation of [
+      () => database.sql`delete from work_items where workspace_id = ${workspaceId}`,
+      () => database.sql`delete from workspaces where id = ${workspaceId}`,
+    ]) {
+      try {
+        await operation();
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+  }
   try {
     await database.sql`
       delete from hosted_login_transactions where issuer = ${issuer} and client_id = ${clientId}
     `;
-    const [remaining] = await database.sql<{ identities: number; transactions: number }[]>`
+    const [remaining] = await database.sql<
+      { identities: number; transactions: number; workspaces: number; workItems: number }[]
+    >`
       select
         (select count(*)::integer from external_identities
           where issuer = ${issuer} and subject = ${subject}) as identities,
         (select count(*)::integer from hosted_login_transactions
-          where issuer = ${issuer} and client_id = ${clientId}) as transactions
+          where issuer = ${issuer} and client_id = ${clientId}) as transactions,
+        (select count(*)::integer from workspaces
+          where id = any(${accounts.flatMap(({ workspaceId }) => workspaceId ?? [])}::uuid[])) as workspaces,
+        (select count(*)::integer from work_items
+          where workspace_id = any(${accounts.flatMap(({ workspaceId }) => workspaceId ?? [])}::uuid[])) as "workItems"
     `;
-    if (remaining?.identities !== 0 || remaining.transactions !== 0) cleanupFailed = true;
+    if (
+      remaining?.identities !== 0 ||
+      remaining.transactions !== 0 ||
+      remaining.workspaces !== 0 ||
+      remaining.workItems !== 0
+    ) {
+      cleanupFailed = true;
+    }
   } catch {
     cleanupFailed = true;
   }
