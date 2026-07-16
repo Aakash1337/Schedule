@@ -154,9 +154,10 @@ try {
     "API accepted premature hosted companion configuration.",
   );
   assert.notEqual(rejectedExit.code, 0);
-  assert.equal(rejected.output().includes(secret), false);
-  assert.equal(rejected.output().includes("Hosted_Session_Pepper"), false);
-  assert.match(rejected.output(), /Hosted companion configuration is not accepted/u);
+  const rejectedOutput = rejected.output();
+  assert.equal(rejectedOutput.includes(secret), false);
+  assert.equal(rejectedOutput.toUpperCase().includes("HOSTED_SESSION_PEPPER"), false);
+  assert.match(rejectedOutput, /Hosted companion configuration is not accepted/u);
 } finally {
   if (rejected.child.exitCode === null && rejected.child.signalCode === null) {
     rejected.child.kill("SIGKILL");
