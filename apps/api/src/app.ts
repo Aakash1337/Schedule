@@ -28,6 +28,7 @@ import {
   registerHostedWorkItemBoundary,
   type HostedWorkItemServices,
 } from "./hosted-work-item-routes.js";
+import { registerHostedTodayBoundary, type HostedTodayServices } from "./hosted-today-routes.js";
 import type { HostedWorkspaceBoundaryDependencies } from "./hosted-auth-boundary.js";
 import {
   registerHostedWorkspaceRoutes,
@@ -40,6 +41,7 @@ export interface HostedApiOptions {
   readonly boundary: HostedWorkspaceBoundaryDependencies;
   readonly workspaces: HostedWorkspaceServices;
   readonly workItems: HostedWorkItemServices;
+  readonly today: HostedTodayServices;
   readonly webShell?: HostedWebShell;
   readonly requestsPerMinute: number;
 }
@@ -193,6 +195,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         hostedApp,
         options.hostedApi!.boundary,
         options.hostedApi!.workItems,
+      );
+      await registerHostedTodayBoundary(
+        hostedApp,
+        options.hostedApi!.boundary,
+        options.hostedApi!.today,
       );
     });
   }

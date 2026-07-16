@@ -2,7 +2,15 @@ import { CheckCircle2, CircleDotDashed, LogOut, Plus } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { Button, ErrorNotice, Field, PageSkeleton } from "./components/ui";
-import { hostedApi, HostedApiError, type HostedWorkItem, type HostedWorkspace } from "./hosted-api";
+import { formatMinutes, todayKey } from "./date";
+import {
+  hostedApi,
+  HostedApiError,
+  type HostedToday,
+  type HostedTodayActivityState,
+  type HostedWorkItem,
+  type HostedWorkspace,
+} from "./hosted-api";
 
 const selectedWorkspaceKey = "schedule.hostedWorkspace";
 
@@ -17,6 +25,10 @@ function publicError(error: unknown): string {
   return "Schedule could not be reached.";
 }
 
+function activityLabel(state: HostedTodayActivityState): string {
+  return `${state.charAt(0).toUpperCase()}${state.slice(1)}`;
+}
+
 export function HostedApp() {
   const [mode, setMode] = useState<"loading" | "signed-out" | "ready" | "unavailable">("loading");
   const [workspaces, setWorkspaces] = useState<readonly HostedWorkspace[]>([]);
@@ -29,6 +41,11 @@ export function HostedApp() {
   const [backlogLoading, setBacklogLoading] = useState(true);
   const [backlogError, setBacklogError] = useState<string | null>(null);
   const [backlogRefresh, setBacklogRefresh] = useState(0);
+  const [today, setToday] = useState<HostedToday | null>(null);
+  const [todayLoading, setTodayLoading] = useState(true);
+  const [todayError, setTodayError] = useState<string | null>(null);
+  const [todayRefresh, setTodayRefresh] = useState(0);
+  const [todayDate, setTodayDate] = useState(() => todayKey());
 
   const load = useCallback(async () => {
     setMode("loading");
@@ -55,6 +72,16 @@ export function HostedApp() {
       setError(publicError(loadError));
     }
   }, []);
+
+  useEffect(() => {
+    const now = new Date();
+    const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const timeout = window.setTimeout(
+      () => setTodayDate(todayKey()),
+      tomorrow.getTime() - now.getTime() + 1_000,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [todayDate]);
 
   useEffect(() => {
     void load();
@@ -93,6 +120,39 @@ export function HostedApp() {
     };
   }, [backlogRefresh, mode, selectedWorkspaceId]);
 
+  useEffect(() => {
+    if (mode !== "ready" || selectedWorkspaceId === null) {
+      setToday(null);
+      setTodayLoading(false);
+      setTodayError(null);
+      return;
+    }
+    let active = true;
+    setToday(null);
+    setTodayLoading(true);
+    setTodayError(null);
+    void hostedApi
+      .getToday(selectedWorkspaceId, todayDate)
+      .then((result) => {
+        if (active) setToday(result);
+      })
+      .catch((todayReadError: unknown) => {
+        if (!active) return;
+        if (todayReadError instanceof HostedApiError && todayReadError.status === 401) {
+          setMode("signed-out");
+          setError(publicError(todayReadError));
+          return;
+        }
+        setTodayError(publicError(todayReadError));
+      })
+      .finally(() => {
+        if (active) setTodayLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [mode, selectedWorkspaceId, todayDate, todayRefresh]);
+
   const selectedWorkspace = useMemo(
     () => workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
     [selectedWorkspaceId, workspaces],
@@ -106,6 +166,9 @@ export function HostedApp() {
     setBacklogItems([]);
     setBacklogLoading(true);
     setBacklogError(null);
+    setToday(null);
+    setTodayLoading(true);
+    setTodayError(null);
   }
 
   async function capture(event: FormEvent<HTMLFormElement>) {
@@ -274,6 +337,43 @@ export function HostedApp() {
                 <span>{confirmation}</span>
               </p>
             )}
+            <div className="hosted-today" aria-labelledby="hosted-today-title">
+              <div className="hosted-today-heading">
+                <h2 id="hosted-today-title">Today</h2>
+                {today === null ? null : <span>{formatMinutes(today.totalMinutes)}</span>}
+              </div>
+              {todayLoading ? (
+                <p className="hosted-today-state" role="status">
+                  Loading today…
+                </p>
+              ) : todayError !== null ? (
+                <ErrorNotice
+                  message={todayError}
+                  action={
+                    <Button
+                      type="button"
+                      variant="quiet"
+                      onClick={() => setTodayRefresh((value) => value + 1)}
+                    >
+                      Retry today
+                    </Button>
+                  }
+                />
+              ) : today === null || today.items.length === 0 ? (
+                <p className="hosted-today-state">Nothing planned for today.</p>
+              ) : (
+                <ul className="hosted-today-list">
+                  {today.items.map((item, index) => (
+                    <li key={`${item.title}:${index}`}>
+                      <span>{item.title}</span>
+                      <span className="hosted-today-meta">
+                        {formatMinutes(item.scheduledMinutes)} · {activityLabel(item.activityState)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
             <div className="hosted-backlog" aria-labelledby="hosted-backlog-title">
               <div className="hosted-backlog-heading">
                 <h2 id="hosted-backlog-title">Backlog snapshot</h2>

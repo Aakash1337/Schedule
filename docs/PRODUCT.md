@@ -706,10 +706,11 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
 - Implemented security boundary: exact-Origin double-submit CSRF, host-only cookies, generic tenant
   denial, bounded client-address throttling, direct pinned OIDC HTTPS, startup preflight/cleanup, and
   same-transaction user/session/workspace/membership reauthorization.
-- Implemented narrow hosted read: a signed-in principal can list only active workspace memberships
-  through a bounded, no-store page without identity or role metadata.
+- Implemented narrow hosted reads: a signed-in principal can list only active workspace memberships,
+  the fixed first 20 backlog titles, and one existing browser-local current-day plan projection
+  without identity, role, planner-reason, or version metadata.
 - Implemented narrow hosted UI: a same-origin capture shell can sign in, select one active
-  workspace, review the first 20 backlog titles, and create one title through the
+  workspace, review Today and the first 20 backlog titles, and create one title through the
   transaction-authorized route; it exposes no provider tokens, identity metadata, workspace
   administration, or local-only routes.
 - Deferred: hosted workspace administration, the broader product API and interface, account

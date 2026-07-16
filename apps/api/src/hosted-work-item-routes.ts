@@ -11,6 +11,7 @@ import {
   registerHostedWorkspaceBoundary,
   type HostedWorkspaceBoundaryDependencies,
   type HostedWorkspaceRequestAccess,
+  withHostedWorkspaceNotFoundRedacted,
 } from "./hosted-auth-boundary.js";
 import { parseRequest } from "./http-errors.js";
 import { workItemCreateBodySchema } from "./product-routes.js";
@@ -50,19 +51,6 @@ function requestAuthorization(
   return authorization;
 }
 
-async function withWorkspaceNotFoundRedacted<Result>(
-  operation: () => Promise<Result>,
-): Promise<Result> {
-  try {
-    return await operation();
-  } catch (error) {
-    if (error instanceof DomainError && error.code === "workspace.not_found") {
-      throw new DomainError("workspace.not_found", "The requested workspace does not exist.");
-    }
-    throw error;
-  }
-}
-
 async function registerHostedWorkItemRoutes(
   app: FastifyInstance,
   access: HostedWorkspaceRequestAccess,
@@ -71,7 +59,7 @@ async function registerHostedWorkItemRoutes(
   app.get(HOSTED_WORK_ITEM_COLLECTION_ROUTE, async (request) => {
     parseRequest(emptyQuery, request.query);
     const authorization = requestAuthorization(request, access);
-    const page = await withWorkspaceNotFoundRedacted(() =>
+    const page = await withHostedWorkspaceNotFoundRedacted(() =>
       services.listWorkItems({ authorization }),
     );
     return {
@@ -84,7 +72,7 @@ async function registerHostedWorkItemRoutes(
   app.post(HOSTED_WORK_ITEM_COLLECTION_ROUTE, async (request, reply) => {
     const authorization = requestAuthorization(request, access);
     const body = parseRequest(workItemCreateBodySchema, request.body);
-    const created = await withWorkspaceNotFoundRedacted(() =>
+    const created = await withHostedWorkspaceNotFoundRedacted(() =>
       services.createWorkItem({
         authorization,
         command: {

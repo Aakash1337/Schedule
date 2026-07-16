@@ -2,7 +2,7 @@ import {
   type BrowserSessionPrincipal,
   type HostedWorkspaceAuthorization,
 } from "@schedule/application";
-import { workspaceId, type WorkspaceId } from "@schedule/domain";
+import { DomainError, workspaceId, type WorkspaceId } from "@schedule/domain";
 import type { FastifyInstance, FastifyRequest, onSendHookHandler } from "fastify";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -59,6 +59,19 @@ export type HostedWorkspaceRouteRegistrar = (
   app: FastifyInstance,
   access: HostedWorkspaceRequestAccess,
 ) => Promise<void> | void;
+
+export async function withHostedWorkspaceNotFoundRedacted<Result>(
+  operation: () => Promise<Result>,
+): Promise<Result> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof DomainError && error.code === "workspace.not_found") {
+      throw new DomainError("workspace.not_found", "The requested workspace does not exist.");
+    }
+    throw error;
+  }
+}
 
 function workspaceFromRequest(request: FastifyRequest): WorkspaceId | null {
   if (typeof request.params !== "object" || request.params === null) return null;

@@ -417,6 +417,19 @@ mismatch, deletion after preflight, and membership denial all remain the same ge
 private repository detail. The endpoint adds no update, completion, planning, filter, paging, or
 synchronization authority.
 
+## Bounded hosted Today read
+
+`GET /v1/hosted/workspaces/:workspaceId/today?date=YYYY-MM-DD` crosses the same hosted cookie and
+workspace-membership preflight. It accepts exactly one real Gregorian local date and reads only an
+already-generated current plan; it never generates or changes one. A missing plan returns that date
+with an empty item list and zero minutes.
+
+The response projects only ordered item titles, scheduled minutes, activity states, and total
+minutes. It omits item and plan IDs, head versions, source identity, time zone, scores, reasons,
+warnings, input data, and all mutation controls. The browser supplies its current local date because
+workspaces do not yet own a persisted time zone. Authorization failures use the same generic tenant
+denial, `Cache-Control: no-store`, and read-side revocation boundary as the backlog snapshot.
+
 ## Hosted capture shell
 
 Explicit OIDC mode also serves one same-origin capture page at `/`. The production API loads the
@@ -431,13 +444,14 @@ framing denial, and MIME sniffing denial. Fingerprinted assets are immutable for
 requests sit outside the hosted API's per-source request budget.
 
 The browser reads only `{ authenticated }`, the active workspace page, the first 20 backlog item
-IDs/titles, and the created work item. It never receives provider tokens, user or session
-identifiers, membership state, or roles. A signed-in user may choose one discovered workspace,
-review that bounded snapshot, and submit one title. The script copies the exact host-only CSRF
+IDs/titles, the narrow current-day projection above, and the created work item. It never receives
+provider tokens, user or session identifiers, membership state, or roles. A signed-in user may
+choose one discovered workspace, review Today and the bounded backlog snapshot, and submit one title.
+The script copies the exact host-only CSRF
 cookie into the existing header and calls the transaction-authorized hosted create route; the
 server remains authoritative for identity, membership, defaults, and validation. The page cannot
-page, filter, edit, complete, schedule, or synchronize work and offers no workspace or account
-administration.
+generate a plan, page, filter, edit, complete, schedule, or synchronize work and offers no workspace
+or account administration.
 
 ## Deliberately absent
 
@@ -446,8 +460,8 @@ broader hosted product interface or route set, account-management API, role mode
 protocol, or verified public deployment. The authenticated workspace list is discovery only.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. Work-item create is the only transaction-coupled hosted product mutation. The bounded
-backlog snapshot is the only hosted product-data read; all other product routes remain local-only
-and require their own authority before future hosted exposure.
+backlog and current-day projections are the only hosted product-data reads; all other product routes
+remain local-only and require their own authority before future hosted exposure.
 
 ## Concrete OIDC composition
 

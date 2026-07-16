@@ -29,12 +29,22 @@ describe("hosted web API client", () => {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ date: "2026-07-16", items: [], totalMinutes: 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
       );
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(hostedApi.session()).resolves.toEqual({ authenticated: true });
     await expect(hostedApi.listWorkspaces()).resolves.toMatchObject({ items: [] });
     await expect(hostedApi.listWorkItems("workspace/one")).resolves.toMatchObject({ items: [] });
+    await expect(hostedApi.getToday("workspace/one", "2026-07-16")).resolves.toMatchObject({
+      date: "2026-07-16",
+      items: [],
+    });
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       "/v1/auth/session",
@@ -48,6 +58,11 @@ describe("hosted web API client", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
       "/v1/hosted/workspaces/workspace%2Fone/work-items",
+      expect.objectContaining({ method: "GET", credentials: "same-origin" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/v1/hosted/workspaces/workspace%2Fone/today?date=2026-07-16",
       expect.objectContaining({ method: "GET", credentials: "same-origin" }),
     );
   });

@@ -18,6 +18,19 @@ export interface HostedWorkItemPage {
   readonly offset: number;
 }
 
+export type HostedTodayActivityState =
+  "pending" | "started" | "completed" | "skipped" | "deferred" | "dismissed";
+
+export interface HostedToday {
+  readonly date: string;
+  readonly items: readonly {
+    readonly title: string;
+    readonly scheduledMinutes: number;
+    readonly activityState: HostedTodayActivityState;
+  }[];
+  readonly totalMinutes: number;
+}
+
 export class HostedApiError extends Error {
   constructor(
     readonly status: number,
@@ -85,6 +98,10 @@ export const hostedApi = {
   listWorkItems: (workspaceId: string) =>
     request<HostedWorkItemPage>(
       `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/work-items`,
+    ),
+  getToday: (workspaceId: string, date: string) =>
+    request<HostedToday>(
+      `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/today?date=${encodeURIComponent(date)}`,
     ),
   createWorkItem: (workspaceId: string, title: string) =>
     request<HostedWorkItem>(`/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/work-items`, {
