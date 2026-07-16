@@ -175,6 +175,31 @@ must still bind them to the same exact configured issuer and provide a connectio
 The verifier does not import into `buildApp`, `server.ts`, configuration, or a route; it cannot make
 the dormant hosted surface reachable.
 
+## Dormant direct OIDC HTTPS transport
+
+`directOidcHttpsFetch` is the production connection-level transport shared by the future discovery,
+remote-JWKS, and token clients. It accepts only the exact canonical default-port HTTPS URLs already
+required by those adapters and an ordinary DNS hostname: literal IPs, credentials, fragments,
+special-use names, non-default ports, and non-canonical spellings fail before DNS.
+
+Every lookup requests all answers in verbatim order, accepts at most 32, and rejects the complete set
+when any IPv4 or IPv6 address is malformed, private, local, reserved, documentation-only,
+benchmarking, multicast, or otherwise outside globally routable unicast space. It snapshots the
+validated set and pins the first address into the HTTPS request's lookup callback, preventing a
+second DNS resolution from changing the destination. The original hostname remains both the HTTP
+host and TLS server name, certificate verification stays enabled, the request uses no agent or
+ambient proxy, and redirects are surfaced rather than followed.
+
+The transport accepts only the existing bounded GET shape or the one-shot token POST shape. It
+rejects caller-controlled framing, hop-by-hop, proxy, forwarding, host, credential, referrer, and
+redirect behavior. The caller's abort signal covers DNS and the HTTPS request; failures expose only
+one stable availability error. Responses retain the exact requested URL and stream into the existing
+bounded OIDC readers, which continue to own status, content type, cache, header, body, and hard-time
+limits. The transport adds no retry and no provider/runtime configuration.
+
+This adapter remains dormant: production configuration does not construct it with provider clients,
+and `buildApp` and `server.ts` register no hosted route.
+
 ## Dormant pinned remote-JWKS resolver
 
 `createOidcRemoteJwksResolver` binds one exact issuer to one deployment-controlled HTTPS JWKS URI
@@ -200,11 +225,10 @@ successful set is refreshed after five minutes. Matching cached keys avoid netwo
 unknown or ambiguous key remains an invalid credential, while transport and malformed-response
 failures remain redacted availability failures.
 
-This is not by itself a production SSRF boundary. The mandatory transport must disable or explicitly
-govern proxies, resolve and vet every connected address, reject local/private/reserved destinations,
-resist DNS rebinding, and preserve TLS hostname and certificate verification. No such production
-transport or concrete resolver construction is registered with the dormant callback or production
-server.
+Exact URL binding and response bounds are not by themselves a production SSRF boundary. The direct
+OIDC HTTPS transport now supplies the required proxy, DNS-answer, address-pinning, rebinding, and TLS
+controls, but no concrete resolver construction is registered with the dormant callback or
+production server.
 
 ## Dormant trusted OIDC discovery/provider metadata
 
@@ -242,9 +266,9 @@ endpoint authentication is reduced to the deterministic supported subset of
 `client_secret_basic` when the field is absent. Extra metadata is ignored and never enters the
 trusted snapshot.
 
-This adapter is still dormant. Its required transport has no production DNS/IP/proxy/TLS
-implementation, and the snapshot is not registered with the authorization builder, token exchanger,
-JWKS resolver, ID-token verifier, runtime configuration, routes, callback, or server.
+This adapter is still dormant. A production DNS/IP/proxy/TLS transport now exists, but the snapshot
+and transport are not constructed with the authorization builder, token exchanger, JWKS resolver,
+ID-token verifier, runtime configuration, routes, callback, or server.
 
 ## Dormant OIDC authorization-request builder
 
@@ -430,6 +454,11 @@ form/authentication-method matrix, parameter-injection and endpoint-query collis
 transaction binding, no retry, abort/deadline behavior across transport and body, response/header/
 cache bounds, OAuth rejection classification, secret/token redaction, and mandatory verifier
 handoff. It performs no external request; the runtime gate continues to prove HTTP closure.
+`pnpm verify:oidc-direct-https` rebuilds the core packages and runs the direct transport together
+with discovery, remote-JWKS, token-exchange, and bounded-response compatibility suites. Mocked DNS
+and HTTPS seams prove all-answer validation, private/mixed-set denial, address pinning, hostname and
+certificate preservation, proxy/redirect/framing denial, abort behavior, streamed exact-URL
+responses, and redacted failures without making an external request.
 `pnpm verify:hosted-oidc-lifecycle` rebuilds the core packages and runs the dormant start/callback,
 browser-cookie, authorization-request, token-exchange, and ID-token suites. It proves query-free
 start, exact state/code/browser binding, optional issuer binding, consume-before-exchange ordering,

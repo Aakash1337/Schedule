@@ -259,5 +259,6 @@ to one consumed transaction, one advertised client-authentication method, one fo
 hosted runtime gate rejects premature companion configuration. The dormant registrar now composes
 transaction start/consume, authorization redirect, code exchange, nonce-bound verification,
 provisioning, and session issuance with a hardened browser-binding cookie, but it remains absent from
-`buildApp` and production server wiring until connection-level OIDC egress enforcement, concrete
-runtime adapter construction, and an intentionally selected public hosted surface exist.
+`buildApp` and production server wiring. A direct HTTPS transport now provides connection-level DNS,
+IP, proxy, and TLS enforcement behind the dormant adapters; concrete runtime configuration,
+provider construction, and an intentionally selected public hosted surface remain absent.

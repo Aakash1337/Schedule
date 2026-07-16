@@ -29,6 +29,7 @@
     "oidc-remote-jwks": { "command": "pnpm check", "ci": true },
     "oidc-provider-metadata": { "command": "pnpm check", "ci": true },
     "oidc-token-exchange": { "command": "pnpm check", "ci": true },
+    "oidc-direct-https": { "command": "pnpm check", "ci": true },
     "hosted-oidc-lifecycle": { "command": "pnpm check", "ci": true },
     "hosted-runtime-gate": { "command": "pnpm verify:database", "ci": true },
     "hosted-mutation-authorization": { "command": "pnpm verify:database", "ci": true },
@@ -2659,6 +2660,51 @@
       ]
     },
     {
+      "id": "oidc-direct-https-transport",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Dormant direct OIDC HTTPS transport"
+      },
+      "limitations": [
+        "The direct transport is production-grade but dormant: provider discovery, JWKS, token exchange, runtime configuration, buildApp, and server.ts do not construct or register it.",
+        "The existing bounded OIDC callers own hard deadlines, status/content/cache/body validation, and retry policy. This transport performs one DNS lookup and one pinned direct HTTPS attempt, never follows redirects, and adds no retry."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/oidc-direct-https-transport.test.ts",
+          "command": "oidc-direct-https",
+          "anchors": [
+            "classifies %s as public=%s",
+            "snapshots only a bounded all-public DNS answer set",
+            "makes one direct GET through a pinned public address while preserving TLS hostname checks",
+            "preserves the strict token POST shape without synthesizing proxy headers",
+            "rejects unsafe target %s before DNS",
+            "rejects %s before DNS",
+            "rejects a mixed DNS set before opening a request",
+            "detaches an unresolved DNS lookup when the caller aborts",
+            "redacts DNS and HTTPS failures"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
       "id": "oidc-remote-jwks-foundation",
       "status": "implemented",
       "risk": "critical",
@@ -2667,8 +2713,8 @@
         "anchor": "## Dormant pinned remote-JWKS resolver"
       },
       "limitations": [
-        "The provider-scoped resolver is dormant and is composed with the separate discovery and token-exchange adapters only in tests. It has no production transport, runtime configuration, authorization route, callback, or server composition.",
-        "The mandatory injected transport remains responsible for connection-level DNS, resolved-IP, proxy, and TLS egress enforcement. Exact URL binding, redirect denial, and response bounds in this adapter are not a complete SSRF defense by themselves."
+        "The provider-scoped resolver is dormant and is composed with the separate discovery and token-exchange adapters only in tests. A production direct HTTPS transport exists, but runtime configuration, concrete construction, authorization route, callback, and server composition remain absent.",
+        "Exact URL binding, redirect denial, and response bounds in this adapter are not a complete SSRF defense by themselves. Future composition must inject the direct transport that enforces DNS, resolved-IP, proxy, rebinding, and TLS policy."
       ],
       "evidence": [
         {
@@ -2713,8 +2759,8 @@
         "anchor": "## Dormant trusted OIDC discovery/provider metadata"
       },
       "limitations": [
-        "The immutable provider-metadata adapter is dormant and has no production transport, runtime configuration, client registration, authorization route, callback, server composition, or automatic metadata refresh.",
-        "The mandatory injected transports remain responsible for connection-level DNS, resolved-IP, proxy, DNS-rebinding, and TLS enforcement. Discovery output is composed with the authorization builder, token exchanger, remote-JWKS resolver, and ID-token verifier only in tests, not production."
+        "The immutable provider-metadata adapter is dormant. A production direct HTTPS transport exists, but runtime configuration, concrete client registration, authorization route, callback, server composition, and automatic metadata refresh remain absent.",
+        "Discovery output and the direct transport are composed with the authorization builder, token exchanger, remote-JWKS resolver, and ID-token verifier only in tests, not production."
       ],
       "evidence": [
         {
@@ -2770,7 +2816,7 @@
         "anchor": "## Dormant OIDC authorization-code token exchange"
       },
       "limitations": [
-        "The dormant callback invokes the strict exchanger after consuming state/browser binding and before verifier, provisioning, and session ports. Production DNS/IP/proxy/TLS transport, runtime client/secret configuration, concrete adapter construction, and server composition remain absent.",
+        "The dormant callback invokes the strict exchanger after consuming state/browser binding and before verifier, provisioning, and session ports. A production direct HTTPS transport exists, but runtime client/secret configuration, concrete adapter construction, and server composition remain absent.",
         "Each consumed code is attempted at most once per invocation and is never retried after an ambiguous failure. The returned compact ID token remains untrusted; only the separately configured nonce-bound verifier may turn it into an issuer/subject identity. Access and refresh tokens are discarded."
       ],
       "evidence": [
@@ -2830,7 +2876,7 @@
         "anchor": "## Dormant authentication lifecycle contract"
       },
       "limitations": [
-        "The start/callback composition is tested but dormant: buildApp and server.ts do not register it, HOSTED_API_MODE remains disabled-only, and no production OIDC egress transport or concrete runtime adapter construction exists.",
+        "The start/callback composition is tested but dormant: buildApp and server.ts do not register it, HOSTED_API_MODE remains disabled-only, and the production OIDC egress transport has no concrete runtime adapter construction.",
         "A consumed authorization code is attempted once and never retried. Public hosted routes, account management, synchronization, and the broader hosted product surface remain deferred."
       ],
       "evidence": [

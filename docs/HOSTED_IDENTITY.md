@@ -85,8 +85,8 @@ and CSRF transport, a replay-safe login-transaction foundation, a nonce-bound OI
 verifier, a strict authorization-request builder, a pinned bounded remote-JWKS resolver, a trusted
 immutable provider-metadata loader, a strict dormant authorization-code exchanger, a tested dormant
 start/callback composition, and one transaction-coupled hosted work-item create now sit behind that
-seam. WebFinger issuer discovery, connection-level production metadata/JWKS/token transport,
-concrete runtime adapter construction, and the broader hosted product surface remain absent while
+seam. WebFinger issuer discovery, concrete production metadata/JWKS/token client construction,
+runtime adapter configuration, and the broader hosted product surface remain absent while
 production routes stay closed by default.
 
 ## Verification
