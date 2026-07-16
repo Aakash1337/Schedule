@@ -408,14 +408,29 @@ workspace.
 workspace-membership preflight and accepts no query fields. It reuses the product work-item list
 inside a separate read transaction with fixed `status=backlog`, `limit=20`, and `offset=0`. The
 response is the stable first page ordered by creation time and ID and projects only each item's
-`id` and `title`, plus the fixed page bounds. It omits descriptions, hierarchy, priorities, due
-dates, durations, versions, identity data, and totals and always uses `Cache-Control: no-store`.
+`id`, `title`, and optimistic `version`, plus the fixed page bounds. It omits descriptions,
+hierarchy, priorities, due dates, durations, identity data, and totals and always uses
+`Cache-Control: no-store`.
 
 This is a read-side operation under the preflight transaction limit above: a committed revocation
 fences the next request but cannot retract an already-authorized in-flight read. Path/context
 mismatch, deletion after preflight, and membership denial all remain the same generic `404` without
-private repository detail. The endpoint adds no update, completion, planning, filter, paging, or
-synchronization authority.
+private repository detail. The endpoint adds no filtering, paging, or synchronization authority;
+the version exists only for the strict status mutation below.
+
+## Transaction-coupled hosted status update
+
+`PATCH /v1/hosted/workspaces/:workspaceId/work-items/:workItemId` accepts exactly a positive
+`expectedVersion` and either `in_progress` or `done`, then returns `204`. It rejects titles,
+descriptions, priority, dates, duration, hierarchy, identity fields, other statuses, and unknown
+companions. A stale version returns a fixed `409` and is never retried as a user mutation.
+The transaction also requires the persisted source status to remain `backlog`, so learning or
+guessing a later version cannot reopen an item after the first accepted transition.
+
+`UpdateHostedWorkItemStatus` adapts the same hosted mutation unit of work used by create to the
+existing product update use case. User, session, workspace, and membership are therefore rechecked
+and locked in the same PostgreSQL transaction as the versioned status change and pending reminder
+intent invalidation. The route cannot reopen, cancel, block, reparent, or otherwise edit work.
 
 ## Bounded hosted Today read
 
@@ -444,14 +459,14 @@ framing denial, and MIME sniffing denial. Fingerprinted assets are immutable for
 requests sit outside the hosted API's per-source request budget.
 
 The browser reads only `{ authenticated }`, the active workspace page, the first 20 backlog item
-IDs/titles, the narrow current-day projection above, and the created work item. It never receives
+IDs/titles/versions, the narrow current-day projection above, and the created work item. It never receives
 provider tokens, user or session identifiers, membership state, or roles. A signed-in user may
-choose one discovered workspace, review Today and the bounded backlog snapshot, and submit one title.
-The script copies the exact host-only CSRF
-cookie into the existing header and calls the transaction-authorized hosted create route; the
-server remains authoritative for identity, membership, defaults, and validation. The page cannot
-generate a plan, page, filter, edit, complete, schedule, or synchronize work and offers no workspace
-or account administration.
+choose one discovered workspace, review Today and the bounded backlog snapshot, submit one title,
+or move one visible backlog item to started or done. The script copies the exact host-only CSRF
+cookie into the existing header for both strict mutations; the server remains authoritative for
+identity, membership, defaults, validation, and optimistic versions. The page cannot generate a
+plan, page, filter, edit fields, reopen, cancel, schedule, or synchronize work and offers no
+workspace or account administration.
 
 ## Deliberately absent
 
@@ -459,9 +474,10 @@ There is still no WebFinger issuer discovery, public workspace provisioning or a
 broader hosted product interface or route set, account-management API, role model, synchronization
 protocol, or verified public deployment. The authenticated workspace list is discovery only.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
-principal. Work-item create is the only transaction-coupled hosted product mutation. The bounded
-backlog and current-day projections are the only hosted product-data reads; all other product routes
-remain local-only and require their own authority before future hosted exposure.
+principal. Title-only create and status-only update are the only transaction-coupled hosted product
+mutations. The bounded backlog and current-day projections are the only hosted product-data reads;
+all other product routes remain local-only and require their own authority before future hosted
+exposure.
 
 ## Concrete OIDC composition
 

@@ -37,8 +37,8 @@ stores only that selection in browser storage, sends the exact script-readable C
 mutations, and treats session, access, throttling, and availability failures as bounded states. It
 shows the browser-local day's existing plan through titles, durations, and activity states, plus the
 first 20 backlog titles. The two reads fail and retry independently; capture refreshes only the
-backlog. The shell cannot generate a plan, page, filter, or edit work and does not imply
-synchronization.
+backlog. Each visible backlog item can be moved only to started or done with its snapshot version.
+The shell cannot generate a plan, page, filter, edit fields, reopen, cancel, or synchronize work.
 
 ## Information architecture
 

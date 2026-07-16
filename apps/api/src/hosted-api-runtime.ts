@@ -4,6 +4,7 @@ import {
   GetCurrentDailyPlan,
   ListHostedWorkspaces,
   ListWorkItems,
+  UpdateHostedWorkItemStatus,
 } from "@schedule/application";
 import type { ApiConfig } from "@schedule/config";
 import {
@@ -39,9 +40,10 @@ async function hostedApiOptions(
   const listWorkspaces = new ListHostedWorkspaces(identityUnitOfWork);
   const listWorkItems = new ListWorkItems(new PostgresUnitOfWork(database));
   const getCurrentDailyPlan = new GetCurrentDailyPlan(new PostgresUnitOfWork(database));
-  const createWorkItem = new CreateHostedWorkItem(new PostgresHostedMutationUnitOfWork(database), {
-    now: () => new Date(),
-  });
+  const hostedMutationUnitOfWork = new PostgresHostedMutationUnitOfWork(database);
+  const clock = { now: () => new Date() };
+  const createWorkItem = new CreateHostedWorkItem(hostedMutationUnitOfWork, clock);
+  const updateWorkItemStatus = new UpdateHostedWorkItemStatus(hostedMutationUnitOfWork, clock);
   let webShell: Awaited<ReturnType<HostedWebShellLoader>>;
   try {
     webShell = await webShellLoader();
@@ -68,6 +70,8 @@ async function hostedApiOptions(
         }),
       createWorkItem: ({ authorization, command }) =>
         createWorkItem.execute(authorization, command),
+      updateWorkItemStatus: ({ authorization, command }) =>
+        updateWorkItemStatus.execute(authorization, command),
     },
     today: {
       getToday: ({ authorization, date }) =>

@@ -17,6 +17,7 @@ export interface UpdateWorkItemCommand {
   readonly workspaceId: WorkspaceId;
   readonly workItemId: WorkItemId;
   readonly expectedVersion: number;
+  readonly expectedStatus?: WorkItemStatus;
   readonly parentWorkItemId?: WorkItemId | null;
   readonly title?: string;
   readonly description?: string | null;
@@ -56,6 +57,12 @@ export class UpdateWorkItem {
           throw new DomainError(
             "work_item.version_conflict",
             "The work item changed before this update could be applied.",
+          );
+        }
+        if (command.expectedStatus !== undefined && current.status !== command.expectedStatus) {
+          throw new DomainError(
+            "work_item.status_conflict",
+            "The work item status changed before this update could be applied.",
           );
         }
         if (

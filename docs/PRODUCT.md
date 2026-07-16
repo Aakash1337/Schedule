@@ -710,9 +710,9 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   the fixed first 20 backlog titles, and one existing browser-local current-day plan projection
   without identity, role, planner-reason, or version metadata.
 - Implemented narrow hosted UI: a same-origin capture shell can sign in, select one active
-  workspace, review Today and the first 20 backlog titles, and create one title through the
-  transaction-authorized route; it exposes no provider tokens, identity metadata, workspace
-  administration, or local-only routes.
+  workspace, review Today and the first 20 backlog titles, create one title, and move a visible
+  backlog item to started or done through transaction-authorized routes; it exposes no provider
+  tokens, identity metadata, general editing, workspace administration, or local-only routes.
 - Deferred: hosted workspace administration, the broader product API and interface, account
   management, provider-specific production verification, collaboration roles, and sync.
 - Cloud deployment selected from measured operational needs

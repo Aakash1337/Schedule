@@ -2,6 +2,7 @@ import {
   DomainError,
   browserSessionId,
   createWorkItem,
+  updateWorkItem,
   userId,
   workspaceId,
 } from "@schedule/domain";
@@ -10,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   HOSTED_WORK_ITEM_COLLECTION_ROUTE,
+  HOSTED_WORK_ITEM_RESOURCE_ROUTE,
   registerHostedWorkItemBoundary,
   type HostedWorkItemServices,
 } from "./hosted-work-item-routes.js";
@@ -44,6 +46,9 @@ function servicesWith(overrides: Partial<HostedWorkItemServices> = {}): HostedWo
       throw new Error("Unexpected hosted work-item create.");
     }),
     listWorkItems: vi.fn(async () => ({ items: [], limit: 20, offset: 0 })),
+    updateWorkItemStatus: vi.fn(async () => {
+      throw new Error("Unexpected hosted work-item update.");
+    }),
     ...overrides,
   };
 }
@@ -143,7 +148,7 @@ describe("dormant hosted work-item routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.json()).toEqual({
-      items: [{ id: first.id, title: first.title }],
+      items: [{ id: first.id, title: first.title, version: first.version }],
       limit: 20,
       offset: 0,
     });
@@ -172,6 +177,108 @@ describe("dormant hosted work-item routes", () => {
       expect(response.statusCode).toBe(400);
     }
     expect(createWorkItemService).not.toHaveBeenCalled();
+  });
+
+  it("updates only status from canonical authority with an optimistic version", async () => {
+    const current = createWorkItem({
+      workspaceId: WORKSPACE_ID,
+      title: "Hosted task",
+      now: new Date("2026-07-16T09:00:00.000Z"),
+    });
+    const updated = updateWorkItem(current, {
+      status: "done",
+      now: new Date("2026-07-16T09:01:00.000Z"),
+    });
+    const updateWorkItemStatus = vi.fn(async () => updated);
+    const app = await createHostedApp({ updateWorkItemStatus });
+    const path = HOSTED_WORK_ITEM_RESOURCE_ROUTE.replace(
+      ":workspaceId",
+      WORKSPACE_ID.toUpperCase(),
+    ).replace(":workItemId", current.id.toUpperCase());
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: path,
+      headers: { "x-user-id": OTHER_USER_ID, "x-workspace-id": OTHER_WORKSPACE_ID },
+      payload: { expectedVersion: current.version, status: "done" },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.body).toBe("");
+    expect(updateWorkItemStatus).toHaveBeenCalledWith({
+      authorization,
+      command: { workItemId: current.id, expectedVersion: current.version, status: "done" },
+    });
+  });
+
+  it("rejects general editing and invalid status updates before calling the service", async () => {
+    const updateWorkItemStatus = vi.fn();
+    const app = await createHostedApp({ updateWorkItemStatus });
+    const path = HOSTED_WORK_ITEM_RESOURCE_ROUTE.replace(":workspaceId", WORKSPACE_ID).replace(
+      ":workItemId",
+      "00000000-0000-4000-8000-000000000401",
+    );
+
+    for (const payload of [
+      { expectedVersion: 1, status: "backlog" },
+      { expectedVersion: 0, status: "done" },
+      { expectedVersion: 1, status: "done", title: "General edit" },
+      { expectedVersion: 1, status: "done", workspaceId: OTHER_WORKSPACE_ID },
+    ]) {
+      const response = await app.inject({ method: "PATCH", url: path, payload });
+      expect(response.statusCode).toBe(400);
+    }
+    expect(updateWorkItemStatus).not.toHaveBeenCalled();
+  });
+
+  it("reports a stale hosted status update without exposing repository detail", async () => {
+    const app = await createHostedApp({
+      updateWorkItemStatus: vi
+        .fn()
+        .mockRejectedValue(new DomainError("work_item.version_conflict", "private row detail")),
+    });
+    const path = HOSTED_WORK_ITEM_RESOURCE_ROUTE.replace(":workspaceId", WORKSPACE_ID).replace(
+      ":workItemId",
+      "00000000-0000-4000-8000-000000000401",
+    );
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: path,
+      payload: { expectedVersion: 1, status: "in_progress" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ error: { code: "work_item.version_conflict" } });
+    expect(response.body).not.toContain("private row detail");
+  });
+
+  it("reports a non-backlog source conflict without exposing repository detail", async () => {
+    const app = await createHostedApp({
+      updateWorkItemStatus: vi
+        .fn()
+        .mockRejectedValue(new DomainError("work_item.status_conflict", "private status detail")),
+    });
+    const path = HOSTED_WORK_ITEM_RESOURCE_ROUTE.replace(":workspaceId", WORKSPACE_ID).replace(
+      ":workItemId",
+      "00000000-0000-4000-8000-000000000401",
+    );
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: path,
+      payload: { expectedVersion: 2, status: "in_progress" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: "work_item.status_conflict",
+        message: "The work item status changed before this update could be applied.",
+      },
+    });
+    expect(response.body).not.toContain("private status detail");
   });
 
   it.each([

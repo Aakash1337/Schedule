@@ -1,10 +1,11 @@
 import type {
   CreateHostedWorkItemCommand,
   HostedWorkspaceAuthorization,
+  UpdateHostedWorkItemStatusCommand,
   WorkItemPage,
 } from "@schedule/application";
-import { DomainError, localDate, workItemId, workspaceId, type WorkItem } from "@schedule/domain";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import { localDate, workItemId, type WorkItem } from "@schedule/domain";
+import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import {
@@ -20,10 +21,18 @@ const canonicalUuid = z
   .string()
   .uuid()
   .transform((value) => value.toLowerCase());
-const hostedWorkspaceParams = z.strictObject({ workspaceId: canonicalUuid });
+const hostedWorkItemParams = z.strictObject({
+  workspaceId: canonicalUuid,
+  workItemId: canonicalUuid,
+});
 const emptyQuery = z.strictObject({});
+const hostedWorkItemStatusBody = z.strictObject({
+  expectedVersion: z.number().int().min(1).max(2_147_483_647),
+  status: z.enum(["in_progress", "done"]),
+});
 
 export const HOSTED_WORK_ITEM_COLLECTION_ROUTE = "/v1/hosted/workspaces/:workspaceId/work-items";
+export const HOSTED_WORK_ITEM_RESOURCE_ROUTE = `${HOSTED_WORK_ITEM_COLLECTION_ROUTE}/:workItemId`;
 
 export interface HostedCreateWorkItemInput {
   readonly authorization: HostedWorkspaceAuthorization;
@@ -34,21 +43,15 @@ export interface HostedListWorkItemsInput {
   readonly authorization: HostedWorkspaceAuthorization;
 }
 
+export interface HostedUpdateWorkItemStatusInput {
+  readonly authorization: HostedWorkspaceAuthorization;
+  readonly command: UpdateHostedWorkItemStatusCommand;
+}
+
 export interface HostedWorkItemServices {
   createWorkItem(input: HostedCreateWorkItemInput): Promise<WorkItem>;
   listWorkItems(input: HostedListWorkItemsInput): Promise<WorkItemPage>;
-}
-
-function requestAuthorization(
-  request: FastifyRequest,
-  access: HostedWorkspaceRequestAccess,
-): HostedWorkspaceAuthorization {
-  const params = parseRequest(hostedWorkspaceParams, request.params);
-  const authorization = access.authorization(request);
-  if (authorization.workspaceId !== workspaceId(params.workspaceId)) {
-    throw new DomainError("workspace.not_found", "The requested workspace does not exist.");
-  }
-  return authorization;
+  updateWorkItemStatus(input: HostedUpdateWorkItemStatusInput): Promise<WorkItem>;
 }
 
 async function registerHostedWorkItemRoutes(
@@ -58,19 +61,19 @@ async function registerHostedWorkItemRoutes(
 ): Promise<void> {
   app.get(HOSTED_WORK_ITEM_COLLECTION_ROUTE, async (request) => {
     parseRequest(emptyQuery, request.query);
-    const authorization = requestAuthorization(request, access);
+    const authorization = access.authorization(request);
     const page = await withHostedWorkspaceNotFoundRedacted(() =>
       services.listWorkItems({ authorization }),
     );
     return {
-      items: page.items.map(({ id, title }) => ({ id, title })),
+      items: page.items.map(({ id, title, version }) => ({ id, title, version })),
       limit: page.limit,
       offset: page.offset,
     };
   });
 
   app.post(HOSTED_WORK_ITEM_COLLECTION_ROUTE, async (request, reply) => {
-    const authorization = requestAuthorization(request, access);
+    const authorization = access.authorization(request);
     const body = parseRequest(workItemCreateBodySchema, request.body);
     const created = await withHostedWorkspaceNotFoundRedacted(() =>
       services.createWorkItem({
@@ -88,6 +91,23 @@ async function registerHostedWorkItemRoutes(
       }),
     );
     return reply.code(201).send(created);
+  });
+
+  app.patch(HOSTED_WORK_ITEM_RESOURCE_ROUTE, async (request, reply) => {
+    const authorization = access.authorization(request);
+    const params = parseRequest(hostedWorkItemParams, request.params);
+    const body = parseRequest(hostedWorkItemStatusBody, request.body);
+    await withHostedWorkspaceNotFoundRedacted(() =>
+      services.updateWorkItemStatus({
+        authorization,
+        command: {
+          workItemId: workItemId(params.workItemId),
+          expectedVersion: body.expectedVersion,
+          status: body.status,
+        },
+      }),
+    );
+    return reply.code(204).send();
   });
 }
 
