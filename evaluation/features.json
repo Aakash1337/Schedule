@@ -28,6 +28,7 @@
     "oidc-authorization-request": { "command": "pnpm check", "ci": true },
     "oidc-remote-jwks": { "command": "pnpm check", "ci": true },
     "oidc-provider-metadata": { "command": "pnpm check", "ci": true },
+    "oidc-token-exchange": { "command": "pnpm check", "ci": true },
     "hosted-runtime-gate": { "command": "pnpm verify:database", "ci": true },
     "hosted-mutation-authorization": { "command": "pnpm verify:database", "ci": true },
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
@@ -2493,7 +2494,7 @@
         "anchor": "## Dormant login transaction foundation"
       },
       "limitations": [
-        "This is a dormant, provider-neutral pre-authentication transaction foundation. No authorization endpoint, callback, code exchange, provider verifier, browser-binding cookie, runtime configuration, or route composition calls it.",
+        "This is a dormant, provider-neutral pre-authentication transaction foundation. The separate authorization-request, token-exchange, and verifier adapters are not runtime-composed with it; no callback, browser-binding cookie, enabling configuration, or route calls it.",
         "A future hosted deployment must source the HMAC pepper and AES-GCM key ring from a secret manager and pass the consumed expectedNonce into a verifier contract that cannot omit nonce validation."
       ],
       "evidence": [
@@ -2569,8 +2570,8 @@
         "anchor": "## Dormant OIDC ID-token verifier"
       },
       "limitations": [
-        "The verifier is dormant and has no provider-metadata/JWKS composition, authorization endpoint, callback, code exchange, browser-binding cookie, runtime configuration, or production route composition.",
-        "The separate discovery and remote-JWKS adapters are not composed. A future provider adapter must bind both to the exact configured issuer through a connection-safe transport; untrusted token headers never select a network location."
+        "The verifier is dormant and has no provider-metadata/JWKS/token-exchange composition, authorization endpoint, callback, browser-binding cookie, runtime configuration, or production route composition.",
+        "The separate discovery, token-exchange, and remote-JWKS adapters are composed only in tests. A future provider adapter must bind them to the exact configured issuer through a connection-safe transport; untrusted token headers never select a network location."
       ],
       "evidence": [
         {
@@ -2612,8 +2613,8 @@
         "anchor": "## Dormant OIDC authorization-request builder"
       },
       "limitations": [
-        "The deterministic builder is dormant. It performs no discovery or network I/O and has no authorization-start route, browser-binding cookie serializer, redirect response, callback, code exchange, provider key resolver, runtime configuration, or production composition.",
-        "A separate trusted provider-metadata adapter now exists but is not composed with the builder. Only bounded, non-reserved query parameters already present in its validated authorization endpoint are retained; request-time arbitrary provider parameters are not accepted."
+        "The deterministic builder is dormant. It performs no discovery or network I/O and has no authorization-start route, browser-binding cookie serializer, redirect response, callback, token-exchange composition, provider key resolver, runtime configuration, or production composition.",
+        "Separate trusted provider-metadata and token-exchange adapters now exist but are composed with the builder only in tests. Only bounded, non-reserved query parameters already present in its validated authorization endpoint are retained; request-time arbitrary provider parameters are not accepted."
       ],
       "evidence": [
         {
@@ -2665,7 +2666,7 @@
         "anchor": "## Dormant pinned remote-JWKS resolver"
       },
       "limitations": [
-        "The provider-scoped resolver is dormant and is not composed with the separate discovery adapter. It has no production transport, runtime configuration, authorization route, callback, token exchange, or server composition.",
+        "The provider-scoped resolver is dormant and is composed with the separate discovery and token-exchange adapters only in tests. It has no production transport, runtime configuration, authorization route, callback, or server composition.",
         "The mandatory injected transport remains responsible for connection-level DNS, resolved-IP, proxy, and TLS egress enforcement. Exact URL binding, redirect denial, and response bounds in this adapter are not a complete SSRF defense by themselves."
       ],
       "evidence": [
@@ -2711,8 +2712,8 @@
         "anchor": "## Dormant trusted OIDC discovery/provider metadata"
       },
       "limitations": [
-        "The immutable provider-metadata adapter is dormant and has no production transport, runtime configuration, client registration, authorization route, callback, token exchange, server composition, or automatic metadata refresh.",
-        "The mandatory injected transport remains responsible for connection-level DNS, resolved-IP, proxy, DNS-rebinding, and TLS enforcement. Discovery output is not yet composed with the authorization builder, remote-JWKS resolver, or ID-token verifier in production."
+        "The immutable provider-metadata adapter is dormant and has no production transport, runtime configuration, client registration, authorization route, callback, server composition, or automatic metadata refresh.",
+        "The mandatory injected transports remain responsible for connection-level DNS, resolved-IP, proxy, DNS-rebinding, and TLS enforcement. Discovery output is composed with the authorization builder, token exchanger, remote-JWKS resolver, and ID-token verifier only in tests, not production."
       ],
       "evidence": [
         {
@@ -2730,7 +2731,7 @@
             "shares a cold request, caches only success, and retries after failure",
             "hard-bounds a transport that ignores its abort signal",
             "clears its hard-deadline timer after a successful response",
-            "feeds only validated frozen values into the existing authorization and JWKS boundaries"
+            "feeds only validated frozen values into authorization, token, and JWKS boundaries"
           ]
         },
         {
@@ -2741,6 +2742,66 @@
             "rejects an already-aborted upstream signal without invoking transport",
             "handles an upstream abort triggered synchronously during transport invocation",
             "rejects a later upstream abort even when transport ignores it and clears the deadline"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "oidc-authorization-code-token-exchange-foundation",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Dormant OIDC authorization-code token exchange"
+      },
+      "limitations": [
+        "The strict exchanger is dormant and has no production DNS/IP/proxy/TLS transport, runtime client or secret configuration, authorization-start route, callback parser, browser-binding cookie, session issuance, account provisioning, or server composition.",
+        "Each consumed code is attempted at most once per invocation and is never retried after an ambiguous failure. The returned compact ID token remains untrusted; only the separately configured nonce-bound verifier may turn it into an issuer/subject identity. Access and refresh tokens are discarded."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/oidc-authorization-code-token-exchange.test.ts",
+          "command": "oidc-token-exchange",
+          "anchors": [
+            "makes one exact Basic-authenticated POST and returns only a frozen ID token",
+            "uses client_secret_post without leaking an Authorization header",
+            "uses the public-client method with client_id and no credential",
+            "form-encodes an opaque authorization code without parameter injection",
+            "snapshots accessor-backed configuration exactly once",
+            "rejects and redacts %s",
+            "rejects token-endpoint query collision with %s",
+            "rejects %s before transport",
+            "treats a %s authorization code as rejected without transport",
+            "maps %s to one redacted availability error",
+            "rejects and redacts a %s",
+            "maps a bounded OAuth rejection to null without exposing provider details",
+            "returns null for an unusable successful response: %s",
+            "hard-bounds a transport that ignores abort and never retries",
+            "hard-bounds a response body that never finishes",
+            "clears the hard-deadline timer after a successful response"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/oidc-provider-metadata.test.ts",
+          "command": "oidc-provider-metadata",
+          "anchors": [
+            "feeds only validated frozen values into authorization, token, and JWKS boundaries"
           ]
         },
         {

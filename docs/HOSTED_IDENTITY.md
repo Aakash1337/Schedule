@@ -71,7 +71,8 @@ workspaces.
 
 ## Deliberately absent
 
-This foundation has no login, callback, logout, refresh, password, OIDC discovery, email-link,
+This foundation has no login, callback, logout, refresh, password, WebFinger issuer discovery,
+email-link,
 browser principal route, or public membership route. It does not read identity claims, bind a
 WhatsApp account, replace integration credentials, or enable synchronization. No environment flag
 can expose it: `HOSTED_API_MODE` accepts only `disabled`, and non-empty companion `HOSTED_*`
@@ -83,10 +84,10 @@ The centralized request-authentication and workspace-authorization seam now exis
 into `buildApp`; see [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md). The dormant browser-session
 and CSRF transport, a replay-safe login-transaction foundation, a nonce-bound OIDC ID-token
 verifier, a strict authorization-request builder, a pinned bounded remote-JWKS resolver, a trusted
-immutable provider-metadata loader, and one transaction-coupled hosted work-item create now sit
-behind that seam. WebFinger issuer discovery, connection-level production metadata/JWKS transport,
-authorization-code transport, and the broader hosted product surface remain absent while production
-routes stay closed by default.
+immutable provider-metadata loader, a strict dormant authorization-code exchanger, and one
+transaction-coupled hosted work-item create now sit behind that seam. WebFinger issuer discovery,
+connection-level production metadata/JWKS/token transport, callback composition, and the broader
+hosted product surface remain absent while production routes stay closed by default.
 
 ## Verification
 
@@ -100,6 +101,7 @@ pnpm verify:oidc-id-token
 pnpm verify:oidc-authorization-request
 pnpm verify:oidc-remote-jwks
 pnpm verify:oidc-provider-metadata
+pnpm verify:oidc-token-exchange
 ```
 
 The first command migrates a nonce database and drives the production application and PostgreSQL
@@ -117,4 +119,7 @@ injection-safe authorization URL construction. The remote-JWKS command composes 
 mandatory fake transport to prove bounded retrieval, caching, rotation, and failure classification.
 The provider-metadata command proves official issuer-path derivation, exact response binding,
 required code-flow capabilities, immutable snapshots, hard retrieval bounds, and compatibility with
-the authorization and key boundaries. None performs an external network request.
+the authorization and key boundaries. The token-exchange command proves exact transaction-bound
+PKCE redemption, all supported client-authentication methods, no retry, strict token-response
+bounds, access/refresh-token discard, and handoff to the nonce-bound verifier. None performs an
+external network request.

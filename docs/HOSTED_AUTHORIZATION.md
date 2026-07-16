@@ -131,10 +131,10 @@ expiry and UUID, with `FOR UPDATE SKIP LOCKED` and a caller limit of at most 1,0
 
 Successful consumption returns a short-lived in-process continuation containing the exact provider
 and redirect bindings, `expectedNonce`, and recovered PKCE verifier. A future callback must consume
-this transaction before code exchange and must pass `expectedNonce` into a verifier contract that
-cannot omit nonce validation. An exchange or verification failure starts a new login; a consumed
-transaction is never reopened. The current opaque-proof lifecycle is not wired to this continuation
-and must not be described as an authorization-code implementation.
+this transaction before invoking the dormant exchanger below and must pass `expectedNonce` into a
+verifier contract that cannot omit nonce validation. An exchange or verification failure starts a
+new login; a consumed transaction is never reopened or retried. The current opaque-proof lifecycle
+is not wired to this continuation and must not be described as an authorization-code route.
 
 ## Dormant OIDC ID-token verifier
 
@@ -239,8 +239,8 @@ endpoint authentication is reduced to the deterministic supported subset of
 trusted snapshot.
 
 This adapter is still dormant. Its required transport has no production DNS/IP/proxy/TLS
-implementation, and the snapshot is not registered with the authorization builder, JWKS resolver,
-ID-token verifier, runtime configuration, routes, callback, token exchange, or server.
+implementation, and the snapshot is not registered with the authorization builder, token exchanger,
+JWKS resolver, ID-token verifier, runtime configuration, routes, callback, or server.
 
 ## Dormant OIDC authorization-request builder
 
@@ -271,9 +271,51 @@ Malformed trusted configuration, altered provider bindings, malformed transactio
 non-S256 method, expiry at the exact trusted clock boundary, invalid clock behavior, hostile runtime
 getters, and an oversized final URL all throw one stable redacted configuration error. The builder
 does not import into `buildApp`, `server.ts`, configuration, or a route. The separate provider
-metadata snapshot is not composed with it; request-time endpoint extensions, browser-binding cookie
-transport, redirects, code exchange, callback processing, and session issuance remain separate
-work.
+metadata snapshot and token exchanger are not composed with it; request-time endpoint extensions,
+browser-binding cookie transport, redirects, callback processing, and session issuance remain
+separate work.
+
+## Dormant OIDC authorization-code token exchange
+
+`StrictOidcAuthorizationCodeTokenExchanger` redeems one opaque authorization code only after the
+server-side login transaction has been consumed. Construction snapshots one validated provider
+metadata view, exact client ID and redirect URI, mandatory injected transport, and exactly one
+provider-advertised authentication method: `client_secret_basic`, `client_secret_post`, or `none`.
+There is no method fallback. Basic credentials follow OAuth form encoding before Base64; post
+credentials appear only in the form; a public client sends `client_id` without any credential.
+Secrets are bounded and control-free. They never enter returned values, error messages, or log
+context; JavaScript strings cannot be reliably zeroed, so their lifetime and scope remain minimal.
+
+`exchange()` accepts the full consumed continuation, snapshots it once, and requires exact issuer,
+client ID, redirect URI, 43-character recovered PKCE verifier, nonce, and consumption time before
+I/O. A user-supplied authorization code is opaque but bounded to 2 KiB of visible ASCII and is always
+encoded with `URLSearchParams`; it cannot add a form field. The endpoint may retain at most 16
+bounded trusted query parameters, but none may collide with `grant_type`, `code`, `redirect_uri`,
+`code_verifier`, `client_id`, or `client_secret`.
+
+Each invocation makes exactly one `POST` with manual redirects, omitted credentials, no referrer,
+identity encoding, and fixed no-cache request headers. The form contains one each of
+`grant_type=authorization_code`, `code`, the original `redirect_uri`, and `code_verifier`, plus only
+the selected client-auth fields. A hard three-second deadline covers transport, headers, and the
+streamed body even when the injected transport ignores cancellation. There is deliberately no
+retry: a timeout can happen after the provider consumed the single-use code, so any ambiguous
+failure requires a new login.
+
+Only an exact non-redirected final URL with `200`, bounded OAuth `400`, or `401` is read. Response
+headers are count/size bounded and must contain exact `Cache-Control: no-store` and `Pragma:
+no-cache` directives. JSON media type, declared length, decoded stream, fatal UTF-8, and JSON parsing
+are bounded; a success must contain a visible bounded access token, case-insensitive `Bearer` type,
+and a compact signed ID token, with bounded optional fields. Access and refresh tokens are validated
+then discarded. The only returned value is a frozen still-untrusted `{ idToken }`; the existing
+nonce-bound verifier is the sole path from that value to `{ issuer, subject }`. A bounded OAuth `400`
+is a generic rejected credential (`null`); outages, malformed responses, redirects, ambiguous
+timeouts, and client-authentication failures become one stable redacted availability error.
+
+This exchanger remains dormant. It has no production connection-safe transport, runtime/client
+secret configuration, authorization-start route, callback parser, browser-binding cookie, session
+issuance, account provisioning, server registration, or retry facility. The provider metadata
+integration test composes discovery, authorization request, exchange, JWKS resolution, and ID-token
+verification only through injected transports; it does not expose HTTP.
 
 ## Preflight transaction limit
 
@@ -320,11 +362,10 @@ membership loss is the same generic `404`; unexpected adapter/database failures 
 
 ## Deliberately absent
 
-There is still no WebFinger issuer discovery, production metadata/JWKS transport or composition,
-hosted authorization-start endpoint, callback or code exchange, production-registered
-authentication route, browser-binding cookie, enabling hosted configuration, public workspace
-route, hosted CORS policy, account-management API, role model, synchronization protocol, or cloud
-deployment.
+There is still no WebFinger issuer discovery, production metadata/JWKS/token transport or
+composition, hosted authorization-start endpoint or callback, production-registered authentication
+route, browser-binding cookie, enabling hosted configuration, public workspace route, hosted CORS
+policy, account-management API, role model, synchronization protocol, or cloud deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. The dormant work-item create is the only transaction-coupled hosted product mutation;
 all other product routes remain local-only and require their own transaction authority before any
@@ -376,3 +417,9 @@ root/path discovery URL, exact issuer equality, required metadata and local S256
 successful snapshots, shared cold requests, retry after failure, hard timeout, bounded JSON,
 endpoint/query compatibility, and redacted failure. It performs no external request; dormant-route
 and runtime-gate evidence remains part of `pnpm check`.
+`pnpm verify:oidc-token-exchange` rebuilds the core packages and runs the exchanger, shared bounded
+JSON, provider-metadata composition, and generated-key ID-token suites. It proves the exact POST and
+form/authentication-method matrix, parameter-injection and endpoint-query collision denial,
+transaction binding, no retry, abort/deadline behavior across transport and body, response/header/
+cache bounds, OAuth rejection classification, secret/token redaction, and mandatory verifier
+handoff. It performs no external request; the runtime gate continues to prove HTTP closure.

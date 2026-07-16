@@ -3,6 +3,10 @@ import type { FetchImplementation } from "jose";
 const MAXIMUM_REQUEST_HEADERS = 8;
 const MAXIMUM_HEADER_NAME_BYTES = 128;
 const MAXIMUM_HEADER_VALUE_BYTES = 1_024;
+const MAXIMUM_RESPONSE_HEADERS = 64;
+const MAXIMUM_RESPONSE_HEADER_NAME_BYTES = 128;
+const MAXIMUM_RESPONSE_HEADER_VALUE_BYTES = 8 * 1_024;
+const MAXIMUM_RESPONSE_HEADER_BYTES = 32 * 1_024;
 const MAXIMUM_CONFIGURED_BODY_BYTES = 1024 * 1_024;
 const FORBIDDEN_REQUEST_HEADERS = new Set([
   "authorization",
@@ -23,6 +27,20 @@ export interface BoundedOidcJsonFetchOptions {
   readonly requestHeaders: Headers;
   readonly maximumBodyBytes: number;
   readonly acceptedContentTypes: readonly string[];
+}
+
+export interface BoundedOidcJsonResponseOptions {
+  readonly response: unknown;
+  readonly expectedUrl: string;
+  readonly acceptedStatusCodes: readonly number[];
+  readonly maximumBodyBytes: number;
+  readonly acceptedContentTypes: readonly string[];
+  readonly requireNoStore: boolean;
+}
+
+export interface BoundedOidcJsonResponse {
+  readonly status: number;
+  readonly json: unknown;
 }
 
 /** Stable internal failure; callers map it to their own public redacted error contract. */
@@ -64,6 +82,25 @@ function safeContentLength(headers: Headers, maximumBodyBytes: number): number |
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || value > maximumBodyBytes) throw unavailable();
   return value;
+}
+
+function trustedResponseHeaders(headers: Headers): void {
+  let count = 0;
+  let totalBytes = 0;
+  for (const [name, value] of headers) {
+    count += 1;
+    const nameBytes = Buffer.byteLength(name, "utf8");
+    const valueBytes = Buffer.byteLength(value, "utf8");
+    totalBytes += nameBytes + valueBytes;
+    if (
+      count > MAXIMUM_RESPONSE_HEADERS ||
+      nameBytes > MAXIMUM_RESPONSE_HEADER_NAME_BYTES ||
+      valueBytes > MAXIMUM_RESPONSE_HEADER_VALUE_BYTES ||
+      totalBytes > MAXIMUM_RESPONSE_HEADER_BYTES
+    ) {
+      throw unavailable();
+    }
+  }
 }
 
 async function readBoundedBody(response: Response, maximumBodyBytes: number): Promise<Uint8Array> {
@@ -120,12 +157,30 @@ function parseJson(body: Uint8Array): unknown {
   }
 }
 
-async function withAbortingDeadline<T>(
+function hasDirective(value: string | null, expected: string): boolean {
+  return (
+    value
+      ?.split(",")
+      .map((part) => part.trim().toLowerCase())
+      .includes(expected) ?? false
+  );
+}
+
+export async function runOidcOperationWithDeadline<T>(
   upstreamSignal: AbortSignal,
   timeoutMilliseconds: number,
   operation: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
-  if (upstreamSignal.aborted) throw unavailable();
+  if (
+    !(upstreamSignal instanceof AbortSignal) ||
+    !Number.isSafeInteger(timeoutMilliseconds) ||
+    timeoutMilliseconds < 100 ||
+    timeoutMilliseconds > 10_000 ||
+    typeof operation !== "function" ||
+    upstreamSignal.aborted
+  ) {
+    throw unavailable();
+  }
   const controller = new AbortController();
   const signal = AbortSignal.any([upstreamSignal, controller.signal]);
   let timeout: NodeJS.Timeout | undefined;
@@ -147,6 +202,60 @@ async function withAbortingDeadline<T>(
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
     removeAbortListener?.();
+  }
+}
+
+/** Validates and parses one exact bounded OIDC JSON response. */
+export async function readBoundedOidcJsonResponse(
+  options: BoundedOidcJsonResponseOptions,
+): Promise<BoundedOidcJsonResponse> {
+  try {
+    if (
+      typeof options !== "object" ||
+      options === null ||
+      !(options.response instanceof Response) ||
+      typeof options.expectedUrl !== "string" ||
+      options.expectedUrl.length === 0 ||
+      !Array.isArray(options.acceptedStatusCodes) ||
+      options.acceptedStatusCodes.length === 0 ||
+      options.acceptedStatusCodes.length > 8 ||
+      options.acceptedStatusCodes.some(
+        (status) => !Number.isSafeInteger(status) || status < 100 || status > 599,
+      ) ||
+      new Set(options.acceptedStatusCodes).size !== options.acceptedStatusCodes.length ||
+      !Number.isSafeInteger(options.maximumBodyBytes) ||
+      options.maximumBodyBytes < 1 ||
+      options.maximumBodyBytes > MAXIMUM_CONFIGURED_BODY_BYTES ||
+      typeof options.requireNoStore !== "boolean"
+    ) {
+      throw unavailable();
+    }
+    const response = options.response;
+    if (
+      !options.acceptedStatusCodes.includes(response.status) ||
+      response.redirected ||
+      (response.url.length > 0 && response.url !== options.expectedUrl)
+    ) {
+      throw unavailable();
+    }
+    trustedResponseHeaders(response.headers);
+    if (
+      options.requireNoStore &&
+      (!hasDirective(response.headers.get("cache-control"), "no-store") ||
+        !hasDirective(response.headers.get("pragma"), "no-cache"))
+    ) {
+      throw unavailable();
+    }
+    const acceptedContentTypes = trustedContentTypes(options.acceptedContentTypes);
+    const rawContentType = response.headers.get("content-type");
+    const contentType = rawContentType?.split(";", 1)[0]?.trim().toLowerCase();
+    if (contentType === undefined || !acceptedContentTypes.has(contentType)) throw unavailable();
+    return Object.freeze({
+      status: response.status,
+      json: parseJson(await readBoundedBody(response, options.maximumBodyBytes)),
+    });
+  } catch {
+    throw unavailable();
   }
 }
 
@@ -173,7 +282,7 @@ export async function fetchBoundedOidcJson(options: BoundedOidcJsonFetchOptions)
     }
     const acceptedContentTypes = trustedContentTypes(options.acceptedContentTypes);
     const requestHeaders = trustedRequestHeaders(options.requestHeaders);
-    return await withAbortingDeadline(
+    return await runOidcOperationWithDeadline(
       options.signal,
       options.timeoutMilliseconds,
       async (signal) => {
@@ -183,20 +292,15 @@ export async function fetchBoundedOidcJson(options: BoundedOidcJsonFetchOptions)
           signal,
           headers: requestHeaders,
         });
-        if (
-          !(response instanceof Response) ||
-          response.status !== 200 ||
-          response.redirected ||
-          (response.url.length > 0 && response.url !== options.url)
-        ) {
-          throw unavailable();
-        }
-
-        const rawContentType = response.headers.get("content-type");
-        const contentType = rawContentType?.split(";", 1)[0]?.trim().toLowerCase();
-        if (contentType === undefined || !acceptedContentTypes.has(contentType))
-          throw unavailable();
-        return parseJson(await readBoundedBody(response, options.maximumBodyBytes));
+        const result = await readBoundedOidcJsonResponse({
+          response,
+          expectedUrl: options.url,
+          acceptedStatusCodes: [200],
+          maximumBodyBytes: options.maximumBodyBytes,
+          acceptedContentTypes: [...acceptedContentTypes],
+          requireNoStore: false,
+        });
+        return result.json;
       },
     );
   } catch {

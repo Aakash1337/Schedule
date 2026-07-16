@@ -1,4 +1,7 @@
-import type { IssuedHostedLoginTransaction } from "@schedule/application";
+import type {
+  ConsumedHostedLoginTransaction,
+  IssuedHostedLoginTransaction,
+} from "@schedule/application";
 import {
   exportJWK,
   generateKeyPair,
@@ -10,6 +13,10 @@ import {
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { StrictOidcAuthorizationRequestBuilder } from "./oidc-authorization-request.js";
+import {
+  StrictOidcAuthorizationCodeTokenExchanger,
+  type OidcTokenEndpointTransport,
+} from "./oidc-authorization-code-token-exchange.js";
 import { JoseOidcIdTokenVerifier } from "./oidc-id-token-verifier.js";
 import {
   OidcProviderMetadataConfigurationError,
@@ -469,7 +476,7 @@ describe("OidcProviderMetadataDiscovery", () => {
     expect(observedSignal?.aborted).toBe(false);
   });
 
-  it("feeds only validated frozen values into the existing authorization and JWKS boundaries", async () => {
+  it("feeds only validated frozen values into authorization, token, and JWKS boundaries", async () => {
     const metadata = await createDiscovery(transportFrom()).discover();
     const builder = new StrictOidcAuthorizationRequestBuilder(
       {
@@ -526,15 +533,57 @@ describe("OidcProviderMetadataDiscovery", () => {
     })
       .setProtectedHeader({ alg: "RS256", kid: KEY_ID, typ: "JWT" })
       .sign(signingKey);
+    const tokenTransport = vi.fn(async (resource, options) => {
+      expect(resource).toBe(metadata.tokenEndpoint);
+      const form = new URLSearchParams(String(options.body));
+      expect(form.get("code")).toBe("provider-code");
+      expect(form.get("code_verifier")).toBe("P".repeat(43));
+      const response = new Response(
+        JSON.stringify({
+          access_token: "provider-access-token",
+          token_type: "Bearer",
+          id_token: idToken,
+        }),
+        {
+          headers: {
+            "content-type": "application/json",
+            "cache-control": "no-store",
+            pragma: "no-cache",
+          },
+        },
+      );
+      Object.defineProperty(response, "url", { value: metadata.tokenEndpoint });
+      return response;
+    }) as unknown as OidcTokenEndpointTransport & ReturnType<typeof vi.fn>;
+    const exchanger = new StrictOidcAuthorizationCodeTokenExchanger({
+      metadata,
+      clientId: CLIENT_ID,
+      redirectUri: REDIRECT_URI,
+      authentication: { method: "none" },
+      transport: tokenTransport,
+    });
+    const consumed = {
+      id: "00000000-0000-4000-8000-000000000001",
+      issuer: metadata.issuer,
+      clientId: CLIENT_ID,
+      redirectUri: REDIRECT_URI,
+      returnToPath: "/today",
+      expectedNonce: NONCE,
+      pkceVerifier: "P".repeat(43),
+      consumedAt: new Date(NOW),
+    } as ConsumedHostedLoginTransaction;
+    const exchanged = await exchanger.exchange({ code: "provider-code", transaction: consumed });
+    expect(exchanged).toEqual({ idToken });
 
     await expect(
       verifier.verify({
-        idToken,
+        idToken: exchanged?.idToken ?? "",
         issuer: metadata.issuer,
         clientId: CLIENT_ID,
         expectedNonce: NONCE,
       }),
     ).resolves.toEqual({ issuer: metadata.issuer, subject: SUBJECT });
+    expect(tokenTransport).toHaveBeenCalledTimes(1);
     expect(jwksTransport).toHaveBeenCalledTimes(1);
   });
 });

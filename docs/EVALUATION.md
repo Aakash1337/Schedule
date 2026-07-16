@@ -36,6 +36,7 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm eval:features`                     | Validate feature-to-evidence traceability                                   | No                              |
 | `pnpm eval:planner`                      | Run deterministic planner quality scenarios                                 | No                              |
 | `pnpm test:coverage`                     | Run every unit/component test and enforce coverage floors                   | No                              |
+| `pnpm verify:oidc-token-exchange`        | Verify the dormant one-shot OIDC code/token boundary and verifier handoff   | No                              |
 | `pnpm eval`                              | Validate traceability and run the covered test suite                        | No                              |
 | `pnpm verify:database`                   | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
 | `pnpm verify:natural-language-proposals` | Verify private persistence and concurrent exactly-once confirmation         | Yes                             |
@@ -56,7 +57,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 115 test files and 1,809 runtime test cases. Three
+The package and script runners currently execute 116 test files and 1,904 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -65,11 +66,11 @@ an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      42 / 42 |
-| Critical implemented features with CI-registered integration or drills |      26 / 26 |
+| Implemented features with CI-registered evidence                       |      43 / 43 |
+| Critical implemented features with CI-registered integration or drills |      27 / 27 |
 | Partial features with an explicit limitation                           |        5 / 5 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          247 |
+| CI-registered evidence items                                           |          251 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -80,13 +81,13 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     58.64% |   69.87% |    66.33% | 59.14% |
+| Whole repository, measured |     58.99% |   70.33% |    66.56% |  59.5% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     94.75% |   91.40% |    93.35% | 95.79% |
 | Domain, required           |        91% |      82% |       92% |    93% |
 | Application, measured      |     89.88% |   83.35% |    98.61% | 90.81% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     90.66% |   86.30% |    83.54% | 91.94% |
+| API, measured              |     91.15% |   87.65% |     84.5% | 92.46% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.00% |   88.01% |    93.25% | 94.62% |
 | Worker, required           |        85% |      87% |       89% |    87% |
@@ -575,9 +576,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   trusted provider-metadata adapter has injected-transport evidence for the official root/path
   discovery URL, exact issuer response binding, required OIDC and local S256 capabilities, bounded
   JSON, hard timeouts, shared cold retrieval, immutable successful snapshots, and downstream
-  authorization/JWKS compatibility. None has HTTP composition: there is still no WebFinger issuer
-  discovery, connection-safe production metadata/JWKS transport, authorization-start endpoint,
-  callback/code exchange, enabling hosted configuration, broader hosted product surface, public
+  authorization/JWKS compatibility. A strict token exchanger adds exact consumed-transaction and
+  endpoint binding, all three supported client-authentication methods, injection-safe PKCE form
+  encoding, one-shot deadline-bound transport, bounded non-cacheable responses, token discard, and
+  verifier handoff. None has HTTP composition: there is still no WebFinger issuer discovery,
+  connection-safe production metadata/JWKS/token transport, authorization-start endpoint,
+  callback composition, enabling hosted configuration, broader hosted product surface, public
   deployment, or synchronization;
 - ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and

@@ -253,8 +253,10 @@ remote-JWKS resolver adds exact endpoint binding, bounded streamed responses, ca
 single-flight refresh, rotation, and redacted failure classification through a mandatory injected
 transport. A trusted provider-metadata loader derives the official issuer-specific discovery URL,
 requires exact issuer and code-flow capabilities, and freezes one endpoint/algorithm snapshot behind
-the same injected transport boundary. A disabled-only hosted runtime gate rejects premature
-companion configuration; the registrars, transaction services, verifier, request builder, resolver,
-and metadata loader remain absent from `buildApp` and production server wiring until
-connection-level OIDC egress enforcement, a complete authorization-code adapter, and an
-intentionally selected public hosted surface exist.
+the same injected transport boundary. A strict authorization-code exchanger now binds that snapshot
+to one consumed transaction, one advertised client-authentication method, one form-encoded PKCE
+`POST`, and one bounded token response without exposing access or refresh tokens. A disabled-only
+hosted runtime gate rejects premature companion configuration; the registrars, transaction services,
+verifier, request builder, resolver, metadata loader, and exchanger remain absent from `buildApp`
+and production server wiring until connection-level OIDC egress enforcement, callback composition,
+and an intentionally selected public hosted surface exist.
