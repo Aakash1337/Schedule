@@ -421,7 +421,7 @@ Adaptation safeguards:
 The current slice implements evidence thresholds, material-change gating, range review, visible
 evidence, explicit approval, exact-key dismissal/reset memory, and Plan Fit use receipts with
 descriptive pending, resolved, and not-evaluable history, separate later-revision disclosure, and
-bounded weighted outcome rates. Learned cadence or energy preferences; adaptive probabilistic
+bounded weighted outcome rates that Today withholds until three comparable uses settle. Learned cadence or energy preferences; adaptive probabilistic
 selection beyond the existing versioned deterministic planner; causal effectiveness analysis and
 outcome-driven learning; and automatic application of learned values remain deferred.
 
@@ -643,7 +643,8 @@ Success is not simply "more tasks completed." Useful measures include realistic 
   bounded joint time/task suggestion, explicit prefill, and exact-key dismissal/reset
 - Implemented: atomic exact-key Plan Fit use receipts with final edited targets and bounded read-only
   pending, resolved, and not-evaluable outcome history, separate later-revision disclosure, and
-  descriptive target-fill and plan-completion rates that exclude later revisions
+  descriptive target-fill and plan-completion rates that exclude later revisions and stay hidden
+  until three comparable uses settle
 - Implemented: explicit append-only **More often**, **Less often**, and resettable routine ranking
   preferences for future plans, with bounded visible score contribution and no current-plan mutation
 - Deferred: inferred cadence, day/time, energy, preference, and category-balance signals
