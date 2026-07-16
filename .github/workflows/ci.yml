@@ -107,6 +107,8 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
       - name: Verify live planning flow in Chromium
         run: pnpm verify:web-e2e
+      - name: Verify hosted capture shell in Chromium
+        run: pnpm verify:hosted-web-e2e
       - name: Upload browser failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v7

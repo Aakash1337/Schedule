@@ -105,6 +105,7 @@ describe("API infrastructure", () => {
 
     const callbackResponse = await app.inject({ method: "GET", url: "/v1/auth/callback" });
     expect(callbackResponse.statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: "/" })).statusCode).toBe(404);
     for (const url of [
       "/v1/hosted/workspaces",
       "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/probe",
@@ -156,6 +157,16 @@ describe("API infrastructure", () => {
       },
       workspaces: { listWorkspaces: vi.fn() },
       workItems: { createWorkItem: vi.fn() },
+      webShell: {
+        html: '<!doctype html><div id="root"></div><script src="/assets/hosted.js"></script>',
+        icon: Buffer.from("<svg></svg>"),
+        assets: new Map([
+          [
+            "hosted.js",
+            { body: Buffer.from("globalThis.hosted = true;"), contentType: "text/javascript" },
+          ],
+        ]),
+      },
       requestsPerMinute: 2,
     } as unknown as HostedApiOptions;
     const app = await buildApp({ hostedApi });
@@ -173,6 +184,12 @@ describe("API infrastructure", () => {
     const throttled = await app.inject({ method: "GET", url: "/v1/auth/session" });
     expect(throttled.statusCode).toBe(429);
     expect(throttled.headers["retry-after"]).toBeDefined();
+    const shell = await app.inject({ method: "GET", url: "/" });
+    expect(shell.statusCode).toBe(200);
+    expect(shell.headers["content-security-policy"]).toContain("default-src 'none'");
+    expect((await app.inject({ method: "GET", url: "/assets/hosted.js" })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/favicon.svg" })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/health/live" })).statusCode).toBe(200);
 
     const protectedApp = await buildApp({
       hostedApi: { ...hostedApi, requestsPerMinute: 120 },

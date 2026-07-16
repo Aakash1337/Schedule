@@ -33,12 +33,14 @@ import {
   registerHostedWorkspaceRoutes,
   type HostedWorkspaceServices,
 } from "./hosted-workspace-routes.js";
+import { registerHostedWebShell, type HostedWebShell } from "./hosted-web-shell.js";
 
 export interface HostedApiOptions {
   readonly auth: HostedAuthLifecycleDependencies;
   readonly boundary: HostedWorkspaceBoundaryDependencies;
   readonly workspaces: HostedWorkspaceServices;
   readonly workItems: HostedWorkItemServices;
+  readonly webShell?: HostedWebShell;
   readonly requestsPerMinute: number;
 }
 
@@ -176,6 +178,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   }
 
   if (options.hostedApi !== undefined) {
+    if (options.hostedApi.webShell !== undefined) {
+      await registerHostedWebShell(app, options.hostedApi.webShell);
+    }
     await app.register(async (hostedApp) => {
       installIpRateLimit(hostedApp, options.hostedApi!.requestsPerMinute);
       await registerHostedAuthLifecycle(hostedApp, options.hostedApi!.auth);

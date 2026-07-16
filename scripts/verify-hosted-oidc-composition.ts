@@ -27,6 +27,7 @@ import {
   HOSTED_LOGOUT_ROUTE,
   HOSTED_SESSION_ROUTE,
 } from "../apps/api/src/hosted-auth-lifecycle.js";
+import type { HostedWebShell } from "../apps/api/src/hosted-web-shell.js";
 
 const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule";
@@ -59,6 +60,16 @@ const config = loadApiConfig({
   HOSTED_SESSION_PEPPER: sessionPepper,
   HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID: "verification",
   HOSTED_LOGIN_PKCE_KEYS: `verification:${pkceKey}`,
+});
+const hostedWebShell: HostedWebShell = Object.freeze({
+  html: '<!doctype html><div id="root"></div><script src="/assets/hosted-test.js"></script>',
+  icon: Buffer.from("<svg></svg>"),
+  assets: new Map([
+    [
+      "hosted-test.js",
+      { body: Buffer.from("globalThis.hosted = true;"), contentType: "text/javascript" },
+    ],
+  ]),
 });
 
 class ExactUrlResponse extends Response {
@@ -169,8 +180,12 @@ let verificationError: unknown;
 let cleanupFailed = false;
 
 try {
-  const prepared = await prepareHostedApiApp(config, database, { logger: false }, (options) =>
-    createDormantHostedOidcComposition({ ...options, transport }),
+  const prepared = await prepareHostedApiApp(
+    config,
+    database,
+    { logger: false },
+    (options) => createDormantHostedOidcComposition({ ...options, transport }),
+    async () => hostedWebShell,
   );
   app = prepared.app;
   await app.ready();
@@ -185,6 +200,13 @@ try {
     hostedEndpointsEnabled: true,
   });
   assert.equal((await app.inject({ method: "GET", url: "/v1/workspaces" })).statusCode, 404);
+  const shell = await app.inject({ method: "GET", url: "/" });
+  assert.equal(shell.statusCode, 200);
+  assert.equal(shell.headers["cache-control"], "no-store");
+  assert.match(shell.headers["content-security-policy"] ?? "", /default-src 'none'/u);
+  const shellAsset = await app.inject({ method: "GET", url: "/assets/hosted-test.js" });
+  assert.equal(shellAsset.statusCode, 200);
+  assert.equal(shellAsset.headers["cache-control"], "public, max-age=31536000, immutable");
 
   const login = await app.inject({ method: "GET", url: HOSTED_LOGIN_ROUTE });
   assert.equal(login.statusCode, 303);
@@ -395,7 +417,7 @@ try {
   assert.deepEqual(requestCounts, { discovery: 1, token: 1, jwks: 1 });
 
   console.log(
-    "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout.",
+    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout.",
   );
 } catch (error) {
   verificationError = error;

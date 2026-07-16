@@ -18,8 +18,8 @@ Durable product and engineering specifications live here so the repository root 
 - [Outbound webhook delivery](./WEBHOOKS.md): encrypted endpoint secrets, signed delivery, opt-in
   privacy-thin Today-change invalidations, subscriptions, network policy, rotation, retries, and
   dead-letter operations.
-- [Local web application](./WEB.md): interface architecture, local runtime, reminder management,
-  and interaction contract.
+- [Web applications](./WEB.md): local interface architecture plus the isolated hosted capture
+  entry, reminder management, browser verification, and interaction contracts.
 - [Local operations](./OPERATIONS.md): verified backup, staged restore, automated recovery state-machine checks, and database maintenance.
 - [Hosted deployment](./DEPLOYMENT.md): provider-neutral topology, the lean Railway adapter,
   release ordering, secrets, health checks, backups, rollback, and staging acceptance.

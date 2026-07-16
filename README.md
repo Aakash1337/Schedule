@@ -138,8 +138,9 @@ is accepted only with the complete immutable registration, secret-backed preflig
 unauthenticated product routes disabled. The enabled surface provides login, callback, session,
 logout, automatic first-login default-workspace membership, and one membership-authorized work-item
 create route with bounded per-source throttling. An authenticated read returns only the caller's
-active workspace page. It does not yet provide a hosted web shell, workspace administration, the
-broader product API, or synchronization.
+active workspace page. A same-origin hosted capture shell can sign in, select one active workspace,
+and add one title to its backlog through that authorized mutation. It does not provide workspace
+administration, work-item reads or edits, the broader product API, or synchronization.
 Partial sets and non-empty mixed-case aliases or unknown companions fail startup without disclosing values.
 Health and system-information endpoints
 intentionally remain available independently of the product Host guard for local diagnostics.
@@ -192,6 +193,11 @@ local-model adapter against a strict loopback double to review a title plus user
 priority/date/duration, confirm, replay the same
 confirmation key, cancel, focus, and reload natural-language work proposals without browser request
 interception.
+
+Run `pnpm verify:hosted-web-e2e` for the separate built OIDC capture entry. Its strict browser double
+checks signed-out and authenticated states, workspace choice, exact CSRF forwarding, title-only
+capture, and 360-pixel layout; the PostgreSQL composition verifier covers the real hosted server
+boundary.
 
 With PostgreSQL running, verify backlog/Kanban, hierarchy, work-item prerequisites, and calendar
 management, routine creation and optimistic updates, duration calibration and Daily Plan Fit,
@@ -258,4 +264,4 @@ These are provider-neutral runtime prerequisites, not a hosted release. TLS ingr
 manifests for a lean Railway API/worker deployment now live under `infra/deploy/railway`; see the
 [hosted deployment guide](./docs/DEPLOYMENT.md). A live environment, managed secrets/backups,
 continuous monitoring, workspace administration, the broader product surface, synchronization, and
-a hosted web shell remain to be implemented and verified.
+a broader hosted product interface remain to be implemented and verified.

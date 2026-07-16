@@ -23,6 +23,19 @@ pnpm db:migrate
 pnpm dev
 ```
 
+## Hosted capture entry
+
+The same package builds a separate `hosted.html` entry for explicit OIDC mode. It reuses the product
+controls and visual tokens but includes only session bootstrap, active-workspace discovery, sign
+in/out, and one title-only backlog form. The API serves that build from the same origin, so the
+browser never needs CORS, provider tokens, or a second frontend service. The local application and
+its unauthenticated routes are not bundled into the hosted entry.
+
+The hosted shell shows a workspace selector only when more than one active membership exists. It
+stores only that selection in browser storage, sends the exact script-readable CSRF proof on
+mutations, and treats session, access, throttling, and availability failures as bounded states. It
+does not list or edit work and does not imply synchronization.
+
 ## Information architecture
 
 The application uses a persistent desktop rail and a compact mobile navigation bar:
@@ -381,6 +394,7 @@ Install the local browser binary once, then run the bounded verifier:
 ```powershell
 pnpm exec playwright install chromium
 pnpm verify:web-e2e
+pnpm verify:hosted-web-e2e
 ```
 
 The verifier builds the API and web application, allocates unused loopback ports, starts an isolated
@@ -392,9 +406,14 @@ and failure both stop the web process tree and remove the disposable container, 
 database; a leaked port or failed cleanup makes the command fail. GitHub CI runs the same command in
 a dedicated Chromium job and retains traces, screenshots, and video when it fails.
 
+The hosted verifier builds its isolated entry and uses a strict in-browser API double to exercise
+signed-out and authenticated capture, exact request verification, workspace selection, and mobile
+layout. The PostgreSQL/OIDC composition verifier separately covers the real server and database
+boundary. A staging HTTPS smoke with the selected identity provider remains required.
+
 ## Deliberately deferred
 
-- Public hosting and production static serving until authentication and authorization exist
+- The broader hosted product interface, external-provider smoke, and verified public deployment
 - Drag ranking, bulk editing, projects, checklists, attachments, and saved searches
 - Recurrence authoring, calendar conflict detection, and automatic placement
 - Generalized plan undo

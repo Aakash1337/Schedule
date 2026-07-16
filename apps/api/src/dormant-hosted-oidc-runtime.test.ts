@@ -91,6 +91,52 @@ describe("dormant hosted OIDC runtime preflight", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("closes the shared database when the hosted shell cannot load", async () => {
+    const close = vi.fn(async () => undefined);
+    const failingDatabase = { close } as unknown as DatabaseConnection;
+    const factory = vi.fn(async () => Object.freeze({ marker: true }) as never);
+    const shellLoader = vi.fn(async () => {
+      throw new Error("C:/secret/build/path");
+    });
+
+    const promise = prepareHostedApiApp(
+      {
+        HOSTED_API_MODE: "oidc",
+        HOSTED_OIDC_PREFLIGHT: preflight,
+        HOSTED_RATE_LIMIT_PER_MINUTE: 120,
+      },
+      failingDatabase,
+      {},
+      factory,
+      shellLoader,
+    );
+
+    await expect(promise).rejects.toThrow("Hosted web shell could not be loaded.");
+    await expect(promise).rejects.not.toThrow("secret");
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("does not load the hosted shell while explicit mode is disabled", async () => {
+    const shellLoader = vi.fn();
+    const prepared = await prepareHostedApiApp(
+      {
+        HOSTED_API_MODE: "disabled",
+        HOSTED_OIDC_PREFLIGHT: preflight,
+        HOSTED_RATE_LIMIT_PER_MINUTE: 120,
+      },
+      database,
+      {},
+      vi.fn(async () => Object.freeze({ marker: true }) as never),
+      shellLoader,
+    );
+    try {
+      expect(shellLoader).not.toHaveBeenCalled();
+      expect((await prepared.app.inject({ method: "GET", url: "/" })).statusCode).toBe(404);
+    } finally {
+      await prepared.app.close();
+    }
+  });
+
   it("preflights before building the normal route-closed app", async () => {
     const order: string[] = [];
     const factory = vi.fn(async () => {

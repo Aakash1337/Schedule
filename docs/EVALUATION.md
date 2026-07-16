@@ -554,11 +554,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   work creation. Active workspace discovery has application, route, and database evidence for
   bounded self-membership filtering without identity or role metadata. The enabled composition
   verifier parses production configuration, builds the real route graph with a strict in-process
-  provider, proves local product routes absent, drives login, discovery, and one authorized create,
-  then checks logout and cleanup. Disabled-mode route closure and redacted startup failure remain
-  independently verified. This evidence does not cover a real external provider, TLS ingress, a
-  hosted web shell, workspace administration, the broader product API, public deployment, or
-  synchronization;
+  provider, proves local product routes absent, drives login, the hardened same-origin capture
+  shell, discovery, and one authorized create, then checks logout and cleanup. A separate built
+  Chromium flow covers signed-out/authenticated capture, exact CSRF forwarding, and 360-pixel
+  layout. Disabled-mode route closure and redacted startup failure remain independently verified.
+  This evidence does not cover a real external provider, TLS ingress, workspace administration, the
+  broader product API/interface, public deployment, or synchronization;
 - ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a

@@ -47,6 +47,10 @@
     "browser-e2e": {
       "command": "pnpm verify:web-e2e",
       "ci": true
+    },
+    "hosted-browser-e2e": {
+      "command": "pnpm verify:hosted-web-e2e",
+      "ci": true
     }
   },
   "features": [
@@ -2952,7 +2956,7 @@
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
           "anchors": [
-            "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
+            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
           ]
         },
         {
@@ -3100,7 +3104,7 @@
         "anchor": "# Hosted request authorization and OIDC runtime"
       },
       "limitations": [
-        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery, and one transaction-coupled work-item create. Workspace administration, a broader public end-user product surface, and synchronization remain unimplemented.",
+        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery, one transaction-coupled work-item create, and one narrow same-origin capture shell. Workspace administration, a broader public end-user product surface, and synchronization remain unimplemented.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [
@@ -3167,7 +3171,10 @@
           "level": "component",
           "file": "apps/api/src/dormant-hosted-oidc-runtime.test.ts",
           "command": "hosted-runtime-preflight",
-          "anchors": ["closes the shared database when activated preflight fails"]
+          "anchors": [
+            "closes the shared database when activated preflight fails",
+            "closes the shared database when the hosted shell cannot load"
+          ]
         },
         {
           "level": "integration",
@@ -3182,7 +3189,77 @@
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
           "anchors": [
-            "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
+            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-oci-runtime.ts",
+          "command": "oci-runtime",
+          "anchors": [
+            "OCI runtime verification passed hardened non-root containers, hosted web assets"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-capture-shell",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Hosted capture shell"
+      },
+      "limitations": [
+        "The shell can authenticate, discover active workspaces, and create one title-only backlog item. It cannot list, edit, complete, schedule, administer, or synchronize product data.",
+        "The built-browser gate uses an in-browser API double; an external identity provider and public TLS ingress still require a staging smoke."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-web-shell.test.ts",
+          "command": "unit",
+          "anchors": [
+            "loads and serves only the bounded build output with hardened caching",
+            "redacts invalid or missing build output"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/hosted-api.test.ts",
+          "command": "unit",
+          "anchors": [
+            "uses only the same-origin session and workspace discovery routes",
+            "copies the exact CSRF cookie into hosted mutations",
+            "fails before sending when request verification is absent"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/HostedApp.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "offers provider sign-in without exposing product controls",
+            "restores workspace choice and captures one title",
+            "returns to sign-in when capture discovers an expired session",
+            "keeps revoked users out of capture until an active workspace exists"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/e2e-hosted/capture-flow.spec.ts",
+          "command": "hosted-browser-e2e",
+          "anchors": [
+            "captures one hosted backlog item with responsive request verification",
+            "keeps capture unavailable before sign-in"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-oidc-composition.ts",
+          "command": "hosted-oidc-composition-db",
+          "anchors": [
+            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
           ]
         }
       ]
@@ -3234,7 +3311,7 @@
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
           "anchors": [
-            "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
+            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
           ]
         }
       ]
@@ -3306,7 +3383,7 @@
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
           "anchors": [
-            "Hosted OIDC activation verification passed enabled config, production route assembly, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
+            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
           ]
         }
       ]

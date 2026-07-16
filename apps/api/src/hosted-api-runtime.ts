@@ -16,17 +16,19 @@ import {
   type HostedOidcCompositionFactory,
 } from "./dormant-hosted-oidc-runtime.js";
 import type { HostedAuthLifecycleDependencies } from "./hosted-auth-lifecycle.js";
+import { loadHostedWebShell, type HostedWebShellLoader } from "./hosted-web-shell.js";
 
 type HostedRuntimeConfig = Pick<
   ApiConfig,
   "HOSTED_API_MODE" | "HOSTED_OIDC_PREFLIGHT" | "HOSTED_RATE_LIMIT_PER_MINUTE"
 >;
 
-function hostedApiOptions(
+async function hostedApiOptions(
   config: HostedRuntimeConfig,
   database: DatabaseConnection,
   composition: HostedAuthLifecycleDependencies | undefined,
-): HostedApiOptions {
+  webShellLoader: HostedWebShellLoader,
+): Promise<HostedApiOptions> {
   if (config.HOSTED_API_MODE !== "oidc" || composition === undefined) {
     throw new Error("Hosted OIDC activation failed.");
   }
@@ -35,6 +37,12 @@ function hostedApiOptions(
   const createWorkItem = new CreateHostedWorkItem(new PostgresHostedMutationUnitOfWork(database), {
     now: () => new Date(),
   });
+  let webShell: Awaited<ReturnType<HostedWebShellLoader>>;
+  try {
+    webShell = await webShellLoader();
+  } catch {
+    throw new Error("Hosted web shell could not be loaded.");
+  }
   return {
     auth: composition,
     boundary: {
@@ -49,6 +57,7 @@ function hostedApiOptions(
       createWorkItem: ({ authorization, command }) =>
         createWorkItem.execute(authorization, command),
     },
+    webShell,
     requestsPerMinute: config.HOSTED_RATE_LIMIT_PER_MINUTE,
   };
 }
@@ -59,16 +68,19 @@ export async function prepareHostedApiApp(
   database: DatabaseConnection,
   baseOptions: Omit<BuildAppOptions, "hostedApi"> = {},
   factory?: HostedOidcCompositionFactory,
+  webShellLoader: HostedWebShellLoader = loadHostedWebShell,
 ) {
   try {
     return await prepareAppAfterDormantHostedOidcPreflight(
       config,
       database,
-      (composition) =>
+      async (composition) =>
         buildApp({
           ...baseOptions,
           ...(config.HOSTED_API_MODE === "oidc"
-            ? { hostedApi: hostedApiOptions(config, database, composition) }
+            ? {
+                hostedApi: await hostedApiOptions(config, database, composition, webShellLoader),
+              }
             : {}),
         }),
       factory,

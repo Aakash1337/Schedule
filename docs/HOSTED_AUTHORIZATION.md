@@ -402,11 +402,32 @@ statement is excluded; a concurrent revocation cannot retract an already-authori
 endpoint is discovery only: it does not create, rename, delete, invite, or grant access to a
 workspace.
 
+## Hosted capture shell
+
+Explicit OIDC mode also serves one same-origin capture page at `/`. The production API loads the
+Vite-built document, favicon, and bounded `.js`/`.css` asset set before listening. Missing,
+unexpected, empty, individually oversized, or collectively oversized build output fails startup
+through one redacted error and closes the shared database connection.
+
+The server exposes only `/`, `/favicon.svg`, and exact known `/assets/:asset` names. It has no
+wildcard fallback, so it cannot shadow `/v1`, `/health`, or future product routes. The document is
+`no-store` and carries a restrictive same-origin content-security policy, no-referrer policy,
+framing denial, and MIME sniffing denial. Fingerprinted assets are immutable for one year. Static
+requests sit outside the hosted API's per-source request budget.
+
+The browser reads only `{ authenticated }`, the active workspace page, and the created work item.
+It never receives provider tokens, user or session identifiers, membership state, or roles. A
+signed-in user may choose one discovered workspace and submit one title. The script copies the
+exact host-only CSRF cookie into the existing header and calls the transaction-authorized hosted
+create route; the server remains authoritative for identity, membership, defaults, and validation.
+The page cannot list, edit, complete, schedule, or synchronize work and offers no workspace or
+account administration.
+
 ## Deliberately absent
 
 There is still no WebFinger issuer discovery, public workspace provisioning or administration,
-hosted web shell, broad hosted product route set, account-management API, role model,
-synchronization protocol, or cloud deployment. The authenticated workspace list is discovery only.
+broader hosted product interface or route set, account-management API, role model, synchronization
+protocol, or verified public deployment. The authenticated workspace list is discovery only.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. Work-item create is the only transaction-coupled hosted product mutation;
 all other product routes remain local-only and require their own transaction authority before any
@@ -484,9 +505,13 @@ mode must report hosted capabilities off and keep representative authentication 
 routes at `404`.
 `pnpm verify:hosted-oidc-composition-db` parses complete enabled configuration, builds the production
 hosted route graph with a strict in-process provider, and drives login, callback, one-time replay
-denial, default-workspace discovery, authenticated transaction-coupled work creation, session
-bootstrap, CSRF denial, logout, and cleanup against PostgreSQL. It also proves the local
-unauthenticated workspace routes are absent.
+denial, hardened shell delivery, default-workspace discovery, authenticated transaction-coupled
+work creation, session bootstrap, CSRF denial, logout, and cleanup against PostgreSQL. It also
+proves the local unauthenticated workspace routes are absent.
+`pnpm verify:hosted-web-e2e` builds the isolated hosted browser entry and exercises signed-out and
+authenticated capture in Chromium. It verifies workspace selection, title-only payloads, exact CSRF
+header forwarding, success feedback, 360-pixel overflow, and mobile action sizing with a strict
+in-browser API double. It does not claim external-provider or public-ingress coverage.
 `pnpm verify:hosted-login-transactions` migrates a disposable database and proves digest-only state
 and browser binding, authenticated PKCE recovery, exact provider/redirect binding, twelve-way
 single-use consumption, database-clock expiry, corruption rollback and redaction, and bounded

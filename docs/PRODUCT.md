@@ -704,7 +704,10 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   same-transaction user/session/workspace/membership reauthorization.
 - Implemented narrow hosted read: a signed-in principal can list only active workspace memberships
   through a bounded, no-store page without identity or role metadata.
-- Deferred: hosted workspace administration, the broader product API and web shell, account
+- Implemented narrow hosted UI: a same-origin capture shell can sign in, select one active
+  workspace, and create one backlog title through the transaction-authorized route; it exposes no
+  provider tokens, identity metadata, workspace administration, or local-only routes.
+- Deferred: hosted workspace administration, the broader product API and interface, account
   management, provider-specific production verification, collaboration roles, and sync.
 - Cloud deployment selected from measured operational needs
 - Offline-capable synchronization and conflict handling, if required

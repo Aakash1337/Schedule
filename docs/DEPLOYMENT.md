@@ -9,11 +9,11 @@ must still prove public ingress, external OIDC, backups, and alerts before produ
 
 ## Topology
 
-| Resource   | Exposure     | Responsibility                                        |
-| ---------- | ------------ | ----------------------------------------------------- |
-| PostgreSQL | Private only | System of record and migration ledger                 |
-| API        | Public HTTPS | OIDC lifecycle, hosted routes, liveness and readiness |
-| Worker     | Private only | Outbox and explicitly enabled background jobs         |
+| Resource   | Exposure     | Responsibility                                |
+| ---------- | ------------ | --------------------------------------------- |
+| PostgreSQL | Private only | System of record and migration ledger         |
+| API        | Public HTTPS | OIDC, capture shell, hosted routes, health    |
+| Worker     | Private only | Outbox and explicitly enabled background jobs |
 
 Use the repository root as the build context. In each Railway service, set the custom config path:
 
@@ -102,7 +102,7 @@ Before attaching a production domain:
 1. Run `pnpm check` and `pnpm verify:oci-runtime` locally.
 2. Deploy staging with production-shaped variables and a separate database.
 3. Confirm `/health/live` and `/health/ready`, then complete login, callback, workspace discovery,
-   authorized work creation, logout, and session revocation through public HTTPS.
+   hosted capture, authorized work creation, logout, and session revocation through public HTTPS.
 4. Force a failed migration and confirm the previous deployment remains active.
 5. Stop PostgreSQL and confirm readiness fails while liveness remains available.
 6. Restore the latest backup into an isolated database and run the database verification suite.
