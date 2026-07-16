@@ -229,6 +229,9 @@ describe("runtime configuration", () => {
       HOSTED_SESSION_PEPPER: `${"x".repeat(32)}\u2028`,
     }),
     hostedPreflightEnvironment({
+      HOSTED_SESSION_PEPPER: "login-transaction-pepper-with-32-bytes",
+    }),
+    hostedPreflightEnvironment({
       HOSTED_LOGIN_PKCE_KEYS: `duplicate:${webhookKeyMaterial(30)},duplicate:${webhookKeyMaterial(31)}`,
       HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID: "duplicate",
     }),

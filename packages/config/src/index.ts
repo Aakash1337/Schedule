@@ -466,6 +466,9 @@ function parseHostedOidcPreflight(
   ) {
     invalidHostedOidcPreflight();
   }
+  if (input.HOSTED_LOGIN_TRANSACTION_PEPPER === input.HOSTED_SESSION_PEPPER) {
+    invalidHostedOidcPreflight();
+  }
   const keys = parseHostedPkceKeys(input.HOSTED_LOGIN_PKCE_KEYS);
   const primaryKeyId = input.HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID;
   if (
