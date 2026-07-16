@@ -135,6 +135,7 @@ describe("direct OIDC HTTPS transport", () => {
       path: "/.well-known/openid-configuration",
       method: "GET",
       agent: false,
+      family: 4,
       rejectUnauthorized: true,
       maxHeaderSize: MAXIMUM_OIDC_RESPONSE_HEADER_BYTES,
     });

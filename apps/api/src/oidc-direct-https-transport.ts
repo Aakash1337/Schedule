@@ -265,6 +265,7 @@ function requestPinned(
         method: request.method,
         headers: request.headers,
         agent: false,
+        family: address.family,
         rejectUnauthorized: true,
         maxHeaderSize: MAXIMUM_OIDC_RESPONSE_HEADER_BYTES,
         lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
