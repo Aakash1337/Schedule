@@ -271,10 +271,10 @@ const STAGED_HOSTED_VARIABLES = new Set([
   "HOSTED_OIDC_CLIENT_ID",
 ]);
 
-function containsAsciiControl(value: string): boolean {
+function containsControl(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f) return true;
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return true;
   }
   return false;
 }
@@ -282,18 +282,22 @@ function containsAsciiControl(value: string): boolean {
 function parseExactHostedHttpsUrl(value: string, originOnly: boolean): string | null {
   if (
     Buffer.byteLength(value, "utf8") > MAXIMUM_HOSTED_URL_BYTES ||
-    containsAsciiControl(value) ||
+    containsControl(value) ||
     /[\s\\]/u.test(value)
   ) {
     return null;
   }
   try {
     const parsed = new URL(value);
+    const hasBareQueryDelimiter = parsed.search === "" && value.includes("?");
+    const hasBareFragmentDelimiter = parsed.hash === "" && value.includes("#");
     const canonical = originOnly
       ? parsed.origin === value
       : parsed.href === value || (parsed.pathname === "/" && parsed.href === `${value}/`);
     return parsed.protocol === "https:" &&
       canonical &&
+      !hasBareQueryDelimiter &&
+      !hasBareFragmentDelimiter &&
       (!originOnly || parsed.pathname === "/") &&
       parsed.username === "" &&
       parsed.password === "" &&
@@ -330,7 +334,7 @@ function parseHostedOidcRegistration(input: {
     clientId.trim() !== clientId ||
     Buffer.byteLength(clientId, "utf8") < 1 ||
     Buffer.byteLength(clientId, "utf8") > MAXIMUM_HOSTED_CLIENT_ID_BYTES ||
-    containsAsciiControl(clientId)
+    containsControl(clientId)
   ) {
     throw new Error("Hosted OIDC registration is invalid.");
   }

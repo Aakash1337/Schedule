@@ -75,8 +75,8 @@ This foundation has no production login, callback, logout, refresh, password, We
 discovery, email-link, browser principal route, or public membership route. It does not read identity claims, bind a
 WhatsApp account, replace integration credentials, or enable synchronization. No environment flag
 can expose it: `HOSTED_API_MODE` accepts only `disabled`. One complete non-secret origin/issuer/client
-registration may be staged, but partial registration, secrets, and unknown hosted configuration fail
-startup without disclosing the configured value. Strict session-cookie
+registration may be staged, but partial registration, secrets, and non-empty unknown hosted
+configuration fail startup without disclosing the configured value. Strict session-cookie
 serialization/parsing and double-submit CSRF transport now exist behind the centralized request
 seam. A tested dormant lifecycle issues and consumes them, but no production route does.
 

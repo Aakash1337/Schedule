@@ -133,8 +133,8 @@ Local unauthenticated product routes are enabled only for non-production loopbac
 Configuration rejects attempts to enable them in production or on a non-loopback bind, and the API
 rejects non-loopback product-route `Host` headers. `HOSTED_API_MODE` defaults to and accepts only
 `disabled`. One complete non-secret registration triad—public origin, issuer, and client ID—may be
-validated and staged while routes remain closed; partial sets, secrets, mixed-case aliases, and
-unknown companions fail startup so staged credentials cannot be mistaken for an enabled deployment.
+validated and staged while routes remain closed; partial sets, secrets, and non-empty mixed-case
+aliases or unknown companions fail startup so staged credentials cannot be mistaken for an enabled deployment.
 Health and system-information endpoints
 intentionally remain available independently of the product Host guard for local diagnostics.
 

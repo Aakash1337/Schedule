@@ -95,7 +95,9 @@ describe("runtime configuration", () => {
   it.each([
     "http://login.example.com",
     "https://login.example.com?query=1",
+    "https://login.example.com/tenant?",
     "https://login.example.com#fragment",
+    "https://login.example.com/tenant#",
     "https://user:pass@login.example.com",
     "https://login.example.com:443",
     "https://LOGIN.example.com",
@@ -110,7 +112,7 @@ describe("runtime configuration", () => {
     ).toThrow(/Hosted OIDC registration is invalid/);
   });
 
-  it.each([" client", "client ", "client\ncontrol", "", "x".repeat(513)])(
+  it.each([" client", "client ", "client\ncontrol", "client\u0085control", "", "x".repeat(513)])(
     "rejects invalid hosted client identifier %s",
     (value) => {
       expect(() =>

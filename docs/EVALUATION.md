@@ -59,7 +59,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 117 test files and 1,986 runtime test cases. Three
+The package and script runners currently execute 117 test files and 1,989 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -83,7 +83,7 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.32% |   70.67% |    66.89% | 59.85% |
+| Whole repository, measured |     59.32% |   70.66% |    66.88% | 59.85% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     94.75% |   91.41% |    93.35% | 95.79% |
 | Domain, required           |        91% |      82% |       92% |    93% |
@@ -96,8 +96,8 @@ quality levels.
 | Web, measured              |     82.38% |   73.83% |    77.38% | 85.49% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 11,441 of 19,284 statements, 8,405 of 11,893 branches,
-2,477 of 3,703 functions, and 10,804 of 18,050 lines.
+The whole-repository totals are 11,438 of 19,280 statements, 8,402 of 11,890 branches,
+2,476 of 3,702 functions, and 10,801 of 18,046 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
