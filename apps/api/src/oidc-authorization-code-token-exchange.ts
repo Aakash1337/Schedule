@@ -292,10 +292,12 @@ function validSuccessfulTokenResponse(value: unknown): OidcAuthorizationCodeToke
   return Object.freeze({ idToken });
 }
 
-function validOAuthError(value: unknown): boolean {
-  return (
-    isPlainObject(value) && typeof value.error === "string" && OAUTH_ERROR_PATTERN.test(value.error)
-  );
+function oauthErrorCode(value: unknown): string | null {
+  return isPlainObject(value) &&
+    typeof value.error === "string" &&
+    OAUTH_ERROR_PATTERN.test(value.error)
+    ? value.error
+    : null;
 }
 
 /**
@@ -449,6 +451,7 @@ export class StrictOidcAuthorizationCodeTokenExchanger implements OidcAuthorizat
           return readBoundedOidcJsonResponse({
             response,
             expectedUrl: this.#tokenEndpoint,
+            signal,
             acceptedStatusCodes: [200, 400, 401],
             maximumBodyBytes: MAXIMUM_TOKEN_RESPONSE_BODY_BYTES,
             acceptedContentTypes: ["application/json"],
@@ -457,8 +460,8 @@ export class StrictOidcAuthorizationCodeTokenExchanger implements OidcAuthorizat
         },
       );
       if (result.status === 400) {
-        if (!validOAuthError(result.json)) throw unavailable();
-        return null;
+        if (oauthErrorCode(result.json) === "invalid_grant") return null;
+        throw unavailable();
       }
       if (result.status === 401) throw unavailable();
       return validSuccessfulTokenResponse(result.json);

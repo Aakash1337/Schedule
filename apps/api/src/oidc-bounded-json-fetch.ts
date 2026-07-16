@@ -32,6 +32,7 @@ export interface BoundedOidcJsonFetchOptions {
 export interface BoundedOidcJsonResponseOptions {
   readonly response: unknown;
   readonly expectedUrl: string;
+  readonly signal: AbortSignal;
   readonly acceptedStatusCodes: readonly number[];
   readonly maximumBodyBytes: number;
   readonly acceptedContentTypes: readonly string[];
@@ -103,13 +104,26 @@ function trustedResponseHeaders(headers: Headers): void {
   }
 }
 
-async function readBoundedBody(response: Response, maximumBodyBytes: number): Promise<Uint8Array> {
+async function readBoundedBody(
+  response: Response,
+  maximumBodyBytes: number,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
   const declaredLength = safeContentLength(response.headers, maximumBodyBytes);
   if (response.body === null) throw unavailable();
 
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  const cancel = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  if (signal.aborted) {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+    throw unavailable();
+  }
+  signal.addEventListener("abort", cancel, { once: true });
   try {
     while (true) {
       const next = await reader.read();
@@ -123,9 +137,11 @@ async function readBoundedBody(response: Response, maximumBodyBytes: number): Pr
       chunks.push(chunk);
     }
   } finally {
+    signal.removeEventListener("abort", cancel);
     reader.releaseLock();
   }
 
+  if (signal.aborted) throw unavailable();
   if (declaredLength !== null && declaredLength !== total) throw unavailable();
   const body = new Uint8Array(total);
   let offset = 0;
@@ -158,6 +174,7 @@ function parseJson(body: Uint8Array): unknown {
 }
 
 function hasDirective(value: string | null, expected: string): boolean {
+  if (value?.includes('"')) return false;
   return (
     value
       ?.split(",")
@@ -216,6 +233,8 @@ export async function readBoundedOidcJsonResponse(
       !(options.response instanceof Response) ||
       typeof options.expectedUrl !== "string" ||
       options.expectedUrl.length === 0 ||
+      !(options.signal instanceof AbortSignal) ||
+      options.signal.aborted ||
       !Array.isArray(options.acceptedStatusCodes) ||
       options.acceptedStatusCodes.length === 0 ||
       options.acceptedStatusCodes.length > 8 ||
@@ -252,7 +271,7 @@ export async function readBoundedOidcJsonResponse(
     if (contentType === undefined || !acceptedContentTypes.has(contentType)) throw unavailable();
     return Object.freeze({
       status: response.status,
-      json: parseJson(await readBoundedBody(response, options.maximumBodyBytes)),
+      json: parseJson(await readBoundedBody(response, options.maximumBodyBytes, options.signal)),
     });
   } catch {
     throw unavailable();
@@ -295,6 +314,7 @@ export async function fetchBoundedOidcJson(options: BoundedOidcJsonFetchOptions)
         const result = await readBoundedOidcJsonResponse({
           response,
           expectedUrl: options.url,
+          signal,
           acceptedStatusCodes: [200],
           maximumBodyBytes: options.maximumBodyBytes,
           acceptedContentTypes: [...acceptedContentTypes],

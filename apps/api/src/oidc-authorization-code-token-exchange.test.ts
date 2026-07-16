@@ -76,7 +76,7 @@ function tokenResponse(value: unknown = successfulBody(), init: ResponseInit = {
   if (!headers.has("cache-control")) headers.set("cache-control", "private, no-store");
   if (!headers.has("pragma")) headers.set("pragma", "no-cache");
   const response = new Response(JSON.stringify(value), { ...init, headers });
-  Object.defineProperty(response, "url", { value: TOKEN_ENDPOINT });
+  Object.defineProperty(response, "url", { value: TOKEN_ENDPOINT, configurable: true });
   return response;
 }
 
@@ -92,7 +92,7 @@ function transportFrom(
       response.url.length === 0 &&
       !intentionallyUrlLessResponses.has(response)
     ) {
-      Object.defineProperty(response, "url", { value: TOKEN_ENDPOINT });
+      Object.defineProperty(response, "url", { value: TOKEN_ENDPOINT, configurable: true });
     }
     return response;
   }) as unknown as MockTransport;
@@ -578,6 +578,28 @@ describe("StrictOidcAuthorizationCodeTokenExchanger", () => {
         }),
     ],
     [
+      "quoted no-store extension",
+      async () =>
+        new Response(JSON.stringify(successfulBody()), {
+          headers: {
+            "content-type": "application/json",
+            "cache-control": 'ext="a,no-store,b"',
+            pragma: "no-cache",
+          },
+        }),
+    ],
+    [
+      "quoted no-cache extension",
+      async () =>
+        new Response(JSON.stringify(successfulBody()), {
+          headers: {
+            "content-type": "application/json",
+            "cache-control": "no-store",
+            pragma: 'ext="a,no-cache,b"',
+          },
+        }),
+    ],
+    [
       "declared oversized body",
       async () => tokenResponse(undefined, { headers: { "content-length": "65537" } }),
     ],
@@ -670,7 +692,7 @@ describe("StrictOidcAuthorizationCodeTokenExchanger", () => {
     },
   );
 
-  it("maps a bounded OAuth rejection to null without exposing provider details", async () => {
+  it("maps a bounded invalid_grant rejection to null without exposing provider details", async () => {
     const transport = transportFrom(async () =>
       tokenResponse(
         {
@@ -706,6 +728,16 @@ describe("StrictOidcAuthorizationCodeTokenExchanger", () => {
       new OidcAuthorizationCodeTokenExchangeUnavailableError(),
     );
   });
+
+  it.each(["invalid_client", "invalid_request", "unauthorized_client"])(
+    "treats a 400 %s response as an operational failure",
+    async (error) => {
+      const transport = transportFrom(async () => tokenResponse({ error }, { status: 400 }));
+      await expect(exchange(createExchanger(transport))).rejects.toEqual(
+        new OidcAuthorizationCodeTokenExchangeUnavailableError(),
+      );
+    },
+  );
 
   it.each([
     ["top-level null", null],
@@ -769,6 +801,7 @@ describe("StrictOidcAuthorizationCodeTokenExchanger", () => {
   it("hard-bounds a response body that never finishes", async () => {
     vi.useFakeTimers();
     let observedAbort = false;
+    let bodyCancelled = false;
     const transport = transportFrom(async (_resource, options) => {
       options.signal?.addEventListener("abort", () => {
         observedAbort = true;
@@ -776,6 +809,9 @@ describe("StrictOidcAuthorizationCodeTokenExchanger", () => {
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(new TextEncoder().encode('{"access_token":"pending"'));
+        },
+        cancel() {
+          bodyCancelled = true;
         },
       });
       return new Response(stream, {
@@ -794,7 +830,9 @@ describe("StrictOidcAuthorizationCodeTokenExchanger", () => {
     await vi.advanceTimersByTimeAsync(3_001);
 
     await rejection;
+    await vi.runAllTicks();
     expect(observedAbort).toBe(true);
+    expect(bodyCancelled).toBe(true);
     expect(transport).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });

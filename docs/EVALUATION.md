@@ -57,7 +57,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 116 test files and 1,904 runtime test cases. Three
+The package and script runners currently execute 116 test files and 1,909 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -81,13 +81,13 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     58.99% |   70.33% |    66.56% |  59.5% |
+| Whole repository, measured |     58.98% |   70.32% |    66.53% |  59.5% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     94.75% |   91.40% |    93.35% | 95.79% |
 | Domain, required           |        91% |      82% |       92% |    93% |
 | Application, measured      |     89.88% |   83.35% |    98.61% | 90.81% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     91.15% |   87.65% |     84.5% | 92.46% |
+| API, measured              |     90.98% |   87.66% |    84.14% | 92.35% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     92.00% |   88.01% |    93.25% | 94.62% |
 | Worker, required           |        85% |      87% |       89% |    87% |

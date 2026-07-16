@@ -307,8 +307,9 @@ no-cache` directives. JSON media type, declared length, decoded stream, fatal UT
 are bounded; a success must contain a visible bounded access token, case-insensitive `Bearer` type,
 and a compact signed ID token, with bounded optional fields. Access and refresh tokens are validated
 then discarded. The only returned value is a frozen still-untrusted `{ idToken }`; the existing
-nonce-bound verifier is the sole path from that value to `{ issuer, subject }`. A bounded OAuth `400`
-is a generic rejected credential (`null`); outages, malformed responses, redirects, ambiguous
+nonce-bound verifier is the sole path from that value to `{ issuer, subject }`. A bounded OAuth
+`invalid_grant` is a generic rejected credential (`null`); other `400` errors, outages, malformed
+responses, redirects, ambiguous
 timeouts, and client-authentication failures become one stable redacted availability error.
 
 This exchanger remains dormant. It has no production connection-safe transport, runtime/client

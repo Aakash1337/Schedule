@@ -2789,7 +2789,7 @@
             "treats a %s authorization code as rejected without transport",
             "maps %s to one redacted availability error",
             "rejects and redacts a %s",
-            "maps a bounded OAuth rejection to null without exposing provider details",
+            "maps a bounded invalid_grant rejection to null without exposing provider details",
             "returns null for an unusable successful response: %s",
             "hard-bounds a transport that ignores abort and never retries",
             "hard-bounds a response body that never finishes",
