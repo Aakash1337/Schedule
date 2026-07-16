@@ -276,13 +276,8 @@ export function installIpRateLimit(
         : current;
 
     if (current === undefined && buckets.size >= maxTrackedClients) {
-      for (const [address, candidate] of buckets) {
-        if (now - candidate.startedAt >= 60_000) buckets.delete(address);
-      }
-      if (buckets.size >= maxTrackedClients) {
-        const leastRecentlyUsedAddress = buckets.keys().next().value as string | undefined;
-        if (leastRecentlyUsedAddress !== undefined) buckets.delete(leastRecentlyUsedAddress);
-      }
+      const leastRecentlyUsedAddress = buckets.keys().next().value as string | undefined;
+      if (leastRecentlyUsedAddress !== undefined) buckets.delete(leastRecentlyUsedAddress);
     }
 
     bucket.count += 1;

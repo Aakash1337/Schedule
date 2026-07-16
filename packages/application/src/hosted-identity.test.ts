@@ -165,8 +165,8 @@ describe("hosted identity application foundation", () => {
     expect(caseDistinct.user.id).not.toBe(created.user.id);
     expect(harness.users).toHaveLength(2);
     expect(harness.identities).toHaveLength(2);
-    expect(harness.workspaces).toHaveLength(2);
-    expect(harness.memberships).toHaveLength(2);
+    expect(harness.workspaces.size).toBe(2);
+    expect(harness.memberships.size).toBe(2);
     expect([...harness.workspaces.values()].every(({ name }) => name === "My Schedule")).toBe(true);
     expect([...harness.memberships.values()].every(({ status }) => status === "active")).toBe(true);
     expect(harness.isolationLevels).toEqual(["read_committed", "read_committed", "read_committed"]);
