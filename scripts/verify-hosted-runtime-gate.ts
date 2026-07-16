@@ -5,7 +5,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const tsxCli = path.join(repositoryRoot, "node_modules", "tsx", "dist", "cli.mjs");
 const serverEntryPoint = path.join(repositoryRoot, "apps", "api", "src", "server.ts");
 const MAX_CAPTURED_OUTPUT_BYTES = 64 * 1_024;
 
@@ -36,7 +35,9 @@ function cleanEnvironment(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 function spawnApi(environment: NodeJS.ProcessEnv): SpawnedServer {
   let output = "";
-  const child = spawn(process.execPath, [tsxCli, serverEntryPoint], {
+  // Run the entry point in the child itself so signals reach its shutdown handler instead of a
+  // platform-specific CLI wrapper process.
+  const child = spawn(process.execPath, ["--import", "tsx", serverEntryPoint], {
     cwd: repositoryRoot,
     env: environment,
     windowsHide: true,
@@ -154,6 +155,7 @@ try {
   );
   assert.notEqual(rejectedExit.code, 0);
   assert.equal(rejected.output().includes(secret), false);
+  assert.equal(rejected.output().includes("Hosted_Session_Pepper"), false);
   assert.match(rejected.output(), /Hosted companion configuration is not accepted/u);
 } finally {
   if (rejected.child.exitCode === null && rejected.child.signalCode === null) {
