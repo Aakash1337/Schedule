@@ -773,16 +773,16 @@ describe("Today commands", () => {
     });
     apiMocks.getDailyPlanFitEffectiveness.mockResolvedValue(
       planFitEffectiveness({
-        usesConsidered: 1,
-        resolvedUseCount: 1,
-        eligibleResolvedUseCount: 1,
-        editedSuggestionUseCount: 1,
-        appliedTargetMinutes: 120,
-        scheduledMinutes: 90,
-        completedMinutes: 60,
-        appliedTargetTaskCount: 3,
-        scheduledTaskCount: 2,
-        completedTaskCount: 1,
+        usesConsidered: 3,
+        resolvedUseCount: 3,
+        eligibleResolvedUseCount: 3,
+        editedSuggestionUseCount: 3,
+        appliedTargetMinutes: 360,
+        scheduledMinutes: 270,
+        completedMinutes: 180,
+        appliedTargetTaskCount: 9,
+        scheduledTaskCount: 6,
+        completedTaskCount: 3,
         scheduledMinutesRateBasisPoints: 7_500,
         scheduledTasksRateBasisPoints: 6_667,
         completionMinutesRateBasisPoints: 6_667,
@@ -799,7 +799,7 @@ describe("Today commands", () => {
     expect(screen.getByText(/Completed 1h and 1 task from 1h 30m across 2 tasks/)).toBeVisible();
     expect(screen.getByRole("heading", { name: "Plan Fit outcome summary" })).toBeVisible();
     expect(
-      screen.getByText(/Based on 1 settled, unrevised use out of 1 explicit use/),
+      screen.getByText(/Based on 3 settled, unrevised uses out of 3 explicit uses/),
     ).toBeVisible();
     expect(screen.getByText("75% time · 66.67% tasks")).toBeVisible();
     expect(screen.getByText("66.67% time · 50% tasks")).toBeVisible();
@@ -816,6 +816,27 @@ describe("Today commands", () => {
       28,
       expect.any(AbortSignal),
     );
+  });
+
+  it("withholds Plan Fit outcome rates until three comparable uses settle", async () => {
+    apiMocks.getCurrentPlan.mockRejectedValue(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
+    apiMocks.getDailyPlanFitEffectiveness.mockResolvedValue(
+      planFitEffectiveness({
+        usesConsidered: 1,
+        resolvedUseCount: 1,
+        eligibleResolvedUseCount: 1,
+        scheduledMinutesRateBasisPoints: 7_500,
+        scheduledTasksRateBasisPoints: 6_667,
+      }),
+    );
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText(/1 of 3 settled, unrevised uses is available/)).toBeVisible();
+    expect(screen.getByText(/Rates appear after 2 more comparable uses/)).toBeVisible();
+    expect(screen.queryByText("75% time · 66.67% tasks")).not.toBeInTheDocument();
   });
 
   it("recovers the independent Plan Fit outcome summary only after explicit retry", async () => {

@@ -1091,29 +1091,9 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
     page.getByText(/Suggested 1h 30m and 2 tasks; generated with 1h 45m and 3 tasks/),
   ).toBeVisible();
   await expect(page.getByText(/Completed .* and 1 task from/)).toBeVisible();
-  const generatedMinutes = generatedPlan.items.reduce(
-    (total, item) => total + item.scheduledMinutes,
-    0,
-  );
-  const scheduledMinutesRate = Math.round((generatedMinutes * 10_000) / 105);
-  const scheduledTasksRate = Math.round((generatedPlan.items.length * 10_000) / 3);
-  const completionMinutesRate = Math.round(
-    (generatedPlan.items[0]!.scheduledMinutes * 10_000) / generatedMinutes,
-  );
-  const completionTasksRate = Math.round(10_000 / generatedPlan.items.length);
-  await expect(
-    page.getByText(/Based on 1 settled, unrevised use out of 1 explicit use/),
-  ).toBeVisible();
-  await expect(
-    page.getByText(
-      `${String(scheduledMinutesRate / 100)}% time · ${String(scheduledTasksRate / 100)}% tasks`,
-    ),
-  ).toBeVisible();
-  await expect(
-    page.getByText(
-      `${String(completionMinutesRate / 100)}% time · ${String(completionTasksRate / 100)}% tasks`,
-    ),
-  ).toBeVisible();
+  await expect(page.getByText(/1 of 3 settled, unrevised uses is available/)).toBeVisible();
+  await expect(page.getByText(/Rates appear after 2 more comparable uses/)).toBeVisible();
+  await expect(page.getByText("Target scheduled")).not.toBeVisible();
 
   const mutationRequest = { ...generationRequestBody };
   delete mutationRequest.date;
