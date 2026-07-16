@@ -62,11 +62,13 @@ const apiSchema = baseSchema.extend({
 });
 
 const workerSchema = baseSchema.extend({
+  PORT: z.coerce.number().int().min(1).max(65_535).optional(),
   OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
   OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(25),
   OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(8),
   WORKER_OBSERVABILITY_MODE: z.enum(["disabled", "loopback"]).default("disabled"),
   WORKER_OBSERVABILITY_PORT: z.coerce.number().int().min(1).max(65_535).default(9_464),
+  WORKER_DEPLOYMENT_HEALTH_MODE: z.enum(["disabled", "railway"]).default("disabled"),
   NOTIFICATION_MATERIALIZATION_MODE: z.enum(["disabled", "enabled"]).default("disabled"),
   NOTIFICATION_MATERIALIZATION_INTERVAL_MS: z.coerce
     .number()
@@ -616,6 +618,14 @@ export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): Api
 
 export const loadWorkerConfig = (environment: NodeJS.ProcessEnv = process.env): WorkerConfig => {
   const parsed = workerSchema.parse(environment);
+  if (
+    parsed.WORKER_DEPLOYMENT_HEALTH_MODE === "railway" &&
+    (parsed.NODE_ENV !== "production" || parsed.PORT === undefined)
+  ) {
+    throw new Error(
+      "Railway worker deployment health requires production mode and the platform PORT.",
+    );
+  }
   if (parsed.WEBHOOK_REQUEST_TIMEOUT_MS < parsed.WEBHOOK_CONNECT_TIMEOUT_MS) {
     throw new Error("WEBHOOK_REQUEST_TIMEOUT_MS must be at least WEBHOOK_CONNECT_TIMEOUT_MS.");
   }

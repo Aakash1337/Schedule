@@ -510,7 +510,7 @@ export async function verifyOciRuntime(): Promise<void> {
         "worker",
         "node",
         "-e",
-        "Promise.all(['/health/live','/health/ready'].map(async p=>{const r=await fetch('http://127.0.0.1:9464'+p);if(!r.ok)throw new Error('unhealthy')})).catch(()=>process.exit(1))",
+        "Promise.all([['http://127.0.0.1:9464/health/live',200],['http://127.0.0.1:9464/health/ready',200],['http://127.0.0.1:9464/metrics',200],['http://127.0.0.1:4001/health/live',200],['http://127.0.0.1:4001/health/ready',200],['http://127.0.0.1:4001/metrics',404]].map(async([url,status])=>{const r=await fetch(url);if(r.status!==status)throw new Error('unhealthy')})).catch(()=>process.exit(1))",
       ],
       environment,
     );
@@ -553,7 +553,7 @@ export async function verifyOciRuntime(): Promise<void> {
       throw new Error(`OCI runtime verification interrupted by ${interruptedBy}.`);
     }
     process.stdout.write(
-      "OCI runtime verification passed hardened non-root containers, hosted web assets, migrations, fail-closed API health, loopback worker health, and graceful shutdown.\n",
+      "OCI runtime verification passed hardened non-root containers, hosted web assets, migrations, fail-closed API health, loopback worker health, and graceful shutdown. Railway worker deployment readiness also passed.\n",
     );
   } catch (error) {
     primaryError = error;

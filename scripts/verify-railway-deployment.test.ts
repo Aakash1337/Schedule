@@ -11,6 +11,7 @@ type RailwayManifest = Readonly<{
     startCommand?: string;
     healthcheckPath?: string;
     healthcheckTimeout?: number;
+    drainingSeconds?: string;
     restartPolicyType?: string;
     restartPolicyMaxRetries?: number;
   }>;
@@ -41,7 +42,7 @@ describe("Railway deployment contract", () => {
     expect(existsSync(`${root}/${api.build?.dockerfilePath ?? ""}`)).toBe(true);
   });
 
-  it("runs the worker without a public endpoint or competing migration", () => {
+  it("gates the worker on database readiness without a competing migration", () => {
     const worker = manifest("worker");
 
     expect(worker.$schema).toBe("https://railway.com/railway.schema.json");
@@ -50,6 +51,9 @@ describe("Railway deployment contract", () => {
       dockerfilePath: "infra/docker/worker.Dockerfile",
     });
     expect(worker.deploy).toEqual({
+      healthcheckPath: "/health/ready",
+      healthcheckTimeout: 300,
+      drainingSeconds: "40",
       restartPolicyType: "ON_FAILURE",
       restartPolicyMaxRetries: 3,
     });

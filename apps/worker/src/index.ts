@@ -6,7 +6,11 @@ import {
   createNotificationMaterializationDependencies,
   runNotificationMaterializationWorker,
 } from "./notification-materializer.js";
-import { runWorkerObservabilityServer, WorkerTelemetry } from "./observability.js";
+import {
+  runWorkerDeploymentHealthServer,
+  runWorkerObservabilityServer,
+  WorkerTelemetry,
+} from "./observability.js";
 import {
   runNonCriticalWorkerService,
   runWorkerRuntime,
@@ -20,6 +24,11 @@ import {
 import { runOutboxWorker } from "./worker.js";
 
 const config = loadWorkerConfig();
+const deploymentHealthPort =
+  config.WORKER_DEPLOYMENT_HEALTH_MODE === "railway" ? config.PORT : null;
+if (deploymentHealthPort === undefined) {
+  throw new Error("Railway worker deployment health is missing the platform port.");
+}
 const database = createDatabase(config.DATABASE_URL, 4);
 const observabilityDatabase =
   config.WORKER_OBSERVABILITY_MODE === "loopback"
@@ -29,6 +38,14 @@ const observabilityDatabase =
         applicationName: "schedule-worker-observability",
       })
     : null;
+const deploymentHealthDatabase =
+  deploymentHealthPort === null
+    ? null
+    : createDatabase(config.DATABASE_URL, 1, {
+        readOnly: true,
+        statementTimeoutMs: 5_000,
+        applicationName: "schedule-worker-deployment-health",
+      });
 const dispatcher = new OutboxDispatcher(
   config.WEBHOOK_DELIVERY_MODE === "enabled"
     ? new Map([
@@ -62,6 +79,19 @@ const services: WorkerService[] = [
       telemetry,
     }),
 ];
+
+if (deploymentHealthPort !== null && deploymentHealthDatabase !== null) {
+  services.push((signal) =>
+    runWorkerDeploymentHealthServer(
+      {
+        port: deploymentHealthPort,
+        database: deploymentHealthDatabase,
+        databaseOperationTimeoutMs: 5_000,
+      },
+      signal,
+    ),
+  );
+}
 
 if (config.NOTIFICATION_MATERIALIZATION_MODE === "enabled") {
   const dependencies = createNotificationMaterializationDependencies(
@@ -102,6 +132,7 @@ await runWorkerRuntime({
     const results = await Promise.allSettled([
       database.close(),
       ...(observabilityDatabase === null ? [] : [observabilityDatabase.close()]),
+      ...(deploymentHealthDatabase === null ? [] : [deploymentHealthDatabase.close()]),
     ]);
     const failure = results.find(
       (result): result is PromiseRejectedResult => result.status === "rejected",

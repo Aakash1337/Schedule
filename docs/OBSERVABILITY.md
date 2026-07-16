@@ -8,6 +8,9 @@ provider references, payloads, or raw failures.
 This surface is disabled by default and always binds to IPv4 loopback. It is an operator diagnostic
 boundary, not a public product API and not end-user authentication.
 
+Railway deployment readiness is a separate two-route listener on the platform `PORT`; it never
+exposes metrics. Its bounded contract is documented in [DEPLOYMENT.md](./DEPLOYMENT.md).
+
 ## Enabling the loopback surface
 
 Set these values for the worker process and restart it:
@@ -153,6 +156,6 @@ database even on failure and is included in `pnpm verify:database`.
 
 This slice does not install Prometheus, retain time-series history, configure a hosted dashboard,
 send alerts, expose a public metrics endpoint, or count future browser-authentication failures.
-Hosted deployment must keep the listener on an internal/sidecar boundary and add infrastructure
+Hosted deployment must keep the metrics listener on an internal/sidecar boundary and add infrastructure
 scraping, retention, dashboards, and alert routing separately. Provider/account transport remains a
 separate adapter responsibility.

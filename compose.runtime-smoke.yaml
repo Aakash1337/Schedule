@@ -90,6 +90,8 @@ services:
       OUTBOX_POLL_INTERVAL_MS: 250
       OUTBOX_BATCH_SIZE: 5
       OUTBOX_MAX_ATTEMPTS: 2
+      PORT: 4001
+      WORKER_DEPLOYMENT_HEALTH_MODE: railway
       WORKER_OBSERVABILITY_MODE: loopback
       WORKER_OBSERVABILITY_PORT: 9464
       NOTIFICATION_MATERIALIZATION_MODE: disabled
@@ -115,7 +117,7 @@ services:
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:9464/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+          "fetch('http://127.0.0.1:4001/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
         ]
       interval: 2s
       timeout: 3s

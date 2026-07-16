@@ -63,11 +63,33 @@ DATABASE_URL=${{Postgres.DATABASE_URL}}
 NOTIFICATION_MATERIALIZATION_MODE=disabled
 WEBHOOK_DELIVERY_MODE=disabled
 WORKER_OBSERVABILITY_MODE=disabled
+WORKER_DEPLOYMENT_HEALTH_MODE=railway
 ```
 
 Enable worker capabilities only after their credentials and runbooks are ready. The existing worker
 observability server is intentionally loopback-only and is not presented as a public Railway health
 endpoint.
+
+## Worker deployment readiness
+
+Railway injects `PORT`; do not define it manually. With `NODE_ENV=production` and
+`WORKER_DEPLOYMENT_HEALTH_MODE=railway`, the worker binds a deployment-only listener to that port on
+all interfaces. It exposes only `GET /health/live` and database-backed `GET /health/ready`.
+`/metrics` and every other path return `404`, non-GET methods return `405`, responses are `no-store`,
+and database failures are reduced to `503 {"status":"not_ready"}` without detail.
+
+This listener is a critical worker service. A bind/listener failure stops sibling processing and
+causes a nonzero process exit. Readiness probes share one in-flight query on a dedicated
+one-connection, read-only pool with a five-second statement timeout, so traffic on this port cannot
+consume the processing pool. Shutdown stops accepting connections, lets that bounded query finish,
+then closes the health pool. The manifest gives the process 40 seconds between `SIGTERM` and
+`SIGKILL`.
+
+Railway gates promotion on `/health/ready` for up to 300 seconds. This is not continuous monitoring:
+Railway checks the endpoint while activating a deployment, then stops polling it. Keep the separate
+loopback metrics surface private and configure an external uptime/alerting system only after
+selecting one operational provider. See [Railway healthchecks](https://docs.railway.com/deployments/healthchecks)
+and [deployment teardown](https://docs.railway.com/deployments/deployment-teardown).
 
 ## Release order
 
@@ -76,7 +98,10 @@ that API deployment before traffic moves. The worker deliberately does not run m
 two services racing the same ledger.
 
 For the first release, deploy the API and wait for `/health/ready` before deploying the worker.
-Railway has no Compose-style cross-service `depends_on`, so later migrations must use
+Railway promotes the worker only after its readiness succeeds, but the new process may claim work
+while promotion is still pending. Outbox leases, fencing tokens, and insert-only reminder
+materialization already support this brief multi-replica overlap; the healthcheck is not a leader
+election mechanism. Railway has no Compose-style cross-service `depends_on`, so later migrations must use
 backward-compatible expand/contract changes. Pause worker autodeploy and release it after the API
 when a change cannot satisfy that rule.
 

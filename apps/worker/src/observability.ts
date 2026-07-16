@@ -555,9 +555,12 @@ export function renderWorkerMetrics(
   return `${entries.join("\n")}\n`;
 }
 
-export interface WorkerObservabilityDependencies {
-  readonly telemetry: WorkerTelemetry;
+interface WorkerHealthDependencies {
   readonly readinessCheck: () => Promise<void>;
+}
+
+export interface WorkerObservabilityDependencies extends WorkerHealthDependencies {
+  readonly telemetry: WorkerTelemetry;
   readonly collectDatabaseSnapshot: () => Promise<OperationalDatabaseSnapshot>;
 }
 
@@ -574,16 +577,27 @@ function sendJson(response: ServerResponse, statusCode: number, body: object): v
   response.end(JSON.stringify(body));
 }
 
-export function createWorkerObservabilityHandler(
-  dependencies: WorkerObservabilityDependencies,
+function createWorkerHttpHandler(
+  health: WorkerHealthDependencies,
+  metrics?: Pick<WorkerObservabilityDependencies, "telemetry" | "collectDatabaseSnapshot">,
 ): (request: IncomingMessage, response: ServerResponse) => void {
+  let readinessInFlight: Promise<void> | null = null;
   let databaseCollectionInFlight: Promise<OperationalDatabaseSnapshot | null> | null = null;
+  const checkReadinessOnce = (): Promise<void> => {
+    if (readinessInFlight !== null) return readinessInFlight;
+    const check = Promise.resolve().then(async () => await health.readinessCheck());
+    readinessInFlight = check.finally(() => {
+      readinessInFlight = null;
+    });
+    return readinessInFlight;
+  };
   const collectDatabaseOnce = (): Promise<OperationalDatabaseSnapshot | null> => {
+    if (metrics === undefined) return Promise.resolve(null);
     if (databaseCollectionInFlight !== null) return databaseCollectionInFlight;
-    const collection = dependencies.collectDatabaseSnapshot().then(
+    const collection = metrics.collectDatabaseSnapshot().then(
       (snapshot) => snapshot,
       () => {
-        dependencies.telemetry.recordDatabaseCollectionFailure();
+        metrics.telemetry.recordDatabaseCollectionFailure();
         return null;
       },
     );
@@ -613,17 +627,17 @@ export function createWorkerObservabilityHandler(
       }
       if (pathname === "/health/ready") {
         try {
-          await dependencies.readinessCheck();
+          await checkReadinessOnce();
           sendJson(response, 200, { status: "ready" });
         } catch {
           sendJson(response, 503, { status: "not_ready" });
         }
         return;
       }
-      if (pathname === "/metrics") {
+      if (pathname === "/metrics" && metrics !== undefined) {
         const database = await collectDatabaseOnce();
         response.writeHead(200, commonHeaders(PROMETHEUS_CONTENT_TYPE));
-        response.end(renderWorkerMetrics(dependencies.telemetry.snapshot(), database));
+        response.end(renderWorkerMetrics(metrics.telemetry.snapshot(), database));
         return;
       }
       sendJson(response, 404, { status: "not_found" });
@@ -632,6 +646,18 @@ export function createWorkerObservabilityHandler(
       else response.end();
     });
   };
+}
+
+export function createWorkerObservabilityHandler(
+  dependencies: WorkerObservabilityDependencies,
+): (request: IncomingMessage, response: ServerResponse) => void {
+  return createWorkerHttpHandler(dependencies, dependencies);
+}
+
+function createWorkerDeploymentHealthHandler(
+  dependencies: WorkerHealthDependencies,
+): (request: IncomingMessage, response: ServerResponse) => void {
+  return createWorkerHttpHandler(dependencies);
 }
 
 export interface RunWorkerObservabilityServerOptions {
@@ -643,38 +669,38 @@ export interface RunWorkerObservabilityServerOptions {
   readonly onListening?: (address: AddressInfo, server: Server) => void;
 }
 
-export async function runWorkerObservabilityServer(
-  options: RunWorkerObservabilityServerOptions,
+export interface RunWorkerDeploymentHealthServerOptions {
+  readonly port: number;
+  readonly database: DatabaseConnection;
+  readonly databaseOperationTimeoutMs?: number;
+  readonly onListening?: (address: AddressInfo, server: Server) => void;
+}
+
+interface RunWorkerHttpServerOptions {
+  readonly port: number;
+  readonly host: string;
+  readonly name: string;
+  readonly handler: (request: IncomingMessage, response: ServerResponse) => void;
+  readonly onListening?: (address: AddressInfo, server: Server) => void;
+}
+
+async function runWorkerHttpServer(
+  options: RunWorkerHttpServerOptions,
   signal: AbortSignal,
 ): Promise<void> {
   if (!Number.isSafeInteger(options.port) || options.port < 0 || options.port > 65_535) {
-    throw new RangeError("Worker observability port must be between 0 and 65535.");
+    throw new RangeError("Worker HTTP port must be between 0 and 65535.");
   }
   if (signal.aborted) return;
 
-  const databaseOperationTimeoutMs =
-    options.databaseOperationTimeoutMs ?? DEFAULT_DATABASE_OPERATION_TIMEOUT_MS;
-
-  const server = createServer(
-    createWorkerObservabilityHandler({
-      telemetry: options.telemetry,
-      readinessCheck: async () =>
-        await healthCheckDatabase(options.database, databaseOperationTimeoutMs),
-      collectDatabaseSnapshot: async () =>
-        await collectOperationalDatabaseSnapshot(
-          options.database,
-          databaseOperationTimeoutMs,
-          options.excludedOutboxTopics,
-        ),
-    }),
-  );
+  const server = createServer(options.handler);
 
   await new Promise<void>((resolve, reject) => {
     let closing = false;
     let settled = false;
     let firstFailure: Error | undefined;
     const listenerError = (error: unknown): Error =>
-      error instanceof Error ? error : new Error("Worker observability listener failed.");
+      error instanceof Error ? error : new Error(`${options.name} listener failed.`);
     const finish = (failure?: Error): void => {
       if (settled) return;
       settled = true;
@@ -705,20 +731,15 @@ export async function runWorkerObservabilityServer(
         finish(firstFailure);
         return;
       }
-      try {
-        server.closeAllConnections();
-      } catch (error) {
-        firstFailure ??= listenerError(error);
-      }
     };
     const onAbort = (): void => close();
     server.on("error", fail);
     signal.addEventListener("abort", onAbort, { once: true });
     try {
-      server.listen(options.port, LOOPBACK_HOST, () => {
+      server.listen(options.port, options.host, () => {
         const address = server.address();
         if (address === null || typeof address === "string") {
-          close(new Error("Worker observability server did not bind to a TCP address."));
+          close(new Error(`${options.name} did not bind to a TCP address.`));
           return;
         }
         try {
@@ -734,4 +755,53 @@ export async function runWorkerObservabilityServer(
     }
     if (signal.aborted) close();
   });
+}
+
+export function runWorkerObservabilityServer(
+  options: RunWorkerObservabilityServerOptions,
+  signal: AbortSignal,
+): Promise<void> {
+  const databaseOperationTimeoutMs =
+    options.databaseOperationTimeoutMs ?? DEFAULT_DATABASE_OPERATION_TIMEOUT_MS;
+  return runWorkerHttpServer(
+    {
+      port: options.port,
+      host: LOOPBACK_HOST,
+      name: "Worker observability server",
+      handler: createWorkerObservabilityHandler({
+        telemetry: options.telemetry,
+        readinessCheck: async () =>
+          await healthCheckDatabase(options.database, databaseOperationTimeoutMs),
+        collectDatabaseSnapshot: async () =>
+          await collectOperationalDatabaseSnapshot(
+            options.database,
+            databaseOperationTimeoutMs,
+            options.excludedOutboxTopics,
+          ),
+      }),
+      ...(options.onListening === undefined ? {} : { onListening: options.onListening }),
+    },
+    signal,
+  );
+}
+
+export function runWorkerDeploymentHealthServer(
+  options: RunWorkerDeploymentHealthServerOptions,
+  signal: AbortSignal,
+): Promise<void> {
+  const databaseOperationTimeoutMs =
+    options.databaseOperationTimeoutMs ?? DEFAULT_DATABASE_OPERATION_TIMEOUT_MS;
+  return runWorkerHttpServer(
+    {
+      port: options.port,
+      host: "0.0.0.0",
+      name: "Worker deployment health server",
+      handler: createWorkerDeploymentHealthHandler({
+        readinessCheck: async () =>
+          await healthCheckDatabase(options.database, databaseOperationTimeoutMs),
+      }),
+      ...(options.onListening === undefined ? {} : { onListening: options.onListening }),
+    },
+    signal,
+  );
 }

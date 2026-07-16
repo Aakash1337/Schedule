@@ -556,8 +556,10 @@ The audit deliberately leaves these visible instead of turning them into false g
 - worker observability has unit and disposable-PostgreSQL evidence for loopback-only binding,
   liveness/readiness separation, fixed-cardinality Prometheus text, live outbox/reminder queue
   aggregates, materialization/outbox instrumentation, private-data exclusion, database-failure
-  `NaN` semantics, and graceful shutdown. It does not install a scraper, persist time-series data,
-  deliver alerts, expose a hosted dashboard, or monitor future browser authentication;
+  `NaN` semantics, and graceful shutdown. A separate OCI-tested Railway promotion listener binds
+  only explicit production `PORT`, makes database readiness critical, and returns `404` for metrics.
+  Neither listener installs a scraper, persists time-series data, delivers alerts, exposes a hosted
+  dashboard, or monitors future browser authentication;
 - hosted OIDC has domain, application, schema, adapter, component, and disposable-PostgreSQL
   evidence for exact concurrent identity plus default-workspace provisioning, digest-only sessions,
   hardened cookies, exact-Origin CSRF, single-use login/PKCE, nonce-bound verification, pinned
