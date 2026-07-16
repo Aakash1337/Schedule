@@ -2,8 +2,9 @@
 
 Schedule contains a centralized, provider-neutral request boundary for future hosted workspace
 routes, a provider-neutral browser authentication lifecycle registrar, and one transaction-coupled
-hosted work-item-create registrar. All are implemented and tested, but deliberately have no
-production registration: `buildApp` and the server do not install them, no browser route is
+hosted work-item-create registrar. A separate pre-authentication foundation now coordinates bounded
+state, browser binding, nonce, and PKCE material. All are implemented and tested, but deliberately
+have no production registration: `buildApp` and the server do not install them, no browser route is
 reachable, and the local and machine-integration trust boundaries are unchanged.
 
 ## Disabled runtime configuration gate
@@ -97,6 +98,44 @@ audience/authorized-party claims, timestamps, nonce, and the state/redirect/PKCE
 flow—before returning issuer and subject. Email, display name, or other claims can never substitute
 for that exact provider identity.
 
+## Dormant login transaction foundation
+
+`StartHostedLoginTransaction` and `ConsumeHostedLoginTransaction` establish the server-side
+transaction that a future authorization-code flow must use. They are application services only:
+there is no start route, callback route, browser-binding cookie serializer, provider adapter, or
+runtime configuration that can call them.
+
+Starting a transaction generates four independent 256-bit base64url values:
+
+- authorization `state`, sent to and returned by the identity provider;
+- a browser-binding bearer value intended for a future host-only, secure, HttpOnly, SameSite cookie;
+- the OIDC nonce that a future ID-token verifier must match exactly; and
+- a PKCE verifier whose SHA-256 challenge is the only verifier-derived value sent to the provider.
+
+Migration `0036` adds `hosted_login_transactions`. It persists purpose-separated peppered
+HMAC-SHA-256 digests of state and browser binding, never either plaintext value. It stores the nonce
+and S256 challenge, plus an AES-256-GCM-protected PKCE verifier whose authenticated additional data
+binds it to the transaction UUID. The protector includes a non-secret key identifier so a key ring
+can decrypt in-flight transactions across rotation while new transactions use only the selected
+primary key. Exact issuer, client ID, redirect URI, and bounded local return path are immutable
+transaction fields. No provider token, authorization code, user, email, or profile claim is stored.
+
+PostgreSQL `clock_timestamp()` is authoritative. TTL is restricted to 60–900 seconds. Consumption
+HMACs the presented state, locks the one matching row `FOR UPDATE`, compares the independent browser
+binding in constant time, rejects the exact expiry boundary, decrypts and re-derives the stored PKCE
+challenge, then records consumption with an optimistic version in the same serializable transaction.
+Malformed, missing, wrong-binding, expired, and replayed presentations all return the same `null`.
+Concurrent valid presentations therefore have exactly one winner. Corrupt or wrongly bound
+ciphertext fails before consumption and rolls back. Cleanup deletes only expired rows, ordered by
+expiry and UUID, with `FOR UPDATE SKIP LOCKED` and a caller limit of at most 1,000.
+
+Successful consumption returns a short-lived in-process continuation containing the exact provider
+and redirect bindings, `expectedNonce`, and recovered PKCE verifier. A future callback must consume
+this transaction before code exchange and must pass `expectedNonce` into a verifier contract that
+cannot omit nonce validation. An exchange or verification failure starts a new login; a consumed
+transaction is never reopened. The current opaque-proof lifecycle is not wired to this continuation
+and must not be described as an authorization-code implementation.
+
 ## Preflight transaction limit
 
 The read-side membership decision uses one exact indexed statement at `read committed`. A committed
@@ -142,9 +181,10 @@ membership loss is the same generic `404`; unexpected adapter/database failures 
 
 ## Deliberately absent
 
-There is still no OIDC discovery or callback, concrete identity-provider verifier, production-
-registered authentication route, enabling hosted configuration, public workspace route, hosted
-CORS policy, account-management API, role model, synchronization protocol, or cloud deployment.
+There is still no OIDC discovery, authorization endpoint, callback or code exchange, concrete
+identity-provider verifier, production-registered authentication route, browser-binding cookie,
+enabling hosted configuration, public workspace route, hosted CORS policy, account-management API,
+role model, synchronization protocol, or cloud deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. The dormant work-item create is the only transaction-coupled hosted product mutation;
 all other product routes remain local-only and require their own transaction authority before any
@@ -173,3 +213,7 @@ after the forced rollback probes that its authorization locks were released.
 configuration must fail before listening without disclosing its value, while the explicit disabled
 mode must report hosted capabilities off and keep representative authentication and workspace
 routes at `404`.
+`pnpm verify:hosted-login-transactions` migrates a disposable database and proves digest-only state
+and browser binding, authenticated PKCE recovery, exact provider/redirect binding, twelve-way
+single-use consumption, database-clock expiry, corruption rollback and redaction, and bounded
+cleanup through the production PostgreSQL adapter.

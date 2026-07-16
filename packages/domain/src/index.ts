@@ -9,6 +9,7 @@ export * from "./daily-plan-fit-usage-outcome.js";
 export * from "./duration.js";
 export * from "./errors.js";
 export * from "./hosted-identity.js";
+export * from "./hosted-login-transaction.js";
 export * from "./ids.js";
 export * from "./notification-policy.js";
 export * from "./routine.js";

@@ -22,6 +22,7 @@ export type NotificationIntentId = BrandedId<"NotificationIntentId">;
 export type UserId = BrandedId<"UserId">;
 export type ExternalIdentityId = BrandedId<"ExternalIdentityId">;
 export type BrowserSessionId = BrandedId<"BrowserSessionId">;
+export type HostedLoginTransactionId = BrandedId<"HostedLoginTransactionId">;
 
 function toId<Name extends string>(value: string, label: Name): BrandedId<Name> {
   if (value.trim().length === 0) {
@@ -80,3 +81,6 @@ export const externalIdentityId = (value: string = randomUUID()): ExternalIdenti
 
 export const browserSessionId = (value: string = randomUUID()): BrowserSessionId =>
   toId(value, "BrowserSessionId");
+
+export const hostedLoginTransactionId = (value: string = randomUUID()): HostedLoginTransactionId =>
+  toId(value, "HostedLoginTransactionId");

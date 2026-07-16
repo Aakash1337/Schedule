@@ -13,7 +13,7 @@ cookie/CSRF policy are implemented but unreachable.
 
 ## Persisted model
 
-Four tables are introduced by migration `0031`:
+Four identity tables are introduced by migration `0031`:
 
 - `users` stores only a generated principal ID, active/disabled lifecycle, optimistic version, and
   timestamps. It does not store a name, email, avatar, provider claim, password, or role.
@@ -27,6 +27,12 @@ Four tables are introduced by migration `0031`:
   revocation reason, and optimistic version are explicit.
 - `workspace_memberships` is a binary active/revoked authorization relationship. It has no role or
   implicit ownership semantics.
+
+Migration `0036` separately adds `hosted_login_transactions` for unauthenticated authorization-code
+coordination. It has no user or workspace foreign key. State and browser-binding bearer values are
+represented only by purpose-separated HMAC digests; the PKCE verifier is authenticated ciphertext;
+exact issuer, client ID, redirect URI, nonce, S256 challenge, expiry, and one-time consumption are
+explicit. See [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md#dormant-login-transaction-foundation).
 
 Identity deletion cascades through external identities, sessions, and memberships. It does not
 delete a workspace or any task, plan, reminder, or audit data in that workspace. Workspace lifecycle
@@ -75,8 +81,9 @@ seam, but no production route issues or consumes them.
 
 The centralized request-authentication and workspace-authorization seam now exists but is not wired
 into `buildApp`; see [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md). The dormant browser-session
-and CSRF transport sits behind that seam; provider verification and transaction-coupled hosted
-product authorization must follow while production product routes remain closed by default.
+and CSRF transport, a replay-safe login-transaction foundation, and one transaction-coupled hosted
+work-item create now sit behind that seam. Provider verification, authorization-code transport, and
+the broader hosted product surface remain absent while production routes stay closed by default.
 
 ## Verification
 
@@ -85,6 +92,7 @@ Run:
 ```powershell
 pnpm verify:hosted-identity
 pnpm verify:hosted-identity-migrations
+pnpm verify:hosted-login-transactions
 ```
 
 The first command migrates a nonce database and drives the production application and PostgreSQL
@@ -92,5 +100,7 @@ adapters through concurrent exact provisioning, digest-only issuance, rotation r
 disable/resolve/rotation lock races, membership isolation, 21 hosted workspace provisions, user
 disablement, and deletion preservation.
 The second upgrades a populated pre-`0031` database, validates exact binding uniqueness and cascade
-direction, and proves legacy workspace/work-item data survives. Both commands drop their disposable
-databases and are included in `pnpm verify:database`.
+direction, and proves legacy workspace/work-item data survives. The third independently exercises
+the pre-authentication unit of work through concurrent exactly-once consumption, protected PKCE
+recovery, expiry, rollback, and cleanup. All three commands drop their disposable databases and are
+included in `pnpm verify:database`.

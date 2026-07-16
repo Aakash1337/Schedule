@@ -21,6 +21,7 @@ export * from "./webhook-security.js";
 export * from "./create-workspace.js";
 export * from "./get-workspace.js";
 export * from "./hosted-identity.js";
+export * from "./hosted-login-transaction.js";
 export * from "./hosted-mutation-authorization.js";
 export * from "./list-workspaces.js";
 export * from "./list-notification-deliveries.js";

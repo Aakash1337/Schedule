@@ -15,6 +15,7 @@ import {
   dailyPlanItems,
   dailyPlans,
   externalIdentities,
+  hostedLoginTransactions,
   hostedUsers,
   hostedUserStatus,
   integrationConfirmations,
@@ -103,7 +104,47 @@ describe("database schema", () => {
     expect(getTableName(hostedUsers)).toBe("users");
     expect(getTableName(externalIdentities)).toBe("external_identities");
     expect(getTableName(browserSessions)).toBe("browser_sessions");
+    expect(getTableName(hostedLoginTransactions)).toBe("hosted_login_transactions");
     expect(getTableName(workspaceMemberships)).toBe("workspace_memberships");
+  });
+
+  it("persists only bounded hosted login coordination material", () => {
+    const transactions = getTableConfig(hostedLoginTransactions);
+    expect(transactions.uniqueConstraints.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "hosted_login_transactions_state_digest_uq",
+        "hosted_login_transactions_browser_binding_digest_uq",
+      ]),
+    );
+    expect(transactions.indexes.map((constraint) => constraint.config.name)).toContain(
+      "hosted_login_transactions_expiry_idx",
+    );
+    expect(transactions.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "hosted_login_transactions_digests_valid",
+        "hosted_login_transactions_oidc_values_valid",
+        "hosted_login_transactions_lifecycle_valid",
+        "hosted_login_transactions_version_positive",
+      ]),
+    );
+    expect(hostedLoginTransactions).not.toHaveProperty("state");
+    expect(hostedLoginTransactions).not.toHaveProperty("browserBinding");
+    expect(hostedLoginTransactions).not.toHaveProperty("pkceVerifier");
+  });
+
+  it("migrates hosted login coordination without plaintext bearer columns", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0036_romantic_justice.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain('CREATE TABLE "hosted_login_transactions"');
+    expect(migration).toContain('"state_digest" varchar(64) NOT NULL');
+    expect(migration).toContain('"browser_binding_digest" varchar(64) NOT NULL');
+    expect(migration).toContain('"protected_pkce_verifier" varchar(2048) NOT NULL');
+    expect(migration).toContain("\"pkce_method\" varchar(4) DEFAULT 'S256' NOT NULL");
+    expect(migration).not.toContain('\n\t"state" ');
+    expect(migration).not.toContain('\n\t"browser_binding" ');
+    expect(migration).not.toContain('\n\t"pkce_verifier" ');
   });
 
   it("persists a provider-neutral hosted identity and binary membership boundary", () => {

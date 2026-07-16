@@ -304,6 +304,63 @@ export const browserSessions = pgTable(
   ],
 );
 
+/**
+ * Short-lived pre-authentication transactions. Authorization state and browser-binding bearer
+ * values are represented only by peppered HMAC digests; PKCE verifiers are authenticated
+ * ciphertext and are removed after the bounded expiry window.
+ */
+export const hostedLoginTransactions = pgTable(
+  "hosted_login_transactions",
+  {
+    id: uuid("id").primaryKey(),
+    stateDigest: varchar("state_digest", { length: 64 }).notNull(),
+    browserBindingDigest: varchar("browser_binding_digest", { length: 64 }).notNull(),
+    issuer: varchar("issuer", { length: 2_048 }).notNull(),
+    clientId: varchar("client_id", { length: 512 }).notNull(),
+    redirectUri: varchar("redirect_uri", { length: 2_048 }).notNull(),
+    returnToPath: varchar("return_to_path", { length: 2_048 }).notNull(),
+    nonce: varchar("nonce", { length: 43 }).notNull(),
+    pkceChallenge: varchar("pkce_challenge", { length: 43 }).notNull(),
+    pkceMethod: varchar("pkce_method", { length: 4 }).notNull().default("S256"),
+    protectedPkceVerifier: varchar("protected_pkce_verifier", { length: 2_048 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+  },
+  (table) => [
+    unique("hosted_login_transactions_state_digest_uq").on(table.stateDigest),
+    unique("hosted_login_transactions_browser_binding_digest_uq").on(table.browserBindingDigest),
+    index("hosted_login_transactions_expiry_idx").on(table.expiresAt, table.id),
+    check(
+      "hosted_login_transactions_digests_valid",
+      sql`${table.stateDigest} ~ '^[0-9a-f]{64}$'
+        and ${table.browserBindingDigest} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "hosted_login_transactions_oidc_values_valid",
+      sql`char_length(${table.issuer}) > 0
+        and char_length(${table.clientId}) > 0
+        and char_length(${table.redirectUri}) > 0
+        and char_length(${table.returnToPath}) > 0
+        and ${table.nonce} ~ '^[A-Za-z0-9_-]{43}$'
+        and ${table.pkceChallenge} ~ '^[A-Za-z0-9_-]{43}$'
+        and ${table.pkceMethod} = 'S256'
+        and char_length(${table.protectedPkceVerifier}) > 0`,
+    ),
+    check(
+      "hosted_login_transactions_lifecycle_valid",
+      sql`${table.expiresAt} >= ${table.createdAt} + interval '60 seconds'
+        and ${table.expiresAt} <= ${table.createdAt} + interval '15 minutes'
+        and (${table.consumedAt} is null or (
+          ${table.consumedAt} >= ${table.createdAt}
+          and ${table.consumedAt} < ${table.expiresAt}
+        ))`,
+    ),
+    check("hosted_login_transactions_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
 /** Binary hosted authorization boundary; roles remain deliberately out of scope. */
 export const workspaceMemberships = pgTable(
   "workspace_memberships",

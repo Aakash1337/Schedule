@@ -243,6 +243,9 @@ read-only root filesystem, dropped Linux capabilities, and `no-new-privileges` f
 API, and the worker. These controls are a provider-neutral deployment prerequisite, not evidence that
 public hosting or browser authentication is enabled. Provider-neutral login/session/logout and
 transaction-coupled hosted work-item-create registrars now exercise the hardened browser boundary in
-isolation. A disabled-only hosted runtime gate rejects premature companion configuration, and both
-registrars remain absent from `buildApp` and production server wiring until a concrete verifier and
-an intentionally selected public hosted surface exist.
+isolation. A separate dormant login-transaction foundation provides digest-only state/browser
+binding, nonce and exact redirect binding, protected PKCE recovery, authoritative expiry, and
+single-use consumption. A disabled-only hosted runtime gate rejects premature companion
+configuration; the registrars and transaction services remain absent from `buildApp` and production
+server wiring until a complete authorization-code adapter and intentionally selected public hosted
+surface exist.

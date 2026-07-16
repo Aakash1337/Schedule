@@ -558,9 +558,13 @@ The audit deliberately leaves these visible instead of turning them into false g
   user/session/workspace/membership locking, exact-context authority, cross-tenant denial,
   logout/disable/expiry fencing, both membership-revocation linearizations, and rollback isolation.
   The stack remains dormant: neither registrar is installed. A disabled-only runtime gate rejects
-  premature hosted companion configuration and reports hosted endpoints disabled, but there is no
-  concrete provider verification, enabling hosted configuration, broader hosted product surface,
-  public deployment, or synchronization;
+  premature hosted companion configuration and reports hosted endpoints disabled. A separate
+  pre-authentication foundation has domain, application, migration, adapter, and disposable-
+  PostgreSQL evidence for digest-only state/browser binding, transaction-bound encrypted PKCE,
+  exact issuer/client/redirect/nonce binding, concurrent single-use consumption, authoritative
+  expiry, corruption rollback, and bounded cleanup. It has no HTTP composition: there is still no
+  authorization endpoint, callback/code exchange, concrete provider verification, enabling hosted
+  configuration, broader hosted product surface, public deployment, or synchronization;
 - ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a

@@ -23,6 +23,7 @@
     "notification-materializer": { "command": "pnpm verify:database", "ci": true },
     "worker-observability": { "command": "pnpm verify:database", "ci": true },
     "hosted-identity": { "command": "pnpm verify:database", "ci": true },
+    "hosted-login-transactions": { "command": "pnpm verify:database", "ci": true },
     "hosted-runtime-gate": { "command": "pnpm verify:database", "ci": true },
     "hosted-mutation-authorization": { "command": "pnpm verify:database", "ci": true },
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
@@ -2475,6 +2476,82 @@
           "command": "hosted-runtime-gate",
           "anchors": [
             "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-login-transaction-foundation",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Dormant login transaction foundation"
+      },
+      "limitations": [
+        "This is a dormant, provider-neutral pre-authentication transaction foundation. No authorization endpoint, callback, code exchange, provider verifier, browser-binding cookie, runtime configuration, or route composition calls it.",
+        "A future hosted deployment must source the HMAC pepper and AES-GCM key ring from a secret manager and pass the consumed expectedNonce into a verifier contract that cannot omit nonce validation."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/hosted-login-transaction.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates a bounded S256 transaction without plaintext state or browser binding",
+            "is usable strictly before expiry and consumes exactly once in the domain"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/hosted-login-transaction.test.ts",
+          "command": "unit",
+          "anchors": [
+            "issues independent 256-bit values with purpose-separated digests",
+            "protects PKCE verifiers with transaction-bound authenticated encryption and key rotation",
+            "persists no plaintext bearer values and consumes the exact transaction once",
+            "rejects expiry at the exact boundary and prunes in bounded read-committed batches",
+            "fails closed before consumption when protected PKCE material is corrupted"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": [
+            "persists only bounded hosted login coordination material",
+            "migrates hosted login coordination without plaintext bearer columns"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/hosted-login-transaction.test.ts",
+          "command": "unit",
+          "anchors": [
+            "keeps pre-authentication repositories in a separate transaction context",
+            "retries serialization failures without retrying unrelated failures"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/backup-database.test.ts",
+          "command": "unit",
+          "anchors": [
+            "keeps the current database allowlist aligned with the latest migration snapshot"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-login-transactions.ts",
+          "command": "hosted-login-transactions",
+          "anchors": [
+            "Hosted login transaction verification passed digest-only state and browser binding, protected PKCE recovery, exact provider and redirect binding, concurrent single-use consumption, database-clock expiry, corruption rollback, redaction, and bounded cleanup"
           ]
         }
       ]
