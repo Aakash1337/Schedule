@@ -188,6 +188,7 @@ function authorizationRedirect(value: string): string | null {
 function callbackCredentials(request: FastifyRequest): {
   readonly code: string;
   readonly state: string;
+  readonly issuer?: string;
 } | null {
   const rawUrl = request.raw.url;
   if (typeof rawUrl !== "string" || Buffer.byteLength(rawUrl, "utf8") > MAX_CALLBACK_URL_BYTES) {
@@ -199,20 +200,26 @@ function callbackCredentials(request: FastifyRequest): {
   } catch {
     return null;
   }
-  const entries = [...parsed.searchParams];
   if (
     parsed.pathname !== HOSTED_CALLBACK_ROUTE ||
-    entries.length !== 2 ||
     parsed.searchParams.getAll("code").length !== 1 ||
-    parsed.searchParams.getAll("state").length !== 1
+    parsed.searchParams.getAll("state").length !== 1 ||
+    parsed.searchParams.getAll("iss").length > 1 ||
+    parsed.searchParams.has("error")
   ) {
     return null;
   }
   const code = parsed.searchParams.get("code") ?? "";
   const state = parsed.searchParams.get("state") ?? "";
-  return AUTHORIZATION_CODE_PATTERN.test(code) && OPAQUE_VALUE_PATTERN.test(state)
-    ? Object.freeze({ code, state })
-    : null;
+  const issuer = parsed.searchParams.get("iss") ?? undefined;
+  if (
+    !AUTHORIZATION_CODE_PATTERN.test(code) ||
+    !OPAQUE_VALUE_PATTERN.test(state) ||
+    (issuer !== undefined && (issuer.length === 0 || issuer.length > 2_048))
+  ) {
+    return null;
+  }
+  return Object.freeze(issuer === undefined ? { code, state } : { code, state, issuer });
 }
 
 function verifiedIdentityIsWellFormed(value: unknown): value is VerifiedHostedIdentity {
@@ -357,6 +364,9 @@ export async function registerHostedAuthLifecycle(
         ) {
           request.log.error("hosted login transaction returned inconsistent provider binding");
           return reply.code(503).send(publicFailure(request, 503));
+        }
+        if (credentials.issuer !== undefined && credentials.issuer !== transaction.issuer) {
+          return reply.code(401).send(publicFailure(request, 401));
         }
         const returnUrl = new URL(transaction.returnToPath, loginPolicy.hostedOrigin);
         if (

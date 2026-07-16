@@ -553,7 +553,8 @@ The audit deliberately leaves these visible instead of turning them into false g
   duplicate-safe session cookies, host-only issue/clear attributes, exact-Origin constant-time
   double-submit CSRF proof, and safe/unsafe production-route closure. A separately injectable
   lifecycle registrar has unit evidence for identity-private session bootstrap, query-free login
-  start, exact callback parameters and browser binding, consume-before-exchange ordering,
+  start, exact callback credentials, optional provider-issuer binding, browser binding,
+  consume-before-exchange ordering,
   nonce-bound verification handoff, fixed-origin local redirects, exact issuer/subject provisioning
   with returned-binding consistency checks, disabled-user denial, hardened cookie issuance,
   idempotent signed-out revocation, and redacted failures. One separately dormant work-item-create

@@ -82,8 +82,10 @@ configuration, or deployment manifests installs it. Direct registrar tests exerc
   authorization URL from that exact result, emits the opaque browser binding only in the hardened
   `__Host-schedule_login` cookie, and returns a `303` provider redirect with `no-store` and
   `no-referrer` response policy.
-- `GET /v1/auth/callback` accepts exactly one bounded visible-ASCII `code` and one 256-bit `state`,
-  plus exactly one valid browser-binding cookie. It consumes the transaction before making one code
+- `GET /v1/auth/callback` accepts exactly one bounded visible-ASCII `code`, one 256-bit `state`, and
+  exactly one valid browser-binding cookie. It ignores unknown successful-response extensions as
+  OAuth requires; when the provider supplies RFC 9207 `iss`, it accepts one bounded value and binds
+  it exactly to the consumed transaction issuer. It consumes the transaction before making one code
   exchange, passes the consumed issuer/client/nonce into the ID-token verifier, accepts only a
   bounded exact issuer/subject identity, provisions that identity, and issues the session. Success
   clears the login binding, emits hardened session and fresh CSRF cookies, and returns a `303` only
@@ -377,7 +379,7 @@ future hosted exposure.
 ## Verification
 
 `pnpm check` covers bounded and duplicate-safe cookie parsing, exact Origin and double-submit CSRF
-proof, cookie issue/clear attributes, query-free login start, exact callback query and browser
+proof, cookie issue/clear attributes, query-free login start, bounded callback credentials and browser
 binding, consume-before-exchange ordering, nonce-bound verification handoff, fixed-origin local
 redirects, no retry, exact verified-identity provisioning and binding consistency, session bootstrap
 without identity disclosure, disabled-user denial, logout idempotency and revocation, request
@@ -430,6 +432,7 @@ cache bounds, OAuth rejection classification, secret/token redaction, and mandat
 handoff. It performs no external request; the runtime gate continues to prove HTTP closure.
 `pnpm verify:hosted-oidc-lifecycle` rebuilds the core packages and runs the dormant start/callback,
 browser-cookie, authorization-request, token-exchange, and ID-token suites. It proves query-free
-start, exact state/code/browser binding, consume-before-exchange ordering, mandatory nonce handoff,
+start, exact state/code/browser binding, optional issuer binding, consume-before-exchange ordering,
+mandatory nonce handoff,
 fixed-origin local redirects, hardened cookie transitions, generic failure classification, and no
 retry. It performs no external request and does not register production routes.

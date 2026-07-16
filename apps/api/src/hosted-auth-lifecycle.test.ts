@@ -360,12 +360,26 @@ describe("dormant hosted OIDC authentication lifecycle", () => {
     expect(cookies[2]).toContain(`${HOSTED_LOGIN_BINDING_COOKIE_NAME}=; Path=/; Secure; HttpOnly`);
   });
 
+  it("accepts an exact RFC 9207 issuer and ignores an unknown response parameter", async () => {
+    const fixture = createDependencies();
+    const response = await (
+      await createApp(fixture.dependencies)
+    ).inject({
+      method: "GET",
+      url: `${CALLBACK_URL}&iss=${encodeURIComponent(ISSUER)}&scope=openid`,
+      headers: { cookie: LOGIN_COOKIE },
+    });
+
+    expect(response.statusCode).toBe(303);
+    expect(fixture.exchangeCode).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ["missing code", `${HOSTED_CALLBACK_ROUTE}?state=${STATE}`, LOGIN_COOKIE],
     ["duplicate code", `${CALLBACK_URL}&code=again`, LOGIN_COOKIE],
     ["duplicate state", `${CALLBACK_URL}&state=${STATE}`, LOGIN_COOKIE],
-    ["unexpected parameter", `${CALLBACK_URL}&scope=openid`, LOGIN_COOKIE],
-    ["provider error", `${HOSTED_CALLBACK_ROUTE}?error=access_denied&state=${STATE}`, LOGIN_COOKIE],
+    ["duplicate issuer", `${CALLBACK_URL}&iss=${ISSUER}&iss=${ISSUER}`, LOGIN_COOKIE],
+    ["provider error", `${CALLBACK_URL}&error=access_denied`, LOGIN_COOKIE],
     ["malformed code", `${HOSTED_CALLBACK_ROUTE}?code=bad%0Acode&state=${STATE}`, LOGIN_COOKIE],
     [
       "malformed state",
@@ -390,6 +404,21 @@ describe("dormant hosted OIDC authentication lifecycle", () => {
     expect(setCookieHeaders(response)).toEqual([
       expect.stringContaining(`${HOSTED_LOGIN_BINDING_COOKIE_NAME}=;`),
     ]);
+  });
+
+  it("rejects a mismatched RFC 9207 issuer after consuming state and before code exchange", async () => {
+    const fixture = createDependencies();
+    const response = await (
+      await createApp(fixture.dependencies)
+    ).inject({
+      method: "GET",
+      url: `${CALLBACK_URL}&iss=${encodeURIComponent("https://other-issuer.test")}`,
+      headers: { cookie: LOGIN_COOKIE },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(fixture.consumeLogin).toHaveBeenCalledOnce();
+    expect(fixture.exchangeCode).not.toHaveBeenCalled();
   });
 
   it.each(["consume", "exchange", "verify"] as const)(
