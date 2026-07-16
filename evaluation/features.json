@@ -2465,7 +2465,9 @@
           "command": "unit",
           "anchors": [
             "accepts only the explicit disabled hosted API mode",
-            "rejects non-empty hosted companion configuration without disclosing it"
+            "stages one immutable complete non-secret hosted OIDC registration",
+            "rejects a partial hosted OIDC registration",
+            "rejects hosted secrets and unknown companions without disclosing them"
           ]
         },
         {

@@ -12,6 +12,7 @@ describe("runtime configuration", () => {
     expect(config.API_TRUSTED_PROXIES).toEqual([]);
     expect(config.PRODUCT_API_MODE).toBe("local_unauthenticated");
     expect(config.HOSTED_API_MODE).toBe("disabled");
+    expect(config.HOSTED_OIDC_REGISTRATION).toBeUndefined();
     expect(config.PRODUCT_RATE_LIMIT_PER_MINUTE).toBe(240);
     expect(config.LOCAL_MODEL_ADVISOR_MODE).toBe("disabled");
     expect(config.LOCAL_MODEL_PROPOSAL_MODE).toBe("disabled");
@@ -42,13 +43,94 @@ describe("runtime configuration", () => {
     expect(() => loadApiConfig({ HOSTED_API_MODE: "oidc" })).toThrow(/HOSTED_API_MODE/);
   });
 
-  it("rejects non-empty hosted companion configuration without disclosing it", () => {
+  it("stages one immutable complete non-secret hosted OIDC registration", () => {
+    const config = loadApiConfig({
+      HOSTED_PUBLIC_ORIGIN: "https://schedule.example.com",
+      HOSTED_OIDC_ISSUER: "https://login.example.com/tenant",
+      HOSTED_OIDC_CLIENT_ID: "schedule-browser",
+    });
+
+    expect(config.HOSTED_API_MODE).toBe("disabled");
+    expect(config.HOSTED_OIDC_REGISTRATION).toEqual({
+      publicOrigin: "https://schedule.example.com",
+      issuer: "https://login.example.com/tenant",
+      clientId: "schedule-browser",
+      redirectUri: "https://schedule.example.com/v1/auth/callback",
+    });
+    expect(Object.isFrozen(config.HOSTED_OIDC_REGISTRATION)).toBe(true);
+  });
+
+  it.each([
+    { HOSTED_PUBLIC_ORIGIN: "https://schedule.example.com" },
+    { HOSTED_OIDC_ISSUER: "https://login.example.com" },
+    { HOSTED_OIDC_CLIENT_ID: "schedule-browser" },
+    {
+      HOSTED_PUBLIC_ORIGIN: "https://schedule.example.com",
+      HOSTED_OIDC_ISSUER: "https://login.example.com",
+    },
+  ])("rejects a partial hosted OIDC registration", (environment) => {
+    expect(() => loadApiConfig(environment)).toThrow(/complete non-secret set/);
+  });
+
+  it.each([
+    "http://schedule.example.com",
+    "https://schedule.example.com/",
+    "https://schedule.example.com/path",
+    "https://schedule.example.com?query=1",
+    "https://schedule.example.com#fragment",
+    "https://user:pass@schedule.example.com",
+    "https://schedule.example.com:443",
+    "https://SCHEDULE.example.com",
+    " https://schedule.example.com",
+  ])("rejects non-canonical hosted public origin %s", (value) => {
+    expect(() =>
+      loadApiConfig({
+        HOSTED_PUBLIC_ORIGIN: value,
+        HOSTED_OIDC_ISSUER: "https://login.example.com",
+        HOSTED_OIDC_CLIENT_ID: "schedule-browser",
+      }),
+    ).toThrow(/Hosted OIDC registration is invalid/);
+  });
+
+  it.each([
+    "http://login.example.com",
+    "https://login.example.com?query=1",
+    "https://login.example.com#fragment",
+    "https://user:pass@login.example.com",
+    "https://login.example.com:443",
+    "https://LOGIN.example.com",
+    " https://login.example.com",
+  ])("rejects non-canonical hosted issuer %s", (value) => {
+    expect(() =>
+      loadApiConfig({
+        HOSTED_PUBLIC_ORIGIN: "https://schedule.example.com",
+        HOSTED_OIDC_ISSUER: value,
+        HOSTED_OIDC_CLIENT_ID: "schedule-browser",
+      }),
+    ).toThrow(/Hosted OIDC registration is invalid/);
+  });
+
+  it.each([" client", "client ", "client\ncontrol", "", "x".repeat(513)])(
+    "rejects invalid hosted client identifier %s",
+    (value) => {
+      expect(() =>
+        loadApiConfig({
+          HOSTED_PUBLIC_ORIGIN: "https://schedule.example.com",
+          HOSTED_OIDC_ISSUER: "https://login.example.com",
+          HOSTED_OIDC_CLIENT_ID: value,
+        }),
+      ).toThrow();
+    },
+  );
+
+  it("rejects hosted secrets and unknown companions without disclosing them", () => {
     const secret = "https://issuer.example/tenant?credential=private-value";
     for (const environment of [
-      { HOSTED_PUBLIC_ORIGIN: secret },
       { HOSTED_SESSION_PEPPER: secret },
       { HOSTED_OIDC_CLIENT_SECRET: " " },
       { Hosted_Oidc_Client_Secret: secret },
+      { Hosted_Public_Origin: secret },
+      { Hosted_Api_Mode: "enabled" },
     ]) {
       try {
         loadApiConfig(environment);
@@ -65,9 +147,11 @@ describe("runtime configuration", () => {
       loadApiConfig({
         HOSTED_API_MODE: "disabled",
         HOSTED_PUBLIC_ORIGIN: "",
+        HOSTED_OIDC_ISSUER: "",
+        HOSTED_OIDC_CLIENT_ID: "",
         HOSTED_SESSION_PEPPER: "",
-      }).HOSTED_API_MODE,
-    ).toBe("disabled");
+      }).HOSTED_OIDC_REGISTRATION,
+    ).toBeUndefined();
   });
 
   it("rejects attempts to expose the unauthenticated product API", () => {

@@ -14,6 +14,9 @@ const apiSchema = baseSchema.extend({
   API_TRUSTED_PROXIES: z.string().max(16_384).default(""),
   PRODUCT_API_MODE: z.enum(["disabled", "local_unauthenticated"]).optional(),
   HOSTED_API_MODE: z.literal("disabled").default("disabled"),
+  HOSTED_PUBLIC_ORIGIN: z.string().optional(),
+  HOSTED_OIDC_ISSUER: z.string().optional(),
+  HOSTED_OIDC_CLIENT_ID: z.string().optional(),
   PRODUCT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(240),
   LOCAL_MODEL_ADVISOR_MODE: z.enum(["disabled", "ollama"]).default("disabled"),
   LOCAL_MODEL_PROPOSAL_MODE: z.enum(["disabled", "ollama"]).default("disabled"),
@@ -84,11 +87,22 @@ const workerSchema = baseSchema.extend({
 
 export type ApiConfig = Omit<
   z.infer<typeof apiSchema>,
-  "PRODUCT_API_MODE" | "API_TRUSTED_PROXIES"
+  | "PRODUCT_API_MODE"
+  | "API_TRUSTED_PROXIES"
+  | "HOSTED_PUBLIC_ORIGIN"
+  | "HOSTED_OIDC_ISSUER"
+  | "HOSTED_OIDC_CLIENT_ID"
 > & {
   readonly PRODUCT_API_MODE: "disabled" | "local_unauthenticated";
   readonly API_TRUSTED_PROXIES: string[];
+  readonly HOSTED_OIDC_REGISTRATION: HostedOidcRegistration | undefined;
 };
+export type HostedOidcRegistration = Readonly<{
+  publicOrigin: string;
+  issuer: string;
+  clientId: string;
+  redirectUri: string;
+}>;
 export type WebhookMasterKey = Readonly<{
   /** Conservative, canonical key identifier; never derived from a secret. */
   id: string;
@@ -249,12 +263,92 @@ function parseLocalModelAdvisorUrl(value: string): string {
   return value;
 }
 
+const MAXIMUM_HOSTED_URL_BYTES = 2_048;
+const MAXIMUM_HOSTED_CLIENT_ID_BYTES = 512;
+const STAGED_HOSTED_VARIABLES = new Set([
+  "HOSTED_PUBLIC_ORIGIN",
+  "HOSTED_OIDC_ISSUER",
+  "HOSTED_OIDC_CLIENT_ID",
+]);
+
+function containsAsciiControl(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function parseExactHostedHttpsUrl(value: string, originOnly: boolean): string | null {
+  if (
+    Buffer.byteLength(value, "utf8") > MAXIMUM_HOSTED_URL_BYTES ||
+    containsAsciiControl(value) ||
+    /[\s\\]/u.test(value)
+  ) {
+    return null;
+  }
+  try {
+    const parsed = new URL(value);
+    const canonical = originOnly
+      ? parsed.origin === value
+      : parsed.href === value || (parsed.pathname === "/" && parsed.href === `${value}/`);
+    return parsed.protocol === "https:" &&
+      canonical &&
+      (!originOnly || parsed.pathname === "/") &&
+      parsed.username === "" &&
+      parsed.password === "" &&
+      parsed.port === "" &&
+      parsed.search === "" &&
+      parsed.hash === ""
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseHostedOidcRegistration(input: {
+  readonly HOSTED_PUBLIC_ORIGIN: string | undefined;
+  readonly HOSTED_OIDC_ISSUER: string | undefined;
+  readonly HOSTED_OIDC_CLIENT_ID: string | undefined;
+}): HostedOidcRegistration | undefined {
+  const values = [
+    input.HOSTED_PUBLIC_ORIGIN,
+    input.HOSTED_OIDC_ISSUER,
+    input.HOSTED_OIDC_CLIENT_ID,
+  ];
+  if (values.every((value) => value === undefined || value === "")) return undefined;
+  if (values.some((value) => value === undefined || value === "")) {
+    throw new Error("Hosted OIDC registration must be configured as one complete non-secret set.");
+  }
+  const publicOrigin = parseExactHostedHttpsUrl(input.HOSTED_PUBLIC_ORIGIN!, true);
+  const issuer = parseExactHostedHttpsUrl(input.HOSTED_OIDC_ISSUER!, false);
+  const clientId = input.HOSTED_OIDC_CLIENT_ID!;
+  if (
+    publicOrigin === null ||
+    issuer === null ||
+    clientId.trim() !== clientId ||
+    Buffer.byteLength(clientId, "utf8") < 1 ||
+    Buffer.byteLength(clientId, "utf8") > MAXIMUM_HOSTED_CLIENT_ID_BYTES ||
+    containsAsciiControl(clientId)
+  ) {
+    throw new Error("Hosted OIDC registration is invalid.");
+  }
+  const redirectUri = `${publicOrigin}/v1/auth/callback`;
+  if (Buffer.byteLength(redirectUri, "utf8") > MAXIMUM_HOSTED_URL_BYTES) {
+    throw new Error("Hosted OIDC registration is invalid.");
+  }
+  return Object.freeze({ publicOrigin, issuer, clientId, redirectUri });
+}
+
 export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): ApiConfig => {
   const hasPrematureHostedConfiguration = Object.entries(environment).some(([name, value]) => {
     const normalizedName = name.toUpperCase();
     return (
       normalizedName.startsWith("HOSTED_") &&
-      normalizedName !== "HOSTED_API_MODE" &&
+      (normalizedName === "HOSTED_API_MODE"
+        ? name !== "HOSTED_API_MODE"
+        : !STAGED_HOSTED_VARIABLES.has(name)) &&
       value !== undefined &&
       value.length > 0
     );
@@ -266,9 +360,16 @@ export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): Api
     );
   }
   const parsed = apiSchema.parse(environment);
+  const { HOSTED_PUBLIC_ORIGIN, HOSTED_OIDC_ISSUER, HOSTED_OIDC_CLIENT_ID, ...publicConfig } =
+    parsed;
   const config: ApiConfig = {
-    ...parsed,
+    ...publicConfig,
     API_TRUSTED_PROXIES: parseTrustedProxies(parsed.API_TRUSTED_PROXIES),
+    HOSTED_OIDC_REGISTRATION: parseHostedOidcRegistration({
+      HOSTED_PUBLIC_ORIGIN,
+      HOSTED_OIDC_ISSUER,
+      HOSTED_OIDC_CLIENT_ID,
+    }),
     LOCAL_MODEL_ADVISOR_URL: parseLocalModelAdvisorUrl(parsed.LOCAL_MODEL_ADVISOR_URL),
     PRODUCT_API_MODE:
       parsed.PRODUCT_API_MODE ??

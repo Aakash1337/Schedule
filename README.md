@@ -132,9 +132,11 @@ database readiness.
 Local unauthenticated product routes are enabled only for non-production loopback development.
 Configuration rejects attempts to enable them in production or on a non-loopback bind, and the API
 rejects non-loopback product-route `Host` headers. `HOSTED_API_MODE` defaults to and accepts only
-`disabled`; any non-empty companion `HOSTED_*` configuration is rejected so staged provider secrets
-cannot be mistaken for an enabled deployment. Health and system-information endpoints intentionally
-remain available independently of the product Host guard for local diagnostics.
+`disabled`. One complete non-secret registration triad—public origin, issuer, and client ID—may be
+validated and staged while routes remain closed; partial sets, secrets, mixed-case aliases, and
+unknown companions fail startup so staged credentials cannot be mistaken for an enabled deployment.
+Health and system-information endpoints
+intentionally remain available independently of the product Host guard for local diagnostics.
 
 The separately authenticated integration gateway is disabled by default. Provision a per-workspace
 credential and configure `INTEGRATION_API_PEPPER` before enabling `INTEGRATION_API_MODE`; see the

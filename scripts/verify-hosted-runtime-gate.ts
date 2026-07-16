@@ -116,14 +116,16 @@ async function stopServer(spawned: SpawnedServer): Promise<void> {
   );
 }
 
-async function startDisabledServer(): Promise<{
+async function startDisabledServer(overrides: NodeJS.ProcessEnv = {}): Promise<{
   readonly origin: string;
   readonly spawned: SpawnedServer;
 }> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const port = await unusedLoopbackPort();
     const origin = `http://127.0.0.1:${String(port)}`;
-    const spawned = spawnApi(cleanEnvironment({ API_PORT: String(port), LOG_LEVEL: "error" }));
+    const spawned = spawnApi(
+      cleanEnvironment({ API_PORT: String(port), LOG_LEVEL: "error", ...overrides }),
+    );
     try {
       await waitForLiveServer(origin, spawned);
       return { origin, spawned };
@@ -164,7 +166,11 @@ try {
   }
 }
 
-const { origin, spawned: disabled } = await startDisabledServer();
+const { origin, spawned: disabled } = await startDisabledServer({
+  HOSTED_PUBLIC_ORIGIN: "https://schedule.example.com",
+  HOSTED_OIDC_ISSUER: "https://login.example.com/tenant",
+  HOSTED_OIDC_CLIENT_ID: "schedule-browser",
+});
 try {
   const systemInfo = await fetch(`${origin}/v1/system/info`);
   assert.equal(systemInfo.status, 200);

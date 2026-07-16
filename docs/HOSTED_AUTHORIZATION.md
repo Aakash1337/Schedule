@@ -9,15 +9,21 @@ reachable, and the local and machine-integration trust boundaries are unchanged.
 
 ## Disabled runtime configuration gate
 
-`HOSTED_API_MODE` defaults to and accepts only `disabled`. While it is disabled, configuration
-rejects every non-empty companion `HOSTED_*` environment value before API startup without echoing a
-variable name or value that may contain credentials. Empty placeholders are inert. This flag cannot
-register the login lifecycle, workspace boundary, or work-item route; `buildApp` has no hosted
-runtime input and `/v1/system/info` always reports `hostedEndpointsEnabled: false`.
+`HOSTED_API_MODE` defaults to and accepts only `disabled`. Configuration may stage one complete
+non-secret registration made of `HOSTED_PUBLIC_ORIGIN`, `HOSTED_OIDC_ISSUER`, and
+`HOSTED_OIDC_CLIENT_ID`. The origin and issuer must be bounded exact canonical default-port HTTPS
+values, the client ID is bounded and control-free, and the callback URI is derived rather than
+configured. All three absent or empty is inert; a partial set fails startup. Secrets, mixed-case
+aliases, and every other non-empty `HOSTED_*` value are rejected without echoing a variable name or
+value that may contain credentials.
+
+The staged object is immutable configuration only. It cannot register the login lifecycle,
+workspace boundary, or work-item route; `buildApp` has no hosted runtime input and `/v1/system/info`
+always reports `hostedEndpointsEnabled: false`.
 
 This gate records an explicit production posture, not an enabling mechanism. A later provider slice
-must add its own complete proof flow, bounded secret and lifetime policy, exact HTTPS origin, and
-intentional route composition before the accepted mode can be widened.
+must add bounded secret and lifetime policy, concrete adapter construction, and intentional route
+composition before the accepted mode can be widened.
 
 ## Boundary contract
 
