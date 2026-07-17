@@ -1,4 +1,4 @@
-# Deterministic Planner v6
+# Deterministic Planner v7
 
 This document describes the first implemented planner contract. The broader product intent remains in [PRODUCT.md](./PRODUCT.md).
 
@@ -50,14 +50,17 @@ The planner is implemented as a pure domain operation in `packages/domain/src/da
 1. Canonically sort routines, opted-in work items, work-item dependency projections, activity events, the latest applicable routine-feedback event per routine, and bounded explicit routine selection preference events.
 2. Apply routine exclusions for temporary feedback, lifecycle, dates, weekdays, context, cadence maximum, spacing, consecutive-day prohibition, and minimum duration fit. Apply work-item exclusions when its planning duration is absent, its status is not `backlog`, `planned`, or `in_progress`, any direct prerequisite status is not `done`, or its full duration cannot fit a window. A due date never bypasses these exclusions.
 3. Score eligible routines with integer components for priority, cadence deficit, minimum urgency, neglect, preferred weekday, energy/context fit, preference, recent frequency, consecutive-day repetition, skip fatigue, and explicit selection preference. The selection preference uses the latest eight directional events after the latest reset inside the inclusive prior 90 local days, at 100 points per event and clamped to `[-400, 400]`. Score eligible one-time work from explicit priority plus deadline pressure. The default 14-day horizon gives future work a linearly increasing increment as its local due date approaches, gives work due today the `workItemDeadlineDueToday` increment, and gives overdue work a capped increment. A due date outside the horizon adds an explicit zero-pressure explanation. One-time work has no cadence, activity-history, or routine-preference score.
-4. Convert the scores to integer selection weights with a nonzero exploration floor.
+4. Convert the scores to integer selection weights with a nonzero ordinary exploration floor. For a
+   routine at or beyond its cadence target, apply one integer division by the versioned repetition
+   decay base for each completion at or beyond the target, stopping at a smaller nonzero post-target
+   floor. Work-item weights are unchanged.
 5. Generate deterministic weighted permutations using the versioned Mulberry32 implementation.
 6. Fit each permutation into the available windows without exceeding maximum minutes or task count. Splittable routines may use a shorter session, but never less than their configured minimum; work items use their full planning duration.
 7. Rank candidate combinations using task scores, time fit, task-count fit, category diversity, and minimum-bound shortfall penalties.
 8. Select from the strongest candidate combinations using the same seeded generator.
 9. Return the selected items, score components, explanations, exclusions, warnings, full canonical input snapshot, and replay metadata.
 
-The default search is bounded at 128 eligible candidates and 32 randomized iterations. Applying the candidate limit emits a warning rather than silently presenting the result as exhaustive.
+The default search is bounded at 128 eligible candidates and 32 randomized iterations. Applying the candidate limit emits a warning rather than silently presenting the result as exhaustive. The default post-target rule divides a routine's seeded selection weight by 10 at each repetition step and never below 1; these parameters are configuration-snapshotted rather than learned from outcomes.
 Custom deadline configuration must use a non-negative safe-integer horizon, and its horizon multiplied by the future-per-day weight cannot exceed the planner's 1,000,000-point component bound. This keeps every derived deadline score finite and safely comparable.
 
 ## Client-derived calendar availability
@@ -81,7 +84,7 @@ remain independent reservations rather than planner candidates or automatic plac
 
 ## Determinism contract
 
-For the same canonical input snapshot, request revision, seed, algorithm version, configuration version, and PRNG version, the planner returns the same item selection and explanations regardless of input array order. Planner algorithm v6 owns the canonical dependency and routine-selection-preference projections and their snapshot and hash semantics. Preference events are tenant/date filtered, ordered by routine then ingestion sequence and ID, reset-trimmed, and bounded before snapshotting. Expired, future, and reset-discarded preference history is hash-neutral. The `default-weights-v4` configuration owns the resulting visible score component.
+For the same canonical input snapshot, request revision, seed, algorithm version, configuration version, and PRNG version, the planner returns the same item selection and explanations regardless of input array order. Planner algorithm v7 owns the canonical dependency and routine-selection-preference projections plus bounded post-target repetition decay and their snapshot and hash semantics. Preference events are tenant/date filtered, ordered by routine then ingestion sequence and ID, reset-trimmed, and bounded before snapshotting. Expired, future, and reset-discarded preference history is hash-neutral. The `default-weights-v5` configuration owns the resulting visible score component, decay base, and nonzero post-target floor.
 
 The generated plan ID and generation timestamp are supplied by the caller when strict byte-for-byte replay is required. The persisted input hash intentionally changes when any input fact changes, even if the final selected items remain the same.
 
@@ -378,7 +381,8 @@ pnpm verify:planner-db
 - Authentication, authorization, and public network exposure
 - Exact start-time placement within a selected window
 - Alternative-plan branching and multi-step undo workflows
-- Learned cadence, preference, energy, and adaptive-selection adjustments
+- Learned cadence, preference, energy, and outcome-tuned selection adjustments beyond the fixed
+  repetition rule
 - Automatic Plan Fit application, upward target expansion, user-editable Plan Fit policy, and
   outcome-driven learning
 - Automatic duration-insight application and historical insight comparison

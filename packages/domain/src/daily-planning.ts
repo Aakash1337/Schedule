@@ -40,8 +40,8 @@ import {
   type PlanningWorkItemDependency,
 } from "./work-item-dependency.js";
 
-export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v6";
-export const PLANNER_CONFIG_VERSION = "default-weights-v4";
+export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v7";
+export const PLANNER_CONFIG_VERSION = "default-weights-v5";
 export const PLANNER_PRNG_VERSION = "mulberry32-v1";
 const MAXIMUM_PLANNER_SCORE_COMPONENT = 1_000_000;
 
@@ -126,6 +126,8 @@ export interface PlannerConfig {
   readonly workItemDeadlineHorizonDays: number;
   readonly selectionWeightFloor: number;
   readonly selectionWeightOffset: number;
+  readonly postTargetRepetitionDecayBase: number;
+  readonly postTargetSelectionWeightFloor: number;
   readonly score: PlannerScoreWeights;
 }
 
@@ -138,6 +140,8 @@ export const DEFAULT_PLANNER_CONFIG: PlannerConfig = {
   workItemDeadlineHorizonDays: 14,
   selectionWeightFloor: 100,
   selectionWeightOffset: 250,
+  postTargetRepetitionDecayBase: 10,
+  postTargetSelectionWeightFloor: 1,
   score: {
     priority: { low: 1_000, medium: 2_000, high: 3_500, critical: 5_000 },
     cadenceDeficit: 1_200,
@@ -197,6 +201,7 @@ export interface RoutineEvaluation {
   readonly exclusionCodes: readonly EligibilityCode[];
   readonly periodCompletions: number;
   readonly targetReached: boolean;
+  readonly postTargetRepetitionSteps: number;
   readonly lastCompletedOn: LocalDate | null;
   readonly minimumScheduledMinutes: number;
   readonly desiredScheduledMinutes: number;
@@ -629,6 +634,10 @@ export function evaluateRoutineForPlan(
     null,
   );
   const targetReached = periodCompletions >= routine.cadence.targetCompletions;
+  const postTargetRepetitionSteps = Math.max(
+    0,
+    periodCompletions - routine.cadence.targetCompletions + 1,
+  );
   const minimumScheduledMinutes =
     (routine.duration.splittable
       ? (routine.duration.minimumSessionMinutes ?? routine.duration.minimumMinutes)
@@ -776,8 +785,11 @@ export function evaluateRoutineForPlan(
     );
   }
   if (scoreComponents.preferredWeekday > 0) reasons.push("Today is a preferred weekday.");
-  if (targetReached)
-    reasons.push("The cadence target is already satisfied, so its weight is reduced.");
+  if (targetReached) {
+    reasons.push(
+      `The cadence target is satisfied; ${postTargetRepetitionSteps} repetition decay step(s) divide its seeded selection weight by ${config.postTargetRepetitionDecayBase} each, with a floor of ${config.postTargetSelectionWeightFloor}.`,
+    );
+  }
   if (minimumDeficit > 0)
     reasons.push(`The cadence minimum still needs ${minimumDeficit} completion(s).`);
   if (activeFeedback?.kind === "not_today") {
@@ -797,6 +809,7 @@ export function evaluateRoutineForPlan(
     exclusionCodes: [...new Set(exclusions)],
     periodCompletions,
     targetReached,
+    postTargetRepetitionSteps,
     lastCompletedOn,
     minimumScheduledMinutes,
     desiredScheduledMinutes,
@@ -973,6 +986,23 @@ function weightedOrder(candidates: readonly Candidate[], random: Mulberry32): Ca
     if (chosen !== undefined) result.push(chosen);
   }
   return result;
+}
+
+function applyPostTargetRepetitionDecay(
+  baseWeight: number,
+  steps: number,
+  config: PlannerConfig,
+): number {
+  let weight = baseWeight;
+  let remainingSteps = steps;
+  while (remainingSteps > 0 && weight > config.postTargetSelectionWeightFloor) {
+    weight = Math.max(
+      config.postTargetSelectionWeightFloor,
+      Math.floor(weight / config.postTargetRepetitionDecayBase),
+    );
+    remainingSteps -= 1;
+  }
+  return weight;
 }
 
 function placeCandidate(
@@ -1344,6 +1374,21 @@ function planDailyAlternatives(
     "Planner selection-weight offset must be a non-negative whole number.",
     0,
   );
+  invariant(
+    Number.isSafeInteger(config.postTargetRepetitionDecayBase) &&
+      config.postTargetRepetitionDecayBase >= 2 &&
+      config.postTargetRepetitionDecayBase <= 1_000_000,
+    "planning.post_target_decay_base_invalid",
+    "Post-target repetition decay base must be a safe whole number from 2 through 1,000,000.",
+  );
+  invariant(
+    Number.isSafeInteger(config.postTargetSelectionWeightFloor) &&
+      config.postTargetSelectionWeightFloor >= 1 &&
+      config.postTargetSelectionWeightFloor <= config.selectionWeightFloor &&
+      config.postTargetSelectionWeightFloor <= 1_000_000,
+    "planning.post_target_selection_floor_invalid",
+    "Post-target selection-weight floor must be a positive safe whole number no greater than the ordinary selection floor or 1,000,000.",
+  );
   const scoreValues = [
     ...Object.values(config.score.priority),
     ...Object.entries(config.score)
@@ -1508,19 +1553,26 @@ function planDailyAlternatives(
   if (eligible.length === 0) warnings.push("no_eligible_routines");
 
   const minimumScore = Math.min(0, ...eligible.map(({ evaluation }) => evaluation.score));
-  const candidates: Candidate[] = eligible.map(({ routine, workItem, source, evaluation }) => ({
-    routine,
-    workItem,
-    source,
-    evaluation,
-    selectionWeight: Math.min(
+  const candidates: Candidate[] = eligible.map(({ routine, workItem, source, evaluation }) => {
+    const baseWeight = Math.min(
       1_000_000,
       Math.max(
         config.selectionWeightFloor,
         evaluation.score - minimumScore + config.selectionWeightOffset,
       ),
-    ),
-  }));
+    );
+    return {
+      routine,
+      workItem,
+      source,
+      evaluation,
+      selectionWeight: applyPostTargetRepetitionDecay(
+        baseWeight,
+        "postTargetRepetitionSteps" in evaluation ? evaluation.postTargetRepetitionSteps : 0,
+        config,
+      ),
+    };
+  });
   const random = new Mulberry32(
     `${config.algorithmVersion}|${config.configVersion}|${input.request.seed}|${input.request.requestRevision}`,
   );

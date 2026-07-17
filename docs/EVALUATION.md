@@ -64,7 +64,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 129 test files and 2,196 runtime test cases. Three
+The package and script runners currently execute 129 test files and 2,203 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -77,7 +77,7 @@ an independent product feature.
 | Critical implemented features with CI-registered integration or drills |      41 / 41 |
 | Partial features with an explicit limitation                           |        4 / 4 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          339 |
+| CI-registered evidence items                                           |          341 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -88,9 +88,9 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     60.01% |   71.64% |    67.98% | 60.51% |
+| Whole repository, measured |     60.03% |   71.67% |    67.99% | 60.53% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |     94.97% |    91.6% |    93.47% | 95.98% |
+| Domain, measured           |        95% |   91.67% |    93.49% | 96.01% |
 | Domain, required           |        91% |      82% |       92% |    93% |
 | Application, measured      |     89.96% |    83.9% |    98.51% | 90.87% |
 | Application, required      |        83% |      76% |       98% |    83% |
@@ -101,8 +101,8 @@ quality levels.
 | Web, measured              |     86.03% |   79.27% |    84.23% | 86.88% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 12,780 of 21,293 statements, 9,484 of 13,237 branches,
-2,744 of 4,036 functions, and 12,063 of 19,934 lines.
+The whole-repository totals are 12,790 of 21,303 statements, 9,495 of 13,248 branches,
+2,745 of 4,037 functions, and 12,074 of 19,945 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -135,10 +135,10 @@ exist.
 
 The deadline feature has independent domain, application, database, API, web, and executable
 PostgreSQL evidence. Domain tests require nullable real Gregorian local dates, normal version
-semantics for preserving and clearing a date, deterministic v5 deadline pressure for future, today,
+semantics for preserving and clearing a date, deterministic versioned deadline pressure for future, today,
 overdue, capped-overdue, and outside-horizon work, and continued exclusion of non-plannable work.
 The configured 14-day horizon and all deadline weights are validated before planning. The test also
-proves that reversed candidate order produces the same v5 snapshot hash and selected items.
+proves that reversed candidate order produces the same snapshot hash and selected items.
 
 Application and repository tests cover create, update, explicit clear, database row mapping, and
 the nullable `due_on` column. Product API tests round-trip a leap-day date through create, get, list,
@@ -161,7 +161,7 @@ interface behavior. Domain tests cover tenant-scoped edge construction, self-ref
 validation, mixed-case equality for persisted PostgreSQL UUIDs without folding arbitrary domain IDs,
 done-only satisfaction across every direct prerequisite, canonical ordering and snapshot hashing,
 prerequisite projections outside the candidate list, malformed and duplicate input, and dependency-
-aware replanning with explicit nonterminal anchors. Planner v6 reports
+aware replanning with explicit nonterminal anchors. Planner v7 reports
 `work_item_dependency_unsatisfied` without changing work-item status or deadline scoring.
 
 Application tests cover graph-lock call ordering, same-tenant endpoint validation, exact duplicate-add
@@ -205,7 +205,7 @@ Temporary routine feedback has independent oracles for policy, planning, persist
 interface behavior. Domain tests cover inclusive day and routine-defined week boundaries, tenant and
 future-event filtering, deterministic latest-event resolution, reset and expiry, and immutable
 recording-time input. Planner tests require **Not today** and **Not this week** to be hard routine
-exclusions without changing score or cadence evidence, include the canonical latest event in the v5
+exclusions without changing score or cadence evidence, include the canonical latest event in the versioned
 input snapshot and hash, and preserve that input through residual replanning.
 
 Application tests require an unlocked, pending routine source, prove immediate server-allocated
