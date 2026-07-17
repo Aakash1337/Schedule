@@ -268,30 +268,24 @@ hermes plugins enable hermes-schedule
 hermes plugins list --enabled
 ```
 
-Then run the repository's native registration verifier with Hermes's Python. It performs fresh
+Then run the installed native registration verifier with Hermes's Python. It performs fresh
 plugin discovery and checks the exact six tools, their `schedule` toolset, and the observer-only
 turn hook. The verifier itself does not invoke a tool, call Schedule, query a model, or send a
 message. Native discovery does import and initialize every enabled plugin under Hermes's normal
 trusted-plugin model, so run it only against an installation whose enabled plugins you trust:
 
 ```powershell
-$HermesHome = if ($env:HERMES_HOME) {
-  $env:HERMES_HOME
-} elseif ($env:LOCALAPPDATA) {
-  Join-Path $env:LOCALAPPDATA "hermes"
-} else {
-  Join-Path $HOME "AppData\Local\hermes"
-}
+$HermesHome = python .\integrations\hermes-schedule\install.py home
 & "$HermesHome\hermes-agent\venv\Scripts\python.exe" `
-  .\integrations\hermes-schedule\verify_native.py
+  "$HermesHome\plugins\hermes-schedule\verify_native.py"
 ```
 
 On POSIX, use the matching virtual-environment path:
 
 ```bash
-HermesHome="${HERMES_HOME:-$HOME/.hermes}"
+HermesHome="$(python3 ./integrations/hermes-schedule/install.py home)"
 "$HermesHome/hermes-agent/venv/bin/python" \
-  ./integrations/hermes-schedule/verify_native.py
+  "$HermesHome/plugins/hermes-schedule/verify_native.py"
 ```
 
 The verifier's success line is `plugin=enabled tools=6 toolset=schedule hook=pre_llm_call`; Hermes or

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import importlib
+import io
 import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from support import PACKAGE_NAME, PLUGIN_ROOT
@@ -17,6 +19,24 @@ installer = importlib.import_module(f"{PACKAGE_NAME}.install")
 
 
 class HermesInstallTests(unittest.TestCase):
+    def test_home_action_uses_the_trimmed_expanded_override(self) -> None:
+        configured = "  ~/.schedule-hermes-test  "
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": configured}),
+            redirect_stdout(output := io.StringIO()),
+        ):
+            self.assertEqual(installer.main(["home"]), 0)
+        self.assertEqual(output.getvalue().strip(), str(Path(configured.strip()).expanduser()))
+
+    def test_install_does_not_claim_to_change_enablement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with redirect_stdout(output := io.StringIO()):
+                self.assertEqual(
+                    installer.main(["install", "--hermes-home", temporary]),
+                    0,
+                )
+        self.assertIn("enablement is unchanged", output.getvalue())
+
     def test_uses_the_native_windows_home_when_no_override_is_set(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             with (
