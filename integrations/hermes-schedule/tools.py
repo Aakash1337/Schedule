@@ -58,6 +58,10 @@ def handle_schedule_list_work_items(args: dict[str, Any], **kwargs: Any) -> str:
     return _handled(lambda: _list_work_items(args, kwargs))
 
 
+def handle_schedule_list_one_off_reminders(args: dict[str, Any], **kwargs: Any) -> str:
+    return _handled(lambda: _list_one_off_reminders(args, kwargs))
+
+
 def handle_schedule_prepare_change(args: dict[str, Any], **kwargs: Any) -> str:
     return _handled(lambda: _prepare_change(args, kwargs))
 
@@ -87,6 +91,17 @@ def _list_work_items(args: Mapping[str, Any], kwargs: Mapping[str, Any]) -> dict
             limit=args.get("limit", 100),
             offset=args.get("offset", 0),
         ),
+    }
+
+
+def _list_one_off_reminders(
+    args: Mapping[str, Any], kwargs: Mapping[str, Any]
+) -> dict[str, Any]:
+    _require_exact_args(args, {"from", "to"})
+    _session_id(kwargs)
+    return {
+        "ok": True,
+        "data": _get_client().list_one_off_reminders(args["from"], args["to"]),
     }
 
 

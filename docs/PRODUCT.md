@@ -1,7 +1,7 @@
 # Adaptive Scheduling System — Product Specification
 
 Status: Working product definition
-Last updated: 2026-07-15
+Last updated: 2026-07-16
 
 Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement and alternative-selection revisions, deterministic read-only comparison of up to three distinct alternatives, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items with direct prerequisites and arbitrary-depth subtasks, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v6 selects both reusable routines and explicitly opted-in one-time leaf work items, applies temporary routine feedback and explicit bounded routine selection preferences, and hard-excludes parent containers and work with unmet prerequisites from new selection and unlocked regeneration retention. A locked nonterminal item remains anchored under the existing user-authority rules. The planner also adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent routine-duration insight with explicit approval, evidence-backed Daily Plan Fit guidance with explicit use receipts and read-only outcome history, and reversible user-authored routine ranking preferences; none applies automatically, and the descriptive history does not enter planner scoring. Broader inferred preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. The Work interface may separately prepare one expiring, editable backlog-title proposal from free-form text; no work exists until explicit, audited, exactly-once confirmation. A provider-neutral authenticated gateway provides Today reads, credential-scoped work-item discovery including hierarchy, reviewed create/reparent/detach mutations, and least-privilege reminder delivery claims/receipts for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. A deterministic reminder-policy core stores versioned profiles and rules, explicit one-offs, concurrency-safe immutable intents, an opt-in local periodic materializer, and a provider-neutral fenced delivery lifecycle without performing provider transport. See [API.md](./API.md), [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md), [REMINDERS.md](./REMINDERS.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language routine creation, model-driven task breakdown, multi-command capture, automatic advisor application or calibration, hosted model providers, generalized undo, recurrence authoring, phone delivery, a Hermes/WhatsApp transport, and public hosting remain deferred.
 
@@ -10,10 +10,11 @@ intents; and presents separate planned and product-safe execution histories. An 
 enable background intent materialization. Neither path implies that an external provider sent a
 message.
 
-Separately, an opt-in local Hermes plugin calls the authenticated read/write gateway, binds a later
-confirmation turn to the same sender/session/platform identity, and includes a deterministic stdout
-Today helper. It does not make the provider-neutral delivery runtime or live WhatsApp delivery
-complete. See [HERMES.md](./HERMES.md).
+Separately, an opt-in local Hermes plugin calls the authenticated read/write gateway, discovers
+bounded one-off reminder ranges, and supports explicitly confirmed creation, rescheduling, and
+cancellation bound to the same sender/session/platform identity. It also includes a deterministic
+stdout Today helper. It does not make the provider-neutral delivery runtime or live WhatsApp
+delivery complete. See [HERMES.md](./HERMES.md).
 
 ## 1. Product summary
 
@@ -695,11 +696,11 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   single-flight polling with loopback health and graceful shutdown, while concrete provider
   transport/reconciliation, external bootstrap/control wiring, and human/account binding remain
   follow-on work
-- Implemented local adapter: disabled-by-default Hermes tools for authenticated Today/work-item
-  reads and sender/session/platform-bound confirmed mutations, including strict one-off reminder
-  creation, plus a deterministic stdout reminder
-  helper and a checked runtime-only installer; it is separate from the delivery-claim runtime, and
-  live WhatsApp still requires the operator's `WHATSAPP_HOME_CHANNEL` and self-chat smoke
+- Implemented local adapter: disabled-by-default Hermes tools for authenticated Today, work-item, and
+  bounded one-off reminder reads plus sender/session/platform-bound confirmed reminder creation,
+  rescheduling, and cancellation; a deterministic stdout Today helper and checked runtime-only
+  installer remain separate from the delivery-claim runtime, and live WhatsApp still requires the
+  operator's `WHATSAPP_HOME_CHANNEL` and self-chat smoke
 - Implemented narrow hosted runtime: complete `HOSTED_API_MODE=oidc` configuration activates exact
   issuer/subject provisioning, digest-only revocable browser sessions, first-login default-workspace
   membership, login/session/logout, and one transaction-authorized work-item create route. Disabled

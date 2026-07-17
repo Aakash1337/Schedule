@@ -3,12 +3,14 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  createOneOffReminder,
   createNotificationProfile,
   createScheduleBlock,
   createWorkItem,
   createWorkspace,
   dailyPlanId,
   localDate,
+  oneOffReminderId,
   planItemId,
   recordActivityEvent,
   scheduleBlockId,
@@ -25,6 +27,7 @@ import {
   ConfirmIntegrationCommand,
   GetIntegrationToday,
   ListIntegrationCredentials,
+  ListIntegrationOneOffReminders,
   ListIntegrationWorkItems,
   PrepareIntegrationCommand,
   ProvisionIntegrationCredential,
@@ -107,6 +110,12 @@ function createHarness() {
     priority: string | undefined;
     limit: number;
     offset: number;
+  }[] = [];
+  const oneOffReminderListCalls: {
+    workspaceId: string;
+    fromInclusive: Date;
+    throughExclusive: Date;
+    limit: number;
   }[] = [];
   const verifyCalls: { secret: string; secretHash: string }[] = [];
   const currentPlan: DailyPlan = {
@@ -357,6 +366,45 @@ function createHarness() {
       insertOneOffReminder: async (reminder) => {
         oneOffReminders.push(reminder);
       },
+      findOneOffReminder: async (workspaceIdValue, id) =>
+        oneOffReminders.find(
+          (reminder) => reminder.workspaceId === workspaceIdValue && reminder.id === id,
+        ) ?? null,
+      listOneOffReminders: async (workspaceIdValue, fromInclusive, throughExclusive, limit) => {
+        oneOffReminderListCalls.push({
+          workspaceId: workspaceIdValue,
+          fromInclusive,
+          throughExclusive,
+          limit,
+        });
+        return oneOffReminders
+          .filter(
+            (reminder) =>
+              reminder.workspaceId === workspaceIdValue &&
+              reminder.scheduledFor >= fromInclusive &&
+              reminder.scheduledFor < throughExclusive,
+          )
+          .sort(
+            (left, right) =>
+              left.scheduledFor.getTime() - right.scheduledFor.getTime() ||
+              left.id.localeCompare(right.id),
+          )
+          .slice(0, limit);
+      },
+      saveOneOffReminder: async (reminder, expectedVersion) => {
+        const index = oneOffReminders.findIndex(
+          (candidate) =>
+            candidate.workspaceId === reminder.workspaceId &&
+            candidate.id === reminder.id &&
+            candidate.version === expectedVersion,
+        );
+        if (index < 0) throw new Error("one-off reminder version conflict");
+        oneOffReminders[index] = reminder;
+      },
+      deleteIntentsForOneOff: async (_workspaceId, id) => {
+        invalidatedTargets.push(`one_off_reminder:${id}:all`);
+        return 1;
+      },
       deleteIntentsForTarget: async (_workspaceId, targetType, targetId, kind) => {
         invalidatedTargets.push(`${targetType}:${targetId}:${kind ?? "all"}`);
         return 1;
@@ -437,6 +485,7 @@ function createHarness() {
       return hierarchyLocks;
     },
     workItemListCalls,
+    oneOffReminderListCalls,
     getUnitOfWorkRuns() {
       return unitOfWorkRuns;
     },
@@ -458,6 +507,7 @@ function createHarness() {
       authenticate: new AuthenticateIntegrationCredential(unitOfWork, clock, secretVerifier),
       getToday: new GetIntegrationToday(unitOfWork, clock),
       listWorkItems: new ListIntegrationWorkItems(unitOfWork, clock),
+      listOneOffReminders: new ListIntegrationOneOffReminders(unitOfWork, clock),
       prepare: new PrepareIntegrationCommand(unitOfWork, clock),
       confirm: new ConfirmIntegrationCommand(unitOfWork, clock),
       provision: new ProvisionIntegrationCredential(unitOfWork, clock),
@@ -748,6 +798,116 @@ describe("integration work-item reads", () => {
   });
 });
 
+describe("integration one-off reminder reads", () => {
+  it("returns one bounded credential-scoped range with current IDs and versions", async () => {
+    const test = createHarness();
+    const first = createOneOffReminder({
+      id: oneOffReminderId("70000000-0000-4000-8000-000000000001"),
+      workspaceId: WORKSPACE_ID,
+      title: "Call the clinic",
+      scheduledFor: new Date("2026-07-14T09:00:00.000Z"),
+      now: BASE_NOW,
+    });
+    const second = {
+      ...createOneOffReminder({
+        id: oneOffReminderId("70000000-0000-4000-8000-000000000002"),
+        workspaceId: WORKSPACE_ID,
+        title: "Old reminder",
+        scheduledFor: new Date("2026-07-14T10:00:00.000Z"),
+        now: BASE_NOW,
+      }),
+      cancelledAt: new Date("2026-07-13T13:00:00.000Z"),
+      version: 2,
+      updatedAt: new Date("2026-07-13T13:00:00.000Z"),
+    };
+    test.oneOffReminders.push(
+      second,
+      first,
+      createOneOffReminder({
+        id: oneOffReminderId("70000000-0000-4000-8000-000000000003"),
+        workspaceId: OTHER_WORKSPACE_ID,
+        title: "Foreign",
+        scheduledFor: new Date("2026-07-14T09:30:00.000Z"),
+        now: BASE_NOW,
+      }),
+    );
+
+    const result = await test.services.listOneOffReminders.execute({
+      principal: { ...test.principal, workspaceId: OTHER_WORKSPACE_ID, scopes: [] },
+      fromInclusive: "2026-07-14T00:00:00.000Z",
+      throughExclusive: "2026-07-15T00:00:00.000Z",
+    });
+
+    expect(result.items).toEqual([
+      {
+        id: first.id,
+        workspaceId: WORKSPACE_ID,
+        title: "Call the clinic",
+        scheduledFor: "2026-07-14T09:00:00.000Z",
+        cancelledAt: null,
+        version: 1,
+        createdAt: BASE_NOW.toISOString(),
+        updatedAt: BASE_NOW.toISOString(),
+      },
+      {
+        id: second.id,
+        workspaceId: WORKSPACE_ID,
+        title: "Old reminder",
+        scheduledFor: "2026-07-14T10:00:00.000Z",
+        cancelledAt: "2026-07-13T13:00:00.000Z",
+        version: 2,
+        createdAt: BASE_NOW.toISOString(),
+        updatedAt: "2026-07-13T13:00:00.000Z",
+      },
+    ]);
+    expect(test.oneOffReminderListCalls).toEqual([
+      {
+        workspaceId: WORKSPACE_ID,
+        fromInclusive: new Date("2026-07-14T00:00:00.000Z"),
+        throughExclusive: new Date("2026-07-15T00:00:00.000Z"),
+        limit: 101,
+      },
+    ]);
+    expect(test.audits).toHaveLength(0);
+
+    for (const [fromInclusive, throughExclusive] of [
+      ["not-an-instant", "2026-07-15T00:00:00.000Z"],
+      ["2026-07-15T00:00:00.000Z", "2026-07-14T00:00:00.000Z"],
+      ["2026-07-14T00:00:00.000Z", "2026-08-15T00:00:00.000Z"],
+    ]) {
+      const invalid = createHarness();
+      expect(() =>
+        invalid.services.listOneOffReminders.execute({
+          principal: invalid.principal,
+          fromInclusive,
+          throughExclusive,
+        }),
+      ).toThrow(expect.objectContaining({ code: "integration.one_off_reminder_range_invalid" }));
+      expect(invalid.oneOffReminderListCalls).toHaveLength(0);
+    }
+
+    const crowded = createHarness();
+    crowded.oneOffReminders.push(
+      ...Array.from({ length: 101 }, (_, index) =>
+        createOneOffReminder({
+          id: oneOffReminderId(`70000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`),
+          workspaceId: WORKSPACE_ID,
+          title: `Reminder ${index + 1}`,
+          scheduledFor: new Date("2026-07-14T09:00:00.000Z"),
+          now: BASE_NOW,
+        }),
+      ),
+    );
+    await expect(
+      crowded.services.listOneOffReminders.execute({
+        principal: crowded.principal,
+        fromInclusive: "2026-07-14T00:00:00.000Z",
+        throughExclusive: "2026-07-15T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "integration.one_off_reminder_result_limit" });
+  });
+});
+
 describe("integration Today and preparation", () => {
   it("returns the public Today projection without planner snapshots or history", async () => {
     const test = createHarness();
@@ -848,6 +1008,25 @@ describe("integration Today and preparation", () => {
         },
         summary:
           "Update schedule block 60000000-0000-4000-8000-000000000001: title: clear it; remove linked work item; set start to 2026-07-13T16:00:00.000Z; set time zone to America/La_Paz.",
+      },
+      {
+        command: {
+          type: "one_off_reminder.update",
+          oneOffReminderId: "70000000-0000-4000-8000-000000000001",
+          expectedVersion: 1,
+          title: "Call the new clinic",
+          scheduledFor: "2026-07-14T15:00:00.000Z",
+        },
+        summary:
+          "Update one-off reminder 70000000-0000-4000-8000-000000000001: set title to “Call the new clinic”; set scheduled time to 2026-07-14T15:00:00.000Z.",
+      },
+      {
+        command: {
+          type: "one_off_reminder.cancel",
+          oneOffReminderId: "70000000-0000-4000-8000-000000000001",
+          expectedVersion: 2,
+        },
+        summary: "Cancel one-off reminder 70000000-0000-4000-8000-000000000001.",
       },
       {
         command: {
@@ -955,6 +1134,44 @@ describe("integration Today and preparation", () => {
         workspaceId: WORKSPACE_ID,
       },
       {
+        type: "one_off_reminder.update",
+        oneOffReminderId: "70000000-0000-4000-8000-000000000001",
+        expectedVersion: 1,
+      },
+      {
+        type: "one_off_reminder.update",
+        oneOffReminderId: "70000000-0000-4000-8000-000000000001",
+        expectedVersion: 1,
+        title: " Reminder ",
+      },
+      {
+        type: "one_off_reminder.update",
+        oneOffReminderId: "70000000-0000-4000-8000-000000000001",
+        expectedVersion: 1,
+        scheduledFor: "2026-02-30T13:00:00.000Z",
+      },
+      {
+        type: "one_off_reminder.cancel",
+        oneOffReminderId: "not-a-uuid",
+        expectedVersion: 1,
+      },
+      {
+        type: "one_off_reminder.cancel",
+        oneOffReminderId: "70000000-0000-4000-8000-AAAAAAAAAAAA",
+        expectedVersion: 1,
+      },
+      {
+        type: "one_off_reminder.cancel",
+        oneOffReminderId: "70000000-0000-4000-8000-000000000001",
+        expectedVersion: 0,
+      },
+      {
+        type: "one_off_reminder.cancel",
+        oneOffReminderId: "70000000-0000-4000-8000-000000000001",
+        expectedVersion: 1,
+        reason: "unsupported",
+      },
+      {
         type: "work_item.update",
         workItemId: SOURCE_WORK_ITEM_ID,
         expectedVersion: 1,
@@ -1013,7 +1230,7 @@ describe("integration Today and preparation", () => {
       ).toThrow(
         expect.objectContaining({
           code: expect.stringMatching(
-            /^integration\.(?:command_invalid|parent_work_item_id_invalid)$/,
+            /^integration\.(?:command_invalid|parent_work_item_id_invalid|one_off_reminder_id_invalid)$/,
           ),
         }),
       );
@@ -1137,6 +1354,155 @@ describe("integration confirmation execution", () => {
     expect(test.requests).toHaveLength(0);
     expect(test.confirmations[0]?.consumedAt).toBeNull();
     expect(test.audits.map((event) => event.action)).toEqual(["integration.command_prepared"]);
+  });
+
+  it("updates, cancels, and exactly replays one discovered reminder", async () => {
+    const test = createHarness();
+    const reminder = createOneOffReminder({
+      id: oneOffReminderId("70000000-0000-4000-8000-000000000001"),
+      workspaceId: WORKSPACE_ID,
+      title: "Call the clinic",
+      scheduledFor: new Date("2026-07-14T13:30:00.000Z"),
+      now: new Date("2026-07-13T11:00:00.000Z"),
+    });
+    test.oneOffReminders.push(reminder);
+
+    const update = await test.services.prepare.execute({
+      principal: test.principal,
+      requestId: "reminder-update",
+      command: {
+        type: "one_off_reminder.update",
+        oneOffReminderId: reminder.id,
+        expectedVersion: 1,
+        title: "Call the new clinic",
+        scheduledFor: "2026-07-14T15:00:00.000Z",
+      },
+    });
+    expect(test.oneOffReminders[0]).toEqual(reminder);
+    expect(test.invalidatedTargets).toHaveLength(0);
+
+    const updated = await test.services.confirm.execute({
+      principal: test.principal,
+      confirmationId: update.confirmationId,
+      idempotencyKey: "reminder-update-confirm",
+    });
+    const updateReplay = await test.services.confirm.execute({
+      principal: test.principal,
+      confirmationId: update.confirmationId,
+      idempotencyKey: "reminder-update-confirm",
+    });
+    expect(updateReplay).toEqual(updated);
+    expect(updated).toMatchObject({
+      receiptVersion: 2,
+      operation: "one_off_reminder.update",
+      outcome: {
+        type: "one_off_reminder.updated",
+        oneOffReminder: {
+          id: reminder.id,
+          title: "Call the new clinic",
+          scheduledFor: "2026-07-14T15:00:00.000Z",
+          cancelledAt: null,
+          version: 2,
+        },
+      },
+    });
+    expect(test.invalidatedTargets).toEqual([`one_off_reminder:${reminder.id}:all`]);
+
+    const staleCancel = await test.services.prepare.execute({
+      principal: test.principal,
+      requestId: "reminder-cancel-stale",
+      command: {
+        type: "one_off_reminder.cancel",
+        oneOffReminderId: reminder.id,
+        expectedVersion: 1,
+      },
+    });
+    await expect(
+      test.services.confirm.execute({
+        principal: test.principal,
+        confirmationId: staleCancel.confirmationId,
+        idempotencyKey: "reminder-cancel-stale-confirm",
+      }),
+    ).rejects.toMatchObject({ code: "one_off_reminder.version_conflict" });
+    expect(
+      test.confirmations.find((item) => item.id === staleCancel.confirmationId)?.consumedAt,
+    ).toBeNull();
+    expect(test.requests).toHaveLength(1);
+
+    test.setNow("2026-07-13T12:05:00.000Z");
+    const cancel = await test.services.prepare.execute({
+      principal: test.principal,
+      requestId: "reminder-cancel",
+      command: {
+        type: "one_off_reminder.cancel",
+        oneOffReminderId: reminder.id,
+        expectedVersion: 2,
+      },
+    });
+    expect(test.oneOffReminders[0]?.cancelledAt).toBeNull();
+
+    const cancelled = await test.services.confirm.execute({
+      principal: test.principal,
+      confirmationId: cancel.confirmationId,
+      idempotencyKey: "reminder-cancel-confirm",
+    });
+    const cancelReplay = await test.services.confirm.execute({
+      principal: test.principal,
+      confirmationId: cancel.confirmationId,
+      idempotencyKey: "reminder-cancel-confirm",
+    });
+    expect(cancelReplay).toEqual(cancelled);
+    expect(cancelled).toMatchObject({
+      receiptVersion: 2,
+      operation: "one_off_reminder.cancel",
+      outcome: {
+        type: "one_off_reminder.cancelled",
+        oneOffReminder: {
+          id: reminder.id,
+          cancelledAt: "2026-07-13T12:05:00.000Z",
+          version: 3,
+        },
+      },
+    });
+    expect(test.invalidatedTargets).toEqual([
+      `one_off_reminder:${reminder.id}:all`,
+      `one_off_reminder:${reminder.id}:all`,
+    ]);
+    expect(test.audits.filter((event) => event.action === "one_off_reminder.updated")).toHaveLength(
+      1,
+    );
+    expect(
+      test.audits.filter((event) => event.action === "one_off_reminder.cancelled"),
+    ).toHaveLength(1);
+    expect(
+      test.audits.filter((event) => event.action === "integration.command_confirmed"),
+    ).toHaveLength(2);
+
+    const requestIndex = test.requests.findIndex(
+      (request) => request.idempotencyKey === "reminder-cancel-confirm",
+    );
+    const stored = test.requests[requestIndex]!.result!;
+    if (stored.outcome.type !== "one_off_reminder.cancelled") {
+      throw new Error("unexpected outcome");
+    }
+    test.requests[requestIndex] = {
+      ...test.requests[requestIndex]!,
+      result: {
+        ...stored,
+        outcome: {
+          ...stored.outcome,
+          oneOffReminder: { ...stored.outcome.oneOffReminder, cancelledAt: null },
+        },
+      },
+    };
+    await expect(
+      test.services.confirm.execute({
+        principal: test.principal,
+        confirmationId: cancel.confirmationId,
+        idempotencyKey: "reminder-cancel-confirm",
+      }),
+    ).rejects.toMatchObject({ code: "integration.receipt_corrupt" });
+    expect(test.findCredentialByIdForUpdate).toHaveBeenCalledTimes(6);
   });
 
   it("canonicalizes, executes, clears, and replays work-item due dates", async () => {
@@ -1536,8 +1902,16 @@ describe("integration confirmation execution", () => {
       timeZone: "UTC",
       now: BASE_NOW,
     });
+    const foreignReminder = createOneOffReminder({
+      id: oneOffReminderId("70000000-0000-4000-8000-000000000099"),
+      workspaceId: OTHER_WORKSPACE_ID,
+      title: "Foreign reminder",
+      scheduledFor: new Date("2026-07-14T15:00:00.000Z"),
+      now: BASE_NOW,
+    });
     test.workItems.push(foreignWork);
     test.scheduleBlocks.push(foreignBlock);
+    test.oneOffReminders.push(foreignReminder);
 
     const workUpdate = await test.services.prepare.execute({
       principal: test.principal,
@@ -1576,6 +1950,25 @@ describe("integration confirmation execution", () => {
       }),
     ).rejects.toMatchObject({ code: "schedule_block.not_found" });
     expect(test.scheduleBlocks[0]).toEqual(foreignBlock);
+
+    const reminderUpdate = await test.services.prepare.execute({
+      principal: test.principal,
+      requestId: "foreign-reminder",
+      command: {
+        type: "one_off_reminder.update",
+        oneOffReminderId: foreignReminder.id,
+        expectedVersion: 1,
+        title: "Stolen",
+      },
+    });
+    await expect(
+      test.services.confirm.execute({
+        principal: test.principal,
+        confirmationId: reminderUpdate.confirmationId,
+        idempotencyKey: "foreign-reminder-confirm",
+      }),
+    ).rejects.toMatchObject({ code: "one_off_reminder.not_found" });
+    expect(test.oneOffReminders[0]).toEqual(foreignReminder);
 
     const primaryPrepared = await test.services.prepare.execute({
       principal: test.principal,
@@ -1654,7 +2047,7 @@ describe("integration confirmation execution", () => {
     expect(corruptTest.workItems).toHaveLength(0);
   });
 
-  it("dispatches every supported command with tenant-bound repositories and JSON-ready results", async () => {
+  it("dispatches every core work, block, and activity command with tenant-bound repositories", async () => {
     const test = createHarness();
     const seededWork = createWorkItem({
       id: SOURCE_WORK_ITEM_ID,

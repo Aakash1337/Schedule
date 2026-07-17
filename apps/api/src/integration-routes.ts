@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type {
   ConfirmIntegrationCommandInput,
   ConfirmedIntegrationCommandResult,
@@ -5,8 +7,10 @@ import type {
   IntegrationCommand,
   IntegrationCredentialScope,
   IntegrationPrincipal,
+  IntegrationOneOffReminderListResult,
   IntegrationTodayResult,
   IntegrationWorkItemPageResult,
+  ListIntegrationOneOffRemindersQuery,
   ListIntegrationWorkItemsQuery,
   PreparedIntegrationCommand,
   NotificationDeliveryReceiptResult,
@@ -36,6 +40,9 @@ export interface IntegrationServices {
     readonly date: string;
   }): Promise<IntegrationTodayResult>;
   listWorkItems(input: ListIntegrationWorkItemsQuery): Promise<IntegrationWorkItemPageResult>;
+  listOneOffReminders(
+    input: ListIntegrationOneOffRemindersQuery,
+  ): Promise<IntegrationOneOffReminderListResult>;
   prepareCommand(input: {
     readonly principal: IntegrationPrincipal;
     readonly requestId: string;
@@ -62,6 +69,7 @@ const DEFAULT_INTEGRATION_API_LIMITS: Required<IntegrationApiLimits> = {
 };
 
 const uuid = z.string().uuid();
+const canonicalUuid = uuid.regex(/^[0-9a-f-]+$/, "Expected a canonical lowercase UUID.");
 const localDateText = z
   .string()
   .refine(isValidLocalDate, "Expected a valid Gregorian date in YYYY-MM-DD format.");
@@ -81,7 +89,7 @@ const workItemPriority = z.enum(["none", "low", "medium", "high", "urgent"]);
 const createWorkItemCommand = z.strictObject({
   type: z.literal("work_item.create"),
   title: z.string().trim().min(1).max(240),
-  parentWorkItemId: uuid.nullable().optional(),
+  parentWorkItemId: canonicalUuid.nullable().optional(),
   description: z.string().max(4_000).nullable().optional(),
   status: workItemStatus.optional(),
   priority: workItemPriority.optional(),
@@ -92,9 +100,9 @@ const createWorkItemCommand = z.strictObject({
 const updateWorkItemCommand = z
   .strictObject({
     type: z.literal("work_item.update"),
-    workItemId: uuid,
+    workItemId: canonicalUuid,
     expectedVersion,
-    parentWorkItemId: uuid.nullable().optional(),
+    parentWorkItemId: canonicalUuid.nullable().optional(),
     title: z.string().trim().min(1).max(240).optional(),
     description: z.string().max(4_000).nullable().optional(),
     status: workItemStatus.optional(),
@@ -116,7 +124,7 @@ const updateWorkItemCommand = z
 
 const createScheduleBlockCommand = z.strictObject({
   type: z.literal("schedule_block.create"),
-  workItemId: uuid.nullable().optional(),
+  workItemId: canonicalUuid.nullable().optional(),
   title: z.string().max(240).nullable().optional(),
   startsAt: instant,
   endsAt: instant,
@@ -126,9 +134,9 @@ const createScheduleBlockCommand = z.strictObject({
 const updateScheduleBlockCommand = z
   .strictObject({
     type: z.literal("schedule_block.update"),
-    scheduleBlockId: uuid,
+    scheduleBlockId: canonicalUuid,
     expectedVersion,
-    workItemId: uuid.nullable().optional(),
+    workItemId: canonicalUuid.nullable().optional(),
     title: z.string().max(240).nullable().optional(),
     startsAt: instant.optional(),
     endsAt: instant.optional(),
@@ -153,6 +161,27 @@ const createOneOffReminderCommand = z.strictObject({
     .refine((value) => value === value.trim(), "Title must not have surrounding whitespace."),
   scheduledFor: instant,
 });
+const updateOneOffReminderCommand = z
+  .strictObject({
+    type: z.literal("one_off_reminder.update"),
+    oneOffReminderId: canonicalUuid,
+    expectedVersion,
+    title: z
+      .string()
+      .min(1)
+      .max(240)
+      .refine((value) => value === value.trim(), "Title must not have surrounding whitespace.")
+      .optional(),
+    scheduledFor: instant.optional(),
+  })
+  .refine((command) => command.title !== undefined || command.scheduledFor !== undefined, {
+    message: "At least one one-off reminder change is required.",
+  });
+const cancelOneOffReminderCommand = z.strictObject({
+  type: z.literal("one_off_reminder.cancel"),
+  oneOffReminderId: canonicalUuid,
+  expectedVersion,
+});
 
 const metadataValue = z.union([z.string().max(256), z.number().finite(), z.boolean(), z.null()]);
 const activityMetadata = z
@@ -164,8 +193,8 @@ const planItemActivityCommand = z
   .strictObject({
     type: z.literal("plan_item.activity"),
     date: localDateText,
-    expectedPlanId: uuid,
-    itemId: uuid,
+    expectedPlanId: canonicalUuid,
+    itemId: canonicalUuid,
     expectedHeadVersion: expectedVersion,
     activityType: z.enum([
       "started",
@@ -195,6 +224,8 @@ const integrationCommand = z.union([
   createScheduleBlockCommand,
   updateScheduleBlockCommand,
   createOneOffReminderCommand,
+  updateOneOffReminderCommand,
+  cancelOneOffReminderCommand,
   planItemActivityCommand,
 ]);
 const prepareBody = z.strictObject({
@@ -246,6 +277,13 @@ const workItemsQuery = z.strictObject({
   limit: canonicalPageValue(1, 200, 100),
   offset: canonicalPageValue(0, 1_000_000, 0),
 });
+const oneOffRemindersQuery = z.strictObject({ from: instant, to: instant }).refine(
+  (query) => {
+    const range = new Date(query.to).getTime() - new Date(query.from).getTime();
+    return range > 0 && range <= 31 * 86_400_000;
+  },
+  { message: "The reminder range must increase and cannot exceed 31 days." },
+);
 const idempotencyKey = z.string().trim().min(1).max(160);
 
 interface CredentialToken {
@@ -382,7 +420,7 @@ export async function registerIntegrationRoutes(
     const principal = await authenticate(request, reply, "schedule:read");
     const query = parseRequest(todayQuery, request.query);
     const result = await services.getToday({ principal, date: query.date });
-    return envelope(request.id, result);
+    return envelope(randomUUID(), result);
   });
 
   app.get("/v1/integrations/work-items", async (request, reply) => {
@@ -395,7 +433,18 @@ export async function registerIntegrationRoutes(
       limit: query.limit,
       offset: query.offset,
     });
-    return envelope(request.id, result);
+    return envelope(randomUUID(), result);
+  });
+
+  app.get("/v1/integrations/one-off-reminders", async (request, reply) => {
+    const principal = await authenticate(request, reply, "schedule:read");
+    const query = parseRequest(oneOffRemindersQuery, request.query);
+    const result = await services.listOneOffReminders({
+      principal,
+      fromInclusive: query.from,
+      throughExclusive: query.to,
+    });
+    return envelope(randomUUID(), result);
   });
 
   app.post("/v1/integrations/commands/prepare", async (request, reply) => {
@@ -434,7 +483,7 @@ export async function registerIntegrationRoutes(
       principal,
       idempotencyKey: key,
     });
-    return envelope(request.id, result);
+    return envelope(randomUUID(), result);
   });
 
   app.post("/v1/integrations/reminder-deliveries/receipt", async (request, reply) => {
@@ -457,6 +506,6 @@ export async function registerIntegrationRoutes(
               : {}),
           }),
     });
-    return envelope(request.id, result);
+    return envelope(randomUUID(), result);
   });
 }

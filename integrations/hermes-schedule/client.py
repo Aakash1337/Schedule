@@ -37,6 +37,8 @@ _OPERATIONS = frozenset(
         "schedule_block.update",
         "plan_item.activity",
         "one_off_reminder.create",
+        "one_off_reminder.update",
+        "one_off_reminder.cancel",
     }
 )
 _ACTIVITY_STATES = frozenset({"pending", "started", "completed", "skipped", "deferred", "dismissed"})
@@ -205,19 +207,52 @@ class ScheduleClient:
             self._validate_work_item(item)
         return page
 
+    def list_one_off_reminders(
+        self, from_inclusive: str, through_exclusive: str
+    ) -> dict[str, Any]:
+        start = _instant(from_inclusive, "schedule_reminder_range_invalid")
+        end = _instant(through_exclusive, "schedule_reminder_range_invalid")
+        start_at = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        end_at = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        duration = end_at - start_at
+        if not (0 < duration.total_seconds() <= 31 * 86_400):
+            raise ScheduleAdapterError("schedule_reminder_range_invalid")
+        data = self._request(
+            "GET",
+            f"/v1/integrations/one-off-reminders?{urlencode({'from': start, 'to': end})}",
+        )
+        page = _exact_object(data, {"items"}, "schedule_one_off_reminders_invalid")
+        if not isinstance(page["items"], list) or len(page["items"]) > 100:
+            raise ScheduleAdapterError("schedule_one_off_reminders_invalid")
+        previous: tuple[datetime, str] | None = None
+        workspace_id: str | None = None
+        for reminder in page["items"]:
+            item = self._validate_one_off_reminder(
+                reminder, "schedule_one_off_reminders_invalid"
+            )
+            if workspace_id is None:
+                workspace_id = item["workspaceId"]
+            elif item["workspaceId"] != workspace_id:
+                raise ScheduleAdapterError("schedule_one_off_reminders_invalid")
+            key = (
+                datetime.fromisoformat(item["scheduledFor"].replace("Z", "+00:00")),
+                item["id"],
+            )
+            if not start_at <= key[0] < end_at or (previous is not None and key <= previous):
+                raise ScheduleAdapterError("schedule_one_off_reminders_invalid")
+            previous = key
+        return page
+
     def prepare_change(self, request_id: str, command: Mapping[str, Any]) -> dict[str, Any]:
         _uuid(request_id, "schedule_request_id_invalid")
         if not isinstance(command, Mapping):
             raise ScheduleAdapterError("schedule_command_invalid")
-        if command.get("type") == "one_off_reminder.create":
-            title = command.get("title")
-            if (
-                not isinstance(title, str)
-                or title != title.strip()
-                or not (1 <= len(title) <= 240)
-            ):
-                raise ScheduleAdapterError("schedule_command_invalid")
-            _instant(command.get("scheduledFor"), "schedule_command_invalid")
+        if command.get("type") in {
+            "one_off_reminder.create",
+            "one_off_reminder.update",
+            "one_off_reminder.cancel",
+        }:
+            self._validate_one_off_command(command)
         data = self._request(
             "POST",
             "/v1/integrations/commands/prepare",
@@ -459,6 +494,79 @@ class ScheduleClient:
         return item
 
     @staticmethod
+    def _validate_one_off_command(command: Mapping[str, Any]) -> None:
+        code = "schedule_command_invalid"
+        operation = command.get("type")
+        if operation == "one_off_reminder.create":
+            _exact_object(command, {"type", "title", "scheduledFor"}, code)
+        elif operation == "one_off_reminder.update":
+            base = {"type", "oneOffReminderId", "expectedVersion"}
+            changes = set(command) - base
+            if set(command) - changes != base or not changes or changes - {
+                "title",
+                "scheduledFor",
+            }:
+                raise ScheduleAdapterError(code)
+        else:
+            _exact_object(command, {"type", "oneOffReminderId", "expectedVersion"}, code)
+        if operation != "one_off_reminder.create":
+            _uuid(command["oneOffReminderId"], code)
+            _positive_integer(command["expectedVersion"], code)
+        if "title" in command:
+            title = command["title"]
+            if (
+                not isinstance(title, str)
+                or title != title.strip()
+                or not (1 <= len(title) <= 240)
+            ):
+                raise ScheduleAdapterError(code)
+        if "scheduledFor" in command:
+            _instant(command["scheduledFor"], code)
+
+    @staticmethod
+    def _validate_one_off_reminder(value: Any, code: str) -> dict[str, Any]:
+        reminder = _exact_object(
+            value,
+            {
+                "id",
+                "workspaceId",
+                "title",
+                "scheduledFor",
+                "cancelledAt",
+                "version",
+                "createdAt",
+                "updatedAt",
+            },
+            code,
+        )
+        _uuid(reminder["id"], code)
+        _uuid(reminder["workspaceId"], code)
+        title = _bounded_text(reminder["title"], 240, code)
+        if title != title.strip():
+            raise ScheduleAdapterError(code)
+        _instant(reminder["scheduledFor"], code)
+        cancelled_at = (
+            None
+            if reminder["cancelledAt"] is None
+            else datetime.fromisoformat(
+                _instant(reminder["cancelledAt"], code).replace("Z", "+00:00")
+            )
+        )
+        _positive_integer(reminder["version"], code)
+        created_at = datetime.fromisoformat(
+            _instant(reminder["createdAt"], code).replace("Z", "+00:00")
+        )
+        updated_at = datetime.fromisoformat(
+            _instant(reminder["updatedAt"], code).replace("Z", "+00:00")
+        )
+        if updated_at < created_at or (
+            cancelled_at is not None
+            and (cancelled_at < created_at or cancelled_at != updated_at)
+        ):
+            raise ScheduleAdapterError(code)
+        return reminder
+
+    @staticmethod
     def _safe_confirmation_outcome(
         value: Any, operation: str, receipt_version: int | None
     ) -> dict[str, Any]:
@@ -530,48 +638,38 @@ class ScheduleClient:
                 "scheduleBlock": {"id": block["id"], "version": version},
             }
 
-        if operation == "one_off_reminder.create":
+        if operation in {
+            "one_off_reminder.create",
+            "one_off_reminder.update",
+            "one_off_reminder.cancel",
+        }:
             if receipt_version != 2:
                 raise ScheduleAdapterError("schedule_confirmed_change_invalid")
             outcome = _exact_object(
                 value, {"type", "oneOffReminder"}, "schedule_confirmed_change_invalid"
             )
-            if outcome["type"] != "one_off_reminder.created":
+            expected_type = {
+                "one_off_reminder.create": "one_off_reminder.created",
+                "one_off_reminder.update": "one_off_reminder.updated",
+                "one_off_reminder.cancel": "one_off_reminder.cancelled",
+            }[operation]
+            if outcome["type"] != expected_type:
                 raise ScheduleAdapterError("schedule_confirmed_change_invalid")
-            reminder = _exact_object(
+            reminder = ScheduleClient._validate_one_off_reminder(
                 outcome["oneOffReminder"],
-                {
-                    "id",
-                    "workspaceId",
-                    "title",
-                    "scheduledFor",
-                    "cancelledAt",
-                    "version",
-                    "createdAt",
-                    "updatedAt",
-                },
                 "schedule_confirmed_change_invalid",
             )
-            reminder_id = _uuid(reminder["id"], "schedule_confirmed_change_invalid")
-            _uuid(reminder["workspaceId"], "schedule_confirmed_change_invalid")
-            _bounded_text(reminder["title"], 240, "schedule_confirmed_change_invalid")
-            scheduled_for = _instant(
-                reminder["scheduledFor"], "schedule_confirmed_change_invalid"
-            )
-            if reminder["cancelledAt"] is not None:
+            cancelled = operation == "one_off_reminder.cancel"
+            if (reminder["cancelledAt"] is not None) != cancelled:
                 raise ScheduleAdapterError("schedule_confirmed_change_invalid")
-            version = _positive_integer(
-                reminder["version"], "schedule_confirmed_change_invalid"
-            )
-            _instant(reminder["createdAt"], "schedule_confirmed_change_invalid")
-            _instant(reminder["updatedAt"], "schedule_confirmed_change_invalid")
+            if operation == "one_off_reminder.create" and reminder["version"] != 1:
+                raise ScheduleAdapterError("schedule_confirmed_change_invalid")
+            projected = {"id": reminder["id"], "version": reminder["version"]}
+            field = "cancelledAt" if cancelled else "scheduledFor"
+            projected[field] = reminder[field]
             return {
-                "type": "one_off_reminder.created",
-                "oneOffReminder": {
-                    "id": reminder_id,
-                    "scheduledFor": scheduled_for,
-                    "version": version,
-                },
+                "type": expected_type,
+                "oneOffReminder": projected,
             }
 
         outcome = _exact_object(

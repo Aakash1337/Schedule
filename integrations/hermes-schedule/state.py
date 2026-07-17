@@ -30,6 +30,8 @@ _OPERATIONS = frozenset(
         "schedule_block.update",
         "plan_item.activity",
         "one_off_reminder.create",
+        "one_off_reminder.update",
+        "one_off_reminder.cancel",
     }
 )
 _PENDING_COLUMNS = (

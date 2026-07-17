@@ -79,6 +79,23 @@ function integrationServices(): IntegrationServices {
           page: { limit: 100, offset: 0 },
         }) as never,
     ),
+    listOneOffReminders: vi.fn(
+      async () =>
+        ({
+          items: [
+            {
+              id: RESOURCE_ID,
+              workspaceId: WORKSPACE_ID,
+              title: "Call the clinic",
+              scheduledFor: "2026-07-13T13:30:00.000Z",
+              cancelledAt: null,
+              version: 2,
+              createdAt: "2026-07-13T12:00:00.000Z",
+              updatedAt: "2026-07-13T12:30:00.000Z",
+            },
+          ],
+        }) as never,
+    ),
     prepareCommand: vi.fn(async (input) => {
       const display = commandDisplay(input.command);
       return {
@@ -590,6 +607,60 @@ describe("integration gateway routes", () => {
     });
   });
 
+  it("lists one strict reminder range and rejects query drift before reading", async () => {
+    const services = integrationServices();
+    const app = await integrationApp(services);
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/integrations/one-off-reminders?from=2026-07-13T00%3A00%3A00.000Z&to=2026-07-14T00%3A00%3A00.000Z",
+      headers: { authorization: AUTHORIZATION },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    const responseBody = response.json();
+    expect(responseBody.requestId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(responseBody.data).toEqual({
+      items: [
+        {
+          id: RESOURCE_ID,
+          workspaceId: WORKSPACE_ID,
+          title: "Call the clinic",
+          scheduledFor: "2026-07-13T13:30:00.000Z",
+          cancelledAt: null,
+          version: 2,
+          createdAt: "2026-07-13T12:00:00.000Z",
+          updatedAt: "2026-07-13T12:30:00.000Z",
+        },
+      ],
+    });
+    expect(services.listOneOffReminders).toHaveBeenCalledWith({
+      principal: expect.objectContaining({ workspaceId: WORKSPACE_ID }),
+      fromInclusive: "2026-07-13T00:00:00.000Z",
+      throughExclusive: "2026-07-14T00:00:00.000Z",
+    });
+
+    for (const query of [
+      "to=2026-07-14T00%3A00%3A00.000Z",
+      "from=2026-02-30T00%3A00%3A00.000Z&to=2026-03-01T00%3A00%3A00.000Z",
+      "from=2026-07-13T00%3A00%3A00&to=2026-07-14T00%3A00%3A00.000Z",
+      "from=2026-07-14T00%3A00%3A00.000Z&to=2026-07-13T00%3A00%3A00.000Z",
+      "from=2026-07-13T00%3A00%3A00.000Z&to=2026-08-14T00%3A00%3A00.000Z",
+      "from=2026-07-13T00%3A00%3A00.000Z&to=2026-07-14T00%3A00%3A00.000Z&workspaceId=00000000-0000-4000-8000-000000000002",
+    ]) {
+      const invalid = await app.inject({
+        method: "GET",
+        url: `/v1/integrations/one-off-reminders?${query}`,
+        headers: { authorization: AUTHORIZATION },
+      });
+      expect(invalid.statusCode).toBe(400);
+      expect(invalid.json().error.code).toBe("request.validation_failed");
+    }
+    expect(services.listOneOffReminders).toHaveBeenCalledTimes(1);
+  });
+
   it("authenticates work-item reads before rejecting strict query drift", async () => {
     const services = integrationServices();
     const app = await integrationApp(services);
@@ -705,6 +776,18 @@ describe("integration gateway routes", () => {
       scheduledFor: "2026-07-13T09:30:00-04:00",
     },
     {
+      type: "one_off_reminder.update",
+      oneOffReminderId: RESOURCE_ID,
+      expectedVersion: 2,
+      title: "Call the new clinic",
+      scheduledFor: "2026-07-13T10:30:00-04:00",
+    },
+    {
+      type: "one_off_reminder.cancel",
+      oneOffReminderId: RESOURCE_ID,
+      expectedVersion: 3,
+    },
+    {
       type: "plan_item.activity",
       date: "2026-07-13",
       expectedPlanId: PLAN_ID,
@@ -806,6 +889,33 @@ describe("integration gateway routes", () => {
         title: "Reminder",
         scheduledFor: "2026-07-13T09:30:00-04:00",
         recipient: "someone-else",
+      }),
+      preparePayload({
+        type: "one_off_reminder.update",
+        oneOffReminderId: RESOURCE_ID,
+        expectedVersion: 1,
+      }),
+      preparePayload({
+        type: "one_off_reminder.update",
+        oneOffReminderId: RESOURCE_ID,
+        expectedVersion: 1,
+        title: " Reminder ",
+      }),
+      preparePayload({
+        type: "one_off_reminder.cancel",
+        oneOffReminderId: RESOURCE_ID,
+        expectedVersion: 0,
+      }),
+      preparePayload({
+        type: "one_off_reminder.cancel",
+        oneOffReminderId: "00000000-0000-4000-8000-AAAAAAAAAAAA",
+        expectedVersion: 1,
+      }),
+      preparePayload({
+        type: "one_off_reminder.cancel",
+        oneOffReminderId: RESOURCE_ID,
+        expectedVersion: 1,
+        reason: "unsupported",
       }),
       preparePayload({
         type: "work_item.update",

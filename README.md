@@ -78,13 +78,14 @@ title from free-form text. It stores no raw prompt or model prose and performs n
 user reviews the exact command and confirms it. Confirmation is tenant-scoped, expiring,
 version-checked, audited, and durable exactly-once under concurrent retries.
 
-An optional integration gateway gives a workspace-scoped machine credential read-only access to
-Today and a two-step, idempotent structured-command flow. It is disabled by default. Schedule stays
-authoritative; Hermes or another messaging agent calls this boundary instead of writing the
-database. The repository includes an opt-in local Hermes plugin that adds sender/session/platform-
-bound later-turn confirmation, including strict one-off reminder creation, and a deterministic stdout reminder helper. A checked installer copies
-only their runtime files into Hermes; it remains local-only and does not silently enable the plugin,
-create a cron job, or send a WhatsApp message.
+An optional integration gateway gives a workspace-scoped machine credential bounded reads of Today,
+work items, and one-off reminders plus a two-step, idempotent structured-command flow. It is disabled
+by default. Schedule stays authoritative; Hermes or another messaging agent calls this boundary
+instead of writing the database. The repository includes an opt-in local Hermes plugin with
+sender/session/platform-bound later-turn confirmation, including one-off reminder discovery,
+creation, rescheduling, and cancellation, plus a deterministic stdout Today helper. A checked
+installer copies only its runtime files into Hermes; it remains local-only and does not silently
+enable the plugin, create a cron job, or send a WhatsApp message.
 
 A separate outbound webhook substrate can deliver signed, workspace-bound test events and explicitly
 subscribed privacy-thin Today-change invalidations through the existing durable outbox. It is also
@@ -164,11 +165,11 @@ into `schedule.changed.v1`, which tells a receiver to refresh Today without carr
 content. This webhook is not used as a reminder. Reminder policy decisions, durable intents, and
 provider-neutral supervised delivery polling are implemented, with polling disabled by default.
 Provider/account binding, reconciliation, external bootstrap, and a concrete Hermes/WhatsApp
-transport are not part of this release. Separately, the opt-in local Hermes plugin calls the
-authenticated read/write gateway when invoked and offers a deterministic stdout Today helper; its
-installer is dry with respect to secrets, plugin enablement, cron, and messaging. Live WhatsApp
-delivery remains incomplete until the operator configures `WHATSAPP_HOME_CHANNEL` and verifies an
-operator-owned self-chat. Automatic
+transport are not part of this release. Separately, the opt-in local Hermes plugin can read and
+manage bounded one-off reminders through the authenticated gateway's explicit-confirmation flow and
+offers a deterministic stdout Today helper; its installer is dry with respect to secrets, plugin
+enablement, cron, and messaging. Live WhatsApp delivery remains incomplete until the operator
+configures `WHATSAPP_HOME_CHANNEL` and verifies an operator-owned self-chat. Automatic
 local intent materialization is available but disabled by default; set
 `NOTIFICATION_MATERIALIZATION_MODE=enabled` only after reminder policy is configured. This does not
 enable delivery. The least-privilege claim/receipt gateway is implemented for an external adapter.
@@ -227,13 +228,14 @@ verifier checks the
 workspace/schedule/id execution-history index without changing delivery or credential data.
 
 Verify the Hermes plugin's deterministic Python contract and its disposable PostgreSQL/real
-Fastify one-off-reminder prepare-and-confirm flow separately:
+Fastify one-off-reminder create, discovery, reschedule, and cancellation lifecycle separately:
 
 ```powershell
 pnpm verify:hermes-adapter
 ```
 
-That command proves the local/stdout provider boundary, not delivery to a WhatsApp account or phone.
+That command proves bounded discovery, later-turn confirmation, exact replay, and pending-intent
+invalidation. It does not prove delivery to a WhatsApp account or phone.
 
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh
