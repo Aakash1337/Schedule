@@ -41,9 +41,10 @@ mutations, and treats session, access, throttling, and availability failures as 
 shows the browser-local day's existing plan through titles, durations, and activity states, plus the
 first 20 backlog titles. The two reads fail and retry independently; capture refreshes only the
 backlog. Each visible backlog item can be moved only to started or done with its snapshot version.
-Pending Today items offer Start and Done; started items offer Done; terminal items offer neither.
+Pending Today items offer Start, Done, and Skip; started items offer Done and Skip; terminal items
+offer none.
 An ambiguous Today failure explicitly retries the same timestamp/key, while a stale head discards
-the intent and requires a fresh read. Successful completion refreshes both Today and backlog.
+the intent and requires a fresh read. A successful action refreshes both Today and backlog.
 The shell cannot generate a plan, page, filter, edit fields, reopen, cancel, synchronize work,
 rename/delete workspaces, or administer membership.
 

@@ -573,10 +573,11 @@ The audit deliberately leaves these visible instead of turning them into false g
   membership through a downstream work mutation. The fixed first-20 backlog projection has route,
   component, browser, and database evidence. The narrow existing-plan Today projection has route,
   component, browser, and database evidence, including authenticated missing-plan behavior. The
-  narrow Start/Done action has route/client/component/browser evidence for strict input, CSRF,
-  optimistic conflicts, and exact ambiguous retry. Its database composition proof records one
-  completion twice with the same intent and observes one activity, one interaction, one head advance,
-  and atomic source completion. Together they exercise bounded membership-scoped reads and writes
+  narrow Start/Done/Skip action has route/client/component evidence for strict input, CSRF,
+  optimistic conflicts, and exact ambiguous retry. The built browser proves responsive access to all
+  three choices and completion; the shared database composition path records one completion twice
+  with the same intent and observes one activity, one interaction, one head advance, and atomic source
+  completion. Together they exercise bounded membership-scoped reads and writes
   without identity, role, description, planner-reason, or time-zone metadata. The enabled composition
   verifier parses production configuration, builds the real route graph with a strict in-process
   provider, proves local product routes absent, drives login, the hardened same-origin capture

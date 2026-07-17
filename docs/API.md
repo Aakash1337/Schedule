@@ -31,7 +31,7 @@ not authorize these product routes.
   `GET /v1/hosted/workspaces/{workspaceId}/today?date=YYYY-MM-DD` returns only an existing current
   plan's identity/head fence, item IDs/titles/scheduled minutes/activity states, and total minutes.
   CSRF-protected `POST /v1/hosted/workspaces/{workspaceId}/today/{itemId}/activity-events?date=YYYY-MM-DD`
-  accepts only the expected plan/head, `started|completed`, one offset timestamp, and a required
+  accepts only the expected plan/head, `started|completed|skipped`, one offset timestamp, and a required
   `Idempotency-Key`; the server derives the plan time zone and reauthorizes in the write transaction.
   Workspace detail reads, most
   product routes, synchronization, ingress/TLS, and deployment automation remain separate

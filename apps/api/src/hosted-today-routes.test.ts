@@ -183,7 +183,7 @@ describe("hosted Today route", () => {
       payload: {
         expectedPlanId: PLAN_ID.toUpperCase(),
         expectedHeadVersion: 9,
-        type: "completed",
+        type: "skipped",
         occurredAt: "2026-07-16T09:30:00.000Z",
       },
     });
@@ -197,7 +197,7 @@ describe("hosted Today route", () => {
       expectedPlanId: PLAN_ID,
       itemId: ITEM_ID,
       expectedHeadVersion: 9,
-      type: "completed",
+      type: "skipped",
       occurredAt: new Date("2026-07-16T09:30:00.000Z"),
       idempotencyKey: "hosted-today-action-1",
     });
@@ -214,7 +214,7 @@ describe("hosted Today route", () => {
       occurredAt: "2026-07-16T09:30:00.000Z",
     };
     const attempts = [
-      { url: todayActivityPath(), payload: { ...valid, type: "skipped" }, key: "action-1" },
+      { url: todayActivityPath(), payload: { ...valid, type: "deferred" }, key: "action-1" },
       { url: todayActivityPath(), payload: { ...valid, reason: "too broad" }, key: "action-2" },
       { url: todayActivityPath(), payload: { ...valid, expectedHeadVersion: 0 }, key: "action-3" },
       {

@@ -148,7 +148,8 @@ active workspace page or create one name-only workspace while rechecking the bro
 same transaction. A same-origin hosted capture shell can sign in, create or select one active workspace,
 review the browser-local day's existing plan and the first 20 backlog titles, and add one title
 through an authorized mutation. A visible backlog item can be moved only to started or done with an
-optimistic version. A pending Today item can be started or completed, and a started item completed,
+optimistic version. A pending Today item can be started, completed, or skipped, and a started item can
+be completed or skipped,
 through an idempotent, head-fenced mutation that reauthorizes in the write transaction. The shell
 does not generate plans or provide general work-item editing,
 workspace rename/delete or membership administration, the broader product API, or synchronization.

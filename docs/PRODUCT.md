@@ -718,7 +718,7 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   only the IDs/head fence needed for mutation and no identity, role, planner-reason, or time-zone metadata.
 - Implemented narrow hosted UI: a same-origin capture shell can sign in, select one active
   workspace or create another, review Today and the first 20 backlog titles, create one title, and
-  move a visible backlog item to started or done, and start or complete one actionable Today item
+  move a visible backlog item to started or done, and start, complete, or skip one actionable Today item
   through transaction-authorized routes with exact retry semantics; it exposes
   no provider tokens, identity metadata, general editing, workspace rename/delete or membership
   administration, or local-only routes.
