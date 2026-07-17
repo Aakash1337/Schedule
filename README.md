@@ -96,7 +96,8 @@ conversation, or raw receipt data. A dormant [Hermes reminder adapter foundation
 now implements the safe claim/send/receipt and dedupe ordering around this gateway plus a shared,
 fenced PostgreSQL dedupe store that persists only a digest of its reservation token. A fail-safe,
 single-flight polling supervisor and loopback health runtime are also implemented, but remain inert
-without an explicit operator control. A concrete Hermes transport, human binding, provider
+without an explicit operator control. A dormant reconcile-before-send Hermes/WhatsApp client bridge
+is locally testable; a live authenticated Hermes client, human binding, provider-specific conclusive
 reconciliation, and external process bootstrap are still required for real delivery.
 
 The worker can optionally expose loopback-only liveness, database readiness, and fixed-cardinality
@@ -142,8 +143,8 @@ enabling the worker. Endpoints have no automatic subscriptions by default; an op
 into `schedule.changed.v1`, which tells a receiver to refresh Today without carrying plan or task
 content. This webhook is not used as a reminder. Reminder policy decisions, durable intents, and
 provider-neutral supervised delivery polling are implemented, with polling disabled by default.
-Provider/account binding, reconciliation, external bootstrap, and a concrete Hermes/WhatsApp
-transport are not part of this release. Separately, the opt-in local Hermes plugin calls the
+Provider/account binding, a live Hermes client, provider-specific reconciliation, and external
+bootstrap are not part of this release. Separately, the opt-in local Hermes plugin calls the
 authenticated read/write gateway when invoked and offers a deterministic stdout Today helper; live
 WhatsApp delivery remains incomplete until the operator configures `WHATSAPP_HOME_CHANNEL` and
 verifies an operator-owned self-chat. Automatic

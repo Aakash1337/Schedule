@@ -551,9 +551,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   per-claim operator control, single-flight polling, bounded full-jitter retry/failure budgets, fixed
   fatal classifications, graceful in-flight shutdown, sibling-service supervision, and real
   loopback live/ready HTTP evidence without private identifiers. Delivered tombstone cleanup remains
-  disabled until Schedule exposes an authoritative replay retention watermark. It still has no
-  concrete external provider/account binding, provider reconciliation, external provider bootstrap,
-  live phone verification, or dead-letter redrive control;
+  disabled until Schedule exposes an authoritative replay retention watermark. A dormant
+  Hermes/WhatsApp client bridge adds unit evidence for reconcile-before-send behavior, sanitized
+  minimal payloads, bounded known failures, ambiguous-result redaction, and preservation of the
+  runner fence. It still has no live external provider/account binding, provider-specific conclusive
+  reconciliation, external provider bootstrap, live phone verification, or dead-letter redrive
+  control;
 - worker observability has unit and disposable-PostgreSQL evidence for loopback-only binding,
   liveness/readiness separation, fixed-cardinality Prometheus text, live outbox/reminder queue
   aggregates, materialization/outbox instrumentation, private-data exclusion, database-failure
@@ -566,10 +569,13 @@ The audit deliberately leaves these visible instead of turning them into false g
   product data. A centralized hosted request boundary additionally has unit and disposable-
   PostgreSQL evidence for request isolation, single authentication, spoof resistance,
   enumeration-resistant membership denial, redacted failures, immutable workspace contexts, and
-  post-revocation fencing. Both remain dormant: there is no browser route, provider
-  verification, cookie/CSRF policy, transaction-coupled product mutation authorization, public
-  deployment, or synchronization;
-- eleven live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
+  post-revocation fencing. The dormant browser transport additionally has unit evidence for bounded
+  duplicate-safe session cookies, host-only issue/clear attributes, exact-Origin constant-time
+  double-submit CSRF proof, verification ordering, and safe/unsafe production-route closure. The
+  stack remains dormant: there is no browser route, provider verification, route-level cookie
+  issuance, transaction-coupled product mutation authorization, public deployment, or
+  synchronization;
+- ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a
   320px subtask create/complete/reload/detach/reparent/overflow flow with leaf-only planning, plus

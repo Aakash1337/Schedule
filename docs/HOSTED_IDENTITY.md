@@ -2,12 +2,14 @@
 
 Schedule contains a dormant, provider-neutral persistence foundation for future hosted browser
 authentication. It establishes identity, session, and workspace-membership invariants without
-opening an HTTP route, setting a cookie, selecting an identity provider, or changing the local
-product's trust boundary.
+opening an HTTP route, selecting an identity provider, or changing the local product's trust
+boundary. A separate dormant transport can serialize the session into a hardened cookie, but no
+runtime currently calls it.
 
 This is deliberately not a claim that hosted authentication is complete. Production remains closed
-until a later slice adds one centralized request-authentication seam, provider verification,
-session-cookie and CSRF policy, route authorization, and deployment configuration.
+until later slices add provider verification, route-level login/session lifecycle, transaction-
+coupled product authorization, and deployment configuration. The centralized request seam and
+cookie/CSRF policy are implemented but unreachable.
 
 ## Persisted model
 
@@ -64,14 +66,16 @@ workspaces.
 ## Deliberately absent
 
 This foundation has no login, callback, logout, refresh, password, OIDC discovery, email-link,
-cookie, CSRF, browser principal, or public membership route. It does not read identity claims, bind a
+browser principal route, or public membership route. It does not read identity claims, bind a
 WhatsApp account, replace integration credentials, or enable synchronization. No environment flag
-can accidentally expose it.
+can accidentally expose it. Strict session-cookie serialization/parsing and double-submit CSRF
+transport now exist behind the centralized request seam, but no production route issues or consumes
+them.
 
 The centralized request-authentication and workspace-authorization seam now exists but is not wired
-into `buildApp`; see [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md). Provider and
-browser-session transport should follow behind that seam while production product routes remain
-closed by default.
+into `buildApp`; see [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md). The dormant browser-session
+and CSRF transport sits behind that seam; provider verification and transaction-coupled hosted
+product authorization must follow while production product routes remain closed by default.
 
 ## Verification
 
