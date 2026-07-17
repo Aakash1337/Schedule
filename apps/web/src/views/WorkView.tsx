@@ -21,6 +21,7 @@ import type {
   WorkItemDependency,
   NaturalLanguageProposal,
   NaturalLanguageProposalCommand,
+  NaturalLanguageProposalUserSelection,
   WorkItemPriority,
   WorkItemStatus,
   WorkspaceViewProps,
@@ -42,6 +43,43 @@ const priorities: readonly { readonly value: WorkItemPriority; readonly label: s
   { value: "high", label: "High" },
   { value: "urgent", label: "Urgent" },
 ];
+
+function isCanonicalLocalDate(value: unknown): value is string {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(value) ||
+    value.startsWith("0000-")
+  ) {
+    return false;
+  }
+  const instant = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(instant.getTime()) && instant.toISOString().slice(0, 10) === value;
+}
+
+function reviewableWorkItemSelection(
+  proposal: NaturalLanguageProposal,
+): NaturalLanguageProposalUserSelection | null {
+  if (proposal.command.type !== "work_item.create") return null;
+  const selection = proposal.userSelection;
+  if (
+    selection === null ||
+    typeof selection !== "object" ||
+    !("priority" in selection) ||
+    !priorities.some((priority) => priority.value === selection.priority) ||
+    !("dueOn" in selection) ||
+    (selection.dueOn !== null && !isCanonicalLocalDate(selection.dueOn)) ||
+    !("planningDurationMinutes" in selection) ||
+    (selection.planningDurationMinutes !== null &&
+      (typeof selection.planningDurationMinutes !== "number" ||
+        !Number.isFinite(selection.planningDurationMinutes) ||
+        !Number.isInteger(selection.planningDurationMinutes) ||
+        selection.planningDurationMinutes <= 0 ||
+        selection.planningDurationMinutes > 43_200))
+  ) {
+    throw new Error("The work-item proposal omitted valid reviewed values.");
+  }
+  return selection;
+}
 
 type PriorityFilter = WorkItemPriority | "";
 
@@ -936,12 +974,10 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         setProposalAnnouncement("Nothing was created.");
         return;
       }
+      const selection = reviewableWorkItemSelection(result.proposal);
       setProposal(result.proposal);
       setProposalTitle(result.proposal.command.title);
-      if (result.proposal.command.type === "work_item.create") {
-        const selection = result.proposal.userSelection;
-        if (selection === null)
-          throw new Error("The work-item proposal omitted its reviewed values.");
+      if (selection !== null) {
         setProposalPriority(selection.priority);
         setProposalDueOn(selection.dueOn ?? "");
         setProposalIncludeInDailyPlan(selection.planningDurationMinutes !== null);
@@ -951,7 +987,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         setProposalBlockStartsAt(isoToLocalTime(result.proposal.command.startsAt));
         setProposalBlockEndsOn(isoToLocalDate(result.proposal.command.endsAt));
         setProposalBlockEndsAt(isoToLocalTime(result.proposal.command.endsAt));
-      } else {
+      } else if (result.proposal.command.type === "routine.create") {
         setProposalRoutineDraft(routineDraftFromRoutine(result.proposal.command));
         setProposalRoutineStatus(result.proposal.command.status);
       }
@@ -1114,7 +1150,11 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
             ? {
                 expectedVersion: currentProposal.version,
                 command: reviewedCommand,
-                userSelection: userSelection!,
+                userSelection:
+                  userSelection ??
+                  (() => {
+                    throw new Error("The work-item proposal omitted its reviewed values.");
+                  })(),
               }
             : reviewedCommand.type === "schedule_block.create"
               ? { expectedVersion: currentProposal.version, command: reviewedCommand }
@@ -1126,12 +1166,17 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
           request.controller.signal,
         );
         if (!proposalOperationIsCurrent(request.operation, request.workspaceId)) return;
+        let selection: NaturalLanguageProposalUserSelection | null;
+        try {
+          selection = reviewableWorkItemSelection(currentProposal);
+        } catch (error) {
+          setProposal(null);
+          confirmationKeyRef.current = null;
+          throw error;
+        }
         setProposal(currentProposal);
         setProposalTitle(currentProposal.command.title);
-        if (currentProposal.command.type === "work_item.create") {
-          const selection = currentProposal.userSelection;
-          if (selection === null)
-            throw new Error("The work-item proposal omitted its reviewed values.");
+        if (selection !== null) {
           setProposalPriority(selection.priority);
           setProposalDueOn(selection.dueOn ?? "");
           setProposalIncludeInDailyPlan(selection.planningDurationMinutes !== null);

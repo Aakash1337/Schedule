@@ -3262,6 +3262,7 @@ describe("local product API", () => {
             resultType: "work_item",
             workItem: createdWorkItem,
             scheduleBlock: null,
+            routine: null,
           };
         },
       }).services,

@@ -80,6 +80,13 @@ function naturalLanguageProposal(title = "Prepare quarterly report"): NaturalLan
   };
 }
 
+function malformedWorkItemProposal(): NaturalLanguageProposal {
+  return {
+    ...naturalLanguageProposal(),
+    userSelection: null,
+  } as unknown as NaturalLanguageProposal;
+}
+
 function naturalLanguageResult(
   proposal = naturalLanguageProposal(),
 ): NaturalLanguageProposalResult {
@@ -122,6 +129,7 @@ function naturalLanguageScheduleBlockProposal(): NaturalLanguageProposal {
       timeZone,
     },
     modelSuggestions: null,
+    userSelection: null,
   };
 }
 
@@ -327,6 +335,63 @@ describe("work board", () => {
     expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
   });
 
+  it("rejects a malformed generated work-item proposal before it becomes reviewable", async () => {
+    const user = userEvent.setup();
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(
+      naturalLanguageResult(malformedWorkItemProposal()),
+    );
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(screen.getByRole("textbox", { name: /^Describe one/ }), "Add work");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The work-item proposal omitted valid reviewed values.",
+    );
+    expect(screen.queryByRole("heading", { name: "Create one backlog work item" })).toBeNull();
+    expect(apiMocks.confirmNaturalLanguageProposal).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed updated work-item proposal before it can be confirmed", async () => {
+    const user = userEvent.setup();
+    const proposal = naturalLanguageProposal();
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(naturalLanguageResult(proposal));
+    apiMocks.updateNaturalLanguageProposal.mockResolvedValue(malformedWorkItemProposal());
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(screen.getByRole("textbox", { name: /^Describe one/ }), "Add work");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+    const choices = await screen.findByRole("region", { name: "Your reviewed choices" });
+    await user.selectOptions(within(choices).getByRole("combobox", { name: "Priority" }), "urgent");
+    await user.click(screen.getByRole("button", { name: "Create this work item" }));
+
+    await waitFor(() =>
+      expect(apiMocks.updateNaturalLanguageProposal).toHaveBeenCalledWith(
+        workspace.id,
+        proposal.id,
+        {
+          expectedVersion: proposal.version,
+          command: proposal.command,
+          userSelection: {
+            priority: "urgent",
+            dueOn: null,
+            planningDurationMinutes: null,
+          },
+        },
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The work-item proposal omitted valid reviewed values.",
+    );
+    expect(screen.queryByRole("heading", { name: "Create one backlog work item" })).toBeNull();
+    expect(apiMocks.confirmNaturalLanguageProposal).not.toHaveBeenCalled();
+  });
+
   it("reviews, edits, and confirms one unlinked calendar block", async () => {
     const user = userEvent.setup();
     const proposal = naturalLanguageScheduleBlockProposal();
@@ -338,7 +403,13 @@ describe("work board", () => {
       endsAt: new Date(2026, 6, 17, 0, 45).toISOString(),
       timeZone: proposal.command.timeZone,
     };
-    const edited: NaturalLanguageProposal = { ...proposal, command, version: 2 };
+    const edited: NaturalLanguageProposal = {
+      ...proposal,
+      command,
+      modelSuggestions: null,
+      userSelection: null,
+      version: 2,
+    };
     const created: ScheduleBlock = {
       id: proposal.id,
       workspaceId: workspace.id,

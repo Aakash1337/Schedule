@@ -674,8 +674,15 @@ describe("database schema", () => {
       'DROP CONSTRAINT IF EXISTS "natural_language_proposals_command_display_bounded"',
     );
     expect(migration).toContain('"command_display") BETWEEN 1 AND 64000');
-    expect(migration).toContain("= 'routine.create'");
-    expect(migration).toContain('"result_routine_id" IS NOT NULL');
+    expect(migration).toContain(
+      '"command"->>\'type\') = \'work_item.create\' AND "natural_language_proposals"."result_work_item_id" IS NOT NULL AND "natural_language_proposals"."result_schedule_block_id" IS NULL AND "natural_language_proposals"."result_routine_id" IS NULL',
+    );
+    expect(migration).toContain(
+      '"command"->>\'type\') = \'schedule_block.create\' AND "natural_language_proposals"."result_work_item_id" IS NULL AND "natural_language_proposals"."result_schedule_block_id" IS NOT NULL AND "natural_language_proposals"."result_routine_id" IS NULL',
+    );
+    expect(migration).toContain(
+      '"command"->>\'type\') = \'routine.create\' AND "natural_language_proposals"."result_work_item_id" IS NULL AND "natural_language_proposals"."result_schedule_block_id" IS NULL AND "natural_language_proposals"."result_routine_id" IS NOT NULL',
+    );
   });
 
   it("constrains routine weekday arrays at the database boundary", () => {

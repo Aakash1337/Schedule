@@ -72,20 +72,34 @@ export interface NaturalLanguageProposalModelSuggestions {
   readonly planningDurationMinutes: number | null;
 }
 
-export interface NaturalLanguageProposal {
+interface NaturalLanguageProposalBase {
   readonly id: string;
   readonly requestId: string;
   readonly commandHash: string;
   readonly commandDisplay: string;
-  readonly command: NaturalLanguageProposalCommand;
-  readonly modelSuggestions: NaturalLanguageProposalModelSuggestions | null;
-  readonly userSelection: NaturalLanguageProposalUserSelection | null;
   readonly provider: string;
   readonly model: string | null;
   readonly status: NaturalLanguageProposalStatus;
   readonly expiresAt: string;
   readonly version: number;
 }
+
+export type NaturalLanguageProposal =
+  | (NaturalLanguageProposalBase & {
+      readonly command: NaturalLanguageWorkItemCommand;
+      readonly modelSuggestions: NaturalLanguageProposalModelSuggestions | null;
+      readonly userSelection: NaturalLanguageProposalUserSelection;
+    })
+  | (NaturalLanguageProposalBase & {
+      readonly command: NaturalLanguageScheduleBlockCommand;
+      readonly modelSuggestions: null;
+      readonly userSelection: null;
+    })
+  | (NaturalLanguageProposalBase & {
+      readonly command: NaturalLanguageRoutineCommand;
+      readonly modelSuggestions: null;
+      readonly userSelection: null;
+    });
 
 export interface NaturalLanguageProposalResult {
   readonly version: "schedule.natural-language/v4";
