@@ -29,7 +29,8 @@ The same package builds a separate `hosted.html` entry for explicit OIDC mode. I
 controls and visual tokens but includes only session bootstrap, active-workspace discovery, sign
 in/out, name-only workspace creation, one current-day snapshot, one fixed first-page backlog
 snapshot, narrow Today/backlog actions, and one backlog form with optional priority, due date, and
-planning duration. The API serves that build from the same origin, so the
+planning duration. Before a first plan it may also read one bounded Plan Fit projection and expose
+an explicit joint-target prefill. The API serves that build from the same origin, so the
 browser never needs CORS, provider tokens, or a second frontend service. The local application and
 its unauthenticated routes are not bundled into the hosted entry.
 
@@ -46,6 +47,11 @@ Pending Today items offer Start, Done, and Skip; started items offer Done and Sk
 offer none.
 An ambiguous Today failure explicitly retries the same timestamp/key, while a stale head discards
 the intent and requires a fresh read. A successful action refreshes both Today and backlog.
+When no current plan exists, Plan Fit loads independently and never blocks the manual window or
+targets. Only **Use …** copies both targets and retains the reviewed evidence key; generation remains
+a separate submit and any later target edits are preserved in the atomic use receipt. Changed
+evidence is rejected server-side and reloaded rather than silently substituted. Insufficient,
+aligned, and dismissed states remain visible explanations without an action.
 The shell cannot regenerate an existing plan, page, filter, edit fields, reopen, cancel, synchronize work,
 rename/delete workspaces, or administer membership.
 
@@ -430,12 +436,13 @@ a dedicated Chromium job and retains traces, screenshots, and video when it fail
 
 The hosted verifier builds its isolated entry and uses a strict in-browser API double to exercise
 signed-out and authenticated capture, exact request verification, workspace selection, Today
-first-plan generation, completion, and mobile layout. The missing-plan form uses the browser IANA
+first-plan generation, explicit Plan Fit prefill, completion, and mobile layout. The missing-plan form uses the browser IANA
 zone, one editable same-day window, and independent minute/task caps; after generation it disappears
 in favor of the authoritative Today projection and focus moves to the persistent Today heading.
-Ambiguous retries retain the exact request key and
+Ambiguous retries retain the exact request key, reviewed Plan Fit key, and
 window. The PostgreSQL/OIDC composition verifier separately covers the real server/database
-transaction, deterministic replay, and conflicting-input rejection. A staging HTTPS smoke with the selected identity
+transaction, deterministic replay, conflicting-input rejection, and one exact atomic Plan Fit use
+receipt after a read-only guidance request. A staging HTTPS smoke with the selected identity
 provider remains required.
 
 ## Deliberately deferred

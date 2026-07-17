@@ -174,6 +174,34 @@
   margin-top: 4px;
 }
 
+.hosted-plan-fit-state,
+.hosted-plan-fit-suggestion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.hosted-plan-fit-suggestion {
+  padding: 12px;
+  background: var(--accent-soft);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+}
+
+.hosted-plan-fit-suggestion p {
+  margin: 2px 0 0;
+  line-height: 1.45;
+}
+
+.hosted-plan-fit-state .button,
+.hosted-plan-fit-suggestion .button {
+  flex: none;
+}
+
 .hosted-plan-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -316,6 +344,18 @@
 
   .hosted-plan-fields {
     grid-template-columns: 1fr;
+  }
+
+  .hosted-plan-fit-state,
+  .hosted-plan-fit-suggestion {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .hosted-plan-fit-state .button,
+  .hosted-plan-fit-suggestion .button {
+    align-self: flex-start;
+    min-height: 44px;
   }
 
   .hosted-plan-fields input {

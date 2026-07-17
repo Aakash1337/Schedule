@@ -12,6 +12,7 @@ const apiMocks = vi.hoisted(() => ({
   createWorkspace: vi.fn(),
   listWorkItems: vi.fn(),
   getToday: vi.fn(),
+  getDailyPlanFitInsight: vi.fn(),
   generateToday: vi.fn(),
   recordTodayActivity: vi.fn(),
   createWorkItem: vi.fn(),
@@ -40,6 +41,16 @@ beforeEach(() => {
     headVersion: null,
     items: [],
     totalMinutes: 0,
+  });
+  apiMocks.getDailyPlanFitInsight.mockResolvedValue({
+    forDate: todayKey(),
+    status: "insufficient_history",
+    disposition: "available",
+    sampleCount: 0,
+    minimumSamples: 3,
+    suggestedTargetMinutes: null,
+    suggestedTargetTaskCount: null,
+    insightKey: null,
   });
   apiMocks.recordTodayActivity.mockResolvedValue(undefined);
   apiMocks.generateToday.mockResolvedValue(undefined);
@@ -218,6 +229,11 @@ describe("hosted capture shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Build today’s plan" })).toBeInTheDocument();
     expect(screen.getByText(browserTimeZone())).toBeInTheDocument();
+    expect(
+      await screen.findByText("Plan Fit needs 3 resolved plans; 0 available.", {
+        selector: ".hosted-plan-fit-state",
+      }),
+    ).toBeInTheDocument();
     await user.clear(screen.getByLabelText("Work window starts"));
     await user.type(screen.getByLabelText("Work window starts"), "10:00");
     await user.clear(screen.getByLabelText("Work window ends"));
@@ -236,6 +252,7 @@ describe("hosted capture shell", () => {
       },
       targetMinutes: 240,
       targetTaskCount: 5,
+      planFitInsightKey: null,
       idempotencyKey: expect.any(String),
     });
     expect(await screen.findByText("Built today’s plan.")).toBeInTheDocument();
@@ -243,6 +260,173 @@ describe("hosted capture shell", () => {
     expect(screen.getByText("1h 15m · Pending")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Today" })).toHaveFocus();
     expect(screen.queryByRole("heading", { name: "Build today’s plan" })).not.toBeInTheDocument();
+  });
+
+  it("prefills hosted Plan Fit targets only after explicit use and preserves its exact key", async () => {
+    const user = userEvent.setup();
+    const date = todayKey();
+    const insightKey = "a".repeat(64);
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.getDailyPlanFitInsight.mockResolvedValue({
+      forDate: date,
+      status: "suggested",
+      disposition: "available",
+      sampleCount: 3,
+      minimumSamples: 3,
+      suggestedTargetMinutes: 90,
+      suggestedTargetTaskCount: 2,
+      insightKey,
+    });
+
+    render(<HostedApp />);
+
+    const useSuggestion = await screen.findByRole("button", { name: "Use 1h 30m and 2 tasks" });
+    expect(screen.getByRole("spinbutton", { name: "Time budget (minutes)" })).toHaveValue(180);
+    expect(screen.getByRole("spinbutton", { name: "Task limit" })).toHaveValue(4);
+    expect(apiMocks.generateToday).not.toHaveBeenCalled();
+
+    await user.click(useSuggestion);
+    expect(screen.getByRole("spinbutton", { name: "Time budget (minutes)" })).toHaveValue(90);
+    expect(screen.getByRole("spinbutton", { name: "Task limit" })).toHaveValue(2);
+    expect(screen.getByRole("spinbutton", { name: "Time budget (minutes)" })).toHaveFocus();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Using 1h 30m and 2 tasks. You can still edit both limits.",
+    );
+    expect(screen.getByRole("button", { name: "Suggestion applied" })).toBeDisabled();
+    expect(apiMocks.generateToday).not.toHaveBeenCalled();
+
+    await user.clear(screen.getByRole("spinbutton", { name: "Time budget (minutes)" }));
+    await user.type(screen.getByRole("spinbutton", { name: "Time budget (minutes)" }), "105");
+    await user.click(screen.getByRole("button", { name: "Build plan" }));
+    expect(apiMocks.generateToday).toHaveBeenCalledWith(
+      personal.id,
+      date,
+      expect.objectContaining({
+        targetMinutes: 105,
+        targetTaskCount: 2,
+        planFitInsightKey: insightKey,
+      }),
+    );
+  });
+
+  it("keeps manual planning usable while failed Plan Fit guidance is explicitly retried", async () => {
+    const user = userEvent.setup();
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.getDailyPlanFitInsight
+      .mockRejectedValueOnce(new Error("private network detail"))
+      .mockResolvedValueOnce({
+        forDate: todayKey(),
+        status: "suggested",
+        disposition: "available",
+        sampleCount: 3,
+        minimumSamples: 3,
+        suggestedTargetMinutes: 75,
+        suggestedTargetTaskCount: 2,
+        insightKey: "b".repeat(64),
+      });
+
+    render(<HostedApp />);
+
+    expect(
+      await screen.findByText("Plan Fit guidance is unavailable.", {
+        selector: ".hosted-plan-fit-state > span",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Plan Fit guidance is unavailable.");
+    expect(screen.getByRole("button", { name: "Build plan" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Retry guidance" }));
+    expect(await screen.findByRole("button", { name: "Use 1h 15m and 2 tasks" })).toBeEnabled();
+    expect(apiMocks.generateToday).not.toHaveBeenCalled();
+  });
+
+  it("keeps the form visible and reloads guidance after a stale Plan Fit selection", async () => {
+    const user = userEvent.setup();
+    const date = todayKey();
+    const firstKey = "c".repeat(64);
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.getDailyPlanFitInsight
+      .mockResolvedValueOnce({
+        forDate: date,
+        status: "suggested",
+        disposition: "available",
+        sampleCount: 3,
+        minimumSamples: 3,
+        suggestedTargetMinutes: 90,
+        suggestedTargetTaskCount: 2,
+        insightKey: firstKey,
+      })
+      .mockResolvedValue({
+        forDate: date,
+        status: "suggested",
+        disposition: "available",
+        sampleCount: 4,
+        minimumSamples: 3,
+        suggestedTargetMinutes: 105,
+        suggestedTargetTaskCount: 3,
+        insightKey: "d".repeat(64),
+      });
+    apiMocks.generateToday.mockRejectedValueOnce(
+      new HostedApiError(
+        409,
+        "daily_plan_fit_insight.evidence_conflict",
+        "private evidence detail",
+      ),
+    );
+
+    render(<HostedApp />);
+
+    await user.click(await screen.findByRole("button", { name: "Use 1h 30m and 2 tasks" }));
+    await user.click(screen.getByRole("button", { name: "Build plan" }));
+    expect(
+      await screen.findByText(
+        "Recent plan history changed. Review the refreshed Plan Fit guidance.",
+        { selector: ".hosted-plan-fit-state" },
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Recent plan history changed. Review the refreshed Plan Fit guidance.",
+    );
+    expect(screen.getByRole("heading", { name: "Build today’s plan" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Use 1h 45m and 3 tasks" })).toBeEnabled();
+    expect(apiMocks.generateToday).toHaveBeenCalledWith(
+      personal.id,
+      date,
+      expect.objectContaining({ planFitInsightKey: firstKey }),
+    );
+    expect(apiMocks.getDailyPlanFitInsight).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [
+      { status: "aligned", disposition: "available", insightKey: null },
+      "Recent completed plans are aligned; no lower targets are suggested.",
+    ],
+    [
+      { status: "suggested", disposition: "dismissed", insightKey: "e".repeat(64) },
+      "The current Plan Fit suggestion is dismissed.",
+    ],
+  ] as const)("explains non-actionable hosted Plan Fit state %#", async (state, message) => {
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.getDailyPlanFitInsight.mockResolvedValue({
+      forDate: todayKey(),
+      sampleCount: 3,
+      minimumSamples: 3,
+      suggestedTargetMinutes: state.status === "suggested" ? 90 : null,
+      suggestedTargetTaskCount: state.status === "suggested" ? 2 : null,
+      ...state,
+    });
+
+    render(<HostedApp />);
+
+    expect(
+      await screen.findByText(message, { selector: ".hosted-plan-fit-state" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(message);
+    expect(apiMocks.generateToday).not.toHaveBeenCalled();
   });
 
   it("retries an ambiguous first-plan request with the exact same intent", async () => {

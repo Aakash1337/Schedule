@@ -5,6 +5,7 @@ const workspaces = [
   { id: "00000000-0000-4000-8000-000000000001", name: "My Schedule" },
   { id: "00000000-0000-4000-8000-000000000002", name: "Studio" },
 ];
+const planFitInsightKey = "a".repeat(64);
 
 test("captures one hosted backlog item with responsive request verification", async ({ page }) => {
   let capturedBody: unknown;
@@ -18,6 +19,8 @@ test("captures one hosted backlog item with responsive request verification", as
   let capturedPlanCsrf: string | undefined;
   let capturedPlanIdempotency: string | undefined;
   let requestedTodayDate: string | null = null;
+  let requestedPlanFitPath: string | null = null;
+  let requestedPlanFitDate: string | null = null;
   const existing = {
     id: "00000000-0000-4000-8000-000000000009",
     title: `Review-${"outline".repeat(24)}`,
@@ -62,6 +65,23 @@ test("captures one hosted backlog item with responsive request verification", as
     }
     if (request.method() === "GET" && url.pathname.endsWith("/work-items")) {
       await route.fulfill({ json: { items: backlog, limit: 20, offset: 0 } });
+      return;
+    }
+    if (request.method() === "GET" && url.pathname.endsWith("/daily-plan-fit-insight")) {
+      requestedPlanFitPath = url.pathname;
+      requestedPlanFitDate = url.searchParams.get("forDate");
+      await route.fulfill({
+        json: {
+          forDate: url.searchParams.get("forDate"),
+          status: "suggested",
+          disposition: "available",
+          sampleCount: 3,
+          minimumSamples: 3,
+          suggestedTargetMinutes: 90,
+          suggestedTargetTaskCount: 2,
+          insightKey: planFitInsightKey,
+        },
+      });
       return;
     }
     if (request.method() === "GET" && url.pathname.endsWith("/today")) {
@@ -132,6 +152,17 @@ test("captures one hosted backlog item with responsive request verification", as
   expect(requestedTodayDate).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
   await page.getByRole("combobox", { name: "Workspace" }).selectOption(workspaces[1]!.id);
   await page.setViewportSize({ width: 360, height: 740 });
+  const usePlanFit = page.getByRole("button", { name: "Use 1h 30m and 2 tasks" });
+  await expect(usePlanFit).toBeVisible();
+  expect(requestedPlanFitPath).toBe(
+    `/v1/hosted/workspaces/${workspaces[1]!.id}/daily-plan-fit-insight`,
+  );
+  expect(requestedPlanFitDate).toBe(requestedTodayDate);
+  expect((await usePlanFit.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  await usePlanFit.click();
+  await expect(page.getByRole("spinbutton", { name: "Time budget (minutes)" })).toHaveValue("90");
+  await expect(page.getByRole("spinbutton", { name: "Task limit" })).toHaveValue("2");
+  expect(capturedPlanBody).toBeUndefined();
   await page.getByLabel("Work window starts").fill("10:00");
   await page.getByLabel("Work window ends").fill("16:30");
   await page.getByRole("spinbutton", { name: "Time budget (minutes)" }).fill("240");
@@ -206,6 +237,7 @@ test("captures one hosted backlog item with responsive request verification", as
     },
     targetMinutes: 240,
     targetTaskCount: 5,
+    planFitInsightKey,
   });
   const planWindow = (capturedPlanBody as { window: { startsAt: string; endsAt: string } }).window;
   expect(new Date(planWindow.endsAt).getTime() - new Date(planWindow.startsAt).getTime()).toBe(
@@ -295,6 +327,21 @@ test("creates the first hosted workspace through exact request verification", as
           headVersion: null,
           items: [],
           totalMinutes: 0,
+        },
+      });
+      return;
+    }
+    if (request.method() === "GET" && url.pathname.endsWith("/daily-plan-fit-insight")) {
+      await route.fulfill({
+        json: {
+          forDate: url.searchParams.get("forDate"),
+          status: "insufficient_history",
+          disposition: "available",
+          sampleCount: 0,
+          minimumSamples: 3,
+          suggestedTargetMinutes: null,
+          suggestedTargetTaskCount: null,
+          insightKey: null,
         },
       });
       return;

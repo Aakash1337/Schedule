@@ -162,7 +162,12 @@ describe("API infrastructure", () => {
         listWorkItems: vi.fn(),
         updateWorkItemStatus: vi.fn(),
       },
-      today: { getToday: vi.fn(), recordActivity: vi.fn() },
+      today: {
+        getToday: vi.fn(),
+        getDailyPlanFitInsight: vi.fn(),
+        generateToday: vi.fn(),
+        recordActivity: vi.fn(),
+      },
       webShell: {
         html: '<!doctype html><div id="root"></div><script src="/assets/hosted.js"></script>',
         icon: Buffer.from("<svg></svg>"),
@@ -227,6 +232,12 @@ describe("API infrastructure", () => {
     });
     expect(protectedToday.statusCode).toBe(401);
     expect(hostedApi.today.getToday).not.toHaveBeenCalled();
+    const protectedPlanFit = await protectedApp.inject({
+      method: "GET",
+      url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/daily-plan-fit-insight?forDate=2026-07-16",
+    });
+    expect(protectedPlanFit.statusCode).toBe(401);
+    expect(hostedApi.today.getDailyPlanFitInsight).not.toHaveBeenCalled();
     const protectedTodayActivity = await protectedApp.inject({
       method: "POST",
       url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/today/00000000-0000-4000-8000-000000000002/activity-events?date=2026-07-16",

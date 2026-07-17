@@ -48,11 +48,23 @@ export interface HostedToday {
   readonly totalMinutes: number;
 }
 
+export interface HostedDailyPlanFitInsight {
+  readonly forDate: string;
+  readonly status: "insufficient_history" | "aligned" | "suggested";
+  readonly disposition: "available" | "dismissed";
+  readonly sampleCount: number;
+  readonly minimumSamples: number;
+  readonly suggestedTargetMinutes: number | null;
+  readonly suggestedTargetTaskCount: number | null;
+  readonly insightKey: string | null;
+}
+
 export interface HostedGenerateToday {
   readonly timeZone: string;
   readonly window: Readonly<{ startsAt: string; endsAt: string }>;
   readonly targetMinutes: number;
   readonly targetTaskCount: number;
+  readonly planFitInsightKey: string | null;
   readonly idempotencyKey: string;
 }
 
@@ -140,6 +152,10 @@ export const hostedApi = {
     request<HostedToday>(
       `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/today?date=${encodeURIComponent(date)}`,
     ),
+  getDailyPlanFitInsight: (workspaceId: string, forDate: string) =>
+    request<HostedDailyPlanFitInsight>(
+      `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/daily-plan-fit-insight?forDate=${encodeURIComponent(forDate)}`,
+    ),
   generateToday: (workspaceId: string, date: string, command: HostedGenerateToday) =>
     request<void>(
       `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/today?date=${encodeURIComponent(date)}`,
@@ -150,6 +166,7 @@ export const hostedApi = {
           window: command.window,
           targetMinutes: command.targetMinutes,
           targetTaskCount: command.targetTaskCount,
+          planFitInsightKey: command.planFitInsightKey,
         },
         csrf: true,
         idempotencyKey: command.idempotencyKey,

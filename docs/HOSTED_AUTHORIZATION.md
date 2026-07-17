@@ -455,6 +455,21 @@ The browser supplies its current local date because
 workspaces do not yet own a persisted time zone. Authorization failures use the same generic tenant
 denial, `Cache-Control: no-store`, and read-side revocation boundary as the backlog snapshot.
 
+## Bounded hosted Plan Fit guidance
+
+`GET /v1/hosted/workspaces/:workspaceId/daily-plan-fit-insight?forDate=YYYY-MM-DD` accepts exactly
+one real Gregorian local date behind the same cookie and active-membership boundary. It reuses the
+deterministic 90-day Plan Fit calculation but projects only the requested date, status, disposition,
+sample/minimum counts, nullable joint targets, and exact nullable evidence key. It omits historical
+plans, item/activity data, typical values, thresholds, feedback timestamps, and outcome history.
+Reading or displaying the projection writes no feedback and changes no planning input.
+
+The hosted shell requests guidance only while the selected day has no current plan. A suggestion is
+never applied automatically: **Use …** copies both targets and retains its exact key, after which the
+user may still edit either target. Insufficient, aligned, or locally dismissed guidance is explained
+as read-only status and changes nothing. A failed guidance read leaves manual generation usable and
+independently retryable.
+
 ## Transaction-coupled hosted first-plan generation
 
 `POST /v1/hosted/workspaces/:workspaceId/today?date=YYYY-MM-DD` accepts one strict body containing
@@ -462,8 +477,9 @@ an IANA `timeZone`, one offset-bearing `{ startsAt, endsAt }` window, a positive
 bounded to 1–1,440, and a positive `targetTaskCount` bounded to 1–64. Both ends must define a
 positive window wholly inside the requested date in that zone. Unknown fields, multiple windows,
 planner configuration, energy, contexts, source choices, minimums, maximums, revisions, and
-Plan Fit inputs are rejected. A required 1–160 character `Idempotency-Key` is not persisted as a
-separate receipt; the runtime prefixes it into the existing deterministic planner seed.
+arbitrary Plan Fit fields are rejected. The only optional Plan Fit input is a nullable exact
+64-character lowercase evidence key. A required 1–160 character `Idempotency-Key` is not persisted
+as a separate request receipt; the runtime prefixes it into the existing deterministic planner seed.
 
 The runtime fixes balanced fit, null energy, empty contexts, and revision 1, then invokes the
 existing `GenerateDailyPlan` through `TransactionallyAuthorizedHostedUnitOfWork`. The ordinary
@@ -473,6 +489,13 @@ request/key replay returns the existing revision with `204` and no second plan. 
 input after revision 1 exists fails with `409`; the browser retains the exact intent only across an
 ambiguous transport failure and otherwise refreshes Today. There is no regeneration, multi-window
 calendar exclusion, stored planning profile, or hosted planner-settings surface.
+
+When the optional Plan Fit key is present, `GenerateDailyPlan` locks the workspace feedback stream,
+recalculates the bounded evidence, and requires the same available suggestion before inserting the
+plan. The exact key, evidence summary, and final user-edited targets are appended as one `used`
+receipt in that same authorized transaction. A stale/dismissed key creates neither plan nor receipt;
+an exact ambiguous replay requires the matching receipt and creates no duplicate. Hosted mode does
+not expose dismissal/reset or outcome-history management.
 
 ## Transaction-coupled hosted Today action
 
@@ -505,11 +528,12 @@ framing denial, and MIME sniffing denial. Fingerprinted assets are immutable for
 requests sit outside the hosted API's per-source request budget.
 
 The browser reads only `{ authenticated }`, the active workspace page, the first 20 backlog item
-IDs/titles/versions plus priority/due-date/planning-duration summaries, the narrow current-day projection and concurrency fences above, the created workspace, and the created
-work item. It never receives provider tokens, user or session identifiers, membership state, or
+IDs/titles/versions plus priority/due-date/planning-duration summaries, the narrow current-day
+projection and concurrency fences above, the bounded Plan Fit projection while no plan exists, the
+created workspace, and the created work item. It never receives provider tokens, user or session identifiers, membership state, or
 roles. A signed-in user may create or choose one active workspace, review Today and the bounded
 backlog snapshot, submit one title with optional scheduling fields, move one visible backlog item to started or done, or
-build the missing current-day revision from one editable window and two limits, or
+explicitly prefill Plan Fit targets and build the missing current-day revision from one editable window and two limits, or
 start/complete/skip one actionable Today item. The script
 copies the exact host-only CSRF cookie into the existing header for all strict mutations; the server
 remains authoritative for identity, membership, defaults, validation, and optimistic versions. The
@@ -522,9 +546,10 @@ There is still no WebFinger issuer discovery, workspace rename/delete or members
 broader hosted product interface or route set, account-management API, role model, synchronization
 protocol, or verified public deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
-principal. Name-only workspace creation, narrow scheduling-field work creation, status-only update, and the
-first-plan generation and start/complete/skip Today action are the only transaction-coupled hosted mutations. The bounded backlog and current-day projections are the
-only hosted product-data reads; all other product routes remain local-only and require their own
+principal. Name-only workspace creation, narrow scheduling-field work creation, status-only update,
+first-plan generation, and start/complete/skip Today action are the only transaction-coupled hosted
+mutations. The bounded backlog, current-day, and Plan Fit projections are the only hosted
+product-data reads; all other product routes remain local-only and require their own
 authority before future hosted exposure.
 
 ## Concrete OIDC composition
