@@ -30,7 +30,13 @@ class HermesInstallError(Exception):
 
 def default_hermes_home() -> Path:
     configured = os.environ.get("HERMES_HOME", "").strip()
-    return Path(configured).expanduser() if configured else Path.home() / ".hermes"
+    if configured:
+        return Path(configured).expanduser()
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+        return base / "hermes"
+    return Path.home() / ".hermes"
 
 
 def _digest(path: Path) -> str:

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import importlib
+import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from support import PACKAGE_NAME, PLUGIN_ROOT
 
@@ -14,6 +17,50 @@ installer = importlib.import_module(f"{PACKAGE_NAME}.install")
 
 
 class HermesInstallTests(unittest.TestCase):
+    def test_uses_the_native_windows_home_when_no_override_is_set(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                patch.dict(os.environ, {"LOCALAPPDATA": temporary}, clear=True),
+                patch.object(sys, "platform", "win32"),
+            ):
+                self.assertEqual(installer.default_hermes_home(), Path(temporary) / "hermes")
+
+    def test_explicit_home_still_wins_on_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            configured = Path(temporary) / "configured"
+            with (
+                patch.dict(
+                    os.environ,
+                    {"HERMES_HOME": str(configured), "LOCALAPPDATA": temporary},
+                    clear=True,
+                ),
+                patch.object(sys, "platform", "win32"),
+            ):
+                self.assertEqual(installer.default_hermes_home(), configured)
+
+    def test_windows_home_has_a_stable_fallback_without_local_app_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            user_home = Path(temporary)
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.object(sys, "platform", "win32"),
+                patch.object(installer.Path, "home", return_value=user_home),
+            ):
+                self.assertEqual(
+                    installer.default_hermes_home(),
+                    user_home / "AppData" / "Local" / "hermes",
+                )
+
+    def test_non_windows_home_keeps_the_posix_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            user_home = Path(temporary)
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.object(sys, "platform", "linux"),
+                patch.object(installer.Path, "home", return_value=user_home),
+            ):
+                self.assertEqual(installer.default_hermes_home(), user_home / ".hermes")
+
     def test_installs_only_runtime_and_reminder_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)

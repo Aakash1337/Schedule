@@ -560,7 +560,7 @@ lock waits, row-locked revocation linearization, concurrent exclusion, retry and
 transitions, stale-token fencing, indexed expiry recovery, source invalidation, tenant isolation,
 privacy-field exclusion, and empty-claim replay.
 
-The separate Hermes adapter verifier exercises the native plugin boundary plus a disposable
+The separate Hermes adapter verifier exercises the repository plugin boundary plus a disposable
 PostgreSQL and real Fastify one-off-reminder lifecycle:
 
 ```powershell
@@ -569,6 +569,7 @@ pnpm verify:hermes-adapter
 
 It proves bounded discovery, no mutation before explicit confirmation, exact replay of create,
 reschedule, and cancellation, and pending-intent invalidation. It does not contact WhatsApp; see
+[HERMES.md](./HERMES.md#install-and-enable) for the installed-runtime registration probe and
 [HERMES.md](./HERMES.md#verification-and-safe-rollout) for the operator-run delivery smoke.
 
 ## Retention and cleanup
