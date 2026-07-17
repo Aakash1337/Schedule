@@ -46,7 +46,7 @@ Pending Today items offer Start, Done, and Skip; started items offer Done and Sk
 offer none.
 An ambiguous Today failure explicitly retries the same timestamp/key, while a stale head discards
 the intent and requires a fresh read. A successful action refreshes both Today and backlog.
-The shell cannot generate a plan, page, filter, edit fields, reopen, cancel, synchronize work,
+The shell cannot regenerate an existing plan, page, filter, edit fields, reopen, cancel, synchronize work,
 rename/delete workspaces, or administer membership.
 
 ## Information architecture

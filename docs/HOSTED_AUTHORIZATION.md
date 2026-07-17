@@ -513,7 +513,7 @@ build the missing current-day revision from one editable window and two limits, 
 start/complete/skip one actionable Today item. The script
 copies the exact host-only CSRF cookie into the existing header for all strict mutations; the server
 remains authoritative for identity, membership, defaults, validation, and optimistic versions. The
-page cannot regenerate a plan, page, filter, generally edit fields, reopen, cancel, synchronize work,
+page cannot regenerate an existing plan, page, filter, generally edit fields, reopen, cancel, synchronize work,
 rename/delete a workspace, or administer membership or accounts.
 
 ## Deliberately absent
