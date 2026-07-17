@@ -2,6 +2,7 @@ import {
   DomainError,
   browserSessionId,
   createWorkItem,
+  localDate,
   updateWorkItem,
   userId,
   workspaceId,
@@ -77,17 +78,25 @@ async function createHostedApp(
   return app;
 }
 
-describe("dormant hosted work-item routes", () => {
-  it("derives canonical authority from the boundary and ignores spoofed headers", async () => {
+describe("hosted work-item routes", () => {
+  it("derives canonical authority and applies narrow scheduling defaults", async () => {
     const created = createWorkItem({
       workspaceId: WORKSPACE_ID,
       title: "Hosted task",
-      description: "Created through the dormant route",
       priority: "high",
+      dueOn: localDate("2026-07-20"),
       planningDurationMinutes: 45,
       now: new Date("2026-07-15T09:00:00.000Z"),
     });
-    const createWorkItemService = vi.fn(async () => created);
+    const defaulted = createWorkItem({
+      workspaceId: WORKSPACE_ID,
+      title: "Default task",
+      now: new Date("2026-07-15T09:01:00.000Z"),
+    });
+    const createWorkItemService = vi
+      .fn()
+      .mockResolvedValueOnce(created)
+      .mockResolvedValueOnce(defaulted);
     const app = await createHostedApp({ createWorkItem: createWorkItemService });
 
     const response = await app.inject({
@@ -96,28 +105,63 @@ describe("dormant hosted work-item routes", () => {
       headers: { "x-user-id": OTHER_USER_ID, "x-workspace-id": OTHER_WORKSPACE_ID },
       payload: {
         title: "  Hosted task  ",
-        description: "Created through the dormant route",
         priority: "high",
+        dueOn: "2026-07-20",
         planningDurationMinutes: 45,
       },
     });
 
     expect(response.statusCode).toBe(201);
     expect(response.headers["cache-control"]).toBe("no-store");
-    expect(response.json()).toMatchObject({ id: created.id, workspaceId: WORKSPACE_ID });
-    expect(createWorkItemService).toHaveBeenCalledWith({
+    expect(response.json()).toEqual({
+      id: created.id,
+      title: created.title,
+      version: created.version,
+      priority: "high",
+      dueOn: "2026-07-20",
+      planningDurationMinutes: 45,
+    });
+    expect(response.body).not.toContain(WORKSPACE_ID);
+    expect(createWorkItemService).toHaveBeenNthCalledWith(1, {
       authorization,
       command: {
         parentWorkItemId: null,
         title: "Hosted task",
-        description: "Created through the dormant route",
+        description: null,
         status: "backlog",
         priority: "high",
-        dueOn: null,
+        dueOn: localDate("2026-07-20"),
         planningDurationMinutes: 45,
       },
     });
     expect(Object.isFrozen(createWorkItemService.mock.calls[0]?.[0].authorization)).toBe(true);
+
+    const defaultResponse = await app.inject({
+      method: "POST",
+      url: HOSTED_WORK_ITEM_COLLECTION_ROUTE.replace(":workspaceId", WORKSPACE_ID),
+      payload: { title: "Default task" },
+    });
+    expect(defaultResponse.statusCode).toBe(201);
+    expect(defaultResponse.json()).toEqual({
+      id: defaulted.id,
+      title: defaulted.title,
+      version: defaulted.version,
+      priority: "none",
+      dueOn: null,
+      planningDurationMinutes: null,
+    });
+    expect(createWorkItemService).toHaveBeenNthCalledWith(2, {
+      authorization,
+      command: {
+        parentWorkItemId: null,
+        title: "Default task",
+        description: null,
+        status: "backlog",
+        priority: "none",
+        dueOn: null,
+        planningDurationMinutes: null,
+      },
+    });
   });
 
   it("returns one redacted fixed backlog page from canonical authority", async () => {
@@ -125,6 +169,9 @@ describe("dormant hosted work-item routes", () => {
       workspaceId: WORKSPACE_ID,
       title: "Visible backlog title",
       description: "private description",
+      priority: "medium",
+      dueOn: localDate("2026-07-21"),
+      planningDurationMinutes: 30,
       now: new Date("2026-07-15T09:00:00.000Z"),
     });
     const listWorkItems = vi
@@ -148,7 +195,16 @@ describe("dormant hosted work-item routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.json()).toEqual({
-      items: [{ id: first.id, title: first.title, version: first.version }],
+      items: [
+        {
+          id: first.id,
+          title: first.title,
+          version: first.version,
+          priority: "medium",
+          dueOn: "2026-07-21",
+          planningDurationMinutes: 30,
+        },
+      ],
       limit: 20,
       offset: 0,
     });
@@ -168,6 +224,12 @@ describe("dormant hosted work-item routes", () => {
       { title: "Spoof", userId: OTHER_USER_ID },
       { title: "" },
       { title: "Valid", planningDurationMinutes: 0 },
+      { title: "Invalid date", dueOn: "2026-02-30" },
+      { title: "Invalid priority", priority: "critical" },
+      { title: "Too long", planningDurationMinutes: 43_201 },
+      { title: "Too broad", description: "private" },
+      { title: "Too broad", status: "done" },
+      { title: "Too broad", parentWorkItemId: "00000000-0000-4000-8000-000000000401" },
     ]) {
       const response = await app.inject({
         method: "POST",

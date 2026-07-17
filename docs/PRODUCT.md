@@ -714,10 +714,11 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   denial, bounded client-address throttling, direct pinned OIDC HTTPS, startup preflight/cleanup, and
   same-transaction user/session/workspace/membership reauthorization.
 - Implemented narrow hosted reads: a signed-in principal can list only active workspace memberships,
-  the fixed first 20 backlog titles, and one existing browser-local current-day plan projection with
+  the fixed first 20 backlog items with priority/due-date/planning-duration summaries, and one existing browser-local current-day plan projection with
   only the IDs/head fence needed for mutation and no identity, role, planner-reason, or time-zone metadata.
 - Implemented narrow hosted UI: a same-origin capture shell can sign in, select one active
-  workspace or create another, review Today and the first 20 backlog titles, create one title, and
+  workspace or create another, review Today and the first 20 backlog items, create one title with
+  optional priority, due date, and planning duration, and
   move a visible backlog item to started or done, and start, complete, or skip one actionable Today item
   through transaction-authorized routes with exact retry semantics; it exposes
   no provider tokens, identity metadata, general editing, workspace rename/delete or membership

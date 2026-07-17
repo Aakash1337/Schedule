@@ -4,7 +4,7 @@ import type {
   UpdateHostedWorkItemStatusCommand,
   WorkItemPage,
 } from "@schedule/application";
-import { localDate, workItemId, type WorkItem } from "@schedule/domain";
+import { isValidLocalDate, localDate, workItemId, type WorkItem } from "@schedule/domain";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
@@ -15,7 +15,6 @@ import {
   withHostedWorkspaceNotFoundRedacted,
 } from "./hosted-auth-boundary.js";
 import { parseRequest } from "./http-errors.js";
-import { workItemCreateBodySchema } from "./product-routes.js";
 
 const canonicalUuid = z
   .string()
@@ -26,6 +25,16 @@ const hostedWorkItemParams = z.strictObject({
   workItemId: canonicalUuid,
 });
 const emptyQuery = z.strictObject({});
+const hostedWorkItemCreateBody = z.strictObject({
+  title: z.string().trim().min(1).max(240),
+  priority: z.enum(["none", "low", "medium", "high", "urgent"]).default("none"),
+  dueOn: z
+    .string()
+    .refine(isValidLocalDate, "Expected a valid Gregorian date in YYYY-MM-DD format.")
+    .nullable()
+    .default(null),
+  planningDurationMinutes: z.number().int().positive().max(43_200).nullable().default(null),
+});
 const hostedWorkItemStatusBody = z.strictObject({
   expectedVersion: z.number().int().min(1).max(2_147_483_647),
   status: z.enum(["in_progress", "done"]),
@@ -54,6 +63,11 @@ export interface HostedWorkItemServices {
   updateWorkItemStatus(input: HostedUpdateWorkItemStatusInput): Promise<WorkItem>;
 }
 
+function hostedWorkItemProjection(item: WorkItem) {
+  const { id, title, version, priority, dueOn, planningDurationMinutes } = item;
+  return { id, title, version, priority, dueOn, planningDurationMinutes };
+}
+
 async function registerHostedWorkItemRoutes(
   app: FastifyInstance,
   access: HostedWorkspaceRequestAccess,
@@ -66,7 +80,7 @@ async function registerHostedWorkItemRoutes(
       services.listWorkItems({ authorization }),
     );
     return {
-      items: page.items.map(({ id, title, version }) => ({ id, title, version })),
+      items: page.items.map(hostedWorkItemProjection),
       limit: page.limit,
       offset: page.offset,
     };
@@ -74,23 +88,22 @@ async function registerHostedWorkItemRoutes(
 
   app.post(HOSTED_WORK_ITEM_COLLECTION_ROUTE, async (request, reply) => {
     const authorization = access.authorization(request);
-    const body = parseRequest(workItemCreateBodySchema, request.body);
+    const body = parseRequest(hostedWorkItemCreateBody, request.body);
     const created = await withHostedWorkspaceNotFoundRedacted(() =>
       services.createWorkItem({
         authorization,
         command: {
-          parentWorkItemId:
-            body.parentWorkItemId === null ? null : workItemId(body.parentWorkItemId),
+          parentWorkItemId: null,
           title: body.title,
-          description: body.description,
-          status: body.status,
+          description: null,
+          status: "backlog",
           priority: body.priority,
           dueOn: body.dueOn === null ? null : localDate(body.dueOn),
           planningDurationMinutes: body.planningDurationMinutes,
         },
       }),
     );
-    return reply.code(201).send(created);
+    return reply.code(201).send(hostedWorkItemProjection(created));
   });
 
   app.patch(HOSTED_WORK_ITEM_RESOURCE_ROUTE, async (request, reply) => {
