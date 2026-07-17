@@ -147,6 +147,7 @@ class ScheduleClientTests(unittest.TestCase):
             {**guidance, "insightKey": "MUST_NOT_ESCAPE"},
             {**guidance, "forDate": "2026-07-16"},
             {**guidance, "sampleCount": True},
+            {**guidance, "minimumSamples": 3.0},
             {**guidance, "minimumSamples": 4},
             {**guidance, "status": "insufficient_history"},
             {**guidance, "disposition": "dismissed"},

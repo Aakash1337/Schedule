@@ -216,6 +216,8 @@ class ScheduleClient:
             or isinstance(sample_count, bool)
             or not isinstance(sample_count, int)
             or not (0 <= sample_count <= _PLAN_FIT_MAXIMUM_SAMPLES)
+            or isinstance(minimum_samples, bool)
+            or not isinstance(minimum_samples, int)
             or minimum_samples != _PLAN_FIT_MINIMUM_SAMPLES
             or (status == "insufficient_history") != (sample_count < minimum_samples)
             or (disposition == "dismissed" and status != "suggested")

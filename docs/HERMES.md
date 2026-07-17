@@ -495,7 +495,7 @@ pnpm verify:hermes-adapter
 ```
 
 It runs deterministic Python tests plus a disposable PostgreSQL and real Fastify integration flow.
-Through the production Python client, the gate first reads a strict non-actionable Plan Fit
+Through the production Python client, the gate first reads a strict non-mutating Plan Fit
 projection without writing or entering confirmation state, then creates, discovers, reschedules, and
 cancels one reminder. It verifies no mutation before confirmation, exact receipt replay, versions
 `1` through `3`, one persistent source row, and pending-intent invalidation after update and
