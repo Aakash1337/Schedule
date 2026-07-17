@@ -17,6 +17,11 @@ export interface HostedRequestAuthenticator {
   authenticate(request: FastifyRequest): Promise<BrowserSessionPrincipal | null>;
 }
 
+export interface HostedRequestCsrfGuard {
+  /** Safe methods pass; unsafe browser requests require the configured Origin and CSRF proof. */
+  verify(request: FastifyRequest): Promise<boolean> | boolean;
+}
+
 export interface HostedWorkspaceAuthorizer {
   execute(
     principal: Pick<BrowserSessionPrincipal, "userId" | "sessionId">,
@@ -31,6 +36,7 @@ export interface HostedWorkspaceRequestAccess {
 
 export interface HostedWorkspaceBoundaryDependencies {
   readonly authenticator: HostedRequestAuthenticator;
+  readonly csrfGuard: HostedRequestCsrfGuard;
   readonly authorizer: HostedWorkspaceAuthorizer;
 }
 
@@ -59,7 +65,7 @@ function principalIsWellFormed(
 
 function publicFailure(
   request: FastifyRequest,
-  status: 401 | 404 | 503,
+  status: 401 | 403 | 404 | 503,
 ): {
   readonly error: { readonly code: string; readonly message: string };
   readonly requestId: string;
@@ -67,6 +73,12 @@ function publicFailure(
   if (status === 401) {
     return {
       error: { code: "hosted.authentication_failed", message: "Authentication failed." },
+      requestId: request.id,
+    };
+  }
+  if (status === 403) {
+    return {
+      error: { code: "hosted.csrf_failed", message: "Request verification failed." },
       requestId: request.id,
     };
   }
@@ -125,6 +137,15 @@ export async function registerHostedWorkspaceBoundary(
 
     hostedApp.addHook("onRequest", async (request, reply) => {
       reply.header("cache-control", "no-store");
+      try {
+        if ((await dependencies.csrfGuard.verify(request)) !== true) {
+          return reply.code(403).send(publicFailure(request, 403));
+        }
+      } catch {
+        request.log.error("hosted request verification failed internally");
+        return reply.code(503).send(publicFailure(request, 503));
+      }
+
       let authentication = authenticationByRequest.get(request);
       if (authentication === undefined) {
         authentication = Promise.resolve().then(() =>

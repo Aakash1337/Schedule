@@ -91,6 +91,20 @@ describe("API infrastructure", () => {
       const response = await app.inject({ method: "GET", url });
       expect(response.statusCode, url).toBe(404);
     }
+
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"] as const) {
+      const response = await app.inject({
+        method,
+        url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/probe",
+        headers: {
+          origin: "https://hosted.schedule.test",
+          cookie:
+            "__Host-schedule_session=00000000-0000-4000-8000-000000000201.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; __Host-schedule_csrf=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "x-schedule-csrf": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        },
+      });
+      expect(response.statusCode, method).toBe(404);
+    }
   });
 
   it("keeps health endpoints independent from the product Host guard", async () => {

@@ -2449,7 +2449,7 @@
         "anchor": "# Hosted identity persistence foundation"
       },
       "limitations": [
-        "The foundation is dormant: no browser route, cookie, identity provider, CSRF policy, or deployment flag exposes it.",
+        "The foundation is dormant: strict cookie and CSRF transport exists, but no browser route, identity provider, or deployment flag exposes it.",
         "Public hosted authentication and synchronization remain deferred, and machine integration credentials remain a separate trust boundary."
       ],
       "evidence": [
@@ -2526,7 +2526,7 @@
         "anchor": "# Dormant hosted request authorization seam"
       },
       "limitations": [
-        "The seam is not registered in buildApp: provider verification, browser cookie and CSRF transport, public end-user routes, transaction-coupled product mutations, and synchronization remain unimplemented.",
+        "The seam and implemented cookie/CSRF transport are not registered in buildApp: provider verification, public end-user routes, transaction-coupled product mutations, and synchronization remain unimplemented.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [
@@ -2540,12 +2540,25 @@
         },
         {
           "level": "unit",
+          "file": "apps/api/src/hosted-browser-session.test.ts",
+          "command": "unit",
+          "anchors": [
+            "resolves exactly one bounded canonical session cookie without trusting spoofed headers",
+            "serializes and clears a host-only server-expiring browser session",
+            "accepts only the exact configured origin and matching double-submit proof",
+            "issues independent script-readable host-only CSRF cookies and clears them exactly"
+          ]
+        },
+        {
+          "level": "unit",
           "file": "apps/api/src/hosted-auth-boundary.test.ts",
           "command": "unit",
           "anchors": [
             "authenticates once and exposes only an immutable authorized context",
             "makes malformed and all denied workspace access indistinguishable",
             "redacts internal %s failures behind one temporary-unavailability response",
+            "rejects unsafe browser requests before authentication and workspace authorization",
+            "crosses the dormant boundary with one real cookie resolution and exact CSRF proof",
             "keeps concurrent request principals isolated",
             "refuses to register an unscoped route inside the hosted workspace boundary"
           ]
