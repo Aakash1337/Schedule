@@ -38,7 +38,7 @@ not authorize these product routes.
   `GET /v1/hosted/workspaces/{workspaceId}/daily-plan-fit-insight?forDate=YYYY-MM-DD` returns only
   bounded deterministic status, sample counts, nullable joint targets, and the exact nullable
   evidence key; reading it writes nothing and exposes no plan or activity history.
-  A strict CSRF-protected `POST` to that same URL creates only revision 1 from one same-local-date
+  A strict CSRF-protected `POST` to the `/today` URL creates only revision 1 from one same-local-date
   offset window, an IANA time zone, `targetMinutes` from 1 through 1,440, `targetTaskCount` from 1
   through 64, an optional nullable exact Plan Fit evidence key, and a required `Idempotency-Key`.
   The runtime fixes balanced fit, null energy, empty contexts, and derives the deterministic seed

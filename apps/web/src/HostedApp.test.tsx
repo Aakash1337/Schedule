@@ -298,6 +298,13 @@ describe("hosted capture shell", () => {
 
     await user.clear(screen.getByRole("spinbutton", { name: "Time budget (minutes)" }));
     await user.type(screen.getByRole("spinbutton", { name: "Time budget (minutes)" }), "105");
+    expect(screen.getByRole("button", { name: "Use 1h 30m and 2 tasks" })).toBeEnabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Plan Fit suggests 1h 30m and 2 tasks.");
+    await user.click(screen.getByRole("button", { name: "Use 1h 30m and 2 tasks" }));
+    expect(screen.getByRole("spinbutton", { name: "Time budget (minutes)" })).toHaveValue(90);
+    expect(screen.getByRole("button", { name: "Suggestion applied" })).toBeDisabled();
+    await user.clear(screen.getByRole("spinbutton", { name: "Time budget (minutes)" }));
+    await user.type(screen.getByRole("spinbutton", { name: "Time budget (minutes)" }), "105");
     await user.click(screen.getByRole("button", { name: "Build plan" }));
     expect(apiMocks.generateToday).toHaveBeenCalledWith(
       personal.id,

@@ -167,6 +167,8 @@ test("captures one hosted backlog item with responsive request verification", as
   await page.getByLabel("Work window ends").fill("16:30");
   await page.getByRole("spinbutton", { name: "Time budget (minutes)" }).fill("240");
   await page.getByRole("spinbutton", { name: "Task limit" }).fill("5");
+  await expect(page.getByRole("button", { name: "Use 1h 30m and 2 tasks" })).toBeEnabled();
+  await expect(page.getByRole("status")).toContainText("Plan Fit suggests 1h 30m and 2 tasks.");
   for (const input of [
     page.getByLabel("Work window starts"),
     page.getByLabel("Work window ends"),

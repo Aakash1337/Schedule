@@ -359,6 +359,11 @@ export function HostedApp() {
           : planFitInsight.disposition === "dismissed"
             ? "The current Plan Fit suggestion is dismissed."
             : null;
+  const planFitSuggestionApplied =
+    planFitSuggestion !== null &&
+    selectedPlanFitInsightKey === planFitSuggestion.insightKey &&
+    Number(planningTargetMinutes) === planFitSuggestion.targetMinutes &&
+    Number(planningTargetTaskCount) === planFitSuggestion.targetTaskCount;
   const planFitAnnouncement =
     planFitNotice ??
     (planFitLoading
@@ -367,7 +372,7 @@ export function HostedApp() {
         ? "Plan Fit guidance is unavailable."
         : planFitSuggestion === null
           ? (planFitStatusMessage ?? "")
-          : selectedPlanFitInsightKey === planFitSuggestion.insightKey
+          : planFitSuggestionApplied
             ? `Using ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}. You can still edit both limits.`
             : `Plan Fit suggests ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}.`);
 
@@ -935,7 +940,7 @@ export function HostedApp() {
                       <div>
                         <strong>Recent Plan Fit</strong>
                         <p>
-                          {selectedPlanFitInsightKey === planFitSuggestion.insightKey
+                          {planFitSuggestionApplied
                             ? `Using ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}. You can still edit both limits.`
                             : `Based on ${planFitSuggestion.sampleCount} resolved plans, try ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}.`}
                         </p>
@@ -943,12 +948,10 @@ export function HostedApp() {
                       <Button
                         type="button"
                         variant="quiet"
-                        disabled={
-                          mutationBusy || selectedPlanFitInsightKey === planFitSuggestion.insightKey
-                        }
+                        disabled={mutationBusy || planFitSuggestionApplied}
                         onClick={applyPlanFitSuggestion}
                       >
-                        {selectedPlanFitInsightKey === planFitSuggestion.insightKey
+                        {planFitSuggestionApplied
                           ? "Suggestion applied"
                           : `Use ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}`}
                       </Button>
