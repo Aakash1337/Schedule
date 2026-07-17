@@ -60,6 +60,11 @@ function naturalLanguageProposal(title = "Prepare quarterly report"): NaturalLan
     commandHash: "a".repeat(64),
     commandDisplay: JSON.stringify({ title, type: "work_item.create" }),
     command: { type: "work_item.create", title },
+    modelSuggestions: {
+      priority: "high",
+      dueOn: "2026-07-20",
+      planningDurationMinutes: 45,
+    },
     userSelection: {
       priority: "none",
       dueOn: null,
@@ -220,15 +225,14 @@ describe("work board", () => {
     expect(
       screen.getByText(/Confirming will atomically create this reviewed root item in Backlog/),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("region", { name: "Your choices — not suggested by the model" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Your reviewed choices" })).toBeInTheDocument();
     expect(apiMocks.generateNaturalLanguageProposal).toHaveBeenCalledWith(
       workspace.id,
       expect.objectContaining({
         version: "schedule.natural-language/v1",
         prompt: "Add prepare the quarterly report to my work list",
         requestId: expect.any(String),
+        referenceDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
       }),
       expect.any(AbortSignal),
     );
@@ -293,7 +297,7 @@ describe("work board", () => {
     await user.clear(title);
     await user.type(title, edited.command.title);
     const userFields = screen.getByRole("region", {
-      name: "Your choices — not suggested by the model",
+      name: "Your reviewed choices",
     });
     await user.selectOptions(
       within(userFields).getByRole("combobox", { name: "Priority" }),
@@ -341,6 +345,38 @@ describe("work board", () => {
     if (card === null) throw new Error("Confirmed work card was not rendered.");
     await waitFor(() => expect(card).toHaveFocus());
     expect(screen.getByRole("status")).toHaveTextContent("was created in Backlog");
+  });
+
+  it("uses optional model suggestions only in the local review draft", async () => {
+    const user = userEvent.setup();
+    const proposal = naturalLanguageProposal();
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(naturalLanguageResult(proposal));
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(screen.getByRole("textbox", { name: /^Describe one work item/ }), "Report");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+
+    const suggestions = await screen.findByRole("region", { name: "Optional model suggestions" });
+    expect(suggestions).toHaveTextContent("Optional suggestions");
+    await user.click(within(suggestions).getByRole("button", { name: "Use priority" }));
+    await user.click(within(suggestions).getByRole("button", { name: "Use due date" }));
+    await user.click(within(suggestions).getByRole("button", { name: "Use duration" }));
+
+    expect(apiMocks.updateNaturalLanguageProposal).not.toHaveBeenCalled();
+    expect(apiMocks.confirmNaturalLanguageProposal).not.toHaveBeenCalled();
+    const userFields = screen.getByRole("region", {
+      name: "Your reviewed choices",
+    });
+    expect(within(userFields).getByRole("combobox", { name: "Priority" })).toHaveValue("high");
+    expect(userFields.querySelector<HTMLInputElement>('input[type="date"]')).toHaveValue(
+      "2026-07-20",
+    );
+    expect(within(userFields).getByRole("checkbox", { name: "Include in Today" })).toBeChecked();
+    expect(
+      within(userFields).getByRole("spinbutton", { name: "Plan duration (minutes)" }),
+    ).toHaveValue(45);
   });
 
   it("does not insert a confirmed proposal into a priority filter selected in flight", async () => {

@@ -49,6 +49,7 @@ import type {
   HostedMutationTransactionContext,
   HostedMutationUnitOfWork,
   HostedWorkspaceAuthorization,
+  NaturalLanguageProposalModelSuggestions,
   NaturalLanguageProposalRecord,
   NaturalLanguageProposalRepository,
   NaturalLanguageProposalTransactionContext,
@@ -478,6 +479,20 @@ function mapNaturalLanguageProposal(
       "The stored natural-language proposal review fields do not match their digest.",
     );
   }
+  const modelSuggestions = mapNaturalLanguageProposalModelSuggestions(row.modelSuggestions);
+  const modelSuggestionsDisplay =
+    modelSuggestions === null
+      ? "null"
+      : `{"dueOn":${JSON.stringify(modelSuggestions.dueOn)},"planningDurationMinutes":${JSON.stringify(modelSuggestions.planningDurationMinutes)},"priority":${JSON.stringify(modelSuggestions.priority)}}`;
+  const modelSuggestionsHash = createHash("sha256")
+    .update(modelSuggestionsDisplay, "utf8")
+    .digest("hex");
+  if (modelSuggestionsHash !== row.modelSuggestionsHash) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal model suggestions do not match their digest.",
+    );
+  }
   return {
     id: row.id,
     workspaceId: workspaceId(row.workspaceId),
@@ -485,8 +500,10 @@ function mapNaturalLanguageProposal(
     promptHash: row.promptHash,
     commandHash: row.commandHash,
     reviewHash: row.reviewHash,
+    modelSuggestionsHash: row.modelSuggestionsHash,
     commandDisplay: row.commandDisplay,
     command: typedCommand,
+    modelSuggestions,
     userSelection: {
       priority: row.reviewPriority,
       dueOn: reviewDueOn,
@@ -503,6 +520,70 @@ function mapNaturalLanguageProposal(
     version: row.version,
     createdAt: new Date(row.createdAt),
     updatedAt: new Date(row.updatedAt),
+  };
+}
+
+function mapNaturalLanguageProposalModelSuggestions(
+  value: unknown,
+): NaturalLanguageProposalModelSuggestions | null {
+  if (value === null) return null;
+  if (
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join("\0") !== "dueOn\0planningDurationMinutes\0priority"
+  ) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal model suggestions are invalid.",
+    );
+  }
+  const suggestions = value as Readonly<Record<string, unknown>>;
+  if (
+    !(
+      suggestions.priority === null ||
+      suggestions.priority === "low" ||
+      suggestions.priority === "medium" ||
+      suggestions.priority === "high" ||
+      suggestions.priority === "urgent"
+    ) ||
+    !(
+      suggestions.planningDurationMinutes === null ||
+      (typeof suggestions.planningDurationMinutes === "number" &&
+        Number.isInteger(suggestions.planningDurationMinutes) &&
+        suggestions.planningDurationMinutes >= 1 &&
+        suggestions.planningDurationMinutes <= 43_200)
+    ) ||
+    !(suggestions.dueOn === null || typeof suggestions.dueOn === "string")
+  ) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal model suggestions are invalid.",
+    );
+  }
+  let dueOn: LocalDate | null;
+  try {
+    dueOn = suggestions.dueOn === null ? null : localDate(suggestions.dueOn as string);
+  } catch {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal model suggestions are invalid.",
+    );
+  }
+  if (
+    suggestions.priority === null &&
+    dueOn === null &&
+    suggestions.planningDurationMinutes === null
+  ) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal model suggestions must contain a value.",
+    );
+  }
+  return {
+    priority: suggestions.priority as NaturalLanguageProposalModelSuggestions["priority"],
+    dueOn,
+    planningDurationMinutes:
+      suggestions.planningDurationMinutes as NaturalLanguageProposalModelSuggestions["planningDurationMinutes"],
   };
 }
 
@@ -4794,8 +4875,10 @@ export class PostgresNaturalLanguageProposalRepository implements NaturalLanguag
         promptHash: record.promptHash,
         commandHash: record.commandHash,
         reviewHash: record.reviewHash,
+        modelSuggestionsHash: record.modelSuggestionsHash,
         commandDisplay: record.commandDisplay,
         command: record.command as unknown as Record<string, unknown>,
+        modelSuggestions: record.modelSuggestions,
         reviewPriority: record.userSelection.priority,
         reviewDueOn: record.userSelection.dueOn,
         reviewPlanningDurationMinutes: record.userSelection.planningDurationMinutes,
@@ -4838,8 +4921,10 @@ export class PostgresNaturalLanguageProposalRepository implements NaturalLanguag
       .set({
         commandHash: record.commandHash,
         reviewHash: record.reviewHash,
+        modelSuggestionsHash: record.modelSuggestionsHash,
         commandDisplay: record.commandDisplay,
         command: record.command as unknown as Record<string, unknown>,
+        modelSuggestions: record.modelSuggestions,
         reviewPriority: record.userSelection.priority,
         reviewDueOn: record.userSelection.dueOn,
         reviewPlanningDurationMinutes: record.userSelection.planningDurationMinutes,

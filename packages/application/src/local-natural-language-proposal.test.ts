@@ -53,6 +53,7 @@ function available(title = "Prepare release notes"): NaturalLanguageProposerResu
       summary: "Create one backlog work item.",
       warnings: ["Review the title before confirming."],
       command: { type: "work_item.create", title },
+      modelSuggestions: null,
     },
   };
 }
@@ -207,6 +208,7 @@ async function prepare(test: Harness, prompt = "Add prepare release notes to my 
     requestId: REQUEST_ID,
     workspaceId: WORKSPACE_ID,
     prompt,
+    referenceDate: null,
   });
 }
 
@@ -244,15 +246,21 @@ describe("local natural-language work-item proposals", () => {
     expect(test.proposer.propose).toHaveBeenCalledTimes(1);
     const context = test.proposer.propose.mock.calls[0]?.[0] as NaturalLanguageProposerContext;
     expect(context).toEqual({
-      version: "schedule.natural-language-context/v1",
+      version: "schedule.natural-language-context/v2",
       requestId: REQUEST_ID,
       prompt: "Add prepare release notes to my work list",
+      referenceDate: null,
     });
     expect(Object.isFrozen(context)).toBe(true);
   });
 
   it("keys prompt fingerprints and separates request and workspace domains", () => {
-    const common = { requestId: REQUEST_ID, workspaceId: WORKSPACE_ID, prompt: "Buy milk" };
+    const common = {
+      requestId: REQUEST_ID,
+      workspaceId: WORKSPACE_ID,
+      prompt: "Buy milk",
+      referenceDate: null,
+    };
     const digest = promptHasher.digest(common);
 
     expect(promptHasher.digest(common)).toBe(digest);
@@ -268,7 +276,130 @@ describe("local natural-language work-item proposals", () => {
         workspaceId: workspaceId("33333333-3333-4333-8333-333333333333"),
       }),
     ).not.toBe(digest);
+    expect(promptHasher.digest({ ...common, referenceDate: localDate("2026-07-14") })).not.toBe(
+      digest,
+    );
     expect(() => new HmacNaturalLanguagePromptHasher("too-short")).toThrow("at least 32 bytes");
+  });
+
+  it("binds the reference date into the model context and request replay fingerprint", async () => {
+    const test = createHarness();
+    const generate = new GenerateNaturalLanguageProposal(
+      test.unitOfWork,
+      test.proposer,
+      test.clock,
+      promptHasher,
+    );
+    const input = {
+      version: NATURAL_LANGUAGE_PROPOSAL_VERSION,
+      requestId: REQUEST_ID,
+      workspaceId: WORKSPACE_ID,
+      prompt: "Add prepare release notes to my work list",
+      referenceDate: localDate("2026-07-14"),
+    } as const;
+
+    await generate.execute(input);
+    expect(test.proposer.propose.mock.calls[0]?.[0]).toMatchObject({
+      version: "schedule.natural-language-context/v2",
+      referenceDate: "2026-07-14",
+    });
+    await expect(
+      generate.execute({ ...input, referenceDate: localDate("2026-07-15") }),
+    ).rejects.toMatchObject({ code: "natural_language.request_conflict" });
+    expect(test.proposer.propose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps model suggestions advisory until an explicit user review update", async () => {
+    const output = available();
+    if (output.status !== "available") throw new Error("invalid fixture");
+    const test = createHarness({
+      ...output,
+      output: {
+        ...output.output,
+        modelSuggestions: {
+          priority: "urgent",
+          dueOn: "2026-07-20",
+          planningDurationMinutes: 90,
+        },
+      },
+    });
+    const proposal = (await prepare(test)).proposal!;
+
+    expect(proposal).toMatchObject({
+      modelSuggestions: { priority: "urgent", dueOn: "2026-07-20", planningDurationMinutes: 90 },
+      userSelection: { priority: "none", dueOn: null, planningDurationMinutes: null },
+    });
+    expect(test.audits[0]?.data).not.toHaveProperty("modelSuggestions");
+    const confirmed = await new ConfirmNaturalLanguageProposal(test.unitOfWork, test.clock).execute(
+      {
+        workspaceId: WORKSPACE_ID,
+        proposalId: proposal.id,
+        expectedVersion: proposal.version,
+        idempotencyKey: "confirm-defaults-ignore-suggestions",
+      },
+    );
+    expect(confirmed.workItem).toMatchObject({
+      priority: "none",
+      dueOn: null,
+      planningDurationMinutes: null,
+    });
+    expect(test.audits.at(-1)?.data).not.toHaveProperty("modelSuggestions");
+  });
+
+  it("strictly rejects malformed model suggestions and normalizes an empty suggestion object to null", async () => {
+    const base = available();
+    if (base.status !== "available") throw new Error("invalid fixture");
+    const normalized = createHarness({
+      ...base,
+      output: {
+        ...base.output,
+        modelSuggestions: { priority: null, dueOn: null, planningDurationMinutes: null },
+      },
+    });
+    await expect(prepare(normalized)).resolves.toMatchObject({
+      proposal: { modelSuggestions: null },
+    });
+
+    for (const modelSuggestions of [
+      { priority: "none", dueOn: null, planningDurationMinutes: null },
+      { priority: "high", dueOn: "2026-02-30", planningDurationMinutes: null },
+      { priority: "medium", dueOn: null, planningDurationMinutes: 0 },
+      { priority: "low", dueOn: null, planningDurationMinutes: null, extra: true },
+    ]) {
+      const test = createHarness({
+        ...base,
+        output: { ...base.output, modelSuggestions },
+      });
+      await expect(prepare(test)).resolves.toMatchObject({
+        status: "unavailable",
+        reason: "malformed_response",
+      });
+      expect(test.proposals).toHaveLength(0);
+      expect(test.workItems).toHaveLength(0);
+    }
+  });
+
+  it("preserves immutable model suggestions across an explicit user review update", async () => {
+    const output = available();
+    if (output.status !== "available") throw new Error("invalid fixture");
+    const test = createHarness({
+      ...output,
+      output: {
+        ...output.output,
+        modelSuggestions: { priority: "high", dueOn: null, planningDurationMinutes: 45 },
+      },
+    });
+    const proposal = (await prepare(test)).proposal!;
+    const updated = await new UpdateNaturalLanguageProposal(test.unitOfWork, test.clock).execute({
+      workspaceId: WORKSPACE_ID,
+      proposalId: proposal.id,
+      expectedVersion: proposal.version,
+      title: proposal.command.title,
+      userSelection: { priority: "high", dueOn: null, planningDurationMinutes: 45 },
+    });
+
+    expect(updated.modelSuggestions).toEqual(proposal.modelSuggestions);
+    expect(test.audits.at(-1)?.data).not.toHaveProperty("modelSuggestions");
   });
 
   it("replays a request without another model call and rejects request-id content conflicts", async () => {
@@ -319,6 +450,7 @@ describe("local natural-language work-item proposals", () => {
           requestId: REQUEST_ID,
           workspaceId: WORKSPACE_ID,
           prompt: "Add prepare release notes to my work list",
+          referenceDate: null,
         },
         controller.signal,
       ),
@@ -352,6 +484,7 @@ describe("local natural-language work-item proposals", () => {
           requestId: REQUEST_ID,
           workspaceId: WORKSPACE_ID,
           prompt: "Add prepare release notes to my work list",
+          referenceDate: null,
         },
         controller.signal,
       ),
@@ -393,6 +526,7 @@ describe("local natural-language work-item proposals", () => {
           requestId: REQUEST_ID,
           workspaceId: WORKSPACE_ID,
           prompt: "Add prepare release notes to my work list",
+          referenceDate: null,
         },
         controller.signal,
       ),
@@ -412,6 +546,7 @@ describe("local natural-language work-item proposals", () => {
         summary: "This first version can capture one work item at a time.",
         warnings: ["Describe a single concrete task."],
         command: null,
+        modelSuggestions: null,
       },
     });
 
@@ -432,30 +567,35 @@ describe("local natural-language work-item proposals", () => {
         summary: "Create work.",
         warnings: [],
         command: { type: "work_item.create", title: "Allowed", priority: "urgent" },
+        modelSuggestions: null,
       },
       {
         version: NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION,
         summary: "Create\u202ework.",
         warnings: [],
         command: { type: "work_item.create", title: "Allowed" },
+        modelSuggestions: null,
       },
       {
         version: NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION,
         summary: "Update work.",
         warnings: [],
         command: { type: "work_item.update", title: "Not allowed" },
+        modelSuggestions: null,
       },
       {
         version: NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION,
         summary: "Create work.",
         warnings: [],
         command: { type: "work_item.create", title: 42 },
+        modelSuggestions: null,
       },
       {
         version: NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION,
         summary: "Create work.",
         warnings: [],
         command: { type: "work_item.create", title: "Misleading\nsecond line" },
+        modelSuggestions: null,
       },
     ];
 

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 
 import { api, ApiError } from "../api";
 import { Button, EmptyState, ErrorNotice, Field, PageHeader, PageSkeleton } from "../components/ui";
+import { todayKey } from "../date";
 import type {
   WorkItem,
   WorkItemDependency,
@@ -889,6 +890,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
           version: "schedule.natural-language/v1",
           requestId,
           prompt,
+          referenceDate: todayKey(),
         },
         request.controller.signal,
       );
@@ -1254,9 +1256,70 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                     </ul>
                   )}
                 </div>
+                {proposal.modelSuggestions === null ? null : (
+                  <section
+                    className="work-natural-language-suggestions"
+                    aria-label="Optional model suggestions"
+                  >
+                    <p>Optional suggestions. Use one only if it fits your reviewed work item.</p>
+                    {proposal.modelSuggestions.priority === null ? null : (
+                      <div className="work-natural-language-suggestion-row">
+                        <span>Priority: {priorityLabel(proposal.modelSuggestions.priority)}</span>
+                        <Button
+                          type="button"
+                          variant="quiet"
+                          disabled={proposalBusy !== null}
+                          onClick={() => {
+                            setProposalPriority(proposal.modelSuggestions?.priority ?? "none");
+                            setProposalError(null);
+                          }}
+                        >
+                          Use priority
+                        </Button>
+                      </div>
+                    )}
+                    {proposal.modelSuggestions.dueOn === null ? null : (
+                      <div className="work-natural-language-suggestion-row">
+                        <span>Due date: {proposal.modelSuggestions.dueOn}</span>
+                        <Button
+                          type="button"
+                          variant="quiet"
+                          disabled={proposalBusy !== null}
+                          onClick={() => {
+                            setProposalDueOn(proposal.modelSuggestions?.dueOn ?? "");
+                            setProposalError(null);
+                          }}
+                        >
+                          Use due date
+                        </Button>
+                      </div>
+                    )}
+                    {proposal.modelSuggestions.planningDurationMinutes === null ? null : (
+                      <div className="work-natural-language-suggestion-row">
+                        <span>
+                          Plan duration: {proposal.modelSuggestions.planningDurationMinutes} minutes
+                        </span>
+                        <Button
+                          type="button"
+                          variant="quiet"
+                          disabled={proposalBusy !== null}
+                          onClick={() => {
+                            setProposalIncludeInDailyPlan(true);
+                            setProposalPlanningDurationMinutes(
+                              String(proposal.modelSuggestions?.planningDurationMinutes ?? 30),
+                            );
+                            setProposalError(null);
+                          }}
+                        >
+                          Use duration
+                        </Button>
+                      </div>
+                    )}
+                  </section>
+                )}
                 <Field
                   label="Work item title"
-                  hint="Editing this changes only the stored proposal. It still creates nothing."
+                  hint="Review or edit every value. Model suggestions are optional and create nothing."
                 >
                   <input
                     value={proposalTitle}
@@ -1275,7 +1338,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                 >
                   <div className="work-natural-language-user-fields-heading">
                     <p className="eyebrow" id="work-natural-language-user-fields-title">
-                      Your choices — not suggested by the model
+                      Your reviewed choices
                     </p>
                     <p>These fields are stored only when you review them.</p>
                   </div>

@@ -420,6 +420,36 @@
   font-size: 0.82rem;
 }
 
+.work-natural-language-suggestions {
+  display: grid;
+  gap: 7px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.work-natural-language-suggestions > p {
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.work-natural-language-suggestion-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.work-natural-language-suggestion-row .button {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 0.74rem;
+}
+
 .work-natural-language-user-fields {
   display: grid;
   grid-template-columns: minmax(150px, 0.7fr) minmax(190px, 1fr);
@@ -3769,7 +3799,8 @@
 
   .work-natural-language-header,
   .work-natural-language-prompt-footer,
-  .work-natural-language-actions {
+  .work-natural-language-actions,
+  .work-natural-language-suggestion-row {
     align-items: stretch;
     flex-direction: column;
   }
@@ -3780,7 +3811,8 @@
   }
 
   .work-natural-language-prompt-footer .button,
-  .work-natural-language-actions .button {
+  .work-natural-language-actions .button,
+  .work-natural-language-suggestion-row .button {
     width: 100%;
   }
 

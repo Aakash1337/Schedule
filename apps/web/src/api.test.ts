@@ -894,6 +894,7 @@ describe("web API client", () => {
       version: "schedule.natural-language/v1" as const,
       requestId,
       prompt: "Prepare the launch checklist",
+      referenceDate: "2026-07-16",
     };
 
     await api.generateNaturalLanguageProposal("workspace/one", generateInput, controller.signal);
@@ -989,6 +990,7 @@ describe("web API client", () => {
         version: "schedule.natural-language/v1",
         requestId: "2f0f423e-b13a-4e4c-a34c-34ab0ee8e68c",
         prompt: "Prepare the launch checklist",
+        referenceDate: "2026-07-16",
       }),
     ).rejects.toMatchObject({ code: "natural_language.response_mismatch", status: 502 });
   });

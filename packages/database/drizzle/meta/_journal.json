@@ -267,6 +267,13 @@
       "when": 1784203736036,
       "tag": "0037_spooky_maelstrom",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1784249989488,
+      "tag": "0038_smooth_ender_wiggin",
+      "breakpoints": true
     }
   ]
 }

@@ -3171,6 +3171,11 @@ describe("local product API", () => {
       commandHash: "e".repeat(64),
       commandDisplay: '{"title":"Prepare quarterly report","type":"work_item.create"}',
       command: { type: "work_item.create" as const, title: "Prepare quarterly report" },
+      modelSuggestions: {
+        priority: "high" as const,
+        dueOn: localDate("2026-07-20"),
+        planningDurationMinutes: 90,
+      },
       userSelection: {
         priority: "none" as const,
         dueOn: null,
@@ -3248,6 +3253,7 @@ describe("local product API", () => {
         version: "schedule.natural-language/v1",
         requestId: adviceRequestUuid,
         prompt: "Add prepare quarterly report to my list",
+        referenceDate: "2026-07-15",
       },
     });
     expect(generated.statusCode).toBe(200);
@@ -3257,8 +3263,35 @@ describe("local product API", () => {
       workspaceId: workspace.id,
       requestId: adviceRequestUuid,
       prompt: "Add prepare quarterly report to my list",
+      referenceDate: "2026-07-15",
     });
     expect(generatedSignal).toBeInstanceOf(AbortSignal);
+
+    for (const invalidReferenceDate of ["2026-02-30", "tomorrow", 42]) {
+      const invalidReference = await app.inject({
+        method: "POST",
+        url: baseUrl,
+        payload: {
+          version: "schedule.natural-language/v1",
+          requestId: adviceRequestUuid,
+          prompt: "Add prepare quarterly report to my list",
+          referenceDate: invalidReferenceDate,
+        },
+      });
+      expect(invalidReference.statusCode).toBe(400);
+    }
+
+    const generatedWithoutReferenceDate = await app.inject({
+      method: "POST",
+      url: baseUrl,
+      payload: {
+        version: "schedule.natural-language/v1",
+        requestId: adviceRequestUuid,
+        prompt: "Add prepare quarterly report to my list",
+      },
+    });
+    expect(generatedWithoutReferenceDate.statusCode).toBe(200);
+    expect(generatedCommand).toMatchObject({ referenceDate: null });
 
     const edited = await app.inject({
       method: "PATCH",

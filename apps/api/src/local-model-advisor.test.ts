@@ -94,6 +94,7 @@ const proposalContext: NaturalLanguageProposerContext = {
   version: NATURAL_LANGUAGE_PROPOSER_CONTEXT_VERSION,
   requestId: "88888888-8888-4888-8888-888888888888",
   prompt: "Add prepare the quarterly report to my work list",
+  referenceDate: localDate("2026-07-13"),
 };
 
 const validProposalOutput: NaturalLanguageProposerOutput = {
@@ -101,6 +102,11 @@ const validProposalOutput: NaturalLanguageProposerOutput = {
   summary: "Prepare one reviewable work item.",
   warnings: ["Review the title before confirming."],
   command: { type: "work_item.create", title: "Prepare the quarterly report" },
+  modelSuggestions: {
+    priority: "high",
+    dueOn: "2026-07-20",
+    planningDurationMinutes: 90,
+  },
 };
 
 function ollamaEnvelope(output: unknown = validOutput): string {
@@ -638,17 +644,55 @@ describe("OllamaSchedulingAdvisor proposal boundary", () => {
           readonly additionalProperties: boolean;
           readonly properties: {
             readonly command: { readonly oneOf: readonly unknown[] };
+            readonly modelSuggestions: {
+              readonly oneOf: readonly {
+                readonly additionalProperties?: boolean;
+                readonly required?: readonly string[];
+                readonly not?: unknown;
+                readonly properties?: {
+                  readonly dueOn?: {
+                    readonly minLength?: number;
+                    readonly maxLength?: number;
+                    readonly pattern?: string;
+                  };
+                };
+              }[];
+            };
           };
         };
         readonly tools?: unknown;
         readonly think: boolean;
       };
       expect(outbound.messages[0]?.content).toContain("human must review and explicitly confirm");
+      expect(outbound.messages[0]?.content).toContain("modelSuggestions are review-only advice");
+      expect(outbound.messages[0]?.content).toContain(
+        "only when the user text states that value explicitly and unambiguously",
+      );
+      expect(outbound.messages[0]?.content).toContain("preserve that exact priority word");
+      expect(outbound.messages[0]?.content).toContain("set modelSuggestions itself to null");
+      expect(outbound.messages[0]?.content).toContain("only against context.referenceDate");
+      expect(outbound.messages[0]?.content).toContain("mutate Schedule");
       expect(outbound.messages[1]?.content).toBe(
         `BEGIN_UNTRUSTED_WORK_CONTEXT_JSON\n${JSON.stringify(proposalContext)}\nEND_UNTRUSTED_WORK_CONTEXT_JSON`,
       );
       expect(outbound.format.additionalProperties).toBe(false);
       expect(outbound.format.properties.command.oneOf).toHaveLength(2);
+      expect(outbound.format.properties.modelSuggestions.oneOf).toHaveLength(2);
+      expect(outbound.format.properties.modelSuggestions.oneOf[1]?.required).toEqual([
+        "priority",
+        "dueOn",
+        "planningDurationMinutes",
+      ]);
+      expect(outbound.format.properties.modelSuggestions.oneOf[1]?.additionalProperties).toBe(
+        false,
+      );
+      expect(outbound.format.properties.modelSuggestions.oneOf[1]).not.toHaveProperty("not");
+      expect(outbound.format.properties.modelSuggestions.oneOf[1]?.properties?.dueOn).toMatchObject(
+        { minLength: 10, maxLength: 10 },
+      );
+      expect(
+        outbound.format.properties.modelSuggestions.oneOf[1]?.properties?.dueOn,
+      ).not.toHaveProperty("pattern");
       expect(outbound).not.toHaveProperty("tools");
       expect(outbound.think).toBe(false);
     } finally {
@@ -670,6 +714,48 @@ describe("OllamaSchedulingAdvisor proposal boundary", () => {
       { ...validProposalOutput, command: { type: "work_item.create", title: "First\nSecond" } },
     ],
     ["duplicate warnings", { ...validProposalOutput, warnings: ["Review it.", "Review it."] }],
+    [
+      "missing model suggestions",
+      (({ modelSuggestions: _ignored, ...output }) => output)(validProposalOutput),
+    ],
+    [
+      "unknown model suggestion field",
+      {
+        ...validProposalOutput,
+        modelSuggestions: { ...validProposalOutput.modelSuggestions, inferred: true },
+      },
+    ],
+    [
+      "all-null model suggestions",
+      {
+        ...validProposalOutput,
+        modelSuggestions: { priority: null, dueOn: null, planningDurationMinutes: null },
+      },
+    ],
+    [
+      "relative model due date",
+      {
+        ...validProposalOutput,
+        modelSuggestions: { ...validProposalOutput.modelSuggestions, dueOn: "tomorrow" },
+      },
+    ],
+    [
+      "invalid Gregorian model due date",
+      {
+        ...validProposalOutput,
+        modelSuggestions: { ...validProposalOutput.modelSuggestions, dueOn: "2026-02-30" },
+      },
+    ],
+    [
+      "out-of-range model duration",
+      {
+        ...validProposalOutput,
+        modelSuggestions: {
+          ...validProposalOutput.modelSuggestions,
+          planningDurationMinutes: 43_201,
+        },
+      },
+    ],
   ])("rejects proposal output with %s", async (_label, output) => {
     await withResponse(ollamaEnvelope(output), async (advisor) => {
       await expect(advisor.propose(proposalContext)).resolves.toEqual({

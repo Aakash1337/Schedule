@@ -279,6 +279,7 @@ export const api = {
       readonly version: "schedule.natural-language/v1";
       readonly requestId: string;
       readonly prompt: string;
+      readonly referenceDate: string;
     },
     signal?: AbortSignal,
   ) => {
