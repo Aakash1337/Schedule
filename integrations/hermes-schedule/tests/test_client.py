@@ -360,24 +360,27 @@ class ScheduleClientTests(unittest.TestCase):
         command_hash = "a" * 64
         scheduled_for = "2026-07-16T18:30:00.000Z"
         cancelled_at = "2026-07-16T12:30:00.000Z"
-        for operation, outcome_type, cancellation, projection in (
+        for operation, outcome_type, cancellation, version, projection in (
             (
                 "one_off_reminder.create",
                 "one_off_reminder.created",
                 None,
+                1,
                 {"id": reminder_id, "scheduledFor": scheduled_for, "version": 1},
             ),
             (
                 "one_off_reminder.update",
                 "one_off_reminder.updated",
                 None,
-                {"id": reminder_id, "scheduledFor": scheduled_for, "version": 1},
+                2,
+                {"id": reminder_id, "scheduledFor": scheduled_for, "version": 2},
             ),
             (
                 "one_off_reminder.cancel",
                 "one_off_reminder.cancelled",
                 cancelled_at,
-                {"id": reminder_id, "cancelledAt": cancelled_at, "version": 1},
+                2,
+                {"id": reminder_id, "cancelledAt": cancelled_at, "version": 2},
             ),
         ):
             receipt = {
@@ -393,7 +396,7 @@ class ScheduleClientTests(unittest.TestCase):
                         "title": "Call home",
                         "scheduledFor": scheduled_for,
                         "cancelledAt": cancellation,
-                        "version": 1,
+                        "version": version,
                         "createdAt": "2026-07-16T12:00:00.000Z",
                         "updatedAt": "2026-07-16T12:30:00.000Z",
                     },
@@ -407,6 +410,16 @@ class ScheduleClientTests(unittest.TestCase):
                     )
                 self.assertEqual(safe["outcome"], {"type": outcome_type, "oneOffReminder": projection})
                 self.assertNotIn("Call home", json.dumps(safe))
+                if operation != "one_off_reminder.create":
+                    receipt["outcome"]["oneOffReminder"]["version"] = 1
+                    with _server(_json_response(200, _envelope(receipt))) as (port, _fixture):
+                        client = ScheduleClient(ScheduleClientConfig(port=port, token=self.token))
+                        with self.assertRaisesRegex(
+                            ScheduleAdapterError, "^schedule_confirmed_change_invalid$"
+                        ):
+                            client.confirm_change(
+                                confirmation_id, str(uuid4()), operation, command_hash
+                            )
 
     def test_rejects_hostile_one_off_reminder_receipts(self) -> None:
         confirmation_id = str(uuid4())

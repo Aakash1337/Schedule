@@ -662,7 +662,10 @@ class ScheduleClient:
             cancelled = operation == "one_off_reminder.cancel"
             if (reminder["cancelledAt"] is not None) != cancelled:
                 raise ScheduleAdapterError("schedule_confirmed_change_invalid")
-            if operation == "one_off_reminder.create" and reminder["version"] != 1:
+            if operation == "one_off_reminder.create":
+                if reminder["version"] != 1:
+                    raise ScheduleAdapterError("schedule_confirmed_change_invalid")
+            elif reminder["version"] <= 1:
                 raise ScheduleAdapterError("schedule_confirmed_change_invalid")
             projected = {"id": reminder["id"], "version": reminder["version"]}
             field = "cancelledAt" if cancelled else "scheduledFor"
