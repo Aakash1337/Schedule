@@ -661,8 +661,9 @@ security-sensitive recovery.
   generation remain absent. Hermes still owns message ingestion and intent interpretation, while its
   platform connector supplies sender, session, and platform identity.
 - A separate tested reminder-delivery foundation consumes the `schedule:delivery` claim/receipt
-  contract with shared PostgreSQL dedupe and fail-safe loopback supervision. It has no standalone
-  provider bootstrap, concrete WhatsApp transport, provider reconciliation, or human/account
+  contract with shared PostgreSQL dedupe, fail-safe loopback supervision, and a dormant
+  reconcile-before-send Hermes client bridge. It has no standalone provider bootstrap, live
+  authenticated WhatsApp client, provider-specific conclusive reconciliation, or human/account
   binding; its supervisor is disabled unless an operator control explicitly enables claims.
 - A disabled-by-default [outbound webhook substrate](./WEBHOOKS.md) can send operator-queued signed
   test events and explicitly subscribed `schedule.changed.v1` invalidations. It cannot send schedule
