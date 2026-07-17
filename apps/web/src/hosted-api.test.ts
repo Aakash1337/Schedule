@@ -209,6 +209,46 @@ describe("hosted web API client", () => {
     expect(headers.get("Idempotency-Key")).toBe("today-action-1");
   });
 
+  it("sends one bounded, idempotent first-plan request", async () => {
+    const token = "e".repeat(43);
+    vi.spyOn(document, "cookie", "get").mockReturnValue(`__Host-schedule_csrf=${token}`);
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 204 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await hostedApi.generateToday("workspace/one", "2026-07-16", {
+      timeZone: "America/La_Paz",
+      window: {
+        startsAt: "2026-07-16T13:00:00.000Z",
+        endsAt: "2026-07-16T21:00:00.000Z",
+      },
+      targetMinutes: 180,
+      targetTaskCount: 4,
+      idempotencyKey: "first-plan-1",
+    });
+    const [, options] = fetchMock.mock.calls[0] ?? [];
+    const headers = new Headers(options?.headers);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/hosted/workspaces/workspace%2Fone/today?date=2026-07-16",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "same-origin",
+        body: JSON.stringify({
+          timeZone: "America/La_Paz",
+          window: {
+            startsAt: "2026-07-16T13:00:00.000Z",
+            endsAt: "2026-07-16T21:00:00.000Z",
+          },
+          targetMinutes: 180,
+          targetTaskCount: 4,
+        }),
+      }),
+    );
+    expect(headers.get("x-schedule-csrf")).toBe(token);
+    expect(headers.get("Idempotency-Key")).toBe("first-plan-1");
+  });
+
   it("fails before sending when request verification is absent", async () => {
     vi.spyOn(document, "cookie", "get").mockReturnValue("");
     const fetchMock = vi.fn();

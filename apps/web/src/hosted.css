@@ -148,6 +148,42 @@
   font-size: 0.82rem;
 }
 
+.hosted-plan-form {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+  margin-top: 12px;
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.hosted-plan-intro h3,
+.hosted-plan-intro p {
+  margin: 0;
+}
+
+.hosted-plan-intro p,
+.hosted-plan-intro span {
+  color: var(--ink-faint);
+  font-size: 0.82rem;
+}
+
+.hosted-plan-intro span {
+  display: block;
+  margin-top: 4px;
+}
+
+.hosted-plan-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.hosted-plan-form > .button {
+  justify-self: start;
+}
+
 .hosted-today-list,
 .hosted-backlog-list {
   padding: 0;
@@ -276,6 +312,19 @@
 
   .hosted-capture-fields {
     grid-template-columns: 1fr;
+  }
+
+  .hosted-plan-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .hosted-plan-fields input {
+    min-height: 44px;
+  }
+
+  .hosted-plan-form > .button {
+    justify-self: stretch;
+    min-height: 44px;
   }
 
   .hosted-capture-form .button,

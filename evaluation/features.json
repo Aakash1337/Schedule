@@ -3680,6 +3680,69 @@
       ]
     },
     {
+      "id": "hosted-first-plan-generation",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Transaction-coupled hosted first-plan generation"
+      },
+      "limitations": [
+        "The mutation creates only revision 1 from one same-local-date window, browser-supplied IANA time zone, a 1–1,440 minute target, and a 1–64 task target. It fixes balanced fit, null energy, empty contexts, and exposes no calendar exclusion, Plan Fit, regeneration, source selection, or stored planning settings.",
+        "Exact retry derives the deterministic planner seed from the required request key and relies on the existing revision input hash plus day lock. Changed input or a different key after revision 1 exists is a 409, not a second plan."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/generate-daily-plan.test.ts",
+          "command": "unit",
+          "anchors": [
+            "rejects reuse of a revision for a different input snapshot",
+            "returns the same persisted plan for an exact deterministic retry"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-today-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "generates one bounded first plan with canonical authority and an exact retry key",
+            "rejects invalid, cross-day, or over-broad hosted plan requests before mutation",
+            "redacts revoked membership details from hosted plan generation"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/hosted-api.test.ts",
+          "command": "unit",
+          "anchors": ["sends one bounded, idempotent first-plan request"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/HostedApp.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "builds the first Today plan from one window plus time and task limits",
+            "retries an ambiguous first-plan request with the exact same intent"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/e2e-hosted/capture-flow.spec.ts",
+          "command": "hosted-browser-e2e",
+          "anchors": ["captures one hosted backlog item with responsive request verification"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-oidc-composition.ts",
+          "command": "hosted-oidc-composition-db",
+          "anchors": [
+            "Hosted first-plan generation proved exact replay, conflicting-input rejection, one persisted revision, and planner-selected work without synthetic plan rows"
+          ]
+        }
+      ]
+    },
+    {
       "id": "hosted-transaction-coupled-work-item-create",
       "status": "implemented",
       "risk": "critical",

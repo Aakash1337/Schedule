@@ -449,6 +449,17 @@ try {
     items: [],
     totalMinutes: 0,
   });
+  const completedWorkItem = await app.inject({
+    method: "PATCH",
+    url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items/${createdWorkItemBody.id}`,
+    headers: {
+      origin,
+      cookie: `${cookiePair(sessionCookie)}; ${cookiePair(csrfCookie)}`,
+      [HOSTED_CSRF_HEADER_NAME]: csrfToken!,
+    },
+    payload: { expectedVersion: createdWorkItemBody.version, status: "done" },
+  });
+  assert.equal(completedWorkItem.statusCode, 204, completedWorkItem.body);
   const plannedWorkItem = await app.inject({
     method: "POST",
     url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items`,
@@ -457,51 +468,69 @@ try {
       cookie: `${cookiePair(sessionCookie)}; ${cookiePair(csrfCookie)}`,
       [HOSTED_CSRF_HEADER_NAME]: csrfToken!,
     },
-    payload: { title: "Verified hosted Today item" },
+    payload: {
+      title: "Verified hosted Today item",
+      priority: "urgent",
+      dueOn: "2026-07-16",
+      planningDurationMinutes: 45,
+    },
   });
   assert.equal(plannedWorkItem.statusCode, 201, plannedWorkItem.body);
   const plannedWorkItemBody = plannedWorkItem.json<{ id: string; version: number }>();
-  const planId = randomUUID();
-  const planItemId = randomUUID();
-  const planHeadId = randomUUID();
-  await database.sql`
-    insert into daily_plans (
-      id, workspace_id, local_date, time_zone, status, request_revision,
-      algorithm_version, config_version, prng_version, seed, input_hash,
-      input_snapshot, total_minutes, fitness, generated_at
-    ) values (
-      ${planId}::uuid, ${createdWorkspaceBody.id}::uuid, '2026-07-16'::date,
-      'America/La_Paz', 'generated', 1, 'hosted-verifier-v1', 'hosted-verifier-v1',
-      'hosted-verifier-v1', 'hosted-verifier-seed', ${"0".repeat(64)},
-      '{}'::jsonb, 45, 0, '2026-07-16T09:00:00.000Z'::timestamptz
-    )
-  `;
-  await database.sql`
-    insert into daily_plan_items (
-      id, workspace_id, plan_id, source_type, work_item_id, title_snapshot,
-      position, window_index, scheduled_minutes, partial_session, score,
-      score_components
-    ) values (
-      ${planItemId}::uuid, ${createdWorkspaceBody.id}::uuid, ${planId}::uuid,
-      'work_item', ${plannedWorkItemBody.id}::uuid, 'Verified hosted Today item',
-      0, 0, 45, false, 0, '{}'::jsonb
-    )
-  `;
-  await database.sql`
-    insert into daily_plan_heads (
-      id, workspace_id, local_date, current_plan_id, version
-    ) values (
-      ${planHeadId}::uuid, ${createdWorkspaceBody.id}::uuid,
-      '2026-07-16'::date, ${planId}::uuid, 1
-    )
-  `;
+  const generationRoute = `/v1/hosted/workspaces/${createdWorkspaceBody.id}/today?date=2026-07-16`;
+  const generationHeaders = {
+    origin,
+    cookie: `${cookiePair(sessionCookie)}; ${cookiePair(csrfCookie)}`,
+    [HOSTED_CSRF_HEADER_NAME]: csrfToken!,
+    "idempotency-key": "hosted-oidc-first-plan",
+  };
+  const generationPayload = {
+    timeZone: "UTC",
+    window: {
+      startsAt: "2026-07-16T09:00:00.000Z",
+      endsAt: "2026-07-16T17:00:00.000Z",
+    },
+    targetMinutes: 45,
+    targetTaskCount: 1,
+  };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const generation: Awaited<ReturnType<typeof prepared.app.inject>> = await app.inject({
+      method: "POST",
+      url: generationRoute,
+      headers: generationHeaders,
+      payload: generationPayload,
+    });
+    assert.equal(generation.statusCode, 204, generation.body);
+    assert.equal(generation.body, "");
+    assert.equal(generation.headers["cache-control"], "no-store");
+  }
+  const conflictingGeneration = await app.inject({
+    method: "POST",
+    url: generationRoute,
+    headers: generationHeaders,
+    payload: { ...generationPayload, targetMinutes: 60 },
+  });
+  assert.equal(conflictingGeneration.statusCode, 409, conflictingGeneration.body);
+  assert.equal(
+    conflictingGeneration.json<{ error: { code: string } }>().error.code,
+    "planning.revision_conflict",
+  );
   const plannedToday = await app.inject({
     method: "GET",
-    url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/today?date=2026-07-16`,
+    url: generationRoute,
     headers: { cookie: cookiePair(sessionCookie) },
   });
   assert.equal(plannedToday.statusCode, 200, plannedToday.body);
-  assert.deepEqual(plannedToday.json(), {
+  const plannedTodayBody = plannedToday.json<{
+    planId: string;
+    headVersion: number;
+    items: { id: string; title: string; scheduledMinutes: number; activityState: string }[];
+    date: string;
+    totalMinutes: number;
+  }>();
+  const planId = plannedTodayBody.planId;
+  const planItemId = plannedTodayBody.items[0]!.id;
+  assert.deepEqual(plannedTodayBody, {
     date: "2026-07-16",
     planId,
     headVersion: 1,
@@ -566,17 +595,6 @@ try {
     ],
     totalMinutes: 45,
   });
-  const completedWorkItem = await app.inject({
-    method: "PATCH",
-    url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items/${createdWorkItemBody.id}`,
-    headers: {
-      origin,
-      cookie: `${cookiePair(sessionCookie)}; ${cookiePair(csrfCookie)}`,
-      [HOSTED_CSRF_HEADER_NAME]: csrfToken!,
-    },
-    payload: { expectedVersion: createdWorkItemBody.version, status: "done" },
-  });
-  assert.equal(completedWorkItem.statusCode, 204, completedWorkItem.body);
   const emptyBacklog = await app.inject({
     method: "GET",
     url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items`,
@@ -593,6 +611,11 @@ try {
       memberships: number;
       workItems: number;
       doneWorkItems: number;
+      dailyPlans: number;
+      planSeed: string;
+      planTimeZone: string;
+      planRevision: number;
+      planMinutes: number;
       activityEvents: number;
       planInteractions: number;
       completedPlanItems: number;
@@ -622,6 +645,16 @@ try {
         where workspace_id = ${createdWorkspaceBody.id}) as "workItems",
       (select count(*)::integer from work_items
         where workspace_id = ${createdWorkspaceBody.id} and status = 'done') as "doneWorkItems",
+      (select count(*)::integer from daily_plans
+        where workspace_id = ${createdWorkspaceBody.id} and local_date = '2026-07-16') as "dailyPlans",
+      (select seed from daily_plans
+        where workspace_id = ${createdWorkspaceBody.id} and id = ${planId}::uuid) as "planSeed",
+      (select time_zone from daily_plans
+        where workspace_id = ${createdWorkspaceBody.id} and id = ${planId}::uuid) as "planTimeZone",
+      (select request_revision from daily_plans
+        where workspace_id = ${createdWorkspaceBody.id} and id = ${planId}::uuid) as "planRevision",
+      (select total_minutes from daily_plans
+        where workspace_id = ${createdWorkspaceBody.id} and id = ${planId}::uuid) as "planMinutes",
       (select count(*)::integer from activity_events
         where workspace_id = ${createdWorkspaceBody.id}
           and plan_id = ${planId}::uuid and plan_item_id = ${planItemId}::uuid) as "activityEvents",
@@ -657,12 +690,17 @@ try {
     memberships: 2,
     workItems: 2,
     doneWorkItems: 2,
+    dailyPlans: 1,
+    planSeed: "hosted-today:hosted-oidc-first-plan",
+    planTimeZone: "UTC",
+    planRevision: 1,
+    planMinutes: 45,
     activityEvents: 1,
     planInteractions: 1,
     completedPlanItems: 1,
     headVersion: 2,
     plannedWorkVersion: 2,
-    activityTimeZone: "America/La_Paz",
+    activityTimeZone: "UTC",
     activityLocalDate: "2026-07-16",
     consumed: 1,
   });
@@ -724,7 +762,7 @@ try {
   assert.deepEqual(requestCounts, { discovery: 1, token: 1, jwks: 1 });
 
   console.log(
-    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read and empty Today read and a transaction-authorized status update, plus principal-bound workspace creation. Hosted capture scheduling fields were restricted, projected, and persisted exactly. Hosted Today completion also proved exact idempotent replay, one activity append, one head advance, and atomic source completion, while a stale head left no residue and the plan time zone remained authoritative.",
+    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read and empty Today read and a transaction-authorized status update, plus principal-bound workspace creation. Hosted capture scheduling fields were restricted, projected, and persisted exactly. Hosted first-plan generation proved exact replay, conflicting-input rejection, one persisted revision, and planner-selected work without synthetic plan rows. Hosted Today completion also proved exact idempotent replay, one activity append, one head advance, and atomic source completion, while a stale head left no residue and the generated plan time zone remained authoritative.",
   );
 } catch (error) {
   verificationError = error;

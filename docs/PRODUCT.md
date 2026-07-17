@@ -719,8 +719,10 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
 - Implemented narrow hosted UI: a same-origin capture shell can sign in, select one active
   workspace or create another, review Today and the first 20 backlog items, create one title with
   optional priority, due date, and planning duration, and
-  move a visible backlog item to started or done, and start, complete, or skip one actionable Today item
-  through transaction-authorized routes with exact retry semantics; it exposes
+  move a visible backlog item to started or done, generate a missing revision-1 Today plan from one
+  browser-local window plus minute/task limits, and start, complete, or skip one actionable Today item
+  through transaction-authorized routes with exact retry semantics. Generation fixes balanced fit,
+  null energy, and empty contexts and adds no stored settings; the shell exposes
   no provider tokens, identity metadata, general editing, workspace rename/delete or membership
   administration, or local-only routes.
 - Deferred: hosted workspace rename/delete and membership administration, the broader product API and interface, account

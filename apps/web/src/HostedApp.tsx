@@ -2,10 +2,11 @@ import { CheckCircle2, CircleDotDashed, LogOut, Plus } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { Button, ErrorNotice, Field, PageSkeleton } from "./components/ui";
-import { formatMinutes, todayKey } from "./date";
+import { browserTimeZone, formatMinutes, localDateTimeToIso, todayKey } from "./date";
 import {
   hostedApi,
   HostedApiError,
+  type HostedGenerateToday,
   type HostedToday,
   type HostedTodayActivityState,
   type HostedTodayActivityType,
@@ -26,6 +27,11 @@ interface TodayActionIntent {
   readonly type: HostedTodayActivityType;
   readonly occurredAt: string;
   readonly idempotencyKey: string;
+}
+
+interface TodayGenerationIntent extends HostedGenerateToday {
+  readonly workspaceId: string;
+  readonly date: string;
 }
 
 function publicError(error: unknown): string {
@@ -101,6 +107,8 @@ export function HostedApp() {
   const [planningDuration, setPlanningDuration] = useState("");
   const titleInput = useRef<HTMLInputElement>(null);
   const refocusTitleAfterCapture = useRef(false);
+  const todayHeading = useRef<HTMLHeadingElement>(null);
+  const refocusTodayAfterGeneration = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<string | null>(null);
@@ -114,6 +122,14 @@ export function HostedApp() {
   const [todayRefresh, setTodayRefresh] = useState(0);
   const [todayDate, setTodayDate] = useState(() => todayKey());
   const [todayRetry, setTodayRetry] = useState<TodayActionIntent | null>(null);
+  const [todayGenerationRetry, setTodayGenerationRetry] = useState<TodayGenerationIntent | null>(
+    null,
+  );
+  const [planningStartsAt, setPlanningStartsAt] = useState("09:00");
+  const [planningEndsAt, setPlanningEndsAt] = useState("17:00");
+  const [planningTargetMinutes, setPlanningTargetMinutes] = useState("180");
+  const [planningTargetTaskCount, setPlanningTargetTaskCount] = useState("4");
+  const [generatingToday, setGeneratingToday] = useState(false);
   const [updatingTodayItem, setUpdatingTodayItem] = useState<{
     readonly id: string;
     readonly type: HostedTodayActivityType;
@@ -122,12 +138,19 @@ export function HostedApp() {
     readonly id: string;
     readonly status: "in_progress" | "done";
   } | null>(null);
+  const timeZone = useMemo(() => browserTimeZone(), []);
 
   useEffect(() => {
     if (busy || !refocusTitleAfterCapture.current) return;
     refocusTitleAfterCapture.current = false;
     titleInput.current?.focus();
   }, [busy]);
+
+  useEffect(() => {
+    if (todayLoading || today?.planId == null || !refocusTodayAfterGeneration.current) return;
+    refocusTodayAfterGeneration.current = false;
+    todayHeading.current?.focus();
+  }, [today?.planId, todayLoading]);
 
   const load = useCallback(async () => {
     setMode("loading");
@@ -208,6 +231,7 @@ export function HostedApp() {
       setTodayLoading(false);
       setTodayError(null);
       setTodayRetry(null);
+      setTodayGenerationRetry(null);
       return;
     }
     let active = true;
@@ -225,6 +249,14 @@ export function HostedApp() {
           retry.date === todayDate &&
           retry.expectedPlanId === result.planId &&
           retry.expectedHeadVersion === result.headVersion
+            ? retry
+            : null,
+        );
+        setTodayGenerationRetry((retry) =>
+          retry !== null &&
+          retry.workspaceId === selectedWorkspaceId &&
+          retry.date === todayDate &&
+          result.planId === null
             ? retry
             : null,
         );
@@ -250,7 +282,8 @@ export function HostedApp() {
     () => workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
     [selectedWorkspaceId, workspaces],
   );
-  const mutationBusy = busy || updatingItem !== null || updatingTodayItem !== null;
+  const mutationBusy =
+    busy || generatingToday || updatingItem !== null || updatingTodayItem !== null;
 
   function selectWorkspace(id: string) {
     localStorage.setItem(selectedWorkspaceKey, id);
@@ -264,6 +297,8 @@ export function HostedApp() {
     setTodayLoading(true);
     setTodayError(null);
     setTodayRetry(null);
+    setTodayGenerationRetry(null);
+    refocusTodayAfterGeneration.current = false;
   }
 
   async function capture(event: FormEvent<HTMLFormElement>) {
@@ -421,6 +456,83 @@ export function HostedApp() {
     void submitTodayAction(intent);
   }
 
+  async function submitTodayGeneration(intent: TodayGenerationIntent) {
+    if (selectedWorkspaceId !== intent.workspaceId || todayDate !== intent.date) {
+      setTodayGenerationRetry(null);
+      return;
+    }
+    setGeneratingToday(true);
+    setConfirmation(null);
+    try {
+      const { workspaceId, date, ...command } = intent;
+      await hostedApi.generateToday(workspaceId, date, command);
+      setTodayGenerationRetry(null);
+      refocusTodayAfterGeneration.current = true;
+      setConfirmation("Built today’s plan.");
+      setTodayRefresh((value) => value + 1);
+    } catch (generationError) {
+      const known = generationError instanceof HostedApiError;
+      if (known && generationError.status === 401) {
+        setTodayGenerationRetry(null);
+        setMode("signed-out");
+        setError(publicError(generationError));
+      } else {
+        const ambiguous =
+          !known ||
+          generationError.status === 408 ||
+          generationError.status === 429 ||
+          generationError.status >= 500;
+        if (!ambiguous) setTodayGenerationRetry(null);
+        setTodayError(
+          known && generationError.status === 409
+            ? "Today already has a different plan. Refresh it before trying again."
+            : publicError(generationError),
+        );
+      }
+    } finally {
+      setGeneratingToday(false);
+    }
+  }
+
+  function beginTodayGeneration(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (selectedWorkspace === null || today?.planId !== null) return;
+    const targetMinutes = Number(planningTargetMinutes);
+    const targetTaskCount = Number(planningTargetTaskCount);
+    if (!Number.isInteger(targetMinutes) || targetMinutes < 1 || targetMinutes > 1_440) {
+      setTodayError("Time budget must be a whole number from 1 to 1,440 minutes.");
+      return;
+    }
+    if (!Number.isInteger(targetTaskCount) || targetTaskCount < 1 || targetTaskCount > 64) {
+      setTodayError("Task limit must be a whole number from 1 to 64.");
+      return;
+    }
+    let startsAt: string;
+    let endsAt: string;
+    try {
+      startsAt = localDateTimeToIso(todayDate, planningStartsAt);
+      endsAt = localDateTimeToIso(todayDate, planningEndsAt);
+    } catch {
+      setTodayError("Choose valid local start and end times.");
+      return;
+    }
+    if (new Date(endsAt) <= new Date(startsAt)) {
+      setTodayError("The work window must end after it starts.");
+      return;
+    }
+    const intent: TodayGenerationIntent = {
+      workspaceId: selectedWorkspace.id,
+      date: todayDate,
+      timeZone,
+      window: { startsAt, endsAt },
+      targetMinutes,
+      targetTaskCount,
+      idempotencyKey: crypto.randomUUID(),
+    };
+    setTodayGenerationRetry(intent);
+    void submitTodayGeneration(intent);
+  }
+
   async function logout() {
     setBusy(true);
     setError(null);
@@ -491,7 +603,7 @@ export function HostedApp() {
           type="button"
           variant="quiet"
           busy={busy}
-          disabled={updatingItem !== null || updatingTodayItem !== null}
+          disabled={generatingToday || updatingItem !== null || updatingTodayItem !== null}
           onClick={() => void logout()}
         >
           <LogOut size={16} aria-hidden="true" />
@@ -622,9 +734,7 @@ export function HostedApp() {
                 type="submit"
                 variant="primary"
                 busy={busy}
-                disabled={
-                  title.trim() === "" || updatingItem !== null || updatingTodayItem !== null
-                }
+                disabled={title.trim() === "" || mutationBusy}
               >
                 <Plus size={17} aria-hidden="true" />
                 Add to backlog
@@ -639,8 +749,10 @@ export function HostedApp() {
             )}
             <div className="hosted-today" aria-labelledby="hosted-today-title">
               <div className="hosted-today-heading">
-                <h2 id="hosted-today-title">Today</h2>
-                {today === null ? null : <span>{formatMinutes(today.totalMinutes)}</span>}
+                <h2 ref={todayHeading} id="hosted-today-title" tabIndex={-1}>
+                  Today
+                </h2>
+                {today?.planId == null ? null : <span>{formatMinutes(today.totalMinutes)}</span>}
               </div>
               {todayLoading ? (
                 <p className="hosted-today-state" role="status">
@@ -653,17 +765,89 @@ export function HostedApp() {
                     <Button
                       type="button"
                       variant="quiet"
+                      busy={todayGenerationRetry !== null && generatingToday}
                       onClick={() => {
-                        if (todayRetry === null) setTodayRefresh((value) => value + 1);
-                        else void submitTodayAction(todayRetry);
+                        if (todayGenerationRetry !== null)
+                          void submitTodayGeneration(todayGenerationRetry);
+                        else if (todayRetry !== null) void submitTodayAction(todayRetry);
+                        else setTodayRefresh((value) => value + 1);
                       }}
                     >
-                      {todayRetry === null ? "Retry today" : "Retry action"}
+                      {todayGenerationRetry !== null
+                        ? "Retry plan"
+                        : todayRetry === null
+                          ? "Retry today"
+                          : "Retry action"}
                     </Button>
                   }
                 />
-              ) : today === null || today.items.length === 0 ? (
-                <p className="hosted-today-state">Nothing planned for today.</p>
+              ) : today === null ? null : today.planId === null ? (
+                <form
+                  className="hosted-plan-form"
+                  onSubmit={(event) => beginTodayGeneration(event)}
+                >
+                  <div className="hosted-plan-intro">
+                    <h3>Build today’s plan</h3>
+                    <p>Choose one work window and cap both time and task count.</p>
+                    <span>{timeZone}</span>
+                  </div>
+                  <div className="hosted-plan-fields">
+                    <Field label="Work window starts">
+                      <input
+                        type="time"
+                        value={planningStartsAt}
+                        disabled={mutationBusy}
+                        required
+                        onChange={(event) => setPlanningStartsAt(event.target.value)}
+                      />
+                    </Field>
+                    <Field label="Work window ends">
+                      <input
+                        type="time"
+                        value={planningEndsAt}
+                        disabled={mutationBusy}
+                        required
+                        onChange={(event) => setPlanningEndsAt(event.target.value)}
+                      />
+                    </Field>
+                    <Field label="Time budget (minutes)">
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={1_440}
+                        step={1}
+                        value={planningTargetMinutes}
+                        disabled={mutationBusy}
+                        required
+                        onChange={(event) => setPlanningTargetMinutes(event.target.value)}
+                      />
+                    </Field>
+                    <Field label="Task limit">
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={64}
+                        step={1}
+                        value={planningTargetTaskCount}
+                        disabled={mutationBusy}
+                        required
+                        onChange={(event) => setPlanningTargetTaskCount(event.target.value)}
+                      />
+                    </Field>
+                  </div>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    busy={generatingToday}
+                    disabled={mutationBusy}
+                  >
+                    Build plan
+                  </Button>
+                </form>
+              ) : today.items.length === 0 ? (
+                <p className="hosted-today-state">No eligible work fit this plan.</p>
               ) : (
                 <ul className="hosted-today-list">
                   {today.items.map((item) => (

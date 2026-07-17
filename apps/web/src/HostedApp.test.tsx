@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HostedApp } from "./HostedApp";
-import { todayKey } from "./date";
+import { browserTimeZone, localDateTimeToIso, todayKey } from "./date";
 import { HostedApiError } from "./hosted-api";
 
 const apiMocks = vi.hoisted(() => ({
@@ -12,6 +12,7 @@ const apiMocks = vi.hoisted(() => ({
   createWorkspace: vi.fn(),
   listWorkItems: vi.fn(),
   getToday: vi.fn(),
+  generateToday: vi.fn(),
   recordTodayActivity: vi.fn(),
   createWorkItem: vi.fn(),
   updateWorkItemStatus: vi.fn(),
@@ -41,6 +42,7 @@ beforeEach(() => {
     totalMinutes: 0,
   });
   apiMocks.recordTodayActivity.mockResolvedValue(undefined);
+  apiMocks.generateToday.mockResolvedValue(undefined);
   apiMocks.createWorkspace.mockResolvedValue(studio);
   apiMocks.updateWorkItemStatus.mockResolvedValue(undefined);
 });
@@ -115,7 +117,7 @@ describe("hosted capture shell", () => {
     finishCreate(created);
     expect(await screen.findByText("Added “Prepare release” to Studio.")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Work item" })).toHaveValue("");
-    expect(screen.getByRole("textbox", { name: "Work item" })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Work item" })).toHaveFocus());
     expect(screen.getByRole("combobox", { name: "Priority" })).toHaveValue("none");
     expect(screen.getByLabelText("Due date")).toHaveValue("");
     expect(screen.getByRole("spinbutton", { name: /^Planning time \(minutes\)/u })).toHaveValue(
@@ -179,9 +181,112 @@ describe("hosted capture shell", () => {
     expect(screen.getByText("45m · Started")).toBeInTheDocument();
     expect(apiMocks.getToday).toHaveBeenNthCalledWith(1, personal.id, todayKey());
     await user.selectOptions(screen.getByRole("combobox", { name: "Workspace" }), studio.id);
-    expect(await screen.findByText("Nothing planned for today.")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Build today’s plan" })).toBeInTheDocument();
     expect(apiMocks.getToday).toHaveBeenNthCalledWith(2, studio.id, todayKey());
     expect(screen.queryByText("Focused review")).not.toBeInTheDocument();
+  });
+
+  it("builds the first Today plan from one window plus time and task limits", async () => {
+    const user = userEvent.setup();
+    const date = todayKey();
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.getToday
+      .mockResolvedValueOnce({
+        date,
+        planId: null,
+        headVersion: null,
+        items: [],
+        totalMinutes: 0,
+      })
+      .mockResolvedValueOnce({
+        date,
+        planId: "plan-1",
+        headVersion: 1,
+        items: [
+          {
+            id: "plan-item-1",
+            title: "Prepare release",
+            scheduledMinutes: 75,
+            activityState: "pending",
+          },
+        ],
+        totalMinutes: 75,
+      });
+
+    render(<HostedApp />);
+
+    expect(await screen.findByRole("heading", { name: "Build today’s plan" })).toBeInTheDocument();
+    expect(screen.getByText(browserTimeZone())).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Work window starts"));
+    await user.type(screen.getByLabelText("Work window starts"), "10:00");
+    await user.clear(screen.getByLabelText("Work window ends"));
+    await user.type(screen.getByLabelText("Work window ends"), "16:30");
+    await user.clear(screen.getByRole("spinbutton", { name: "Time budget (minutes)" }));
+    await user.type(screen.getByRole("spinbutton", { name: "Time budget (minutes)" }), "240");
+    await user.clear(screen.getByRole("spinbutton", { name: "Task limit" }));
+    await user.type(screen.getByRole("spinbutton", { name: "Task limit" }), "5");
+    await user.click(screen.getByRole("button", { name: "Build plan" }));
+
+    expect(apiMocks.generateToday).toHaveBeenCalledWith(personal.id, date, {
+      timeZone: browserTimeZone(),
+      window: {
+        startsAt: localDateTimeToIso(date, "10:00"),
+        endsAt: localDateTimeToIso(date, "16:30"),
+      },
+      targetMinutes: 240,
+      targetTaskCount: 5,
+      idempotencyKey: expect.any(String),
+    });
+    expect(await screen.findByText("Built today’s plan.")).toBeInTheDocument();
+    expect(await screen.findByText("Prepare release")).toBeInTheDocument();
+    expect(screen.getByText("1h 15m · Pending")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Today" })).toHaveFocus();
+    expect(screen.queryByRole("heading", { name: "Build today’s plan" })).not.toBeInTheDocument();
+  });
+
+  it("retries an ambiguous first-plan request with the exact same intent", async () => {
+    const user = userEvent.setup();
+    const date = todayKey();
+    let finishRetry: () => void = () => undefined;
+    const pendingRetry = new Promise<void>((resolve) => {
+      finishRetry = resolve;
+    });
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.getToday
+      .mockResolvedValueOnce({
+        date,
+        planId: null,
+        headVersion: null,
+        items: [],
+        totalMinutes: 0,
+      })
+      .mockResolvedValueOnce({
+        date,
+        planId: "plan-1",
+        headVersion: 1,
+        items: [],
+        totalMinutes: 0,
+      });
+    apiMocks.generateToday
+      .mockRejectedValueOnce(new HostedApiError(408, "request.timeout", "Timed out after commit."))
+      .mockReturnValueOnce(pendingRetry);
+
+    render(<HostedApp />);
+
+    await user.click(await screen.findByRole("button", { name: "Build plan" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Schedule could not be reached.");
+    const firstCall = apiMocks.generateToday.mock.calls[0];
+    const retry = screen.getByRole("button", { name: "Retry plan" });
+    await user.click(retry);
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+    expect(retry).toHaveFocus();
+    expect(apiMocks.generateToday).toHaveBeenCalledTimes(2);
+    expect(apiMocks.generateToday.mock.calls[1]).toEqual(firstCall);
+    finishRetry();
+    expect(await screen.findByText("Built today’s plan.")).toBeInTheDocument();
+    expect(await screen.findByText("No eligible work fit this plan.")).toBeInTheDocument();
   });
 
   it("keeps capture usable while a failed Today read is explicitly retried", async () => {
@@ -360,7 +465,7 @@ describe("hosted capture shell", () => {
       "Today changed. Refresh it before trying again.",
     );
     await user.click(screen.getByRole("button", { name: "Retry today" }));
-    expect(await screen.findByText("Nothing planned for today.")).toBeInTheDocument();
+    expect(await screen.findByText("No eligible work fit this plan.")).toBeInTheDocument();
     expect(apiMocks.recordTodayActivity).toHaveBeenCalledOnce();
     expect(apiMocks.getToday).toHaveBeenCalledTimes(2);
   });

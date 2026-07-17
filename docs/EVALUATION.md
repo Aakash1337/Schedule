@@ -573,6 +573,11 @@ The audit deliberately leaves these visible instead of turning them into false g
   membership through a downstream work mutation. The fixed first-20 backlog projection and optional
   capture scheduling fields have route, component, browser, and database evidence. The narrow existing-plan Today projection has route,
   component, browser, and database evidence, including authenticated missing-plan behavior. The
+  missing-plan mutation has route/client/component evidence for a same-local-date window, bounded
+  minute/task targets, strict input, exact ambiguous retry, and fixed planner defaults. The real
+  database composition path reuses the planner and day lock, replays one exact request, rejects
+  changed input, persists one revision, and selects the opted-in work item without fixture plan rows.
+  The
   narrow Start/Done/Skip action has route/client/component evidence for strict input, CSRF,
   optimistic conflicts, and exact ambiguous retry. The built browser proves responsive access to all
   three choices and completion; the shared database composition path records one completion twice
@@ -582,9 +587,10 @@ The audit deliberately leaves these visible instead of turning them into false g
   verifier parses production configuration, builds the real route graph with a strict in-process
   provider, proves local product routes absent, drives login, the hardened same-origin capture
   shell, discovery, workspace creation, bounded backlog and empty-Today reads, one authorized work
-  create with persisted priority/due-date/planning-duration fields, one optimistic status update, and one idempotent Today completion, then checks logout and
+  create with persisted priority/due-date/planning-duration fields, one optimistic status update,
+  one idempotent first-plan generation, and one idempotent Today completion, then checks logout and
   cleanup. A separate built Chromium flow covers signed-out/authenticated capture, first-workspace
-  creation, optional scheduling-field capture, Today and status-only completion, backlog refresh,
+  creation, optional scheduling-field capture, first-plan controls, Today and status-only completion, backlog refresh,
   exact CSRF/idempotency forwarding, and 360-pixel
   layout. Disabled-mode route closure and redacted startup failure remain independently verified.
   This evidence does not cover a real external provider, TLS ingress, workspace rename/delete or membership administration, the

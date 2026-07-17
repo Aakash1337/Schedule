@@ -35,6 +35,11 @@ not authorize these product routes.
   `expectedVersion` and `status=in_progress|done`.
   `GET /v1/hosted/workspaces/{workspaceId}/today?date=YYYY-MM-DD` returns only an existing current
   plan's identity/head fence, item IDs/titles/scheduled minutes/activity states, and total minutes.
+  A strict CSRF-protected `POST` to that same URL creates only revision 1 from one same-local-date
+  offset window, an IANA time zone, `targetMinutes` from 1 through 1,440, `targetTaskCount` from 1
+  through 64, and a required `Idempotency-Key`. The runtime fixes balanced fit, null energy, empty
+  contexts, and derives the deterministic seed from the key. An exact retry returns `204`; a
+  different request after revision 1 exists returns `409`.
   CSRF-protected `POST /v1/hosted/workspaces/{workspaceId}/today/{itemId}/activity-events?date=YYYY-MM-DD`
   accepts only the expected plan/head, `started|completed|skipped`, one offset timestamp, and a required
   `Idempotency-Key`; the server derives the plan time zone and reauthorizes in the write transaction.
