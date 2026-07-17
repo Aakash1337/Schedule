@@ -125,6 +125,60 @@ class ScheduleClientTests(unittest.TestCase):
                         }
                     )
 
+    def test_reads_only_strict_actionable_daily_plan_fit_guidance(self) -> None:
+        guidance = {
+            "forDate": "2026-07-15",
+            "status": "suggested",
+            "disposition": "available",
+            "sampleCount": 4,
+            "minimumSamples": 3,
+            "suggestedTargetMinutes": 90,
+            "suggestedTargetTaskCount": 3,
+        }
+        with _server(_json_response(200, _envelope(guidance))) as (port, fixture):
+            client = ScheduleClient(ScheduleClientConfig(port=port, token=self.token))
+            self.assertEqual(client.get_daily_plan_fit("2026-07-15"), guidance)
+        self.assertEqual(
+            fixture.requests[0]["target"],
+            "/v1/integrations/daily-plan-fit-insight?forDate=2026-07-15",
+        )
+
+        invalid_projections = (
+            {**guidance, "insightKey": "MUST_NOT_ESCAPE"},
+            {**guidance, "forDate": "2026-07-16"},
+            {**guidance, "sampleCount": True},
+            {**guidance, "minimumSamples": 4},
+            {**guidance, "status": "insufficient_history"},
+            {**guidance, "disposition": "dismissed"},
+            {**guidance, "suggestedTargetMinutes": None},
+            {
+                **guidance,
+                "status": "aligned",
+                "suggestedTargetMinutes": None,
+                "suggestedTargetTaskCount": 3,
+            },
+        )
+        for invalid in invalid_projections:
+            with self.subTest(invalid=invalid):
+                with _server(_json_response(200, _envelope(invalid))) as (port, _fixture):
+                    client = ScheduleClient(ScheduleClientConfig(port=port, token=self.token))
+                    with self.assertRaisesRegex(
+                        ScheduleAdapterError, "^schedule_daily_plan_fit_invalid$"
+                    ) as caught:
+                        client.get_daily_plan_fit("2026-07-15")
+                self.assertNotIn("MUST_NOT_ESCAPE", str(caught.exception))
+
+        non_actionable = {
+            **guidance,
+            "status": "insufficient_history",
+            "sampleCount": 2,
+            "suggestedTargetMinutes": None,
+            "suggestedTargetTaskCount": None,
+        }
+        with _server(_json_response(200, _envelope(non_actionable))) as (port, _fixture):
+            client = ScheduleClient(ScheduleClientConfig(port=port, token=self.token))
+            self.assertEqual(client.get_daily_plan_fit("2026-07-15"), non_actionable)
+
     def test_reads_today_and_work_items_with_exact_bearer_requests(self) -> None:
         workspace_id = str(uuid4())
         item_id = str(uuid4())

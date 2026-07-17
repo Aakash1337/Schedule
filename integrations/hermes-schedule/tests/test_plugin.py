@@ -27,6 +27,7 @@ class PluginRegistrationTests(unittest.TestCase):
             [entry["name"] for entry in context.tools],
             [
                 "schedule_today",
+                "schedule_daily_plan_fit",
                 "schedule_list_work_items",
                 "schedule_list_one_off_reminders",
                 "schedule_prepare_change",
@@ -76,6 +77,15 @@ class PluginRegistrationTests(unittest.TestCase):
         self.assertEqual(
             plugin.schemas.SCHEDULE_LIST_ONE_OFF_REMINDERS["parameters"]["required"],
             ["from", "to"],
+        )
+        self.assertEqual(
+            plugin.schemas.SCHEDULE_DAILY_PLAN_FIT["parameters"],
+            {
+                "type": "object",
+                "properties": {"forDate": plugin.schemas.LOCAL_DATE},
+                "required": ["forDate"],
+                "additionalProperties": False,
+            },
         )
 
     def test_registration_isolates_schema_instances_from_consumer_mutation(self) -> None:

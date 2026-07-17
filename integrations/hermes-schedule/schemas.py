@@ -198,6 +198,16 @@ SCHEDULE_TODAY = {
     "parameters": _strict({"date": LOCAL_DATE}, ["date"]),
 }
 
+SCHEDULE_DAILY_PLAN_FIT = {
+    "name": "schedule_daily_plan_fit",
+    "description": (
+        "Read bounded deterministic Plan Fit guidance for one exact local date. "
+        "Targets are usable only when status is suggested and disposition is available. "
+        "This tool never changes Schedule."
+    ),
+    "parameters": _strict({"forDate": LOCAL_DATE}, ["forDate"]),
+}
+
 SCHEDULE_LIST_WORK_ITEMS = {
     "name": "schedule_list_work_items",
     "description": "List a bounded page of work items in the credential's Schedule workspace. Use returned IDs and versions before preparing an update.",

@@ -793,6 +793,7 @@ describe("PostgresIntegrationUnitOfWork", () => {
       "auditEvents",
       "confirmations",
       "credentials",
+      "dailyPlanFitInsightFeedback",
       "dailyPlans",
       "notificationDeliveries",
       "notificationDeliveryRequests",

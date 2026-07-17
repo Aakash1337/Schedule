@@ -33,6 +33,7 @@ from hermes_schedule.tools import (  # noqa: E402
     configure_for_testing,
     handle_schedule_cancel_change,
     handle_schedule_confirm_change,
+    handle_schedule_daily_plan_fit,
     handle_schedule_list_one_off_reminders,
     handle_schedule_list_work_items,
     handle_schedule_prepare_change,
@@ -52,6 +53,7 @@ class _FakeClient:
         self.confirmation_id = str(uuid4())
         self.work_item_id = str(uuid4())
         self.reminder_ranges: list[tuple[str, str]] = []
+        self.plan_fit_dates: list[str] = []
 
     def get_today(self, local_date: str) -> dict[str, object]:
         return {
@@ -59,6 +61,18 @@ class _FakeClient:
             "date": local_date,
             "headVersion": 0,
             "plan": None,
+        }
+
+    def get_daily_plan_fit(self, for_date: str) -> dict[str, object]:
+        self.plan_fit_dates.append(for_date)
+        return {
+            "forDate": for_date,
+            "status": "suggested",
+            "disposition": "available",
+            "sampleCount": 4,
+            "minimumSamples": 3,
+            "suggestedTargetMinutes": 90,
+            "suggestedTargetTaskCount": 3,
         }
 
     def list_work_items(self, **filters: object) -> dict[str, object]:
@@ -199,6 +213,11 @@ class ScheduleToolTests(unittest.TestCase):
                 {"status": "planned", "limit": 12}, session_id="session-private"
             )
         )
+        plan_fit = json.loads(
+            handle_schedule_daily_plan_fit(
+                {"forDate": "2026-07-15"}, session_id="session-private"
+            )
+        )
         reminders = json.loads(
             handle_schedule_list_one_off_reminders(
                 {
@@ -209,6 +228,8 @@ class ScheduleToolTests(unittest.TestCase):
             )
         )
         self.assertEqual(today["data"]["date"], "2026-07-15")
+        self.assertEqual(plan_fit["data"]["suggestedTargetMinutes"], 90)
+        self.assertEqual(self.client.plan_fit_dates, ["2026-07-15"])
         self.assertEqual(work_items["data"]["page"], {"limit": 12, "offset": 0})
         self.assertEqual(reminders["data"], {"items": []})
         self.assertEqual(
@@ -224,6 +245,19 @@ class ScheduleToolTests(unittest.TestCase):
             sender_id="sender-private",
         )
         self.assertTrue(self._prepare()["ok"])
+
+    def test_plan_fit_rejects_argument_drift_without_calling_schedule(self) -> None:
+        for arguments in ({}, {"forDate": "2026-07-15", "workspaceId": "private"}):
+            with self.subTest(arguments=arguments):
+                result = json.loads(
+                    handle_schedule_daily_plan_fit(
+                        arguments, session_id="session-private"
+                    )
+                )
+                self.assertEqual(
+                    result["error"]["code"], "schedule_tool_arguments_invalid"
+                )
+        self.assertEqual(self.client.plan_fit_dates, [])
 
     def test_missing_sender_context_fails_closed_without_breaking_the_hook(self) -> None:
         self.assertIsNone(

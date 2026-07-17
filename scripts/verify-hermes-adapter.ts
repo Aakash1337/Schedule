@@ -81,6 +81,12 @@ interface HarnessListResult {
   readonly reminderVersion: number;
 }
 
+interface HarnessPlanFitResult {
+  readonly phase: "plan-fit";
+  readonly status: "insufficient_history";
+  readonly sampleCount: 0;
+}
+
 interface CleanupStep {
   readonly label: string;
   readonly run: () => Promise<unknown>;
@@ -92,6 +98,7 @@ type VerificationPhase =
   | "database-migrations"
   | "application-startup"
   | "workspace-and-credential"
+  | "plan-fit-read"
   | "create-prepare"
   | "create-confirm"
   | "reminder-list"
@@ -104,6 +111,7 @@ type VerificationPhase =
 
 const expectedVerificationChecks = [
   "python-unittest",
+  "plan-fit-read",
   "one-off-reminder-discovery",
   "no-mutation-before-confirmation",
   "one-off-reminder-intent-invalidation",
@@ -142,6 +150,32 @@ class LiveAdapterContract(unittest.TestCase):
                 "operation": operation,
                 "confirmationId": prepared["confirmationId"],
                 "commandHash": prepared["commandHash"],
+            }
+        elif phase == "plan-fit":
+            guidance = client.get_daily_plan_fit(os.environ["SCHEDULE_VERIFY_PLAN_FIT_DATE"])
+            self.assertEqual(
+                set(guidance),
+                {
+                    "forDate",
+                    "status",
+                    "disposition",
+                    "sampleCount",
+                    "minimumSamples",
+                    "suggestedTargetMinutes",
+                    "suggestedTargetTaskCount",
+                },
+            )
+            self.assertEqual(guidance["forDate"], os.environ["SCHEDULE_VERIFY_PLAN_FIT_DATE"])
+            self.assertEqual(guidance["status"], "insufficient_history")
+            self.assertEqual(guidance["disposition"], "available")
+            self.assertEqual(guidance["sampleCount"], 0)
+            self.assertEqual(guidance["minimumSamples"], 3)
+            self.assertIsNone(guidance["suggestedTargetMinutes"])
+            self.assertIsNone(guidance["suggestedTargetTaskCount"])
+            result = {
+                "phase": "plan-fit",
+                "status": guidance["status"],
+                "sampleCount": guidance["sampleCount"],
             }
         elif phase == "list":
             page = client.list_one_off_reminders(
@@ -338,7 +372,7 @@ function assertUuid(value: unknown): asserts value is string {
 
 function parseHarnessResult(
   stdout: string,
-): HarnessPrepareResult | HarnessConfirmResult | HarnessListResult {
+): HarnessPrepareResult | HarnessConfirmResult | HarnessListResult | HarnessPlanFitResult {
   const lines = stdout.split(/\r?\n/u).filter((line) => line.startsWith("SCHEDULE_HERMES_VERIFY="));
   assert.equal(lines.length, 1, "Hermes harness must emit exactly one result marker");
   const value = JSON.parse(lines[0]!.slice("SCHEDULE_HERMES_VERIFY=".length)) as unknown;
@@ -362,6 +396,12 @@ function parseHarnessResult(
     assertUuid(record.reminderId);
     assert.equal(record.reminderVersion, 1);
     return record as unknown as HarnessListResult;
+  }
+  if (record.phase === "plan-fit") {
+    assert.deepEqual(Object.keys(record).sort(), ["phase", "sampleCount", "status"]);
+    assert.equal(record.status, "insufficient_history");
+    assert.equal(record.sampleCount, 0);
+    return record as unknown as HarnessPlanFitResult;
   }
   assert.equal(record.phase, "confirm");
   assert.deepEqual(Object.keys(record).sort(), [
@@ -403,7 +443,7 @@ async function runPythonUnitTests(pythonExecutable: string): Promise<void> {
 async function runLiveHarness(
   pythonExecutable: string,
   environment: NodeJS.ProcessEnv,
-): Promise<HarnessPrepareResult | HarnessConfirmResult | HarnessListResult> {
+): Promise<HarnessPrepareResult | HarnessConfirmResult | HarnessListResult | HarnessPlanFitResult> {
   const result = await runProcess(pythonExecutable, ["-c", liveHarness], {
     ...environment,
     PYTHONDONTWRITEBYTECODE: "1",
@@ -478,6 +518,40 @@ try {
     SCHEDULE_INTEGRATION_URL: `http://127.0.0.1:${String(address.port)}`,
     SCHEDULE_INTEGRATION_TOKEN: token,
   };
+  const snapshotPlanFitReadState = async () => {
+    const [state] = await activeConnection.sql<
+      {
+        audit_count: number;
+        confirmation_count: number;
+        feedback_count: number;
+        request_count: number;
+      }[]
+    >`
+      select
+        (select count(*)::int from audit_events where workspace_id = ${targetWorkspaceId}) as audit_count,
+        (select count(*)::int from integration_confirmations where workspace_id = ${targetWorkspaceId}) as confirmation_count,
+        (select count(*)::int from daily_plan_fit_insight_feedback_events where workspace_id = ${targetWorkspaceId}) as feedback_count,
+        (select count(*)::int from integration_requests where workspace_id = ${targetWorkspaceId}) as request_count
+    `;
+    assert.ok(state);
+    return state;
+  };
+
+  verificationPhase = "plan-fit-read";
+  const planFitStateBefore = await snapshotPlanFitReadState();
+  // EVIDENCE: hermes-adapter-daily-plan-fit-read
+  // The production Python client reads a strict, non-actionable projection without confirmation.
+  const planFit = await runLiveHarness(pythonExecutable, {
+    ...harnessEnvironment,
+    SCHEDULE_VERIFY_PHASE: "plan-fit",
+    SCHEDULE_VERIFY_PLAN_FIT_DATE: "2026-07-15",
+  });
+  assert.equal(planFit.phase, "plan-fit");
+  assert.equal(planFit.status, "insufficient_history");
+  assert.equal(planFit.sampleCount, 0);
+  assert.deepEqual(await snapshotPlanFitReadState(), planFitStateBefore);
+  completedVerificationChecks.add("plan-fit-read");
+
   const prepare = async (operation: ReminderOperation, command: object) => {
     const requestId = randomUUID();
     const result = await runLiveHarness(pythonExecutable, {

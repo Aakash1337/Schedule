@@ -114,13 +114,14 @@ Successful responses are non-cacheable and use one envelope:
 ```
 
 The prepare response uses the caller's `requestId`, confirm uses the stable `confirmationId`, and
-Today uses the server's HTTP request ID. The command-specific value is always inside `data`.
+read routes use the server's HTTP request ID. The command-specific value is always inside `data`.
 
 The version 1 routes are:
 
 | Method | Route                                                          | Scope               | Behavior                                                      |
 | ------ | -------------------------------------------------------------- | ------------------- | ------------------------------------------------------------- |
 | `GET`  | `/v1/integrations/today?date=DATE`                             | `schedule:read`     | Read the credential workspace's current plan                  |
+| `GET`  | `/v1/integrations/daily-plan-fit-insight?forDate=DATE`         | `schedule:read`     | Read bounded deterministic target guidance                    |
 | `GET`  | `/v1/integrations/work-items?status=&priority=&limit=&offset=` | `schedule:read`     | Discover the credential workspace's backlog/Kanban work items |
 | `GET`  | `/v1/integrations/one-off-reminders?from=&to=`                 | `schedule:read`     | Discover one bounded range of one-off reminders               |
 | `POST` | `/v1/integrations/commands/prepare`                            | `schedule:write`    | Validate and prepare one exact mutation                       |
@@ -132,6 +133,22 @@ The version 1 routes are:
 from the credential and never creates a missing plan. Its response `data` is
 `{workspaceId,date,headVersion,plan}`; `plan` is the same public current-plan representation returned
 by the local product API.
+
+### Daily Plan Fit guidance
+
+`GET /v1/integrations/daily-plan-fit-insight?forDate=DATE` accepts exactly one real Gregorian local
+date. Authentication occurs before query validation; the application then revalidates the stored
+`schedule:read` credential inside the read transaction and derives the workspace only from that
+credential. A `workspaceId`, unknown field, invalid date, revoked credential, or missing scope fails
+closed.
+
+The no-store envelope contains exactly `forDate`, `status`, `disposition`, `sampleCount`,
+`minimumSamples`, `suggestedTargetMinutes`, and `suggestedTargetTaskCount`. Both targets are non-null
+only when status is `suggested` and disposition is `available`; otherwise both are null. The
+projection deliberately omits the evidence key, workspace and plan identities, historical rows and
+dates, evaluation/dismissal timestamps, raw medians and thresholds, usage history, and effectiveness
+rates. This read cannot dismiss, restore, apply, receipt, or generate from guidance and writes no
+feedback, audit, confirmation, or request row.
 
 ### Work-item discovery
 
@@ -567,8 +584,9 @@ PostgreSQL and real Fastify one-off-reminder lifecycle:
 pnpm verify:hermes-adapter
 ```
 
-It proves bounded discovery, no mutation before explicit confirmation, exact replay of create,
-reschedule, and cancellation, and pending-intent invalidation. It does not contact WhatsApp; see
+It proves a strict read-only Plan Fit projection, bounded reminder discovery, no mutation before
+explicit confirmation, exact replay of create, reschedule, and cancellation, and pending-intent
+invalidation. It does not contact WhatsApp; see
 [HERMES.md](./HERMES.md#install-and-enable) for the installed-runtime registration probe and
 [HERMES.md](./HERMES.md#verification-and-safe-rollout) for the operator-run delivery smoke.
 
@@ -637,10 +655,11 @@ security-sensitive recovery.
 - The Hermes runtime and WhatsApp transport remain external dependencies. No Schedule endpoint
   accepts a chat message, audio, image, or natural-language instruction. The repository-owned local
   plugin uses Hermes's native hooks and tools instead.
-- The local plugin can find credential-scoped Today, backlog/Kanban data, and bounded one-off reminder
-  ranges, then prepare strict structured commands and require a separate HMAC-bound confirmation
-  turn. Hermes still owns message ingestion and intent interpretation, while its platform connector
-  supplies sender, session, and platform identity.
+- The local plugin can find credential-scoped Today, bounded Daily Plan Fit guidance, backlog/Kanban
+  data, and bounded one-off reminder ranges, then prepare strict structured commands and require a
+  separate HMAC-bound confirmation turn. Plan Fit history, effectiveness, feedback, use receipts, and
+  generation remain absent. Hermes still owns message ingestion and intent interpretation, while its
+  platform connector supplies sender, session, and platform identity.
 - A separate tested reminder-delivery foundation consumes the `schedule:delivery` claim/receipt
   contract with shared PostgreSQL dedupe and fail-safe loopback supervision. It has no standalone
   provider bootstrap, concrete WhatsApp transport, provider reconciliation, or human/account

@@ -928,6 +928,10 @@ export interface IntegrationTransactionContext {
   readonly scheduleBlocks: ScheduleBlockRepository;
   readonly auditEvents: AuditEventRepository;
   readonly dailyPlans: DailyPlanRepository;
+  readonly dailyPlanFitInsightFeedback: Pick<
+    DailyPlanFitInsightFeedbackRepository,
+    "findLatestForKey"
+  >;
   readonly notifications: NotificationRepository;
 }
 

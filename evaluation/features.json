@@ -242,6 +242,18 @@
         },
         {
           "level": "integration",
+          "file": "scripts/verify-integration-gateway.ts",
+          "command": "integration-gateway",
+          "anchors": ["integration-gateway-daily-plan-fit-read"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hermes-adapter.ts",
+          "command": "hermes-adapter",
+          "anchors": ["hermes-adapter-daily-plan-fit-read"]
+        },
+        {
+          "level": "integration",
           "file": "apps/web/e2e/planning-flow.spec.ts",
           "command": "browser-e2e",
           "anchors": [
@@ -481,6 +493,35 @@
             "fails closed when dependency planning data exceeds 2,000 rows",
             "fails closed if the combined graph contains a noncandidate dependent edge"
           ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/integration-gateway.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns only actionable credential-scoped guidance and withholds dismissed targets",
+            "validates the date and revalidates schedule:read inside the transaction"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/integration-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns only bounded Plan Fit guidance and rejects strict query drift after authentication"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "integrations/hermes-schedule/tests/test_client.py",
+          "command": "hermes-adapter",
+          "anchors": ["test_reads_only_strict_actionable_daily_plan_fit_guidance"]
+        },
+        {
+          "level": "unit",
+          "file": "integrations/hermes-schedule/tests/test_tools.py",
+          "command": "hermes-adapter",
+          "anchors": ["test_plan_fit_rejects_argument_drift_without_calling_schedule"]
         },
         {
           "level": "unit",
@@ -1059,6 +1100,7 @@
             "rate limits failed guesses by presented credential ID across remote addresses",
             "uses forwarded client addresses only from an explicitly trusted proxy",
             "returns the authenticated workspace Today view in a no-store envelope",
+            "returns only bounded Plan Fit guidance and rejects strict query drift after authentication",
             "lists one strict reminder range and rejects query drift before reading",
             "prepares the strict $type command for explicit confirmation",
             "returns the exact validated command so truncated or bidi text cannot hide approval data",
@@ -1072,6 +1114,7 @@
           "command": "unit",
           "anchors": [
             "returns the public Today projection without planner snapshots or history",
+            "returns only actionable credential-scoped guidance and withholds dismissed targets",
             "replays an identical preparation and conflicts on request ID reuse",
             "produces exact confirmation summaries that disclose every material change",
             "returns the exact stored command while bounding and sanitizing its advisory summary",
@@ -1107,6 +1150,7 @@
             "integration-gateway-credential-workspace-isolation",
             "integration-gateway-concurrent-prepare-exclusion",
             "integration-gateway-concurrent-confirm-exclusion",
+            "integration-gateway-daily-plan-fit-read",
             "integration-gateway-core-five-command-postgres-e2e",
             "integration gateway verification passed"
           ]
@@ -1122,7 +1166,7 @@
         "anchor": "## Verification and safe rollout"
       },
       "limitations": [
-        "CI verifies bounded one-off reminder discovery plus explicitly confirmed create, reschedule, and cancellation through the production Python client, deterministic loopback fakes, and a real Schedule gateway with disposable PostgreSQL; it does not load the plugin inside a live Hermes runtime.",
+        "CI verifies strict read-only Daily Plan Fit guidance, bounded one-off reminder discovery, and explicitly confirmed create, reschedule, and cancellation through the production Python client, deterministic loopback fakes, and a real Schedule gateway with disposable PostgreSQL; it does not load the plugin inside a live Hermes runtime.",
         "Live WhatsApp delivery remains operator-run and requires an explicit WHATSAPP_HOME_CHANNEL; the local stdout reminder smoke does not establish phone delivery."
       ],
       "evidence": [
@@ -1132,6 +1176,7 @@
           "command": "hermes-adapter",
           "anchors": [
             "test_environment_accepts_only_an_exact_loopback_origin",
+            "test_reads_only_strict_actionable_daily_plan_fit_guidance",
             "test_lists_strict_one_off_reminders_in_a_bounded_range",
             "test_prepares_then_confirms_with_distinct_request_and_replay_keys",
             "test_projects_strict_one_off_reminder_management_receipts",
@@ -1161,7 +1206,10 @@
           "level": "unit",
           "file": "integrations/hermes-schedule/tests/test_plugin.py",
           "command": "hermes-adapter",
-          "anchors": ["test_command_schemas_match_the_current_gateway_bounds_and_hierarchy_fields"]
+          "anchors": [
+            "test_registers_only_the_bounded_schedule_tools_and_turn_hook",
+            "test_command_schemas_match_the_current_gateway_bounds_and_hierarchy_fields"
+          ]
         },
         {
           "level": "unit",
@@ -1170,6 +1218,7 @@
           "anchors": [
             "test_prepare_does_not_confirm_and_requires_the_exact_phrase_in_a_later_turn",
             "test_hook_context_drives_writes_while_read_tools_remain_bounded",
+            "test_plan_fit_rejects_argument_drift_without_calling_schedule",
             "test_missing_sender_context_fails_closed_without_breaking_the_hook",
             "test_a_newer_turn_invalidates_a_stale_async_tool_context",
             "test_retry_reuses_the_same_idempotency_key_then_consumes_the_pending_change",
@@ -1212,6 +1261,7 @@
           "command": "hermes-adapter",
           "anchors": [
             "hermes-adapter-python-unittest",
+            "hermes-adapter-daily-plan-fit-read",
             "hermes-adapter-no-mutation-before-confirmation",
             "hermes-adapter-one-off-reminder-discovery",
             "hermes-adapter-one-off-reminder-intent-invalidation",

@@ -185,8 +185,9 @@ reads/DML and DDL, restart durability, and exact cleanup of the nonce database a
 ## Local Hermes Schedule plugin
 
 The Hermes Schedule plugin is the local, opt-in adapter between a Hermes conversation and
-Schedule's authenticated integration gateway. It can read the authoritative Today plan and work
-items, prepare one of Schedule's strict structured commands—including one-off reminder creation—and
+Schedule's authenticated integration gateway. It can read the authoritative Today plan, bounded
+Daily Plan Fit guidance, and work items, prepare one of Schedule's strict structured
+commands—including one-off reminder creation—and
 confirm that exact command only after a separate human turn. A companion script produces a deterministic daily-plan reminder on
 standard output without invoking an LLM.
 
@@ -269,7 +270,7 @@ hermes plugins list --enabled
 ```
 
 Then run the installed native registration verifier with Hermes's Python. It performs fresh
-plugin discovery and checks the exact six tools, their `schedule` toolset, and the observer-only
+plugin discovery and checks the exact seven tools, their `schedule` toolset, and the observer-only
 turn hook. The verifier itself does not invoke a tool, call Schedule, query a model, or send a
 message. Native discovery does import and initialize every enabled plugin under Hermes's normal
 trusted-plugin model, so run it only against an installation whose enabled plugins you trust:
@@ -288,7 +289,7 @@ HermesHome="$(python3 ./integrations/hermes-schedule/install.py home)"
   "$HermesHome/plugins/hermes-schedule/verify_native.py"
 ```
 
-The verifier's success line is `plugin=enabled tools=6 toolset=schedule hook=pre_llm_call`; Hermes or
+The verifier's success line is `plugin=enabled tools=7 toolset=schedule hook=pre_llm_call`; Hermes or
 another enabled plugin may emit its own diagnostics. A disabled plugin, load error, origin or
 registration drift, or the wrong Python environment fails closed. This deliberately pins native
 Hermes registration bookkeeping and verifies neither credential validity, gateway lifecycle, a
@@ -321,11 +322,12 @@ pending-confirmation table schema fails closed instead of being rewritten.
 
 ### Conversation contract
 
-The plugin registers six tools:
+The plugin registers seven tools:
 
 | Tool                              | Purpose                                                                | Required Schedule scope                 |
 | --------------------------------- | ---------------------------------------------------------------------- | --------------------------------------- |
 | `schedule_today`                  | Read one existing authoritative Today plan                             | `schedule:read`                         |
+| `schedule_daily_plan_fit`         | Read bounded deterministic target guidance for one local date          | `schedule:read`                         |
 | `schedule_list_work_items`        | Read a bounded, filtered work-item page                                | `schedule:read`                         |
 | `schedule_list_one_off_reminders` | Read one bounded time range of one-off reminders                       | `schedule:read`                         |
 | `schedule_prepare_change`         | Validate and persist one exact structured command without executing it | `schedule:write`                        |
@@ -336,6 +338,12 @@ Hermes may interpret a natural-language request, but Schedule does not receive o
 WhatsApp message. The model must select a command from the versioned vocabulary in
 [INTEGRATIONS.md](./INTEGRATIONS.md#commands). Schedule validates that command using the same domain
 and optimistic-concurrency rules as every other integration client.
+
+`schedule_daily_plan_fit` accepts exactly `forDate`. It returns only status, disposition, sample
+counts, and nullable joint minute/task targets; it rejects any extra response field, including an
+evidence key. Hermes should present targets only when status is `suggested` and disposition is
+`available`. The tool performs no confirmation or write, cannot apply or dismiss the suggestion, and
+receives no Plan Fit history, outcome rates, raw evidence, workspace identity, or timestamps.
 
 For “remind me” requests, Hermes may propose the strict `one_off_reminder.create` command with a title
 and explicit-offset `scheduledFor` instant. The workspace reminder profile must already exist.
@@ -487,17 +495,18 @@ pnpm verify:hermes-adapter
 ```
 
 It runs deterministic Python tests plus a disposable PostgreSQL and real Fastify integration flow.
-Through the production Python client, the gate creates, discovers, reschedules, and cancels one
-reminder. It verifies no mutation before confirmation, exact receipt replay, versions `1` through
-`3`, one persistent source row, and pending-intent invalidation after update and cancellation. It
-does not contact WhatsApp and does not prove phone delivery.
+Through the production Python client, the gate first reads a strict non-actionable Plan Fit
+projection without writing or entering confirmation state, then creates, discovers, reschedules, and
+cancels one reminder. It verifies no mutation before confirmation, exact receipt replay, versions
+`1` through `3`, one persistent source row, and pending-intent invalidation after update and
+cancellation. It does not contact WhatsApp and does not prove phone delivery.
 
 Use this rollout order:
 
 1. Verify the plugin with the disposable automated gate.
 2. Install it disabled, set secrets in the Hermes service environment, then enable it explicitly.
 3. Run `verify_native.py` with Hermes's Python, then restart every long-running Hermes process.
-4. Exercise `schedule_today`, `schedule_list_work_items`, and
+4. Exercise `schedule_today`, `schedule_daily_plan_fit`, `schedule_list_work_items`, and
    `schedule_list_one_off_reminders` against the intended workspace.
 5. Prepare a harmless test change, inspect every canonical field, and cancel it.
 6. Prepare another bounded test, confirm from the same sender/session/platform on a later turn, and
@@ -513,6 +522,8 @@ Use this rollout order:
 - The plugin exposes only the integration gateway's current read surfaces and structured command
   vocabulary. It does not add recurrence authoring, dependency editing, plan generation, deletes,
   arbitrary SQL, or a general Schedule natural-language API.
+- Plan Fit access is guidance-only: no evidence key, feedback commands, use receipts, outcome history,
+  effectiveness rates, prefill, or generation crosses the Hermes tool boundary.
 - Natural-language interpretation occurs in Hermes and can be wrong. Nothing is written until the
   exact server-validated command is presented and separately confirmed.
 - The stdout Today helper is a deterministic snapshot, not a durable Schedule reminder engine. It
