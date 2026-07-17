@@ -8,9 +8,11 @@ import {
   createWorkspace,
   localDate,
   scheduleBlockId,
+  routineId,
   workItemId,
   workspaceId,
   type ScheduleBlock,
+  type Routine,
   type WorkItem,
   type Workspace,
   type WorkspaceId,
@@ -21,6 +23,7 @@ import type {
   AuditEventRepository,
   Clock,
   ScheduleBlockRepository,
+  RoutineRepository,
   WorkItemRepository,
   WorkspaceRepository,
 } from "./ports.js";
@@ -32,6 +35,7 @@ import {
   NATURAL_LANGUAGE_PROPOSAL_VERSION,
   NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION,
   UpdateNaturalLanguageProposal,
+  naturalLanguageProposalCommandDisplay,
   type NaturalLanguageProposalRecord,
   type NaturalLanguageProposalRepository,
   type NaturalLanguageProposalUserSelection,
@@ -88,11 +92,25 @@ function availableScheduleBlock(
   };
 }
 
+function availableRoutine(title = "Practice piano"): NaturalLanguageProposerResult {
+  return {
+    status: "available",
+    output: {
+      version: NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION,
+      summary: "Review one routine.",
+      warnings: [],
+      command: { type: "routine.create", title },
+      modelSuggestions: null,
+    },
+  };
+}
+
 interface Harness {
   readonly workspaces: Workspace[];
   readonly proposals: NaturalLanguageProposalRecord[];
   readonly workItems: WorkItem[];
   readonly scheduleBlocks: ScheduleBlock[];
+  readonly routines: Routine[];
   readonly audits: AuditEventRecord[];
   readonly unitOfWork: NaturalLanguageProposalUnitOfWork;
   readonly proposer: NaturalLanguageProposer & {
@@ -108,6 +126,7 @@ function createHarness(result: NaturalLanguageProposerResult = available()): Har
   const proposals: NaturalLanguageProposalRecord[] = [];
   const workItems: WorkItem[] = [];
   const scheduleBlocks: ScheduleBlock[] = [];
+  const routines: Routine[] = [];
   const audits: AuditEventRecord[] = [];
   let now = new Date(NOW);
   let auditFailure = false;
@@ -140,6 +159,17 @@ function createHarness(result: NaturalLanguageProposerResult = available()): Har
     save: async () => undefined,
     delete: async () => undefined,
   } satisfies ScheduleBlockRepository;
+  const routineRepository = {
+    findById: async (targetWorkspaceId: WorkspaceId, id: Routine["id"]) =>
+      routines.find((routine) => routine.workspaceId === targetWorkspaceId && routine.id === id) ??
+      null,
+    list: async () => routines,
+    listPlanningCandidates: async () => routines,
+    insert: async (routine: Routine) => {
+      routines.push(routine);
+    },
+    save: async () => undefined,
+  } satisfies RoutineRepository;
   const proposalRepository: NaturalLanguageProposalRepository = {
     findByRequestId: async (targetWorkspaceId, requestId) =>
       proposals.find(
@@ -180,6 +210,7 @@ function createHarness(result: NaturalLanguageProposerResult = available()): Har
     workspaces: workspaceRepository,
     workItems: workItemRepository,
     scheduleBlocks: scheduleBlockRepository,
+    routines: routineRepository,
     auditEvents: auditRepository,
     proposals: proposalRepository,
   };
@@ -188,6 +219,7 @@ function createHarness(result: NaturalLanguageProposerResult = available()): Har
       const proposalSnapshot = [...proposals];
       const workItemSnapshot = [...workItems];
       const scheduleBlockSnapshot = [...scheduleBlocks];
+      const routineSnapshot = [...routines];
       const auditSnapshot = [...audits];
       try {
         return await operation(context);
@@ -195,6 +227,7 @@ function createHarness(result: NaturalLanguageProposerResult = available()): Har
         proposals.splice(0, proposals.length, ...proposalSnapshot);
         workItems.splice(0, workItems.length, ...workItemSnapshot);
         scheduleBlocks.splice(0, scheduleBlocks.length, ...scheduleBlockSnapshot);
+        routines.splice(0, routines.length, ...routineSnapshot);
         audits.splice(0, audits.length, ...auditSnapshot);
         throw error;
       }
@@ -211,6 +244,7 @@ function createHarness(result: NaturalLanguageProposerResult = available()): Har
     proposals,
     workItems,
     scheduleBlocks,
+    routines,
     audits,
     unitOfWork,
     proposer,
@@ -294,7 +328,7 @@ describe("local natural-language proposals", () => {
     expect(test.proposer.propose).toHaveBeenCalledTimes(1);
     const context = test.proposer.propose.mock.calls[0]?.[0] as NaturalLanguageProposerContext;
     expect(context).toEqual({
-      version: "schedule.natural-language-context/v3",
+      version: "schedule.natural-language-context/v4",
       requestId: REQUEST_ID,
       prompt: "Add prepare release notes to my work list",
       referenceDate: null,
@@ -351,7 +385,7 @@ describe("local natural-language proposals", () => {
 
     await generate.execute(input);
     expect(test.proposer.propose.mock.calls[0]?.[0]).toMatchObject({
-      version: "schedule.natural-language-context/v3",
+      version: "schedule.natural-language-context/v4",
       referenceDate: "2026-07-14",
       timeZone: "UTC",
     });
@@ -464,6 +498,73 @@ describe("local natural-language proposals", () => {
     await expect(prepare(test, "Add a different task")).rejects.toMatchObject({
       code: "natural_language.request_conflict",
     });
+  });
+
+  it("permits v3 only as a hash-matched pending replay and always returns the v4 envelope", async () => {
+    const test = createHarness();
+    const first = await prepare(test);
+    const legacyInput = {
+      version: "schedule.natural-language/v3" as const,
+      requestId: REQUEST_ID,
+      workspaceId: WORKSPACE_ID,
+      prompt: "Add prepare release notes to my work list",
+      referenceDate: null,
+      timeZone: "UTC",
+    };
+    test.proposals[0] = {
+      ...test.proposals[0]!,
+      promptHash: promptHasher.digestLegacyV3({
+        workspaceId: WORKSPACE_ID,
+        requestId: REQUEST_ID,
+        prompt: legacyInput.prompt,
+        referenceDate: null,
+        timeZone: "UTC",
+      }),
+    };
+    const replay = await new GenerateNaturalLanguageProposal(
+      test.unitOfWork,
+      test.proposer,
+      test.clock,
+      promptHasher,
+    ).execute(legacyInput);
+    expect(replay).toMatchObject({
+      version: NATURAL_LANGUAGE_PROPOSAL_VERSION,
+      proposal: { id: first.proposal!.id },
+    });
+    expect(test.proposer.propose).toHaveBeenCalledTimes(1);
+
+    await expect(
+      new GenerateNaturalLanguageProposal(
+        test.unitOfWork,
+        test.proposer,
+        test.clock,
+        promptHasher,
+      ).execute({
+        ...legacyInput,
+        prompt: "Different legacy text",
+      }),
+    ).rejects.toMatchObject({ code: "natural_language.request_conflict" });
+  });
+
+  it("rejects a new v3 request without provider work or proposal persistence", async () => {
+    const test = createHarness();
+    await expect(
+      new GenerateNaturalLanguageProposal(
+        test.unitOfWork,
+        test.proposer,
+        test.clock,
+        promptHasher,
+      ).execute({
+        version: "schedule.natural-language/v3",
+        requestId: REQUEST_ID,
+        workspaceId: WORKSPACE_ID,
+        prompt: "Create a legacy proposal",
+        referenceDate: null,
+        timeZone: "UTC",
+      }),
+    ).rejects.toMatchObject({ code: "natural_language.request_invalid" });
+    expect(test.proposer.propose).not.toHaveBeenCalled();
+    expect(test.proposals).toHaveLength(0);
   });
 
   it.each([
@@ -1202,5 +1303,151 @@ describe("local natural-language proposals", () => {
     ).rejects.toThrow("audit unavailable");
     expect(confirmFailure.workItems).toHaveLength(0);
     expect(confirmFailure.proposals[0]?.status).toBe("pending");
+  });
+
+  it("normalizes a compact provider routine into the native editor defaults without a user selection", async () => {
+    const test = createHarness(availableRoutine());
+    const proposal = (await prepare(test)).proposal!;
+    expect(proposal).toMatchObject({
+      command: {
+        type: "routine.create",
+        title: "Practice piano",
+        description: null,
+        status: "active",
+        tags: {
+          priority: "medium",
+          effort: "medium",
+          energy: "normal",
+          preference: "neutral",
+          contexts: [],
+          categories: [],
+          freeForm: [],
+        },
+        duration: {
+          minimumMinutes: 15,
+          expectedMinutes: 30,
+          maximumMinutes: 60,
+          splittable: false,
+          minimumSessionMinutes: null,
+          overheadMinutes: 0,
+        },
+        cadence: {
+          period: "week",
+          rollingIntervalDays: null,
+          targetCompletions: 3,
+          minimumCompletions: null,
+          maximumCompletions: null,
+          minimumSpacingDays: 1,
+          discourageConsecutiveDays: true,
+          prohibitConsecutiveDays: false,
+          weekStartsOn: 1,
+          preferredWeekdays: [],
+          excludedWeekdays: [],
+          startsOn: null,
+          pausedUntil: null,
+          endsOn: null,
+        },
+      },
+      userSelection: null,
+      modelSuggestions: null,
+    });
+    expect(test.workItems).toHaveLength(0);
+    expect(test.routines).toHaveLength(0);
+  });
+
+  it("rejects provider-authored routine policy fields or suggestions", async () => {
+    const base = availableRoutine();
+    if (base.status !== "available") throw new Error("invalid fixture");
+    for (const output of [
+      { ...base.output, command: { type: "routine.create", title: "Read", duration: {} } },
+      {
+        ...base.output,
+        modelSuggestions: { priority: "high", dueOn: null, planningDurationMinutes: null },
+      },
+    ]) {
+      const test = createHarness({ status: "available", output } as NaturalLanguageProposerResult);
+      await expect(prepare(test)).resolves.toMatchObject({
+        status: "unavailable",
+        reason: "malformed_response",
+      });
+      expect(test.proposals).toHaveLength(0);
+    }
+  });
+
+  it("accepts a native-cap routine description even when its canonical display exceeds the legacy database limit", async () => {
+    const test = createHarness(availableRoutine());
+    const proposal = (await prepare(test)).proposal!;
+    const command = proposal.command as Extract<
+      typeof proposal.command,
+      { type: "routine.create" }
+    >;
+    const reviewed = {
+      ...command,
+      description: "d".repeat(4_000),
+    } as const;
+    expect(naturalLanguageProposalCommandDisplay(reviewed).length).toBeGreaterThan(1_000);
+
+    await expect(
+      new UpdateNaturalLanguageProposal(test.unitOfWork, test.clock).execute({
+        workspaceId: WORKSPACE_ID,
+        proposalId: proposal.id,
+        expectedVersion: proposal.version,
+        command: reviewed,
+      }),
+    ).resolves.toMatchObject({ command: { description: reviewed.description } });
+  });
+
+  it("requires a full explicit routine review and confirms its exact deterministic snapshot once", async () => {
+    const test = createHarness(availableRoutine());
+    const proposal = (await prepare(test)).proposal!;
+    const command = proposal.command as Extract<
+      typeof proposal.command,
+      { type: "routine.create" }
+    >;
+    const updated = await new UpdateNaturalLanguageProposal(test.unitOfWork, test.clock).execute({
+      workspaceId: WORKSPACE_ID,
+      proposalId: proposal.id,
+      expectedVersion: proposal.version,
+      command: {
+        ...command,
+        title: "Practice piano scales",
+        description: "Use a deliberate tempo and record one clean take.",
+        tags: {
+          priority: "high",
+          effort: "medium",
+          energy: "normal",
+          preference: "enjoyable",
+          contexts: ["home"],
+          categories: ["music"],
+          freeForm: ["piano"],
+        },
+        duration: { ...command.duration, expectedMinutes: 45, maximumMinutes: 60 },
+      },
+    });
+    expect(updated.userSelection).toBeNull();
+    const confirm = new ConfirmNaturalLanguageProposal(test.unitOfWork, test.clock);
+    const request = {
+      workspaceId: WORKSPACE_ID,
+      proposalId: updated.id,
+      expectedVersion: updated.version,
+      idempotencyKey: "routine-confirm",
+    } as const;
+    const first = await confirm.execute(request);
+    const replay = await confirm.execute(request);
+    expect(first).toMatchObject({
+      resultType: "routine",
+      replayed: false,
+      routine: { id: routineId(proposal.id), title: "Practice piano scales", version: 1 },
+    });
+    expect(replay).toMatchObject({
+      resultType: "routine",
+      replayed: true,
+      routine: { id: routineId(proposal.id) },
+    });
+    expect(test.routines).toHaveLength(1);
+    expect(test.audits.at(-1)?.data).toMatchObject({
+      resultType: "routine",
+      resultId: routineId(proposal.id),
+    });
   });
 });

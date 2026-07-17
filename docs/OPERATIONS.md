@@ -304,7 +304,9 @@ fingerprint.
 Migration `0028` creates `natural_language_proposals`; migration `0032` adds the separately stored
 user review fields and a bounded-duration constraint; migration `0038` adds nullable, review-only
 model suggestions plus an independent integrity digest; migration `0039` adds the tenant-bound
-calendar-block result and command-typed lifecycle constraint.
+calendar-block result and command-typed lifecycle constraint; migration `0040` adds the tenant-bound
+routine result, extends that exact command/result constraint, and raises the canonical command-display
+bound from 1,000 to 64,000 characters for full routine snapshots.
 The table is part of the exact backup and restore catalog. Back up before migration. After applying
 it, run the real concurrency verifier:
 
@@ -314,9 +316,11 @@ pnpm verify:natural-language-proposals
 ```
 
 The verifier does not call Ollama. It uses production PostgreSQL repositories from two independent
-connection pools and checks private persistence, exact reviewed root work-item and unlinked
-calendar-block results, tenant isolation, same-key replay, competing-key conflict, and exactly one
-result/audit. The browser verifier starts a strict loopback model double and
+connection pools and checks private persistence, title-only routine provider authority, no mutation
+during a full routine review, persistence and replay of a valid routine command display over 1,000
+characters, exact reviewed root work-item, unlinked calendar-block, and routine results, tenant
+isolation, same-key replay, competing-key conflict, and exactly one result and confirmation audit.
+The browser verifier starts a strict loopback model double and
 exercises the production adapter and UI. A real provider can be checked manually through the Work
 view after Ollama itself is healthy; this is usability smoke testing, not a correctness or quality
 gate.

@@ -151,6 +151,7 @@ try {
   assert.equal(columnNames.has("model_suggestions"), true);
   assert.equal(columnNames.has("model_suggestions_hash"), true);
   assert.equal(columnNames.has("result_schedule_block_id"), true);
+  assert.equal(columnNames.has("result_routine_id"), true);
 
   const [persisted] = await observerConnection.sql<
     {
@@ -429,21 +430,270 @@ try {
     /natural_language_proposals_lifecycle_valid/,
   );
 
+  const routineWorkspaceId = await createVerificationWorkspace("Natural-language routine verifier");
+  const routinePrompt = "Create a weekly piano-practice routine from my private notes.";
+  const routineGenerate = new GenerateNaturalLanguageProposal(
+    firstUnitOfWork,
+    {
+      provider: "ollama",
+      model: "gemma4:e4b",
+      async propose() {
+        return {
+          status: "available" as const,
+          output: {
+            version: NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION,
+            summary: "Prepared one reviewable routine title.",
+            warnings: ["Review every routine setting before confirmation."],
+            command: {
+              type: "routine.create" as const,
+              title: "Practice piano",
+            },
+            modelSuggestions: null,
+          },
+        };
+      },
+    },
+    clock,
+    promptHasher,
+    10 * 60_000,
+  );
+  const routinePrepared = await routineGenerate.execute({
+    version: NATURAL_LANGUAGE_PROPOSAL_VERSION,
+    workspaceId: routineWorkspaceId,
+    requestId: randomUUID(),
+    prompt: routinePrompt,
+    referenceDate: localDate("2026-07-15"),
+    timeZone: "UTC",
+  });
+  assert.equal(routinePrepared.status, "proposal");
+  assert.notEqual(routinePrepared.proposal, null);
+  assert.equal(routinePrepared.proposal!.modelSuggestions, null);
+  assert.equal(routinePrepared.proposal!.userSelection, null);
+  assert.deepEqual(routinePrepared.proposal!.command, {
+    type: "routine.create",
+    title: "Practice piano",
+    description: null,
+    status: "active",
+    tags: {
+      priority: "medium",
+      effort: "medium",
+      energy: "normal",
+      preference: "neutral",
+      contexts: [],
+      categories: [],
+      freeForm: [],
+    },
+    duration: {
+      minimumMinutes: 15,
+      expectedMinutes: 30,
+      maximumMinutes: 60,
+      splittable: false,
+      minimumSessionMinutes: null,
+      overheadMinutes: 0,
+    },
+    cadence: {
+      period: "week",
+      rollingIntervalDays: null,
+      targetCompletions: 3,
+      minimumCompletions: null,
+      maximumCompletions: null,
+      minimumSpacingDays: 1,
+      preferredWeekdays: [],
+      excludedWeekdays: [],
+      discourageConsecutiveDays: true,
+      prohibitConsecutiveDays: false,
+      weekStartsOn: 1 as const,
+      startsOn: null,
+      pausedUntil: null,
+      endsOn: null,
+    },
+  });
+
+  const [routineBeforeReview] = await observerConnection.sql<
+    { routines: string; serialized_proposal: string }[]
+  >`
+    select
+      (select count(*)::text from routines
+       where workspace_id = ${routineWorkspaceId}) as routines,
+      to_jsonb(natural_language_proposals)::text as serialized_proposal
+    from natural_language_proposals
+    where workspace_id = ${routineWorkspaceId} and id = ${routinePrepared.proposal!.id}
+  `;
+  assert.equal(routineBeforeReview?.routines, "0");
+  assert.equal(routineBeforeReview?.serialized_proposal.includes(routinePrompt), false);
+
+  const reviewedRoutineDescription =
+    "Practice notes: " +
+    Array.from(
+      { length: 22 },
+      () => "Keep a steady tone and relaxed timing throughout the session.",
+    ).join(" ");
+  assert.equal(reviewedRoutineDescription.length > 1_000, true);
+  const reviewedRoutineCommand = {
+    type: "routine.create" as const,
+    title: "Practice reviewed piano scales",
+    description: reviewedRoutineDescription,
+    status: "active" as const,
+    tags: {
+      priority: "high" as const,
+      effort: "medium" as const,
+      energy: "normal" as const,
+      preference: "enjoyable" as const,
+      contexts: ["home"],
+      categories: ["music"],
+      freeForm: ["piano"],
+    },
+    duration: {
+      minimumMinutes: 20,
+      expectedMinutes: 45,
+      maximumMinutes: 75,
+      splittable: false,
+      minimumSessionMinutes: null,
+      overheadMinutes: 5,
+    },
+    cadence: {
+      period: "week" as const,
+      rollingIntervalDays: null,
+      targetCompletions: 4,
+      minimumCompletions: 2,
+      maximumCompletions: 5,
+      minimumSpacingDays: 1,
+      preferredWeekdays: [1, 3, 5] as const,
+      excludedWeekdays: [],
+      discourageConsecutiveDays: true,
+      prohibitConsecutiveDays: false,
+      weekStartsOn: 1 as const,
+      startsOn: localDate("2026-07-15"),
+      pausedUntil: null,
+      endsOn: null,
+    },
+  };
+  const reviewedRoutine = await update.execute({
+    workspaceId: routineWorkspaceId,
+    proposalId: routinePrepared.proposal!.id,
+    expectedVersion: routinePrepared.proposal!.version,
+    command: reviewedRoutineCommand,
+  });
+  assert.deepEqual(reviewedRoutine.command, reviewedRoutineCommand);
+  assert.equal(reviewedRoutine.commandDisplay.length > 1_000, true);
+
+  const [routineBeforeConfirmation] = await observerConnection.sql<
+    { count: string; command_display_length: number }[]
+  >`
+    select
+      (select count(*)::text from routines where workspace_id = ${routineWorkspaceId}) as count,
+      char_length(command_display)::integer as command_display_length
+    from natural_language_proposals
+    where workspace_id = ${routineWorkspaceId} and id = ${reviewedRoutine.id}
+  `;
+  assert.equal(routineBeforeConfirmation?.count, "0");
+  assert.equal((routineBeforeConfirmation?.command_display_length ?? 0) > 1_000, true);
+
+  const routineConfirmationCommand = {
+    workspaceId: routineWorkspaceId,
+    proposalId: reviewedRoutine.id,
+    expectedVersion: reviewedRoutine.version,
+    idempotencyKey: "natural-language-routine-same-key-live-verification",
+  };
+  const routineResults = await Promise.all([
+    firstConfirm.execute(routineConfirmationCommand),
+    secondConfirm.execute(routineConfirmationCommand),
+  ]);
+  assert.deepEqual(routineResults.map((result) => result.replayed).sort(), [false, true]);
+  for (const result of routineResults) {
+    assert.equal(result.resultType, "routine");
+    if (result.resultType !== "routine") throw new Error("Expected a routine.");
+    assert.equal(result.routine.id, routinePrepared.proposal!.id);
+    assert.equal(result.routine.description, reviewedRoutineDescription);
+    assert.deepEqual(
+      {
+        workspaceId: result.routine.workspaceId,
+        title: result.routine.title,
+        description: result.routine.description,
+        status: result.routine.status,
+        tags: result.routine.tags,
+        duration: result.routine.duration,
+        cadence: result.routine.cadence,
+      },
+      {
+        workspaceId: routineWorkspaceId,
+        title: reviewedRoutineCommand.title,
+        description: reviewedRoutineCommand.description,
+        status: reviewedRoutineCommand.status,
+        tags: reviewedRoutineCommand.tags,
+        duration: reviewedRoutineCommand.duration,
+        cadence: reviewedRoutineCommand.cadence,
+      },
+    );
+  }
+
+  const [routineCounts] = await observerConnection.sql<
+    {
+      proposals: string;
+      routines: string;
+      confirmation_events: string;
+      result_routine_id: string | null;
+      result_schedule_block_id: string | null;
+      result_work_item_id: string | null;
+      serialized_audits: string;
+      serialized_result: string;
+    }[]
+  >`
+    select
+      (select count(*)::text from natural_language_proposals
+       where workspace_id = ${routineWorkspaceId}) as proposals,
+      (select count(*)::text from routines
+       where workspace_id = ${routineWorkspaceId} and id = ${routinePrepared.proposal!.id}) as routines,
+      (select count(*)::text from audit_events
+       where workspace_id = ${routineWorkspaceId}
+         and entity_id = ${routinePrepared.proposal!.id}
+         and action = 'natural_language.proposal_confirmed') as confirmation_events,
+      result_routine_id,
+      result_schedule_block_id,
+      result_work_item_id,
+      (select coalesce(jsonb_agg(to_jsonb(audit_events)), '[]'::jsonb)::text
+       from audit_events where workspace_id = ${routineWorkspaceId}) as serialized_audits,
+      (select to_jsonb(routines)::text from routines
+        where workspace_id = ${routineWorkspaceId} and id = ${routinePrepared.proposal!.id}) as serialized_result
+    from natural_language_proposals
+    where workspace_id = ${routineWorkspaceId} and id = ${routinePrepared.proposal!.id}
+  `;
+  assert.deepEqual(
+    {
+      proposals: routineCounts?.proposals,
+      routines: routineCounts?.routines,
+      confirmation_events: routineCounts?.confirmation_events,
+      result_routine_id: routineCounts?.result_routine_id,
+      result_schedule_block_id: routineCounts?.result_schedule_block_id,
+      result_work_item_id: routineCounts?.result_work_item_id,
+    },
+    {
+      proposals: "1",
+      routines: "1",
+      confirmation_events: "1",
+      result_routine_id: routinePrepared.proposal!.id,
+      result_schedule_block_id: null,
+      result_work_item_id: null,
+    },
+  );
+  assert.equal(routineCounts?.serialized_audits.includes(routinePrompt), false);
+  assert.equal(routineCounts?.serialized_result.includes(routinePrompt), false);
+
   const isolatedWorkspaceId = await createVerificationWorkspace(
     "Natural-language tenant isolation verifier",
   );
   await assert.rejects(
     firstConfirm.execute({
       workspaceId: isolatedWorkspaceId,
-      proposalId: conflicting.proposal.id,
-      expectedVersion: conflicting.proposal.version,
+      proposalId: reviewedRoutine.id,
+      expectedVersion: reviewedRoutine.version,
       idempotencyKey: "natural-language-tenant-isolation",
     }),
     (error: unknown) => domainErrorCode(error) === "natural_language.proposal_not_found",
   );
 
   console.log(
-    "Natural-language proposal verification passed advisory suggestion isolation, private review persistence, exact work-item and calendar-block creation, tenant isolation, and concurrent exactly-once confirmation",
+    "Natural-language proposal verification passed advisory suggestion isolation, private review persistence, exact work-item, calendar-block, and user-reviewed routine creation, tenant isolation, and concurrent exactly-once confirmation",
   );
 } finally {
   await removeVerificationWorkspaces().catch(() => undefined);

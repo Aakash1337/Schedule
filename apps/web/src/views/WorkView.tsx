@@ -4,6 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { api, ApiError } from "../api";
 import { Button, EmptyState, ErrorNotice, Field, PageHeader, PageSkeleton } from "../components/ui";
 import {
+  parseRoutineDraft,
+  RoutineFields,
+  routineDraftFromRoutine,
+  type RoutineDraft,
+} from "./RoutineEditor";
+import {
   browserTimeZone,
   isoToLocalDate,
   isoToLocalTime,
@@ -193,6 +199,10 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const [proposalBlockStartsAt, setProposalBlockStartsAt] = useState("");
   const [proposalBlockEndsOn, setProposalBlockEndsOn] = useState("");
   const [proposalBlockEndsAt, setProposalBlockEndsAt] = useState("");
+  const [proposalRoutineDraft, setProposalRoutineDraft] = useState<RoutineDraft | null>(null);
+  const [proposalRoutineStatus, setProposalRoutineStatus] = useState<
+    "active" | "paused" | "archived"
+  >("active");
   const [proposalSummary, setProposalSummary] = useState<string | null>(null);
   const [proposalWarnings, setProposalWarnings] = useState<readonly string[]>([]);
   const [proposalBusy, setProposalBusy] = useState<
@@ -319,6 +329,8 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     setProposalBlockStartsAt("");
     setProposalBlockEndsOn("");
     setProposalBlockEndsAt("");
+    setProposalRoutineDraft(null);
+    setProposalRoutineStatus("active");
     setProposalSummary(null);
     setProposalWarnings([]);
     setProposalBusy(null);
@@ -897,6 +909,8 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     setProposalBlockStartsAt("");
     setProposalBlockEndsOn("");
     setProposalBlockEndsAt("");
+    setProposalRoutineDraft(null);
+    setProposalRoutineStatus("active");
     setProposalSummary(null);
     setProposalWarnings([]);
     setProposalError(null);
@@ -906,7 +920,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       const result = await api.generateNaturalLanguageProposal(
         request.workspaceId,
         {
-          version: "schedule.natural-language/v3",
+          version: "schedule.natural-language/v4",
           requestId,
           prompt,
           referenceDate: todayKey(),
@@ -925,19 +939,21 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       setProposal(result.proposal);
       setProposalTitle(result.proposal.command.title);
       if (result.proposal.command.type === "work_item.create") {
-        setProposalPriority(result.proposal.userSelection.priority);
-        setProposalDueOn(result.proposal.userSelection.dueOn ?? "");
-        setProposalIncludeInDailyPlan(
-          result.proposal.userSelection.planningDurationMinutes !== null,
-        );
-        setProposalPlanningDurationMinutes(
-          String(result.proposal.userSelection.planningDurationMinutes ?? 30),
-        );
-      } else {
+        const selection = result.proposal.userSelection;
+        if (selection === null)
+          throw new Error("The work-item proposal omitted its reviewed values.");
+        setProposalPriority(selection.priority);
+        setProposalDueOn(selection.dueOn ?? "");
+        setProposalIncludeInDailyPlan(selection.planningDurationMinutes !== null);
+        setProposalPlanningDurationMinutes(String(selection.planningDurationMinutes ?? 30));
+      } else if (result.proposal.command.type === "schedule_block.create") {
         setProposalBlockDate(isoToLocalDate(result.proposal.command.startsAt));
         setProposalBlockStartsAt(isoToLocalTime(result.proposal.command.startsAt));
         setProposalBlockEndsOn(isoToLocalDate(result.proposal.command.endsAt));
         setProposalBlockEndsAt(isoToLocalTime(result.proposal.command.endsAt));
+      } else {
+        setProposalRoutineDraft(routineDraftFromRoutine(result.proposal.command));
+        setProposalRoutineStatus(result.proposal.command.status);
       }
       setProposalSummary(result.summary);
       setProposalWarnings(result.warnings);
@@ -982,6 +998,8 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       setProposalBlockStartsAt("");
       setProposalBlockEndsOn("");
       setProposalBlockEndsAt("");
+      setProposalRoutineDraft(null);
+      setProposalRoutineStatus("active");
       setProposalSummary(null);
       setProposalWarnings([]);
       confirmationKeyRef.current = null;
@@ -1042,19 +1060,33 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         setProposalError(messageFor(error));
         return;
       }
-    } else {
+    } else if (proposal.command.type === "work_item.create") {
       if (!isPlanningDurationValid(proposalPlanningDurationMinutes, proposalIncludeInDailyPlan)) {
         return;
       }
       reviewedCommand = { type: "work_item.create", title: normalizedTitle };
+    } else {
+      if (proposalRoutineDraft === null) return;
+      const parsed = parseRoutineDraft(
+        { ...proposalRoutineDraft, title: normalizedTitle },
+        proposalRoutineStatus,
+      );
+      if (parsed.payload === null) {
+        setProposalError(parsed.error);
+        return;
+      }
+      reviewedCommand = { type: "routine.create", ...parsed.payload };
     }
-    const userSelection = {
-      priority: proposalPriority,
-      dueOn: proposalDueOn === "" ? null : proposalDueOn,
-      planningDurationMinutes: proposalIncludeInDailyPlan
-        ? Number(proposalPlanningDurationMinutes)
-        : null,
-    } as const;
+    const userSelection =
+      proposal.command.type === "work_item.create"
+        ? ({
+            priority: proposalPriority,
+            dueOn: proposalDueOn === "" ? null : proposalDueOn,
+            planningDurationMinutes: proposalIncludeInDailyPlan
+              ? Number(proposalPlanningDurationMinutes)
+              : null,
+          } as const)
+        : null;
     const request = beginProposalOperation();
     const requestQueryKey = activeQueryKey;
     const confirmationKey = confirmationKeyRef.current ?? globalThis.crypto.randomUUID();
@@ -1066,39 +1098,47 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       const commandChanged =
         reviewedCommand.type === "work_item.create"
           ? reviewedCommand.title !== currentProposal.command.title ||
-            userSelection.priority !== currentProposal.userSelection.priority ||
-            userSelection.dueOn !== currentProposal.userSelection.dueOn ||
-            userSelection.planningDurationMinutes !==
-              currentProposal.userSelection.planningDurationMinutes
-          : currentProposal.command.type !== "schedule_block.create" ||
-            reviewedCommand.title !== currentProposal.command.title ||
-            reviewedCommand.startsAt !== currentProposal.command.startsAt ||
-            reviewedCommand.endsAt !== currentProposal.command.endsAt;
+            userSelection?.priority !== currentProposal.userSelection?.priority ||
+            userSelection?.dueOn !== currentProposal.userSelection?.dueOn ||
+            userSelection?.planningDurationMinutes !==
+              currentProposal.userSelection?.planningDurationMinutes
+          : reviewedCommand.type === "schedule_block.create"
+            ? currentProposal.command.type !== "schedule_block.create" ||
+              reviewedCommand.title !== currentProposal.command.title ||
+              reviewedCommand.startsAt !== currentProposal.command.startsAt ||
+              reviewedCommand.endsAt !== currentProposal.command.endsAt
+            : JSON.stringify(reviewedCommand) !== JSON.stringify(currentProposal.command);
       if (commandChanged) {
-        currentProposal = await api.updateNaturalLanguageProposal(
-          request.workspaceId,
-          currentProposal.id,
+        const updateInput =
           reviewedCommand.type === "work_item.create"
             ? {
                 expectedVersion: currentProposal.version,
                 command: reviewedCommand,
-                userSelection,
+                userSelection: userSelection!,
               }
-            : { expectedVersion: currentProposal.version, command: reviewedCommand },
+            : reviewedCommand.type === "schedule_block.create"
+              ? { expectedVersion: currentProposal.version, command: reviewedCommand }
+              : { expectedVersion: currentProposal.version, command: reviewedCommand };
+        currentProposal = await api.updateNaturalLanguageProposal(
+          request.workspaceId,
+          currentProposal.id,
+          updateInput,
           request.controller.signal,
         );
         if (!proposalOperationIsCurrent(request.operation, request.workspaceId)) return;
         setProposal(currentProposal);
         setProposalTitle(currentProposal.command.title);
         if (currentProposal.command.type === "work_item.create") {
-          setProposalPriority(currentProposal.userSelection.priority);
-          setProposalDueOn(currentProposal.userSelection.dueOn ?? "");
-          setProposalIncludeInDailyPlan(
-            currentProposal.userSelection.planningDurationMinutes !== null,
-          );
-          setProposalPlanningDurationMinutes(
-            String(currentProposal.userSelection.planningDurationMinutes ?? 30),
-          );
+          const selection = currentProposal.userSelection;
+          if (selection === null)
+            throw new Error("The work-item proposal omitted its reviewed values.");
+          setProposalPriority(selection.priority);
+          setProposalDueOn(selection.dueOn ?? "");
+          setProposalIncludeInDailyPlan(selection.planningDurationMinutes !== null);
+          setProposalPlanningDurationMinutes(String(selection.planningDurationMinutes ?? 30));
+        } else if (currentProposal.command.type === "routine.create") {
+          setProposalRoutineDraft(routineDraftFromRoutine(currentProposal.command));
+          setProposalRoutineStatus(currentProposal.command.status);
         }
       }
       const result = await api.confirmNaturalLanguageProposal(
@@ -1144,12 +1184,18 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
             ? `${created.title} was already created; the existing work item is shown.`
             : `${created.title} was created in Backlog.`,
         );
-      } else {
+      } else if (result.resultType === "schedule_block") {
         const title = result.scheduleBlock.title ?? "Calendar block";
         setProposalAnnouncement(
           result.replayed
             ? `${title} was already created in Calendar.`
             : `${title} was created in Calendar.`,
+        );
+      } else {
+        setProposalAnnouncement(
+          result.replayed
+            ? `${result.routine.title} was already created in Routines.`
+            : `${result.routine.title} was created in Routines.`,
         );
       }
       setProposal(null);
@@ -1163,6 +1209,8 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       setProposalBlockStartsAt("");
       setProposalBlockEndsOn("");
       setProposalBlockEndsAt("");
+      setProposalRoutineDraft(null);
+      setProposalRoutineStatus("active");
       setProposalSummary(null);
       setProposalWarnings([]);
       setProposalOpen(false);
@@ -1284,8 +1332,8 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
             </header>
             <p className="work-natural-language-trust">
               <ShieldCheck size={17} aria-hidden="true" />
-              The local model can suggest one backlog item or calendar block. It cannot create or
-              change anything.
+              The local model can name one backlog item, calendar block, or routine. You review
+              every stored value before anything is created.
             </p>
             {proposalError === null ? null : (
               <ErrorNotice message={proposalError} onDismiss={() => setProposalError(null)} />
@@ -1297,7 +1345,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                 onSubmit={(event) => void prepareProposal(event)}
               >
                 <Field
-                  label="Describe one item or calendar block"
+                  label="Describe one item, calendar block, or routine"
                   hint="Keep this to one concrete request. You will review every value next."
                 >
                   <textarea
@@ -1336,7 +1384,9 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                   <h4>
                     {proposal.command.type === "work_item.create"
                       ? "Create one backlog work item"
-                      : "Create one unlinked calendar block"}
+                      : proposal.command.type === "schedule_block.create"
+                        ? "Create one unlinked calendar block"
+                        : "Create one reusable routine"}
                   </h4>
                   {proposalSummary === null ? null : <p>{proposalSummary}</p>}
                   {proposalWarnings.length === 0 ? null : (
@@ -1347,7 +1397,8 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                     </ul>
                   )}
                 </div>
-                {proposal.modelSuggestions === null ? null : (
+                {proposal.command.type !== "work_item.create" ||
+                proposal.modelSuggestions === null ? null : (
                   <section
                     className="work-natural-language-suggestions"
                     aria-label="Optional model suggestions"
@@ -1408,25 +1459,27 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                     )}
                   </section>
                 )}
-                <Field
-                  label={
-                    proposal.command.type === "work_item.create"
-                      ? "Work item title"
-                      : "Calendar block title"
-                  }
-                  hint="Review or edit every value. Nothing is created until you confirm."
-                >
-                  <input
-                    value={proposalTitle}
-                    maxLength={240}
-                    required
-                    disabled={proposalBusy !== null}
-                    onChange={(event) => {
-                      setProposalTitle(event.currentTarget.value);
-                      setProposalError(null);
-                    }}
-                  />
-                </Field>
+                {proposal.command.type === "routine.create" ? null : (
+                  <Field
+                    label={
+                      proposal.command.type === "work_item.create"
+                        ? "Work item title"
+                        : "Calendar block title"
+                    }
+                    hint="Review or edit every value. Nothing is created until you confirm."
+                  >
+                    <input
+                      value={proposalTitle}
+                      maxLength={240}
+                      required
+                      disabled={proposalBusy !== null}
+                      onChange={(event) => {
+                        setProposalTitle(event.currentTarget.value);
+                        setProposalError(null);
+                      }}
+                    />
+                  </Field>
+                )}
                 {proposal.command.type === "work_item.create" ? (
                   <section
                     className="work-natural-language-user-fields"
@@ -1511,7 +1564,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                       </p>
                     </fieldset>
                   </section>
-                ) : (
+                ) : proposal.command.type === "schedule_block.create" ? (
                   <section
                     className="work-natural-language-user-fields"
                     aria-labelledby="work-natural-language-block-fields-title"
@@ -1577,12 +1630,41 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                       <input value={proposal.command.timeZone} readOnly aria-readonly="true" />
                     </Field>
                   </section>
+                ) : proposalRoutineDraft === null ? null : (
+                  <section
+                    className="work-natural-language-routine-fields"
+                    aria-label="Reviewed routine fields"
+                  >
+                    <p className="work-natural-language-routine-note">
+                      The model suggested only the title. These defaults are yours to review and
+                      edit.
+                    </p>
+                    <RoutineFields
+                      draft={proposalRoutineDraft}
+                      status={proposalRoutineStatus}
+                      disabled={proposalBusy !== null}
+                      autoFocus
+                      onChange={(changes) => {
+                        setProposalRoutineDraft((current) =>
+                          current === null ? null : { ...current, ...changes },
+                        );
+                        if (changes.title !== undefined) setProposalTitle(changes.title);
+                        setProposalError(null);
+                      }}
+                      onStatusChange={(status) => {
+                        setProposalRoutineStatus(status);
+                        setProposalError(null);
+                      }}
+                    />
+                  </section>
                 )}
                 <p className="work-natural-language-no-mutation">
                   <ShieldCheck size={17} aria-hidden="true" />
                   {proposal.command.type === "work_item.create"
                     ? "Nothing has been created yet. Confirming will atomically create this reviewed root item in Backlog."
-                    : "Nothing has been created yet. Confirming will atomically create this reviewed unlinked block in Calendar."}
+                    : proposal.command.type === "schedule_block.create"
+                      ? "Nothing has been created yet. Confirming will atomically create this reviewed unlinked block in Calendar."
+                      : "Nothing has been created yet. Confirming will atomically create this reviewed routine."}
                 </p>
                 <p className="work-natural-language-provenance">
                   Prepared by {proposal.model ?? proposal.provider}; expires at{" "}
@@ -1614,15 +1696,19 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                             proposalPlanningDurationMinutes,
                             proposalIncludeInDailyPlan,
                           )
-                        : proposalBlockDate === "" ||
-                          proposalBlockStartsAt === "" ||
-                          proposalBlockEndsOn === "" ||
-                          proposalBlockEndsAt === "")
+                        : proposal.command.type === "schedule_block.create"
+                          ? proposalBlockDate === "" ||
+                            proposalBlockStartsAt === "" ||
+                            proposalBlockEndsOn === "" ||
+                            proposalBlockEndsAt === ""
+                          : proposalRoutineDraft === null)
                     }
                   >
                     {proposal.command.type === "work_item.create"
                       ? "Create this work item"
-                      : "Create this calendar block"}
+                      : proposal.command.type === "schedule_block.create"
+                        ? "Create this calendar block"
+                        : "Create this routine"}
                   </Button>
                 </div>
               </form>

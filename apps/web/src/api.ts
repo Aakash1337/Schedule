@@ -11,6 +11,7 @@ import type {
   NaturalLanguageConfirmationResult,
   NaturalLanguageProposal,
   NaturalLanguageProposalResult,
+  NaturalLanguageRoutineCommand,
   NotificationDeliveryHistoryItem,
   NotificationIntent,
   NotificationMaterializationResult,
@@ -276,7 +277,7 @@ export const api = {
   generateNaturalLanguageProposal: async (
     workspaceId: string,
     input: {
-      readonly version: "schedule.natural-language/v3";
+      readonly version: "schedule.natural-language/v4";
       readonly requestId: string;
       readonly prompt: string;
       readonly referenceDate: string;
@@ -292,7 +293,7 @@ export const api = {
         ...(signal === undefined ? {} : { signal }),
       },
     );
-    if (result.version !== "schedule.natural-language/v3" || result.requestId !== input.requestId) {
+    if (result.version !== "schedule.natural-language/v4" || result.requestId !== input.requestId) {
       throw new ApiError(
         502,
         "natural_language.response_mismatch",
@@ -328,6 +329,10 @@ export const api = {
             readonly endsAt: string;
             readonly timeZone: string;
           };
+        }
+      | {
+          readonly expectedVersion: number;
+          readonly command: NaturalLanguageRoutineCommand;
         },
     signal?: AbortSignal,
   ) =>

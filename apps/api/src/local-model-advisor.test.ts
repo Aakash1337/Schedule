@@ -124,6 +124,14 @@ const validScheduleBlockProposalOutput: NaturalLanguageProposerOutput = {
   modelSuggestions: null,
 };
 
+const validRoutineProposalOutput: NaturalLanguageProposerOutput = {
+  version: NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION,
+  summary: "Review one routine title.",
+  warnings: [],
+  command: { type: "routine.create", title: "Practice Spanish" },
+  modelSuggestions: null,
+};
+
 function ollamaEnvelope(output: unknown = validOutput): string {
   return JSON.stringify({
     model: "gemma4:e4b",
@@ -344,6 +352,11 @@ describe("OllamaSchedulingAdvisor security boundary", () => {
             };
           };
         };
+        readonly allOf: readonly {
+          readonly then?: {
+            readonly properties?: { readonly modelSuggestions?: { readonly type?: string } };
+          };
+        }[];
         readonly options: {
           readonly temperature: number;
           readonly seed: number;
@@ -685,13 +698,19 @@ describe("OllamaSchedulingAdvisor proposal boundary", () => {
       );
       expect(outbound.messages[0]?.content).toContain("preserve that exact priority word");
       expect(outbound.messages[0]?.content).toContain("set modelSuggestions itself to null");
+      expect(outbound.messages[0]?.content).toContain(
+        "routine.create, return only its type and title",
+      );
+      expect(outbound.messages[0]?.content).toContain(
+        "schedule_block.create or routine.create, modelSuggestions must be null",
+      );
       expect(outbound.messages[0]?.content).toContain("only against context.referenceDate");
       expect(outbound.messages[0]?.content).toContain("mutate Schedule");
       expect(outbound.messages[1]?.content).toBe(
         `BEGIN_UNTRUSTED_WORK_CONTEXT_JSON\n${JSON.stringify(proposalContext)}\nEND_UNTRUSTED_WORK_CONTEXT_JSON`,
       );
       expect(outbound.format.additionalProperties).toBe(false);
-      expect(outbound.format.properties.command.oneOf).toHaveLength(3);
+      expect(outbound.format.properties.command.oneOf).toHaveLength(4);
       expect(outbound.format.properties.modelSuggestions.oneOf).toHaveLength(2);
       expect(outbound.format.properties.modelSuggestions.oneOf[1]?.required).toEqual([
         "priority",
@@ -708,6 +727,7 @@ describe("OllamaSchedulingAdvisor proposal boundary", () => {
       expect(
         outbound.format.properties.modelSuggestions.oneOf[1]?.properties?.dueOn,
       ).not.toHaveProperty("pattern");
+      expect(outbound.format.allOf[0]?.then?.properties?.modelSuggestions?.type).toBe("null");
       expect(outbound).not.toHaveProperty("tools");
       expect(outbound.think).toBe(false);
     } finally {
@@ -720,6 +740,15 @@ describe("OllamaSchedulingAdvisor proposal boundary", () => {
       await expect(advisor.propose(proposalContext)).resolves.toEqual({
         status: "available",
         output: validScheduleBlockProposalOutput,
+      });
+    });
+  });
+
+  it("accepts one compact routine proposal", async () => {
+    await withResponse(ollamaEnvelope(validRoutineProposalOutput), async (advisor) => {
+      await expect(advisor.propose(proposalContext)).resolves.toEqual({
+        status: "available",
+        output: validRoutineProposalOutput,
       });
     });
   });
@@ -811,6 +840,27 @@ describe("OllamaSchedulingAdvisor proposal boundary", () => {
       "calendar block work suggestions",
       {
         ...validScheduleBlockProposalOutput,
+        modelSuggestions: { ...validProposalOutput.modelSuggestions },
+      },
+    ],
+    [
+      "routine model-authored description",
+      {
+        ...validRoutineProposalOutput,
+        command: { ...validRoutineProposalOutput.command, description: "Every weekday" },
+      },
+    ],
+    [
+      "routine model-authored cadence",
+      {
+        ...validRoutineProposalOutput,
+        command: { ...validRoutineProposalOutput.command, cadence: { period: "week" } },
+      },
+    ],
+    [
+      "routine work suggestions",
+      {
+        ...validRoutineProposalOutput,
         modelSuggestions: { ...validProposalOutput.modelSuggestions },
       },
     ],

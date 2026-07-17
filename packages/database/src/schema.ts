@@ -730,6 +730,7 @@ export const naturalLanguageProposals = pgTable(
     confirmationKeyHash: varchar("confirmation_key_hash", { length: 64 }),
     resultWorkItemId: uuid("result_work_item_id"),
     resultScheduleBlockId: uuid("result_schedule_block_id"),
+    resultRoutineId: uuid("result_routine_id"),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     version: integer("version").notNull().default(1),
@@ -762,6 +763,11 @@ export const naturalLanguageProposals = pgTable(
       columns: [table.workspaceId, table.resultScheduleBlockId],
       foreignColumns: [scheduleBlocks.workspaceId, scheduleBlocks.id],
     }).onDelete("restrict"),
+    foreignKey({
+      name: "natural_language_proposals_result_routine_tenant_fk",
+      columns: [table.workspaceId, table.resultRoutineId],
+      foreignColumns: [routines.workspaceId, routines.id],
+    }).onDelete("restrict"),
     check("natural_language_proposals_version_positive", sql`${table.version} > 0`),
     check(
       "natural_language_proposals_prompt_hash_valid",
@@ -785,7 +791,7 @@ export const naturalLanguageProposals = pgTable(
     ),
     check(
       "natural_language_proposals_command_display_bounded",
-      sql`char_length(${table.commandDisplay}) BETWEEN 1 AND 1000`,
+      sql`char_length(${table.commandDisplay}) BETWEEN 1 AND 64000`,
     ),
     check(
       "natural_language_proposals_model_suggestions_object",
@@ -806,15 +812,17 @@ export const naturalLanguageProposals = pgTable(
     check(
       "natural_language_proposals_lifecycle_valid",
       sql`COALESCE((
-        (${table.status} = 'pending' AND ${table.confirmationKeyHash} IS NULL AND ${table.resultWorkItemId} IS NULL AND ${table.resultScheduleBlockId} IS NULL AND ${table.confirmedAt} IS NULL AND ${table.cancelledAt} IS NULL)
+        (${table.status} = 'pending' AND ${table.confirmationKeyHash} IS NULL AND ${table.resultWorkItemId} IS NULL AND ${table.resultScheduleBlockId} IS NULL AND ${table.resultRoutineId} IS NULL AND ${table.confirmedAt} IS NULL AND ${table.cancelledAt} IS NULL)
         OR
         (${table.status} = 'confirmed' AND ${table.confirmationKeyHash} IS NOT NULL AND ${table.confirmedAt} IS NOT NULL AND ${table.cancelledAt} IS NULL AND (
-          ((${table.command}->>'type') = 'work_item.create' AND ${table.resultWorkItemId} IS NOT NULL AND ${table.resultScheduleBlockId} IS NULL)
+          ((${table.command}->>'type') = 'work_item.create' AND ${table.resultWorkItemId} IS NOT NULL AND ${table.resultScheduleBlockId} IS NULL AND ${table.resultRoutineId} IS NULL)
           OR
-          ((${table.command}->>'type') = 'schedule_block.create' AND ${table.resultWorkItemId} IS NULL AND ${table.resultScheduleBlockId} IS NOT NULL)
+          ((${table.command}->>'type') = 'schedule_block.create' AND ${table.resultWorkItemId} IS NULL AND ${table.resultScheduleBlockId} IS NOT NULL AND ${table.resultRoutineId} IS NULL)
+          OR
+          ((${table.command}->>'type') = 'routine.create' AND ${table.resultWorkItemId} IS NULL AND ${table.resultScheduleBlockId} IS NULL AND ${table.resultRoutineId} IS NOT NULL)
         ))
         OR
-        (${table.status} = 'cancelled' AND ${table.confirmationKeyHash} IS NULL AND ${table.resultWorkItemId} IS NULL AND ${table.resultScheduleBlockId} IS NULL AND ${table.confirmedAt} IS NULL AND ${table.cancelledAt} IS NOT NULL)
+        (${table.status} = 'cancelled' AND ${table.confirmationKeyHash} IS NULL AND ${table.resultWorkItemId} IS NULL AND ${table.resultScheduleBlockId} IS NULL AND ${table.resultRoutineId} IS NULL AND ${table.confirmedAt} IS NULL AND ${table.cancelledAt} IS NOT NULL)
       ), false)`,
     ),
     check(

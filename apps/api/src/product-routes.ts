@@ -756,13 +756,22 @@ const schedulingAdviceBody = z.strictObject({
   expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
 });
 const naturalLanguageProposalBody = z.strictObject({
-  version: z.literal("schedule.natural-language/v3"),
+  version: z.enum(["schedule.natural-language/v3", "schedule.natural-language/v4"]),
   requestId: uuid,
   prompt: z.string().min(1).max(2_000),
   referenceDate: localDateText.nullable().default(null),
   timeZone: ianaTimeZone,
 });
 const naturalLanguageExpectedVersion = z.number().int().positive().max(2_147_483_647);
+const naturalLanguageRoutineCommandBody = z.strictObject({
+  type: z.literal("routine.create"),
+  title: z.string().trim().min(1).max(240),
+  description: z.string().max(4_000).nullable(),
+  status: z.enum(["active", "paused", "archived"]),
+  tags: replacementTagsBody,
+  duration: replacementDurationBody,
+  cadence: replacementCadenceBody,
+});
 const updateNaturalLanguageProposalBody = z.union([
   z.strictObject({
     expectedVersion: naturalLanguageExpectedVersion,
@@ -785,6 +794,10 @@ const updateNaturalLanguageProposalBody = z.union([
       endsAt: canonicalInstant,
       timeZone: ianaTimeZone,
     }),
+  }),
+  z.strictObject({
+    expectedVersion: naturalLanguageExpectedVersion,
+    command: naturalLanguageRoutineCommandBody,
   }),
 ]);
 const naturalLanguageProposalVersionBody = z.strictObject({
@@ -992,7 +1005,7 @@ export async function registerProductRoutes(
     try {
       return await services.generateNaturalLanguageProposal(
         {
-          version: body.version,
+          version: body.version as GenerateNaturalLanguageProposalCommand["version"],
           requestId: body.requestId,
           workspaceId: workspaceId(params.workspaceId),
           prompt: body.prompt,
@@ -1026,6 +1039,25 @@ export async function registerProductRoutes(
           priority: body.userSelection.priority,
           dueOn: body.userSelection.dueOn === null ? null : localDate(body.userSelection.dueOn),
           planningDurationMinutes: body.userSelection.planningDurationMinutes,
+        },
+      });
+    }
+    if (body.command.type === "routine.create") {
+      return services.updateNaturalLanguageProposal({
+        ...base,
+        command: {
+          type: body.command.type,
+          title: body.command.title,
+          description: body.command.description,
+          status: body.command.status,
+          tags: createStructuredTags(body.command.tags),
+          duration: createDurationRange(body.command.duration),
+          cadence: createCadencePolicy({
+            ...body.command.cadence,
+            preferredWeekdays: body.command.cadence.preferredWeekdays as Weekday[],
+            excludedWeekdays: body.command.cadence.excludedWeekdays as Weekday[],
+            weekStartsOn: body.command.cadence.weekStartsOn as Weekday,
+          }),
         },
       });
     }

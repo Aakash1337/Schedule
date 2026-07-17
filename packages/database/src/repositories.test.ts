@@ -6,6 +6,10 @@ import { PgDialect } from "drizzle-orm/pg-core";
 
 import {
   activityEventId,
+  createCadencePolicy,
+  createDurationRange,
+  createRoutine,
+  createStructuredTags,
   dailyPlanFitInsightMaximumItemsPerPlan,
   dailyPlanFitInsightFeedbackId,
   dailyPlanId,
@@ -22,6 +26,7 @@ import {
   type WorkItem,
   type WorkItemDependency,
 } from "@schedule/domain";
+import { naturalLanguageProposalCommandDisplay } from "@schedule/application";
 
 import type { DatabaseConnection } from "./database.js";
 import {
@@ -113,6 +118,7 @@ const proposalRow = {
   confirmationKeyHash: null,
   resultWorkItemId: null,
   resultScheduleBlockId: null,
+  resultRoutineId: null,
   confirmedAt: null,
   cancelledAt: null,
   version: 1,
@@ -849,6 +855,7 @@ describe("PostgresNaturalLanguageProposalUnitOfWork", () => {
     expect(repositories).toEqual([
       "auditEvents",
       "proposals",
+      "routines",
       "scheduleBlocks",
       "workItems",
       "workspaces",
@@ -932,6 +939,90 @@ describe("PostgresNaturalLanguageProposalRepository", () => {
     });
   });
 
+  it("maps a canonical routine command and its typed result identity", async () => {
+    const routine = createRoutine({
+      workspaceId: proposalRow.workspaceId,
+      title: "Review vocabulary",
+      description: null,
+      status: "active",
+      tags: createStructuredTags(),
+      duration: createDurationRange({
+        minimumMinutes: 15,
+        expectedMinutes: 30,
+        maximumMinutes: 60,
+        splittable: false,
+        minimumSessionMinutes: null,
+        overheadMinutes: 0,
+      }),
+      cadence: createCadencePolicy({
+        period: "week",
+        targetCompletions: 3,
+        minimumSpacingDays: 1,
+        discourageConsecutiveDays: true,
+        prohibitConsecutiveDays: false,
+        weekStartsOn: 1,
+      }),
+      now: proposalRow.createdAt,
+    });
+    const command = {
+      type: "routine.create" as const,
+      title: routine.title,
+      description: routine.description,
+      status: routine.status,
+      tags: routine.tags,
+      duration: routine.duration,
+      cadence: routine.cadence,
+    };
+    const commandDisplay = naturalLanguageProposalCommandDisplay(command);
+    const row = {
+      ...proposalRow,
+      command,
+      commandDisplay,
+      commandHash: createHash("sha256").update(commandDisplay).digest("hex"),
+      reviewHash: nullModelSuggestionsHash,
+      userSelection: null,
+      reviewPriority: "none" as const,
+      reviewDueOn: null,
+      reviewPlanningDurationMinutes: null,
+      status: "confirmed" as const,
+      confirmationKeyHash: "a".repeat(64),
+      resultRoutineId: proposalRow.id,
+      confirmedAt: new Date("2026-07-13T02:05:00.000Z"),
+    };
+    const repository = new PostgresNaturalLanguageProposalRepository(proposalInsertDatabase(row));
+
+    await expect(repository.insertOrFind(row)).resolves.toMatchObject({
+      proposal: {
+        command,
+        userSelection: null,
+        resultWorkItemId: null,
+        resultScheduleBlockId: null,
+        resultRoutineId: proposalRow.id,
+      },
+    });
+  });
+
+  it.each([
+    [
+      "a work-item command to a calendar-block result",
+      {
+        status: "confirmed" as const,
+        confirmationKeyHash: "a".repeat(64),
+        resultScheduleBlockId: proposalRow.id,
+        confirmedAt: new Date("2026-07-13T02:05:00.000Z"),
+      },
+    ],
+    ["a pending proposal with a result", { resultWorkItemId: proposalRow.id }],
+  ])("fails closed when persisted results bind %s", async (_label, overrides) => {
+    const repository = new PostgresNaturalLanguageProposalRepository(
+      proposalInsertDatabase({ ...proposalRow, ...overrides }),
+    );
+
+    await expect(repository.insertOrFind(proposalRow)).rejects.toMatchObject({
+      code: "natural_language.confirmation_corrupt",
+    });
+  });
+
   it("persists model suggestions independently on insert and save", async () => {
     const insertReturning = vi.fn().mockResolvedValue([proposalRow]);
     const onConflictDoUpdate = vi.fn().mockReturnValue({ returning: insertReturning });
@@ -952,6 +1043,7 @@ describe("PostgresNaturalLanguageProposalRepository", () => {
         modelSuggestions: proposalRow.modelSuggestions,
         modelSuggestionsHash: proposalRow.modelSuggestionsHash,
         resultScheduleBlockId: null,
+        resultRoutineId: null,
       }),
     );
     expect(saveSet).toHaveBeenCalledWith(
@@ -959,6 +1051,7 @@ describe("PostgresNaturalLanguageProposalRepository", () => {
         modelSuggestions: proposalRow.modelSuggestions,
         modelSuggestionsHash: proposalRow.modelSuggestionsHash,
         resultScheduleBlockId: null,
+        resultRoutineId: null,
       }),
     );
   });

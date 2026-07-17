@@ -2065,7 +2065,7 @@
         "anchor": "# Local natural-language proposals"
       },
       "limitations": [
-        "Version 3 prepares exactly one editable root-backlog item or one unlinked calendar block. Work-item suggestions remain limited to explicit priority, due-date, and duration values; routines, tags, recurrence, task breakdown, multiple commands, linked blocks, automatic confirmation, hosted providers, and messaging interpretation remain deferred.",
+        "Version 4 prepares exactly one editable root-backlog item, unlinked calendar block, or routine. Version 3 is accepted only for exact recovery of a matching pending request and always returns version 4; it cannot start generation. A routine title is the only model-authored routine field; all other settings start as visible native defaults and remain user-reviewed. Work-item suggestions remain limited to explicit priority, due-date, and duration values; task breakdown, multiple commands, model-authored routine settings, linked blocks, automatic confirmation, hosted providers, and messaging interpretation remain deferred.",
         "The browser E2E uses a strict loopback provider double; it establishes authority and lifecycle behavior, not real-model title or time-interpretation quality."
       ],
       "evidence": [
@@ -2076,6 +2076,8 @@
           "anchors": [
             "persists a bounded hash-bound proposal without mutating work or storing the prompt",
             "binds the reference date into the model context and request replay fingerprint",
+            "permits v3 only as a hash-matched pending replay and always returns the v4 envelope",
+            "rejects a new v3 request without provider work or proposal persistence",
             "keeps model suggestions advisory until an explicit user review update",
             "preserves immutable model suggestions across an explicit user review update",
             "confirms the complete user-reviewed snapshot as one root backlog item",
@@ -2085,6 +2087,10 @@
             "confirms one reviewed calendar block exactly once without creating work",
             "persists reviewed calendar-block edits before confirmation",
             "fails closed for unsafe calendar-block model output and deterministic collisions",
+            "normalizes a compact provider routine into the native editor defaults without a user selection",
+            "rejects provider-authored routine policy fields or suggestions",
+            "accepts a native-cap routine description even when its canonical display exceeds the legacy database limit",
+            "requires a full explicit routine review and confirms its exact deterministic snapshot once",
             "rolls back proposal creation and confirmation when audit persistence fails"
           ]
         },
@@ -2095,6 +2101,7 @@
           "anchors": [
             "sends a fixed tool-free proposal request and returns only strict review data",
             "accepts one strict unlinked calendar-block proposal",
+            "accepts one compact routine proposal",
             "rejects proposal output with %s",
             "shares the same concurrency permit across advice and proposal work"
           ]
@@ -2108,7 +2115,8 @@
             "migrates natural-language proposal lifecycle and retention boundaries",
             "migrates user-authored natural-language review fields without widening model commands",
             "migrates nullable structured model suggestions independently of the command",
-            "migrates command-typed calendar-block proposal results"
+            "migrates command-typed calendar-block proposal results",
+            "migrates command-typed routine proposal results with a tenant boundary"
           ]
         },
         {
@@ -2118,6 +2126,7 @@
           "anchors": [
             "atomically inserts or returns the request winner and validates its command digest",
             "maps a canonical calendar-block command and its typed result identity",
+            "maps a canonical routine command and its typed result identity",
             "persists model suggestions independently on insert and save",
             "fails closed when valid model suggestions do not match their digest",
             "fails closed when persisted model suggestions have %s",
@@ -2130,6 +2139,7 @@
           "command": "unit",
           "anchors": [
             "keeps natural-language capture proposal-only until an idempotent explicit confirmation",
+            "returns the routine confirmation-result union unchanged",
             "maps terminal proposal state to gone and redacts corrupt persisted commands"
           ]
         },
@@ -2140,6 +2150,7 @@
           "anchors": [
             "prepares and cancels a local proposal without creating a work item",
             "reviews, edits, and confirms one unlinked calendar block",
+            "reviews every native routine field and confirms one routine without changing the work board",
             "persists an edited proposal, confirms explicitly, and focuses the created backlog card",
             "uses optional model suggestions only in the local review draft",
             "reuses the same confirmation key after an ambiguous failure",
@@ -2151,7 +2162,7 @@
           "file": "scripts/verify-natural-language-proposals.ts",
           "command": "natural-language-proposals",
           "anchors": [
-            "Natural-language proposal verification passed advisory suggestion isolation, private review persistence, exact work-item and calendar-block creation, tenant isolation, and concurrent exactly-once confirmation"
+            "Natural-language proposal verification passed advisory suggestion isolation, private review persistence, exact work-item, calendar-block, and user-reviewed routine creation, tenant isolation, and concurrent exactly-once confirmation"
           ]
         },
         {

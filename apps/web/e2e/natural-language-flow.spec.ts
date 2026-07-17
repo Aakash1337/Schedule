@@ -341,6 +341,66 @@ test("reviews and explicitly confirms local work and calendar proposals through 
   await expect(page.getByText("Review the quarterly report", { exact: true })).toBeVisible();
   await workNavigation.click();
 
+  await page.getByRole("button", { name: "Describe work" }).click();
+  await page
+    .getByRole("textbox", { name: /^Describe one/ })
+    .fill("Create a routine E2E for Spanish practice");
+  const routineProposalResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) => /^\/v1\/workspaces\/[^/]+\/natural-language\/proposals$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Review proposal" }).click();
+  expect((await routineProposalResponsePromise).status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "Create one reusable routine" })).toBeVisible();
+  const routineFields = page.getByRole("region", { name: "Reviewed routine fields" });
+  await expect(routineFields).toContainText("The model suggested only the title");
+  await routineFields.getByRole("textbox", { name: "Title" }).fill("Practice reviewed Spanish");
+  await routineFields.getByRole("spinbutton", { name: "Expected minutes" }).fill("50");
+  await routineFields.getByRole("combobox", { name: "Period" }).selectOption("day");
+  await routineFields.getByRole("textbox", { name: /^Categories/ }).fill("learning");
+  const routineUpdateResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "PATCH",
+      (pathname) => /^\/v1\/workspaces\/[^/]+\/natural-language\/proposals\/[^/]+$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  const routineConfirmationResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) =>
+        /^\/v1\/workspaces\/[^/]+\/natural-language\/proposals\/[^/]+\/confirmations$/.test(
+          pathname,
+        ),
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Create this routine" }).click();
+  expect((await routineUpdateResponsePromise).status()).toBe(200);
+  const routineConfirmation = await routineConfirmationResponsePromise;
+  expect(routineConfirmation.status()).toBe(201);
+  expect(await routineConfirmation.json()).toMatchObject({
+    resultType: "routine",
+    workItem: null,
+    scheduleBlock: null,
+    routine: {
+      title: "Practice reviewed Spanish",
+      tags: { categories: ["learning"] },
+      duration: { expectedMinutes: 50 },
+      cadence: { period: "day" },
+    },
+  });
+  await expect(page.getByText("Practice reviewed Spanish was created in Routines.")).toBeVisible();
+  await page.getByRole("button", { name: "Routines", exact: true }).click();
+  await expect(page.getByRole("button", { name: /^Practice reviewed Spanish\b/ })).toBeVisible();
+  await workNavigation.click();
+
   const workspaceSelect = page.getByRole("combobox", { name: "Workspace" }).first();
   const originalWorkspaceId = await workspaceSelect.inputValue();
   await page.getByRole("button", { name: "New workspace" }).click();
