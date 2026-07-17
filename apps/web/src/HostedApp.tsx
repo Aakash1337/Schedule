@@ -395,7 +395,6 @@ export function HostedApp() {
       return;
     }
     setUpdatingTodayItem({ id: intent.itemId, type: intent.type });
-    setTodayError(null);
     setConfirmation(null);
     try {
       await hostedApi.recordTodayActivity(intent.workspaceId, intent.date, intent.itemId, {
@@ -765,7 +764,11 @@ export function HostedApp() {
                     <Button
                       type="button"
                       variant="quiet"
-                      busy={todayGenerationRetry !== null && generatingToday}
+                      busy={
+                        (todayGenerationRetry !== null && generatingToday) ||
+                        (todayRetry !== null && updatingTodayItem !== null)
+                      }
+                      disabled={mutationBusy}
                       onClick={() => {
                         if (todayGenerationRetry !== null)
                           void submitTodayGeneration(todayGenerationRetry);

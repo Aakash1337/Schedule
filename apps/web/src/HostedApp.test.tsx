@@ -388,6 +388,10 @@ describe("hosted capture shell", () => {
 
   it("retries an ambiguous Today action with the exact same intent", async () => {
     const user = userEvent.setup();
+    let finishRetry: () => void = () => undefined;
+    const pendingRetry = new Promise<void>((resolve) => {
+      finishRetry = resolve;
+    });
     const item = {
       id: "plan-item-1",
       title: "Focused review",
@@ -413,16 +417,21 @@ describe("hosted capture shell", () => {
       });
     apiMocks.recordTodayActivity
       .mockRejectedValueOnce(new HostedApiError(408, "request.timeout", "Timed out after commit."))
-      .mockResolvedValueOnce(undefined);
+      .mockReturnValueOnce(pendingRetry);
 
     render(<HostedApp />);
 
     await user.click(await screen.findByRole("button", { name: `Skip ${item.title} in Today` }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Schedule could not be reached.");
     const firstCall = apiMocks.recordTodayActivity.mock.calls[0];
-    await user.click(screen.getByRole("button", { name: "Retry action" }));
+    const retry = screen.getByRole("button", { name: "Retry action" });
+    await user.click(retry);
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+    expect(retry).toBeDisabled();
+    expect(retry).toHaveFocus();
     expect(apiMocks.recordTodayActivity).toHaveBeenCalledTimes(2);
     expect(apiMocks.recordTodayActivity.mock.calls[1]).toEqual(firstCall);
+    finishRetry();
     expect(await screen.findByText(`Skipped “${item.title}”.`)).toBeInTheDocument();
     expect(await screen.findByText("45m · Skipped")).toBeInTheDocument();
   });
