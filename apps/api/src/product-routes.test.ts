@@ -3369,7 +3369,7 @@ describe("local product API", () => {
       },
     });
 
-    const unsafeBlockEdit = await app.inject({
+    const noncanonicalBlockEdit = await app.inject({
       method: "PATCH",
       url: `${baseUrl}/${proposalUuid}`,
       payload: {
@@ -3380,11 +3380,27 @@ describe("local product API", () => {
           startsAt: "2026-07-16T10:00:00-04:00",
           endsAt: "2026-07-16T15:00:00.000Z",
           timeZone: "UTC",
+        },
+      },
+    });
+    expect(noncanonicalBlockEdit.statusCode).toBe(400);
+
+    const linkedBlockEdit = await app.inject({
+      method: "PATCH",
+      url: `${baseUrl}/${proposalUuid}`,
+      payload: {
+        expectedVersion: 1,
+        command: {
+          type: "schedule_block.create",
+          title: "Quarterly report",
+          startsAt: "2026-07-16T14:00:00.000Z",
+          endsAt: "2026-07-16T15:00:00.000Z",
+          timeZone: "UTC",
           workItemId: workItemUuid,
         },
       },
     });
-    expect(unsafeBlockEdit.statusCode).toBe(400);
+    expect(linkedBlockEdit.statusCode).toBe(400);
 
     for (const invalidUserSelection of [
       undefined,

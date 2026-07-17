@@ -328,7 +328,9 @@ test("reviews and explicitly confirms local work and calendar proposals through 
     scheduleBlock: {
       title: "Review the quarterly report",
       workItemId: null,
-      timeZone: expect.any(String),
+      startsAt: "2026-07-17T14:00:00.000Z",
+      endsAt: "2026-07-17T15:00:00.000Z",
+      timeZone: "UTC",
     },
   });
   await expect(

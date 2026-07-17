@@ -350,11 +350,20 @@ function proposalRequestContext(value: unknown): {
   if (!content.startsWith(prefix) || !content.endsWith(suffix)) {
     throw new Error("Fake Ollama received an unbounded context.");
   }
-  const context = JSON.parse(content.slice(prefix.length, -suffix.length)) as Record<
-    string,
-    unknown
-  >;
-  if (typeof context.prompt !== "string" || typeof context.timeZone !== "string") {
+  const parsed = JSON.parse(content.slice(prefix.length, -suffix.length)) as unknown;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Fake Ollama received an invalid context.");
+  }
+  const context = parsed as Record<string, unknown>;
+  if (
+    JSON.stringify(Object.keys(context).sort()) !==
+      JSON.stringify(["prompt", "referenceDate", "requestId", "timeZone", "version"]) ||
+    context.version !== "schedule.natural-language-context/v3" ||
+    typeof context.requestId !== "string" ||
+    typeof context.prompt !== "string" ||
+    !(context.referenceDate === null || typeof context.referenceDate === "string") ||
+    typeof context.timeZone !== "string"
+  ) {
     throw new Error("Fake Ollama received an incomplete context.");
   }
   return { prompt: context.prompt, timeZone: context.timeZone };

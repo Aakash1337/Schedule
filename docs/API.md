@@ -502,9 +502,9 @@ ID, reviewed priority, reviewed date, reviewed duration, tags, or other mutation
 warning text plus either one pending `work_item.create`, one pending unlinked
 `schedule_block.create`, `no_proposal`, or a bounded unavailable
 reason. Preparing a proposal does not create a work item or hold a database transaction open during
-inference. Reusing the same request UUID and normalized prompt returns the still-pending stored
-proposal without another provider call; reusing it for different text returns
-`409 natural_language.request_conflict`.
+inference. Reusing the same request UUID with the same normalized prompt, reference date, and time
+zone fingerprint inputs returns the still-pending stored proposal without another provider call;
+reusing it for a different request context returns `409 natural_language.request_conflict`.
 
 The response's proposal has an ID, request ID, exact canonical command and command hash,
 provider/model identifiers, `pending` status, expiration instant, positive optimistic version,

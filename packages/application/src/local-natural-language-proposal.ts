@@ -209,13 +209,21 @@ export interface GenerateNaturalLanguageProposalResult {
   };
 }
 
-export interface UpdateNaturalLanguageProposalCommand {
+interface UpdateNaturalLanguageProposalCommandBase {
   readonly workspaceId: WorkspaceId;
   readonly proposalId: string;
   readonly expectedVersion: number;
-  readonly command: NaturalLanguageProposalCommand;
-  readonly userSelection?: NaturalLanguageProposalUserSelection;
 }
+
+export type UpdateNaturalLanguageProposalCommand =
+  | (UpdateNaturalLanguageProposalCommandBase & {
+      readonly command: NaturalLanguageWorkItemCommand;
+      readonly userSelection: NaturalLanguageProposalUserSelection;
+    })
+  | (UpdateNaturalLanguageProposalCommandBase & {
+      readonly command: NaturalLanguageScheduleBlockCommand;
+      readonly userSelection?: never;
+    });
 
 export interface CancelNaturalLanguageProposalCommand {
   readonly workspaceId: WorkspaceId;
@@ -853,7 +861,7 @@ export class GenerateNaturalLanguageProposal {
       if (existing.promptHash !== promptHash) {
         throw new DomainError(
           "natural_language.request_conflict",
-          "The request ID was already used for different text.",
+          "The request ID was already used for a different request context.",
         );
       }
       assertPending(existing, requestedAt);
@@ -988,7 +996,7 @@ export class GenerateNaturalLanguageProposal {
       if (result.proposal.promptHash !== promptHash) {
         throw new DomainError(
           "natural_language.request_conflict",
-          "The request ID was already used for different text.",
+          "The request ID was already used for a different request context.",
         );
       }
       if (result.kind === "existing") assertPending(result.proposal, completedAt);

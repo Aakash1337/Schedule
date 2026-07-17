@@ -67,7 +67,8 @@ from the command and review digests, confirmation input, and audit payloads. API
 3. A valid provider result is canonicalized and inserted as a pending proposal with immutable,
    separately stored suggestions and a configurable
    lifetime of 60 seconds to one hour. Reusing the same request UUID and normalized prompt returns
-   the pending winner without another model call; different text conflicts.
+   the pending winner without another model call; a different prompt, reference date, or time zone
+   conflicts.
 4. The browser displays the exact proposed command. Work-item suggestions remain separate and use
    one
    explicit-use control per suggested field. Suggestions never prefill the user's choices. An edit

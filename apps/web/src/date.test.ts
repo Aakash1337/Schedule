@@ -40,7 +40,8 @@ describe("local date helpers", () => {
         "ambiguous in the browser time zone",
       );
     } finally {
-      process.env.TZ = priorTimeZone;
+      if (priorTimeZone === undefined) delete process.env.TZ;
+      else process.env.TZ = priorTimeZone;
     }
   });
 
