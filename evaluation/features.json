@@ -3800,6 +3800,7 @@
           "anchors": [
             "prefills hosted Plan Fit targets only after explicit use and preserves its exact key",
             "dismisses and restores an exact hosted Plan Fit suggestion without changing manual limits",
+            "returns focus to planning when a post-feedback refresh fails",
             "preserves reviewed Plan Fit provenance until a dismissal succeeds",
             "retries ambiguous hosted Plan Fit feedback with the same idempotency key",
             "refreshes stale hosted Plan Fit feedback without changing manual targets"

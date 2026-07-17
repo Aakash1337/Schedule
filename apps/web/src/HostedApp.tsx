@@ -180,9 +180,9 @@ export function HostedApp() {
   }, [today?.planId, todayLoading]);
 
   useEffect(() => {
-    if (planFitLoading || planFitInsight === null || !refocusPlanFitAfterFeedback.current) return;
+    if (planFitLoading || !refocusPlanFitAfterFeedback.current) return;
     refocusPlanFitAfterFeedback.current = false;
-    planFitHeading.current?.focus();
+    (planFitHeading.current ?? planningTargetMinutesInput.current)?.focus();
   }, [planFitInsight, planFitLoading]);
 
   const load = useCallback(async () => {

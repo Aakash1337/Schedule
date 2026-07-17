@@ -486,6 +486,37 @@ describe("hosted capture shell", () => {
     expect(apiMocks.generateToday).not.toHaveBeenCalled();
   });
 
+  it("returns focus to planning when a post-feedback refresh fails", async () => {
+    const user = userEvent.setup();
+    const date = todayKey();
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.getDailyPlanFitInsight
+      .mockResolvedValueOnce({
+        forDate: date,
+        status: "suggested",
+        disposition: "available",
+        sampleCount: 3,
+        minimumSamples: 3,
+        suggestedTargetMinutes: 90,
+        suggestedTargetTaskCount: 2,
+        insightKey: "7".repeat(64),
+      })
+      .mockRejectedValueOnce(new Error("private refresh failure"));
+
+    render(<HostedApp />);
+
+    await user.click(await screen.findByRole("button", { name: "Not now" }));
+    expect(
+      await screen.findByText("Plan Fit guidance is unavailable.", {
+        selector: ".hosted-plan-fit-state > span",
+      }),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("spinbutton", { name: "Time budget (minutes)" })).toHaveFocus(),
+    );
+  });
+
   it("preserves reviewed Plan Fit provenance until a dismissal succeeds", async () => {
     const user = userEvent.setup();
     const date = todayKey();
