@@ -277,8 +277,10 @@ remain outside this boundary.
 Planning outcomes is a read-only workspace summary for an explicit local `forDate`. It reuses the
 authoritative current-plan projection for each of the preceding 30 local dates and counts at most one
 final head per date. Every item contributes its scheduled minutes and one task to the planned totals;
-only items whose current activity state is `completed` contribute to completed totals. Empty plan
-heads still count as plan days but add no workload.
+only items whose current activity state is `completed` contribute to completed totals. Separate
+task and scheduled-minute totals describe current `skipped`, `deferred`, and `dismissed` states;
+pending or started items remain only in planned totals. Empty plan heads still count as plan days but
+add no workload.
 
 The two completion rates divide weighted completed totals by weighted planned totals and use half-up
 integer basis points. A rate is unavailable when its denominator is zero; Today withholds both rates

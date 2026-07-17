@@ -212,6 +212,10 @@ function formatBasisPoints(value: number | null): string {
   return value === null ? "Not available" : `${String(value / 100)}%`;
 }
 
+function formatOutcomeTotal(taskCount: number, minutes: number): string {
+  return `${String(taskCount)} ${taskCount === 1 ? "task" : "tasks"} · ${formatMinutes(minutes)}`;
+}
+
 const minimumPlanningOutcomePlans = 3;
 
 interface PlanningOutcomesSummaryProps {
@@ -275,6 +279,18 @@ function PlanningOutcomesSummary({
                 {formatMinutes(outcomes.plannedMinutes)} · {outcomes.completedTaskCount} of{" "}
                 {outcomes.plannedTaskCount} tasks
               </dd>
+            </div>
+            <div>
+              <dt>Skipped</dt>
+              <dd>{formatOutcomeTotal(outcomes.skippedTaskCount, outcomes.skippedMinutes)}</dd>
+            </div>
+            <div>
+              <dt>Deferred</dt>
+              <dd>{formatOutcomeTotal(outcomes.deferredTaskCount, outcomes.deferredMinutes)}</dd>
+            </div>
+            <div>
+              <dt>Dismissed</dt>
+              <dd>{formatOutcomeTotal(outcomes.dismissedTaskCount, outcomes.dismissedMinutes)}</dd>
             </div>
           </dl>
           <p className="today-plan-fit-note">

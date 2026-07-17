@@ -451,8 +451,14 @@ export interface PlanningOutcomes {
   readonly plansConsidered: number;
   readonly plannedTaskCount: number;
   readonly completedTaskCount: number;
+  readonly skippedTaskCount: number;
+  readonly deferredTaskCount: number;
+  readonly dismissedTaskCount: number;
   readonly plannedMinutes: number;
   readonly completedMinutes: number;
+  readonly skippedMinutes: number;
+  readonly deferredMinutes: number;
+  readonly dismissedMinutes: number;
   readonly additionalPlanRevisionCount: number;
   readonly completionTasksRateBasisPoints: number | null;
   readonly completionMinutesRateBasisPoints: number | null;

@@ -18,8 +18,14 @@ export interface PlanningOutcomes {
   readonly plansConsidered: number;
   readonly plannedTaskCount: number;
   readonly completedTaskCount: number;
+  readonly skippedTaskCount: number;
+  readonly deferredTaskCount: number;
+  readonly dismissedTaskCount: number;
   readonly plannedMinutes: number;
   readonly completedMinutes: number;
+  readonly skippedMinutes: number;
+  readonly deferredMinutes: number;
+  readonly dismissedMinutes: number;
   readonly additionalPlanRevisionCount: number;
   readonly completionTasksRateBasisPoints: number | null;
   readonly completionMinutesRateBasisPoints: number | null;
@@ -56,8 +62,14 @@ export function calculatePlanningOutcomes(
   const dates = new Set<LocalDate>();
   let plannedTaskCount = 0;
   let completedTaskCount = 0;
+  let skippedTaskCount = 0;
+  let deferredTaskCount = 0;
+  let dismissedTaskCount = 0;
   let plannedMinutes = 0;
   let completedMinutes = 0;
+  let skippedMinutes = 0;
+  let deferredMinutes = 0;
+  let dismissedMinutes = 0;
   let additionalPlanRevisionCount = 0;
 
   for (const plan of plans) {
@@ -94,9 +106,23 @@ export function calculatePlanningOutcomes(
       plannedTaskCount = safeAdd(plannedTaskCount, 1);
       plannedMinutes = safeAdd(plannedMinutes, item.scheduledMinutes);
       planMinutes = safeAdd(planMinutes, item.scheduledMinutes);
-      if (item.activityState === "completed") {
-        completedTaskCount = safeAdd(completedTaskCount, 1);
-        completedMinutes = safeAdd(completedMinutes, item.scheduledMinutes);
+      switch (item.activityState) {
+        case "completed":
+          completedTaskCount = safeAdd(completedTaskCount, 1);
+          completedMinutes = safeAdd(completedMinutes, item.scheduledMinutes);
+          break;
+        case "skipped":
+          skippedTaskCount = safeAdd(skippedTaskCount, 1);
+          skippedMinutes = safeAdd(skippedMinutes, item.scheduledMinutes);
+          break;
+        case "deferred":
+          deferredTaskCount = safeAdd(deferredTaskCount, 1);
+          deferredMinutes = safeAdd(deferredMinutes, item.scheduledMinutes);
+          break;
+        case "dismissed":
+          dismissedTaskCount = safeAdd(dismissedTaskCount, 1);
+          dismissedMinutes = safeAdd(dismissedMinutes, item.scheduledMinutes);
+          break;
       }
     }
     invariant(
@@ -114,8 +140,14 @@ export function calculatePlanningOutcomes(
     plansConsidered: dates.size,
     plannedTaskCount,
     completedTaskCount,
+    skippedTaskCount,
+    deferredTaskCount,
+    dismissedTaskCount,
     plannedMinutes,
     completedMinutes,
+    skippedMinutes,
+    deferredMinutes,
+    dismissedMinutes,
     additionalPlanRevisionCount,
     completionTasksRateBasisPoints: rate(completedTaskCount, plannedTaskCount),
     completionMinutesRateBasisPoints: rate(completedMinutes, plannedMinutes),

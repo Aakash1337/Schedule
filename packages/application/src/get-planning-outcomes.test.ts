@@ -85,6 +85,12 @@ describe("GetPlanningOutcomes", () => {
       plansConsidered: 1,
       plannedTaskCount: 1,
       completedTaskCount: 1,
+      skippedTaskCount: 0,
+      deferredTaskCount: 0,
+      dismissedTaskCount: 0,
+      skippedMinutes: 0,
+      deferredMinutes: 0,
+      dismissedMinutes: 0,
       additionalPlanRevisionCount: 1,
     });
     const dates = test.findCurrentForDates.mock.calls[0]?.[1];
