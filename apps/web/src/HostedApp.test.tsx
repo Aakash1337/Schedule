@@ -268,7 +268,7 @@ describe("hosted capture shell", () => {
         totalMinutes: 45,
       });
     apiMocks.recordTodayActivity
-      .mockRejectedValueOnce(new Error("private network detail"))
+      .mockRejectedValueOnce(new HostedApiError(408, "request.timeout", "Timed out after commit."))
       .mockResolvedValueOnce(undefined);
 
     render(<HostedApp />);

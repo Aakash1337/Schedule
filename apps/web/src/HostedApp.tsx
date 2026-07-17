@@ -340,7 +340,11 @@ export function HostedApp() {
         setMode("signed-out");
         setError(publicError(activityError));
       } else {
-        const ambiguous = !known || activityError.status === 429 || activityError.status >= 500;
+        const ambiguous =
+          !known ||
+          activityError.status === 408 ||
+          activityError.status === 429 ||
+          activityError.status >= 500;
         if (!ambiguous) setTodayRetry(null);
         setTodayError(
           known && activityError.status === 409
