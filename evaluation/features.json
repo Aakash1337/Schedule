@@ -2183,12 +2183,26 @@
         "anchor": "## Delivery lifecycle"
       },
       "limitations": [
-        "Schedule exposes fenced pull claims and bounded receipts and now includes a dormant provider-neutral Hermes adapter core, but has no concrete Hermes/WhatsApp, email, push, or other provider transport and stores no human/account binding.",
-        "Periodic intent materialization, a shared PostgreSQL adapter dedupe store, and fail-safe supervised provider-neutral polling are implemented; external provider bootstrap/control wiring and provider reconciliation remain absent.",
+        "Schedule exposes fenced pull claims and bounded receipts and now includes a dormant reconcile-before-send Hermes/WhatsApp client bridge, but no live authenticated provider client or human/account binding.",
+        "Periodic intent materialization, a shared PostgreSQL adapter dedupe store, fail-safe supervised polling, and adapter-side reconciliation semantics are implemented; external provider bootstrap/control wiring and provider-specific conclusive reconciliation remain absent.",
         "Delivered dedupe tombstone cleanup is intentionally disabled until Schedule exposes an authoritative replay-retention watermark.",
         "Dead-letter redrive is not implemented in this slice."
       ],
       "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/hermes-reminders/src/hermes-whatsapp-transport.test.ts",
+          "command": "unit",
+          "anchors": [
+            "reconciles an accepted dedupe key without sending again",
+            "submits only a sanitized bounded message and stable dedupe key",
+            "maps known Hermes failures into bounded Schedule transport outcomes",
+            "redacts %s client results as one ambiguous outcome",
+            "never forwards valid-looking provider diagnostics into Schedule failure codes",
+            "reconciles an ambiguous first submission before any later resend",
+            "preserves the runner reservation and Schedule attempt for an ambiguous Hermes outcome"
+          ]
+        },
         {
           "level": "unit",
           "file": "apps/hermes-reminders/src/delivery-runner.test.ts",
