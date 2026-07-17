@@ -1989,16 +1989,16 @@
       ]
     },
     {
-      "id": "local-natural-language-work-proposals",
+      "id": "local-natural-language-proposals",
       "status": "implemented",
       "risk": "critical",
       "contract": {
         "file": "docs/NATURAL_LANGUAGE.md",
-        "anchor": "# Local natural-language work proposals"
+        "anchor": "# Local natural-language proposals"
       },
       "limitations": [
-        "Version 2 prepares only one editable backlog-title command plus conservative review-only suggestions for its existing priority, due-date, and duration fields; routines, tags, task breakdown, multiple commands, automatic confirmation, hosted providers, and messaging interpretation remain deferred.",
-        "The browser E2E uses a strict loopback provider double; it establishes authority and lifecycle behavior, not real-model title quality."
+        "Version 3 prepares exactly one editable root-backlog item or one unlinked calendar block. Work-item suggestions remain limited to explicit priority, due-date, and duration values; routines, tags, recurrence, task breakdown, multiple commands, linked blocks, automatic confirmation, hosted providers, and messaging interpretation remain deferred.",
+        "The browser E2E uses a strict loopback provider double; it establishes authority and lifecycle behavior, not real-model title or time-interpretation quality."
       ],
       "evidence": [
         {
@@ -2014,6 +2014,9 @@
             "rejects invalid review fields and deterministic work-item mismatches",
             "confirms the persisted command exactly once and replays the same idempotency key",
             "recovers a deterministic proposal work item without creating a duplicate",
+            "confirms one reviewed calendar block exactly once without creating work",
+            "persists reviewed calendar-block edits before confirmation",
+            "fails closed for unsafe calendar-block model output and deterministic collisions",
             "rolls back proposal creation and confirmation when audit persistence fails"
           ]
         },
@@ -2023,6 +2026,7 @@
           "command": "unit",
           "anchors": [
             "sends a fixed tool-free proposal request and returns only strict review data",
+            "accepts one strict unlinked calendar-block proposal",
             "rejects proposal output with %s",
             "shares the same concurrency permit across advice and proposal work"
           ]
@@ -2035,7 +2039,8 @@
             "constrains private, expiring, tenant-bound natural-language proposals",
             "migrates natural-language proposal lifecycle and retention boundaries",
             "migrates user-authored natural-language review fields without widening model commands",
-            "migrates nullable structured model suggestions independently of the command"
+            "migrates nullable structured model suggestions independently of the command",
+            "migrates command-typed calendar-block proposal results"
           ]
         },
         {
@@ -2044,6 +2049,7 @@
           "command": "unit",
           "anchors": [
             "atomically inserts or returns the request winner and validates its command digest",
+            "maps a canonical calendar-block command and its typed result identity",
             "persists model suggestions independently on insert and save",
             "fails closed when valid model suggestions do not match their digest",
             "fails closed when persisted model suggestions have %s",
@@ -2065,6 +2071,7 @@
           "command": "unit",
           "anchors": [
             "prepares and cancels a local proposal without creating a work item",
+            "reviews, edits, and confirms one unlinked calendar block",
             "persists an edited proposal, confirms explicitly, and focuses the created backlog card",
             "uses optional model suggestions only in the local review draft",
             "reuses the same confirmation key after an ambiguous failure",
@@ -2076,7 +2083,7 @@
           "file": "scripts/verify-natural-language-proposals.ts",
           "command": "natural-language-proposals",
           "anchors": [
-            "Natural-language proposal verification passed advisory suggestion isolation, private review persistence, exact reviewed creation, tenant isolation, and concurrent exactly-once confirmation"
+            "Natural-language proposal verification passed advisory suggestion isolation, private review persistence, exact work-item and calendar-block creation, tenant isolation, and concurrent exactly-once confirmation"
           ]
         },
         {
@@ -2084,7 +2091,7 @@
           "file": "apps/web/e2e/natural-language-flow.spec.ts",
           "command": "browser-e2e",
           "anchors": [
-            "reviews and explicitly confirms a local natural-language proposal through the live stack"
+            "reviews and explicitly confirms local work and calendar proposals through the live stack"
           ]
         }
       ]

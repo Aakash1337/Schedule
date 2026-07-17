@@ -556,14 +556,18 @@ describe("database schema", () => {
         "review_hash",
         "model_suggestions_hash",
         "model_suggestions",
+        "result_schedule_block_id",
       ]),
     );
     expect(columnNames).not.toEqual(expect.arrayContaining(["prompt", "summary", "warnings"]));
     expect(config.uniqueConstraints.map((constraint) => constraint.name)).toContain(
       "natural_language_proposals_workspace_request_uq",
     );
-    expect(config.foreignKeys.map((constraint) => constraint.getName())).toContain(
-      "natural_language_proposals_result_work_item_tenant_fk",
+    expect(config.foreignKeys.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "natural_language_proposals_result_work_item_tenant_fk",
+        "natural_language_proposals_result_schedule_block_tenant_fk",
+      ]),
     );
     expect(config.indexes.map((constraint) => constraint.config.name)).toEqual(
       expect.arrayContaining([
@@ -634,6 +638,22 @@ describe("database schema", () => {
     expect(migration).toContain("model_suggestions_hash_valid");
     expect(migration).toContain('"model_suggestions" IS NULL OR jsonb_typeof');
     expect(migration).not.toContain('ALTER COLUMN "command"');
+  });
+
+  it("migrates command-typed calendar-block proposal results", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0039_lively_smiling_tiger.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain('ADD COLUMN "result_schedule_block_id" uuid');
+    expect(migration).toContain(
+      'CONSTRAINT "natural_language_proposals_result_schedule_block_tenant_fk"',
+    );
+    expect(migration).toContain("= 'schedule_block.create'");
+    expect(migration).toContain("CHECK (COALESCE((");
+    expect(migration).toContain('"result_work_item_id" IS NULL');
+    expect(migration).toContain('"result_schedule_block_id" IS NOT NULL');
   });
 
   it("constrains routine weekday arrays at the database boundary", () => {

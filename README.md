@@ -208,8 +208,8 @@ prefill/dismissal/reset, stale-key rejection, explicit generation receipts, reso
 revision disclosure. The local proposal flow uses the production
 local-model adapter against a strict loopback double to review a title plus separately labeled,
 explicit-use priority/date/duration suggestions, override them, confirm, replay the same
-confirmation key, cancel, focus, and reload natural-language work proposals without browser request
-interception.
+confirmation key, cancel, focus, and reload a natural-language work proposal, then confirm an
+unlinked calendar-block proposal and display it in Calendar, all without browser request interception.
 
 Run `pnpm verify:hosted-web-e2e` for the separate built OIDC capture entry. Its strict browser double
 checks signed-out and authenticated states, workspace choice, bounded backlog refresh, exact CSRF

@@ -491,31 +491,35 @@ Prohibited responsibilities:
 - Exposing an Apply or Accept control for model output
 - Participating in duration calibration or automatic adaptation
 
-### 11.1 Explicit natural-language work proposals
+### 11.1 Explicit natural-language proposals
 
 The Work view has a separate, opt-in `NaturalLanguageProposer` boundary for one free-form capture
 request. It shares the local Ollama transport controls but receives only a versioned request ID, the
-submitted prompt, and a local reference date; it has no plan context, repositories, tools, or mutation
-services. Its only valid command is one `work_item.create` title. Model summary and warnings are transient review text.
+submitted prompt, a local reference date, and the browser IANA time zone; it has no plan context,
+repositories, tools, or mutation services. Its valid commands are one `work_item.create` title or
+one unlinked `schedule_block.create` with canonical instants and the trusted zone. Model summary and
+warnings are transient review text.
 The raw prompt and free-form model output are never persisted; only a secret-keyed prompt fingerprint,
 canonical command/digest, bounded provenance, expiration, status, and result identity are durable.
 The model may separately suggest a non-`none` priority, an absolute due date resolved from that
 reference date, and a bounded planning duration only when the text is explicit and unambiguous.
 These immutable suggestions are persisted with their own digest, outside the command and
-reviewed-field digest, and never prefill or execute. Priority, due date, and planning duration enter the reviewed snapshot only when
-the user explicitly uses or edits them; they never widen the title-only model command.
+reviewed-field digest, and never prefill or execute. They are forbidden for calendar-block
+proposals. Priority, due date, and planning duration enter the reviewed snapshot only when
+the user explicitly uses or edits them; they never widen the title-only work-item command.
 
 The proposal is not an applied recommendation. It is pending, editable, cancellable, tenant-scoped,
 optimistically versioned, and valid for 60 minutes at most. Confirmation is a distinct explicit
 action with a stable idempotency key. One serializable transaction locks and revalidates the exact
-proposal and digest, creates a deterministic backlog work-item identity, marks the proposal, and
+proposal and digest, creates a deterministic backlog work-item or calendar-block identity, marks the proposal, and
 audits it. Same-key retries replay; a competing key conflicts. The user may select priority, a due
-date, and a planning duration before confirmation. This creates eligible source data but does not
-mutate the current Today plan, routines, calendar blocks, tags, or cadence.
+date, and a planning duration before work-item confirmation. A calendar review exposes title,
+date, start, and end while keeping the block unlinked. Neither path mutates the current Today plan,
+routines, tags, or cadence.
 
-This implements natural-language creation only for one reviewed root backlog item, including
-review-only suggestions for its existing scheduling fields. Natural-language routine creation,
-tags, task breakdown, multi-command capture, automatic confirmation,
+This implements natural-language creation for one reviewed root backlog item or one reviewed
+unlinked calendar block, including review-only suggestions for existing work-item scheduling fields.
+Natural-language routine creation, tags, linked blocks, task breakdown, multi-command capture, automatic confirmation,
 prompt history, model-driven planning, hosted providers, and Hermes/WhatsApp interpretation remain
 deferred. The complete privacy, lifecycle, API, and verification contract is in
 [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md).
@@ -671,12 +675,13 @@ Success is not simply "more tasks completed." Useful measures include realistic 
   allowlist, fixed request shape, resource limits, deterministic unavailable states, and no retries
 - Implemented: explicit Today review with provenance, accessible loading/failure states, stale-result
   rejection, and no Apply or mutation control
-- Implemented: separate free-form Work capture for one expiring, editable backlog-title proposal,
-  with prompt-private persistence and explicit audited exactly-once confirmation
+- Implemented: separate free-form Work capture for one expiring, editable root backlog-item or
+  unlinked calendar-block proposal, with prompt-private persistence and explicit audited
+  exactly-once confirmation
 - Implemented: separately persisted review-only model suggestions for explicit priority, due date,
   and planning duration, plus per-field explicit use and an independently versioned editable review
-  snapshot; the executable model command remains title-only
-- Deferred: natural-language routine creation, tags, multi-command capture, and task breakdown
+  snapshot; the work-item command remains title-only
+- Deferred: natural-language routine creation, linked blocks, tags, multi-command capture, and task breakdown
 - Deferred: free-form context interpretation, automatic application, duration calibration, and
   model-driven planner changes
 - Deferred: local OpenAI-compatible endpoints and hosted model providers

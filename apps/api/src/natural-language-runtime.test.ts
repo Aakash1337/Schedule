@@ -10,6 +10,7 @@ describe("natural-language runtime", () => {
     requestId: "22222222-2222-4222-8222-222222222222",
     prompt: "private prompt",
     referenceDate: null,
+    timeZone: "UTC",
   };
 
   it("ignores a stale short configured HMAC key while proposals are disabled", () => {

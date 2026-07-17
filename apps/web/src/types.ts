@@ -34,6 +34,17 @@ export interface NaturalLanguageWorkItemCommand {
   readonly title: string;
 }
 
+export interface NaturalLanguageScheduleBlockCommand {
+  readonly type: "schedule_block.create";
+  readonly title: string;
+  readonly startsAt: string;
+  readonly endsAt: string;
+  readonly timeZone: string;
+}
+
+export type NaturalLanguageProposalCommand =
+  NaturalLanguageWorkItemCommand | NaturalLanguageScheduleBlockCommand;
+
 export type NaturalLanguageProposalStatus = "pending" | "confirmed" | "cancelled";
 
 export interface NaturalLanguageProposalUserSelection {
@@ -54,7 +65,7 @@ export interface NaturalLanguageProposal {
   readonly requestId: string;
   readonly commandHash: string;
   readonly commandDisplay: string;
-  readonly command: NaturalLanguageWorkItemCommand;
+  readonly command: NaturalLanguageProposalCommand;
   readonly modelSuggestions: NaturalLanguageProposalModelSuggestions | null;
   readonly userSelection: NaturalLanguageProposalUserSelection;
   readonly provider: string;
@@ -65,7 +76,7 @@ export interface NaturalLanguageProposal {
 }
 
 export interface NaturalLanguageProposalResult {
-  readonly version: "schedule.natural-language/v2";
+  readonly version: "schedule.natural-language/v3";
   readonly requestId: string;
   readonly status: "proposal" | "no_proposal" | "unavailable";
   readonly reason: string | null;
@@ -81,12 +92,23 @@ export interface NaturalLanguageProposalResult {
   };
 }
 
-export interface NaturalLanguageConfirmationResult {
+interface NaturalLanguageConfirmationResultBase {
   readonly proposalId: string;
   readonly commandHash: string;
   readonly replayed: boolean;
-  readonly workItem: WorkItem;
 }
+
+export type NaturalLanguageConfirmationResult =
+  | (NaturalLanguageConfirmationResultBase & {
+      readonly resultType: "work_item";
+      readonly workItem: WorkItem;
+      readonly scheduleBlock: null;
+    })
+  | (NaturalLanguageConfirmationResultBase & {
+      readonly resultType: "schedule_block";
+      readonly workItem: null;
+      readonly scheduleBlock: ScheduleBlock;
+    });
 
 /** A directed edge: the dependent waits for the prerequisite to be done. */
 export interface WorkItemDependency {

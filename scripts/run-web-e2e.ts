@@ -338,6 +338,28 @@ function isProposalRequest(value: unknown): boolean {
   return command !== null && typeof command === "object" && !Array.isArray(command);
 }
 
+function proposalRequestContext(value: unknown): {
+  readonly prompt: string;
+  readonly timeZone: string;
+} {
+  const body = value as { readonly messages: readonly { readonly content?: unknown }[] };
+  const content = body.messages[1]?.content;
+  if (typeof content !== "string") throw new Error("Fake Ollama received invalid context.");
+  const prefix = "BEGIN_UNTRUSTED_WORK_CONTEXT_JSON\n";
+  const suffix = "\nEND_UNTRUSTED_WORK_CONTEXT_JSON";
+  if (!content.startsWith(prefix) || !content.endsWith(suffix)) {
+    throw new Error("Fake Ollama received an unbounded context.");
+  }
+  const context = JSON.parse(content.slice(prefix.length, -suffix.length)) as Record<
+    string,
+    unknown
+  >;
+  if (typeof context.prompt !== "string" || typeof context.timeZone !== "string") {
+    throw new Error("Fake Ollama received an incomplete context.");
+  }
+  return { prompt: context.prompt, timeZone: context.timeZone };
+}
+
 export async function startFakeOllamaServer(port: number): Promise<FakeOllamaServer> {
   let handledRequests = 0;
   let releaseHeldResponse: (() => void) | null = null;
@@ -367,6 +389,7 @@ export async function startFakeOllamaServer(port: number): Promise<FakeOllamaSer
         sendJson(response, 400, { error: "invalid_proposal_request" });
         return;
       }
+      const context = proposalRequestContext(body);
       handledRequests += 1;
       if (JSON.stringify(body).includes("delay this proposal while I switch workspaces")) {
         heldClientAborted = false;
@@ -386,12 +409,22 @@ export async function startFakeOllamaServer(port: number): Promise<FakeOllamaSer
         response.off("close", markPrematureClose);
         if (request.destroyed || response.destroyed) return;
       }
-      sendJson(response, 200, {
-        done: true,
-        message: {
-          role: "assistant",
-          content: JSON.stringify({
-            version: "schedule.natural-language-output/v2",
+      const output = context.prompt.includes("calendar block E2E")
+        ? {
+            version: "schedule.natural-language-output/v3",
+            summary: "Prepared one reviewable calendar block.",
+            warnings: [],
+            command: {
+              type: "schedule_block.create",
+              title: "Review the quarterly report",
+              startsAt: "2026-07-17T14:00:00.000Z",
+              endsAt: "2026-07-17T15:00:00.000Z",
+              timeZone: context.timeZone,
+            },
+            modelSuggestions: null,
+          }
+        : {
+            version: "schedule.natural-language-output/v3",
             summary: "Prepared one reviewable backlog title.",
             warnings: [],
             command: {
@@ -403,7 +436,12 @@ export async function startFakeOllamaServer(port: number): Promise<FakeOllamaSer
               dueOn: "2026-07-18",
               planningDurationMinutes: 45,
             },
-          }),
+          };
+      sendJson(response, 200, {
+        done: true,
+        message: {
+          role: "assistant",
+          content: JSON.stringify(output),
         },
       });
     } catch {

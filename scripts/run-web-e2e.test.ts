@@ -81,7 +81,11 @@ describe("browser E2E runner", () => {
           model: "gemma4:e4b",
           messages: [
             { role: "system", content: "proposal" },
-            { role: "user", content: "untrusted" },
+            {
+              role: "user",
+              content:
+                'BEGIN_UNTRUSTED_WORK_CONTEXT_JSON\n{"prompt":"Create work","timeZone":"UTC"}\nEND_UNTRUSTED_WORK_CONTEXT_JSON',
+            },
           ],
           stream: false,
           think: false,

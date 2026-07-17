@@ -6,6 +6,7 @@ import { ApiError } from "../api";
 import type {
   NaturalLanguageProposal,
   NaturalLanguageProposalResult,
+  ScheduleBlock,
   WorkItem,
   WorkItemDependency,
   Workspace,
@@ -82,7 +83,7 @@ function naturalLanguageResult(
   proposal = naturalLanguageProposal(),
 ): NaturalLanguageProposalResult {
   return {
-    version: "schedule.natural-language/v2",
+    version: "schedule.natural-language/v3",
     requestId: proposal.requestId,
     status: "proposal",
     reason: null,
@@ -96,6 +97,30 @@ function naturalLanguageResult(
       completedAt: "2026-07-14T10:00:01.000Z",
       latencyMs: 1_000,
     },
+  };
+}
+
+function naturalLanguageScheduleBlockProposal(): NaturalLanguageProposal {
+  const startsAt = new Date(2026, 6, 16, 23, 0).toISOString();
+  const endsAt = new Date(2026, 6, 17, 1, 0).toISOString();
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  return {
+    ...naturalLanguageProposal("Quarterly report"),
+    commandDisplay: JSON.stringify({
+      endsAt,
+      startsAt,
+      timeZone,
+      title: "Quarterly report",
+      type: "schedule_block.create",
+    }),
+    command: {
+      type: "schedule_block.create",
+      title: "Quarterly report",
+      startsAt,
+      endsAt,
+      timeZone,
+    },
+    modelSuggestions: null,
   };
 }
 
@@ -214,7 +239,7 @@ describe("work board", () => {
     await screen.findByRole("heading", { name: item.title });
     await user.click(screen.getByRole("button", { name: "Describe work" }));
     await user.type(
-      screen.getByRole("textbox", { name: /^Describe one work item/ }),
+      screen.getByRole("textbox", { name: /^Describe one/ }),
       "Add prepare the quarterly report to my work list",
     );
     await user.click(screen.getByRole("button", { name: "Review proposal" }));
@@ -229,10 +254,11 @@ describe("work board", () => {
     expect(apiMocks.generateNaturalLanguageProposal).toHaveBeenCalledWith(
       workspace.id,
       expect.objectContaining({
-        version: "schedule.natural-language/v2",
+        version: "schedule.natural-language/v3",
         prompt: "Add prepare the quarterly report to my work list",
         requestId: expect.any(String),
         referenceDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        timeZone: expect.any(String),
       }),
       expect.any(AbortSignal),
     );
@@ -247,9 +273,87 @@ describe("work board", () => {
       expect.any(AbortSignal),
     );
     expect(await screen.findByRole("status")).toHaveTextContent(
-      "Proposal cancelled. No work item was created.",
+      "Proposal cancelled. Nothing was created.",
     );
     expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
+  });
+
+  it("reviews, edits, and confirms one unlinked calendar block", async () => {
+    const user = userEvent.setup();
+    const proposal = naturalLanguageScheduleBlockProposal();
+    if (proposal.command.type !== "schedule_block.create") throw new Error("Expected a block.");
+    const command = {
+      type: "schedule_block.create" as const,
+      title: "Focused quarterly report",
+      startsAt: new Date(2026, 6, 16, 23, 30).toISOString(),
+      endsAt: new Date(2026, 6, 17, 0, 45).toISOString(),
+      timeZone: proposal.command.timeZone,
+    };
+    const edited: NaturalLanguageProposal = { ...proposal, command, version: 2 };
+    const created: ScheduleBlock = {
+      id: proposal.id,
+      workspaceId: workspace.id,
+      workItemId: null,
+      title: command.title,
+      startsAt: command.startsAt,
+      endsAt: command.endsAt,
+      timeZone: command.timeZone,
+      version: 1,
+      createdAt: "2026-07-14T10:00:01.000Z",
+      updatedAt: "2026-07-14T10:00:01.000Z",
+    };
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(naturalLanguageResult(proposal));
+    apiMocks.updateNaturalLanguageProposal.mockResolvedValue(edited);
+    apiMocks.confirmNaturalLanguageProposal.mockResolvedValue({
+      proposalId: proposal.id,
+      commandHash: proposal.commandHash,
+      replayed: false,
+      resultType: "schedule_block",
+      workItem: null,
+      scheduleBlock: created,
+    });
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(screen.getByRole("textbox", { name: /^Describe one/ }), "Block report time");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Create one unlinked calendar block" }),
+    ).toBeInTheDocument();
+    const reviewedTime = screen.getByRole("region", { name: "Your reviewed time" });
+    expect(within(reviewedTime).getByLabelText(/^Time zone/)).toHaveValue(command.timeZone);
+    expect(within(reviewedTime).getByLabelText("Start date")).toHaveValue("2026-07-16");
+    expect(within(reviewedTime).getByLabelText("End date")).toHaveValue("2026-07-17");
+    const title = screen.getByRole("textbox", { name: /^Calendar block title/ });
+    await user.clear(title);
+    await user.type(title, command.title);
+    fireEvent.change(within(reviewedTime).getByLabelText("Start time"), {
+      target: { value: "23:30" },
+    });
+    fireEvent.change(within(reviewedTime).getByLabelText("End time"), {
+      target: { value: "00:45" },
+    });
+    await user.click(screen.getByRole("button", { name: "Create this calendar block" }));
+
+    expect(apiMocks.updateNaturalLanguageProposal).toHaveBeenCalledWith(
+      workspace.id,
+      proposal.id,
+      { expectedVersion: 1, command },
+      expect.any(AbortSignal),
+    );
+    expect(apiMocks.confirmNaturalLanguageProposal).toHaveBeenCalledWith(
+      workspace.id,
+      proposal.id,
+      2,
+      expect.any(String),
+      expect.any(AbortSignal),
+    );
+    expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Focused quarterly report was created in Calendar.",
+    );
   });
 
   it("persists an edited proposal, confirms explicitly, and focuses the created backlog card", async () => {
@@ -282,14 +386,16 @@ describe("work board", () => {
       proposalId: proposal.id,
       commandHash: edited.commandHash,
       replayed: false,
+      resultType: "work_item",
       workItem: created,
+      scheduleBlock: null,
     });
 
     render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
     await screen.findByRole("heading", { name: item.title });
     await user.click(screen.getByRole("button", { name: "Describe work" }));
     await user.type(
-      screen.getByRole("textbox", { name: /^Describe one work item/ }),
+      screen.getByRole("textbox", { name: /^Describe one/ }),
       "Prepare a quarterly report",
     );
     await user.click(screen.getByRole("button", { name: "Review proposal" }));
@@ -327,7 +433,7 @@ describe("work board", () => {
       proposal.id,
       {
         expectedVersion: 1,
-        title: edited.command.title,
+        command: { type: "work_item.create", title: edited.command.title },
         userSelection: edited.userSelection,
       },
       expect.any(AbortSignal),
@@ -355,7 +461,7 @@ describe("work board", () => {
     render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
     await screen.findByRole("heading", { name: item.title });
     await user.click(screen.getByRole("button", { name: "Describe work" }));
-    await user.type(screen.getByRole("textbox", { name: /^Describe one work item/ }), "Report");
+    await user.type(screen.getByRole("textbox", { name: /^Describe one/ }), "Report");
     await user.click(screen.getByRole("button", { name: "Review proposal" }));
 
     const suggestions = await screen.findByRole("region", { name: "Optional model suggestions" });
@@ -386,7 +492,9 @@ describe("work board", () => {
       proposalId: string;
       commandHash: string;
       replayed: boolean;
+      resultType: "work_item";
       workItem: WorkItem;
+      scheduleBlock: null;
     }>();
     const created: WorkItem = {
       ...item,
@@ -413,7 +521,7 @@ describe("work board", () => {
     render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
     await screen.findByRole("heading", { name: item.title });
     await user.click(screen.getByRole("button", { name: "Describe work" }));
-    await user.type(screen.getByRole("textbox", { name: /^Describe one work item/ }), "Report");
+    await user.type(screen.getByRole("textbox", { name: /^Describe one/ }), "Report");
     await user.click(screen.getByRole("button", { name: "Review proposal" }));
     await user.click(await screen.findByRole("button", { name: "Create this work item" }));
     await waitFor(() => expect(apiMocks.confirmNaturalLanguageProposal).toHaveBeenCalledOnce());
@@ -434,7 +542,9 @@ describe("work board", () => {
         proposalId: proposal.id,
         commandHash: proposal.commandHash,
         replayed: false,
+        resultType: "work_item",
         workItem: created,
+        scheduleBlock: null,
       });
       await confirmation.promise;
     });
@@ -463,13 +573,15 @@ describe("work board", () => {
         proposalId: proposal.id,
         commandHash: proposal.commandHash,
         replayed: true,
+        resultType: "work_item",
         workItem: created,
+        scheduleBlock: null,
       });
 
     render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
     await screen.findByRole("heading", { name: item.title });
     await user.click(screen.getByRole("button", { name: "Describe work" }));
-    await user.type(screen.getByRole("textbox", { name: /^Describe one work item/ }), "Report");
+    await user.type(screen.getByRole("textbox", { name: /^Describe one/ }), "Report");
     await user.click(screen.getByRole("button", { name: "Review proposal" }));
     await user.click(await screen.findByRole("button", { name: "Create this work item" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("same confirmation key");
@@ -498,7 +610,7 @@ describe("work board", () => {
     const { rerender } = render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
     await screen.findByRole("heading", { name: item.title });
     await user.click(screen.getByRole("button", { name: "Describe work" }));
-    await user.type(screen.getByRole("textbox", { name: /^Describe one work item/ }), "Old work");
+    await user.type(screen.getByRole("textbox", { name: /^Describe one/ }), "Old work");
     await user.click(screen.getByRole("button", { name: "Review proposal" }));
     await waitFor(() => expect(requestSignal).toBeInstanceOf(AbortSignal));
 

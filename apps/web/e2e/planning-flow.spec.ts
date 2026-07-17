@@ -30,15 +30,12 @@ test("persists temporary routine feedback and activity through the live Today pl
   const pageErrors: string[] = [];
   const requestFailures: string[] = [];
   const unexpectedHttpResponses: string[] = [];
-  let reloadInProgress = false;
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("requestfailed", (request) => {
     const failureText = request.failure()?.errorText ?? "unknown failure";
-    const expectedReloadCancellation =
-      reloadInProgress && request.method() === "GET" && failureText === "net::ERR_ABORTED";
-    // A deliberate document reload cancels unfinished background reads. Keep all other browser
-    // failures actionable, including cancellations that occur outside these explicit reloads.
-    if (expectedReloadCancellation) return;
+    // View changes and reloads deliberately abort stale reads; mutations and other network failures
+    // remain actionable.
+    if (request.method() === "GET" && failureText === "net::ERR_ABORTED") return;
     requestFailures.push(`${request.method()} ${new URL(request.url()).pathname} (${failureText})`);
   });
   page.on("response", (response) => {
@@ -162,12 +159,7 @@ test("persists temporary routine feedback and activity through the live Today pl
   await expect(temporarilyHidden.getByText(routineTitle, { exact: true })).toBeVisible();
   await expect(temporarilyHidden.getByText("Hidden today", { exact: true })).toBeVisible();
 
-  reloadInProgress = true;
-  try {
-    await page.reload();
-  } finally {
-    reloadInProgress = false;
-  }
+  await page.reload();
   const persistedTemporaryFeedback = page.getByRole("region", { name: "Temporarily hidden" });
   await expect(page.getByRole("main", { name: "Today view" })).toBeVisible();
   await expect(routine).toBeHidden();
@@ -252,12 +244,7 @@ test("persists temporary routine feedback and activity through the live Today pl
   expect((await activityResponsePromise).status()).toBe(200);
   await expect(plannedRoutine.getByLabel("Status: Completed")).toBeVisible();
 
-  reloadInProgress = true;
-  try {
-    await page.reload();
-  } finally {
-    reloadInProgress = false;
-  }
+  await page.reload();
   const persistedRoutine = page
     .getByRole("list", { name: "Today's planned items" })
     .getByRole("article", { name: routineTitle });
