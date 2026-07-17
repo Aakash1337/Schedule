@@ -3814,6 +3814,7 @@
   .work-natural-language-actions .button,
   .work-natural-language-suggestion-row .button {
     width: 100%;
+    min-height: 44px;
   }
 
   .work-natural-language-user-fields {

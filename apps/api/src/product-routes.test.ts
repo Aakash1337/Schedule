@@ -3016,7 +3016,7 @@ describe("local product API", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          version: "schedule.natural-language/v1",
+          version: "schedule.natural-language/v2",
           requestId: adviceRequestUuid,
           prompt: "Add prepare quarterly report to my list",
         }),
@@ -3204,7 +3204,7 @@ describe("local product API", () => {
           generatedCommand = command;
           generatedSignal = signal;
           return {
-            version: "schedule.natural-language/v1",
+            version: "schedule.natural-language/v2",
             requestId: command.requestId,
             status: "proposal",
             reason: null,
@@ -3250,7 +3250,7 @@ describe("local product API", () => {
       method: "POST",
       url: baseUrl,
       payload: {
-        version: "schedule.natural-language/v1",
+        version: "schedule.natural-language/v2",
         requestId: adviceRequestUuid,
         prompt: "Add prepare quarterly report to my list",
         referenceDate: "2026-07-15",
@@ -3272,7 +3272,7 @@ describe("local product API", () => {
         method: "POST",
         url: baseUrl,
         payload: {
-          version: "schedule.natural-language/v1",
+          version: "schedule.natural-language/v2",
           requestId: adviceRequestUuid,
           prompt: "Add prepare quarterly report to my list",
           referenceDate: invalidReferenceDate,
@@ -3285,7 +3285,7 @@ describe("local product API", () => {
       method: "POST",
       url: baseUrl,
       payload: {
-        version: "schedule.natural-language/v1",
+        version: "schedule.natural-language/v2",
         requestId: adviceRequestUuid,
         prompt: "Add prepare quarterly report to my list",
       },
@@ -3378,7 +3378,7 @@ describe("local product API", () => {
       method: "POST",
       url: baseUrl,
       payload: {
-        version: "schedule.natural-language/v1",
+        version: "schedule.natural-language/v2",
         requestId: adviceRequestUuid,
         prompt: "Add a task",
         model: "remote-model",

@@ -82,7 +82,7 @@ function naturalLanguageResult(
   proposal = naturalLanguageProposal(),
 ): NaturalLanguageProposalResult {
   return {
-    version: "schedule.natural-language/v1",
+    version: "schedule.natural-language/v2",
     requestId: proposal.requestId,
     status: "proposal",
     reason: null,
@@ -229,7 +229,7 @@ describe("work board", () => {
     expect(apiMocks.generateNaturalLanguageProposal).toHaveBeenCalledWith(
       workspace.id,
       expect.objectContaining({
-        version: "schedule.natural-language/v1",
+        version: "schedule.natural-language/v2",
         prompt: "Add prepare the quarterly report to my work list",
         requestId: expect.any(String),
         referenceDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),

@@ -1995,7 +1995,7 @@
         "anchor": "# Local natural-language work proposals"
       },
       "limitations": [
-        "Version 1 prepares only one editable backlog-title command plus conservative review-only suggestions for its existing priority, due-date, and duration fields; routines, tags, task breakdown, multiple commands, automatic confirmation, hosted providers, and messaging interpretation remain deferred.",
+        "Version 2 prepares only one editable backlog-title command plus conservative review-only suggestions for its existing priority, due-date, and duration fields; routines, tags, task breakdown, multiple commands, automatic confirmation, hosted providers, and messaging interpretation remain deferred.",
         "The browser E2E uses a strict loopback provider double; it establishes authority and lifecycle behavior, not real-model title quality."
       ],
       "evidence": [

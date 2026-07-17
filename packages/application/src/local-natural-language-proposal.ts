@@ -20,7 +20,7 @@ import type {
 } from "./ports.js";
 import type { SchedulingAdvisorUnavailableReason } from "./get-scheduling-advice.js";
 
-export const NATURAL_LANGUAGE_PROPOSAL_VERSION = "schedule.natural-language/v1" as const;
+export const NATURAL_LANGUAGE_PROPOSAL_VERSION = "schedule.natural-language/v2" as const;
 export const NATURAL_LANGUAGE_PROPOSER_CONTEXT_VERSION =
   "schedule.natural-language-context/v2" as const;
 export const NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION =

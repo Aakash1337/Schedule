@@ -464,7 +464,7 @@ default and accepts only one versioned prompt request:
 
 ```json
 {
-  "version": "schedule.natural-language/v1",
+  "version": "schedule.natural-language/v2",
   "requestId": "11111111-1111-4111-8111-111111111111",
   "prompt": "Turn my launch notes into one urgent checklist task due tomorrow",
   "referenceDate": "2026-07-15"
@@ -534,7 +534,7 @@ Concurrent confirmations therefore create one work item and one confirmation aud
 proposals return `404`; expired, cancelled, or already-consumed proposal operations return `410`;
 corrupt stored commands fail as a redacted `500`.
 
-There is intentionally no proposal-list or proposal-read route in version 1. Pending proposals are
+There is intentionally no proposal-list or proposal-read route in version 2. Pending proposals are
 short-lived interaction state, not a prompt or model-output history. See
 [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md) for the complete trust and persistence contract.
 

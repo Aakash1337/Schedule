@@ -65,7 +65,7 @@ export interface NaturalLanguageProposal {
 }
 
 export interface NaturalLanguageProposalResult {
-  readonly version: "schedule.natural-language/v1";
+  readonly version: "schedule.natural-language/v2";
   readonly requestId: string;
   readonly status: "proposal" | "no_proposal" | "unavailable";
   readonly reason: string | null;

@@ -10,7 +10,7 @@ explicitly confirms them.
 
 ## Implemented scope
 
-The version 1 contract supports exactly one command:
+The version 2 contract supports exactly one command:
 
 ```json
 { "type": "work_item.create", "title": "Prepare the launch checklist" }

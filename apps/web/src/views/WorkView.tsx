@@ -887,7 +887,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       const result = await api.generateNaturalLanguageProposal(
         request.workspaceId,
         {
-          version: "schedule.natural-language/v1",
+          version: "schedule.natural-language/v2",
           requestId,
           prompt,
           referenceDate: todayKey(),
