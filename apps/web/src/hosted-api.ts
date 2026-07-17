@@ -59,6 +59,12 @@ export interface HostedDailyPlanFitInsight {
   readonly insightKey: string | null;
 }
 
+export interface HostedDailyPlanFitFeedback {
+  readonly forDate: string;
+  readonly insightKey: string;
+  readonly idempotencyKey: string;
+}
+
 export interface HostedGenerateToday {
   readonly timeZone: string;
   readonly window: Readonly<{ startsAt: string; endsAt: string }>;
@@ -155,6 +161,32 @@ export const hostedApi = {
   getDailyPlanFitInsight: (workspaceId: string, forDate: string) =>
     request<HostedDailyPlanFitInsight>(
       `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/daily-plan-fit-insight?forDate=${encodeURIComponent(forDate)}`,
+    ),
+  dismissDailyPlanFitInsight: (
+    workspaceId: string,
+    { idempotencyKey, ...feedback }: HostedDailyPlanFitFeedback,
+  ) =>
+    request<void>(
+      `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/daily-plan-fit-insight/dismissals`,
+      {
+        method: "POST",
+        json: feedback,
+        csrf: true,
+        idempotencyKey,
+      },
+    ),
+  resetDailyPlanFitInsightDismissal: (
+    workspaceId: string,
+    { idempotencyKey, ...feedback }: HostedDailyPlanFitFeedback,
+  ) =>
+    request<void>(
+      `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/daily-plan-fit-insight/dismissal-resets`,
+      {
+        method: "POST",
+        json: feedback,
+        csrf: true,
+        idempotencyKey,
+      },
     ),
   generateToday: (workspaceId: string, date: string, command: HostedGenerateToday) =>
     request<void>(

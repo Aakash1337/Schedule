@@ -165,6 +165,8 @@ describe("API infrastructure", () => {
       today: {
         getToday: vi.fn(),
         getDailyPlanFitInsight: vi.fn(),
+        dismissDailyPlanFitInsight: vi.fn(),
+        resetDailyPlanFitInsightDismissal: vi.fn(),
         generateToday: vi.fn(),
         recordActivity: vi.fn(),
       },
@@ -238,6 +240,19 @@ describe("API infrastructure", () => {
     });
     expect(protectedPlanFit.statusCode).toBe(401);
     expect(hostedApi.today.getDailyPlanFitInsight).not.toHaveBeenCalled();
+    for (const [suffix, service] of [
+      ["dismissals", hostedApi.today.dismissDailyPlanFitInsight],
+      ["dismissal-resets", hostedApi.today.resetDailyPlanFitInsightDismissal],
+    ] as const) {
+      const response = await protectedApp.inject({
+        method: "POST",
+        url: `/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/daily-plan-fit-insight/${suffix}`,
+        headers: { "idempotency-key": `protected-${suffix}` },
+        payload: { forDate: "2026-07-16", insightKey: "a".repeat(64) },
+      });
+      expect(response.statusCode).toBe(401);
+      expect(service).not.toHaveBeenCalled();
+    }
     const protectedTodayActivity = await protectedApp.inject({
       method: "POST",
       url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/today/00000000-0000-4000-8000-000000000002/activity-events?date=2026-07-16",

@@ -16,6 +16,8 @@ import {
 } from "../apps/api/src/dormant-hosted-oidc-composition.js";
 import { prepareHostedApiApp } from "../apps/api/src/hosted-api-runtime.js";
 import {
+  HOSTED_DAILY_PLAN_FIT_DISMISSAL_RESET_ROUTE,
+  HOSTED_DAILY_PLAN_FIT_DISMISSAL_ROUTE,
   HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE,
   HOSTED_TODAY_ACTIVITY_ROUTE,
 } from "../apps/api/src/hosted-today-routes.js";
@@ -828,6 +830,74 @@ try {
   `;
   assert.deepEqual(fitReceiptsBeforeUse, { count: 0 });
 
+  const fitFeedbackPayload = {
+    forDate: "2026-07-16",
+    insightKey: fitInsight.insightKey,
+  };
+  const fitDismissalRoute = HOSTED_DAILY_PLAN_FIT_DISMISSAL_ROUTE.replace(
+    ":workspaceId",
+    fitWorkspaceId,
+  );
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const dismissalResponse: { statusCode: number; body: string } = await app.inject({
+      method: "POST",
+      url: fitDismissalRoute,
+      headers: { ...verifiedMutationHeaders, "idempotency-key": "hosted-fit-dismiss" },
+      payload: fitFeedbackPayload,
+    });
+    assert.equal(dismissalResponse.statusCode, 204, dismissalResponse.body);
+  }
+  const dismissedInsight = await app.inject({
+    method: "GET",
+    url: fitInsightRoute,
+    headers: { cookie: cookiePair(sessionCookie) },
+  });
+  assert.equal(dismissedInsight.statusCode, 200, dismissedInsight.body);
+  assert.equal(dismissedInsight.json<{ disposition: string }>().disposition, "dismissed");
+
+  const fitResetRoute = HOSTED_DAILY_PLAN_FIT_DISMISSAL_RESET_ROUTE.replace(
+    ":workspaceId",
+    fitWorkspaceId,
+  );
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const resetResponse: { statusCode: number; body: string } = await app.inject({
+      method: "POST",
+      url: fitResetRoute,
+      headers: { ...verifiedMutationHeaders, "idempotency-key": "hosted-fit-reset" },
+      payload: fitFeedbackPayload,
+    });
+    assert.equal(resetResponse.statusCode, 204, resetResponse.body);
+  }
+  const restoredInsight = await app.inject({
+    method: "GET",
+    url: fitInsightRoute,
+    headers: { cookie: cookiePair(sessionCookie) },
+  });
+  assert.equal(restoredInsight.statusCode, 200, restoredInsight.body);
+  assert.equal(restoredInsight.json<{ disposition: string }>().disposition, "available");
+
+  const staleDismissal = await app.inject({
+    method: "POST",
+    url: fitDismissalRoute,
+    headers: { ...verifiedMutationHeaders, "idempotency-key": "hosted-fit-stale" },
+    payload: { ...fitFeedbackPayload, insightKey: "b".repeat(64) },
+  });
+  assert.equal(staleDismissal.statusCode, 409, staleDismissal.body);
+  const fitFeedbackBeforeUse = await database.sql<{ kind: string; count: number }[]>`
+    select kind::text as kind, count(*)::integer as count
+    from daily_plan_fit_insight_feedback_events
+    where workspace_id = ${fitWorkspaceId}::uuid
+    group by kind
+    order by kind
+  `;
+  assert.deepEqual(
+    [...fitFeedbackBeforeUse],
+    [
+      { kind: "dismissed", count: 1 },
+      { kind: "reset", count: 1 },
+    ],
+  );
+
   const fitGenerationRoute = `/v1/hosted/workspaces/${fitWorkspaceId}/today?date=2026-07-16`;
   const fitGenerationHeaders = {
     ...verifiedMutationHeaders,
@@ -873,7 +943,7 @@ try {
       (select count(*)::integer from daily_plans
         where workspace_id = ${fitWorkspaceId}::uuid and local_date = '2026-07-16') as plans
     from daily_plan_fit_insight_feedback_events
-    where workspace_id = ${fitWorkspaceId}::uuid
+    where workspace_id = ${fitWorkspaceId}::uuid and kind = 'used'
   `;
   assert.deepEqual(fitReceipt, {
     insightKey: fitInsight.insightKey,
@@ -943,7 +1013,7 @@ try {
   assert.deepEqual(requestCounts, { discovery: 1, token: 1, jwks: 1 });
 
   console.log(
-    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read and empty Today read and a transaction-authorized status update, plus principal-bound workspace creation. Hosted capture scheduling fields were restricted, projected, and persisted exactly. Hosted first-plan generation proved exact replay, conflicting-input rejection, one persisted revision, and planner-selected work without synthetic plan rows. Hosted Today completion also proved exact idempotent replay, one activity append, one head advance, and atomic source completion, while a stale head left no residue and the generated plan time zone remained authoritative. Hosted Plan Fit guidance proved bounded authorized projection, read-only prefill evidence, exact-key replay, one persisted plan, and one atomic use receipt.",
+    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read and empty Today read and a transaction-authorized status update, plus principal-bound workspace creation. Hosted capture scheduling fields were restricted, projected, and persisted exactly. Hosted first-plan generation proved exact replay, conflicting-input rejection, one persisted revision, and planner-selected work without synthetic plan rows. Hosted Today completion also proved exact idempotent replay, one activity append, one head advance, and atomic source completion, while a stale head left no residue and the generated plan time zone remained authoritative. Hosted Plan Fit guidance proved bounded authorized projection, exact dismissal and reset replay, stale-key rollback, one persisted plan, and one atomic use receipt.",
   );
 } catch (error) {
   verificationError = error;

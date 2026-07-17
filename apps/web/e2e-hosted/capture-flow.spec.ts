@@ -18,6 +18,12 @@ test("captures one hosted backlog item with responsive request verification", as
   let capturedPlanBody: unknown;
   let capturedPlanCsrf: string | undefined;
   let capturedPlanIdempotency: string | undefined;
+  const capturedPlanFitFeedback: {
+    path: string;
+    body: unknown;
+    csrf: string | undefined;
+    idempotencyKey: string | undefined;
+  }[] = [];
   let requestedTodayDate: string | null = null;
   let requestedPlanFitPath: string | null = null;
   let requestedPlanFitDate: string | null = null;
@@ -46,6 +52,7 @@ test("captures one hosted backlog item with responsive request verification", as
   let todayHeadVersion = 5;
   let todayActivityState: "pending" | "completed" = "pending";
   let todayGenerated = false;
+  let planFitDisposition: "available" | "dismissed" = "available";
   let backlog: (typeof existing | typeof created)[] = [existing];
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
@@ -74,7 +81,7 @@ test("captures one hosted backlog item with responsive request verification", as
         json: {
           forDate: url.searchParams.get("forDate"),
           status: "suggested",
-          disposition: "available",
+          disposition: planFitDisposition,
           sampleCount: 3,
           minimumSamples: 3,
           suggestedTargetMinutes: 90,
@@ -82,6 +89,21 @@ test("captures one hosted backlog item with responsive request verification", as
           insightKey: planFitInsightKey,
         },
       });
+      return;
+    }
+    if (
+      request.method() === "POST" &&
+      (url.pathname.endsWith("/daily-plan-fit-insight/dismissals") ||
+        url.pathname.endsWith("/daily-plan-fit-insight/dismissal-resets"))
+    ) {
+      capturedPlanFitFeedback.push({
+        path: url.pathname,
+        body: request.postDataJSON(),
+        csrf: request.headers()["x-schedule-csrf"],
+        idempotencyKey: request.headers()["idempotency-key"],
+      });
+      planFitDisposition = url.pathname.endsWith("/dismissals") ? "dismissed" : "available";
+      await route.fulfill({ status: 204, body: "" });
       return;
     }
     if (request.method() === "GET" && url.pathname.endsWith("/today")) {
@@ -159,6 +181,14 @@ test("captures one hosted backlog item with responsive request verification", as
   );
   expect(requestedPlanFitDate).toBe(requestedTodayDate);
   expect((await usePlanFit.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  const notNow = page.getByRole("button", { name: "Not now" });
+  expect((await notNow.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  await notNow.click();
+  const showAgain = page.getByRole("button", { name: "Show again" });
+  await expect(showAgain).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Recent Plan Fit" })).toBeFocused();
+  await showAgain.click();
+  await expect(usePlanFit).toBeVisible();
   await usePlanFit.click();
   await expect(page.getByRole("spinbutton", { name: "Time budget (minutes)" })).toHaveValue("90");
   await expect(page.getByRole("spinbutton", { name: "Task limit" })).toHaveValue("2");
@@ -241,6 +271,20 @@ test("captures one hosted backlog item with responsive request verification", as
     targetTaskCount: 5,
     planFitInsightKey,
   });
+  expect(capturedPlanFitFeedback).toEqual([
+    {
+      path: `/v1/hosted/workspaces/${workspaces[1]!.id}/daily-plan-fit-insight/dismissals`,
+      body: { forDate: requestedTodayDate, insightKey: planFitInsightKey },
+      csrf: csrfToken,
+      idempotencyKey: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+    },
+    {
+      path: `/v1/hosted/workspaces/${workspaces[1]!.id}/daily-plan-fit-insight/dismissal-resets`,
+      body: { forDate: requestedTodayDate, insightKey: planFitInsightKey },
+      csrf: csrfToken,
+      idempotencyKey: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+    },
+  ]);
   const planWindow = (capturedPlanBody as { window: { startsAt: string; endsAt: string } }).window;
   expect(new Date(planWindow.endsAt).getTime() - new Date(planWindow.startsAt).getTime()).toBe(
     390 * 60_000,

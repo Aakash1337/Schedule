@@ -6,6 +6,7 @@ import { browserTimeZone, formatMinutes, localDateTimeToIso, todayKey } from "./
 import {
   hostedApi,
   HostedApiError,
+  type HostedDailyPlanFitFeedback,
   type HostedDailyPlanFitInsight,
   type HostedGenerateToday,
   type HostedToday,
@@ -33,6 +34,11 @@ interface TodayActionIntent {
 interface TodayGenerationIntent extends HostedGenerateToday {
   readonly workspaceId: string;
   readonly date: string;
+}
+
+interface PlanFitFeedbackIntent extends HostedDailyPlanFitFeedback {
+  readonly workspaceId: string;
+  readonly kind: "dismiss" | "reset";
 }
 
 function publicError(error: unknown): string {
@@ -111,6 +117,12 @@ export function HostedApp() {
   const todayHeading = useRef<HTMLHeadingElement>(null);
   const refocusTodayAfterGeneration = useRef(false);
   const planningTargetMinutesInput = useRef<HTMLInputElement>(null);
+  const planFitHeading = useRef<HTMLHeadingElement>(null);
+  const refocusPlanFitAfterFeedback = useRef(false);
+  const planFitContext = useRef<{ workspaceId: string | null; date: string }>({
+    workspaceId: null,
+    date: "",
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<string | null>(null);
@@ -129,6 +141,12 @@ export function HostedApp() {
   const [planFitNotice, setPlanFitNotice] = useState<string | null>(null);
   const [planFitRefresh, setPlanFitRefresh] = useState(0);
   const [selectedPlanFitInsightKey, setSelectedPlanFitInsightKey] = useState<string | null>(null);
+  const [planFitFeedbackAction, setPlanFitFeedbackAction] = useState<
+    PlanFitFeedbackIntent["kind"] | null
+  >(null);
+  const [planFitFeedbackRetry, setPlanFitFeedbackRetry] = useState<PlanFitFeedbackIntent | null>(
+    null,
+  );
   const [todayRetry, setTodayRetry] = useState<TodayActionIntent | null>(null);
   const [todayGenerationRetry, setTodayGenerationRetry] = useState<TodayGenerationIntent | null>(
     null,
@@ -147,6 +165,7 @@ export function HostedApp() {
     readonly status: "in_progress" | "done";
   } | null>(null);
   const timeZone = useMemo(() => browserTimeZone(), []);
+  planFitContext.current = { workspaceId: selectedWorkspaceId, date: todayDate };
 
   useEffect(() => {
     if (busy || !refocusTitleAfterCapture.current) return;
@@ -159,6 +178,12 @@ export function HostedApp() {
     refocusTodayAfterGeneration.current = false;
     todayHeading.current?.focus();
   }, [today?.planId, todayLoading]);
+
+  useEffect(() => {
+    if (planFitLoading || planFitInsight === null || !refocusPlanFitAfterFeedback.current) return;
+    refocusPlanFitAfterFeedback.current = false;
+    planFitHeading.current?.focus();
+  }, [planFitInsight, planFitLoading]);
 
   const load = useCallback(async () => {
     setMode("loading");
@@ -299,6 +324,8 @@ export function HostedApp() {
         setPlanFitLoading(false);
         setPlanFitError(false);
         setSelectedPlanFitInsightKey(null);
+        setPlanFitFeedbackAction(null);
+        setPlanFitFeedbackRetry(null);
       }
       return;
     }
@@ -312,6 +339,14 @@ export function HostedApp() {
         if (!active) return;
         setPlanFitInsight(insight);
         setSelectedPlanFitInsightKey((key) => (key === insight.insightKey ? key : null));
+        setPlanFitFeedbackRetry((retry) =>
+          retry !== null &&
+          retry.workspaceId === selectedWorkspaceId &&
+          retry.forDate === todayDate &&
+          retry.insightKey === insight.insightKey
+            ? retry
+            : null,
+        );
       })
       .catch((insightError: unknown) => {
         if (!active) return;
@@ -335,30 +370,35 @@ export function HostedApp() {
     [selectedWorkspaceId, workspaces],
   );
   const mutationBusy =
-    busy || generatingToday || updatingItem !== null || updatingTodayItem !== null;
-  const planFitSuggestion =
+    busy ||
+    generatingToday ||
+    updatingItem !== null ||
+    updatingTodayItem !== null ||
+    planFitFeedbackAction !== null;
+  const planFitCandidate =
     planFitInsight?.status === "suggested" &&
-    planFitInsight.disposition === "available" &&
     planFitInsight.insightKey !== null &&
     planFitInsight.suggestedTargetMinutes !== null &&
     planFitInsight.suggestedTargetTaskCount !== null
       ? {
           insightKey: planFitInsight.insightKey,
+          disposition: planFitInsight.disposition,
           sampleCount: planFitInsight.sampleCount,
           targetMinutes: planFitInsight.suggestedTargetMinutes,
           targetTaskCount: planFitInsight.suggestedTargetTaskCount,
         }
       : null;
+  const planFitSuggestion = planFitCandidate?.disposition === "available" ? planFitCandidate : null;
+  const dismissedPlanFitSuggestion =
+    planFitCandidate?.disposition === "dismissed" ? planFitCandidate : null;
   const planFitStatusMessage =
-    planFitInsight === null || planFitSuggestion !== null
+    planFitInsight === null || planFitCandidate !== null
       ? null
       : planFitInsight.status === "insufficient_history"
         ? `Plan Fit needs ${planFitInsight.minimumSamples} resolved plans; ${planFitInsight.sampleCount} available.`
         : planFitInsight.status === "aligned"
           ? "Recent completed plans are aligned; no lower targets are suggested."
-          : planFitInsight.disposition === "dismissed"
-            ? "The current Plan Fit suggestion is dismissed."
-            : null;
+          : null;
   const planFitSuggestionApplied =
     planFitSuggestion !== null &&
     selectedPlanFitInsightKey === planFitSuggestion.insightKey &&
@@ -366,15 +406,19 @@ export function HostedApp() {
     Number(planningTargetTaskCount) === planFitSuggestion.targetTaskCount;
   const planFitAnnouncement =
     planFitNotice ??
-    (planFitLoading
-      ? "Checking recent plan fit."
-      : planFitError
-        ? "Plan Fit guidance is unavailable."
-        : planFitSuggestion === null
-          ? (planFitStatusMessage ?? "")
-          : planFitSuggestionApplied
-            ? `Using ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}. You can still edit both limits.`
-            : `Plan Fit suggests ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}.`);
+    (planFitFeedbackAction !== null
+      ? "Updating Plan Fit suggestion."
+      : planFitLoading
+        ? "Checking recent plan fit."
+        : planFitError
+          ? "Plan Fit guidance is unavailable."
+          : dismissedPlanFitSuggestion !== null
+            ? "Plan Fit suggestion is paused."
+            : planFitSuggestion === null
+              ? (planFitStatusMessage ?? "")
+              : planFitSuggestionApplied
+                ? `Using ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}. You can still edit both limits.`
+                : `Plan Fit suggests ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}.`);
 
   function selectWorkspace(id: string) {
     localStorage.setItem(selectedWorkspaceKey, id);
@@ -394,6 +438,9 @@ export function HostedApp() {
     setPlanFitError(false);
     setPlanFitNotice(null);
     setSelectedPlanFitInsightKey(null);
+    setPlanFitFeedbackAction(null);
+    setPlanFitFeedbackRetry(null);
+    refocusPlanFitAfterFeedback.current = false;
     refocusTodayAfterGeneration.current = false;
   }
 
@@ -602,7 +649,7 @@ export function HostedApp() {
 
   function beginTodayGeneration(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (selectedWorkspace === null || today?.planId !== null) return;
+    if (mutationBusy || selectedWorkspace === null || today?.planId !== null) return;
     const targetMinutes = Number(planningTargetMinutes);
     const targetTaskCount = Number(planningTargetTaskCount);
     if (!Number.isInteger(targetMinutes) || targetMinutes < 1 || targetMinutes > 1_440) {
@@ -648,6 +695,84 @@ export function HostedApp() {
     setPlanFitNotice(null);
     setTodayError(null);
     planningTargetMinutesInput.current?.focus();
+  }
+
+  async function submitPlanFitFeedback(intent: PlanFitFeedbackIntent) {
+    const requestIsActive = () =>
+      planFitContext.current.workspaceId === intent.workspaceId &&
+      planFitContext.current.date === intent.forDate;
+    setPlanFitFeedbackAction(intent.kind);
+    setPlanFitNotice(null);
+    try {
+      const { workspaceId, kind, ...command } = intent;
+      if (kind === "dismiss") {
+        await hostedApi.dismissDailyPlanFitInsight(workspaceId, command);
+      } else {
+        await hostedApi.resetDailyPlanFitInsightDismissal(workspaceId, command);
+      }
+      if (!requestIsActive()) return;
+      setPlanFitFeedbackRetry(null);
+      if (kind === "dismiss") {
+        setSelectedPlanFitInsightKey((key) => (key === intent.insightKey ? null : key));
+      }
+      setPlanFitNotice(
+        kind === "dismiss"
+          ? "Suggestion hidden. New evidence may show a new suggestion."
+          : "Suggestion available again.",
+      );
+      refocusPlanFitAfterFeedback.current = true;
+      setPlanFitRefresh((value) => value + 1);
+    } catch (feedbackError) {
+      if (!requestIsActive()) return;
+      const known = feedbackError instanceof HostedApiError;
+      if (known && feedbackError.status === 401) {
+        setPlanFitFeedbackRetry(null);
+        setMode("signed-out");
+        setError(publicError(feedbackError));
+      } else if (known && feedbackError.status === 409) {
+        setPlanFitFeedbackRetry(null);
+        setSelectedPlanFitInsightKey(null);
+        setPlanFitNotice("Plan Fit changed. Review the refreshed suggestion; nothing was applied.");
+        refocusPlanFitAfterFeedback.current = true;
+        setPlanFitRefresh((value) => value + 1);
+      } else {
+        const ambiguous =
+          !known ||
+          feedbackError.status === 408 ||
+          feedbackError.status === 429 ||
+          feedbackError.status >= 500;
+        if (!ambiguous) setPlanFitFeedbackRetry(null);
+        setPlanFitNotice(
+          ambiguous
+            ? "Plan Fit update could not be confirmed. Try again."
+            : publicError(feedbackError),
+        );
+      }
+    } finally {
+      if (requestIsActive()) setPlanFitFeedbackAction(null);
+    }
+  }
+
+  function beginPlanFitFeedback(kind: PlanFitFeedbackIntent["kind"]) {
+    const candidate = kind === "dismiss" ? planFitSuggestion : dismissedPlanFitSuggestion;
+    if (selectedWorkspace === null || candidate === null) return;
+    const retry = planFitFeedbackRetry;
+    const intent =
+      retry !== null &&
+      retry.workspaceId === selectedWorkspace.id &&
+      retry.forDate === todayDate &&
+      retry.insightKey === candidate.insightKey &&
+      retry.kind === kind
+        ? retry
+        : {
+            workspaceId: selectedWorkspace.id,
+            forDate: todayDate,
+            insightKey: candidate.insightKey,
+            idempotencyKey: crypto.randomUUID(),
+            kind,
+          };
+    setPlanFitFeedbackRetry(intent);
+    void submitPlanFitFeedback(intent);
   }
 
   async function logout() {
@@ -931,30 +1056,63 @@ export function HostedApp() {
                         Retry guidance
                       </Button>
                     </div>
-                  ) : planFitSuggestion === null ? (
+                  ) : planFitCandidate === null ? (
                     planFitStatusMessage === null ? null : (
                       <p className="hosted-plan-fit-state">{planFitStatusMessage}</p>
                     )
                   ) : (
                     <div className="hosted-plan-fit-suggestion">
                       <div>
-                        <strong>Recent Plan Fit</strong>
+                        <h4 ref={planFitHeading} tabIndex={-1}>
+                          Recent Plan Fit
+                        </h4>
                         <p>
-                          {planFitSuggestionApplied
-                            ? `Using ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}. You can still edit both limits.`
-                            : `Based on ${planFitSuggestion.sampleCount} resolved plans, try ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}.`}
+                          {dismissedPlanFitSuggestion !== null
+                            ? `Suggestion paused. Based on ${dismissedPlanFitSuggestion.sampleCount} resolved plans, it suggested ${formatMinutes(dismissedPlanFitSuggestion.targetMinutes)} and ${dismissedPlanFitSuggestion.targetTaskCount} ${dismissedPlanFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}.`
+                            : planFitSuggestionApplied
+                              ? `Using ${formatMinutes(planFitCandidate.targetMinutes)} and ${planFitCandidate.targetTaskCount} ${planFitCandidate.targetTaskCount === 1 ? "task" : "tasks"}. You can still edit both limits.`
+                              : `Based on ${planFitCandidate.sampleCount} resolved plans, try ${formatMinutes(planFitCandidate.targetMinutes)} and ${planFitCandidate.targetTaskCount} ${planFitCandidate.targetTaskCount === 1 ? "task" : "tasks"}.`}
                         </p>
                       </div>
-                      <Button
-                        type="button"
-                        variant="quiet"
-                        disabled={mutationBusy || planFitSuggestionApplied}
-                        onClick={applyPlanFitSuggestion}
-                      >
-                        {planFitSuggestionApplied
-                          ? "Suggestion applied"
-                          : `Use ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}`}
-                      </Button>
+                      <div className="hosted-plan-fit-actions">
+                        {planFitSuggestion === null ? (
+                          <Button
+                            type="button"
+                            variant="quiet"
+                            busy={planFitFeedbackAction === "reset"}
+                            disabled={mutationBusy || planFitFeedbackAction !== null}
+                            onClick={() => beginPlanFitFeedback("reset")}
+                          >
+                            Show again
+                          </Button>
+                        ) : (
+                          <>
+                            <Button
+                              type="button"
+                              variant="quiet"
+                              disabled={
+                                mutationBusy ||
+                                planFitFeedbackAction !== null ||
+                                planFitSuggestionApplied
+                              }
+                              onClick={applyPlanFitSuggestion}
+                            >
+                              {planFitSuggestionApplied
+                                ? "Suggestion applied"
+                                : `Use ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}`}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="quiet"
+                              busy={planFitFeedbackAction === "dismiss"}
+                              disabled={mutationBusy || planFitFeedbackAction !== null}
+                              onClick={() => beginPlanFitFeedback("dismiss")}
+                            >
+                              Not now
+                            </Button>
+                          </>
+                        )}
+                      </div>
                     </div>
                   )}
                   <div className="hosted-plan-fields">
