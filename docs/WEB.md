@@ -272,7 +272,10 @@ The separate **Planning outcomes** card summarizes the final current heads from 
 dates whether or not Plan Fit was used. It shows weighted completed-versus-planned scheduled time and
 task totals after three plan days, plus the number of additional revisions. Empty, insufficient,
 loading, failure, and retry states stay inline. The card reuses existing Today presentation styles,
-writes nothing, and never changes guidance, planning, or model input.
+writes nothing, and never changes guidance, planning, or model input. A nested **By planner version**
+list groups the same final heads by their exact planner/configuration pair. Every observed group stays
+visible, but its completion rates appear only after three plan days. The copy presents these as
+observational groups, never a ranking or claim that one version caused an outcome.
 
 **Not now** appends feedback for the exact evidence key and refetches the panel. A paused suggestion
 keeps its evidence visible and offers **Show again**. Ambiguous retry retains the same idempotency

@@ -454,8 +454,13 @@ improvement score, planner input, learned policy, or model signal.
 local dates. It uses at most one authoritative current head per date and returns the window bounds,
 plan-day count, weighted planned/completed task and scheduled-minute totals, additional revisions
 beyond revision 1, and half-up completion rates in integer basis points. Rates are `null` when their
-planned denominator is zero. The route is read-only and does not write telemetry, compare planner
-versions, infer causality, or influence planning or model input.
+planned denominator is zero. `versionSegments` groups those same current heads by the exact
+`algorithmVersion`/`configVersion` pair and returns plan-day plus weighted planned/completed totals.
+Segments are ordered by plan-day count descending and then both versions ascending; their rates stay
+`null` until that exact pair has three plan days and also remain `null` without a planned denominator.
+Additional revisions remain aggregate-only because a current head does not identify the version of
+its earlier revisions. The route is read-only and does not write telemetry, rank versions, infer
+causality, or influence planning or model input.
 
 Routine activity history is ordered by newest ingestion first and accepts `limit` from 1–200 (default 50) plus an opaque, integrity-protected `cursor`. The cursor is bound to its workspace and routine. The first page captures a high-water mark, so later appends do not shift subsequent pages. A non-null `page.nextCursor` retrieves the next page. Local cursor signing keys are process-bound, so clients should restart pagination after an API restart.
 

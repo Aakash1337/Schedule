@@ -244,6 +244,7 @@ function planningOutcomes(overrides: Partial<PlanningOutcomes> = {}): PlanningOu
     additionalPlanRevisionCount: 0,
     completionTasksRateBasisPoints: null,
     completionMinutesRateBasisPoints: null,
+    versionSegments: [],
     ...overrides,
   };
 }
@@ -861,6 +862,30 @@ describe("Today commands", () => {
         additionalPlanRevisionCount: 2,
         completionTasksRateBasisPoints: 7_000,
         completionMinutesRateBasisPoints: 7_000,
+        versionSegments: [
+          {
+            algorithmVersion: "planner-v6",
+            configVersion: "weights-v4",
+            plansConsidered: 3,
+            plannedTaskCount: 8,
+            completedTaskCount: 6,
+            plannedMinutes: 240,
+            completedMinutes: 180,
+            completionTasksRateBasisPoints: 7_500,
+            completionMinutesRateBasisPoints: 7_500,
+          },
+          {
+            algorithmVersion: "planner-v5",
+            configVersion: "weights-v3",
+            plansConsidered: 1,
+            plannedTaskCount: 2,
+            completedTaskCount: 1,
+            plannedMinutes: 60,
+            completedMinutes: 30,
+            completionTasksRateBasisPoints: null,
+            completionMinutesRateBasisPoints: null,
+          },
+        ],
       }),
     );
 
@@ -874,6 +899,14 @@ describe("Today commands", () => {
     expect(screen.getByText("Deferred").parentElement).toHaveTextContent("1 task · 30m");
     expect(screen.getByText("Dismissed").parentElement).toHaveTextContent("1 task · 30m");
     expect(screen.getByText(/2 additional plan revisions after initial generation/i)).toBeVisible();
+    expect(screen.getByRole("heading", { name: "By planner version" })).toBeVisible();
+    expect(screen.getByText("planner-v6 · weights-v4")).toBeVisible();
+    expect(screen.getByText(/Completed 75% scheduled time · 75% tasks/)).toBeVisible();
+    expect(screen.getByText(/3h of 4h · 6 of 8 tasks/)).toBeVisible();
+    expect(screen.getByText("planner-v5 · weights-v3")).toBeVisible();
+    expect(screen.getByText(/1 of 3 plan days with this exact version is available/)).toBeVisible();
+    expect(screen.getByText(/need at least 2 more within the current window/)).toBeVisible();
+    expect(screen.getByText(/do not show that a version caused an outcome/i)).toBeVisible();
     expect(apiMocks.getPlanningOutcomes).toHaveBeenCalledWith(
       workspace.id,
       todayKey(),
@@ -885,7 +918,24 @@ describe("Today commands", () => {
     const user = userEvent.setup();
     apiMocks.getPlanningOutcomes
       .mockRejectedValueOnce(new Error("outcomes failed"))
-      .mockResolvedValueOnce(planningOutcomes({ plansConsidered: 1 }));
+      .mockResolvedValueOnce(
+        planningOutcomes({
+          plansConsidered: 1,
+          versionSegments: [
+            {
+              algorithmVersion: "planner-v6",
+              configVersion: "weights-v4",
+              plansConsidered: 1,
+              plannedTaskCount: 0,
+              completedTaskCount: 0,
+              plannedMinutes: 0,
+              completedMinutes: 0,
+              completionTasksRateBasisPoints: null,
+              completionMinutesRateBasisPoints: null,
+            },
+          ],
+        }),
+      );
 
     render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
 
@@ -893,6 +943,12 @@ describe("Today commands", () => {
     await user.click(screen.getByRole("button", { name: "Retry outcomes" }));
     expect(await screen.findByText(/1 of 3 prior plan days is available/i)).toBeVisible();
     expect(screen.getByText(/Rates appear after 2 more days/i)).toBeVisible();
+    expect(
+      screen.getByText(/1 of 3 plan days with this exact version is available, but none contains/i),
+    ).toBeVisible();
+    expect(
+      screen.getByText(/need at least 2 more within the current window and some planned work/i),
+    ).toBeVisible();
     expect(apiMocks.getPlanningOutcomes).toHaveBeenCalledTimes(2);
   });
 

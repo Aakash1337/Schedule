@@ -288,10 +288,17 @@ until three prior plan days exist. The summary also adds `requestRevision - 1` a
 heads and labels the result **additional plan revisions**. That count is not a replacement-frequency
 or causality claim.
 
+`versionSegments` groups those same final heads by the exact persisted `algorithmVersion` and
+`configVersion` pair. Every observed pair remains visible, ordered by plan-day count descending and
+then both version strings ascending. Each segment carries only its attributable plan-day and weighted
+planned/completed task and minute totals. Segment rates remain unavailable until that pair has three
+plan days. Additional revisions are not assigned to a segment because the final head's versions do
+not identify which versions produced its earlier revisions.
+
 The read writes no telemetry, activity, plan, or model state and never enters planner scoring,
-guidance, prompts, or automatic adaptation. It uses scheduled rather than stopwatch duration and may
-span planner versions, so it is a compact description of current local history—not an algorithm
-comparison or claim that the planner improved an outcome.
+guidance, prompts, or automatic adaptation. It uses scheduled rather than stopwatch duration. The
+top-level aggregate may span versions; the exact observational groups make that mixture visible but
+do not rank versions, establish causality, or claim that the planner improved an outcome.
 
 ## Duration-calibration boundary
 

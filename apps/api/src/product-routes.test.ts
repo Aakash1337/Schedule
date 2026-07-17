@@ -214,6 +214,19 @@ const planningOutcomes = {
   additionalPlanRevisionCount: 2,
   completionTasksRateBasisPoints: 7_000,
   completionMinutesRateBasisPoints: 7_000,
+  versionSegments: [
+    {
+      algorithmVersion: "planner-v6",
+      configVersion: "weights-v4",
+      plansConsidered: 4,
+      plannedTaskCount: 10,
+      completedTaskCount: 7,
+      plannedMinutes: 300,
+      completedMinutes: 210,
+      completionTasksRateBasisPoints: 7_000,
+      completionMinutesRateBasisPoints: 7_000,
+    },
+  ],
 } satisfies PlanningOutcomes;
 
 afterEach(async () => {
