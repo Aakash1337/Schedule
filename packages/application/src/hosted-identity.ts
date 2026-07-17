@@ -180,6 +180,10 @@ function requireActiveUser(user: HostedUser | null): HostedUser {
   return user;
 }
 
+function hostedAuthenticationFailed(): never {
+  throw new DomainError("hosted.authentication_failed", "Authentication failed.");
+}
+
 export interface FindOrProvisionHostedUserResult {
   readonly user: HostedUser;
   readonly identity: ExternalIdentity;
@@ -238,16 +242,51 @@ export class ProvisionHostedWorkspace {
     return this.unitOfWork.run(async ({ users, workspaces, memberships, time }) => {
       requireActiveUser(await users.findByIdForUpdate(input.userId));
       const now = await time.current();
-      const workspace = createWorkspace({ name: input.name, now });
-      const membership = createWorkspaceMembership({
-        userId: input.userId,
-        workspaceId: workspace.id,
-        now,
-      });
-      await workspaces.insert(workspace);
-      await memberships.insert(membership);
-      return { workspace, membership };
+      return insertHostedWorkspace(workspaces, memberships, input.userId, input.name, now);
     });
+  }
+}
+
+async function insertHostedWorkspace(
+  workspaces: HostedWorkspaceRepository,
+  memberships: WorkspaceMembershipRepository,
+  userId: UserId,
+  name: string,
+  now: Date,
+): Promise<{ readonly workspace: Workspace; readonly membership: WorkspaceMembership }> {
+  const workspace = createWorkspace({ name, now });
+  const membership = createWorkspaceMembership({ userId, workspaceId: workspace.id, now });
+  await workspaces.insert(workspace);
+  await memberships.insert(membership);
+  return { workspace, membership };
+}
+
+/** Creates a workspace only while the authenticated browser session still owns the write. */
+export class CreateHostedWorkspaceForPrincipal {
+  constructor(private readonly unitOfWork: IdentityUnitOfWork) {}
+
+  execute(input: {
+    readonly userId: UserId;
+    readonly sessionId: BrowserSessionId;
+    readonly name: string;
+  }): Promise<{ readonly workspace: Workspace; readonly membership: WorkspaceMembership }> {
+    return this.unitOfWork.run(
+      async ({ users, browserSessions, workspaces, memberships, time }) => {
+        const user = await users.findByIdForUpdate(input.userId);
+        const session = await browserSessions.findByIdForUpdate(input.sessionId);
+        const now = await time.current();
+        if (
+          user?.status !== "active" ||
+          session === null ||
+          session.userId !== input.userId ||
+          !browserSessionIsUsable(session, now)
+        ) {
+          hostedAuthenticationFailed();
+        }
+        return insertHostedWorkspace(workspaces, memberships, input.userId, input.name, now);
+      },
+      { isolationLevel: "read_committed" },
+    );
   }
 }
 

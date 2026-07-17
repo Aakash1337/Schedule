@@ -3,8 +3,8 @@
 Schedule contains a centralized browser authentication lifecycle and workspace-authorization
 boundary. It is closed by default. With `HOSTED_API_MODE=oidc`, the server preflights one trusted
 provider, installs login/callback/session/logout, and exposes one transaction-authorized work-item
-create route. Local unauthenticated product routes remain disabled and machine integration credentials
-remain a separate trust boundary.
+create route plus principal-bound workspace list/create. Local unauthenticated product routes remain
+disabled and machine integration credentials remain a separate trust boundary.
 
 ## Runtime configuration gate
 
@@ -387,7 +387,7 @@ A committed logout, disabled user, expired session, missing workspace, cross-ten
 membership likewise denies the write. Authentication loss is a generic `401`; workspace or
 membership loss is the same generic `404`; unexpected adapter/database failures remain redacted.
 
-## Authenticated workspace discovery
+## Authenticated workspace discovery and creation
 
 `GET /v1/hosted/workspaces?limit=20&offset=0` crosses the same cookie, CSRF, and principal boundary
 without accepting identity from headers or query input. It returns a stable page of workspace
@@ -396,11 +396,19 @@ records joined only through the caller's active memberships, ordered by workspac
 no user ID, session ID, membership state, role, inactive workspace, or total count and always uses
 `Cache-Control: no-store`.
 
-The join is one `read committed` statement backed by the bounded
+The list join is one `read committed` statement backed by the bounded
 `(user_id, status, workspace_id)` access path. A membership revocation committed before that
 statement is excluded; a concurrent revocation cannot retract an already-authorized read. The
-endpoint is discovery only: it does not create, rename, delete, invite, or grant access to a
-workspace.
+collection also accepts CSRF-protected `POST /v1/hosted/workspaces` with exactly one trimmed,
+bounded `name`. The handler derives the user and session only from the authenticated principal. In
+one `read committed` transaction, `CreateHostedWorkspaceForPrincipal` locks that user and then the
+exact browser session, uses PostgreSQL time to recheck active ownership, revocation, idle expiry,
+and absolute expiry, and only then inserts the workspace and active membership atomically. Any lost
+authentication is the same generic `401` and leaves neither row behind.
+
+Creation returns only the workspace record with `201`; it accepts no user, membership, role, or
+identity field. The collection cannot retrieve details, rename, delete, invite, change membership,
+or grant roles.
 
 ## Bounded hosted backlog read
 
@@ -459,25 +467,25 @@ framing denial, and MIME sniffing denial. Fingerprinted assets are immutable for
 requests sit outside the hosted API's per-source request budget.
 
 The browser reads only `{ authenticated }`, the active workspace page, the first 20 backlog item
-IDs/titles/versions, the narrow current-day projection above, and the created work item. It never receives
-provider tokens, user or session identifiers, membership state, or roles. A signed-in user may
-choose one discovered workspace, review Today and the bounded backlog snapshot, submit one title,
-or move one visible backlog item to started or done. The script copies the exact host-only CSRF
-cookie into the existing header for both strict mutations; the server remains authoritative for
-identity, membership, defaults, validation, and optimistic versions. The page cannot generate a
-plan, page, filter, edit fields, reopen, cancel, schedule, or synchronize work and offers no
-workspace or account administration.
+IDs/titles/versions, the narrow current-day projection above, the created workspace, and the created
+work item. It never receives provider tokens, user or session identifiers, membership state, or
+roles. A signed-in user may create or choose one active workspace, review Today and the bounded
+backlog snapshot, submit one title, or move one visible backlog item to started or done. The script
+copies the exact host-only CSRF cookie into the existing header for all strict mutations; the server
+remains authoritative for identity, membership, defaults, validation, and optimistic versions. The
+page cannot generate a plan, page, filter, edit fields, reopen, cancel, schedule, synchronize work,
+rename/delete a workspace, or administer membership or accounts.
 
 ## Deliberately absent
 
-There is still no WebFinger issuer discovery, public workspace provisioning or administration,
+There is still no WebFinger issuer discovery, workspace rename/delete or membership administration,
 broader hosted product interface or route set, account-management API, role model, synchronization
-protocol, or verified public deployment. The authenticated workspace list is discovery only.
+protocol, or verified public deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
-principal. Title-only create and status-only update are the only transaction-coupled hosted product
-mutations. The bounded backlog and current-day projections are the only hosted product-data reads;
-all other product routes remain local-only and require their own authority before future hosted
-exposure.
+principal. Name-only workspace creation, title-only work creation, and status-only update are the
+only transaction-coupled hosted mutations. The bounded backlog and current-day projections are the
+only hosted product-data reads; all other product routes remain local-only and require their own
+authority before future hosted exposure.
 
 ## Concrete OIDC composition
 

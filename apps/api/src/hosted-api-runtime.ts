@@ -1,5 +1,6 @@
 import {
   AuthorizeHostedWorkspace,
+  CreateHostedWorkspaceForPrincipal,
   CreateHostedWorkItem,
   GetCurrentDailyPlan,
   ListHostedWorkspaces,
@@ -38,6 +39,7 @@ async function hostedApiOptions(
   }
   const identityUnitOfWork = new PostgresIdentityUnitOfWork(database);
   const listWorkspaces = new ListHostedWorkspaces(identityUnitOfWork);
+  const createWorkspace = new CreateHostedWorkspaceForPrincipal(identityUnitOfWork);
   const listWorkItems = new ListWorkItems(new PostgresUnitOfWork(database));
   const getCurrentDailyPlan = new GetCurrentDailyPlan(new PostgresUnitOfWork(database));
   const hostedMutationUnitOfWork = new PostgresHostedMutationUnitOfWork(database);
@@ -59,6 +61,7 @@ async function hostedApiOptions(
     },
     workspaces: {
       listWorkspaces: (input) => listWorkspaces.execute(input),
+      createWorkspace: (input) => createWorkspace.execute(input).then(({ workspace }) => workspace),
     },
     workItems: {
       listWorkItems: ({ authorization }) =>

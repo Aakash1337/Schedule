@@ -1,8 +1,11 @@
-import { browserSessionId, userId, workspaceId } from "@schedule/domain";
+import { browserSessionId, DomainError, userId, workspaceId } from "@schedule/domain";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { HostedRequestAuthenticator } from "./hosted-auth-boundary.js";
+import type {
+  HostedPrincipalBoundaryDependencies,
+  HostedRequestAuthenticator,
+} from "./hosted-auth-boundary.js";
 import {
   HOSTED_WORKSPACE_LIST_ROUTE,
   registerHostedWorkspaceRoutes,
@@ -34,15 +37,12 @@ afterEach(async () => {
 async function createApp(
   authenticator: HostedRequestAuthenticator,
   services: HostedWorkspaceServices,
+  csrfGuard: HostedPrincipalBoundaryDependencies["csrfGuard"] = { verify: () => true },
 ): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   apps.push(app);
   installErrorHandler(app);
-  await registerHostedWorkspaceRoutes(
-    app,
-    { authenticator, csrfGuard: { verify: () => true } },
-    services,
-  );
+  await registerHostedWorkspaceRoutes(app, { authenticator, csrfGuard }, services);
   await app.ready();
   return app;
 }
@@ -50,7 +50,10 @@ async function createApp(
 describe("hosted workspace discovery", () => {
   it("lists only the authenticated principal's bounded workspace page", async () => {
     const listWorkspaces = vi.fn(async () => ({ items: [workspace], limit: 1, offset: 2 }));
-    const app = await createApp({ authenticate: async () => principal }, { listWorkspaces });
+    const app = await createApp(
+      { authenticate: async () => principal },
+      { listWorkspaces, createWorkspace: vi.fn() },
+    );
 
     const response = await app.inject({
       method: "GET",
@@ -74,24 +77,75 @@ describe("hosted workspace discovery", () => {
     expect(listWorkspaces).toHaveBeenCalledWith({ userId: USER_ID, limit: 1, offset: 2 });
   });
 
-  it("rejects unauthenticated and malformed requests before workspace reads", async () => {
+  it("creates one name-only workspace for the authenticated session", async () => {
+    const createWorkspace = vi.fn(async () => workspace);
+    const app = await createApp(
+      { authenticate: async () => principal },
+      { listWorkspaces: vi.fn(), createWorkspace },
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: HOSTED_WORKSPACE_LIST_ROUTE,
+      headers: {
+        "x-user-id": "00000000-0000-4000-8000-000000000999",
+        "x-session-id": "00000000-0000-4000-8000-000000000999",
+      },
+      payload: { name: "  Projects  " },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({
+      ...workspace,
+      createdAt: workspace.createdAt.toISOString(),
+      updatedAt: workspace.updatedAt.toISOString(),
+    });
+    expect(createWorkspace).toHaveBeenCalledWith({
+      userId: USER_ID,
+      sessionId: SESSION_ID,
+      name: "Projects",
+    });
+  });
+
+  it("rejects unauthenticated and malformed requests before workspace services", async () => {
     const listWorkspaces = vi.fn();
-    const unauthenticated = await createApp({ authenticate: async () => null }, { listWorkspaces });
+    const createWorkspace = vi.fn();
+    const services = { listWorkspaces, createWorkspace };
+    const unauthenticated = await createApp({ authenticate: async () => null }, services);
     expect(
       (await unauthenticated.inject({ method: "GET", url: HOSTED_WORKSPACE_LIST_ROUTE }))
         .statusCode,
     ).toBe(401);
 
-    const authenticated = await createApp(
-      { authenticate: async () => principal },
-      { listWorkspaces },
-    );
+    const authenticated = await createApp({ authenticate: async () => principal }, services);
     const malformed = await authenticated.inject({
       method: "GET",
       url: `${HOSTED_WORKSPACE_LIST_ROUTE}?offset=1001&unexpected=true`,
     });
     expect(malformed.statusCode).toBe(400);
     expect(listWorkspaces).not.toHaveBeenCalled();
+
+    const malformedCreate = await authenticated.inject({
+      method: "POST",
+      url: HOSTED_WORKSPACE_LIST_ROUTE,
+      payload: { name: "Projects", unexpected: true },
+    });
+    expect(malformedCreate.statusCode).toBe(400);
+
+    const unverified = await createApp({ authenticate: async () => principal }, services, {
+      verify: () => false,
+    });
+    expect(
+      (
+        await unverified.inject({
+          method: "POST",
+          url: HOSTED_WORKSPACE_LIST_ROUTE,
+          payload: { name: "Projects" },
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(createWorkspace).not.toHaveBeenCalled();
   });
 
   it("redacts workspace repository failures", async () => {
@@ -102,11 +156,36 @@ describe("hosted workspace discovery", () => {
         listWorkspaces: async () => {
           throw new Error(secret);
         },
+        createWorkspace: vi.fn(),
       },
     );
 
     const response = await app.inject({ method: "GET", url: HOSTED_WORKSPACE_LIST_ROUTE });
     expect(response.statusCode).toBe(500);
+    expect(response.body).not.toContain(secret);
+  });
+
+  it("redacts transaction authentication details from workspace creation", async () => {
+    const secret = "private session state";
+    const app = await createApp(
+      { authenticate: async () => principal },
+      {
+        listWorkspaces: vi.fn(),
+        createWorkspace: async () => {
+          throw new DomainError("hosted.authentication_failed", secret);
+        },
+      },
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: HOSTED_WORKSPACE_LIST_ROUTE,
+      payload: { name: "Projects" },
+    });
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toMatchObject({
+      error: { code: "hosted.authentication_failed", message: "Authentication failed." },
+    });
     expect(response.body).not.toContain(secret);
   });
 });

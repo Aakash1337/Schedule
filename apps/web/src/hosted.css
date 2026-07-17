@@ -63,6 +63,17 @@
   color: var(--line-strong);
 }
 
+.hosted-workspace-create {
+  margin-bottom: 22px;
+}
+
+.hosted-workspace-create summary {
+  margin-bottom: 12px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-weight: 700;
+}
+
 .hosted-capture-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

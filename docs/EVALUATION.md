@@ -568,19 +568,21 @@ The audit deliberately leaves these visible instead of turning them into false g
   evidence for exact concurrent identity plus default-workspace provisioning, digest-only sessions,
   hardened cookies, exact-Origin CSRF, single-use login/PKCE, nonce-bound verification, pinned
   metadata/JWKS/token HTTPS, bounded client tracking, generic tenant denial, and transaction-coupled
-  work creation. Active workspace discovery and the fixed first-20 backlog projection have route,
+  work creation. Active workspace discovery and principal-bound name-only creation have application,
+  route, browser, and database evidence; creation rechecks the locked user/session and proves the new
+  membership through a downstream work mutation. The fixed first-20 backlog projection has route,
   component, browser, and database evidence. The narrow existing-plan Today projection has route,
   component, and browser evidence, while its database composition check covers authenticated
   missing-plan behavior. Together they exercise bounded membership-scoped reads without identity,
   role, description, planner-reason, or version metadata. The enabled composition
   verifier parses production configuration, builds the real route graph with a strict in-process
   provider, proves local product routes absent, drives login, the hardened same-origin capture
-  shell, discovery, bounded backlog and empty-Today reads, one authorized create, and one optimistic
-  status update, then checks logout and cleanup. A separate built Chromium flow covers
-  signed-out/authenticated capture, Today, status-only completion, backlog refresh, exact CSRF
+  shell, discovery, workspace creation, bounded backlog and empty-Today reads, one authorized work
+  create, and one optimistic status update, then checks logout and cleanup. A separate built Chromium flow covers
+  signed-out/authenticated capture, first-workspace creation, Today, status-only completion, backlog refresh, exact CSRF
   forwarding, and 360-pixel
   layout. Disabled-mode route closure and redacted startup failure remain independently verified.
-  This evidence does not cover a real external provider, TLS ingress, workspace administration, the
+  This evidence does not cover a real external provider, TLS ingress, workspace rename/delete or membership administration, the
   broader product API/interface, public deployment, or synchronization;
 - ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and

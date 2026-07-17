@@ -143,12 +143,13 @@ rejects non-loopback product-route `Host` headers. `HOSTED_API_MODE` defaults to
 is accepted only with the complete immutable registration, secret-backed preflight, and local
 unauthenticated product routes disabled. The enabled surface provides login, callback, session,
 logout, automatic first-login default-workspace membership, and one membership-authorized work-item
-create route with bounded per-source throttling. An authenticated read returns only the caller's
-active workspace page. A same-origin hosted capture shell can sign in, select one active workspace,
+create route with bounded per-source throttling. An authenticated collection can list the caller's
+active workspace page or create one name-only workspace while rechecking the browser session in the
+same transaction. A same-origin hosted capture shell can sign in, create or select one active workspace,
 review the browser-local day's existing plan and the first 20 backlog titles, and add one title
 through an authorized mutation. A visible backlog item can be moved only to started or done with an
 optimistic version. The shell does not generate plans or provide general work-item editing,
-workspace administration, the broader product API, or synchronization.
+workspace rename/delete or membership administration, the broader product API, or synchronization.
 Partial sets and non-empty mixed-case aliases or unknown companions fail startup without disclosing values.
 Health and system-information endpoints
 intentionally remain available independently of the product Host guard for local diagnostics.
@@ -274,5 +275,5 @@ These are provider-neutral runtime prerequisites, not a hosted release. TLS ingr
 manifests for a lean Railway API/worker deployment now live under `infra/deploy/railway`; see the
 [hosted deployment guide](./docs/DEPLOYMENT.md). Both services have database-backed Railway
 promotion checks; the worker listener exposes no metrics. A live environment, managed secrets/backups,
-continuous monitoring, workspace administration, the broader product surface, synchronization, and
+continuous monitoring, workspace rename/delete and membership administration, the broader product surface, synchronization, and
 a broader hosted product interface remain to be implemented and verified.

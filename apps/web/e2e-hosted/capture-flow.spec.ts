@@ -131,3 +131,53 @@ test("keeps capture unavailable before sign-in", async ({ page }) => {
   );
   await expect(page.getByRole("textbox", { name: "Work item" })).toHaveCount(0);
 });
+
+test("creates the first hosted workspace through exact request verification", async ({ page }) => {
+  const workspace = { id: "00000000-0000-4000-8000-000000000003", name: "Projects" };
+  let createBody: unknown;
+  let createCsrf: string | undefined;
+
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname === "/v1/auth/session") {
+      await route.fulfill({
+        json: { authenticated: true },
+        headers: {
+          "set-cookie": `__Host-schedule_csrf=${csrfToken}; Path=/; Secure; SameSite=Lax`,
+        },
+      });
+      return;
+    }
+    if (request.method() === "GET" && url.pathname === "/v1/hosted/workspaces") {
+      await route.fulfill({ json: { items: [], limit: 20, offset: 0 } });
+      return;
+    }
+    if (request.method() === "POST" && url.pathname === "/v1/hosted/workspaces") {
+      createBody = request.postDataJSON();
+      createCsrf = request.headers()["x-schedule-csrf"];
+      await route.fulfill({ status: 201, json: workspace });
+      return;
+    }
+    if (request.method() === "GET" && url.pathname.endsWith("/work-items")) {
+      await route.fulfill({ json: { items: [], limit: 20, offset: 0 } });
+      return;
+    }
+    if (request.method() === "GET" && url.pathname.endsWith("/today")) {
+      await route.fulfill({ json: { date: "2026-07-16", items: [], totalMinutes: 0 } });
+      return;
+    }
+    await route.fulfill({ status: 404, json: { error: { code: "test.unexpected" } } });
+  });
+
+  await page.goto("/hosted.html");
+  await page.getByRole("textbox", { name: "Workspace name" }).fill("Projects");
+  await page.getByRole("button", { name: "Create workspace" }).click();
+
+  await expect(page.getByRole("textbox", { name: "Work item" })).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Created workspace “Projects”." }),
+  ).toBeVisible();
+  expect(createBody).toEqual({ name: "Projects" });
+  expect(createCsrf).toBe(csrfToken);
+});

@@ -707,8 +707,9 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   operator's `WHATSAPP_HOME_CHANNEL` and self-chat smoke
 - Implemented narrow hosted runtime: complete `HOSTED_API_MODE=oidc` configuration activates exact
   issuer/subject provisioning, digest-only revocable browser sessions, first-login default-workspace
-  membership, login/session/logout, and one transaction-authorized work-item create route. Disabled
-  mode remains route-closed, and local unauthenticated product routes cannot coexist with OIDC mode.
+  membership, login/session/logout, principal-bound name-only workspace creation, and one
+  transaction-authorized work-item create route. Disabled mode remains route-closed, and local
+  unauthenticated product routes cannot coexist with OIDC mode.
 - Implemented security boundary: exact-Origin double-submit CSRF, host-only cookies, generic tenant
   denial, bounded client-address throttling, direct pinned OIDC HTTPS, startup preflight/cleanup, and
   same-transaction user/session/workspace/membership reauthorization.
@@ -716,10 +717,11 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   the fixed first 20 backlog titles, and one existing browser-local current-day plan projection
   without identity, role, planner-reason, or version metadata.
 - Implemented narrow hosted UI: a same-origin capture shell can sign in, select one active
-  workspace, review Today and the first 20 backlog titles, create one title, and move a visible
-  backlog item to started or done through transaction-authorized routes; it exposes no provider
-  tokens, identity metadata, general editing, workspace administration, or local-only routes.
-- Deferred: hosted workspace administration, the broader product API and interface, account
+  workspace or create another, review Today and the first 20 backlog titles, create one title, and
+  move a visible backlog item to started or done through transaction-authorized routes; it exposes
+  no provider tokens, identity metadata, general editing, workspace rename/delete or membership
+  administration, or local-only routes.
+- Deferred: hosted workspace rename/delete and membership administration, the broader product API and interface, account
   management, provider-specific production verification, collaboration roles, and sync.
 - Cloud deployment selected from measured operational needs
 - Offline-capable synchronization and conflict handling, if required

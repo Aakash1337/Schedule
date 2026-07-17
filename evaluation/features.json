@@ -3176,7 +3176,7 @@
       },
       "limitations": [
         "The identity/session factory is active only in explicit OIDC mode; disabled mode remains route-closed and first login creates one default workspace membership.",
-        "Hosted workspace administration, the broader product surface, synchronization, and public deployment remain deferred. Machine integration credentials remain a separate trust boundary."
+        "Workspace rename/delete and membership administration, the broader product surface, synchronization, and public deployment remain deferred. Machine integration credentials remain a separate trust boundary."
       ],
       "evidence": [
         {
@@ -3198,6 +3198,8 @@
             "provisions an exact identity and default workspace once under read-committed lock semantics",
             "locks the user before the session after a non-locking ownership probe",
             "rotates without extending absolute lifetime and rejects replay of the old token",
+            "creates a workspace only after locking the active user and browser session",
+            "rejects %s before inserting a hosted workspace",
             "revokes one membership without revoking the user's global session and can reactivate it"
           ]
         },
@@ -3252,7 +3254,7 @@
         "anchor": "# Hosted request authorization and OIDC runtime"
       },
       "limitations": [
-        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery, bounded backlog and existing-plan Today reads, transaction-coupled title create and status-only update, and one narrow same-origin capture shell. Workspace administration, a broader public end-user product surface, and synchronization remain unimplemented.",
+        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery and name-only creation, bounded backlog and existing-plan Today reads, transaction-coupled title create and status-only update, and one narrow same-origin capture shell. Workspace rename/delete and membership administration, a broader public end-user product surface, and synchronization remain unimplemented.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [
@@ -3359,7 +3361,7 @@
         "anchor": "## Hosted capture shell"
       },
       "limitations": [
-        "The shell can authenticate, discover active workspaces, show one existing browser-local current-day plan and the first 20 backlog titles, create one title-only backlog item, and move one visible item to started or done. It cannot generate plans, page, filter, edit fields, reopen, cancel, schedule, administer, or synchronize product data.",
+        "The shell can authenticate, create or discover active workspaces, show one existing browser-local current-day plan and the first 20 backlog titles, create one title-only backlog item, and move one visible item to started or done. It cannot generate plans, page, filter, edit fields, reopen, cancel, schedule, rename/delete workspaces, administer membership, or synchronize product data.",
         "The built-browser gate uses an in-browser API double; an external identity provider and public TLS ingress still require a staging smoke."
       ],
       "evidence": [
@@ -3379,6 +3381,7 @@
           "anchors": [
             "uses only the same-origin session and bounded hosted read routes",
             "copies the exact CSRF cookie into hosted mutations",
+            "sends only a workspace name through the verified hosted collection",
             "sends only optimistic status fields for hosted workflow updates",
             "fails before sending when request verification is absent"
           ]
@@ -3397,7 +3400,8 @@
             "starts one backlog item with its optimistic version and refreshes the snapshot",
             "keeps a stale status update explicit and retryable",
             "returns to sign-in when capture discovers an expired session",
-            "keeps revoked users out of capture until an active workspace exists"
+            "creates the first workspace before enabling capture",
+            "creates and selects another workspace without exposing broader administration"
           ]
         },
         {
@@ -3406,7 +3410,8 @@
           "command": "hosted-browser-e2e",
           "anchors": [
             "captures one hosted backlog item with responsive request verification",
-            "keeps capture unavailable before sign-in"
+            "keeps capture unavailable before sign-in",
+            "creates the first hosted workspace through exact request verification"
           ]
         },
         {
@@ -3425,17 +3430,21 @@
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "## Authenticated workspace discovery"
+        "anchor": "## Authenticated workspace discovery and creation"
       },
       "limitations": [
-        "The endpoint lists only the authenticated principal's active memberships. Workspace creation, detail reads, administration, roles, and totals remain absent."
+        "The collection lists only the authenticated principal's active memberships and accepts one name-only creation. Detail reads, rename/delete, invitations, membership changes, roles, and totals remain absent."
       ],
       "evidence": [
         {
           "level": "unit",
           "file": "packages/application/src/hosted-identity.test.ts",
           "command": "unit",
-          "anchors": ["lists only the principal's active hosted workspaces with bounded paging"]
+          "anchors": [
+            "lists only the principal's active hosted workspaces with bounded paging",
+            "creates a workspace only after locking the active user and browser session",
+            "rejects %s before inserting a hosted workspace"
+          ]
         },
         {
           "level": "unit",
@@ -3443,9 +3452,26 @@
           "command": "unit",
           "anchors": [
             "lists only the authenticated principal's bounded workspace page",
-            "rejects unauthenticated and malformed requests before workspace reads",
-            "redacts workspace repository failures"
+            "creates one name-only workspace for the authenticated session",
+            "rejects unauthenticated and malformed requests before workspace services",
+            "redacts workspace repository failures",
+            "redacts transaction authentication details from workspace creation"
           ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/HostedApp.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "creates the first workspace before enabling capture",
+            "creates and selects another workspace without exposing broader administration"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/e2e-hosted/capture-flow.spec.ts",
+          "command": "hosted-browser-e2e",
+          "anchors": ["creates the first hosted workspace through exact request verification"]
         },
         {
           "level": "unit",
@@ -3465,9 +3491,7 @@
           "level": "integration",
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
-          "anchors": [
-            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
-          ]
+          "anchors": ["plus principal-bound workspace creation"]
         }
       ]
     },
