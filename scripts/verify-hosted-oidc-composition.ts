@@ -333,7 +333,10 @@ try {
     "updatedAt",
   ]);
   assert.equal(createdWorkspaceBody.name, "Projects");
-  assert.match(createdWorkspaceBody.id, /^[0-9a-f-]{36}$/u);
+  assert.match(
+    createdWorkspaceBody.id,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+  );
   assert.equal(createdWorkspaceBody.createdAt, createdWorkspaceBody.updatedAt);
 
   const refreshedWorkspaceList = await app.inject({

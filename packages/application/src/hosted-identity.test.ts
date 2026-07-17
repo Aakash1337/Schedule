@@ -47,12 +47,12 @@ function createHarness() {
   const memberships = new Map<string, WorkspaceMembership>();
   const workspaces = new Map<string, Workspace>();
   const isolationLevels: Array<UnitOfWorkOptions["isolationLevel"]> = [];
-  const lockOrder: string[] = [];
+  const transactionEvents: string[] = [];
 
   const context: IdentityTransactionContext = {
     users: {
       findByIdForUpdate: async (id) => {
-        lockOrder.push(`user:${id}`);
+        transactionEvents.push(`lock:user:${id}`);
         return users.get(id) ?? null;
       },
       insert: async (user) => {
@@ -76,7 +76,7 @@ function createHarness() {
     browserSessions: {
       findById: async (id) => sessions.get(id) ?? null,
       findByIdForUpdate: async (id) => {
-        lockOrder.push(`session:${id}`);
+        transactionEvents.push(`lock:session:${id}`);
         return sessions.get(id) ?? null;
       },
       insert: async (session) => {
@@ -109,6 +109,7 @@ function createHarness() {
       findByUserAndWorkspaceForUpdate: async (id, workspace) =>
         memberships.get(`${workspace}:${id}`) ?? null,
       insert: async (membership) => {
+        transactionEvents.push(`insert:membership:${membership.workspaceId}:${membership.userId}`);
         const key = `${membership.workspaceId}:${membership.userId}`;
         if (memberships.has(key)) throw new Error("duplicate membership");
         memberships.set(key, membership);
@@ -121,6 +122,7 @@ function createHarness() {
     },
     workspaces: {
       insert: async (workspace) => {
+        transactionEvents.push(`insert:workspace:${workspace.id}`);
         workspaces.set(workspace.id, workspace);
       },
       listActiveForUser: async (id, limit, offset) =>
@@ -148,7 +150,7 @@ function createHarness() {
     memberships,
     workspaces,
     isolationLevels,
-    lockOrder,
+    transactionEvents,
     setNow: (value: Date) => {
       now = new Date(value);
     },
@@ -262,7 +264,12 @@ describe("hosted identity application foundation", () => {
 
     expect(result.workspace.name).toBe("Hosted projects");
     expect(result.membership).toMatchObject({ status: "active", userId: user.id });
-    expect(harness.lockOrder.slice(-2)).toEqual([`user:${user.id}`, `session:${session.id}`]);
+    expect(harness.transactionEvents).toEqual([
+      `lock:user:${user.id}`,
+      `lock:session:${session.id}`,
+      `insert:workspace:${result.workspace.id}`,
+      `insert:membership:${result.workspace.id}:${user.id}`,
+    ]);
     expect(harness.isolationLevels.at(-1)).toBe("read_committed");
   });
 
@@ -282,11 +289,11 @@ describe("hosted identity application foundation", () => {
         code: "hosted.authentication_failed",
         message: "Authentication failed.",
       });
-      expect(fixture.harness.workspaces).toHaveLength(0);
-      expect(fixture.harness.memberships).toHaveLength(0);
-      expect(fixture.harness.lockOrder.slice(-2)).toEqual([
-        `user:${fixture.user.id}`,
-        `session:${fixture.session.id}`,
+      expect(fixture.harness.workspaces.size).toBe(0);
+      expect(fixture.harness.memberships.size).toBe(0);
+      expect(fixture.harness.transactionEvents).toEqual([
+        `lock:user:${fixture.user.id}`,
+        `lock:session:${fixture.session.id}`,
       ]);
     },
   );
