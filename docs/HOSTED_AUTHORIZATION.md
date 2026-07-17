@@ -445,13 +445,30 @@ intent invalidation. The route cannot reopen, cancel, block, reparent, or otherw
 `GET /v1/hosted/workspaces/:workspaceId/today?date=YYYY-MM-DD` crosses the same hosted cookie and
 workspace-membership preflight. It accepts exactly one real Gregorian local date and reads only an
 already-generated current plan; it never generates or changes one. A missing plan returns that date
-with an empty item list and zero minutes.
+with null plan/head identity, an empty item list, and zero minutes.
 
-The response projects only ordered item titles, scheduled minutes, activity states, and total
-minutes. It omits item and plan IDs, head versions, source identity, time zone, scores, reasons,
-warnings, input data, and all mutation controls. The browser supplies its current local date because
+The response projects only the current plan ID and head version, ordered item IDs/titles/scheduled
+minutes/activity states, and total minutes. Those IDs are optimistic mutation fences, not a general
+plan-detail surface. It omits source identity, time zone, scores, reasons, warnings, and input data.
+The browser supplies its current local date because
 workspaces do not yet own a persisted time zone. Authorization failures use the same generic tenant
 denial, `Cache-Control: no-store`, and read-side revocation boundary as the backlog snapshot.
+
+## Transaction-coupled hosted Today action
+
+`POST /v1/hosted/workspaces/:workspaceId/today/:itemId/activity-events?date=YYYY-MM-DD`
+accepts exactly the current `expectedPlanId`, positive `expectedHeadVersion`, `type=started|completed`,
+one offset-bearing `occurredAt`, and a required 1–160 character `Idempotency-Key`, then returns `204`.
+It accepts no time zone, duration, reason, metadata, source identity, or other activity type. The
+browser retains the same timestamp and key only for an ambiguous retry; a stale head is a `409` that
+must refresh Today instead of replaying against new state.
+
+The runtime resolves the expected plan's immutable time zone server-side and delegates to the
+existing plan-activity use case through `TransactionallyAuthorizedHostedUnitOfWork`. User, exact
+session, workspace, and membership are therefore rechecked and locked in the same PostgreSQL
+transaction as the activity append, item-state projection, single head advance, reminder-intent
+invalidation, and conditional source-work-item completion. Exact replay returns the prior result
+without a second append or head advance.
 
 ## Hosted capture shell
 
@@ -467,10 +484,11 @@ framing denial, and MIME sniffing denial. Fingerprinted assets are immutable for
 requests sit outside the hosted API's per-source request budget.
 
 The browser reads only `{ authenticated }`, the active workspace page, the first 20 backlog item
-IDs/titles/versions, the narrow current-day projection above, the created workspace, and the created
+IDs/titles/versions, the narrow current-day projection and concurrency fences above, the created workspace, and the created
 work item. It never receives provider tokens, user or session identifiers, membership state, or
 roles. A signed-in user may create or choose one active workspace, review Today and the bounded
-backlog snapshot, submit one title, or move one visible backlog item to started or done. The script
+backlog snapshot, submit one title, move one visible backlog item to started or done, or start/complete
+one actionable Today item. The script
 copies the exact host-only CSRF cookie into the existing header for all strict mutations; the server
 remains authoritative for identity, membership, defaults, validation, and optimistic versions. The
 page cannot generate a plan, page, filter, edit fields, reopen, cancel, schedule, synchronize work,
@@ -482,8 +500,8 @@ There is still no WebFinger issuer discovery, workspace rename/delete or members
 broader hosted product interface or route set, account-management API, role model, synchronization
 protocol, or verified public deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
-principal. Name-only workspace creation, title-only work creation, and status-only update are the
-only transaction-coupled hosted mutations. The bounded backlog and current-day projections are the
+principal. Name-only workspace creation, title-only work creation, status-only update, and the
+start/complete Today action are the only transaction-coupled hosted mutations. The bounded backlog and current-day projections are the
 only hosted product-data reads; all other product routes remain local-only and require their own
 authority before future hosted exposure.
 
@@ -561,10 +579,11 @@ routes at `404`.
 hosted route graph with a strict in-process provider, and drives login, callback, one-time replay
 denial, hardened shell delivery, default-workspace discovery, authenticated transaction-coupled
 work creation, session bootstrap, CSRF denial, logout, and cleanup against PostgreSQL. It also
-proves the local unauthenticated workspace routes are absent.
+proves an authenticated Today completion, exact replay without duplicate activity, one head advance,
+atomic source completion, and that the local unauthenticated workspace routes are absent.
 `pnpm verify:hosted-web-e2e` builds the isolated hosted browser entry and exercises signed-out and
-authenticated capture in Chromium. It verifies workspace selection, title-only payloads, exact CSRF
-header forwarding, success feedback, 360-pixel overflow, and mobile action sizing with a strict
+authenticated capture in Chromium. It verifies workspace selection, title-only payloads, Today
+completion, exact CSRF/idempotency forwarding, success feedback, 360-pixel overflow, and mobile action sizing with a strict
 in-browser API double. It does not claim external-provider or public-ingress coverage.
 `pnpm verify:hosted-login-transactions` migrates a disposable database and proves digest-only state
 and browser binding, authenticated PKCE recovery, exact provider/redirect binding, twelve-way

@@ -24,7 +24,10 @@ export type HostedTodayActivityState =
 
 export interface HostedToday {
   readonly date: string;
+  readonly planId: string | null;
+  readonly headVersion: number | null;
   readonly items: readonly {
+    readonly id: string;
     readonly title: string;
     readonly scheduledMinutes: number;
     readonly activityState: HostedTodayActivityState;
@@ -59,10 +62,16 @@ function csrfToken(cookie: string): string | null {
 
 async function request<Result>(
   path: string,
-  options: Readonly<{ method?: "GET" | "POST" | "PATCH"; json?: unknown; csrf?: boolean }> = {},
+  options: Readonly<{
+    method?: "GET" | "POST" | "PATCH";
+    json?: unknown;
+    csrf?: boolean;
+    idempotencyKey?: string;
+  }> = {},
 ): Promise<Result> {
   const headers = new Headers({ Accept: "application/json" });
   if (options.json !== undefined) headers.set("content-type", "application/json");
+  if (options.idempotencyKey !== undefined) headers.set("Idempotency-Key", options.idempotencyKey);
   if (options.csrf === true) {
     const token = csrfToken(document.cookie);
     if (token === null)
@@ -109,6 +118,32 @@ export const hostedApi = {
   getToday: (workspaceId: string, date: string) =>
     request<HostedToday>(
       `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/today?date=${encodeURIComponent(date)}`,
+    ),
+  recordTodayActivity: (
+    workspaceId: string,
+    date: string,
+    itemId: string,
+    command: Readonly<{
+      expectedPlanId: string;
+      expectedHeadVersion: number;
+      type: "started" | "completed";
+      occurredAt: string;
+      idempotencyKey: string;
+    }>,
+  ) =>
+    request<void>(
+      `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/today/${encodeURIComponent(itemId)}/activity-events?date=${encodeURIComponent(date)}`,
+      {
+        method: "POST",
+        json: {
+          expectedPlanId: command.expectedPlanId,
+          expectedHeadVersion: command.expectedHeadVersion,
+          type: command.type,
+          occurredAt: command.occurredAt,
+        },
+        csrf: true,
+        idempotencyKey: command.idempotencyKey,
+      },
     ),
   createWorkItem: (workspaceId: string, title: string) =>
     request<HostedWorkItem>(`/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/work-items`, {

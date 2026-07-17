@@ -1,10 +1,19 @@
 import type { CurrentDailyPlan } from "@schedule/application";
-import { DomainError, browserSessionId, localDate, userId, workspaceId } from "@schedule/domain";
+import {
+  browserSessionId,
+  dailyPlanId,
+  DomainError,
+  localDate,
+  planItemId,
+  userId,
+  workspaceId,
+} from "@schedule/domain";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   HOSTED_TODAY_ROUTE,
+  HOSTED_TODAY_ACTIVITY_ROUTE,
   registerHostedTodayBoundary,
   type HostedTodayServices,
 } from "./hosted-today-routes.js";
@@ -14,6 +23,8 @@ const USER_ID = userId("00000000-0000-4000-8000-000000000101");
 const SESSION_ID = browserSessionId("00000000-0000-4000-8000-000000000201");
 const WORKSPACE_ID = workspaceId("00000000-0000-4000-8000-000000000301");
 const OTHER_WORKSPACE_ID = workspaceId("00000000-0000-4000-8000-000000000302");
+const PLAN_ID = dailyPlanId("00000000-0000-4000-8000-000000000401");
+const ITEM_ID = planItemId("00000000-0000-4000-8000-000000000501");
 const principal = {
   userId: USER_ID,
   sessionId: SESSION_ID,
@@ -33,6 +44,7 @@ afterEach(async () => {
 
 async function createHostedApp(
   getToday: HostedTodayServices["getToday"],
+  recordActivity: HostedTodayServices["recordActivity"] = vi.fn(),
 ): Promise<FastifyInstance> {
   const app = Fastify();
   apps.push(app);
@@ -49,7 +61,7 @@ async function createHostedApp(
             : null,
       },
     },
-    { getToday },
+    { getToday, recordActivity },
   );
   await app.ready();
   return app;
@@ -59,15 +71,20 @@ function todayPath(workspace: string = WORKSPACE_ID): string {
   return `${HOSTED_TODAY_ROUTE.replace(":workspaceId", workspace)}?date=2026-07-16`;
 }
 
+function todayActivityPath(workspace: string = WORKSPACE_ID, item: string = ITEM_ID): string {
+  return `${HOSTED_TODAY_ACTIVITY_ROUTE.replace(":workspaceId", workspace).replace(":itemId", item)}?date=2026-07-16`;
+}
+
 describe("hosted Today route", () => {
   it("returns only the bounded current-plan projection from canonical authority", async () => {
     const getToday = vi.fn(
       async () =>
         ({
           plan: {
+            id: PLAN_ID,
             items: [
               {
-                id: "private-plan-item-id",
+                id: ITEM_ID,
                 title: "Deep work",
                 scheduledMinutes: 45,
                 activityState: "started",
@@ -92,7 +109,9 @@ describe("hosted Today route", () => {
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.json()).toEqual({
       date: "2026-07-16",
-      items: [{ title: "Deep work", scheduledMinutes: 45, activityState: "started" }],
+      planId: PLAN_ID,
+      headVersion: 9,
+      items: [{ id: ITEM_ID, title: "Deep work", scheduledMinutes: 45, activityState: "started" }],
       totalMinutes: 45,
     });
     expect(response.body).not.toContain("private");
@@ -108,7 +127,13 @@ describe("hosted Today route", () => {
     const response = await app.inject({ method: "GET", url: todayPath() });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ date: "2026-07-16", items: [], totalMinutes: 0 });
+    expect(response.json()).toEqual({
+      date: "2026-07-16",
+      planId: null,
+      headVersion: null,
+      items: [],
+      totalMinutes: 0,
+    });
     expect(response.body).not.toContain("private plan detail");
   });
 
@@ -140,5 +165,100 @@ describe("hosted Today route", () => {
     });
     expect(revoked.body).not.toContain("private membership detail");
     expect(getToday).toHaveBeenCalledOnce();
+  });
+
+  it("records only a bounded Today action with canonical authority and idempotency", async () => {
+    const getToday = vi.fn();
+    const recordActivity = vi.fn(async () => undefined);
+    const app = await createHostedApp(getToday, recordActivity);
+
+    const response = await app.inject({
+      method: "POST",
+      url: todayActivityPath(WORKSPACE_ID.toUpperCase(), ITEM_ID.toUpperCase()),
+      headers: {
+        "idempotency-key": "  hosted-today-action-1  ",
+        "x-user-id": "spoofed",
+        "x-workspace-id": OTHER_WORKSPACE_ID,
+      },
+      payload: {
+        expectedPlanId: PLAN_ID.toUpperCase(),
+        expectedHeadVersion: 9,
+        type: "completed",
+        occurredAt: "2026-07-16T09:30:00.000Z",
+      },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.body).toBe("");
+    expect(recordActivity).toHaveBeenCalledWith({
+      authorization,
+      date: localDate("2026-07-16"),
+      expectedPlanId: PLAN_ID,
+      itemId: ITEM_ID,
+      expectedHeadVersion: 9,
+      type: "completed",
+      occurredAt: new Date("2026-07-16T09:30:00.000Z"),
+      idempotencyKey: "hosted-today-action-1",
+    });
+    expect(getToday).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported or over-broad Today actions before mutation", async () => {
+    const recordActivity = vi.fn();
+    const app = await createHostedApp(vi.fn(), recordActivity);
+    const valid = {
+      expectedPlanId: PLAN_ID,
+      expectedHeadVersion: 9,
+      type: "started",
+      occurredAt: "2026-07-16T09:30:00.000Z",
+    };
+    const attempts = [
+      { url: todayActivityPath(), payload: { ...valid, type: "skipped" }, key: "action-1" },
+      { url: todayActivityPath(), payload: { ...valid, reason: "too broad" }, key: "action-2" },
+      { url: todayActivityPath(), payload: { ...valid, expectedHeadVersion: 0 }, key: "action-3" },
+      {
+        url: `${HOSTED_TODAY_ACTIVITY_ROUTE.replace(":workspaceId", WORKSPACE_ID).replace(":itemId", ITEM_ID)}?date=2026-02-30`,
+        payload: valid,
+        key: "action-4",
+      },
+      { url: todayActivityPath(), payload: valid, key: " " },
+    ];
+
+    for (const attempt of attempts) {
+      const response = await app.inject({
+        method: "POST",
+        url: attempt.url,
+        headers: { "idempotency-key": attempt.key },
+        payload: attempt.payload,
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    expect(recordActivity).not.toHaveBeenCalled();
+  });
+
+  it("redacts revoked membership details from Today actions", async () => {
+    const recordActivity = vi
+      .fn()
+      .mockRejectedValue(new DomainError("workspace.not_found", "private membership detail"));
+    const app = await createHostedApp(vi.fn(), recordActivity);
+
+    const response = await app.inject({
+      method: "POST",
+      url: todayActivityPath(),
+      headers: { "idempotency-key": "revoked-action" },
+      payload: {
+        expectedPlanId: PLAN_ID,
+        expectedHeadVersion: 9,
+        type: "started",
+        occurredAt: "2026-07-16T09:30:00.000Z",
+      },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({
+      error: { code: "workspace.not_found", message: "The requested workspace does not exist." },
+    });
+    expect(response.body).not.toContain("private membership detail");
   });
 });

@@ -144,7 +144,7 @@
 
 .hosted-today-list li {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
 }
@@ -161,6 +161,18 @@
 }
 
 .hosted-backlog-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}
+
+.hosted-today-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.hosted-today-actions {
   display: flex;
   flex: none;
   gap: 2px;

@@ -12,6 +12,7 @@ const apiMocks = vi.hoisted(() => ({
   createWorkspace: vi.fn(),
   listWorkItems: vi.fn(),
   getToday: vi.fn(),
+  recordTodayActivity: vi.fn(),
   createWorkItem: vi.fn(),
   updateWorkItemStatus: vi.fn(),
   logout: vi.fn(),
@@ -32,7 +33,14 @@ beforeEach(() => {
   vi.resetAllMocks();
   localStorage.clear();
   apiMocks.listWorkItems.mockResolvedValue({ items: [], limit: 20, offset: 0 });
-  apiMocks.getToday.mockResolvedValue({ date: todayKey(), items: [], totalMinutes: 0 });
+  apiMocks.getToday.mockResolvedValue({
+    date: todayKey(),
+    planId: null,
+    headVersion: null,
+    items: [],
+    totalMinutes: 0,
+  });
+  apiMocks.recordTodayActivity.mockResolvedValue(undefined);
   apiMocks.createWorkspace.mockResolvedValue(studio);
   apiMocks.updateWorkItemStatus.mockResolvedValue(undefined);
 });
@@ -115,10 +123,25 @@ describe("hosted capture shell", () => {
     apiMocks.getToday
       .mockResolvedValueOnce({
         date: todayKey(),
-        items: [{ title: "Focused review", scheduledMinutes: 45, activityState: "started" }],
+        planId: "plan-1",
+        headVersion: 4,
+        items: [
+          {
+            id: "plan-item-1",
+            title: "Focused review",
+            scheduledMinutes: 45,
+            activityState: "started",
+          },
+        ],
         totalMinutes: 45,
       })
-      .mockResolvedValueOnce({ date: todayKey(), items: [], totalMinutes: 0 });
+      .mockResolvedValueOnce({
+        date: todayKey(),
+        planId: null,
+        headVersion: null,
+        items: [],
+        totalMinutes: 0,
+      });
 
     render(<HostedApp />);
 
@@ -139,7 +162,16 @@ describe("hosted capture shell", () => {
       .mockRejectedValueOnce(new Error("private network detail"))
       .mockResolvedValueOnce({
         date: todayKey(),
-        items: [{ title: "Recovered plan", scheduledMinutes: 30, activityState: "pending" }],
+        planId: "plan-1",
+        headVersion: 2,
+        items: [
+          {
+            id: "plan-item-1",
+            title: "Recovered plan",
+            scheduledMinutes: 30,
+            activityState: "pending",
+          },
+        ],
         totalMinutes: 30,
       });
 
@@ -149,6 +181,147 @@ describe("hosted capture shell", () => {
     expect(screen.getByRole("textbox", { name: "Work item" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Retry today" }));
     expect(await screen.findByText("Recovered plan")).toBeInTheDocument();
+    expect(apiMocks.getToday).toHaveBeenCalledTimes(2);
+  });
+
+  it("completes one Today item and refreshes Today plus its source backlog", async () => {
+    const user = userEvent.setup();
+    const item = {
+      id: "plan-item-1",
+      title: "Focused review",
+      scheduledMinutes: 45,
+      activityState: "pending" as const,
+    };
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.listWorkItems
+      .mockResolvedValueOnce({
+        items: [{ id: "work-item-1", title: item.title, version: 1 }],
+        limit: 20,
+        offset: 0,
+      })
+      .mockResolvedValueOnce({ items: [], limit: 20, offset: 0 });
+    apiMocks.getToday
+      .mockResolvedValueOnce({
+        date: todayKey(),
+        planId: "plan-1",
+        headVersion: 7,
+        items: [item],
+        totalMinutes: 45,
+      })
+      .mockResolvedValueOnce({
+        date: todayKey(),
+        planId: "plan-1",
+        headVersion: 8,
+        items: [{ ...item, activityState: "completed" }],
+        totalMinutes: 45,
+      });
+
+    render(<HostedApp />);
+
+    await user.click(
+      await screen.findByRole("button", { name: `Complete ${item.title} in Today` }),
+    );
+    expect(apiMocks.recordTodayActivity).toHaveBeenCalledWith(
+      personal.id,
+      todayKey(),
+      item.id,
+      expect.objectContaining({
+        expectedPlanId: "plan-1",
+        expectedHeadVersion: 7,
+        type: "completed",
+        occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/u),
+        idempotencyKey: expect.any(String),
+      }),
+    );
+    expect(await screen.findByText(`Completed “${item.title}”.`)).toBeInTheDocument();
+    expect(await screen.findByText("45m · Completed")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: `Complete ${item.title} in Today` }),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByText("No backlog items yet.")).toBeInTheDocument();
+  });
+
+  it("retries an ambiguous Today action with the exact same intent", async () => {
+    const user = userEvent.setup();
+    const item = {
+      id: "plan-item-1",
+      title: "Focused review",
+      scheduledMinutes: 45,
+      activityState: "pending" as const,
+    };
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.getToday
+      .mockResolvedValueOnce({
+        date: todayKey(),
+        planId: "plan-1",
+        headVersion: 7,
+        items: [item],
+        totalMinutes: 45,
+      })
+      .mockResolvedValueOnce({
+        date: todayKey(),
+        planId: "plan-1",
+        headVersion: 8,
+        items: [{ ...item, activityState: "started" }],
+        totalMinutes: 45,
+      });
+    apiMocks.recordTodayActivity
+      .mockRejectedValueOnce(new Error("private network detail"))
+      .mockResolvedValueOnce(undefined);
+
+    render(<HostedApp />);
+
+    await user.click(await screen.findByRole("button", { name: `Start ${item.title} in Today` }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Schedule could not be reached.");
+    const firstCall = apiMocks.recordTodayActivity.mock.calls[0];
+    await user.click(screen.getByRole("button", { name: "Retry action" }));
+    expect(apiMocks.recordTodayActivity).toHaveBeenCalledTimes(2);
+    expect(apiMocks.recordTodayActivity.mock.calls[1]).toEqual(firstCall);
+    expect(await screen.findByText(`Started “${item.title}”.`)).toBeInTheDocument();
+  });
+
+  it("refreshes instead of replaying a stale Today action", async () => {
+    const user = userEvent.setup();
+    const item = {
+      id: "plan-item-1",
+      title: "Focused review",
+      scheduledMinutes: 45,
+      activityState: "pending" as const,
+    };
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.getToday
+      .mockResolvedValueOnce({
+        date: todayKey(),
+        planId: "plan-1",
+        headVersion: 7,
+        items: [item],
+        totalMinutes: 45,
+      })
+      .mockResolvedValueOnce({
+        date: todayKey(),
+        planId: "plan-2",
+        headVersion: 1,
+        items: [],
+        totalMinutes: 0,
+      });
+    apiMocks.recordTodayActivity.mockRejectedValueOnce(
+      new HostedApiError(409, "planning.head_conflict", "Changed elsewhere."),
+    );
+
+    render(<HostedApp />);
+
+    await user.click(
+      await screen.findByRole("button", { name: `Complete ${item.title} in Today` }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Today changed. Refresh it before trying again.",
+    );
+    await user.click(screen.getByRole("button", { name: "Retry today" }));
+    expect(await screen.findByText("Nothing planned for today.")).toBeInTheDocument();
+    expect(apiMocks.recordTodayActivity).toHaveBeenCalledOnce();
     expect(apiMocks.getToday).toHaveBeenCalledTimes(2);
   });
 
@@ -217,8 +390,20 @@ describe("hosted capture shell", () => {
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
     apiMocks.getToday
-      .mockResolvedValueOnce({ date: "2026-07-16", items: [], totalMinutes: 0 })
-      .mockResolvedValueOnce({ date: "2026-07-17", items: [], totalMinutes: 0 });
+      .mockResolvedValueOnce({
+        date: "2026-07-16",
+        planId: null,
+        headVersion: null,
+        items: [],
+        totalMinutes: 0,
+      })
+      .mockResolvedValueOnce({
+        date: "2026-07-17",
+        planId: null,
+        headVersion: null,
+        items: [],
+        totalMinutes: 0,
+      });
 
     render(<HostedApp />);
     await act(async () => Promise.resolve());

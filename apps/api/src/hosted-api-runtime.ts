@@ -5,6 +5,8 @@ import {
   GetCurrentDailyPlan,
   ListHostedWorkspaces,
   ListWorkItems,
+  RecordPlanItemActivity,
+  TransactionallyAuthorizedHostedUnitOfWork,
   UpdateHostedWorkItemStatus,
 } from "@schedule/application";
 import type { ApiConfig } from "@schedule/config";
@@ -40,8 +42,9 @@ async function hostedApiOptions(
   const identityUnitOfWork = new PostgresIdentityUnitOfWork(database);
   const listWorkspaces = new ListHostedWorkspaces(identityUnitOfWork);
   const createWorkspace = new CreateHostedWorkspaceForPrincipal(identityUnitOfWork);
-  const listWorkItems = new ListWorkItems(new PostgresUnitOfWork(database));
-  const getCurrentDailyPlan = new GetCurrentDailyPlan(new PostgresUnitOfWork(database));
+  const productUnitOfWork = new PostgresUnitOfWork(database);
+  const listWorkItems = new ListWorkItems(productUnitOfWork);
+  const getCurrentDailyPlan = new GetCurrentDailyPlan(productUnitOfWork);
   const hostedMutationUnitOfWork = new PostgresHostedMutationUnitOfWork(database);
   const clock = { now: () => new Date() };
   const createWorkItem = new CreateHostedWorkItem(hostedMutationUnitOfWork, clock);
@@ -79,6 +82,28 @@ async function hostedApiOptions(
     today: {
       getToday: ({ authorization, date }) =>
         getCurrentDailyPlan.execute({ workspaceId: authorization.workspaceId, date }),
+      recordActivity: async ({ authorization, ...command }) => {
+        const expectedPlan = await productUnitOfWork.run(({ dailyPlans }) =>
+          dailyPlans.findById(authorization.workspaceId, command.expectedPlanId),
+        );
+        const timeZone =
+          expectedPlan?.timeZone ??
+          (
+            await getCurrentDailyPlan.execute({
+              workspaceId: authorization.workspaceId,
+              date: command.date,
+            })
+          ).plan.timeZone;
+        const service = new RecordPlanItemActivity(
+          new TransactionallyAuthorizedHostedUnitOfWork(hostedMutationUnitOfWork, authorization),
+          clock,
+        );
+        await service.execute({
+          ...command,
+          workspaceId: authorization.workspaceId,
+          timeZone,
+        });
+      },
     },
     webShell,
     requestsPerMinute: config.HOSTED_RATE_LIMIT_PER_MINUTE,
