@@ -197,10 +197,15 @@
   line-height: 1.45;
 }
 
+.hosted-plan-fit-suggestion h3,
 .hosted-plan-fit-suggestion h4 {
   margin: 0;
   color: var(--ink);
   font-size: inherit;
+}
+
+.hosted-plan-fit-effectiveness {
+  margin-top: 16px;
 }
 
 .hosted-plan-fit-actions {

@@ -16,6 +16,7 @@ import {
 } from "../apps/api/src/dormant-hosted-oidc-composition.js";
 import { prepareHostedApiApp } from "../apps/api/src/hosted-api-runtime.js";
 import {
+  HOSTED_DAILY_PLAN_FIT_EFFECTIVENESS_ROUTE,
   HOSTED_DAILY_PLAN_FIT_DISMISSAL_RESET_ROUTE,
   HOSTED_DAILY_PLAN_FIT_DISMISSAL_ROUTE,
   HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE,
@@ -954,6 +955,27 @@ try {
     receipts: 1,
     plans: 1,
   });
+  const fitEffectiveness = await app.inject({
+    method: "GET",
+    url: HOSTED_DAILY_PLAN_FIT_EFFECTIVENESS_ROUTE.replace(":workspaceId", fitWorkspaceId),
+    headers: { cookie: cookiePair(sessionCookie) },
+  });
+  assert.equal(fitEffectiveness.statusCode, 200, fitEffectiveness.body);
+  assert.deepEqual(fitEffectiveness.json(), {
+    usesConsidered: 1,
+    eligibleResolvedUseCount: 0,
+    minimumComparableUses: 3,
+    pendingUseCount: 1,
+    revisedUseCount: 0,
+    notEvaluableUseCount: 0,
+    exactSuggestionUseCount: 1,
+    editedSuggestionUseCount: 0,
+    scheduledMinutesRateBasisPoints: null,
+    scheduledTasksRateBasisPoints: null,
+    completionMinutesRateBasisPoints: null,
+    completionTasksRateBasisPoints: null,
+  });
+  assert.doesNotMatch(fitEffectiveness.body, /appliedTarget|usageId|forDate/u);
 
   const deniedLogout = await app.inject({
     method: "POST",
@@ -1013,7 +1035,7 @@ try {
   assert.deepEqual(requestCounts, { discovery: 1, token: 1, jwks: 1 });
 
   console.log(
-    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read and empty Today read and a transaction-authorized status update, plus principal-bound workspace creation. Hosted capture scheduling fields were restricted, projected, and persisted exactly. Hosted first-plan generation proved exact replay, conflicting-input rejection, one persisted revision, and planner-selected work without synthetic plan rows. Hosted Today completion also proved exact idempotent replay, one activity append, one head advance, and atomic source completion, while a stale head left no residue and the generated plan time zone remained authoritative. Hosted Plan Fit guidance proved bounded authorized projection, exact dismissal and reset replay, stale-key rollback, one persisted plan, and one atomic use receipt.",
+    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read and empty Today read and a transaction-authorized status update, plus principal-bound workspace creation. Hosted capture scheduling fields were restricted, projected, and persisted exactly. Hosted first-plan generation proved exact replay, conflicting-input rejection, one persisted revision, and planner-selected work without synthetic plan rows. Hosted Today completion also proved exact idempotent replay, one activity append, one head advance, and atomic source completion, while a stale head left no residue and the generated plan time zone remained authoritative. Hosted Plan Fit guidance proved bounded authorized projection, exact dismissal and reset replay, stale-key rollback, one persisted plan, one atomic use receipt, and one thresholded aggregate outcome read.",
   );
 } catch (error) {
   verificationError = error;

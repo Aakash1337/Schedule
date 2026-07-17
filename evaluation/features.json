@@ -3759,8 +3759,8 @@
         "anchor": "## Bounded hosted Plan Fit guidance"
       },
       "limitations": [
-        "The hosted read projects only bounded deterministic status, counts, nullable joint targets, and the exact nullable key. It does not expose historical plans, activity data, thresholds, feedback timestamps, or outcome history.",
-        "Guidance never applies automatically. The shell offers explicit exact-key dismissal/reset and a joint-target prefill; effectiveness reporting, upward suggestions, learned policy, and automatic adaptation remain absent."
+        "Hosted guidance projects only bounded deterministic status, counts, nullable joint targets, and the exact nullable key. The separate fixed last-28-use outcome read exposes thresholded aggregate counts and rates only; neither surface exposes historical plans, activity data, feedback timestamps, per-use outcome history, dates, IDs, or raw workload totals.",
+        "Guidance never applies automatically. The shell offers explicit exact-key dismissal/reset, a joint-target prefill, and descriptive aggregate reporting; causal effectiveness claims, upward suggestions, learned policy, and automatic adaptation remain absent."
       ],
       "evidence": [
         {
@@ -3781,7 +3781,10 @@
             "rejects invalid Plan Fit dates and redacts revoked access",
             "generates one bounded first plan with an exact reviewed Plan Fit key",
             "records exact-key Plan Fit dismissal and reset without exposing feedback records",
-            "rejects malformed Plan Fit feedback before mutation and redacts revoked access"
+            "rejects malformed Plan Fit feedback before mutation and redacts revoked access",
+            "returns only a thresholded aggregate Plan Fit effectiveness projection",
+            "withholds hosted Plan Fit rates below three comparable uses",
+            "rejects Plan Fit effectiveness query fields and redacts revoked access"
           ]
         },
         {
@@ -3790,6 +3793,7 @@
           "command": "unit",
           "anchors": [
             "reads bounded hosted Plan Fit guidance for one explicit date",
+            "reads the fixed bounded hosted Plan Fit effectiveness projection",
             "sends exact-key hosted Plan Fit dismissal and reset commands"
           ]
         },
@@ -3803,7 +3807,11 @@
             "returns focus to planning when a post-feedback refresh fails",
             "preserves reviewed Plan Fit provenance until a dismissal succeeds",
             "retries ambiguous hosted Plan Fit feedback with the same idempotency key",
-            "refreshes stale hosted Plan Fit feedback without changing manual targets"
+            "refreshes stale hosted Plan Fit feedback without changing manual targets",
+            "shows only bounded descriptive hosted Plan Fit outcome rates",
+            "withholds hosted Plan Fit outcome rates until three comparable uses settle",
+            "keeps hosted planning usable while the outcome summary is retried",
+            "ignores a late Plan Fit outcome summary from the previous workspace"
           ]
         },
         {
@@ -3817,7 +3825,7 @@
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
           "anchors": [
-            "Hosted Plan Fit guidance proved bounded authorized projection, exact dismissal and reset replay, stale-key rollback, one persisted plan, and one atomic use receipt"
+            "Hosted Plan Fit guidance proved bounded authorized projection, exact dismissal and reset replay, stale-key rollback, one persisted plan, one atomic use receipt, and one thresholded aggregate outcome read"
           ]
         }
       ]

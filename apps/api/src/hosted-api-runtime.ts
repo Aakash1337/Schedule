@@ -4,10 +4,13 @@ import {
   CreateHostedWorkItem,
   DismissDailyPlanFitInsight,
   GenerateDailyPlan,
+  GetDailyPlanFitEffectiveness,
   GetDailyPlanFitInsight,
   GetCurrentDailyPlan,
   ListHostedWorkspaces,
+  ListDailyPlanFitUsageOutcomes,
   ListWorkItems,
+  maximumDailyPlanFitUsageOutcomes,
   RecordPlanItemActivity,
   ResetDailyPlanFitInsightDismissal,
   TransactionallyAuthorizedHostedUnitOfWork,
@@ -52,6 +55,9 @@ async function hostedApiOptions(
   const listWorkItems = new ListWorkItems(productUnitOfWork);
   const getCurrentDailyPlan = new GetCurrentDailyPlan(productUnitOfWork);
   const getDailyPlanFitInsight = new GetDailyPlanFitInsight(productUnitOfWork, clock);
+  const getDailyPlanFitEffectiveness = new GetDailyPlanFitEffectiveness(
+    new ListDailyPlanFitUsageOutcomes(productUnitOfWork),
+  );
   const hostedMutationUnitOfWork = new PostgresHostedMutationUnitOfWork(database);
   const createWorkItem = new CreateHostedWorkItem(hostedMutationUnitOfWork, clock);
   const updateWorkItemStatus = new UpdateHostedWorkItemStatus(hostedMutationUnitOfWork, clock);
@@ -92,6 +98,11 @@ async function hostedApiOptions(
         getDailyPlanFitInsight.execute({
           workspaceId: authorization.workspaceId,
           forDate,
+        }),
+      getDailyPlanFitEffectiveness: ({ authorization }) =>
+        getDailyPlanFitEffectiveness.execute({
+          workspaceId: authorization.workspaceId,
+          limit: maximumDailyPlanFitUsageOutcomes,
         }),
       dismissDailyPlanFitInsight: async ({ authorization, ...command }) => {
         const service = new DismissDailyPlanFitInsight(

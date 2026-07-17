@@ -9,6 +9,7 @@ import {
   localDate,
   planItemId,
   type DailyPlanId,
+  type DailyPlanFitEffectiveness,
   type DailyPlanFitInsight,
   type LocalDate,
   type PlanItemId,
@@ -34,6 +35,7 @@ const hostedDailyPlanFitInsightQuery = z.strictObject({
     .string()
     .refine(isValidLocalDate, "Expected a valid Gregorian date in YYYY-MM-DD format."),
 });
+const hostedDailyPlanFitEffectivenessQuery = z.strictObject({});
 const hostedDailyPlanFitFeedbackBody = z.strictObject({
   forDate: z
     .string()
@@ -105,6 +107,7 @@ export const HOSTED_TODAY_ROUTE = "/v1/hosted/workspaces/:workspaceId/today";
 export const HOSTED_TODAY_ACTIVITY_ROUTE = `${HOSTED_TODAY_ROUTE}/:itemId/activity-events`;
 export const HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE =
   "/v1/hosted/workspaces/:workspaceId/daily-plan-fit-insight";
+export const HOSTED_DAILY_PLAN_FIT_EFFECTIVENESS_ROUTE = `${HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE}/effectiveness`;
 export const HOSTED_DAILY_PLAN_FIT_DISMISSAL_ROUTE = `${HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE}/dismissals`;
 export const HOSTED_DAILY_PLAN_FIT_DISMISSAL_RESET_ROUTE = `${HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE}/dismissal-resets`;
 
@@ -116,6 +119,10 @@ export interface HostedTodayInput {
 export interface HostedDailyPlanFitInsightInput {
   readonly authorization: HostedWorkspaceAuthorization;
   readonly forDate: LocalDate;
+}
+
+export interface HostedDailyPlanFitEffectivenessInput {
+  readonly authorization: HostedWorkspaceAuthorization;
 }
 
 export interface HostedDailyPlanFitFeedbackInput extends HostedDailyPlanFitInsightInput {
@@ -148,6 +155,9 @@ export interface HostedTodayGenerationInput {
 export interface HostedTodayServices {
   getToday(input: HostedTodayInput): Promise<CurrentDailyPlan>;
   getDailyPlanFitInsight(input: HostedDailyPlanFitInsightInput): Promise<DailyPlanFitInsight>;
+  getDailyPlanFitEffectiveness(
+    input: HostedDailyPlanFitEffectivenessInput,
+  ): Promise<DailyPlanFitEffectiveness>;
   dismissDailyPlanFitInsight(input: HostedDailyPlanFitFeedbackInput): Promise<void>;
   resetDailyPlanFitInsightDismissal(input: HostedDailyPlanFitFeedbackInput): Promise<void>;
   generateToday(input: HostedTodayGenerationInput): Promise<void>;
@@ -206,6 +216,37 @@ async function registerHostedTodayRoutes(
       suggestedTargetMinutes: insight.suggestedTargetMinutes,
       suggestedTargetTaskCount: insight.suggestedTargetTaskCount,
       insightKey: insight.insightKey,
+    };
+  });
+
+  app.get(HOSTED_DAILY_PLAN_FIT_EFFECTIVENESS_ROUTE, async (request) => {
+    parseRequest(hostedDailyPlanFitEffectivenessQuery, request.query);
+    const authorization = access.authorization(request);
+    const effectiveness = await withHostedWorkspaceNotFoundRedacted(() =>
+      services.getDailyPlanFitEffectiveness({ authorization }),
+    );
+    const ratesAvailable = effectiveness.eligibleResolvedUseCount >= 3;
+    return {
+      usesConsidered: effectiveness.usesConsidered,
+      eligibleResolvedUseCount: effectiveness.eligibleResolvedUseCount,
+      minimumComparableUses: 3,
+      pendingUseCount: effectiveness.pendingUseCount,
+      revisedUseCount: effectiveness.revisedUseCount,
+      notEvaluableUseCount: effectiveness.notEvaluableUseCount,
+      exactSuggestionUseCount: effectiveness.exactSuggestionUseCount,
+      editedSuggestionUseCount: effectiveness.editedSuggestionUseCount,
+      scheduledMinutesRateBasisPoints: ratesAvailable
+        ? effectiveness.scheduledMinutesRateBasisPoints
+        : null,
+      scheduledTasksRateBasisPoints: ratesAvailable
+        ? effectiveness.scheduledTasksRateBasisPoints
+        : null,
+      completionMinutesRateBasisPoints: ratesAvailable
+        ? effectiveness.completionMinutesRateBasisPoints
+        : null,
+      completionTasksRateBasisPoints: ratesAvailable
+        ? effectiveness.completionTasksRateBasisPoints
+        : null,
     };
   });
 

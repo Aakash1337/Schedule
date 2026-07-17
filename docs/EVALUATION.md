@@ -599,11 +599,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   one idempotent first-plan generation, one idempotent Today completion, and a separate three-day
   Plan Fit history whose exact dismissal and reset commands replay without duplication, whose stale
   key rolls back without residue, and whose explicit hosted use creates one plan plus one exact
-  receipt, then checks logout and
+  receipt before a fixed, thresholded aggregate read returns counts and null low-sample rates without
+  dates, IDs, or raw totals, then checks logout and
   cleanup. A separate built Chromium flow covers signed-out/authenticated capture, first-workspace
   creation, optional scheduling-field capture, first-plan controls, Today and status-only completion, backlog refresh,
-  exact Plan Fit dismissal/reset and prefill without auto-generation, exact CSRF/idempotency
-  forwarding, and 360-pixel
+  exact Plan Fit dismissal/reset and prefill without auto-generation, a descriptive outcome summary,
+  exact CSRF/idempotency forwarding, and 360-pixel
   layout. Disabled-mode route closure and redacted startup failure remain independently verified.
   This evidence does not cover a real external provider, TLS ingress, workspace rename/delete or membership administration, the
   broader product API/interface, public deployment, or synchronization;
@@ -632,7 +633,8 @@ The audit deliberately leaves these visible instead of turning them into false g
   comparison, or local-model participation; and
 - Daily Plan Fit has deterministic cross-layer and live-browser evidence plus local descriptive use
   receipts, pending, resolved, and not-evaluable outcome history with later revision disclosed
-  separately, and bounded descriptive aggregate rates, but no production evidence for its 90-day
+  separately, bounded descriptive aggregate rates, and a hosted thresholded aggregate without
+  per-use history or raw totals, but no production evidence for its 90-day
   window, three-use display threshold, medians, acceptance rate, or causal effect. It does not
   recommend increases, infer improvement or causal effectiveness, learn a per-user policy, apply
   automatically, feed outcomes into scoring, or use a model; and

@@ -7,12 +7,14 @@ import {
   planItemId,
   userId,
   workspaceId,
+  type DailyPlanFitEffectiveness,
   type DailyPlanFitInsight,
 } from "@schedule/domain";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  HOSTED_DAILY_PLAN_FIT_EFFECTIVENESS_ROUTE,
   HOSTED_DAILY_PLAN_FIT_DISMISSAL_RESET_ROUTE,
   HOSTED_DAILY_PLAN_FIT_DISMISSAL_ROUTE,
   HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE,
@@ -54,6 +56,7 @@ async function createHostedApp(
   getDailyPlanFitInsight: HostedTodayServices["getDailyPlanFitInsight"] = vi.fn(),
   dismissDailyPlanFitInsight: HostedTodayServices["dismissDailyPlanFitInsight"] = vi.fn(),
   resetDailyPlanFitInsightDismissal: HostedTodayServices["resetDailyPlanFitInsightDismissal"] = vi.fn(),
+  getDailyPlanFitEffectiveness: HostedTodayServices["getDailyPlanFitEffectiveness"] = vi.fn(),
 ): Promise<FastifyInstance> {
   const app = Fastify();
   apps.push(app);
@@ -73,6 +76,7 @@ async function createHostedApp(
     {
       getToday,
       getDailyPlanFitInsight,
+      getDailyPlanFitEffectiveness,
       dismissDailyPlanFitInsight,
       resetDailyPlanFitInsightDismissal,
       generateToday,
@@ -93,6 +97,10 @@ function todayActivityPath(workspace: string = WORKSPACE_ID, item: string = ITEM
 
 function planFitInsightPath(workspace: string = WORKSPACE_ID): string {
   return `${HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE.replace(":workspaceId", workspace)}?forDate=2026-07-16`;
+}
+
+function planFitEffectivenessPath(workspace: string = WORKSPACE_ID): string {
+  return HOSTED_DAILY_PLAN_FIT_EFFECTIVENESS_ROUTE.replace(":workspaceId", workspace);
 }
 
 function planFitFeedbackPath(
@@ -267,6 +275,140 @@ describe("hosted Today route", () => {
     expect(revoked.statusCode).toBe(404);
     expect(revoked.body).not.toContain("private membership detail");
     expect(getDailyPlanFitInsight).toHaveBeenCalledOnce();
+  });
+
+  it("returns only a thresholded aggregate Plan Fit effectiveness projection", async () => {
+    const getDailyPlanFitEffectiveness = vi.fn(
+      async () =>
+        ({
+          usesConsidered: 5,
+          resolvedUseCount: 4,
+          pendingUseCount: 1,
+          notEvaluableUseCount: 0,
+          revisedUseCount: 1,
+          eligibleResolvedUseCount: 3,
+          exactSuggestionUseCount: 3,
+          editedSuggestionUseCount: 2,
+          appliedTargetMinutes: 300,
+          scheduledMinutes: 240,
+          completedMinutes: 180,
+          appliedTargetTaskCount: 12,
+          scheduledTaskCount: 9,
+          completedTaskCount: 7,
+          scheduledMinutesRateBasisPoints: 8_000,
+          scheduledTasksRateBasisPoints: 7_500,
+          completionMinutesRateBasisPoints: 7_500,
+          completionTasksRateBasisPoints: 7_778,
+        }) satisfies DailyPlanFitEffectiveness,
+    );
+    const app = await createHostedApp(
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      getDailyPlanFitEffectiveness,
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: planFitEffectivenessPath(WORKSPACE_ID.toUpperCase()),
+      headers: { "x-workspace-id": OTHER_WORKSPACE_ID },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({
+      usesConsidered: 5,
+      eligibleResolvedUseCount: 3,
+      minimumComparableUses: 3,
+      pendingUseCount: 1,
+      revisedUseCount: 1,
+      notEvaluableUseCount: 0,
+      exactSuggestionUseCount: 3,
+      editedSuggestionUseCount: 2,
+      scheduledMinutesRateBasisPoints: 8_000,
+      scheduledTasksRateBasisPoints: 7_500,
+      completionMinutesRateBasisPoints: 7_500,
+      completionTasksRateBasisPoints: 7_778,
+    });
+    expect(response.body).not.toContain("appliedTargetMinutes");
+    expect(response.body).not.toContain("resolvedUseCount");
+    expect(getDailyPlanFitEffectiveness).toHaveBeenCalledWith({ authorization });
+  });
+
+  it("withholds hosted Plan Fit rates below three comparable uses", async () => {
+    const getDailyPlanFitEffectiveness = vi.fn(async () => ({
+      usesConsidered: 2,
+      resolvedUseCount: 2,
+      pendingUseCount: 0,
+      notEvaluableUseCount: 0,
+      revisedUseCount: 0,
+      eligibleResolvedUseCount: 2,
+      exactSuggestionUseCount: 1,
+      editedSuggestionUseCount: 1,
+      appliedTargetMinutes: 180,
+      scheduledMinutes: 150,
+      completedMinutes: 120,
+      appliedTargetTaskCount: 6,
+      scheduledTaskCount: 5,
+      completedTaskCount: 4,
+      scheduledMinutesRateBasisPoints: 8_333,
+      scheduledTasksRateBasisPoints: 8_333,
+      completionMinutesRateBasisPoints: 8_000,
+      completionTasksRateBasisPoints: 8_000,
+    }));
+    const app = await createHostedApp(
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      getDailyPlanFitEffectiveness,
+    );
+
+    const response = await app.inject({ method: "GET", url: planFitEffectivenessPath() });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      eligibleResolvedUseCount: 2,
+      scheduledMinutesRateBasisPoints: null,
+      scheduledTasksRateBasisPoints: null,
+      completionMinutesRateBasisPoints: null,
+      completionTasksRateBasisPoints: null,
+    });
+  });
+
+  it("rejects Plan Fit effectiveness query fields and redacts revoked access", async () => {
+    const getDailyPlanFitEffectiveness = vi
+      .fn()
+      .mockRejectedValue(new DomainError("workspace.not_found", "private membership detail"));
+    const app = await createHostedApp(
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      getDailyPlanFitEffectiveness,
+    );
+
+    expect(
+      (await app.inject({ method: "GET", url: `${planFitEffectivenessPath()}?limit=28` }))
+        .statusCode,
+    ).toBe(400);
+    const denied = await app.inject({
+      method: "GET",
+      url: planFitEffectivenessPath(OTHER_WORKSPACE_ID),
+    });
+    const revoked = await app.inject({ method: "GET", url: planFitEffectivenessPath() });
+
+    expect(denied.statusCode).toBe(404);
+    expect(revoked.statusCode).toBe(404);
+    expect(revoked.body).not.toContain("private membership detail");
+    expect(getDailyPlanFitEffectiveness).toHaveBeenCalledOnce();
   });
 
   it("records exact-key Plan Fit dismissal and reset without exposing feedback records", async () => {

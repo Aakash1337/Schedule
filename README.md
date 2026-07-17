@@ -217,12 +217,12 @@ unlinked calendar-block proposal and display it in Calendar, all without browser
 Run `pnpm verify:hosted-web-e2e` for the separate built OIDC capture entry. Its strict browser double
 checks signed-out and authenticated states, workspace choice, bounded backlog refresh, exact CSRF
 forwarding, optional scheduling-field capture, explicit Plan Fit dismissal/reset and prefill,
-first-plan generation,
+thresholded aggregate outcome summary, first-plan generation,
 Today completion, idempotency forwarding, and
 360-pixel layout; the
 PostgreSQL composition verifier covers the real hosted server boundary, exact plan replay/conflict,
 atomic Today completion, exact Plan Fit dismissal/reset replay and stale-key rejection, and one exact
-Plan Fit use receipt after an explicit guidance selection.
+Plan Fit use receipt plus one bounded aggregate outcome read after an explicit guidance selection.
 
 With PostgreSQL running, verify backlog/Kanban, hierarchy, work-item prerequisites, and calendar
 management, routine creation and optimistic updates, duration calibration and Daily Plan Fit,
@@ -284,6 +284,7 @@ API, and the worker. Complete secret-manager-fed `HOSTED_API_MODE=oidc` configur
 the hardened authorization-code lifecycle, nonce-bound verification, browser sessions, first-login
 workspace bootstrap, transaction-authorized hosted work-item and Today mutations, and bounded
 hosted Plan Fit guidance with reversible exact-key dismissal/reset and atomic explicit-use receipts.
+The same boundary exposes only a thresholded descriptive outcome aggregate, never per-use history.
 Provider discovery,
 JWKS, and token exchange use bounded direct HTTPS with pinned address policy; failed preflight closes
 the database and exits before listening. Disabled mode remains route-closed.

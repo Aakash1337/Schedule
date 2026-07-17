@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HostedApp } from "./HostedApp";
 import { browserTimeZone, localDateTimeToIso, todayKey } from "./date";
-import { HostedApiError } from "./hosted-api";
+import { HostedApiError, type HostedDailyPlanFitEffectiveness } from "./hosted-api";
 
 const apiMocks = vi.hoisted(() => ({
   session: vi.fn(),
@@ -13,6 +13,7 @@ const apiMocks = vi.hoisted(() => ({
   listWorkItems: vi.fn(),
   getToday: vi.fn(),
   getDailyPlanFitInsight: vi.fn(),
+  getDailyPlanFitEffectiveness: vi.fn(),
   dismissDailyPlanFitInsight: vi.fn(),
   resetDailyPlanFitInsightDismissal: vi.fn(),
   generateToday: vi.fn(),
@@ -32,6 +33,20 @@ vi.mock("./hosted-api", async (importOriginal) => {
 
 const personal = { id: "workspace-personal", name: "My Schedule" };
 const studio = { id: "workspace-studio", name: "Studio" };
+const emptyPlanFitEffectiveness: HostedDailyPlanFitEffectiveness = {
+  usesConsidered: 0,
+  eligibleResolvedUseCount: 0,
+  minimumComparableUses: 3,
+  pendingUseCount: 0,
+  revisedUseCount: 0,
+  notEvaluableUseCount: 0,
+  exactSuggestionUseCount: 0,
+  editedSuggestionUseCount: 0,
+  scheduledMinutesRateBasisPoints: null,
+  scheduledTasksRateBasisPoints: null,
+  completionMinutesRateBasisPoints: null,
+  completionTasksRateBasisPoints: null,
+};
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -54,6 +69,7 @@ beforeEach(() => {
     suggestedTargetTaskCount: null,
     insightKey: null,
   });
+  apiMocks.getDailyPlanFitEffectiveness.mockResolvedValue(emptyPlanFitEffectiveness);
   apiMocks.recordTodayActivity.mockResolvedValue(undefined);
   apiMocks.dismissDailyPlanFitInsight.mockResolvedValue(undefined);
   apiMocks.resetDailyPlanFitInsightDismissal.mockResolvedValue(undefined);
@@ -432,6 +448,113 @@ describe("hosted capture shell", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent(message);
     expect(apiMocks.generateToday).not.toHaveBeenCalled();
+  });
+
+  it("shows only bounded descriptive hosted Plan Fit outcome rates", async () => {
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.getDailyPlanFitEffectiveness.mockResolvedValue({
+      ...emptyPlanFitEffectiveness,
+      usesConsidered: 4,
+      eligibleResolvedUseCount: 3,
+      pendingUseCount: 1,
+      exactSuggestionUseCount: 2,
+      editedSuggestionUseCount: 2,
+      scheduledMinutesRateBasisPoints: 8_000,
+      scheduledTasksRateBasisPoints: 7_500,
+      completionMinutesRateBasisPoints: 7_500,
+      completionTasksRateBasisPoints: 8_000,
+    });
+
+    render(<HostedApp />);
+
+    const summary = (await screen.findByRole("heading", { name: "Plan Fit outcomes" }))
+      .parentElement;
+    expect(summary).toHaveTextContent(
+      "Based on 3 comparable uses: target scheduled 80% time and 75% tasks; plan completed 75% time and 80% tasks. Exact suggestion 2; edited 2.",
+    );
+    expect(summary).toHaveTextContent("Descriptive only; this never changes planning.");
+    expect(apiMocks.getDailyPlanFitEffectiveness).toHaveBeenCalledWith(personal.id);
+  });
+
+  it("withholds hosted Plan Fit outcome rates until three comparable uses settle", async () => {
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.getDailyPlanFitEffectiveness.mockResolvedValue({
+      ...emptyPlanFitEffectiveness,
+      usesConsidered: 2,
+      eligibleResolvedUseCount: 2,
+      scheduledMinutesRateBasisPoints: null,
+      scheduledTasksRateBasisPoints: null,
+      completionMinutesRateBasisPoints: null,
+      completionTasksRateBasisPoints: null,
+    });
+
+    render(<HostedApp />);
+
+    expect(
+      await screen.findByText(
+        "2 of 3 settled, unrevised uses are available. Rates appear after 1 more comparable use.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/target scheduled/iu)).not.toBeInTheDocument();
+  });
+
+  it("keeps hosted planning usable while the outcome summary is retried", async () => {
+    const user = userEvent.setup();
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.getDailyPlanFitEffectiveness
+      .mockRejectedValueOnce(new Error("private network detail"))
+      .mockResolvedValueOnce(emptyPlanFitEffectiveness);
+
+    render(<HostedApp />);
+
+    expect(await screen.findByText("Plan Fit outcome summary is unavailable.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Build plan" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Retry summary" }));
+    expect(
+      await screen.findByText("No explicit Plan Fit use is available to summarize yet."),
+    ).toBeInTheDocument();
+    expect(apiMocks.getDailyPlanFitEffectiveness).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores a late Plan Fit outcome summary from the previous workspace", async () => {
+    const user = userEvent.setup();
+    let resolvePersonal: (value: HostedDailyPlanFitEffectiveness) => void = () => undefined;
+    const pendingPersonal = new Promise<HostedDailyPlanFitEffectiveness>((resolve) => {
+      resolvePersonal = resolve;
+    });
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal, studio] });
+    apiMocks.getDailyPlanFitEffectiveness
+      .mockReturnValueOnce(pendingPersonal)
+      .mockResolvedValueOnce(emptyPlanFitEffectiveness);
+
+    render(<HostedApp />);
+
+    await waitFor(() =>
+      expect(apiMocks.getDailyPlanFitEffectiveness).toHaveBeenCalledWith(personal.id),
+    );
+    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace" }), studio.id);
+    expect(
+      await screen.findByText("No explicit Plan Fit use is available to summarize yet."),
+    ).toBeInTheDocument();
+    await act(async () => {
+      resolvePersonal({
+        ...emptyPlanFitEffectiveness,
+        usesConsidered: 3,
+        eligibleResolvedUseCount: 3,
+        exactSuggestionUseCount: 3,
+        scheduledMinutesRateBasisPoints: 9_900,
+        scheduledTasksRateBasisPoints: 9_900,
+        completionMinutesRateBasisPoints: 9_900,
+        completionTasksRateBasisPoints: 9_900,
+      });
+      await pendingPersonal;
+    });
+    expect(screen.queryByText(/99%/u)).not.toBeInTheDocument();
+    expect(apiMocks.getDailyPlanFitEffectiveness).toHaveBeenLastCalledWith(studio.id);
   });
 
   it("dismisses and restores an exact hosted Plan Fit suggestion without changing manual limits", async () => {

@@ -6,6 +6,7 @@ import { browserTimeZone, formatMinutes, localDateTimeToIso, todayKey } from "./
 import {
   hostedApi,
   HostedApiError,
+  type HostedDailyPlanFitEffectiveness,
   type HostedDailyPlanFitFeedback,
   type HostedDailyPlanFitInsight,
   type HostedGenerateToday,
@@ -66,6 +67,23 @@ function backlogMeta(item: HostedWorkItem): string | null {
       : [`${formatMinutes(item.planningDurationMinutes)} planned`]),
   ];
   return parts.length === 0 ? null : parts.join(" · ");
+}
+
+function formatBasisPoints(value: number | null): string {
+  return value === null ? "not available" : `${String(value / 100)}%`;
+}
+
+function planFitEffectivenessSummary(effectiveness: HostedDailyPlanFitEffectiveness): string {
+  if (effectiveness.usesConsidered === 0)
+    return "No explicit Plan Fit use is available to summarize yet.";
+  const remaining = Math.max(
+    0,
+    effectiveness.minimumComparableUses - effectiveness.eligibleResolvedUseCount,
+  );
+  if (remaining > 0) {
+    return `${effectiveness.eligibleResolvedUseCount} of ${effectiveness.minimumComparableUses} settled, unrevised uses are available. Rates appear after ${remaining} more comparable ${remaining === 1 ? "use" : "uses"}.`;
+  }
+  return `Based on ${effectiveness.eligibleResolvedUseCount} comparable uses: target scheduled ${formatBasisPoints(effectiveness.scheduledMinutesRateBasisPoints)} time and ${formatBasisPoints(effectiveness.scheduledTasksRateBasisPoints)} tasks; plan completed ${formatBasisPoints(effectiveness.completionMinutesRateBasisPoints)} time and ${formatBasisPoints(effectiveness.completionTasksRateBasisPoints)} tasks. Exact suggestion ${effectiveness.exactSuggestionUseCount}; edited ${effectiveness.editedSuggestionUseCount}.`;
 }
 
 interface WorkspaceCreateFormProps {
@@ -147,6 +165,11 @@ export function HostedApp() {
   const [planFitFeedbackRetry, setPlanFitFeedbackRetry] = useState<PlanFitFeedbackIntent | null>(
     null,
   );
+  const [planFitEffectiveness, setPlanFitEffectiveness] =
+    useState<HostedDailyPlanFitEffectiveness | null>(null);
+  const [planFitEffectivenessLoading, setPlanFitEffectivenessLoading] = useState(false);
+  const [planFitEffectivenessError, setPlanFitEffectivenessError] = useState(false);
+  const [planFitEffectivenessRefresh, setPlanFitEffectivenessRefresh] = useState(0);
   const [todayRetry, setTodayRetry] = useState<TodayActionIntent | null>(null);
   const [todayGenerationRetry, setTodayGenerationRetry] = useState<TodayGenerationIntent | null>(
     null,
@@ -364,6 +387,39 @@ export function HostedApp() {
       active = false;
     };
   }, [mode, planFitRefresh, selectedWorkspaceId, today?.planId, todayDate, todayLoading]);
+
+  useEffect(() => {
+    if (mode !== "ready" || selectedWorkspaceId === null) {
+      setPlanFitEffectiveness(null);
+      setPlanFitEffectivenessLoading(false);
+      setPlanFitEffectivenessError(false);
+      return;
+    }
+    let active = true;
+    setPlanFitEffectiveness(null);
+    setPlanFitEffectivenessLoading(true);
+    setPlanFitEffectivenessError(false);
+    void hostedApi
+      .getDailyPlanFitEffectiveness(selectedWorkspaceId)
+      .then((effectiveness) => {
+        if (active) setPlanFitEffectiveness(effectiveness);
+      })
+      .catch((effectivenessError: unknown) => {
+        if (!active) return;
+        if (effectivenessError instanceof HostedApiError && effectivenessError.status === 401) {
+          setMode("signed-out");
+          setError(publicError(effectivenessError));
+          return;
+        }
+        setPlanFitEffectivenessError(true);
+      })
+      .finally(() => {
+        if (active) setPlanFitEffectivenessLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [mode, planFitEffectivenessRefresh, selectedWorkspaceId, todayRefresh]);
 
   const selectedWorkspace = useMemo(
     () => workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
@@ -1234,6 +1290,33 @@ export function HostedApp() {
                     </li>
                   ))}
                 </ul>
+              )}
+              {planFitEffectivenessLoading ? (
+                <p className="hosted-plan-fit-state hosted-plan-fit-effectiveness" role="status">
+                  Summarizing Plan Fit outcomes…
+                </p>
+              ) : planFitEffectivenessError ? (
+                <div className="hosted-plan-fit-state hosted-plan-fit-effectiveness">
+                  <span>Plan Fit outcome summary is unavailable.</span>
+                  <Button
+                    type="button"
+                    variant="quiet"
+                    onClick={() => setPlanFitEffectivenessRefresh((value) => value + 1)}
+                  >
+                    Retry summary
+                  </Button>
+                </div>
+              ) : planFitEffectiveness === null ? null : (
+                <div
+                  className="hosted-plan-fit-suggestion hosted-plan-fit-effectiveness"
+                  aria-labelledby="hosted-plan-fit-effectiveness-title"
+                >
+                  <div>
+                    <h3 id="hosted-plan-fit-effectiveness-title">Plan Fit outcomes</h3>
+                    <p>{planFitEffectivenessSummary(planFitEffectiveness)}</p>
+                    <p>Descriptive only; this never changes planning.</p>
+                  </div>
+                </div>
               )}
             </div>
             <div className="hosted-backlog" aria-labelledby="hosted-backlog-title">

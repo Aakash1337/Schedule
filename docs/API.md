@@ -42,6 +42,10 @@ not authorize these product routes.
   children accept exactly `{ forDate, insightKey }` plus a required `Idempotency-Key`, reauthorize
   inside the write transaction, and return `204` without exposing the feedback record. Exact retry
   also returns `204`; stale evidence or an invalid disposition returns `409` without a write.
+  `GET` on the resource's `/effectiveness` child accepts no query fields and aggregates the last 28
+  explicit uses into bounded counts and four descriptive rates. Rates remain null until three
+  settled, unrevised uses exist. The response omits usage rows, dates, IDs, raw workload totals, and
+  causal interpretation, and reading it writes nothing.
   A strict CSRF-protected `POST` to the `/today` URL creates only revision 1 from one same-local-date
   offset window, an IANA time zone, `targetMinutes` from 1 through 1,440, `targetTaskCount` from 1
   through 64, an optional nullable exact Plan Fit evidence key, and a required `Idempotency-Key`.

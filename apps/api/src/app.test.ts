@@ -165,6 +165,7 @@ describe("API infrastructure", () => {
       today: {
         getToday: vi.fn(),
         getDailyPlanFitInsight: vi.fn(),
+        getDailyPlanFitEffectiveness: vi.fn(),
         dismissDailyPlanFitInsight: vi.fn(),
         resetDailyPlanFitInsightDismissal: vi.fn(),
         generateToday: vi.fn(),
@@ -240,6 +241,12 @@ describe("API infrastructure", () => {
     });
     expect(protectedPlanFit.statusCode).toBe(401);
     expect(hostedApi.today.getDailyPlanFitInsight).not.toHaveBeenCalled();
+    const protectedPlanFitEffectiveness = await protectedApp.inject({
+      method: "GET",
+      url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/daily-plan-fit-insight/effectiveness",
+    });
+    expect(protectedPlanFitEffectiveness.statusCode).toBe(401);
+    expect(hostedApi.today.getDailyPlanFitEffectiveness).not.toHaveBeenCalled();
     for (const [suffix, service] of [
       ["dismissals", hostedApi.today.dismissDailyPlanFitInsight],
       ["dismissal-resets", hostedApi.today.resetDailyPlanFitInsightDismissal],

@@ -27,6 +27,7 @@ test("captures one hosted backlog item with responsive request verification", as
   let requestedTodayDate: string | null = null;
   let requestedPlanFitPath: string | null = null;
   let requestedPlanFitDate: string | null = null;
+  let requestedPlanFitEffectivenessPath: string | null = null;
   const existing = {
     id: "00000000-0000-4000-8000-000000000009",
     title: `Review-${"outline".repeat(24)}`,
@@ -87,6 +88,29 @@ test("captures one hosted backlog item with responsive request verification", as
           suggestedTargetMinutes: 90,
           suggestedTargetTaskCount: 2,
           insightKey: planFitInsightKey,
+        },
+      });
+      return;
+    }
+    if (
+      request.method() === "GET" &&
+      url.pathname.endsWith("/daily-plan-fit-insight/effectiveness")
+    ) {
+      requestedPlanFitEffectivenessPath = url.pathname;
+      await route.fulfill({
+        json: {
+          usesConsidered: 4,
+          eligibleResolvedUseCount: 3,
+          minimumComparableUses: 3,
+          pendingUseCount: 1,
+          revisedUseCount: 0,
+          notEvaluableUseCount: 0,
+          exactSuggestionUseCount: 2,
+          editedSuggestionUseCount: 2,
+          scheduledMinutesRateBasisPoints: 8_000,
+          scheduledTasksRateBasisPoints: 7_500,
+          completionMinutesRateBasisPoints: 7_500,
+          completionTasksRateBasisPoints: 8_000,
         },
       });
       return;
@@ -174,6 +198,11 @@ test("captures one hosted backlog item with responsive request verification", as
   expect(requestedTodayDate).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
   await page.getByRole("combobox", { name: "Workspace" }).selectOption(workspaces[1]!.id);
   await page.setViewportSize({ width: 360, height: 740 });
+  await expect(page.getByRole("heading", { name: "Plan Fit outcomes" })).toBeVisible();
+  await expect(page.getByText(/target scheduled 80% time and 75% tasks/iu)).toBeVisible();
+  expect(requestedPlanFitEffectivenessPath).toBe(
+    `/v1/hosted/workspaces/${workspaces[1]!.id}/daily-plan-fit-insight/effectiveness`,
+  );
   const usePlanFit = page.getByRole("button", { name: "Use 1h 30m and 2 tasks" });
   await expect(usePlanFit).toBeVisible();
   expect(requestedPlanFitPath).toBe(
