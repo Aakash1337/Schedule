@@ -289,7 +289,9 @@ causal lift, or learned adaptation.
 
 The separate **Planning outcomes** card summarizes the final current heads from the prior 30 local
 dates whether or not Plan Fit was used. It shows weighted completed-versus-planned scheduled time and
-task totals after three plan days, plus the number of additional revisions. Empty, insufficient,
+task totals after three plan days, separate skipped/deferred/dismissed totals, the deferred share of
+planned time and tasks, and the number of additional revisions. The deferred share is a prompt for
+manual review of duration, priority, or relevance, not an inferred cause or automatic adjustment. Empty, insufficient,
 loading, failure, and retry states stay inline. The card reuses existing Today presentation styles,
 writes nothing, and never changes guidance, planning, or model input. A nested **By planner version**
 list groups the same final heads by their exact planner/configuration pair. Every observed group stays

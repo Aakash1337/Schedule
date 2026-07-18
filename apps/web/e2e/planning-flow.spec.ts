@@ -684,7 +684,7 @@ test("persists exact-evidence duration insight feedback and resurfaces changed e
   expect(unexpectedHttpResponses).toEqual([]);
 });
 
-test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", async ({ page }) => {
+test("renders planning outcomes and derives, prefills, and restores Plan Fit", async ({ page }) => {
   const pageErrors: string[] = [];
   const requestFailures: string[] = [];
   const unexpectedHttpResponses: string[] = [];
@@ -907,6 +907,8 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
   await expect(page.getByText("4 tasks · 3h")).toBeVisible();
   await expect(page.getByText("2 tasks · 1h 30m")).toBeVisible();
   await expect(page.getByText("1 task · 45m")).toBeVisible();
+  await expect(page.getByText("16.67% time · 16.67% tasks", { exact: true })).toBeVisible();
+  await expect(page.getByText(/manual review of duration, priority, or relevance/i)).toBeVisible();
   await expect(page.getByRole("heading", { name: "By planner version" })).toBeVisible();
   await expect(page.getByText("deterministic-planner-v8 · default-weights-v5")).toBeVisible();
   await expect(page.getByText(/Completed 41.67% scheduled time · 41.67% tasks/)).toBeVisible();
