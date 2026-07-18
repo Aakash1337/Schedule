@@ -18,10 +18,10 @@ import {
   type HostedWorkItemStatus,
   type HostedWorkspace,
 } from "./hosted-api";
+import { reconcileHostedWorkItems, type HostedWorkItemSyncState } from "./hosted-work-item-sync";
 
 const selectedWorkspaceKey = "schedule.hostedWorkspace";
 const workItemPageSize = 20;
-const workItemFetchLimit = workItemPageSize + 1;
 
 interface TodayActionIntent {
   readonly workspaceId: string;
@@ -152,6 +152,7 @@ export function HostedApp() {
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<string | null>(null);
   const [workItems, setWorkItems] = useState<readonly HostedWorkItemSnapshot[]>([]);
+  const workItemSync = useRef<HostedWorkItemSyncState | null>(null);
   const [workItemOffset, setWorkItemOffset] = useState(0);
   const [workItemsLoading, setWorkItemsLoading] = useState(true);
   const [workItemsError, setWorkItemsError] = useState<string | null>(null);
@@ -258,6 +259,7 @@ export function HostedApp() {
 
   useEffect(() => {
     if (mode !== "ready" || selectedWorkspaceId === null) {
+      workItemSync.current = null;
       setWorkItems([]);
       setWorkItemsLoading(false);
       setWorkItemsError(null);
@@ -266,13 +268,17 @@ export function HostedApp() {
     let active = true;
     setWorkItemsLoading(true);
     setWorkItemsError(null);
-    void hostedApi
-      .listWorkItemSnapshot(selectedWorkspaceId, {
-        limit: workItemFetchLimit,
-        offset: workItemOffset,
-      })
-      .then((page) => {
-        if (active) setWorkItems(page.items);
+    void reconcileHostedWorkItems(hostedApi, selectedWorkspaceId, workItemSync.current)
+      .then((state) => {
+        if (!active) return;
+        workItemSync.current = state;
+        setWorkItems(state.items);
+        setWorkItemOffset((offset) =>
+          Math.min(
+            offset,
+            Math.max(0, Math.floor((state.items.length - 1) / workItemPageSize) * workItemPageSize),
+          ),
+        );
       })
       .catch((listError: unknown) => {
         if (!active) return;
@@ -289,7 +295,7 @@ export function HostedApp() {
     return () => {
       active = false;
     };
-  }, [mode, selectedWorkspaceId, workItemOffset, workItemsRefresh]);
+  }, [mode, selectedWorkspaceId, workItemsRefresh]);
 
   useEffect(() => {
     if (mode !== "ready" || selectedWorkspaceId === null) {
@@ -435,8 +441,8 @@ export function HostedApp() {
     () => workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
     [selectedWorkspaceId, workspaces],
   );
-  const visibleWorkItems = workItems.slice(0, workItemPageSize);
-  const hasNextWorkItemPage = workItems.length > workItemPageSize;
+  const visibleWorkItems = workItems.slice(workItemOffset, workItemOffset + workItemPageSize);
+  const hasNextWorkItemPage = workItems.length > workItemOffset + workItemPageSize;
   const mutationBusy =
     busy ||
     generatingToday ||
@@ -490,6 +496,7 @@ export function HostedApp() {
 
   function selectWorkspace(id: string) {
     localStorage.setItem(selectedWorkspaceKey, id);
+    workItemSync.current = null;
     setSelectedWorkspaceId(id);
     setConfirmation(null);
     setError(null);
@@ -855,6 +862,8 @@ export function HostedApp() {
     setError(null);
     try {
       await hostedApi.logout();
+      workItemSync.current = null;
+      setWorkItems([]);
       setWorkspaces([]);
       setSelectedWorkspaceId(null);
       setMode("signed-out");
@@ -1411,11 +1420,9 @@ export function HostedApp() {
                   type="button"
                   variant="quiet"
                   disabled={mutationBusy || workItemsLoading || workItemOffset === 0}
-                  onClick={() => {
-                    setWorkItemsLoading(true);
-                    setWorkItems([]);
-                    setWorkItemOffset((offset) => Math.max(0, offset - workItemPageSize));
-                  }}
+                  onClick={() =>
+                    setWorkItemOffset((offset) => Math.max(0, offset - workItemPageSize))
+                  }
                 >
                   Previous
                 </Button>
@@ -1431,11 +1438,7 @@ export function HostedApp() {
                     workItemsError !== null ||
                     !hasNextWorkItemPage
                   }
-                  onClick={() => {
-                    setWorkItemsLoading(true);
-                    setWorkItems([]);
-                    setWorkItemOffset((offset) => offset + workItemPageSize);
-                  }}
+                  onClick={() => setWorkItemOffset((offset) => offset + workItemPageSize)}
                 >
                   Next
                 </Button>

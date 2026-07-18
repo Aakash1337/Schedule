@@ -8,13 +8,15 @@ import {
   HostedApiError,
   type HostedDailyPlanFitEffectiveness,
   type HostedWorkItemSnapshot,
+  type HostedWorkItemSyncChange,
 } from "./hosted-api";
 
 const apiMocks = vi.hoisted(() => ({
   session: vi.fn(),
   listWorkspaces: vi.fn(),
   createWorkspace: vi.fn(),
-  listWorkItemSnapshot: vi.fn(),
+  bootstrapWorkItemSync: vi.fn(),
+  listWorkItemSyncChanges: vi.fn(),
   getToday: vi.fn(),
   getDailyPlanFitInsight: vi.fn(),
   getDailyPlanFitEffectiveness: vi.fn(),
@@ -54,6 +56,22 @@ function snapshotItem(
   };
 }
 
+function bootstrapPage(
+  items: readonly HostedWorkItemSnapshot[],
+  checkpoint = "checkpoint-1",
+  nextCursor: string | null = null,
+) {
+  return { protocolVersion: 1 as const, items, checkpoint, nextCursor };
+}
+
+function deltaPage(
+  changes: readonly HostedWorkItemSyncChange[],
+  checkpoint = "checkpoint-2",
+  nextCursor: string | null = null,
+) {
+  return { protocolVersion: 1 as const, changes, checkpoint, nextCursor };
+}
+
 function titleCaseForTest(value: string): string {
   const label = value.replaceAll("_", " ");
   return `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
@@ -77,7 +95,10 @@ const emptyPlanFitEffectiveness: HostedDailyPlanFitEffectiveness = {
 beforeEach(() => {
   vi.resetAllMocks();
   localStorage.clear();
-  apiMocks.listWorkItemSnapshot.mockResolvedValue({ items: [], limit: 21, offset: 0 });
+  apiMocks.bootstrapWorkItemSync.mockResolvedValue(bootstrapPage([]));
+  apiMocks.listWorkItemSyncChanges.mockImplementation((_workspaceId: string, cursor: string) =>
+    Promise.resolve(deltaPage([], cursor)),
+  );
   apiMocks.getToday.mockResolvedValue({
     date: todayKey(),
     planId: null,
@@ -144,9 +165,12 @@ describe("hosted capture shell", () => {
     localStorage.setItem("schedule.hostedWorkspace", studio.id);
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal, studio] });
-    apiMocks.listWorkItemSnapshot
-      .mockResolvedValueOnce({ items: [existing], limit: 21, offset: 0 })
-      .mockResolvedValueOnce({ items: [existing, createdSnapshot], limit: 21, offset: 0 });
+    apiMocks.bootstrapWorkItemSync.mockResolvedValueOnce(bootstrapPage([existing], "checkpoint-1"));
+    apiMocks.listWorkItemSyncChanges
+      .mockResolvedValueOnce(deltaPage([], "checkpoint-1"))
+      .mockResolvedValueOnce(
+        deltaPage([{ type: "upsert", item: createdSnapshot }], "checkpoint-2"),
+      );
     apiMocks.createWorkItem.mockReturnValue(pendingCreate);
 
     render(<HostedApp />);
@@ -183,23 +207,20 @@ describe("hosted capture shell", () => {
     expect(
       screen.getByText("Backlog · High priority · Due 2026-07-20 · 1h 15m planned"),
     ).toBeInTheDocument();
-    expect(apiMocks.listWorkItemSnapshot).toHaveBeenNthCalledWith(1, studio.id, {
-      limit: 21,
-      offset: 0,
-    });
-    expect(apiMocks.listWorkItemSnapshot).toHaveBeenNthCalledWith(2, studio.id, {
-      limit: 21,
-      offset: 0,
-    });
+    expect(apiMocks.bootstrapWorkItemSync).toHaveBeenCalledWith(studio.id, undefined);
+    expect(apiMocks.listWorkItemSyncChanges.mock.calls).toEqual([
+      [studio.id, "checkpoint-1"],
+      [studio.id, "checkpoint-1"],
+    ]);
   });
 
   it("keeps capture usable while a failed work-item read is explicitly retried", async () => {
     const user = userEvent.setup();
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
-    apiMocks.listWorkItemSnapshot
+    apiMocks.bootstrapWorkItemSync
       .mockRejectedValueOnce(new Error("private network detail"))
-      .mockResolvedValueOnce({ items: [], limit: 21, offset: 0 });
+      .mockResolvedValueOnce(bootstrapPage([]));
 
     render(<HostedApp />);
 
@@ -207,13 +228,13 @@ describe("hosted capture shell", () => {
     expect(screen.getByRole("textbox", { name: "Work item" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Retry work items" }));
     expect(await screen.findByText("No work items yet.")).toBeInTheDocument();
-    expect(apiMocks.listWorkItemSnapshot).toHaveBeenCalledTimes(2);
+    expect(apiMocks.bootstrapWorkItemSync).toHaveBeenCalledTimes(2);
   });
 
   it("returns to sign-in when the work-item read discovers an expired session", async () => {
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
-    apiMocks.listWorkItemSnapshot.mockRejectedValue(
+    apiMocks.bootstrapWorkItemSync.mockRejectedValue(
       new HostedApiError(401, "hosted.authentication_failed", "Authentication failed."),
     );
 
@@ -235,6 +256,7 @@ describe("hosted capture shell", () => {
         title: `${titleCaseForTest(status)} item`,
         description: status === "planned" ? "Visible context for the planned item." : null,
         status,
+        createdAt: `2026-07-16T12:00:${String(index).padStart(2, "0")}.000Z`,
       }),
     );
     const firstPage = [
@@ -244,6 +266,7 @@ describe("hosted capture shell", () => {
           id: `done-${String(index)}`,
           title: `Completed item ${String(index + 1)}`,
           status: "done",
+          createdAt: `2026-07-16T12:00:${String(index + 6).padStart(2, "0")}.000Z`,
         }),
       ),
     ];
@@ -251,20 +274,11 @@ describe("hosted capture shell", () => {
       id: "item-page-two",
       title: "Later completed item",
       status: "done",
-    });
-    let finishPageTwo: () => void = () => undefined;
-    const pendingPageTwo = new Promise<{
-      items: readonly HostedWorkItemSnapshot[];
-      limit: number;
-      offset: number;
-    }>((resolve) => {
-      finishPageTwo = () => resolve({ items: [pageTwoItem], limit: 21, offset: 20 });
+      createdAt: "2026-07-16T12:00:21.000Z",
     });
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
-    apiMocks.listWorkItemSnapshot
-      .mockResolvedValueOnce({ items: firstPage, limit: 21, offset: 0 })
-      .mockReturnValueOnce(pendingPageTwo);
+    apiMocks.bootstrapWorkItemSync.mockResolvedValue(bootstrapPage([...firstPage, pageTwoItem]));
 
     render(<HostedApp />);
 
@@ -281,15 +295,9 @@ describe("hosted capture shell", () => {
     expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Next" }));
-    expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
-    finishPageTwo();
-
     expect(await screen.findByText(pageTwoItem.title)).toBeInTheDocument();
-    expect(apiMocks.listWorkItemSnapshot).toHaveBeenNthCalledWith(2, personal.id, {
-      limit: 21,
-      offset: 20,
-    });
+    expect(apiMocks.bootstrapWorkItemSync).toHaveBeenCalledOnce();
+    expect(apiMocks.listWorkItemSyncChanges).toHaveBeenCalledWith(personal.id, "checkpoint-1");
     expect(screen.getByRole("button", { name: "Previous" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
     expect(
@@ -297,64 +305,81 @@ describe("hosted capture shell", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("resets work-item paging and ignores a stale page when the workspace changes", async () => {
+  it("resets in-memory work-item paging when the workspace changes", async () => {
     const user = userEvent.setup();
-    let resolveLatePage: (page: {
-      items: readonly HostedWorkItemSnapshot[];
-      limit: number;
-      offset: number;
-    }) => void = () => undefined;
-    const latePage = new Promise<{
-      items: readonly HostedWorkItemSnapshot[];
-      limit: number;
-      offset: number;
-    }>((resolve) => {
-      resolveLatePage = resolve;
-    });
     const firstPage = Array.from({ length: 21 }, (_, index) =>
-      snapshotItem({ id: `personal-${String(index)}`, title: `Personal ${String(index + 1)}` }),
+      snapshotItem({
+        id: `personal-${String(index)}`,
+        title: `Personal ${String(index + 1)}`,
+        createdAt: `2026-07-16T12:00:${String(index).padStart(2, "0")}.000Z`,
+      }),
     );
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal, studio] });
-    apiMocks.listWorkItemSnapshot.mockImplementation(
-      (workspaceId: string, pagination: { limit: number; offset: number }) => {
-        if (workspaceId === personal.id && pagination.offset === 0) {
-          return Promise.resolve({ items: firstPage, limit: 21, offset: 0 });
-        }
-        if (workspaceId === personal.id) return latePage;
-        return Promise.resolve({
-          items: [snapshotItem({ id: "studio-1", title: "Studio item", status: "planned" })],
-          limit: 21,
-          offset: 0,
-        });
-      },
+    apiMocks.bootstrapWorkItemSync.mockImplementation((workspaceId: string) =>
+      Promise.resolve(
+        workspaceId === personal.id
+          ? bootstrapPage(firstPage, "personal-checkpoint")
+          : bootstrapPage(
+              [snapshotItem({ id: "studio-1", title: "Studio item", status: "planned" })],
+              "studio-checkpoint",
+            ),
+      ),
     );
 
     render(<HostedApp />);
 
     await user.click(await screen.findByRole("button", { name: "Next" }));
-    await waitFor(() =>
-      expect(apiMocks.listWorkItemSnapshot).toHaveBeenCalledWith(personal.id, {
-        limit: 21,
-        offset: 20,
-      }),
-    );
+    expect(await screen.findByText("Personal 21")).toBeInTheDocument();
     await user.selectOptions(screen.getByRole("combobox", { name: "Workspace" }), studio.id);
     expect(await screen.findByText("Studio item")).toBeInTheDocument();
-    expect(apiMocks.listWorkItemSnapshot).toHaveBeenCalledWith(studio.id, {
-      limit: 21,
-      offset: 0,
-    });
+    expect(apiMocks.bootstrapWorkItemSync).toHaveBeenCalledWith(studio.id, undefined);
     expect(screen.getAllByText("Page 1").length).toBeGreaterThan(0);
+  });
 
-    resolveLatePage({
-      items: [snapshotItem({ id: "personal-late", title: "Late personal item" })],
-      limit: 21,
-      offset: 20,
+  it("commits a bootstrap atomically and ignores a late prior workspace", async () => {
+    const user = userEvent.setup();
+    let finishPersonal: () => void = () => undefined;
+    const pendingPersonal = new Promise<ReturnType<typeof bootstrapPage>>((resolve) => {
+      finishPersonal = () =>
+        resolve(
+          bootstrapPage(
+            [snapshotItem({ id: "personal-late", title: "Late personal item" })],
+            "personal-checkpoint",
+          ),
+        );
     });
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal, studio] });
+    apiMocks.bootstrapWorkItemSync.mockImplementation((workspaceId: string, cursor?: string) => {
+      if (workspaceId === studio.id) {
+        return Promise.resolve(
+          bootstrapPage([snapshotItem({ id: "studio-1", title: "Studio item" })]),
+        );
+      }
+      return cursor === undefined
+        ? Promise.resolve(
+            bootstrapPage(
+              [snapshotItem({ id: "personal-partial", title: "Partial personal item" })],
+              "personal-checkpoint",
+              "personal-next",
+            ),
+          )
+        : pendingPersonal;
+    });
+
+    render(<HostedApp />);
+
+    await waitFor(() =>
+      expect(apiMocks.bootstrapWorkItemSync).toHaveBeenCalledWith(personal.id, "personal-next"),
+    );
+    expect(screen.queryByText("Partial personal item")).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace" }), studio.id);
+    expect(await screen.findByText("Studio item")).toBeInTheDocument();
+    finishPersonal();
     await act(async () => Promise.resolve());
+    expect(screen.queryByText("Partial personal item")).not.toBeInTheDocument();
     expect(screen.queryByText("Late personal item")).not.toBeInTheDocument();
-    expect(screen.getByText("Studio item")).toBeInTheDocument();
   });
 
   it("shows the current local day and refreshes it when the workspace changes", async () => {
@@ -1032,28 +1057,26 @@ describe("hosted capture shell", () => {
       activityState: "pending" as const,
     };
     const sourceItem = snapshotItem({ id: "work-item-1", title: item.title });
-    let finishSnapshotRefresh: () => void = () => undefined;
-    const pendingSnapshotRefresh = new Promise<{
-      items: HostedWorkItemSnapshot[];
-      limit: number;
-      offset: number;
-    }>((resolve) => {
-      finishSnapshotRefresh = () =>
-        resolve({
-          items: [{ ...sourceItem, status: "done", version: 2 }],
-          limit: 21,
-          offset: 0,
-        });
+    let finishSyncRefresh: () => void = () => undefined;
+    const pendingSyncRefresh = new Promise<ReturnType<typeof deltaPage>>((resolve) => {
+      finishSyncRefresh = () =>
+        resolve(
+          deltaPage([
+            {
+              type: "upsert",
+              item: { ...sourceItem, status: "done", version: 2 },
+            },
+          ]),
+        );
     });
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
-    apiMocks.listWorkItemSnapshot
-      .mockResolvedValueOnce({
-        items: [sourceItem],
-        limit: 21,
-        offset: 0,
-      })
-      .mockReturnValueOnce(pendingSnapshotRefresh);
+    apiMocks.bootstrapWorkItemSync.mockResolvedValueOnce(
+      bootstrapPage([sourceItem], "checkpoint-1"),
+    );
+    apiMocks.listWorkItemSyncChanges
+      .mockResolvedValueOnce(deltaPage([], "checkpoint-1"))
+      .mockReturnValueOnce(pendingSyncRefresh);
     apiMocks.getToday
       .mockResolvedValueOnce({
         date: todayKey(),
@@ -1096,7 +1119,7 @@ describe("hosted capture shell", () => {
       expect(screen.getByRole("button", { name: `Start ${item.title}` })).toBeDisabled();
       expect(screen.getByRole("button", { name: `Complete ${item.title}` })).toBeDisabled();
     });
-    await act(async () => finishSnapshotRefresh());
+    await act(async () => finishSyncRefresh());
     expect(
       await screen.findByText("Done", { selector: ".hosted-backlog-meta" }),
     ).toBeInTheDocument();
@@ -1208,17 +1231,15 @@ describe("hosted capture shell", () => {
     const updatedItem = { ...item, status: "in_progress" as const, version: 4 };
     let finishUpdate: () => void = () => undefined;
     let finishRefresh: () => void = () => undefined;
-    const pendingRefresh = new Promise<{
-      items: readonly HostedWorkItemSnapshot[];
-      limit: number;
-      offset: number;
-    }>((resolve) => {
-      finishRefresh = () => resolve({ items: [updatedItem], limit: 21, offset: 0 });
+    const pendingRefresh = new Promise<ReturnType<typeof deltaPage>>((resolve) => {
+      finishRefresh = () =>
+        resolve(deltaPage([{ type: "upsert", item: updatedItem }], "checkpoint-2"));
     });
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
-    apiMocks.listWorkItemSnapshot
-      .mockResolvedValueOnce({ items: [item], limit: 21, offset: 0 })
+    apiMocks.bootstrapWorkItemSync.mockResolvedValueOnce(bootstrapPage([item], "checkpoint-1"));
+    apiMocks.listWorkItemSyncChanges
+      .mockResolvedValueOnce(deltaPage([], "checkpoint-1"))
       .mockReturnValueOnce(pendingRefresh);
     apiMocks.updateWorkItemStatus.mockReturnValue(
       new Promise<void>((resolve) => {
@@ -1253,7 +1274,7 @@ describe("hosted capture shell", () => {
     });
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
-    apiMocks.listWorkItemSnapshot.mockResolvedValue({ items: [item], limit: 21, offset: 0 });
+    apiMocks.bootstrapWorkItemSync.mockResolvedValue(bootstrapPage([item], "checkpoint-1"));
     apiMocks.updateWorkItemStatus.mockRejectedValue(
       new HostedApiError(
         409,
@@ -1269,9 +1290,10 @@ describe("hosted capture shell", () => {
       "This item changed. Refresh the work items and try again.",
     );
     expect(screen.getByRole("button", { name: "Retry work items" })).toBeEnabled();
-    expect(apiMocks.listWorkItemSnapshot).toHaveBeenCalledOnce();
+    expect(apiMocks.bootstrapWorkItemSync).toHaveBeenCalledOnce();
+    expect(apiMocks.listWorkItemSyncChanges).toHaveBeenCalledOnce();
     await user.click(screen.getByRole("button", { name: "Retry work items" }));
-    await waitFor(() => expect(apiMocks.listWorkItemSnapshot).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(apiMocks.listWorkItemSyncChanges).toHaveBeenCalledTimes(2));
   });
 
   it("refreshes Today after the browser crosses local midnight", async () => {
@@ -1347,10 +1369,7 @@ describe("hosted capture shell", () => {
     expect(screen.getByText("Created workspace “Studio”.")).toBeInTheDocument();
     expect(localStorage.getItem("schedule.hostedWorkspace")).toBe(studio.id);
     await waitFor(() =>
-      expect(apiMocks.listWorkItemSnapshot).toHaveBeenCalledWith(studio.id, {
-        limit: 21,
-        offset: 0,
-      }),
+      expect(apiMocks.bootstrapWorkItemSync).toHaveBeenCalledWith(studio.id, undefined),
     );
     await waitFor(() => expect(apiMocks.getToday).toHaveBeenCalledWith(studio.id, todayKey()));
   });

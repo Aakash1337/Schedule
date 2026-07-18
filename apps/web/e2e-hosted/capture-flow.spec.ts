@@ -78,7 +78,10 @@ test("captures one hosted backlog item with responsive request verification", as
     updatedAt: `2026-07-${String(index + 1).padStart(2, "0")}T12:00:00.000Z`,
   }));
   let studioItems: Array<typeof existing | typeof created> = [existing];
-  const snapshotRequests: string[] = [];
+  let studioSyncVersion = 0;
+  let pendingStudioChanges: { type: "upsert"; item: typeof existing | typeof created }[] = [];
+  const bootstrapRequests: string[] = [];
+  const deltaRequests: string[] = [];
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -95,12 +98,36 @@ test("captures one hosted backlog item with responsive request verification", as
       await route.fulfill({ json: { items: workspaces, limit: 20, offset: 0 } });
       return;
     }
-    if (request.method() === "GET" && url.pathname.endsWith("/work-items/snapshot")) {
-      snapshotRequests.push(`${url.pathname}${url.search}`);
-      const limit = Number(url.searchParams.get("limit"));
-      const offset = Number(url.searchParams.get("offset"));
-      const items = url.pathname.includes(workspaces[0]!.id) ? firstWorkspaceItems : studioItems;
-      await route.fulfill({ json: { items: items.slice(offset, offset + limit), limit, offset } });
+    if (request.method() === "GET" && url.pathname.endsWith("/work-items/sync/bootstrap")) {
+      bootstrapRequests.push(`${url.pathname}${url.search}`);
+      const firstWorkspace = url.pathname.includes(workspaces[0]!.id);
+      await route.fulfill({
+        json: {
+          protocolVersion: 1,
+          items: firstWorkspace ? firstWorkspaceItems : studioItems,
+          checkpoint: firstWorkspace
+            ? "personal-checkpoint-0"
+            : `studio-checkpoint-${studioSyncVersion}`,
+          nextCursor: null,
+        },
+      });
+      return;
+    }
+    if (request.method() === "GET" && url.pathname.endsWith("/work-items/sync/changes")) {
+      deltaRequests.push(`${url.pathname}${url.search}`);
+      const firstWorkspace = url.pathname.includes(workspaces[0]!.id);
+      const changes = firstWorkspace ? [] : pendingStudioChanges;
+      if (!firstWorkspace) pendingStudioChanges = [];
+      await route.fulfill({
+        json: {
+          protocolVersion: 1,
+          changes,
+          checkpoint: firstWorkspace
+            ? "personal-checkpoint-0"
+            : `studio-checkpoint-${studioSyncVersion}`,
+          nextCursor: null,
+        },
+      });
       return;
     }
     if (request.method() === "GET" && url.pathname.endsWith("/daily-plan-fit-insight")) {
@@ -212,6 +239,11 @@ test("captures one hosted backlog item with responsive request verification", as
             }
           : item,
       );
+      studioSyncVersion += 1;
+      pendingStudioChanges.push({
+        type: "upsert",
+        item: studioItems.find((item) => item.id === existing.id)!,
+      });
       await route.fulfill({ status: 204, body: "" });
       return;
     }
@@ -222,6 +254,8 @@ test("captures one hosted backlog item with responsive request verification", as
       capturedBody = request.postDataJSON();
       capturedCsrf = request.headers()["x-schedule-csrf"];
       studioItems = [...studioItems, created];
+      studioSyncVersion += 1;
+      pendingStudioChanges.push({ type: "upsert", item: created });
       await route.fulfill({ status: 201, json: created });
       return;
     }
@@ -250,18 +284,19 @@ test("captures one hosted backlog item with responsive request verification", as
   expect((await previousWorkItems.boundingBox())?.height).toBeGreaterThanOrEqual(44);
   await previousWorkItems.click();
   await expect(page.getByText("Paged work 1", { exact: true })).toBeVisible();
-  expect(snapshotRequests).toContain(
-    `/v1/hosted/workspaces/${workspaces[0]!.id}/work-items/snapshot?limit=21&offset=0`,
-  );
-  expect(snapshotRequests).toContain(
-    `/v1/hosted/workspaces/${workspaces[0]!.id}/work-items/snapshot?limit=21&offset=20`,
-  );
+  expect(bootstrapRequests).toEqual([
+    `/v1/hosted/workspaces/${workspaces[0]!.id}/work-items/sync/bootstrap?limit=200`,
+  ]);
+  expect(deltaRequests).toEqual([
+    `/v1/hosted/workspaces/${workspaces[0]!.id}/work-items/sync/changes?limit=200&cursor=personal-checkpoint-0`,
+  ]);
 
   await page.getByRole("combobox", { name: "Workspace" }).selectOption(workspaces[1]!.id);
   await expect(page.getByText(existing.title)).toBeVisible();
-  expect(snapshotRequests).toContain(
-    `/v1/hosted/workspaces/${workspaces[1]!.id}/work-items/snapshot?limit=21&offset=0`,
-  );
+  expect(bootstrapRequests).toEqual([
+    `/v1/hosted/workspaces/${workspaces[0]!.id}/work-items/sync/bootstrap?limit=200`,
+    `/v1/hosted/workspaces/${workspaces[1]!.id}/work-items/sync/bootstrap?limit=200`,
+  ]);
   await expect(page.getByRole("heading", { name: "Plan Fit outcomes" })).toBeVisible();
   await expect(page.getByText(/target scheduled 80% time and 75% tasks/iu)).toBeVisible();
   expect(requestedPlanFitEffectivenessPath).toBe(
@@ -330,6 +365,7 @@ test("captures one hosted backlog item with responsive request verification", as
   await page.getByRole("button", { name: `Complete ${todayItem.title} in Today` }).click();
   await expect(page.getByText(`Completed “${todayItem.title}”.`)).toBeVisible();
   await expect(page.getByText("45m · Completed")).toBeVisible();
+  await expect.poll(() => deltaRequests.length).toBe(3);
   await page.getByRole("button", { name: `Complete ${existing.title}` }).click();
   await expect(page.getByText(`Completed “${existing.title}”.`)).toBeVisible();
   const transitionedRow = page.locator(".hosted-backlog-list li", { hasText: existing.title });
@@ -347,6 +383,14 @@ test("captures one hosted backlog item with responsive request verification", as
   ).toBeVisible();
   await expect(page.locator(".hosted-backlog-list li", { hasText: created.title })).toBeVisible();
   await expect(page.getByText("High priority · Due 2026-07-20 · 1h 15m planned")).toBeVisible();
+  await expect.poll(() => deltaRequests.length).toBe(5);
+  expect(deltaRequests).toEqual([
+    `/v1/hosted/workspaces/${workspaces[0]!.id}/work-items/sync/changes?limit=200&cursor=personal-checkpoint-0`,
+    `/v1/hosted/workspaces/${workspaces[1]!.id}/work-items/sync/changes?limit=200&cursor=studio-checkpoint-0`,
+    `/v1/hosted/workspaces/${workspaces[1]!.id}/work-items/sync/changes?limit=200&cursor=studio-checkpoint-0`,
+    `/v1/hosted/workspaces/${workspaces[1]!.id}/work-items/sync/changes?limit=200&cursor=studio-checkpoint-0`,
+    `/v1/hosted/workspaces/${workspaces[1]!.id}/work-items/sync/changes?limit=200&cursor=studio-checkpoint-1`,
+  ]);
   expect(capturedBody).toEqual({
     title: "Prepare release",
     priority: "high",
@@ -456,8 +500,26 @@ test("creates the first hosted workspace through exact request verification", as
       await route.fulfill({ status: 201, json: workspace });
       return;
     }
-    if (request.method() === "GET" && url.pathname.endsWith("/work-items/snapshot")) {
-      await route.fulfill({ json: { items: [], limit: 21, offset: 0 } });
+    if (request.method() === "GET" && url.pathname.endsWith("/work-items/sync/bootstrap")) {
+      await route.fulfill({
+        json: {
+          protocolVersion: 1,
+          items: [],
+          checkpoint: "projects-checkpoint-0",
+          nextCursor: null,
+        },
+      });
+      return;
+    }
+    if (request.method() === "GET" && url.pathname.endsWith("/work-items/sync/changes")) {
+      await route.fulfill({
+        json: {
+          protocolVersion: 1,
+          changes: [],
+          checkpoint: "projects-checkpoint-0",
+          nextCursor: null,
+        },
+      });
       return;
     }
     if (request.method() === "GET" && url.pathname.endsWith("/today")) {

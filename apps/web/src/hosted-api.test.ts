@@ -143,6 +143,90 @@ describe("hosted web API client", () => {
     );
   });
 
+  it("passes through fixed-size bootstrap continuations and delta pages", async () => {
+    const item = {
+      id: "item-1",
+      parentWorkItemId: null,
+      title: "Prepare release",
+      description: "Check the final artifacts.",
+      status: "in_progress",
+      priority: "high",
+      dueOn: "2026-07-20",
+      planningDurationMinutes: 75,
+      version: 3,
+      createdAt: "2026-07-16T12:00:00.000Z",
+      updatedAt: "2026-07-17T12:00:00.000Z",
+    } as const;
+    const initial = {
+      protocolVersion: 1,
+      items: [item],
+      checkpoint: "checkpoint-1",
+      nextCursor: "bootstrap/next?x=1",
+    } as const;
+    const continuation = {
+      protocolVersion: 1,
+      items: [],
+      checkpoint: "checkpoint-1",
+      nextCursor: null,
+    } as const;
+    const delta = {
+      protocolVersion: 1,
+      changes: [
+        { type: "upsert", item },
+        { type: "delete", workItemId: "item-2" },
+      ],
+      checkpoint: "checkpoint-2",
+      nextCursor: null,
+    } as const;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(initial), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(continuation), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(delta), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(hostedApi.bootstrapWorkItemSync("workspace/one")).resolves.toEqual(initial);
+    await expect(
+      hostedApi.bootstrapWorkItemSync("workspace/one", initial.nextCursor),
+    ).resolves.toEqual(continuation);
+    await expect(
+      hostedApi.listWorkItemSyncChanges("workspace/one", "delta/checkpoint+1"),
+    ).resolves.toEqual(delta);
+
+    for (const [index, url] of [
+      [1, "/v1/hosted/workspaces/workspace%2Fone/work-items/sync/bootstrap?limit=200"],
+      [
+        2,
+        "/v1/hosted/workspaces/workspace%2Fone/work-items/sync/bootstrap?limit=200&cursor=bootstrap%2Fnext%3Fx%3D1",
+      ],
+      [
+        3,
+        "/v1/hosted/workspaces/workspace%2Fone/work-items/sync/changes?limit=200&cursor=delta%2Fcheckpoint%2B1",
+      ],
+    ] as const) {
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        index,
+        url,
+        expect.objectContaining({ method: "GET", credentials: "same-origin" }),
+      );
+    }
+  });
+
   it("reads the fixed bounded hosted Plan Fit effectiveness projection", async () => {
     const effectiveness = {
       usesConsidered: 4,

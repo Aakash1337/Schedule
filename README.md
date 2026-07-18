@@ -166,8 +166,9 @@ deterministic and rejects changed input.
 The shell does not regenerate plans or provide general work-item editing,
 workspace rename/delete or membership administration, or the broader product API. A separate
 authenticated work-item sync v1 can keyset-bootstrap current items and follow a pinned,
-tombstone-bearing delta window. The capture shell does not consume it, and Schedule does not ship
-an offline store, upload path, merge policy, or cross-entity sync client.
+tombstone-bearing delta window. The capture shell consumes it through atomic in-memory
+reconciliation and local display paging. Schedule does not ship an offline store, background poller,
+upload path, merge policy, or cross-entity sync client.
 Partial sets and non-empty mixed-case aliases or unknown companions fail startup without disclosing values.
 Health and system-information endpoints
 intentionally remain available independently of the product Host guard for local diagnostics.
@@ -306,7 +307,9 @@ behavior. Complete secret-manager-fed `HOSTED_API_MODE=oidc` configuration now a
 the hardened authorization-code lifecycle, nonce-bound verification, browser sessions, first-login
 workspace bootstrap, transaction-authorized hosted work-item and Today mutations, bounded
 hosted Plan Fit guidance with reversible exact-key dismissal/reset and atomic explicit-use receipts,
-and the workspace-scoped work-item sync v1 pull routes.
+and the workspace-scoped work-item sync v1 pull routes. The hosted browser consumes those routes
+through atomic in-memory bootstrap/delta reconciliation and local 20-row presentation pages; it has
+no durable offline cache, polling loop, or upload path.
 The same boundary exposes only a thresholded descriptive outcome aggregate, never per-use history.
 Provider discovery,
 JWKS, and token exchange use bounded direct HTTPS with pinned address policy; failed preflight closes
