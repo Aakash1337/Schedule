@@ -1,5 +1,5 @@
 name: hermes-schedule
-version: 0.1.0
+version: 0.2.0
 description: "Read Schedule and prepare explicitly confirmed changes through the local authenticated integration gateway."
 author: Schedule contributors
 kind: standalone

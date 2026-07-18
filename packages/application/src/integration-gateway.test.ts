@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  createNotificationProfile,
   createScheduleBlock,
   createWorkItem,
   createWorkspace,
@@ -14,6 +15,7 @@ import {
   workItemId,
   workspaceId,
   type DailyPlan,
+  type OneOffReminder,
   type ScheduleBlock,
   type WorkItem,
 } from "@schedule/domain";
@@ -85,6 +87,7 @@ function createHarness() {
   const requests: IntegrationRequestRecord[] = [];
   const workItems: WorkItem[] = [];
   const scheduleBlocks: ScheduleBlock[] = [];
+  const oneOffReminders: OneOffReminder[] = [];
   const audits: AuditEventRecord[] = [];
   const activityInputs: RecordPlanItemActivityInput[] = [];
   const invalidatedTargets: string[] = [];
@@ -92,6 +95,12 @@ function createHarness() {
   const unitOfWorkIsolationLevels: ("serializable" | "read_committed")[] = [];
   let notificationLocks = 0;
   let hierarchyLocks = 0;
+  let hasNotificationProfile = true;
+  const notificationProfile = createNotificationProfile({
+    workspaceId: WORKSPACE_ID,
+    timeZone: "UTC",
+    now: new Date("2026-07-01T00:00:00.000Z"),
+  });
   const workItemListCalls: {
     workspaceId: string;
     status: string | undefined;
@@ -344,6 +353,10 @@ function createHarness() {
         notificationLocks += 1;
         lockOrder.push("notification");
       },
+      findProfile: async () => (hasNotificationProfile ? notificationProfile : null),
+      insertOneOffReminder: async (reminder) => {
+        oneOffReminders.push(reminder);
+      },
       deleteIntentsForTarget: async (_workspaceId, targetType, targetId, kind) => {
         invalidatedTargets.push(`${targetType}:${targetId}:${kind ?? "all"}`);
         return 1;
@@ -361,6 +374,7 @@ function createHarness() {
         requests: copy(requests),
         workItems: copy(workItems),
         scheduleBlocks: copy(scheduleBlocks),
+        oneOffReminders: copy(oneOffReminders),
         audits: copy(audits),
         activityInputs: copy(activityInputs),
         invalidatedTargets: copy(invalidatedTargets),
@@ -376,6 +390,7 @@ function createHarness() {
         replace(requests, snapshot.requests);
         replace(workItems, snapshot.workItems);
         replace(scheduleBlocks, snapshot.scheduleBlocks);
+        replace(oneOffReminders, snapshot.oneOffReminders);
         replace(audits, snapshot.audits);
         replace(activityInputs, snapshot.activityInputs);
         replace(invalidatedTargets, snapshot.invalidatedTargets);
@@ -409,6 +424,7 @@ function createHarness() {
     requests,
     workItems,
     scheduleBlocks,
+    oneOffReminders,
     audits,
     activityInputs,
     invalidatedTargets,
@@ -434,6 +450,9 @@ function createHarness() {
     },
     setFailRequestSucceed(value: boolean) {
       failRequestSucceed = value;
+    },
+    setHasNotificationProfile(value: boolean) {
+      hasNotificationProfile = value;
     },
     services: {
       authenticate: new AuthenticateIntegrationCredential(unitOfWork, clock, secretVerifier),
@@ -918,6 +937,23 @@ describe("integration Today and preparation", () => {
       { type: "work_item.create", title: "Task", dueOn: "2026-02-29" },
       { type: "work_item.create", title: "Task", dueOn: "2026-07-32" },
       { type: "work_item.update", workItemId: SOURCE_WORK_ITEM_ID, expectedVersion: 1, dueOn: 1 },
+      { type: "one_off_reminder.create", title: "Reminder", scheduledFor: "not-an-instant" },
+      {
+        type: "one_off_reminder.create",
+        title: " Reminder ",
+        scheduledFor: "2026-07-13T13:00:00.000Z",
+      },
+      {
+        type: "one_off_reminder.create",
+        title: "Reminder",
+        scheduledFor: "2026-02-30T13:00:00.000Z",
+      },
+      {
+        type: "one_off_reminder.create",
+        title: "Reminder",
+        scheduledFor: "2026-07-13T13:00:00.000Z",
+        workspaceId: WORKSPACE_ID,
+      },
       {
         type: "work_item.update",
         workItemId: SOURCE_WORK_ITEM_ID,
@@ -1001,6 +1037,108 @@ describe("integration Today and preparation", () => {
 });
 
 describe("integration confirmation execution", () => {
+  it("creates and exactly replays one confirmed one-off reminder", async () => {
+    const test = createHarness();
+    const prepared = await test.services.prepare.execute({
+      principal: test.principal,
+      requestId: "reminder-create",
+      command: {
+        type: "one_off_reminder.create",
+        title: "Call the clinic",
+        scheduledFor: "2026-07-13T09:30:00-04:00",
+      },
+    });
+
+    expect(prepared.commandDisplay).toBe(
+      '{"scheduledFor":"2026-07-13T09:30:00-04:00","title":"Call the clinic","type":"one_off_reminder.create"}',
+    );
+    expect(prepared.summary).toBe(
+      "Create one-off reminder “Call the clinic” for 2026-07-13T09:30:00-04:00.",
+    );
+
+    const first = await test.services.confirm.execute({
+      principal: test.principal,
+      confirmationId: prepared.confirmationId,
+      idempotencyKey: "reminder-create-confirm",
+    });
+    expect(first).toMatchObject({
+      receiptVersion: 2,
+      operation: "one_off_reminder.create",
+      outcome: {
+        type: "one_off_reminder.created",
+        oneOffReminder: {
+          workspaceId: WORKSPACE_ID,
+          title: "Call the clinic",
+          scheduledFor: "2026-07-13T13:30:00.000Z",
+          cancelledAt: null,
+          version: 1,
+        },
+      },
+    });
+    const replay = await test.services.confirm.execute({
+      principal: test.principal,
+      confirmationId: prepared.confirmationId,
+      idempotencyKey: "reminder-create-confirm",
+    });
+
+    expect(replay).toEqual(first);
+    expect(test.oneOffReminders).toHaveLength(1);
+    expect(test.audits.map((event) => event.action)).toEqual([
+      "integration.command_prepared",
+      "one_off_reminder.created",
+      "integration.command_confirmed",
+    ]);
+
+    const stored = test.requests[0]!.result!;
+    if (stored.outcome.type !== "one_off_reminder.created") throw new Error("unexpected outcome");
+    test.requests[0] = {
+      ...test.requests[0]!,
+      result: {
+        ...stored,
+        outcome: {
+          ...stored.outcome,
+          oneOffReminder: {
+            ...stored.outcome.oneOffReminder,
+            createdAt: "2026-02-30T13:30:00.000Z",
+          },
+        },
+      },
+    };
+    await expect(
+      test.services.confirm.execute({
+        principal: test.principal,
+        confirmationId: prepared.confirmationId,
+        idempotencyKey: "reminder-create-confirm",
+      }),
+    ).rejects.toMatchObject({ code: "integration.receipt_corrupt" });
+  });
+
+  it("requires configured reminder policy without consuming the confirmation", async () => {
+    const test = createHarness();
+    const prepared = await test.services.prepare.execute({
+      principal: test.principal,
+      requestId: "reminder-profile-required",
+      command: {
+        type: "one_off_reminder.create",
+        title: "Call the clinic",
+        scheduledFor: "2026-07-13T13:30:00.000Z",
+      },
+    });
+    test.setHasNotificationProfile(false);
+
+    await expect(
+      test.services.confirm.execute({
+        principal: test.principal,
+        confirmationId: prepared.confirmationId,
+        idempotencyKey: "reminder-profile-required-confirm",
+      }),
+    ).rejects.toMatchObject({ code: "notification_profile.not_found" });
+    expect(test.oneOffReminders).toHaveLength(0);
+    expect(test.requests).toHaveLength(0);
+    expect(test.confirmations[0]?.consumedAt).toBeNull();
+    expect(test.audits.map((event) => event.action)).toEqual(["integration.command_prepared"]);
+  });
+
   it("canonicalizes, executes, clears, and replays work-item due dates", async () => {
     const test = createHarness();
     const withDueDate = await test.services.prepare.execute({

@@ -1075,6 +1075,7 @@
             "produces exact confirmation summaries that disclose every material change",
             "returns the exact stored command while bounding and sanitizing its advisory summary",
             "strictly rejects unknown fields, empty updates, and non-completion durations",
+            "creates and exactly replays one confirmed one-off reminder",
             "expires and consumes confirmations once while replaying the same receipt exactly",
             "dispatches every supported command with tenant-bound repositories and JSON-ready results",
             "isolates foreign work, blocks, confirmations, and receipt keys by credential workspace",
@@ -1103,7 +1104,7 @@
             "integration-gateway-credential-workspace-isolation",
             "integration-gateway-concurrent-prepare-exclusion",
             "integration-gateway-concurrent-confirm-exclusion",
-            "integration-gateway-five-command-postgres-e2e",
+            "integration-gateway-core-five-command-postgres-e2e",
             "integration gateway verification passed"
           ]
         }
@@ -1118,7 +1119,7 @@
         "anchor": "## Verification and safe rollout"
       },
       "limitations": [
-        "CI verifies the production Python client against deterministic loopback fakes and a real Schedule gateway with disposable PostgreSQL; it does not load the plugin inside a live Hermes runtime.",
+        "CI verifies strict one-off reminder preparation and exactly-once confirmation through the production Python client, deterministic loopback fakes, and a real Schedule gateway with disposable PostgreSQL; it does not load the plugin inside a live Hermes runtime.",
         "Live WhatsApp delivery remains operator-run and requires an explicit WHATSAPP_HOME_CHANNEL; the local stdout reminder smoke does not establish phone delivery."
       ],
       "evidence": [
@@ -1129,6 +1130,8 @@
           "anchors": [
             "test_environment_accepts_only_an_exact_loopback_origin",
             "test_prepares_then_confirms_with_distinct_request_and_replay_keys",
+            "test_projects_a_strict_one_off_reminder_create_receipt",
+            "test_rejects_hostile_one_off_reminder_receipts",
             "test_rejects_prepare_integrity_drift_before_exposing_a_confirmation",
             "test_rejects_mismatched_or_overbroad_confirmation_receipts",
             "test_bounds_and_redacts_rejected_or_malformed_responses"
@@ -1142,10 +1145,19 @@
             "test_persists_only_keyed_binding_and_opaque_confirmation_metadata",
             "test_rejects_a_different_sender_even_inside_the_same_session",
             "test_claim_blocks_cancel_until_the_remote_attempt_finishes",
+            "test_accepts_fresh_reminder_operations_and_rejects_unknown_operations",
+            "test_upgrades_populated_legacy_state_without_losing_a_claim",
+            "test_fails_closed_on_current_schema_constraint_drift",
             "test_rejects_a_stale_async_turn_context_after_a_newer_turn_arrives",
             "test_stale_claim_can_only_retry_the_same_idempotent_confirmation",
             "test_late_failure_cleanup_cannot_delete_a_newer_prepare_attempt"
           ]
+        },
+        {
+          "level": "unit",
+          "file": "integrations/hermes-schedule/tests/test_plugin.py",
+          "command": "hermes-adapter",
+          "anchors": ["test_command_schemas_match_the_current_gateway_bounds_and_hierarchy_fields"]
         },
         {
           "level": "unit",

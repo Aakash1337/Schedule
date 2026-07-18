@@ -1439,8 +1439,8 @@ try {
   assert.equal(hierarchyEvidence?.hierarchy_audit_count, 4);
   assert.equal(hierarchyEvidence?.rejected_request_count, 0);
 
-  // EVIDENCE: integration-gateway-five-command-postgres-e2e
-  // All five v1 command types are confirmed through Fastify and persisted by PostgreSQL adapters.
+  // EVIDENCE: integration-gateway-core-five-command-postgres-e2e
+  // The five work/block/activity commands are confirmed through Fastify and PostgreSQL adapters.
   const [evidence] = await connection.sql<
     {
       receipt_count: number;

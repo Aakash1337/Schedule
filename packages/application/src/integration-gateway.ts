@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   DomainError,
   activityEventTypes,
+  createOneOffReminder,
   createScheduleBlock,
   createWorkItem,
   dailyPlanId,
@@ -20,6 +21,7 @@ import {
   workItemStatuses,
   type ActivityEvent,
   type JsonValue,
+  type OneOffReminder,
   type ScheduleBlock,
   type WorkItem,
   type WorkspaceId,
@@ -34,6 +36,7 @@ import type {
   IntegrationCredential,
   IntegrationCredentialRepository,
   IntegrationCredentialScope,
+  IntegrationOneOffReminderDto,
   IntegrationPlanItemActivityDto,
   IntegrationPrincipal,
   IntegrationRequestRecord,
@@ -607,11 +610,28 @@ function requireInteger(value: unknown, field: string, minimum = 1, maximum = 2_
 }
 
 function parseInstant(value: unknown, field: string): Date {
-  requireText(value, field);
-  if (!/^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(value as string)) {
+  requireTextBounds(value, field, 1, 64);
+  const text = value as string;
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
+      text,
+    );
+  const [, , , hour, minute, second, offsetHour, offsetMinute] = match?.slice(1).map(Number) ?? [];
+  if (
+    match === null ||
+    !isValidLocalDate(text.slice(0, 10)) ||
+    hour === undefined ||
+    hour > 23 ||
+    minute === undefined ||
+    minute > 59 ||
+    second === undefined ||
+    second > 59 ||
+    (offsetHour !== undefined && offsetHour > 23) ||
+    (offsetMinute !== undefined && offsetMinute > 59)
+  ) {
     throw new DomainError("integration.command_invalid", `${field} must be an ISO timestamp.`);
   }
-  const date = new Date(value as string);
+  const date = new Date(text);
   if (!Number.isFinite(date.getTime())) {
     throw new DomainError("integration.command_invalid", `${field} must be an ISO timestamp.`);
   }
@@ -830,6 +850,22 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
           );
         }
       }
+      break;
+    }
+    case "one_off_reminder.create": {
+      assertCommandObject(
+        command,
+        ["type", "title", "scheduledFor"],
+        ["type", "title", "scheduledFor"],
+      );
+      requireTextBounds(command.title, "title", 1, 240, true);
+      if (command.title !== command.title.trim()) {
+        throw new DomainError(
+          "integration.command_invalid",
+          "title must not contain leading or trailing whitespace.",
+        );
+      }
+      parseInstant(command.scheduledFor, "scheduledFor");
       break;
     }
     case "plan_item.activity": {
@@ -1077,6 +1113,8 @@ function rawCommandSummary(command: IntegrationCommand): string {
       if (command.timeZone !== undefined) changes.push(`set time zone to ${command.timeZone}`);
       return `Update schedule block ${command.scheduleBlockId}: ${changes.join("; ")}.`;
     }
+    case "one_off_reminder.create":
+      return `Create one-off reminder ${quoted(command.title)} for ${command.scheduledFor}.`;
     case "plan_item.activity": {
       const details = [
         `on plan date ${command.date}`,
@@ -1252,6 +1290,19 @@ function toScheduleBlockDto(block: ScheduleBlock): IntegrationScheduleBlockDto {
     endsAt: block.endsAt.toISOString(),
     createdAt: block.createdAt.toISOString(),
     updatedAt: block.updatedAt.toISOString(),
+  };
+}
+
+function toOneOffReminderDto(reminder: OneOffReminder): IntegrationOneOffReminderDto {
+  return {
+    id: reminder.id,
+    workspaceId: reminder.workspaceId,
+    title: reminder.title,
+    scheduledFor: reminder.scheduledFor.toISOString(),
+    cancelledAt: null,
+    version: reminder.version,
+    createdAt: reminder.createdAt.toISOString(),
+    updatedAt: reminder.updatedAt.toISOString(),
   };
 }
 
@@ -1468,6 +1519,33 @@ async function dispatchCommand(
       }
       return { type: "schedule_block.updated", scheduleBlock: toScheduleBlockDto(updated) };
     }
+    case "one_off_reminder.create": {
+      if ((await context.notifications.findProfile(credential.workspaceId)) === null) {
+        throw new DomainError(
+          "notification_profile.not_found",
+          "Configure the notification profile before creating reminders.",
+        );
+      }
+      const reminder = createOneOffReminder({
+        workspaceId: credential.workspaceId,
+        title: command.title,
+        scheduledFor: parseInstant(command.scheduledFor, "scheduledFor"),
+        now,
+      });
+      await context.notifications.insertOneOffReminder(reminder);
+      await context.auditEvents.append({
+        workspaceId: credential.workspaceId,
+        action: "one_off_reminder.created",
+        entityType: "one_off_reminder",
+        entityId: reminder.id,
+        data: { source: "integration", version: reminder.version },
+        occurredAt: now,
+      });
+      return {
+        type: "one_off_reminder.created",
+        oneOffReminder: toOneOffReminderDto(reminder),
+      };
+    }
     case "plan_item.activity": {
       const nestedIdempotencyKey = `integration:${createHash("sha256")
         .update(`${credential.id}|${confirmation.requestId}|${confirmation.commandHash}`)
@@ -1517,6 +1595,12 @@ function outcomeEntity(outcome: IntegrationCommandOutcome): {
       entityType: "schedule_block",
       entityId: (outcome as Extract<IntegrationCommandOutcome, { scheduleBlock: unknown }>)
         .scheduleBlock.id,
+    };
+  }
+  if (outcome.type === "one_off_reminder.created") {
+    return {
+      entityType: "one_off_reminder",
+      entityId: outcome.oneOffReminder.id,
     };
   }
   return {
@@ -1604,11 +1688,13 @@ function isUuidText(value: unknown): value is string {
 }
 
 function isInstantText(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    /^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
-    Number.isFinite(new Date(value).getTime())
-  );
+  if (typeof value !== "string") return false;
+  try {
+    parseInstant(value, "receipt timestamp");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isNullableString(value: unknown, maximum: number): value is string | null {
@@ -1768,6 +1854,34 @@ function validReceiptOutcome(
       isInstantText(block.createdAt) &&
       isInstantText(block.updatedAt) &&
       (command.type === "schedule_block.create" || block.id === command.scheduleBlockId)
+    );
+  }
+  if (command.type === "one_off_reminder.create") {
+    const reminder = objectValue(outcome.oneOffReminder);
+    return (
+      receiptVersion === 2 &&
+      outcome.type === "one_off_reminder.created" &&
+      exactKeys(outcome, ["type", "oneOffReminder"]) &&
+      reminder !== null &&
+      exactKeys(reminder, [
+        "id",
+        "workspaceId",
+        "title",
+        "scheduledFor",
+        "cancelledAt",
+        "version",
+        "createdAt",
+        "updatedAt",
+      ]) &&
+      isUuidText(reminder.id) &&
+      reminder.workspaceId === workspaceIdValue &&
+      reminder.title === command.title.trim() &&
+      isInstantText(reminder.scheduledFor) &&
+      new Date(reminder.scheduledFor).getTime() === new Date(command.scheduledFor).getTime() &&
+      reminder.cancelledAt === null &&
+      isPositiveInteger(reminder.version) &&
+      isInstantText(reminder.createdAt) &&
+      isInstantText(reminder.updatedAt)
     );
   }
   const activity = objectValue(outcome.planItemActivity);

@@ -82,7 +82,7 @@ An optional integration gateway gives a workspace-scoped machine credential read
 Today and a two-step, idempotent structured-command flow. It is disabled by default. Schedule stays
 authoritative; Hermes or another messaging agent calls this boundary instead of writing the
 database. The repository includes an opt-in local Hermes plugin that adds sender/session/platform-
-bound later-turn confirmation and a deterministic stdout reminder helper. A checked installer copies
+bound later-turn confirmation, including strict one-off reminder creation, and a deterministic stdout reminder helper. A checked installer copies
 only their runtime files into Hermes; it remains local-only and does not silently enable the plugin,
 create a cron job, or send a WhatsApp message.
 
@@ -227,7 +227,7 @@ verifier checks the
 workspace/schedule/id execution-history index without changing delivery or credential data.
 
 Verify the Hermes plugin's deterministic Python contract and its disposable PostgreSQL/real
-Fastify prepare-and-confirm flow separately:
+Fastify one-off-reminder prepare-and-confirm flow separately:
 
 ```powershell
 pnpm verify:hermes-adapter

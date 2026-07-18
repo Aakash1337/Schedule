@@ -18,6 +18,59 @@ state_module = import_module(f"{PACKAGE_NAME}.state")
 ConfirmationState = state_module.ConfirmationState
 ScheduleAdapterError = client_module.ScheduleAdapterError
 
+_CURRENT_OPERATION_CHECK = "CHECK(length(operation) BETWEEN 1 AND 64)"
+_LEGACY_OPERATION_CHECK = """CHECK(operation IN (
+                    'work_item.create', 'work_item.update', 'schedule_block.create',
+                    'schedule_block.update', 'plan_item.activity'
+                  ))"""
+
+
+def _replace_schema_text(path: Path, original: str, replacement: str) -> None:
+    connection = sqlite3.connect(path, isolation_level=None)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        schema = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'schedule_pending_confirmations'"
+        ).fetchone()[0]
+        if original not in schema:
+            raise AssertionError("The expected schema fragment was not found.")
+        replacement_schema = schema.replace(
+            "schedule_pending_confirmations",
+            "schedule_pending_confirmations_fixture",
+            1,
+        ).replace(original, replacement, 1)
+        columns = ", ".join(
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(schedule_pending_confirmations)"
+            )
+        )
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(replacement_schema)
+        connection.execute(
+            f"INSERT INTO schedule_pending_confirmations_fixture ({columns}) "
+            f"SELECT {columns} FROM schedule_pending_confirmations"
+        )
+        connection.execute("DROP TABLE schedule_pending_confirmations")
+        connection.execute(
+            "ALTER TABLE schedule_pending_confirmations_fixture "
+            "RENAME TO schedule_pending_confirmations"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _pending_row(path: Path) -> tuple | None:
+    connection = sqlite3.connect(path)
+    try:
+        return connection.execute(
+            "SELECT * FROM schedule_pending_confirmations"
+        ).fetchone()
+    finally:
+        connection.close()
+
 
 class ConfirmationStateTests(unittest.TestCase):
     key = b"state-test-binding-key-that-is-long-enough"
@@ -209,6 +262,148 @@ class ConfirmationStateTests(unittest.TestCase):
                         platform=platform,
                         sender_id=sender,
                     )
+
+    def test_accepts_fresh_reminder_operations_and_rejects_unknown_operations(self) -> None:
+        reminder_context = self.state.capture_turn(
+            session_id="reminder-session",
+            turn_id="turn-1",
+            user_message="create a reminder",
+            platform="whatsapp",
+            sender_id="reminder-sender",
+        )
+        reminder_attempt = self.state.begin_prepare(
+            "reminder-session", "8" * 64, reminder_context
+        )
+        pending = self.state.create_pending(
+            "reminder-session",
+            turn_context=reminder_context,
+            confirmation_id=str(uuid4()),
+            command_hash="9" * 64,
+            operation="one_off_reminder.create",
+            request_id=reminder_attempt.request_id,
+            expires_at="2099-07-15T07:01:00.000Z",
+        )
+        self.assertEqual(pending.operation, "one_off_reminder.create")
+
+        unknown_context = self.state.capture_turn(
+            session_id="unknown-session",
+            turn_id="turn-1",
+            user_message="unknown operation",
+            platform="whatsapp",
+            sender_id="unknown-sender",
+        )
+        unknown_attempt = self.state.begin_prepare(
+            "unknown-session", "a" * 64, unknown_context
+        )
+        with self.assertRaisesRegex(
+            ScheduleAdapterError, "^schedule_prepared_change_invalid$"
+        ):
+            self.state.create_pending(
+                "unknown-session",
+                turn_context=unknown_context,
+                confirmation_id=str(uuid4()),
+                command_hash="b" * 64,
+                operation="unrecognized.create",
+                request_id=unknown_attempt.request_id,
+                expires_at="2099-07-15T07:01:00.000Z",
+            )
+
+    def test_upgrades_populated_legacy_state_without_losing_a_claim(self) -> None:
+        context = self._capture()
+        attempt = self.state.begin_prepare("raw-session-identifier", "c" * 64, context)
+        pending = self.state.create_pending(
+            "raw-session-identifier",
+            turn_context=context,
+            confirmation_id=str(uuid4()),
+            command_hash="d" * 64,
+            operation="work_item.create",
+            request_id=attempt.request_id,
+            expires_at="2099-07-15T07:01:00.000Z",
+        )
+        confirmation_context = self._capture(
+            turn="turn-2", message=f"CONFIRM SCHEDULE {pending.challenge}"
+        )
+        self.state.claim_pending(
+            "raw-session-identifier", pending.challenge, confirmation_context
+        )
+        before = _pending_row(self.path)
+        self.assertIsNotNone(before)
+        self.assertIsNotNone(before[-3])
+        self.assertIsNotNone(before[-2])
+
+        _replace_schema_text(
+            self.path, _CURRENT_OPERATION_CHECK, _LEGACY_OPERATION_CHECK
+        )
+        restarted = ConfirmationState(self.path, self.key)
+        restarted_again = ConfirmationState(self.path, self.key)
+
+        self.assertEqual(_pending_row(self.path), before)
+        restarted_again.capture_turn(
+            session_id="raw-session-identifier",
+            turn_id="turn-3",
+            user_message="inspect pending",
+            platform="whatsapp",
+            sender_id="15551234567@s.whatsapp.net",
+        )
+        self.assertEqual(
+            restarted_again.load_pending("raw-session-identifier"), pending
+        )
+        connection = sqlite3.connect(self.path)
+        try:
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+            schema = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'schedule_pending_confirmations'"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertIn(_CURRENT_OPERATION_CHECK, schema)
+
+        reminder_context = restarted.capture_turn(
+            session_id="post-upgrade-reminder",
+            turn_id="turn-1",
+            user_message="create reminder",
+            platform="whatsapp",
+            sender_id="reminder-sender",
+        )
+        reminder_attempt = restarted.begin_prepare(
+            "post-upgrade-reminder", "e" * 64, reminder_context
+        )
+        created = restarted.create_pending(
+            "post-upgrade-reminder",
+            turn_context=reminder_context,
+            confirmation_id=str(uuid4()),
+            command_hash="f" * 64,
+            operation="one_off_reminder.create",
+            request_id=reminder_attempt.request_id,
+            expires_at="2099-07-15T07:01:00.000Z",
+        )
+        self.assertEqual(created.operation, "one_off_reminder.create")
+
+    def test_fails_closed_on_current_schema_constraint_drift(self) -> None:
+        context = self._capture()
+        attempt = self.state.begin_prepare("raw-session-identifier", "1" * 64, context)
+        self.state.create_pending(
+            "raw-session-identifier",
+            turn_context=context,
+            confirmation_id=str(uuid4()),
+            command_hash="2" * 64,
+            operation="work_item.create",
+            request_id=attempt.request_id,
+            expires_at="2099-07-15T07:01:00.000Z",
+        )
+        _replace_schema_text(
+            self.path,
+            "CHECK(length(binding_hash) = 64)",
+            "CHECK(length(binding_hash) >= 63)",
+        )
+        before = _pending_row(self.path)
+
+        with self.assertRaisesRegex(
+            ScheduleAdapterError, "^schedule_state_schema_invalid$"
+        ):
+            ConfirmationState(self.path, self.key)
+        self.assertEqual(_pending_row(self.path), before)
 
 
 if __name__ == "__main__":

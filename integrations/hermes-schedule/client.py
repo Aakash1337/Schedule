@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date as date_type
+from datetime import date as date_type, datetime
 import hashlib
 import hmac
 import http.client
@@ -22,6 +22,10 @@ _TOKEN = re.compile(r"[^\s\x00-\x1f\x7f]{16,4096}\Z")
 _UUID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
 )
+_INSTANT = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})\Z"
+)
 _MAXIMUM_INTEGER = 2_147_483_647
 _PRIORITIES = frozenset({"none", "low", "medium", "high", "urgent"})
 _STATUSES = frozenset({"backlog", "planned", "in_progress", "blocked", "done", "cancelled"})
@@ -32,6 +36,7 @@ _OPERATIONS = frozenset(
         "schedule_block.create",
         "schedule_block.update",
         "plan_item.activity",
+        "one_off_reminder.create",
     }
 )
 _ACTIVITY_STATES = frozenset({"pending", "started", "completed", "skipped", "deferred", "dismissed"})
@@ -90,6 +95,35 @@ def _local_date(value: Any) -> str:
     if parsed.isoformat() != value:
         raise ScheduleAdapterError("schedule_date_invalid")
     return value
+
+
+def _instant(value: Any, code: str) -> str:
+    instant = _bounded_text(value, 64, code)
+    if _INSTANT.fullmatch(instant) is None:
+        raise ScheduleAdapterError(code)
+    normalized = instant[:-1] + "+00:00" if instant.endswith("Z") else instant
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as error:
+        raise ScheduleAdapterError(code) from error
+    if parsed.tzinfo is None:
+        raise ScheduleAdapterError(code)
+    return instant
+
+
+def _same_json(left: Any, right: Any) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _same_json(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _same_json(left_item, right_item)
+            for left_item, right_item in zip(left, right, strict=True)
+        )
+    return left == right
 
 
 @dataclass(frozen=True)
@@ -175,6 +209,15 @@ class ScheduleClient:
         _uuid(request_id, "schedule_request_id_invalid")
         if not isinstance(command, Mapping):
             raise ScheduleAdapterError("schedule_command_invalid")
+        if command.get("type") == "one_off_reminder.create":
+            title = command.get("title")
+            if (
+                not isinstance(title, str)
+                or title != title.strip()
+                or not (1 <= len(title) <= 240)
+            ):
+                raise ScheduleAdapterError("schedule_command_invalid")
+            _instant(command.get("scheduledFor"), "schedule_command_invalid")
         data = self._request(
             "POST",
             "/v1/integrations/commands/prepare",
@@ -207,7 +250,9 @@ class ScheduleClient:
             displayed_command = json.loads(command_display)
         except json.JSONDecodeError as error:
             raise ScheduleAdapterError("schedule_prepared_change_invalid") from error
-        if displayed_command != prepared["command"] or prepared["command"] != dict(command):
+        if not _same_json(displayed_command, prepared["command"]) or not _same_json(
+            prepared["command"], dict(command)
+        ):
             raise ScheduleAdapterError("schedule_prepared_change_invalid")
         display_hash = hashlib.sha256(command_display.encode("utf-8")).hexdigest()
         if not hmac.compare_digest(display_hash, prepared["commandHash"]):
@@ -483,6 +528,50 @@ class ScheduleClient:
             return {
                 "type": expected_type,
                 "scheduleBlock": {"id": block["id"], "version": version},
+            }
+
+        if operation == "one_off_reminder.create":
+            if receipt_version != 2:
+                raise ScheduleAdapterError("schedule_confirmed_change_invalid")
+            outcome = _exact_object(
+                value, {"type", "oneOffReminder"}, "schedule_confirmed_change_invalid"
+            )
+            if outcome["type"] != "one_off_reminder.created":
+                raise ScheduleAdapterError("schedule_confirmed_change_invalid")
+            reminder = _exact_object(
+                outcome["oneOffReminder"],
+                {
+                    "id",
+                    "workspaceId",
+                    "title",
+                    "scheduledFor",
+                    "cancelledAt",
+                    "version",
+                    "createdAt",
+                    "updatedAt",
+                },
+                "schedule_confirmed_change_invalid",
+            )
+            reminder_id = _uuid(reminder["id"], "schedule_confirmed_change_invalid")
+            _uuid(reminder["workspaceId"], "schedule_confirmed_change_invalid")
+            _bounded_text(reminder["title"], 240, "schedule_confirmed_change_invalid")
+            scheduled_for = _instant(
+                reminder["scheduledFor"], "schedule_confirmed_change_invalid"
+            )
+            if reminder["cancelledAt"] is not None:
+                raise ScheduleAdapterError("schedule_confirmed_change_invalid")
+            version = _positive_integer(
+                reminder["version"], "schedule_confirmed_change_invalid"
+            )
+            _instant(reminder["createdAt"], "schedule_confirmed_change_invalid")
+            _instant(reminder["updatedAt"], "schedule_confirmed_change_invalid")
+            return {
+                "type": "one_off_reminder.created",
+                "oneOffReminder": {
+                    "id": reminder_id,
+                    "scheduledFor": scheduled_for,
+                    "version": version,
+                },
             }
 
         outcome = _exact_object(

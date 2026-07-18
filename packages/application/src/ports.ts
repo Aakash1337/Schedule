@@ -584,6 +584,11 @@ export type IntegrationCommand =
       readonly timeZone?: string;
     }
   | {
+      readonly type: "one_off_reminder.create";
+      readonly title: string;
+      readonly scheduledFor: string;
+    }
+  | {
       readonly type: "plan_item.activity";
       readonly date: string;
       readonly expectedPlanId: string;
@@ -649,6 +654,10 @@ export type IntegrationCommandOutcome =
       readonly scheduleBlock: IntegrationScheduleBlockDto;
     }
   | {
+      readonly type: "one_off_reminder.created";
+      readonly oneOffReminder: IntegrationOneOffReminderDto;
+    }
+  | {
       readonly type: "plan_item.activity_recorded";
       readonly planItemActivity: IntegrationPlanItemActivityDto;
     };
@@ -683,6 +692,17 @@ export interface IntegrationScheduleBlockDto {
   readonly updatedAt: string;
 }
 
+export interface IntegrationOneOffReminderDto {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly title: string;
+  readonly scheduledFor: string;
+  readonly cancelledAt: null;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
 export interface IntegrationActivityEventDto {
   readonly id: string;
   readonly workspaceId: string;
@@ -711,7 +731,7 @@ export interface IntegrationPlanItemActivityDto {
 }
 
 export interface ConfirmedIntegrationCommandResult {
-  /** Version 2 adds work-item hierarchy fields; omitted only by legacy durable replays. */
+  /** Version 2 adds hierarchy fields and is required for one-off reminder receipts. */
   readonly receiptVersion?: 1 | 2;
   readonly confirmationId: string;
   readonly operation: IntegrationCommand["type"];

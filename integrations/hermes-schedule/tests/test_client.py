@@ -274,6 +274,157 @@ class ScheduleClientTests(unittest.TestCase):
             {"version": INTEGRATION_VERSION, "confirmationId": confirmation_id},
         )
 
+    def test_projects_a_strict_one_off_reminder_create_receipt(self) -> None:
+        confirmation_id = str(uuid4())
+        reminder_id = str(uuid4())
+        command_hash = "a" * 64
+        receipt = {
+            "receiptVersion": 2,
+            "confirmationId": confirmation_id,
+            "operation": "one_off_reminder.create",
+            "commandHash": command_hash,
+            "outcome": {
+                "type": "one_off_reminder.created",
+                "oneOffReminder": {
+                    "id": reminder_id,
+                    "workspaceId": str(uuid4()),
+                    "title": "Call home",
+                    "scheduledFor": "2026-07-16T18:30:00.000Z",
+                    "cancelledAt": None,
+                    "version": 1,
+                    "createdAt": "2026-07-16T12:00:00.000Z",
+                    "updatedAt": "2026-07-16T12:00:00.000Z",
+                },
+            },
+        }
+        with _server(_json_response(200, _envelope(receipt))) as (port, _fixture):
+            client = ScheduleClient(ScheduleClientConfig(port=port, token=self.token))
+            safe = client.confirm_change(
+                confirmation_id,
+                str(uuid4()),
+                "one_off_reminder.create",
+                command_hash,
+            )
+
+        self.assertEqual(
+            safe,
+            {
+                "receiptVersion": 2,
+                "confirmationId": confirmation_id,
+                "operation": "one_off_reminder.create",
+                "commandHash": command_hash,
+                "outcome": {
+                    "type": "one_off_reminder.created",
+                    "oneOffReminder": {
+                        "id": reminder_id,
+                        "scheduledFor": "2026-07-16T18:30:00.000Z",
+                        "version": 1,
+                    },
+                },
+            },
+        )
+        self.assertNotIn("Call home", json.dumps(safe))
+
+    def test_rejects_hostile_one_off_reminder_receipts(self) -> None:
+        confirmation_id = str(uuid4())
+        command_hash = "b" * 64
+        reminder = {
+            "id": str(uuid4()),
+            "workspaceId": str(uuid4()),
+            "title": "Call home",
+            "scheduledFor": "2026-07-16T18:30:00.000Z",
+            "cancelledAt": None,
+            "version": 1,
+            "createdAt": "2026-07-16T12:00:00.000Z",
+            "updatedAt": "2026-07-16T12:00:00.000Z",
+        }
+        invalid_outcomes = (
+            {
+                "type": "one_off_reminder.created",
+                "oneOffReminder": {**reminder, "providerSecret": "MUST_NOT_ESCAPE"},
+            },
+            {
+                "type": "one_off_reminder.created",
+                "oneOffReminder": {**reminder, "id": "not-a-uuid"},
+            },
+            {
+                "type": "one_off_reminder.created",
+                "oneOffReminder": {**reminder, "scheduledFor": "not-an-instant"},
+            },
+            {
+                "type": "one_off_reminder.created",
+                "oneOffReminder": {
+                    **reminder,
+                    "scheduledFor": "2026-07-16 18:30:00+00:00",
+                },
+            },
+            {
+                "type": "one_off_reminder.created",
+                "oneOffReminder": {
+                    **reminder,
+                    "cancelledAt": "2026-07-16T12:00:00.000Z",
+                },
+            },
+            {
+                "type": "one_off_reminder.created",
+                "oneOffReminder": {**reminder, "version": True},
+            },
+            {"type": "one_off_reminder.updated", "oneOffReminder": reminder},
+            {
+                "type": "one_off_reminder.created",
+                "oneOffReminder": reminder,
+                "rawResponseSecret": "MUST_NOT_ESCAPE",
+            },
+        )
+
+        for outcome in invalid_outcomes:
+            with self.subTest(outcome=outcome):
+                receipt = {
+                    "receiptVersion": 2,
+                    "confirmationId": confirmation_id,
+                    "operation": "one_off_reminder.create",
+                    "commandHash": command_hash,
+                    "outcome": outcome,
+                }
+                with _server(_json_response(200, _envelope(receipt))) as (port, _fixture):
+                    client = ScheduleClient(ScheduleClientConfig(port=port, token=self.token))
+                    with self.assertRaisesRegex(
+                        ScheduleAdapterError, "^schedule_confirmed_change_invalid$"
+                    ) as caught:
+                        client.confirm_change(
+                            confirmation_id,
+                            str(uuid4()),
+                            "one_off_reminder.create",
+                            command_hash,
+                        )
+                self.assertNotIn("MUST_NOT_ESCAPE", str(caught.exception))
+
+        valid_outcome = {
+            "type": "one_off_reminder.created",
+            "oneOffReminder": reminder,
+        }
+        for receipt_version in (None, 1):
+            with self.subTest(receipt_version=receipt_version):
+                receipt = {
+                    "confirmationId": confirmation_id,
+                    "operation": "one_off_reminder.create",
+                    "commandHash": command_hash,
+                    "outcome": valid_outcome,
+                }
+                if receipt_version is not None:
+                    receipt["receiptVersion"] = receipt_version
+                with _server(_json_response(200, _envelope(receipt))) as (port, _fixture):
+                    client = ScheduleClient(ScheduleClientConfig(port=port, token=self.token))
+                    with self.assertRaisesRegex(
+                        ScheduleAdapterError, "^schedule_confirmed_change_invalid$"
+                    ):
+                        client.confirm_change(
+                            confirmation_id,
+                            str(uuid4()),
+                            "one_off_reminder.create",
+                            command_hash,
+                        )
+
     def test_accepts_strict_version_one_and_unversioned_legacy_work_item_receipts(self) -> None:
         confirmation_id = str(uuid4())
         idempotency_key = str(uuid4())
@@ -346,6 +497,7 @@ class ScheduleClientTests(unittest.TestCase):
             "type": "work_item.create",
             "title": "Intended title",
             "status": "planned",
+            "planningDurationMinutes": 1,
         }
         canonical = json.dumps(intended, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
         expected_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -388,6 +540,21 @@ class ScheduleClientTests(unittest.TestCase):
                 "command": intended,
                 "commandDisplay": "not-json",
                 "summary": "Malformed display",
+                "expiresAt": "2026-07-15T07:01:00.000Z",
+            },
+            {
+                "confirmationId": confirmation_id,
+                "requestId": request_id,
+                "commandHash": hashlib.sha256(
+                    canonical.replace('"planningDurationMinutes":1', '"planningDurationMinutes":true').encode(
+                        "utf-8"
+                    )
+                ).hexdigest(),
+                "command": {**intended, "planningDurationMinutes": True},
+                "commandDisplay": canonical.replace(
+                    '"planningDurationMinutes":1', '"planningDurationMinutes":true'
+                ),
+                "summary": "Hostile JSON type collision",
                 "expiresAt": "2026-07-15T07:01:00.000Z",
             },
         )
@@ -529,6 +696,22 @@ class ScheduleClientTests(unittest.TestCase):
             lambda: client.prepare_change(
                 str(uuid4()),
                 {"type": "plan_item.activity", "metadata": {"invalid": float("nan")}},
+            ),
+            lambda: client.prepare_change(
+                str(uuid4()),
+                {
+                    "type": "one_off_reminder.create",
+                    "title": " Reminder ",
+                    "scheduledFor": "2026-07-16T18:30:00Z",
+                },
+            ),
+            lambda: client.prepare_change(
+                str(uuid4()),
+                {
+                    "type": "one_off_reminder.create",
+                    "title": "Reminder",
+                    "scheduledFor": "2026-07-16 18:30:00+00:00",
+                },
             ),
             lambda: client.confirm_change(
                 str(uuid4()), "not-a-uuid", "work_item.create", "a" * 64
