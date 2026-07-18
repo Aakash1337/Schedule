@@ -2059,6 +2059,7 @@
           "command": "unit",
           "anchors": [
             "shows weighted prior-plan outcomes without changing planning",
+            "focuses unchanged Today targets for deferred workload without planning",
             "withholds deferred workload rates when prior plans contain no work",
             "recovers planning outcomes only after explicit retry"
           ]

@@ -905,6 +905,9 @@ describe("Today commands", () => {
     expect(
       screen.getByText(/manual review of duration, priority, or relevance; nothing changes/i),
     ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Review today's targets" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "By planner version" })).toBeVisible();
     expect(screen.getByText("planner-v6 · weights-v4")).toBeVisible();
     expect(screen.getByText(/Completed 75% scheduled time · 75% tasks/)).toBeVisible();
@@ -920,7 +923,59 @@ describe("Today commands", () => {
     );
   });
 
+  it("focuses unchanged Today targets for deferred workload without planning", async () => {
+    const user = userEvent.setup();
+    const pendingGeneration = deferred<CurrentDailyPlan>();
+    apiMocks.getCurrentPlan
+      .mockRejectedValueOnce(new ApiError(404, "daily_plan.not_found", "No plan exists.", null))
+      .mockResolvedValueOnce(plan);
+    apiMocks.generatePlan.mockReturnValue(pendingGeneration.promise);
+    apiMocks.getPlanningOutcomes.mockResolvedValue(
+      planningOutcomes({
+        plansConsidered: 3,
+        plannedTaskCount: 6,
+        deferredTaskCount: 1,
+        plannedMinutes: 180,
+        deferredMinutes: 30,
+        completionTasksRateBasisPoints: 0,
+        completionMinutesRateBasisPoints: 0,
+      }),
+    );
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const reviewTargets = await screen.findByRole("button", {
+      name: "Review today's targets",
+    });
+    const minutes = screen.getByRole("spinbutton", { name: /^Target minutes/ });
+    const tasks = screen.getByRole("spinbutton", { name: /^Target tasks/ });
+    expect(minutes).toHaveValue(180);
+    expect(tasks).toHaveValue(4);
+
+    await user.click(reviewTargets);
+
+    expect(minutes).toHaveFocus();
+    expect(minutes).toHaveValue(180);
+    expect(tasks).toHaveValue(4);
+    expect(apiMocks.generatePlan).not.toHaveBeenCalled();
+    expect(apiMocks.regeneratePlan).not.toHaveBeenCalled();
+    expect(apiMocks.getSchedulingAdvice).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Generate today's plan" }));
+    await waitFor(() => expect(apiMocks.generatePlan).toHaveBeenCalledOnce());
+    expect(reviewTargets).toBeDisabled();
+
+    await act(async () => {
+      pendingGeneration.resolve(plan);
+      await pendingGeneration.promise;
+    });
+    await waitFor(() => expect(reviewTargets).not.toBeInTheDocument());
+  });
+
   it("withholds deferred workload rates when prior plans contain no work", async () => {
+    apiMocks.getCurrentPlan.mockRejectedValue(
+      new ApiError(404, "daily_plan.not_found", "No plan exists.", null),
+    );
     apiMocks.getPlanningOutcomes.mockResolvedValue(
       planningOutcomes({
         plansConsidered: 3,
@@ -945,6 +1000,9 @@ describe("Today commands", () => {
     expect(await screen.findByText(/3 prior plan days contained no planned items/i)).toBeVisible();
     expect(screen.queryByText("Deferred workload")).not.toBeInTheDocument();
     expect(screen.queryByText(/% time · .*% tasks/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Review today's targets" }),
+    ).not.toBeInTheDocument();
   });
 
   it("recovers planning outcomes only after explicit retry", async () => {
