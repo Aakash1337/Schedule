@@ -21,8 +21,10 @@ not authorize these product routes.
   membership atomically; `GET /v1/hosted/workspaces?limit=20&offset=0` returns only the authenticated
   principal's active workspace page. A fixed
   `GET /v1/hosted/workspaces/{workspaceId}/work-items` returns only the first 20 backlog IDs/titles.
-  Workspace detail reads, most product routes, synchronization, ingress/TLS, and deployment
-  automation remain separate requirements.
+  `GET /v1/hosted/workspaces/{workspaceId}/today?date=YYYY-MM-DD` returns only an existing current
+  plan's titles, scheduled minutes, activity states, and total minutes. Workspace detail reads, most
+  product routes, synchronization, ingress/TLS, and deployment automation remain separate
+  requirements.
 - CORS is disabled, JSON bodies are limited to 256 KiB, request objects reject unknown fields, and error responses do not include stack traces.
 - Product routes reject missing, malformed, or non-loopback `Host` authorities before routing. This protects the unauthenticated loopback service from browser DNS-rebinding attacks; `localhost`, IPv4 `127.0.0.0/8`, and IPv6 loopback (`[::1]`) are accepted with an optional valid port. Health and system-information endpoints remain outside this product-route guard for local process and container diagnostics.
 - Accepted UUID values in product-route paths and bodies are canonicalized to lowercase before service dispatch and identity comparison; responses therefore use the canonical spelling.

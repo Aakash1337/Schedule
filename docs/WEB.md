@@ -35,8 +35,9 @@ its unauthenticated routes are not bundled into the hosted entry.
 The hosted shell shows a workspace selector only when more than one active membership exists. It
 stores only that selection in browser storage, sends the exact script-readable CSRF proof on
 mutations, and treats session, access, throttling, and availability failures as bounded states. It
-shows only the first 20 backlog titles, refreshes that snapshot after capture, and keeps a failed
-read independent from the form. It cannot page, filter, or edit work and does not imply
+shows the browser-local day's existing plan through titles, durations, and activity states, plus the
+first 20 backlog titles. The two reads fail and retry independently; capture refreshes only the
+backlog. The shell cannot generate a plan, page, filter, or edit work and does not imply
 synchronization.
 
 ## Information architecture

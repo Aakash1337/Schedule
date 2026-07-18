@@ -9,11 +9,17 @@ const workspaces = [
 test("captures one hosted backlog item with responsive request verification", async ({ page }) => {
   let capturedBody: unknown;
   let capturedCsrf: string | undefined;
+  let requestedTodayDate: string | null = null;
   const existing = {
     id: "00000000-0000-4000-8000-000000000009",
     title: `Review-${"outline".repeat(24)}`,
   };
   const created = { id: "00000000-0000-4000-8000-000000000010", title: "Prepare release" };
+  const todayItem = {
+    title: `Plan-${"focus".repeat(24)}`,
+    scheduledMinutes: 45,
+    activityState: "started",
+  };
   let backlog = [existing];
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
@@ -35,6 +41,13 @@ test("captures one hosted backlog item with responsive request verification", as
       await route.fulfill({ json: { items: backlog, limit: 20, offset: 0 } });
       return;
     }
+    if (request.method() === "GET" && url.pathname.endsWith("/today")) {
+      requestedTodayDate = url.searchParams.get("date");
+      await route.fulfill({
+        json: { date: requestedTodayDate, items: [todayItem], totalMinutes: 45 },
+      });
+      return;
+    }
     if (
       request.method() === "POST" &&
       url.pathname === `/v1/hosted/workspaces/${workspaces[1]!.id}/work-items`
@@ -51,6 +64,9 @@ test("captures one hosted backlog item with responsive request verification", as
   await page.goto("/hosted.html");
   await expect(page.getByRole("heading", { name: "What needs doing?" })).toBeVisible();
   await expect(page.getByText(existing.title)).toBeVisible();
+  await expect(page.getByText(todayItem.title)).toBeVisible();
+  await expect(page.getByText("45m · Started")).toBeVisible();
+  expect(requestedTodayDate).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
   await page.getByRole("combobox", { name: "Workspace" }).selectOption(workspaces[1]!.id);
   await page.getByRole("textbox", { name: "Work item" }).fill("Prepare release");
   await page.getByRole("button", { name: "Add to backlog" }).click();

@@ -1,6 +1,7 @@
 import {
   AuthorizeHostedWorkspace,
   CreateHostedWorkItem,
+  GetCurrentDailyPlan,
   ListHostedWorkspaces,
   ListWorkItems,
 } from "@schedule/application";
@@ -37,6 +38,7 @@ async function hostedApiOptions(
   const identityUnitOfWork = new PostgresIdentityUnitOfWork(database);
   const listWorkspaces = new ListHostedWorkspaces(identityUnitOfWork);
   const listWorkItems = new ListWorkItems(new PostgresUnitOfWork(database));
+  const getCurrentDailyPlan = new GetCurrentDailyPlan(new PostgresUnitOfWork(database));
   const createWorkItem = new CreateHostedWorkItem(new PostgresHostedMutationUnitOfWork(database), {
     now: () => new Date(),
   });
@@ -66,6 +68,10 @@ async function hostedApiOptions(
         }),
       createWorkItem: ({ authorization, command }) =>
         createWorkItem.execute(authorization, command),
+    },
+    today: {
+      getToday: ({ authorization, date }) =>
+        getCurrentDailyPlan.execute({ workspaceId: authorization.workspaceId, date }),
     },
     webShell,
     requestsPerMinute: config.HOSTED_RATE_LIMIT_PER_MINUTE,

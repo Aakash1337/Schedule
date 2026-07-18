@@ -333,6 +333,14 @@ try {
     limit: 20,
     offset: 0,
   });
+  const listedToday = await app.inject({
+    method: "GET",
+    url: `/v1/hosted/workspaces/${hostedAccount.workspaceId}/today?date=2026-07-16`,
+    headers: { cookie: cookiePair(sessionCookie) },
+  });
+  assert.equal(listedToday.statusCode, 200, listedToday.body);
+  assert.equal(listedToday.headers["cache-control"], "no-store");
+  assert.deepEqual(listedToday.json(), { date: "2026-07-16", items: [], totalMinutes: 0 });
 
   const [persisted] = await database.sql<
     {
@@ -429,7 +437,7 @@ try {
   assert.deepEqual(requestCounts, { discovery: 1, token: 1, jwks: 1 });
 
   console.log(
-    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read.",
+    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read and empty Today read.",
   );
 } catch (error) {
   verificationError = error;

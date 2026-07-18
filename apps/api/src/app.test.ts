@@ -157,6 +157,7 @@ describe("API infrastructure", () => {
       },
       workspaces: { listWorkspaces: vi.fn() },
       workItems: { createWorkItem: vi.fn(), listWorkItems: vi.fn() },
+      today: { getToday: vi.fn() },
       webShell: {
         html: '<!doctype html><div id="root"></div><script src="/assets/hosted.js"></script>',
         icon: Buffer.from("<svg></svg>"),
@@ -208,6 +209,12 @@ describe("API infrastructure", () => {
     });
     expect(protectedWorkList.statusCode).toBe(401);
     expect(hostedApi.workItems.listWorkItems).not.toHaveBeenCalled();
+    const protectedToday = await protectedApp.inject({
+      method: "GET",
+      url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/today?date=2026-07-16",
+    });
+    expect(protectedToday.statusCode).toBe(401);
+    expect(hostedApi.today.getToday).not.toHaveBeenCalled();
     const protectedWorkspaceList = await protectedApp.inject({
       method: "GET",
       url: "/v1/hosted/workspaces",
