@@ -14,7 +14,7 @@ not authorize these product routes.
   complete validated registration, `HOSTED_OIDC_PREFLIGHT_MODE=enabled`, the complete bounded secret
   set, and `PRODUCT_API_MODE=disabled`. Enabled startup completes provider discovery before listening,
   installs the four browser lifecycle routes, principal-bound workspace list/create, and the
-  membership-authorized hosted work-item read/create,
+  membership-authorized hosted work-item and Today slice,
   applies `HOSTED_RATE_LIMIT_PER_MINUTE`, and reports `hostedEndpointsEnabled: true`. Partial,
   malformed, mixed-case, and unknown non-empty `HOSTED_*` values fail startup without disclosure.
 - Hosted mode is still a narrow API slice, not a complete public product. First login creates one
@@ -29,7 +29,11 @@ not authorize these product routes.
   `PATCH /v1/hosted/workspaces/{workspaceId}/work-items/{workItemId}` body containing only
   `expectedVersion` and `status=in_progress|done`.
   `GET /v1/hosted/workspaces/{workspaceId}/today?date=YYYY-MM-DD` returns only an existing current
-  plan's titles, scheduled minutes, activity states, and total minutes. Workspace detail reads, most
+  plan's identity/head fence, item IDs/titles/scheduled minutes/activity states, and total minutes.
+  CSRF-protected `POST /v1/hosted/workspaces/{workspaceId}/today/{itemId}/activity-events?date=YYYY-MM-DD`
+  accepts only the expected plan/head, `started|completed`, one offset timestamp, and a required
+  `Idempotency-Key`; the server derives the plan time zone and reauthorizes in the write transaction.
+  Workspace detail reads, most
   product routes, synchronization, ingress/TLS, and deployment automation remain separate
   requirements.
 - CORS is disabled, JSON bodies are limited to 256 KiB, request objects reject unknown fields, and error responses do not include stack traces.

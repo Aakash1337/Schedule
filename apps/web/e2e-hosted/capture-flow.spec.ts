@@ -11,6 +11,9 @@ test("captures one hosted backlog item with responsive request verification", as
   let capturedCsrf: string | undefined;
   let capturedStatusBody: unknown;
   let capturedStatusCsrf: string | undefined;
+  let capturedTodayBody: unknown;
+  let capturedTodayCsrf: string | undefined;
+  let capturedTodayIdempotency: string | undefined;
   let requestedTodayDate: string | null = null;
   const existing = {
     id: "00000000-0000-4000-8000-000000000009",
@@ -23,10 +26,13 @@ test("captures one hosted backlog item with responsive request verification", as
     version: 1,
   };
   const todayItem = {
+    id: "00000000-0000-4000-8000-000000000011",
     title: `Plan-${"focus".repeat(24)}`,
     scheduledMinutes: 45,
-    activityState: "started",
   };
+  const todayPlanId = "00000000-0000-4000-8000-000000000012";
+  let todayHeadVersion = 5;
+  let todayActivityState: "started" | "completed" = "started";
   let backlog = [existing];
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
@@ -51,8 +57,26 @@ test("captures one hosted backlog item with responsive request verification", as
     if (request.method() === "GET" && url.pathname.endsWith("/today")) {
       requestedTodayDate = url.searchParams.get("date");
       await route.fulfill({
-        json: { date: requestedTodayDate, items: [todayItem], totalMinutes: 45 },
+        json: {
+          date: requestedTodayDate,
+          planId: todayPlanId,
+          headVersion: todayHeadVersion,
+          items: [{ ...todayItem, activityState: todayActivityState }],
+          totalMinutes: 45,
+        },
       });
+      return;
+    }
+    if (
+      request.method() === "POST" &&
+      url.pathname.endsWith(`/today/${todayItem.id}/activity-events`)
+    ) {
+      capturedTodayBody = request.postDataJSON();
+      capturedTodayCsrf = request.headers()["x-schedule-csrf"];
+      capturedTodayIdempotency = request.headers()["idempotency-key"];
+      todayActivityState = "completed";
+      todayHeadVersion += 1;
+      await route.fulfill({ status: 204, body: "" });
       return;
     }
     if (request.method() === "PATCH" && url.pathname.endsWith(`/work-items/${existing.id}`)) {
@@ -82,6 +106,9 @@ test("captures one hosted backlog item with responsive request verification", as
   await expect(page.getByText("45m · Started")).toBeVisible();
   expect(requestedTodayDate).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
   await page.getByRole("combobox", { name: "Workspace" }).selectOption(workspaces[1]!.id);
+  await page.getByRole("button", { name: `Complete ${todayItem.title} in Today` }).click();
+  await expect(page.getByText(`Completed “${todayItem.title}”.`)).toBeVisible();
+  await expect(page.getByText("45m · Completed")).toBeVisible();
   await page.getByRole("button", { name: `Complete ${existing.title}` }).click();
   await expect(page.getByText(`Completed “${existing.title}”.`)).toBeVisible();
   await expect(page.locator(".hosted-backlog-list li", { hasText: existing.title })).toHaveCount(0);
@@ -96,6 +123,14 @@ test("captures one hosted backlog item with responsive request verification", as
   expect(capturedCsrf).toBe(csrfToken);
   expect(capturedStatusBody).toEqual({ expectedVersion: existing.version, status: "done" });
   expect(capturedStatusCsrf).toBe(csrfToken);
+  expect(capturedTodayBody).toEqual({
+    expectedPlanId: todayPlanId,
+    expectedHeadVersion: 5,
+    type: "completed",
+    occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/u),
+  });
+  expect(capturedTodayCsrf).toBe(csrfToken);
+  expect(capturedTodayIdempotency).toMatch(/^[0-9a-f-]{36}$/u);
 
   await page.setViewportSize({ width: 360, height: 740 });
   await expect(page.getByRole("button", { name: "Add to backlog" })).toBeVisible();
@@ -164,7 +199,15 @@ test("creates the first hosted workspace through exact request verification", as
       return;
     }
     if (request.method() === "GET" && url.pathname.endsWith("/today")) {
-      await route.fulfill({ json: { date: "2026-07-16", items: [], totalMinutes: 0 } });
+      await route.fulfill({
+        json: {
+          date: "2026-07-16",
+          planId: null,
+          headVersion: null,
+          items: [],
+          totalMinutes: 0,
+        },
+      });
       return;
     }
     await route.fulfill({ status: 404, json: { error: { code: "test.unexpected" } } });

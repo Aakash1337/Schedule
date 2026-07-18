@@ -110,6 +110,7 @@ describe("API infrastructure", () => {
       "/v1/hosted/workspaces",
       "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/probe",
       "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items",
+      "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/today/00000000-0000-4000-8000-000000000002/activity-events?date=2026-07-16",
     ]) {
       for (const method of ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] as const) {
         const response = await app.inject({
@@ -161,7 +162,7 @@ describe("API infrastructure", () => {
         listWorkItems: vi.fn(),
         updateWorkItemStatus: vi.fn(),
       },
-      today: { getToday: vi.fn() },
+      today: { getToday: vi.fn(), recordActivity: vi.fn() },
       webShell: {
         html: '<!doctype html><div id="root"></div><script src="/assets/hosted.js"></script>',
         icon: Buffer.from("<svg></svg>"),
@@ -226,6 +227,19 @@ describe("API infrastructure", () => {
     });
     expect(protectedToday.statusCode).toBe(401);
     expect(hostedApi.today.getToday).not.toHaveBeenCalled();
+    const protectedTodayActivity = await protectedApp.inject({
+      method: "POST",
+      url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/today/00000000-0000-4000-8000-000000000002/activity-events?date=2026-07-16",
+      headers: { "idempotency-key": "protected-today-action" },
+      payload: {
+        expectedPlanId: "00000000-0000-4000-8000-000000000003",
+        expectedHeadVersion: 1,
+        type: "completed",
+        occurredAt: "2026-07-16T09:30:00.000Z",
+      },
+    });
+    expect(protectedTodayActivity.statusCode).toBe(401);
+    expect(hostedApi.today.recordActivity).not.toHaveBeenCalled();
     const protectedWorkspaceList = await protectedApp.inject({
       method: "GET",
       url: "/v1/hosted/workspaces",

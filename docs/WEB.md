@@ -27,8 +27,8 @@ pnpm dev
 
 The same package builds a separate `hosted.html` entry for explicit OIDC mode. It reuses the product
 controls and visual tokens but includes only session bootstrap, active-workspace discovery, sign
-in/out, name-only workspace creation, one fixed first-page backlog snapshot, and one title-only
-backlog form. The API serves that
+in/out, name-only workspace creation, one current-day snapshot, one fixed first-page backlog
+snapshot, narrow Today/backlog actions, and one title-only backlog form. The API serves that
 build from the same origin, so the
 browser never needs CORS, provider tokens, or a second frontend service. The local application and
 its unauthenticated routes are not bundled into the hosted entry.
@@ -41,6 +41,9 @@ mutations, and treats session, access, throttling, and availability failures as 
 shows the browser-local day's existing plan through titles, durations, and activity states, plus the
 first 20 backlog titles. The two reads fail and retry independently; capture refreshes only the
 backlog. Each visible backlog item can be moved only to started or done with its snapshot version.
+Pending Today items offer Start and Done; started items offer Done; terminal items offer neither.
+An ambiguous Today failure explicitly retries the same timestamp/key, while a stale head discards
+the intent and requires a fresh read. Successful completion refreshes both Today and backlog.
 The shell cannot generate a plan, page, filter, edit fields, reopen, cancel, synchronize work,
 rename/delete workspaces, or administer membership.
 
@@ -421,9 +424,10 @@ database; a leaked port or failed cleanup makes the command fail. GitHub CI runs
 a dedicated Chromium job and retains traces, screenshots, and video when it fails.
 
 The hosted verifier builds its isolated entry and uses a strict in-browser API double to exercise
-signed-out and authenticated capture, exact request verification, workspace selection, and mobile
-layout. The PostgreSQL/OIDC composition verifier separately covers the real server and database
-boundary. A staging HTTPS smoke with the selected identity provider remains required.
+signed-out and authenticated capture, exact request verification, workspace selection, Today
+completion, and mobile layout. The PostgreSQL/OIDC composition verifier separately covers the real
+server/database transaction and exact replay. A staging HTTPS smoke with the selected identity
+provider remains required.
 
 ## Deliberately deferred
 

@@ -142,13 +142,15 @@ Configuration rejects attempts to enable them in production or on a non-loopback
 rejects non-loopback product-route `Host` headers. `HOSTED_API_MODE` defaults to `disabled`; `oidc`
 is accepted only with the complete immutable registration, secret-backed preflight, and local
 unauthenticated product routes disabled. The enabled surface provides login, callback, session,
-logout, automatic first-login default-workspace membership, and one membership-authorized work-item
-create route with bounded per-source throttling. An authenticated collection can list the caller's
+logout, automatic first-login default-workspace membership, and a narrow membership-authorized
+product slice with bounded per-source throttling. An authenticated collection can list the caller's
 active workspace page or create one name-only workspace while rechecking the browser session in the
 same transaction. A same-origin hosted capture shell can sign in, create or select one active workspace,
 review the browser-local day's existing plan and the first 20 backlog titles, and add one title
 through an authorized mutation. A visible backlog item can be moved only to started or done with an
-optimistic version. The shell does not generate plans or provide general work-item editing,
+optimistic version. A pending Today item can be started or completed, and a started item completed,
+through an idempotent, head-fenced mutation that reauthorizes in the write transaction. The shell
+does not generate plans or provide general work-item editing,
 workspace rename/delete or membership administration, the broader product API, or synchronization.
 Partial sets and non-empty mixed-case aliases or unknown companions fail startup without disclosing values.
 Health and system-information endpoints
@@ -206,8 +208,8 @@ interception.
 
 Run `pnpm verify:hosted-web-e2e` for the separate built OIDC capture entry. Its strict browser double
 checks signed-out and authenticated states, workspace choice, bounded backlog refresh, exact CSRF
-forwarding, title-only capture, and 360-pixel layout; the PostgreSQL composition verifier covers the real hosted server
-boundary.
+forwarding, title-only capture, Today completion, idempotency forwarding, and 360-pixel layout; the
+PostgreSQL composition verifier covers the real hosted server boundary and atomic Today completion.
 
 With PostgreSQL running, verify backlog/Kanban, hierarchy, work-item prerequisites, and calendar
 management, routine creation and optimistic updates, duration calibration and Daily Plan Fit,
@@ -267,7 +269,7 @@ runtime images use a fixed non-root identity; the executable OCI smoke gate addi
 read-only root filesystem, dropped Linux capabilities, and `no-new-privileges` for migrations, the
 API, and the worker. Complete secret-manager-fed `HOSTED_API_MODE=oidc` configuration now activates
 the hardened authorization-code lifecycle, nonce-bound verification, browser sessions, first-login
-workspace bootstrap, and one transaction-authorized hosted work-item mutation. Provider discovery,
+workspace bootstrap, and transaction-authorized hosted work-item and Today mutations. Provider discovery,
 JWKS, and token exchange use bounded direct HTTPS with pinned address policy; failed preflight closes
 the database and exits before listening. Disabled mode remains route-closed.
 

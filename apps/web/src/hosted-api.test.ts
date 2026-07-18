@@ -31,10 +31,19 @@ describe("hosted web API client", () => {
         }),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ date: "2026-07-16", items: [], totalMinutes: 0 }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
+        new Response(
+          JSON.stringify({
+            date: "2026-07-16",
+            planId: null,
+            headVersion: null,
+            items: [],
+            totalMinutes: 0,
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
       );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -144,6 +153,40 @@ describe("hosted web API client", () => {
       }),
     );
     expect(headers.get("x-schedule-csrf")).toBe(token);
+  });
+
+  it("sends one bounded, idempotent Today action", async () => {
+    const token = "c".repeat(43);
+    vi.spyOn(document, "cookie", "get").mockReturnValue(`__Host-schedule_csrf=${token}`);
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 204 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await hostedApi.recordTodayActivity("workspace/one", "2026-07-16", "item/one", {
+      expectedPlanId: "plan-1",
+      expectedHeadVersion: 7,
+      type: "completed",
+      occurredAt: "2026-07-16T09:30:00.000Z",
+      idempotencyKey: "today-action-1",
+    });
+    const [, options] = fetchMock.mock.calls[0] ?? [];
+    const headers = new Headers(options?.headers);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/hosted/workspaces/workspace%2Fone/today/item%2Fone/activity-events?date=2026-07-16",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "same-origin",
+        body: JSON.stringify({
+          expectedPlanId: "plan-1",
+          expectedHeadVersion: 7,
+          type: "completed",
+          occurredAt: "2026-07-16T09:30:00.000Z",
+        }),
+      }),
+    );
+    expect(headers.get("x-schedule-csrf")).toBe(token);
+    expect(headers.get("Idempotency-Key")).toBe("today-action-1");
   });
 
   it("fails before sending when request verification is absent", async () => {

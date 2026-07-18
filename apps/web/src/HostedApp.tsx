@@ -14,6 +14,18 @@ import {
 
 const selectedWorkspaceKey = "schedule.hostedWorkspace";
 
+interface TodayActionIntent {
+  readonly workspaceId: string;
+  readonly date: string;
+  readonly itemId: string;
+  readonly title: string;
+  readonly expectedPlanId: string;
+  readonly expectedHeadVersion: number;
+  readonly type: "started" | "completed";
+  readonly occurredAt: string;
+  readonly idempotencyKey: string;
+}
+
 function publicError(error: unknown): string {
   if (error instanceof HostedApiError) {
     if (error.status === 401) return "Your session ended. Sign in again.";
@@ -83,6 +95,11 @@ export function HostedApp() {
   const [todayError, setTodayError] = useState<string | null>(null);
   const [todayRefresh, setTodayRefresh] = useState(0);
   const [todayDate, setTodayDate] = useState(() => todayKey());
+  const [todayRetry, setTodayRetry] = useState<TodayActionIntent | null>(null);
+  const [updatingTodayItem, setUpdatingTodayItem] = useState<{
+    readonly id: string;
+    readonly type: "started" | "completed";
+  } | null>(null);
   const [updatingItem, setUpdatingItem] = useState<{
     readonly id: string;
     readonly status: "in_progress" | "done";
@@ -166,6 +183,7 @@ export function HostedApp() {
       setToday(null);
       setTodayLoading(false);
       setTodayError(null);
+      setTodayRetry(null);
       return;
     }
     let active = true;
@@ -175,7 +193,17 @@ export function HostedApp() {
     void hostedApi
       .getToday(selectedWorkspaceId, todayDate)
       .then((result) => {
-        if (active) setToday(result);
+        if (!active) return;
+        setToday(result);
+        setTodayRetry((retry) =>
+          retry !== null &&
+          retry.workspaceId === selectedWorkspaceId &&
+          retry.date === todayDate &&
+          retry.expectedPlanId === result.planId &&
+          retry.expectedHeadVersion === result.headVersion
+            ? retry
+            : null,
+        );
       })
       .catch((todayReadError: unknown) => {
         if (!active) return;
@@ -198,6 +226,7 @@ export function HostedApp() {
     () => workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
     [selectedWorkspaceId, workspaces],
   );
+  const mutationBusy = busy || updatingItem !== null || updatingTodayItem !== null;
 
   function selectWorkspace(id: string) {
     localStorage.setItem(selectedWorkspaceKey, id);
@@ -210,6 +239,7 @@ export function HostedApp() {
     setToday(null);
     setTodayLoading(true);
     setTodayError(null);
+    setTodayRetry(null);
   }
 
   async function capture(event: FormEvent<HTMLFormElement>) {
@@ -279,6 +309,75 @@ export function HostedApp() {
     } finally {
       setUpdatingItem(null);
     }
+  }
+
+  async function submitTodayAction(intent: TodayActionIntent) {
+    if (selectedWorkspaceId !== intent.workspaceId || todayDate !== intent.date) {
+      setTodayRetry(null);
+      return;
+    }
+    setUpdatingTodayItem({ id: intent.itemId, type: intent.type });
+    setTodayError(null);
+    setConfirmation(null);
+    try {
+      await hostedApi.recordTodayActivity(intent.workspaceId, intent.date, intent.itemId, {
+        expectedPlanId: intent.expectedPlanId,
+        expectedHeadVersion: intent.expectedHeadVersion,
+        type: intent.type,
+        occurredAt: intent.occurredAt,
+        idempotencyKey: intent.idempotencyKey,
+      });
+      setTodayRetry(null);
+      setConfirmation(
+        intent.type === "completed" ? `Completed “${intent.title}”.` : `Started “${intent.title}”.`,
+      );
+      setTodayRefresh((value) => value + 1);
+      setBacklogRefresh((value) => value + 1);
+    } catch (activityError) {
+      const known = activityError instanceof HostedApiError;
+      if (known && activityError.status === 401) {
+        setTodayRetry(null);
+        setMode("signed-out");
+        setError(publicError(activityError));
+      } else {
+        const ambiguous =
+          !known ||
+          activityError.status === 408 ||
+          activityError.status === 429 ||
+          activityError.status >= 500;
+        if (!ambiguous) setTodayRetry(null);
+        setTodayError(
+          known && activityError.status === 409
+            ? "Today changed. Refresh it before trying again."
+            : publicError(activityError),
+        );
+      }
+    } finally {
+      setUpdatingTodayItem(null);
+    }
+  }
+
+  function beginTodayAction(item: HostedToday["items"][number], type: "started" | "completed") {
+    if (
+      selectedWorkspace === null ||
+      today === null ||
+      today.planId === null ||
+      today.headVersion === null
+    )
+      return;
+    const intent: TodayActionIntent = {
+      workspaceId: selectedWorkspace.id,
+      date: today.date,
+      itemId: item.id,
+      title: item.title,
+      expectedPlanId: today.planId,
+      expectedHeadVersion: today.headVersion,
+      type,
+      occurredAt: new Date().toISOString(),
+      idempotencyKey: crypto.randomUUID(),
+    };
+    setTodayRetry(intent);
+    void submitTodayAction(intent);
   }
 
   async function logout() {
@@ -351,7 +450,7 @@ export function HostedApp() {
           type="button"
           variant="quiet"
           busy={busy}
-          disabled={updatingItem !== null}
+          disabled={updatingItem !== null || updatingTodayItem !== null}
           onClick={() => void logout()}
         >
           <LogOut size={16} aria-hidden="true" />
@@ -396,7 +495,7 @@ export function HostedApp() {
               <Field label="Workspace" className="hosted-workspace-field">
                 <select
                   value={selectedWorkspace.id}
-                  disabled={busy || updatingItem !== null}
+                  disabled={mutationBusy}
                   onChange={(event) => selectWorkspace(event.target.value)}
                 >
                   {workspaces.map((workspace) => (
@@ -416,7 +515,7 @@ export function HostedApp() {
               <summary>Create another workspace</summary>
               <WorkspaceCreateForm
                 name={workspaceName}
-                busy={busy}
+                busy={mutationBusy}
                 onNameChange={setWorkspaceName}
                 onSubmit={(event) => void createWorkspace(event)}
               />
@@ -430,7 +529,7 @@ export function HostedApp() {
                   onChange={(event) => setTitle(event.target.value)}
                   maxLength={240}
                   placeholder="Prepare next week’s plan"
-                  disabled={busy || updatingItem !== null}
+                  disabled={mutationBusy}
                   required
                 />
               </Field>
@@ -438,7 +537,9 @@ export function HostedApp() {
                 type="submit"
                 variant="primary"
                 busy={busy}
-                disabled={title.trim() === "" || updatingItem !== null}
+                disabled={
+                  title.trim() === "" || updatingItem !== null || updatingTodayItem !== null
+                }
               >
                 <Plus size={17} aria-hidden="true" />
                 Add to backlog
@@ -467,9 +568,12 @@ export function HostedApp() {
                     <Button
                       type="button"
                       variant="quiet"
-                      onClick={() => setTodayRefresh((value) => value + 1)}
+                      onClick={() => {
+                        if (todayRetry === null) setTodayRefresh((value) => value + 1);
+                        else void submitTodayAction(todayRetry);
+                      }}
                     >
-                      Retry today
+                      {todayRetry === null ? "Retry today" : "Retry action"}
                     </Button>
                   }
                 />
@@ -477,12 +581,50 @@ export function HostedApp() {
                 <p className="hosted-today-state">Nothing planned for today.</p>
               ) : (
                 <ul className="hosted-today-list">
-                  {today.items.map((item, index) => (
-                    <li key={`${item.title}:${index}`}>
-                      <span>{item.title}</span>
-                      <span className="hosted-today-meta">
-                        {formatMinutes(item.scheduledMinutes)} · {activityLabel(item.activityState)}
+                  {today.items.map((item) => (
+                    <li key={item.id}>
+                      <span className="hosted-today-copy">
+                        <span>{item.title}</span>
+                        <span className="hosted-today-meta">
+                          {formatMinutes(item.scheduledMinutes)} ·{" "}
+                          {activityLabel(item.activityState)}
+                        </span>
                       </span>
+                      {today.planId === null ||
+                      today.headVersion === null ||
+                      (item.activityState !== "pending" &&
+                        item.activityState !== "started") ? null : (
+                        <span className="hosted-today-actions">
+                          {item.activityState !== "pending" ? null : (
+                            <Button
+                              type="button"
+                              variant="quiet"
+                              aria-label={`Start ${item.title} in Today`}
+                              busy={
+                                updatingTodayItem?.id === item.id &&
+                                updatingTodayItem.type === "started"
+                              }
+                              disabled={mutationBusy}
+                              onClick={() => beginTodayAction(item, "started")}
+                            >
+                              Start
+                            </Button>
+                          )}
+                          <Button
+                            type="button"
+                            variant="quiet"
+                            aria-label={`Complete ${item.title} in Today`}
+                            busy={
+                              updatingTodayItem?.id === item.id &&
+                              updatingTodayItem.type === "completed"
+                            }
+                            disabled={mutationBusy}
+                            onClick={() => beginTodayAction(item, "completed")}
+                          >
+                            Done
+                          </Button>
+                        </span>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -525,7 +667,7 @@ export function HostedApp() {
                           busy={
                             updatingItem?.id === item.id && updatingItem.status === "in_progress"
                           }
-                          disabled={busy || updatingItem !== null}
+                          disabled={mutationBusy}
                           onClick={() => void updateStatus(item, "in_progress")}
                         >
                           Start
@@ -535,7 +677,7 @@ export function HostedApp() {
                           variant="quiet"
                           aria-label={`Complete ${item.title}`}
                           busy={updatingItem?.id === item.id && updatingItem.status === "done"}
-                          disabled={busy || updatingItem !== null}
+                          disabled={mutationBusy}
                           onClick={() => void updateStatus(item, "done")}
                         >
                           Done
