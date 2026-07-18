@@ -24,6 +24,28 @@ const baselineTables = [
   "workspaces",
 ] as const;
 
+const hostedSyncTables = [
+  "hosted_work_item_sync_capability",
+  "hosted_work_item_sync_changes",
+  "hosted_work_item_sync_states",
+] as const;
+const hostedSyncFunctions = [
+  "capture_hosted_work_item_sync_change",
+  "protect_hosted_work_item_sync_capability",
+  "protect_hosted_work_item_sync_change_mutation",
+  "protect_hosted_work_item_sync_state_write",
+  "initialize_hosted_work_item_sync_state",
+  "protect_hosted_work_item_sync_state_delete",
+] as const;
+const hostedSyncTriggers = [
+  ["work_items", "work_items_capture_hosted_sync_change"],
+  ["hosted_work_item_sync_capability", "hosted_work_item_sync_capability_guard"],
+  ["hosted_work_item_sync_changes", "hosted_work_item_sync_changes_append_only"],
+  ["hosted_work_item_sync_states", "hosted_work_item_sync_states_write_guard"],
+  ["workspaces", "workspaces_initialize_hosted_sync_state"],
+  ["hosted_work_item_sync_states", "hosted_work_item_sync_states_delete_guard"],
+] as const;
+
 function supportedCatalogLines(): string[] {
   const lines = ["1; 0 0 SCHEMA - public schedule", "2; 0 0 SCHEMA - drizzle schedule"];
   for (const table of baselineTables) {
@@ -34,6 +56,21 @@ function supportedCatalogLines(): string[] {
   lines.push("21; 0 0 TABLE DATA drizzle __drizzle_migrations schedule");
   lines.push("22; 0 0 SEQUENCE drizzle __drizzle_migrations_id_seq schedule");
   lines.push("23; 0 0 SEQUENCE SET drizzle __drizzle_migrations_id_seq schedule");
+  return lines;
+}
+
+function hostedSyncCatalogLines(): string[] {
+  const lines = supportedCatalogLines();
+  for (const table of hostedSyncTables) {
+    lines.push(`30; 0 0 TABLE public ${table} schedule`);
+    lines.push(`31; 0 0 TABLE DATA public ${table} schedule`);
+  }
+  for (const name of hostedSyncFunctions) {
+    lines.push(`40; 0 0 FUNCTION public ${name}() schedule`);
+  }
+  for (const [table, name] of hostedSyncTriggers) {
+    lines.push(`50; 0 0 TRIGGER public ${table} ${name} schedule`);
+  }
   return lines;
 }
 
@@ -146,11 +183,38 @@ describe("Schedule archive catalogs", () => {
     expect([...expectedScheduleTables].sort()).toEqual(snapshotTables);
   });
 
-  it("accepts a structurally complete supported catalog", () => {
+  it("accepts a complete pre-hosted-sync catalog", () => {
     expect(parseArchiveCatalog(supportedCatalogLines().join("\n"))).toEqual({
       tables: [...baselineTables].sort(),
       sequences: [{ schema: "drizzle", name: "__drizzle_migrations_id_seq" }],
     });
+  });
+
+  it("accepts a hosted-sync catalog with all required functions and triggers", () => {
+    expect(parseArchiveCatalog(hostedSyncCatalogLines().join("\n"))).toEqual({
+      tables: [...baselineTables, ...hostedSyncTables].sort(),
+      sequences: [{ schema: "drizzle", name: "__drizzle_migrations_id_seq" }],
+    });
+  });
+
+  it("rejects a hosted-sync catalog with a missing function", () => {
+    const lines = hostedSyncCatalogLines().filter(
+      (line) => !line.includes("FUNCTION public initialize_hosted_work_item_sync_state()"),
+    );
+
+    expect(() => parseArchiveCatalog(lines.join("\n"))).toThrow(
+      /missing hosted work-item sync functions: initialize_hosted_work_item_sync_state/,
+    );
+  });
+
+  it("rejects a hosted-sync catalog with a missing trigger", () => {
+    const lines = hostedSyncCatalogLines().filter(
+      (line) => !line.includes("hosted_work_item_sync_changes_append_only"),
+    );
+
+    expect(() => parseArchiveCatalog(lines.join("\n"))).toThrow(
+      /missing hosted work-item sync triggers: hosted_work_item_sync_changes\.hosted_work_item_sync_changes_append_only/,
+    );
   });
 
   it.each([

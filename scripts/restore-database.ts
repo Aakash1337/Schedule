@@ -439,13 +439,19 @@ export async function databaseSchemaSignal(databaseName: string): Promise<string
   const result = await runPsql(
     databaseName,
     `
-      WITH objects AS (
+      WITH live_columns AS (
+        SELECT columns.*,
+          row_number() OVER (
+            PARTITION BY table_schema, table_name ORDER BY ordinal_position
+          ) AS live_ordinal_position
+        FROM information_schema.columns AS columns
+        WHERE table_schema IN ('public', 'drizzle')
+      ), objects AS (
         SELECT
-          'column|' || table_schema || '|' || table_name || '|' || ordinal_position::text || '|' ||
+          'column|' || table_schema || '|' || table_name || '|' || live_ordinal_position::text || '|' ||
           column_name || '|' || data_type || '|' || udt_schema || '|' || udt_name || '|' ||
           is_nullable || '|' || COALESCE(column_default, '') AS signature
-        FROM information_schema.columns
-        WHERE table_schema IN ('public', 'drizzle')
+        FROM live_columns
         UNION ALL
         SELECT
           'constraint|' || namespace.nspname || '|' || relation.relname || '|' || constraint_name.conname ||

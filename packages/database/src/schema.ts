@@ -737,6 +737,7 @@ export const hostedWorkItemSyncStates = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    index("hosted_work_item_sync_states_retention_idx").on(table.updatedAt, table.workspaceId),
     check("hosted_work_item_sync_states_head_nonnegative", sql`${table.headCursor} >= 0`),
     check("hosted_work_item_sync_states_minimum_nonnegative", sql`${table.minimumCursor} >= 0`),
     check(

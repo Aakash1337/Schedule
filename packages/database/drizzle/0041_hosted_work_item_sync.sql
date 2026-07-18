@@ -63,6 +63,7 @@ ALTER TABLE "work_items" ADD COLUMN "hosted_sync_cursor" bigint DEFAULT 0 NOT NU
 ALTER TABLE "hosted_work_item_sync_changes" ADD CONSTRAINT "hosted_work_item_sync_changes_state_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."hosted_work_item_sync_states"("workspace_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hosted_work_item_sync_states" ADD CONSTRAINT "hosted_work_item_sync_states_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "work_items" ADD CONSTRAINT "work_items_hosted_sync_cursor_nonnegative" CHECK ("work_items"."hosted_sync_cursor" >= 0);--> statement-breakpoint
+CREATE INDEX "hosted_work_item_sync_states_retention_idx" ON "hosted_work_item_sync_states" USING btree ("updated_at","workspace_id");--> statement-breakpoint
 INSERT INTO public.hosted_work_item_sync_states (
 	workspace_id,
 	head_cursor,
@@ -134,14 +135,24 @@ BEGIN
 	SELECT capability.capture_enabled
 	INTO v_capture_enabled
 	FROM public.hosted_work_item_sync_capability AS capability
-	WHERE capability.singleton
-	FOR SHARE;
+	WHERE capability.singleton;
 	IF NOT FOUND THEN
 		RAISE EXCEPTION 'hosted work item sync capability state is missing'
 			USING ERRCODE = '55000';
 	END IF;
 	IF NOT v_capture_enabled THEN
-		RETURN NULL;
+		SELECT capability.capture_enabled
+		INTO v_capture_enabled
+		FROM public.hosted_work_item_sync_capability AS capability
+		WHERE capability.singleton
+		FOR SHARE;
+		IF NOT FOUND THEN
+			RAISE EXCEPTION 'hosted work item sync capability state is missing'
+				USING ERRCODE = '55000';
+		END IF;
+		IF NOT v_capture_enabled THEN
+			RETURN NULL;
+		END IF;
 	END IF;
 
 	INSERT INTO public.hosted_work_item_sync_states (

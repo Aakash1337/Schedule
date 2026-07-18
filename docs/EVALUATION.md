@@ -85,7 +85,7 @@ provider-monitoring, backup-restore, or broad-sync claim.
 
 ## Current scorecard
 
-The package and script runners currently execute 133 test files and 2,314 runtime test cases. Three
+The package and script runners currently execute 133 test files and 2,317 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -109,11 +109,11 @@ quality levels. Scope rows aggregate every file matched by the corresponding rec
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.61% |   72.32% |    68.15% | 60.12% |
+| Whole repository, measured |     59.46% |   72.24% |    68.01% | 59.96% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     95.12% |   91.89% |    93.49% | 96.13% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     89.99% |    84.6% |    98.94% | 90.88% |
+| Application, measured      |     90.05% |   84.67% |    98.94% | 90.92% |
 | Application, required      |        83% |      76% |       98% |    83% |
 | API, measured              |     90.54% |   87.68% |    84.09% | 92.05% |
 | API, required              |        73% |      69% |       57% |    74% |
@@ -122,9 +122,10 @@ quality levels. Scope rows aggregate every file matched by the corresponding rec
 | Web, measured              |     84.31% |   76.86% |    82.76% | 87.15% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 13,403 of 22,482 statements, 10,221 of 14,132 branches,
-2,864 of 4,202 functions, and 12,654 of 21,045 lines. Two consecutive full runs produced the same
-totals.
+The whole-repository totals are 13,424 of 22,573 statements, 10,235 of 14,167 branches,
+2,869 of 4,218 functions, and 12,671 of 21,131 lines. Two of three full runs produced these exact
+totals; the other was lower by two statement hits, two branch hits, and one line hit, with identical
+denominators and function totals.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global

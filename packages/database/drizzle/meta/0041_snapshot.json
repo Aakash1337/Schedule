@@ -2234,7 +2234,29 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "hosted_work_item_sync_states_retention_idx": {
+          "name": "hosted_work_item_sync_states_retention_idx",
+          "columns": [
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "hosted_work_item_sync_states_workspace_id_workspaces_id_fk": {
           "name": "hosted_work_item_sync_states_workspace_id_workspaces_id_fk",

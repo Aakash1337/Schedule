@@ -358,7 +358,15 @@ describe("hosted work-item sync schema", () => {
         "hosted_work_item_sync_capability_lifecycle",
       ]),
     );
-    expect(getTableConfig(hostedWorkItemSyncStates).checks.map(({ name }) => name)).toEqual(
+    const states = getTableConfig(hostedWorkItemSyncStates);
+    expect(states.indexes.map(({ config }) => config.name)).toEqual([
+      "hosted_work_item_sync_states_retention_idx",
+    ]);
+    expect(states.indexes[0]?.config.columns.map((column) => column.name)).toEqual([
+      "updated_at",
+      "workspace_id",
+    ]);
+    expect(states.checks.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "hosted_work_item_sync_states_head_nonnegative",
         "hosted_work_item_sync_states_minimum_nonnegative",
@@ -391,8 +399,23 @@ describe("hosted work-item sync schema", () => {
     expect(migration).toContain("SELECT id, 0, 0, pg_catalog.clock_timestamp()");
     expect(migration).toContain("VALUES (true, false, NULL)");
     expect(migration).toContain("hosted_work_item_sync_capability_guard");
-    expect(migration).toContain("FOR SHARE");
     expect(migration).toContain("CREATE FUNCTION public.capture_hosted_work_item_sync_change()");
+    const captureFunction = migration.slice(
+      migration.indexOf("CREATE FUNCTION public.capture_hosted_work_item_sync_change()"),
+      migration.indexOf("CREATE TRIGGER work_items_capture_hosted_sync_change"),
+    );
+    const capabilityGate = captureFunction.slice(
+      captureFunction.indexOf("SELECT capability.capture_enabled"),
+      captureFunction.indexOf("INSERT INTO public.hosted_work_item_sync_states"),
+    );
+    const unlockedCapabilityRead = capabilityGate.indexOf("WHERE capability.singleton;");
+    const disabledBranch = capabilityGate.indexOf("IF NOT v_capture_enabled THEN");
+    const lockedCapabilityRead = capabilityGate.indexOf("FOR SHARE;");
+    expect(capabilityGate.match(/SELECT capability\.capture_enabled/gu)).toHaveLength(2);
+    expect(capabilityGate.match(/IF NOT FOUND THEN/gu)).toHaveLength(2);
+    expect(unlockedCapabilityRead).toBeGreaterThan(-1);
+    expect(unlockedCapabilityRead).toBeLessThan(disabledBranch);
+    expect(disabledBranch).toBeLessThan(lockedCapabilityRead);
     expect(migration).toContain("AFTER INSERT OR UPDATE OR DELETE ON public.work_items");
     expect(migration).toContain("SET hosted_sync_cursor = v_cursor");
     expect(migration).toContain("unexpected nested work item sync mutation");
@@ -404,6 +427,9 @@ describe("hosted work-item sync schema", () => {
     );
     expect(migration).toContain("minimum_cursor >= OLD.cursor");
     expect(migration).toContain("hosted_work_item_sync_states_write_guard");
+    expect(migration).toContain(
+      'CREATE INDEX "hosted_work_item_sync_states_retention_idx" ON "hosted_work_item_sync_states" USING btree ("updated_at","workspace_id")',
+    );
     expect(migration).toContain("workspaces_initialize_hosted_sync_state");
     expect(migration).toContain("VALUES (NEW.id, 0, 0, pg_catalog.clock_timestamp())");
     expect(migration).toContain("NEW.head_cursor = OLD.head_cursor + 1");

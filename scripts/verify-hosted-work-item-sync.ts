@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -35,8 +36,30 @@ import {
   type HostedWorkItemServices,
 } from "../apps/api/src/hosted-work-item-routes.js";
 
-const sourceDatabaseUrl =
-  process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule";
+function requireLocalVerificationDatabaseUrl(rawUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error("Hosted work-item sync verification requires a local PostgreSQL database.");
+  }
+  if (
+    !["postgres:", "postgresql:"].includes(url.protocol) ||
+    url.hostname !== "127.0.0.1" ||
+    url.username.length === 0 ||
+    url.password.length === 0 ||
+    url.pathname.length <= 1 ||
+    url.search.length > 0 ||
+    url.hash.length > 0
+  ) {
+    throw new Error("Hosted work-item sync verification requires a local PostgreSQL database.");
+  }
+  return url.toString();
+}
+
+const sourceDatabaseUrl = requireLocalVerificationDatabaseUrl(
+  process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule",
+);
 const databaseName = `schedule_host_sync_verify_${randomUUID().replaceAll("-", "")}`;
 const databaseNamePattern = /^schedule_host_sync_verify_[a-f0-9]{32}$/u;
 const migrationsFolder = path.resolve(
@@ -52,6 +75,42 @@ function quotedDatabase(): string {
   if (!databaseNamePattern.test(databaseName))
     throw new Error("Unsafe sync verification database.");
   return `"${databaseName}"`;
+}
+
+interface CleanupStep {
+  readonly label: string;
+  readonly run: () => Promise<unknown>;
+}
+
+async function collectCleanupFailures(steps: readonly CleanupStep[]): Promise<readonly Error[]> {
+  const failures: Error[] = [];
+  for (const step of steps) {
+    try {
+      await step.run();
+    } catch {
+      // Driver diagnostics can contain credentials; retain only deterministic labels.
+      failures.push(new Error(`Cleanup failed: ${step.label}.`));
+    }
+  }
+  return failures;
+}
+
+async function waitForBlockedSession(
+  observer: DatabaseConnection,
+  applicationName: string,
+): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const [session] = await observer.sql<{ blockers: number; waitEventType: string | null }[]>`
+      select cardinality(pg_blocking_pids(pid))::integer as blockers,
+        wait_event_type as "waitEventType"
+      from pg_stat_activity
+      where datname = current_database() and application_name = ${applicationName}
+    `;
+    if (session?.waitEventType === "Lock" && session.blockers > 0) return;
+    await delay(25);
+  }
+  throw new Error(`Timed out waiting for ${applicationName} to reach its lock barrier.`);
 }
 
 async function migrationEntries(): Promise<readonly { idx: number; tag: string }[]> {
@@ -198,11 +257,15 @@ async function createSyncApp(
 }
 
 const admin = createDatabase(adminUrl.toString(), 1);
+let databaseCreated = false;
 let connection: DatabaseConnection | undefined;
 let app: Awaited<ReturnType<typeof buildApp>> | undefined;
+let verificationError: unknown;
+const raceConnections: { readonly label: string; readonly connection: DatabaseConnection }[] = [];
 
 try {
   await admin.sql.unsafe(`create database ${quotedDatabase()} owner schedule`);
+  databaseCreated = true;
   connection = createDatabase(verificationUrl.toString(), 12);
   await connection.sql`set client_min_messages = warning`;
   const migrations = await migrationEntries();
@@ -256,7 +319,84 @@ try {
     store.listChanges(legacyWorkspace, { afterCursor: "0", limit: 1 }),
     isCorruptStoreFailure,
   );
-  await enableHostedWorkItemSyncCapture(connection);
+  const fenceWorkspace = workspaceId(randomUUID());
+  const fenceItemId = randomUUID();
+  await connection.sql`
+    insert into workspaces (id, name) values (${fenceWorkspace}, 'Sync activation fence')
+  `;
+  await connection.sql`
+    insert into work_items (id, workspace_id, title)
+    values (${fenceItemId}, ${fenceWorkspace}, 'Before sync activation')
+  `;
+  const blockerName = "schedule_sync_fence_blocker";
+  const enablerName = "schedule_sync_fence_enabler";
+  const mutatorName = "schedule_sync_fence_mutator";
+  const raceOptions = { statementTimeoutMs: 20_000 } as const;
+  const blocker = createDatabase(verificationUrl.toString(), 1, {
+    ...raceOptions,
+    applicationName: blockerName,
+  });
+  const enabler = createDatabase(verificationUrl.toString(), 1, {
+    ...raceOptions,
+    applicationName: enablerName,
+  });
+  const mutator = createDatabase(verificationUrl.toString(), 1, {
+    ...raceOptions,
+    applicationName: mutatorName,
+  });
+  raceConnections.push(
+    { label: "sync fence blocker connection", connection: blocker },
+    { label: "sync fence enabler connection", connection: enabler },
+    { label: "sync fence mutator connection", connection: mutator },
+  );
+  let markBlockerReady!: () => void;
+  let releaseBlocker!: () => void;
+  const blockerReady = new Promise<void>((resolve) => (markBlockerReady = resolve));
+  const blockerRelease = new Promise<void>((resolve) => (releaseBlocker = resolve));
+  const blockerTransaction = blocker.sql.begin(async (transaction) => {
+    await transaction`
+      select capture_enabled from hosted_work_item_sync_capability where singleton for update
+    `;
+    markBlockerReady();
+    await blockerRelease;
+  });
+  let activation: Promise<void> | undefined;
+  let mutation: Promise<unknown> | undefined;
+  try {
+    await Promise.race([
+      blockerReady,
+      blockerTransaction.then(() => {
+        throw new Error("Sync fence blocker exited before reaching its lock barrier.");
+      }),
+    ]);
+    activation = enableHostedWorkItemSyncCapture(enabler);
+    await waitForBlockedSession(connection, enablerName);
+    mutation = Promise.resolve(mutator.sql`
+      update work_items set title = 'Activated behind fence', version = version + 1,
+        updated_at = clock_timestamp()
+      where workspace_id = ${fenceWorkspace} and id = ${fenceItemId}
+    `);
+    await waitForBlockedSession(connection, mutatorName);
+    releaseBlocker();
+    await Promise.all([blockerTransaction, activation, mutation]);
+  } finally {
+    releaseBlocker();
+    await Promise.allSettled(
+      [blockerTransaction, activation, mutation].filter(
+        (operation): operation is Promise<unknown> => operation !== undefined,
+      ),
+    );
+  }
+  assert.deepEqual(await syncState(connection, fenceWorkspace), {
+    head: "1",
+    minimum: "0",
+    changes: 1,
+  });
+  const [fencedChange] = await connection.sql<{ cursor: string; title: string }[]>`
+    select cursor::text, title from hosted_work_item_sync_changes
+    where workspace_id = ${fenceWorkspace} and work_item_id = ${fenceItemId}
+  `;
+  assert.deepEqual(fencedChange, { cursor: "1", title: "Activated behind fence" });
   await enableHostedWorkItemSyncCapture(connection);
   await assert.rejects(
     connection.sql`
@@ -819,17 +959,65 @@ try {
   `;
   assert.deepEqual(cascadeState, { states: 0, changes: 0, items: 0 });
   assert.deepEqual(await syncState(connection, secondary), secondaryBeforeCascade);
-
-  process.stdout.write(
-    `Hosted work-item sync verification passed populated upgrade, AFTER-trigger conflicts and guards, generic and direct-activity mutations, concurrent cursors, rollback, tombstones, bootstrap/delta reconstruction, frozen paging, retention resync, corruption fail-closed, tenant isolation, and cascade cleanup in ${databaseName}\n`,
-  );
-} finally {
-  if (app !== undefined) await app.close().catch(() => undefined);
-  if (connection !== undefined) await connection.close().catch(() => undefined);
-  await admin.sql`
-    select pg_terminate_backend(pid) from pg_stat_activity
-    where datname = ${databaseName} and pid <> pg_backend_pid()
-  `.catch(() => undefined);
-  await admin.sql.unsafe(`drop database if exists ${quotedDatabase()}`).catch(() => undefined);
-  await admin.close();
+} catch (error) {
+  verificationError = error;
 }
+
+const cleanupSteps: CleanupStep[] = [];
+if (app !== undefined) {
+  cleanupSteps.push({ label: "Fastify application", run: () => app!.close() });
+}
+for (const raceConnection of raceConnections) {
+  cleanupSteps.push({
+    label: raceConnection.label,
+    run: () => raceConnection.connection.close(),
+  });
+}
+if (connection !== undefined) {
+  cleanupSteps.push({ label: "disposable database connection", run: () => connection!.close() });
+}
+if (databaseCreated) {
+  cleanupSteps.push(
+    {
+      label: "disposable database sessions",
+      run: () => admin.sql`
+        select pg_terminate_backend(pid) from pg_stat_activity
+        where datname = ${databaseName} and pid <> pg_backend_pid()
+      `,
+    },
+    {
+      label: "disposable database",
+      run: () => admin.sql.unsafe(`drop database if exists ${quotedDatabase()} with (force)`),
+    },
+    {
+      label: "disposable database removal check",
+      run: async () => {
+        const [remaining] = await admin.sql<{ exists: boolean }[]>`
+          select exists(select 1 from pg_database where datname = ${databaseName}) as exists
+        `;
+        if (remaining?.exists !== false) throw new Error("Disposable database remains.");
+      },
+    },
+  );
+}
+cleanupSteps.push({ label: "administrative database connection", run: () => admin.close() });
+const cleanupFailures = await collectCleanupFailures(cleanupSteps);
+
+if (verificationError !== undefined) {
+  if (cleanupFailures.length > 0) {
+    throw new AggregateError(
+      [verificationError, ...cleanupFailures],
+      "Hosted work-item sync verification failed and cleanup was incomplete.",
+    );
+  }
+  throw verificationError;
+}
+if (cleanupFailures.length > 0) {
+  throw new AggregateError(
+    cleanupFailures,
+    "Hosted work-item sync verification cleanup was incomplete.",
+  );
+}
+process.stdout.write(
+  `Hosted work-item sync verification passed populated upgrade, AFTER-trigger conflicts and guards, generic and direct-activity mutations, concurrent cursors, rollback, tombstones, bootstrap/delta reconstruction, frozen paging, retention resync, corruption fail-closed, tenant isolation, and cascade cleanup in ${databaseName}\n`,
+);

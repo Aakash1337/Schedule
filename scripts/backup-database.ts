@@ -175,6 +175,28 @@ function sortedUnique(values: readonly string[]): string[] {
   return [...new Set(values)].sort();
 }
 
+const hostedSyncTables = [
+  "hosted_work_item_sync_capability",
+  "hosted_work_item_sync_changes",
+  "hosted_work_item_sync_states",
+] as const;
+const hostedSyncFunctions = [
+  "capture_hosted_work_item_sync_change",
+  "protect_hosted_work_item_sync_capability",
+  "protect_hosted_work_item_sync_change_mutation",
+  "protect_hosted_work_item_sync_state_write",
+  "initialize_hosted_work_item_sync_state",
+  "protect_hosted_work_item_sync_state_delete",
+] as const;
+const hostedSyncTriggers = [
+  "work_items.work_items_capture_hosted_sync_change",
+  "hosted_work_item_sync_capability.hosted_work_item_sync_capability_guard",
+  "hosted_work_item_sync_changes.hosted_work_item_sync_changes_append_only",
+  "hosted_work_item_sync_states.hosted_work_item_sync_states_write_guard",
+  "workspaces.workspaces_initialize_hosted_sync_state",
+  "hosted_work_item_sync_states.hosted_work_item_sync_states_delete_guard",
+] as const;
+
 function assertSafeDatabaseName(databaseName: string): void {
   if (!/^[a-z][a-z0-9_]{0,62}$/.test(databaseName)) {
     throw new Error(`Unsafe PostgreSQL database identifier: ${databaseName}`);
@@ -321,6 +343,36 @@ export function parseArchiveCatalog(listing: string): ScheduleArchiveCatalog {
     throw new Error(
       `Backup is not a supported Schedule archive; missing baseline tables: ${missingBaselineTables.join(", ")}`,
     );
+  }
+
+  if (hostedSyncTables.some((table) => tables.includes(table))) {
+    const functions = sortedUnique(
+      catalogLines.flatMap((line) => {
+        const match = /\bFUNCTION public ([a-z_][a-z0-9_]*)\(\)(?:\s|$)/.exec(line);
+        return match?.[1] === undefined ? [] : [match[1]];
+      }),
+    );
+    const missingFunctions = hostedSyncFunctions.filter((name) => !functions.includes(name));
+    if (missingFunctions.length > 0) {
+      throw new Error(
+        `Backup is missing hosted work-item sync functions: ${missingFunctions.join(", ")}`,
+      );
+    }
+
+    const triggers = sortedUnique(
+      catalogLines.flatMap((line) => {
+        const match = /\bTRIGGER public ([a-z_][a-z0-9_]*) ([a-z_][a-z0-9_]*)(?:\s|$)/.exec(line);
+        return match?.[1] === undefined || match[2] === undefined
+          ? []
+          : [`${match[1]}.${match[2]}`];
+      }),
+    );
+    const missingTriggers = hostedSyncTriggers.filter((name) => !triggers.includes(name));
+    if (missingTriggers.length > 0) {
+      throw new Error(
+        `Backup is missing hosted work-item sync triggers: ${missingTriggers.join(", ")}`,
+      );
+    }
   }
 
   return {
