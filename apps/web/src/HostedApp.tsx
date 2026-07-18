@@ -1,5 +1,5 @@
 import { CheckCircle2, CircleDotDashed, LogOut, Plus } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { Button, ErrorNotice, Field, PageSkeleton } from "./components/ui";
 import { formatMinutes, todayKey } from "./date";
@@ -10,6 +10,7 @@ import {
   type HostedTodayActivityState,
   type HostedTodayActivityType,
   type HostedWorkItem,
+  type HostedWorkItemPriority,
   type HostedWorkspace,
 } from "./hosted-api";
 
@@ -39,8 +40,19 @@ function publicError(error: unknown): string {
   return "Schedule could not be reached.";
 }
 
-function activityLabel(state: HostedTodayActivityState): string {
-  return `${state.charAt(0).toUpperCase()}${state.slice(1)}`;
+function titleCase(value: HostedTodayActivityState | HostedWorkItemPriority): string {
+  return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
+}
+
+function backlogMeta(item: HostedWorkItem): string | null {
+  const parts = [
+    ...(item.priority === "none" ? [] : [`${titleCase(item.priority)} priority`]),
+    ...(item.dueOn === null ? [] : [`Due ${item.dueOn}`]),
+    ...(item.planningDurationMinutes === null
+      ? []
+      : [`${formatMinutes(item.planningDurationMinutes)} planned`]),
+  ];
+  return parts.length === 0 ? null : parts.join(" · ");
 }
 
 interface WorkspaceCreateFormProps {
@@ -84,6 +96,11 @@ export function HostedApp() {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
   const [workspaceName, setWorkspaceName] = useState("");
   const [title, setTitle] = useState("");
+  const [priority, setPriority] = useState<HostedWorkItemPriority>("none");
+  const [dueOn, setDueOn] = useState("");
+  const [planningDuration, setPlanningDuration] = useState("");
+  const titleInput = useRef<HTMLInputElement>(null);
+  const refocusTitleAfterCapture = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<string | null>(null);
@@ -105,6 +122,12 @@ export function HostedApp() {
     readonly id: string;
     readonly status: "in_progress" | "done";
   } | null>(null);
+
+  useEffect(() => {
+    if (busy || !refocusTitleAfterCapture.current) return;
+    refocusTitleAfterCapture.current = false;
+    titleInput.current?.focus();
+  }, [busy]);
 
   const load = useCallback(async () => {
     setMode("loading");
@@ -247,12 +270,31 @@ export function HostedApp() {
     event.preventDefault();
     const capturedTitle = title.trim();
     if (selectedWorkspace === null || capturedTitle.length === 0) return;
+    const capturedPlanningDuration = planningDuration === "" ? null : Number(planningDuration);
+    if (
+      capturedPlanningDuration !== null &&
+      (!Number.isInteger(capturedPlanningDuration) ||
+        capturedPlanningDuration < 1 ||
+        capturedPlanningDuration > 43_200)
+    ) {
+      setError("Planning time must be a whole number from 1 to 43,200 minutes.");
+      return;
+    }
     setBusy(true);
     setError(null);
     setConfirmation(null);
     try {
-      await hostedApi.createWorkItem(selectedWorkspace.id, capturedTitle);
+      await hostedApi.createWorkItem(selectedWorkspace.id, {
+        title: capturedTitle,
+        priority,
+        dueOn: dueOn === "" ? null : dueOn,
+        planningDurationMinutes: capturedPlanningDuration,
+      });
       setTitle("");
+      setPriority("none");
+      setDueOn("");
+      setPlanningDuration("");
+      refocusTitleAfterCapture.current = true;
       setConfirmation(`Added “${capturedTitle}” to ${selectedWorkspace.name}.`);
       setBacklogRefresh((value) => value + 1);
     } catch (captureError) {
@@ -329,7 +371,7 @@ export function HostedApp() {
         idempotencyKey: intent.idempotencyKey,
       });
       setTodayRetry(null);
-      setConfirmation(`${activityLabel(intent.type)} “${intent.title}”.`);
+      setConfirmation(`${titleCase(intent.type)} “${intent.title}”.`);
       setTodayRefresh((value) => value + 1);
       setBacklogRefresh((value) => value + 1);
     } catch (activityError) {
@@ -460,7 +502,7 @@ export function HostedApp() {
       <main className="hosted-main">
         <p className="eyebrow">Quick capture</p>
         <h1>What needs doing?</h1>
-        <p className="hosted-intro">Add one item now. Priority, timing, and planning can wait.</p>
+        <p className="hosted-intro">Add one item now. Scheduling details stay optional.</p>
 
         {error === null ? null : (
           <ErrorNotice
@@ -521,8 +563,9 @@ export function HostedApp() {
             </details>
 
             <form className="hosted-capture-form" onSubmit={(event) => void capture(event)}>
-              <Field label="Work item">
+              <Field label="Work item" className="hosted-capture-title">
                 <input
+                  ref={titleInput}
                   autoFocus
                   value={title}
                   onChange={(event) => setTitle(event.target.value)}
@@ -532,6 +575,49 @@ export function HostedApp() {
                   required
                 />
               </Field>
+              <details className="hosted-capture-details">
+                <summary>Scheduling details (optional)</summary>
+                <div className="hosted-capture-fields">
+                  <Field label="Priority">
+                    <select
+                      value={priority}
+                      disabled={mutationBusy}
+                      onChange={(event) =>
+                        setPriority(event.target.value as HostedWorkItemPriority)
+                      }
+                    >
+                      <option value="none">No priority</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="urgent">Urgent</option>
+                    </select>
+                  </Field>
+                  <Field label="Due date">
+                    <input
+                      type="date"
+                      value={dueOn}
+                      disabled={mutationBusy}
+                      onChange={(event) => setDueOn(event.target.value)}
+                    />
+                  </Field>
+                  <Field
+                    label="Planning time (minutes)"
+                    hint="Leave blank to keep this item out of daily planning."
+                  >
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={43_200}
+                      step={1}
+                      value={planningDuration}
+                      disabled={mutationBusy}
+                      onChange={(event) => setPlanningDuration(event.target.value)}
+                    />
+                  </Field>
+                </div>
+              </details>
               <Button
                 type="submit"
                 variant="primary"
@@ -585,8 +671,7 @@ export function HostedApp() {
                       <span className="hosted-today-copy">
                         <span>{item.title}</span>
                         <span className="hosted-today-meta">
-                          {formatMinutes(item.scheduledMinutes)} ·{" "}
-                          {activityLabel(item.activityState)}
+                          {formatMinutes(item.scheduledMinutes)} · {titleCase(item.activityState)}
                         </span>
                       </span>
                       {today.planId === null ||
@@ -668,35 +753,43 @@ export function HostedApp() {
                 <p className="hosted-backlog-state">No backlog items yet.</p>
               ) : (
                 <ul className="hosted-backlog-list">
-                  {backlogItems.map((item) => (
-                    <li key={item.id}>
-                      <span className="hosted-backlog-title">{item.title}</span>
-                      <span className="hosted-backlog-actions">
-                        <Button
-                          type="button"
-                          variant="quiet"
-                          aria-label={`Start ${item.title}`}
-                          busy={
-                            updatingItem?.id === item.id && updatingItem.status === "in_progress"
-                          }
-                          disabled={mutationBusy}
-                          onClick={() => void updateStatus(item, "in_progress")}
-                        >
-                          Start
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="quiet"
-                          aria-label={`Complete ${item.title}`}
-                          busy={updatingItem?.id === item.id && updatingItem.status === "done"}
-                          disabled={mutationBusy}
-                          onClick={() => void updateStatus(item, "done")}
-                        >
-                          Done
-                        </Button>
-                      </span>
-                    </li>
-                  ))}
+                  {backlogItems.map((item) => {
+                    const meta = backlogMeta(item);
+                    return (
+                      <li key={item.id}>
+                        <span className="hosted-backlog-copy">
+                          <span className="hosted-backlog-title">{item.title}</span>
+                          {meta === null ? null : (
+                            <span className="hosted-backlog-meta">{meta}</span>
+                          )}
+                        </span>
+                        <span className="hosted-backlog-actions">
+                          <Button
+                            type="button"
+                            variant="quiet"
+                            aria-label={`Start ${item.title}`}
+                            busy={
+                              updatingItem?.id === item.id && updatingItem.status === "in_progress"
+                            }
+                            disabled={mutationBusy}
+                            onClick={() => void updateStatus(item, "in_progress")}
+                          >
+                            Start
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="quiet"
+                            aria-label={`Complete ${item.title}`}
+                            busy={updatingItem?.id === item.id && updatingItem.status === "done"}
+                            disabled={mutationBusy}
+                            onClick={() => void updateStatus(item, "done")}
+                          >
+                            Done
+                          </Button>
+                        </span>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </div>

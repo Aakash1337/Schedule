@@ -65,8 +65,22 @@ describe("hosted capture shell", () => {
 
   it("restores workspace choice, lists its backlog, and refreshes after capture", async () => {
     const user = userEvent.setup();
-    const existing = { id: "item-0", title: "Review outline", version: 1 };
-    const created = { id: "item-1", title: "Prepare release", version: 1 };
+    const existing = {
+      id: "item-0",
+      title: "Review outline",
+      version: 1,
+      priority: "none" as const,
+      dueOn: null,
+      planningDurationMinutes: null,
+    };
+    const created = {
+      id: "item-1",
+      title: "Prepare release",
+      version: 1,
+      priority: "high" as const,
+      dueOn: "2026-07-20",
+      planningDurationMinutes: 75,
+    };
     let finishCreate: (value: typeof created) => void = () => undefined;
     const pendingCreate = new Promise<typeof created>((resolve) => {
       finishCreate = resolve;
@@ -85,16 +99,32 @@ describe("hosted capture shell", () => {
     expect(screen.getByRole("combobox", { name: "Workspace" })).toHaveValue(studio.id);
     expect(await screen.findByText(existing.title)).toBeInTheDocument();
     await user.type(screen.getByRole("textbox", { name: "Work item" }), "Prepare release");
+    await user.click(screen.getByText("Scheduling details (optional)"));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Priority" }), "high");
+    await user.type(screen.getByLabelText("Due date"), "2026-07-20");
+    await user.type(screen.getByRole("spinbutton", { name: /^Planning time \(minutes\)/u }), "75");
     await user.click(screen.getByRole("button", { name: "Add to backlog" }));
 
-    expect(apiMocks.createWorkItem).toHaveBeenCalledWith(studio.id, "Prepare release");
+    expect(apiMocks.createWorkItem).toHaveBeenCalledWith(studio.id, {
+      title: "Prepare release",
+      priority: "high",
+      dueOn: "2026-07-20",
+      planningDurationMinutes: 75,
+    });
     expect(screen.getByRole("combobox", { name: "Workspace" })).toBeDisabled();
     finishCreate(created);
     expect(await screen.findByText("Added “Prepare release” to Studio.")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Work item" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Work item" })).toHaveFocus();
+    expect(screen.getByRole("combobox", { name: "Priority" })).toHaveValue("none");
+    expect(screen.getByLabelText("Due date")).toHaveValue("");
+    expect(screen.getByRole("spinbutton", { name: /^Planning time \(minutes\)/u })).toHaveValue(
+      null,
+    );
     expect(
       await screen.findByText(created.title, { selector: ".hosted-backlog-title" }),
     ).toBeInTheDocument();
+    expect(screen.getByText("High priority · Due 2026-07-20 · 1h 15m planned")).toBeInTheDocument();
     expect(apiMocks.listWorkItems).toHaveBeenNthCalledWith(1, studio.id);
     expect(apiMocks.listWorkItems).toHaveBeenNthCalledWith(2, studio.id);
   });
@@ -196,7 +226,16 @@ describe("hosted capture shell", () => {
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
     apiMocks.listWorkItems
       .mockResolvedValueOnce({
-        items: [{ id: "work-item-1", title: item.title, version: 1 }],
+        items: [
+          {
+            id: "work-item-1",
+            title: item.title,
+            version: 1,
+            priority: "none",
+            dueOn: null,
+            planningDurationMinutes: null,
+          },
+        ],
         limit: 20,
         offset: 0,
       })
@@ -328,7 +367,14 @@ describe("hosted capture shell", () => {
 
   it("starts one backlog item with its optimistic version and refreshes the snapshot", async () => {
     const user = userEvent.setup();
-    const item = { id: "item-1", title: "Review outline", version: 3 };
+    const item = {
+      id: "item-1",
+      title: "Review outline",
+      version: 3,
+      priority: "none" as const,
+      dueOn: null,
+      planningDurationMinutes: null,
+    };
     let finishUpdate: () => void = () => undefined;
     let finishRefresh: () => void = () => undefined;
     const pendingRefresh = new Promise<{ items: never[]; limit: number; offset: number }>(
@@ -361,7 +407,14 @@ describe("hosted capture shell", () => {
 
   it("keeps a stale status update explicit and retryable", async () => {
     const user = userEvent.setup();
-    const item = { id: "item-1", title: "Review outline", version: 3 };
+    const item = {
+      id: "item-1",
+      title: "Review outline",
+      version: 3,
+      priority: "none" as const,
+      dueOn: null,
+      planningDurationMinutes: null,
+    };
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
     apiMocks.listWorkItems.mockResolvedValue({ items: [item], limit: 20, offset: 0 });

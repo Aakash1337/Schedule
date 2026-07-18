@@ -25,7 +25,12 @@ not authorize these product routes.
   active membership in that same transaction. Rename, deletion, invitations, membership changes,
   roles, and workspace detail are absent. A fixed
   `GET /v1/hosted/workspaces/{workspaceId}/work-items` returns only the first 20 backlog
-  IDs/titles/versions. Its item versions support a strict
+  IDs/titles/versions plus priority, due date, and planning duration. A strict CSRF-protected
+  `POST` to that collection accepts only title and those optional scheduling fields; the server fixes
+  parent and description to null and status to backlog. `priority` is
+  `none|low|medium|high|urgent` and defaults to `none`; `dueOn` is a valid nullable `YYYY-MM-DD` and
+  defaults to null; `planningDurationMinutes` is a nullable integer from 1 through 43,200 and defaults
+  to null. Create and list responses use the same narrow projection. Its item versions support a strict
   `PATCH /v1/hosted/workspaces/{workspaceId}/work-items/{workItemId}` body containing only
   `expectedVersion` and `status=in_progress|done`.
   `GET /v1/hosted/workspaces/{workspaceId}/today?date=YYYY-MM-DD` returns only an existing current

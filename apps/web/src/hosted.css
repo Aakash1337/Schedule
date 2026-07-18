@@ -81,6 +81,28 @@
   gap: 12px;
 }
 
+.hosted-capture-title {
+  grid-column: 1 / -1;
+}
+
+.hosted-capture-details {
+  color: var(--ink-soft);
+}
+
+.hosted-capture-details summary {
+  width: fit-content;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.hosted-capture-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding-top: 12px;
+}
+
 .hosted-capture-form .button {
   min-height: 38px;
 }
@@ -156,8 +178,10 @@
   gap: 12px;
 }
 
-.hosted-backlog-title {
+.hosted-backlog-copy {
+  display: grid;
   min-width: 0;
+  gap: 2px;
 }
 
 .hosted-backlog-actions {
@@ -178,10 +202,14 @@
   gap: 2px;
 }
 
-.hosted-today-meta {
+.hosted-today-meta,
+.hosted-backlog-meta {
   flex: none;
   color: var(--ink-faint);
   font-size: 0.82rem;
+}
+
+.hosted-today-meta {
   white-space: nowrap;
 }
 
@@ -246,12 +274,23 @@
     grid-template-columns: 1fr;
   }
 
+  .hosted-capture-fields {
+    grid-template-columns: 1fr;
+  }
+
   .hosted-capture-form .button,
   .hosted-sign-in-button {
     width: 100%;
   }
 
   .hosted-capture-form .button {
+    min-height: 44px;
+  }
+
+  .hosted-topbar .button,
+  .hosted-backlog-actions .button,
+  .hosted-workspace-create summary,
+  .hosted-capture-details summary {
     min-height: 44px;
   }
 

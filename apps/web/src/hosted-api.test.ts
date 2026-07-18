@@ -83,14 +83,29 @@ describe("hosted web API client", () => {
     );
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        new Response(JSON.stringify({ id: "item-1", title: "Prepare release" }), {
-          status: 201,
-          headers: { "content-type": "application/json" },
-        }),
+        new Response(
+          JSON.stringify({
+            id: "item-1",
+            title: "Prepare release",
+            version: 1,
+            priority: "high",
+            dueOn: "2026-07-20",
+            planningDurationMinutes: 75,
+          }),
+          {
+            status: 201,
+            headers: { "content-type": "application/json" },
+          },
+        ),
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    await hostedApi.createWorkItem("workspace/one", "Prepare release");
+    await hostedApi.createWorkItem("workspace/one", {
+      title: "Prepare release",
+      priority: "high",
+      dueOn: "2026-07-20",
+      planningDurationMinutes: 75,
+    });
     const [, options] = fetchMock.mock.calls[0] ?? [];
     const headers = new Headers(options?.headers);
     expect(fetchMock).toHaveBeenCalledWith(
@@ -98,7 +113,12 @@ describe("hosted web API client", () => {
       expect.objectContaining({
         method: "POST",
         credentials: "same-origin",
-        body: JSON.stringify({ title: "Prepare release" }),
+        body: JSON.stringify({
+          title: "Prepare release",
+          priority: "high",
+          dueOn: "2026-07-20",
+          planningDurationMinutes: 75,
+        }),
       }),
     );
     expect(headers.get("x-schedule-csrf")).toBe(token);

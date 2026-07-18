@@ -146,8 +146,9 @@ logout, automatic first-login default-workspace membership, and a narrow members
 product slice with bounded per-source throttling. An authenticated collection can list the caller's
 active workspace page or create one name-only workspace while rechecking the browser session in the
 same transaction. A same-origin hosted capture shell can sign in, create or select one active workspace,
-review the browser-local day's existing plan and the first 20 backlog titles, and add one title
-through an authorized mutation. A visible backlog item can be moved only to started or done with an
+review the browser-local day's existing plan and the first 20 backlog items, and add one title with
+optional priority, due date, and planning duration through an authorized mutation. A visible backlog
+item can be moved only to started or done with an
 optimistic version. A pending Today item can be started, completed, or skipped, and a started item can
 be completed or skipped,
 through an idempotent, head-fenced mutation that reauthorizes in the write transaction. The shell
@@ -209,7 +210,8 @@ interception.
 
 Run `pnpm verify:hosted-web-e2e` for the separate built OIDC capture entry. Its strict browser double
 checks signed-out and authenticated states, workspace choice, bounded backlog refresh, exact CSRF
-forwarding, title-only capture, Today completion, idempotency forwarding, and 360-pixel layout; the
+forwarding, optional scheduling-field capture, Today completion, idempotency forwarding, and
+360-pixel layout; the
 PostgreSQL composition verifier covers the real hosted server boundary and atomic Today completion.
 
 With PostgreSQL running, verify backlog/Kanban, hierarchy, work-item prerequisites, and calendar

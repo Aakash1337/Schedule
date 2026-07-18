@@ -365,10 +365,30 @@ try {
       cookie: `${cookiePair(sessionCookie)}; ${cookiePair(csrfCookie)}`,
       [HOSTED_CSRF_HEADER_NAME]: csrfToken!,
     },
-    payload: { title: "Verified hosted work item" },
+    payload: {
+      title: "Verified hosted work item",
+      priority: "high",
+      dueOn: "2026-07-20",
+      planningDurationMinutes: 75,
+    },
   });
   assert.equal(createdWorkItem.statusCode, 201, createdWorkItem.body);
-  assert.equal(createdWorkItem.json().workspaceId, createdWorkspaceBody.id);
+  const createdWorkItemBody = createdWorkItem.json<{
+    id: string;
+    title: string;
+    version: number;
+    priority: string;
+    dueOn: string | null;
+    planningDurationMinutes: number | null;
+  }>();
+  assert.deepEqual(createdWorkItemBody, {
+    id: createdWorkItemBody.id,
+    title: "Verified hosted work item",
+    version: 1,
+    priority: "high",
+    dueOn: "2026-07-20",
+    planningDurationMinutes: 75,
+  });
   const listedWorkItems = await app.inject({
     method: "GET",
     url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items`,
@@ -379,13 +399,41 @@ try {
   assert.deepEqual(listedWorkItems.json(), {
     items: [
       {
-        id: createdWorkItem.json().id,
+        id: createdWorkItemBody.id,
         title: "Verified hosted work item",
-        version: createdWorkItem.json().version,
+        version: createdWorkItemBody.version,
+        priority: "high",
+        dueOn: "2026-07-20",
+        planningDurationMinutes: 75,
       },
     ],
     limit: 20,
     offset: 0,
+  });
+  const [persistedCapture] = await database.sql<
+    {
+      parentWorkItemId: string | null;
+      description: string | null;
+      status: string;
+      priority: string;
+      dueOn: string;
+      planningDurationMinutes: number;
+    }[]
+  >`
+    select parent_work_item_id::text as "parentWorkItemId", description, status, priority,
+      due_on::text as "dueOn",
+      planning_duration_minutes as "planningDurationMinutes"
+    from work_items
+    where workspace_id = ${createdWorkspaceBody.id}::uuid
+      and id = ${createdWorkItemBody.id}::uuid
+  `;
+  assert.deepEqual(persistedCapture, {
+    parentWorkItemId: null,
+    description: null,
+    status: "backlog",
+    priority: "high",
+    dueOn: "2026-07-20",
+    planningDurationMinutes: 75,
   });
   const listedToday = await app.inject({
     method: "GET",
@@ -520,13 +568,13 @@ try {
   });
   const completedWorkItem = await app.inject({
     method: "PATCH",
-    url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items/${createdWorkItem.json().id}`,
+    url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items/${createdWorkItemBody.id}`,
     headers: {
       origin,
       cookie: `${cookiePair(sessionCookie)}; ${cookiePair(csrfCookie)}`,
       [HOSTED_CSRF_HEADER_NAME]: csrfToken!,
     },
-    payload: { expectedVersion: createdWorkItem.json().version, status: "done" },
+    payload: { expectedVersion: createdWorkItemBody.version, status: "done" },
   });
   assert.equal(completedWorkItem.statusCode, 204, completedWorkItem.body);
   const emptyBacklog = await app.inject({
@@ -676,7 +724,7 @@ try {
   assert.deepEqual(requestCounts, { discovery: 1, token: 1, jwks: 1 });
 
   console.log(
-    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read and empty Today read and a transaction-authorized status update, plus principal-bound workspace creation. Hosted Today completion also proved exact idempotent replay, one activity append, one head advance, and atomic source completion, while a stale head left no residue and the plan time zone remained authoritative.",
+    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read and empty Today read and a transaction-authorized status update, plus principal-bound workspace creation. Hosted capture scheduling fields were restricted, projected, and persisted exactly. Hosted Today completion also proved exact idempotent replay, one activity append, one head advance, and atomic source completion, while a stale head left no residue and the plan time zone remained authoritative.",
   );
 } catch (error) {
   verificationError = error;

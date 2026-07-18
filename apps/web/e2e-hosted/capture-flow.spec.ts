@@ -19,11 +19,17 @@ test("captures one hosted backlog item with responsive request verification", as
     id: "00000000-0000-4000-8000-000000000009",
     title: `Review-${"outline".repeat(24)}`,
     version: 4,
+    priority: "none",
+    dueOn: null,
+    planningDurationMinutes: null,
   };
   const created = {
     id: "00000000-0000-4000-8000-000000000010",
     title: "Prepare release",
     version: 1,
+    priority: "high",
+    dueOn: "2026-07-20",
+    planningDurationMinutes: 75,
   };
   const todayItem = {
     id: "00000000-0000-4000-8000-000000000011",
@@ -33,7 +39,7 @@ test("captures one hosted backlog item with responsive request verification", as
   const todayPlanId = "00000000-0000-4000-8000-000000000012";
   let todayHeadVersion = 5;
   let todayActivityState: "pending" | "completed" = "pending";
-  let backlog = [existing];
+  let backlog: (typeof existing | typeof created)[] = [existing];
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -121,6 +127,13 @@ test("captures one hosted backlog item with responsive request verification", as
   });
   expect(actionLayout.width).toBeLessThanOrEqual(actionLayout.viewport);
   expect((await skipButton.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  for (const target of [
+    page.getByRole("button", { name: "Sign out" }),
+    page.getByRole("button", { name: `Start ${existing.title}` }),
+    page.getByText("Scheduling details (optional)"),
+  ]) {
+    expect((await target.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  }
   await page.getByRole("button", { name: `Complete ${todayItem.title} in Today` }).click();
   await expect(page.getByText(`Completed “${todayItem.title}”.`)).toBeVisible();
   await expect(page.getByText("45m · Completed")).toBeVisible();
@@ -128,13 +141,23 @@ test("captures one hosted backlog item with responsive request verification", as
   await expect(page.getByText(`Completed “${existing.title}”.`)).toBeVisible();
   await expect(page.locator(".hosted-backlog-list li", { hasText: existing.title })).toHaveCount(0);
   await page.getByRole("textbox", { name: "Work item" }).fill("Prepare release");
+  await page.getByText("Scheduling details (optional)").click();
+  await page.getByRole("combobox", { name: "Priority" }).selectOption("high");
+  await page.getByLabel("Due date").fill("2026-07-20");
+  await page.getByRole("spinbutton", { name: /^Planning time \(minutes\)/u }).fill("75");
   await page.getByRole("button", { name: "Add to backlog" }).click();
 
   await expect(
     page.getByRole("status").filter({ hasText: "Added “Prepare release” to Studio." }),
   ).toBeVisible();
   await expect(page.locator(".hosted-backlog-list li", { hasText: created.title })).toBeVisible();
-  expect(capturedBody).toEqual({ title: "Prepare release" });
+  await expect(page.getByText("High priority · Due 2026-07-20 · 1h 15m planned")).toBeVisible();
+  expect(capturedBody).toEqual({
+    title: "Prepare release",
+    priority: "high",
+    dueOn: "2026-07-20",
+    planningDurationMinutes: 75,
+  });
   expect(capturedCsrf).toBe(csrfToken);
   expect(capturedStatusBody).toEqual({ expectedVersion: existing.version, status: "done" });
   expect(capturedStatusCsrf).toBe(csrfToken);

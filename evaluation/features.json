@@ -3104,7 +3104,8 @@
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
           "anchors": [
-            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
+            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout",
+            "Hosted capture scheduling fields were restricted, projected, and persisted exactly"
           ]
         },
         {
@@ -3254,7 +3255,7 @@
         "anchor": "# Hosted request authorization and OIDC runtime"
       },
       "limitations": [
-        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery and name-only creation, bounded backlog and existing-plan Today reads, transaction-coupled title create, status-only update, and Today Start/Done/Skip, plus one narrow same-origin capture shell. Workspace rename/delete and membership administration, a broader public end-user product surface, and synchronization remain unimplemented.",
+        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery and name-only creation, bounded backlog and existing-plan Today reads, transaction-coupled title plus optional priority/due-date/planning-duration create, status-only update, and Today Start/Done/Skip, plus one narrow same-origin capture shell. Workspace rename/delete and membership administration, a broader public end-user product surface, and synchronization remain unimplemented.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [
@@ -3361,7 +3362,7 @@
         "anchor": "## Hosted capture shell"
       },
       "limitations": [
-        "The shell can authenticate, create or discover active workspaces, show one existing browser-local current-day plan and the first 20 backlog titles, create one title-only backlog item, move one visible backlog item to started or done, and start, complete, or skip one actionable Today item with exact ambiguous retry. It cannot generate plans, page, filter, edit fields, reopen, cancel, schedule, rename/delete workspaces, administer membership, or synchronize product data.",
+        "The shell can authenticate, create or discover active workspaces, show one existing browser-local current-day plan and the first 20 backlog items with scheduling summaries, create one title with optional priority, due date, and planning duration, move one visible backlog item to started or done, and start, complete, or skip one actionable Today item with exact ambiguous retry. It cannot generate plans, page, filter, edit existing fields, reopen, cancel, schedule, rename/delete workspaces, administer membership, or synchronize product data.",
         "The built-browser gate uses an in-browser API double; an external identity provider and public TLS ingress still require a staging smoke."
       ],
       "evidence": [
@@ -3504,7 +3505,7 @@
         "anchor": "## Bounded hosted backlog read"
       },
       "limitations": [
-        "The endpoint returns only the stable first 20 backlog IDs, titles, and optimistic versions. It has no filters, pagination controls, totals, descriptions, or synchronization semantics and does not mix in the separate Today projection.",
+        "The endpoint returns only the stable first 20 backlog IDs, titles, optimistic versions, priorities, due dates, and planning durations. It has no filters, pagination controls, totals, descriptions, hierarchy, or synchronization semantics and does not mix in the separate Today projection.",
         "Read authorization follows the documented preflight linearization: a committed revocation fences the next request but cannot retract an already-authorized in-flight read."
       ],
       "evidence": [
@@ -3719,7 +3720,7 @@
           "file": "apps/api/src/hosted-work-item-routes.test.ts",
           "command": "unit",
           "anchors": [
-            "derives canonical authority from the boundary and ignores spoofed headers",
+            "derives canonical authority and applies narrow scheduling defaults",
             "rejects identity-bearing and malformed bodies before calling the service",
             "maps transaction authorization denial without exposing auth detail",
             "redacts internal transaction failures",

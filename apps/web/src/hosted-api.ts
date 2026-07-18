@@ -11,6 +11,18 @@ export interface HostedWorkItem {
   readonly id: string;
   readonly title: string;
   readonly version: number;
+  readonly priority: HostedWorkItemPriority;
+  readonly dueOn: string | null;
+  readonly planningDurationMinutes: number | null;
+}
+
+export type HostedWorkItemPriority = "none" | "low" | "medium" | "high" | "urgent";
+
+export interface HostedCreateWorkItem {
+  readonly title: string;
+  readonly priority?: HostedWorkItemPriority;
+  readonly dueOn?: string | null;
+  readonly planningDurationMinutes?: number | null;
 }
 
 export interface HostedWorkItemPage {
@@ -146,10 +158,10 @@ export const hostedApi = {
         idempotencyKey: command.idempotencyKey,
       },
     ),
-  createWorkItem: (workspaceId: string, title: string) =>
+  createWorkItem: (workspaceId: string, command: HostedCreateWorkItem) =>
     request<HostedWorkItem>(`/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/work-items`, {
       method: "POST",
-      json: { title },
+      json: command,
       csrf: true,
     }),
   updateWorkItemStatus: (

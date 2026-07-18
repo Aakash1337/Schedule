@@ -360,10 +360,11 @@ never sufficient to call the separate identity and local-product units of work i
 
 `registerHostedWorkItemBoundary` inseparably composes the hosted authentication, CSRF, and workspace
 authorization boundary with one route:
-`POST /v1/hosted/workspaces/:workspaceId/work-items`. It accepts the same strict work-item body as
-the local create route, derives workspace authority only from the immutable hosted boundary context,
-ignores identity-shaped headers, rejects identity fields in the body, and returns `201` for a
-successful create. A path/context mismatch fails as the same generic `workspace.not_found` response.
+`POST /v1/hosted/workspaces/:workspaceId/work-items`. Its strict body accepts only a title plus
+optional priority, due date, and planning duration. The server fixes parent and description to null
+and status to backlog, derives workspace authority only from the immutable hosted boundary context,
+rejects every extra field, and returns only the same narrow scheduling projection with `201`. A
+path/context mismatch fails as the same generic `workspace.not_found` response.
 The registrar is installed only in OIDC mode.
 
 `CreateHostedWorkItem` adapts a specialized hosted mutation unit of work to the existing product
@@ -416,8 +417,8 @@ or grant roles.
 workspace-membership preflight and accepts no query fields. It reuses the product work-item list
 inside a separate read transaction with fixed `status=backlog`, `limit=20`, and `offset=0`. The
 response is the stable first page ordered by creation time and ID and projects only each item's
-`id`, `title`, and optimistic `version`, plus the fixed page bounds. It omits descriptions,
-hierarchy, priorities, due dates, durations, identity data, and totals and always uses
+`id`, `title`, optimistic `version`, priority, due date, and planning duration, plus the fixed page
+bounds. It omits descriptions, hierarchy, identity data, and totals and always uses
 `Cache-Control: no-store`.
 
 This is a read-side operation under the preflight transaction limit above: a committed revocation
@@ -485,10 +486,10 @@ framing denial, and MIME sniffing denial. Fingerprinted assets are immutable for
 requests sit outside the hosted API's per-source request budget.
 
 The browser reads only `{ authenticated }`, the active workspace page, the first 20 backlog item
-IDs/titles/versions, the narrow current-day projection and concurrency fences above, the created workspace, and the created
+IDs/titles/versions plus priority/due-date/planning-duration summaries, the narrow current-day projection and concurrency fences above, the created workspace, and the created
 work item. It never receives provider tokens, user or session identifiers, membership state, or
 roles. A signed-in user may create or choose one active workspace, review Today and the bounded
-backlog snapshot, submit one title, move one visible backlog item to started or done, or
+backlog snapshot, submit one title with optional scheduling fields, move one visible backlog item to started or done, or
 start/complete/skip one actionable Today item. The script
 copies the exact host-only CSRF cookie into the existing header for all strict mutations; the server
 remains authoritative for identity, membership, defaults, validation, and optimistic versions. The
@@ -501,7 +502,7 @@ There is still no WebFinger issuer discovery, workspace rename/delete or members
 broader hosted product interface or route set, account-management API, role model, synchronization
 protocol, or verified public deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
-principal. Name-only workspace creation, title-only work creation, status-only update, and the
+principal. Name-only workspace creation, narrow scheduling-field work creation, status-only update, and the
 start/complete/skip Today action are the only transaction-coupled hosted mutations. The bounded backlog and current-day projections are the
 only hosted product-data reads; all other product routes remain local-only and require their own
 authority before future hosted exposure.
@@ -583,7 +584,7 @@ work creation, session bootstrap, CSRF denial, logout, and cleanup against Postg
 proves an authenticated Today completion, exact replay without duplicate activity, one head advance,
 atomic source completion, and that the local unauthenticated workspace routes are absent.
 `pnpm verify:hosted-web-e2e` builds the isolated hosted browser entry and exercises signed-out and
-authenticated capture in Chromium. It verifies workspace selection, title-only payloads, Today
+authenticated capture in Chromium. It verifies workspace selection, optional scheduling-field payloads, Today
 completion, exact CSRF/idempotency forwarding, success feedback, 360-pixel overflow, and mobile action sizing with a strict
 in-browser API double. It does not claim external-provider or public-ingress coverage.
 `pnpm verify:hosted-login-transactions` migrates a disposable database and proves digest-only state

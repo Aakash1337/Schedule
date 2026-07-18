@@ -28,8 +28,8 @@ pnpm dev
 The same package builds a separate `hosted.html` entry for explicit OIDC mode. It reuses the product
 controls and visual tokens but includes only session bootstrap, active-workspace discovery, sign
 in/out, name-only workspace creation, one current-day snapshot, one fixed first-page backlog
-snapshot, narrow Today/backlog actions, and one title-only backlog form. The API serves that
-build from the same origin, so the
+snapshot, narrow Today/backlog actions, and one backlog form with optional priority, due date, and
+planning duration. The API serves that build from the same origin, so the
 browser never needs CORS, provider tokens, or a second frontend service. The local application and
 its unauthenticated routes are not bundled into the hosted entry.
 
@@ -39,7 +39,8 @@ membership exists, immediately selects a successful creation, stores only that s
 storage, and sends the exact script-readable CSRF proof on
 mutations, and treats session, access, throttling, and availability failures as bounded states. It
 shows the browser-local day's existing plan through titles, durations, and activity states, plus the
-first 20 backlog titles. The two reads fail and retry independently; capture refreshes only the
+first 20 backlog items with scheduling summaries. Optional capture fields stay behind one disclosure.
+The two reads fail and retry independently; capture refreshes only the
 backlog. Each visible backlog item can be moved only to started or done with its snapshot version.
 Pending Today items offer Start, Done, and Skip; started items offer Done and Skip; terminal items
 offer none.
