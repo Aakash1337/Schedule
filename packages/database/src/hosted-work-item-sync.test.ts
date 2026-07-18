@@ -406,7 +406,7 @@ describe("hosted work-item sync schema", () => {
     );
     const capabilityGate = captureFunction.slice(
       captureFunction.indexOf("SELECT capability.capture_enabled"),
-      captureFunction.indexOf("INSERT INTO public.hosted_work_item_sync_states"),
+      captureFunction.indexOf("UPDATE public.hosted_work_item_sync_states"),
     );
     const unlockedCapabilityRead = capabilityGate.indexOf("WHERE capability.singleton;");
     const disabledBranch = capabilityGate.indexOf("IF NOT v_capture_enabled THEN");
@@ -417,6 +417,9 @@ describe("hosted work-item sync schema", () => {
     expect(unlockedCapabilityRead).toBeLessThan(disabledBranch);
     expect(disabledBranch).toBeLessThan(lockedCapabilityRead);
     expect(migration).toContain("AFTER INSERT OR UPDATE OR DELETE ON public.work_items");
+    expect(captureFunction).toContain("UPDATE public.hosted_work_item_sync_states");
+    expect(captureFunction).toContain("hosted work item sync state is missing");
+    expect(captureFunction).not.toContain("ON CONFLICT (workspace_id) DO UPDATE");
     expect(migration).toContain("SET hosted_sync_cursor = v_cursor");
     expect(migration).toContain("unexpected nested work item sync mutation");
     expect(migration).toContain("IF NEW IS NOT DISTINCT FROM OLD");

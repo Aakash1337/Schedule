@@ -481,6 +481,16 @@ try {
     checkpoint: "0",
     nextAfterId: null,
   });
+  const corruptItemId = randomUUID();
+  await connection.sql`
+    insert into work_items (id, workspace_id, title)
+    values (${corruptItemId}, ${corruptWorkspace}, 'Corruption sentinel')
+  `;
+  assert.deepEqual(await syncState(connection, corruptWorkspace), {
+    head: "1",
+    minimum: "0",
+    changes: 1,
+  });
   await connection.sql`
     alter table hosted_work_item_sync_states
       disable trigger hosted_work_item_sync_states_delete_guard
@@ -506,6 +516,19 @@ try {
     store.listChanges(corruptWorkspace, { afterCursor: "0", limit: 1 }),
     isCorruptStoreFailure,
   );
+  await assert.rejects(
+    connection.sql`
+      update work_items set title = 'Must roll back'
+      where workspace_id = ${corruptWorkspace} and id = ${corruptItemId}
+    `,
+    /hosted work item sync state is missing/u,
+  );
+  await assert.rejects(store.bootstrap(corruptWorkspace, { limit: 1 }), isCorruptStoreFailure);
+  const [corruptionSentinel] = await connection.sql<{ cursor: string; title: string }[]>`
+    select hosted_sync_cursor::text as cursor, title from work_items
+    where workspace_id = ${corruptWorkspace} and id = ${corruptItemId}
+  `;
+  assert.deepEqual(corruptionSentinel, { cursor: "1", title: "Corruption sentinel" });
 
   let now = new Date("2026-07-18T08:00:00.000Z");
   const clock = { now: () => now };
@@ -593,6 +616,56 @@ try {
     where item.workspace_id = ${primary} and item.id = ${generic.id}
   `;
   assert.deepEqual(afterManagedCursorEdit, beforeManagedCursorEdit);
+
+  const beforeDeniedSyncWrites = await syncState(connection, primary);
+  await assert.rejects(
+    connection.sql`
+      insert into hosted_work_item_sync_changes (
+        workspace_id, cursor, kind, work_item_id, recorded_at
+      ) values (${primary}, 999, 'delete', ${randomUUID()}, clock_timestamp())
+    `,
+    /immutable while retained/u,
+  );
+  await assert.rejects(
+    connection.sql`
+      update hosted_work_item_sync_changes set recorded_at = recorded_at
+      where workspace_id = ${primary} and cursor = 1
+    `,
+    /immutable while retained/u,
+  );
+  await assert.rejects(
+    connection.sql`
+      delete from hosted_work_item_sync_changes
+      where workspace_id = ${primary} and cursor = 1
+    `,
+    /immutable while retained/u,
+  );
+  await assert.rejects(
+    connection.sql`
+      insert into hosted_work_item_sync_states (
+        workspace_id, head_cursor, minimum_cursor, updated_at
+      ) values (${primary}, 0, 0, clock_timestamp())
+    `,
+    /state transition is not allowed/u,
+  );
+  await assert.rejects(
+    connection.sql`
+      update hosted_work_item_sync_states set head_cursor = head_cursor + 1
+      where workspace_id = ${primary}
+    `,
+    /state transition is not allowed/u,
+  );
+  await assert.rejects(
+    connection.sql`
+      delete from hosted_work_item_sync_states where workspace_id = ${primary}
+    `,
+    /cannot be deleted independently/u,
+  );
+  assert.deepEqual(
+    await syncState(connection, primary),
+    beforeDeniedSyncWrites,
+    "direct sync state and change writes must fail without mutation",
+  );
 
   const activityItem = await creator.execute({
     workspaceId: activityWorkspace,

@@ -155,17 +155,15 @@ BEGIN
 		END IF;
 	END IF;
 
-	INSERT INTO public.hosted_work_item_sync_states (
-		workspace_id,
-		head_cursor,
-		minimum_cursor,
-		updated_at
-	)
-	VALUES (v_workspace_id, 1, 0, v_recorded_at)
-	ON CONFLICT (workspace_id) DO UPDATE
-	SET head_cursor = public.hosted_work_item_sync_states.head_cursor + 1,
-		updated_at = EXCLUDED.updated_at
+	UPDATE public.hosted_work_item_sync_states
+	SET head_cursor = head_cursor + 1,
+		updated_at = v_recorded_at
+	WHERE workspace_id = v_workspace_id
 	RETURNING head_cursor INTO v_cursor;
+	IF NOT FOUND THEN
+		RAISE EXCEPTION 'hosted work item sync state is missing'
+			USING ERRCODE = '55000';
+	END IF;
 
 	IF TG_OP = 'DELETE' THEN
 		INSERT INTO public.hosted_work_item_sync_changes (
