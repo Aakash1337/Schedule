@@ -739,12 +739,15 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   denial, bounded client-address throttling, direct pinned OIDC HTTPS, startup preflight/cleanup, and
   same-transaction user/session/workspace/membership reauthorization.
 - Implemented narrow hosted reads: a signed-in principal can list only active workspace memberships,
-  the fixed first 20 backlog items with priority/due-date/planning-duration summaries, and one existing browser-local current-day plan projection with
+  the fixed first 20 backlog items with priority/due-date/planning-duration summaries, a separate
+  bounded current-state page of all work-item statuses and full reconciliation fields except the
+  redundant workspace ID, and one existing browser-local current-day plan projection with
   only the IDs/head fence needed for mutation and no identity, role, planner-reason, or time-zone
   metadata. A missing-plan day may also read one bounded deterministic Plan Fit projection without
   historical plan or activity data. A separate fixed last-28-use aggregate exposes only bounded
   counts and rates, with rates withheld until three settled, unrevised uses and no per-use rows,
-  dates, IDs, or raw workload totals.
+  dates, IDs, or raw workload totals. The work-item page is current-state offset pagination, not a
+  frozen multi-page sync snapshot, change feed, tombstone stream, or offline protocol.
 - Implemented narrow hosted UI: a same-origin capture shell can sign in, select one active
   workspace or create another, review Today and the first 20 backlog items, create one title with
   optional priority, due date, and planning duration, and

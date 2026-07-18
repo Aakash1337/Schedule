@@ -3356,7 +3356,7 @@
         "anchor": "# Hosted request authorization and OIDC runtime"
       },
       "limitations": [
-        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery and name-only creation, bounded backlog and existing-plan Today reads, transaction-coupled title plus optional priority/due-date/planning-duration create, status-only update, and Today Start/Done/Skip, plus one narrow same-origin capture shell. Workspace rename/delete and membership administration, a broader public end-user product surface, and synchronization remain unimplemented.",
+        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery and name-only creation, bounded backlog, current-state all-status work-item, and existing-plan Today reads, transaction-coupled title plus optional priority/due-date/planning-duration create, status-only update, and Today Start/Done/Skip, plus one narrow same-origin capture shell. Workspace rename/delete and membership administration, a broader public end-user product surface, and synchronization remain unimplemented; the offset work-item page is not a frozen sync snapshot or change feed.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [
@@ -3607,6 +3607,7 @@
       },
       "limitations": [
         "The endpoint returns only the stable first 20 backlog IDs, titles, optimistic versions, priorities, due dates, and planning durations. It has no filters, pagination controls, totals, descriptions, hierarchy, or synchronization semantics and does not mix in the separate Today projection.",
+        "A separate bounded offset page may contain items from every current status and returns full work-item fields except workspaceId. It is independently read on every request and has no frozen snapshot boundary, change feed, tombstones, watermark, conflict handling, or offline semantics.",
         "Read authorization follows the documented preflight linearization: a committed revocation fences the next request but cannot retract an already-authorized in-flight read."
       ],
       "evidence": [
@@ -3614,7 +3615,12 @@
           "level": "unit",
           "file": "apps/api/src/hosted-work-item-routes.test.ts",
           "command": "unit",
-          "anchors": ["returns one redacted fixed backlog page from canonical authority"]
+          "anchors": [
+            "returns one redacted fixed backlog page from canonical authority",
+            "returns a stable full-field current-state work-item page with default and forwarded pages",
+            "rejects non-canonical snapshot pages before calling the service",
+            "redacts unavailable snapshot membership and never crosses the workspace boundary"
+          ]
         },
         {
           "level": "unit",
@@ -3650,7 +3656,7 @@
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
           "anchors": [
-            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read"
+            "unchanged bounded backlog read and a full-field current-state work-item page with stable pages, non-backlog visibility, tenant redaction, and no read mutation"
           ]
         }
       ]
@@ -3713,7 +3719,7 @@
           "level": "integration",
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
-          "anchors": ["plus bounded backlog read and empty Today read"]
+          "anchors": ["plus empty Today read and a transaction-authorized status update"]
         }
       ]
     },

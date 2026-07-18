@@ -427,6 +427,22 @@ mismatch, deletion after preflight, and membership denial all remain the same ge
 private repository detail. The endpoint adds no filtering, paging, or synchronization authority;
 the version exists only for the strict status mutation below.
 
+### Current-state work-item snapshot
+
+`GET /v1/hosted/workspaces/:workspaceId/work-items/snapshot?limit=100&offset=0` is a separate
+membership-authorized, no-store read. Its page may include items in every current status, in stable
+`createdAt,id` order, with `limit` from 1 through 200 and `offset` from 0 through 1,000,000. Unknown,
+noncanonical, negative, and out-of-range query values fail before repository access. Each item
+contains `id`, nullable `parentWorkItemId`, title, nullable description, status, priority, nullable
+due date and planning duration, optimistic version, and creation/update timestamps. It deliberately
+omits `workspaceId`, browser/session identity, membership detail, and totals.
+
+The route does not alter the fixed first-20 capture backlog above. It reads current rows independently
+for every request, so changes between offset pages may shift or repeat entries. It provides neither
+a frozen reconciliation boundary nor a change feed, deletion tombstones, cursor/watermark,
+conflict handling, push notification, or offline support. Those are still synchronization protocol
+decisions, not properties inferred from this bounded HTTP page.
+
 ## Transaction-coupled hosted status update
 
 `PATCH /v1/hosted/workspaces/:workspaceId/work-items/:workItemId` accepts exactly a positive
@@ -573,9 +589,9 @@ Integration credentials remain a separate machine boundary and cannot authentica
 principal. Name-only workspace creation, narrow scheduling-field work creation, status-only update,
 exact-key Plan Fit dismissal/reset, first-plan generation, and start/complete/skip Today action are
 the only transaction-coupled hosted mutations. The bounded backlog, current-day, Plan Fit guidance,
-and thresholded outcome aggregate are the only hosted
-product-data reads; all other product routes remain local-only and require their own
-authority before future hosted exposure.
+thresholded outcome aggregate, and separate current-state work-item page are the only hosted
+product-data reads; all other product routes remain local-only and require their own authority
+before future hosted exposure. The current-state page does not implement synchronization.
 
 ## Concrete OIDC composition
 

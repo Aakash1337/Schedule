@@ -25,6 +25,14 @@ const hostedWorkItemParams = z.strictObject({
   workItemId: canonicalUuid,
 });
 const emptyQuery = z.strictObject({});
+const canonicalDecimal = z.string().regex(/^(0|[1-9]\d*)$/u);
+const hostedWorkItemSnapshotQuery = z.strictObject({
+  limit: canonicalDecimal.transform(Number).pipe(z.number().int().min(1).max(200)).default(100),
+  offset: canonicalDecimal
+    .transform(Number)
+    .pipe(z.number().int().min(0).max(1_000_000))
+    .default(0),
+});
 const hostedWorkItemCreateBody = z.strictObject({
   title: z.string().trim().min(1).max(240),
   priority: z.enum(["none", "low", "medium", "high", "urgent"]).default("none"),
@@ -41,6 +49,7 @@ const hostedWorkItemStatusBody = z.strictObject({
 });
 
 export const HOSTED_WORK_ITEM_COLLECTION_ROUTE = "/v1/hosted/workspaces/:workspaceId/work-items";
+export const HOSTED_WORK_ITEM_SNAPSHOT_ROUTE = `${HOSTED_WORK_ITEM_COLLECTION_ROUTE}/snapshot`;
 export const HOSTED_WORK_ITEM_RESOURCE_ROUTE = `${HOSTED_WORK_ITEM_COLLECTION_ROUTE}/:workItemId`;
 
 export interface HostedCreateWorkItemInput {
@@ -52,6 +61,12 @@ export interface HostedListWorkItemsInput {
   readonly authorization: HostedWorkspaceAuthorization;
 }
 
+export interface HostedListWorkItemSnapshotInput {
+  readonly authorization: HostedWorkspaceAuthorization;
+  readonly limit: number;
+  readonly offset: number;
+}
+
 export interface HostedUpdateWorkItemStatusInput {
   readonly authorization: HostedWorkspaceAuthorization;
   readonly command: UpdateHostedWorkItemStatusCommand;
@@ -60,12 +75,42 @@ export interface HostedUpdateWorkItemStatusInput {
 export interface HostedWorkItemServices {
   createWorkItem(input: HostedCreateWorkItemInput): Promise<WorkItem>;
   listWorkItems(input: HostedListWorkItemsInput): Promise<WorkItemPage>;
+  listWorkItemSnapshot(input: HostedListWorkItemSnapshotInput): Promise<WorkItemPage>;
   updateWorkItemStatus(input: HostedUpdateWorkItemStatusInput): Promise<WorkItem>;
 }
 
 function hostedWorkItemProjection(item: WorkItem) {
   const { id, title, version, priority, dueOn, planningDurationMinutes } = item;
   return { id, title, version, priority, dueOn, planningDurationMinutes };
+}
+
+function hostedWorkItemSnapshotProjection(item: WorkItem) {
+  const {
+    id,
+    parentWorkItemId,
+    title,
+    description,
+    status,
+    priority,
+    dueOn,
+    planningDurationMinutes,
+    version,
+    createdAt,
+    updatedAt,
+  } = item;
+  return {
+    id,
+    parentWorkItemId,
+    title,
+    description,
+    status,
+    priority,
+    dueOn,
+    planningDurationMinutes,
+    version,
+    createdAt: createdAt.toISOString(),
+    updatedAt: updatedAt.toISOString(),
+  };
 }
 
 async function registerHostedWorkItemRoutes(
@@ -81,6 +126,23 @@ async function registerHostedWorkItemRoutes(
     );
     return {
       items: page.items.map(hostedWorkItemProjection),
+      limit: page.limit,
+      offset: page.offset,
+    };
+  });
+
+  app.get(HOSTED_WORK_ITEM_SNAPSHOT_ROUTE, async (request) => {
+    const query = parseRequest(hostedWorkItemSnapshotQuery, request.query);
+    const authorization = access.authorization(request);
+    const page = await withHostedWorkspaceNotFoundRedacted(() =>
+      services.listWorkItemSnapshot({
+        authorization,
+        limit: query.limit,
+        offset: query.offset,
+      }),
+    );
+    return {
+      items: page.items.map(hostedWorkItemSnapshotProjection),
       limit: page.limit,
       offset: page.offset,
     };

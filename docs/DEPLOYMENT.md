@@ -127,8 +127,9 @@ Before attaching a production domain:
 1. Run `pnpm check` and `pnpm verify:oci-runtime` locally.
 2. Deploy staging with production-shaped variables and a separate database.
 3. Confirm `/health/live` and `/health/ready`, then complete login, callback, workspace discovery,
-   hosted Today/backlog reads, capture, authorized work creation/status update, idempotent Today
-   completion, logout, and session revocation through public HTTPS.
+   hosted Today/backlog reads, the bounded all-status current work-item page, capture, authorized work
+   creation/status update, idempotent Today completion, logout, and session revocation through public
+   HTTPS. Treat the work-item page as a current-state read, not proof of synchronization.
 4. Force a failed migration and confirm the previous deployment remains active.
 5. Stop PostgreSQL and confirm readiness fails while liveness remains available.
 6. Restore the latest backup into an isolated database and run the database verification suite.

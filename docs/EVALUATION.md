@@ -592,7 +592,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   work creation. Active workspace discovery and principal-bound name-only creation have application,
   route, browser, and database evidence; creation rechecks the locked user/session and proves the new
   membership through a downstream work mutation. The fixed first-20 backlog projection and optional
-  capture scheduling fields have route, component, browser, and database evidence. The narrow existing-plan Today projection has route,
+  capture scheduling fields have route, component, browser, and database evidence. A separate
+  authenticated current-state work-item page has route and real PostgreSQL/Fastify evidence for all statuses,
+  the full current projection except workspace identity, stable bounded offset pages, generic tenant
+  denial, no-store responses, and no read mutation while leaving the capture backlog unchanged. It
+  is explicitly a current-state page, not a frozen multi-page snapshot, change feed, tombstone
+  stream, or offline synchronization protocol. The narrow existing-plan Today projection has route,
   component, browser, and database evidence, including authenticated missing-plan behavior. The
   missing-plan mutation has route/client/component evidence for a same-local-date window, bounded
   minute/task targets, strict input, exact ambiguous retry, and fixed planner defaults. The real
@@ -607,8 +612,9 @@ The audit deliberately leaves these visible instead of turning them into false g
   without identity, role, description, planner-reason, or time-zone metadata. The enabled composition
   verifier parses production configuration, builds the real route graph with a strict in-process
   provider, proves local product routes absent, drives login, the hardened same-origin capture
-  shell, discovery, workspace creation, bounded backlog and empty-Today reads, one authorized work
-  create with persisted priority/due-date/planning-duration fields, one optimistic status update,
+  shell, discovery, workspace creation, bounded backlog and full current-state work-item reads,
+  empty-Today reads, one authorized work create with persisted priority/due-date/planning-duration
+  fields, one optimistic status update,
   one idempotent first-plan generation, one idempotent Today completion, and a separate three-day
   Plan Fit history whose exact dismissal and reset commands replay without duplication, whose stale
   key rolls back without residue, and whose explicit hosted use creates one plan plus one exact
