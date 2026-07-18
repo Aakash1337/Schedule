@@ -470,8 +470,15 @@ in favor of the authoritative Today projection and focus moves to the persistent
 Ambiguous retries retain the exact request key, reviewed Plan Fit key, and
 window. The PostgreSQL/OIDC composition verifier separately covers the real server/database
 transaction, deterministic replay, conflicting-input rejection, and one exact atomic Plan Fit use
-receipt after a read-only guidance request. A staging HTTPS smoke with the selected identity
-provider remains required.
+receipt after a read-only guidance request. `pnpm verify:hosted-staging` now provides the
+operator-assisted, headed staging HTTPS gate: it requires a staging-marked HTTPS host, a
+staging-prefixed operator-designated workspace, and exact host/workspace confirmation. It uses a
+fresh profile without identity-provider credentials and asks the operator to complete real OIDC
+before checking health/session/workspace/Today/snapshot/create/Done/logout. It retains one completed
+auditable work item in that workspace, has no cleanup route,
+and stores no trace, screenshot, or video. The gate has not been run here against external staging;
+CI cannot prove external OIDC or public ingress, and it is not evidence of production, provider
+monitoring, backup restore, or synchronization.
 
 ## Deliberately deferred
 

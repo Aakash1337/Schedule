@@ -3371,7 +3371,8 @@
       },
       "limitations": [
         "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery and name-only creation, bounded backlog, current-state all-status work-item, and existing-plan Today reads, transaction-coupled title plus optional priority/due-date/planning-duration create, status-only update, and Today Start/Done/Skip. The narrow same-origin shell consumes the current-state work-item page in fixed 20-row displays with one-row lookahead and exposes status actions only for backlog rows. Workspace rename/delete and membership administration, a broader public end-user product surface, and synchronization remain unimplemented; the offset work-item page is not a frozen sync snapshot or change feed.",
-        "Integration machine credentials remain a separate boundary and do not authenticate browser users."
+        "Integration machine credentials remain a separate boundary and do not authenticate browser users.",
+        "The headed, mutation-capable staging gate is operator-assisted and deliberately excluded from CI integration evidence: CI-safe configuration anchors live in scripts/hosted-staging-config.test.ts, while the manual source/spec anchor is apps/web/e2e-staging/hosted-staging.spec.ts, operator-assisted hosted staging smoke. It refuses common CI markers and requires a staging-marked HTTPS host, a staging-prefixed operator-designated workspace, exact mutation confirmation, and manual real OIDC in a fresh profile without identity-provider credentials. It leaves one completed auditable work item without a cleanup route. It exists but has not been executed here against external staging; CI cannot prove public ingress or external OIDC, and it makes no production, provider-monitoring, backup-restore, or broad-sync claim."
       ],
       "evidence": [
         {
@@ -3440,6 +3441,17 @@
           "anchors": [
             "closes the shared database when activated preflight fails",
             "closes the shared database when the hosted shell cannot load"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/hosted-staging-config.test.ts",
+          "command": "unit",
+          "anchors": [
+            "parses a canonical target and applies stable bounded defaults",
+            "preserves explicit canonical boundary values",
+            "fails closed for %s",
+            "does not echo secret-like target input in validation errors"
           ]
         },
         {

@@ -75,6 +75,7 @@
     "verify:recovery-state-machine": "tsx scripts/run-recovery-state-machine-verification.ts",
     "build:web-e2e": "pnpm build:packages && pnpm --filter @schedule/api build && pnpm --filter @schedule/web build",
     "verify:web-e2e": "pnpm build:web-e2e && tsx scripts/run-web-e2e.ts",
+    "verify:hosted-staging": "playwright test --config playwright.staging.config.ts",
     "verify:hosted-web-e2e": "pnpm --filter @schedule/web build && playwright test --config playwright.hosted.config.ts",
     "infra:up": "docker compose up -d postgres",
     "infra:down": "docker compose down",

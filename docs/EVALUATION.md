@@ -42,6 +42,7 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:hosted-oidc-composition`    | Verify the concrete hosted OIDC dependency graph                            | No                              |
 | `pnpm verify:hosted-oidc-composition-db` | Drive login, authorized work/Today, Plan Fit feedback, and explicit use     | Yes                             |
 | `pnpm verify:hosted-runtime-preflight`   | Verify secret parsing, startup construction, cleanup, and route gating      | No                              |
+| `pnpm verify:hosted-staging`             | Operator-assisted real-OIDC staging launch gate; never CI                   | External staging, manually      |
 | `pnpm eval`                              | Validate traceability and run the covered test suite                        | No                              |
 | `pnpm verify:database`                   | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
 | `pnpm verify:integration-gateway`        | Verify authenticated reads/commands, including bounded Plan Fit guidance    | Yes, disposable only            |
@@ -62,9 +63,25 @@ The destructive recovery command requires the explicit environment guards docume
 [`OPERATIONS.md`](./OPERATIONS.md). CI supplies those guards only inside its disposable Compose
 project.
 
+### External hosted staging gate
+
+`pnpm verify:hosted-staging` is intentionally an operator-run launch gate, not an evidence command:
+it refuses CI and cannot establish public ingress or external identity-provider behavior in the test
+environment. Its CI-safe configuration parser is covered by
+`scripts/hosted-staging-config.test.ts` (`parses a canonical target and applies stable bounded
+defaults`, `preserves explicit canonical boundary values`, and `fails closed for %s`). The manual
+source anchor is `apps/web/e2e-staging/hosted-staging.spec.ts`,
+`operator-assisted hosted staging smoke`; it deliberately does not count as CI integration proof.
+The gate uses a fresh headed browser profile, accepts no provider credentials, requires a
+staging-marked HTTPS host, a staging-prefixed operator-designated workspace, exact mutation
+confirmation, and manual OIDC. It keeps no trace/screenshot/video and leaves one completed auditable
+work item in that workspace without a cleanup route.
+It exists but has not been executed here against external staging; it makes no production,
+provider-monitoring, backup-restore, or broad-sync claim.
+
 ## Current scorecard
 
-The package and script runners currently execute 129 test files and 2,241 runtime test cases. Three
+The package and script runners currently execute 130 test files and 2,269 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -88,21 +105,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.99% |   72.20% |    68.68% | 60.48% |
+| Whole repository, measured |     60.06% |   72.29% |    68.71% | 60.55% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     95.12% |   91.89% |    93.49% | 96.13% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     89.71% |   83.87% |    98.89% | 90.56% |
+| Application, measured      |     89.82% |   84.01% |     98.9% | 90.67% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     90.48% |   87.83% |    84.15% | 92.02% |
+| API, measured              |     90.45% |   87.85% |    84.02% | 91.98% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |      92.1% |   87.99% |     93.6% | 94.77% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     86.03% |   79.27% |    84.23% | 86.88% |
+| Web, measured              |     86.13% |   80.25% |    83.77% |  87.1% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 13,003 of 21,672 statements, 9,807 of 13,582 branches,
-2,796 of 4,071 functions, and 12,284 of 20,308 lines.
+The whole-repository totals are 13,041 of 21,711 statements, 9,852 of 13,627 branches,
+2,801 of 4,076 functions, and 12,320 of 20,345 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
