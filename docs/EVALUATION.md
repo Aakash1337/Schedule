@@ -64,7 +64,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 129 test files and 2,229 runtime test cases. Three
+The package and script runners currently execute 129 test files and 2,230 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -88,7 +88,7 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     60.21% |    72.2% |     68.7% | 60.72% |
+| Whole repository, measured |     60.22% |   72.23% |    68.71% | 60.72% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     95.12% |   91.89% |    93.49% | 96.13% |
 | Domain, required           |        91% |      82% |       92% |    93% |
@@ -368,13 +368,16 @@ user.
 The general planning-outcomes read has domain, application, API, client, and Today component oracles.
 They require exactly the 30 local dates before the selected date, one authoritative current head per
 date, weighted task and scheduled-minute totals, current completed-state projection, half-up basis
-points, explicit zero-denominator handling, and an additional-revision count. Invalid dates,
+points, terminal non-completion breakdowns, explicit zero-denominator handling, and an
+additional-revision count. Today derives the deferred share of planned time and tasks only after the
+three-plan gate and withholds it when no planned work exists. Invalid dates,
 cross-workspace plans, duplicate dates, inconsistent totals, retry, and the three-plan display gate
 are covered. Exact algorithm/configuration segments additionally require collision-safe grouping,
 weighted totals, deterministic count/version ordering, and `null` rates below three plan days. The
-implementation reuses an existing bounded repository projection and adds no schema, telemetry, or
-planner input. The built Chromium lifecycle renders a qualifying exact version pair and its explicit
-non-causal boundary. The groups are not evidence of causal improvement or a planner-version ranking.
+implementation reuses an existing bounded repository projection and adds no schema, API field,
+telemetry, or planner input. The built Chromium lifecycle renders a qualifying deferred share, exact
+version pair, and explicit non-causal boundary. The groups are not evidence of causal improvement or
+a planner-version ranking.
 
 ### Daily-plan alternative evidence
 

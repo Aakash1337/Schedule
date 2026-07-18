@@ -672,8 +672,9 @@ Success is not simply "more tasks completed." Useful measures include realistic 
   descriptive target-fill and plan-completion rates that exclude later revisions and stay hidden
   until three comparable uses settle
 - Implemented: a general read-only prior-30-day planning-outcomes summary using final current heads,
-  weighted task/time completion totals, a transparent aggregate revision count, and exact
-  planner/configuration groups with a three-day rate gate
+  weighted task/time completion totals, terminal non-completion totals, a descriptive deferred
+  workload share, a transparent aggregate revision count, and exact planner/configuration groups
+  with a three-day rate gate
 - Implemented: explicit append-only **More often**, **Less often**, and resettable routine ranking
   preferences for future plans, with bounded visible score contribution and no current-plan mutation
 - Implemented: fixed, versioned post-target repetition decay in the seeded selection weight, with a

@@ -216,6 +216,12 @@ function formatOutcomeTotal(taskCount: number, minutes: number): string {
   return `${String(taskCount)} ${taskCount === 1 ? "task" : "tasks"} · ${formatMinutes(minutes)}`;
 }
 
+function formatOutcomeRate(numerator: number, denominator: number): string {
+  return formatBasisPoints(
+    denominator === 0 ? null : Math.round((numerator / denominator) * 10_000),
+  );
+}
+
 const minimumPlanningOutcomePlans = 3;
 
 interface PlanningOutcomesSummaryProps {
@@ -351,6 +357,13 @@ function PlanningOutcomesSummary({
               <dd>{formatOutcomeTotal(outcomes.deferredTaskCount, outcomes.deferredMinutes)}</dd>
             </div>
             <div>
+              <dt>Deferred workload</dt>
+              <dd>
+                {formatOutcomeRate(outcomes.deferredMinutes, outcomes.plannedMinutes)} time ·{" "}
+                {formatOutcomeRate(outcomes.deferredTaskCount, outcomes.plannedTaskCount)} tasks
+              </dd>
+            </div>
+            <div>
               <dt>Dismissed</dt>
               <dd>{formatOutcomeTotal(outcomes.dismissedTaskCount, outcomes.dismissedMinutes)}</dd>
             </div>
@@ -359,6 +372,10 @@ function PlanningOutcomesSummary({
             {outcomes.additionalPlanRevisionCount} additional plan{" "}
             {outcomes.additionalPlanRevisionCount === 1 ? "revision" : "revisions"} after initial{" "}
             generation.
+          </p>
+          <p className="today-plan-fit-note">
+            Final states only. Repeated deferrals can prompt a manual review of duration, priority,
+            or relevance; nothing changes automatically.
           </p>
         </>
       )}

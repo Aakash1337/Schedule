@@ -1987,7 +1987,7 @@
           "level": "integration",
           "file": "apps/web/e2e/planning-flow.spec.ts",
           "command": "browser-e2e",
-          "anchors": ["derives, prefills, and explicitly restores a Daily Plan Fit suggestion"]
+          "anchors": ["renders planning outcomes and derives, prefills, and restores Plan Fit"]
         }
       ]
     },
@@ -2046,6 +2046,7 @@
           "command": "unit",
           "anchors": [
             "shows weighted prior-plan outcomes without changing planning",
+            "withholds deferred workload rates when prior plans contain no work",
             "recovers planning outcomes only after explicit retry"
           ]
         },
@@ -2053,7 +2054,7 @@
           "level": "integration",
           "file": "apps/web/e2e/planning-flow.spec.ts",
           "command": "browser-e2e",
-          "anchors": ["derives, prefills, and explicitly restores a Daily Plan Fit suggestion"]
+          "anchors": ["renders planning outcomes and derives, prefills, and restores Plan Fit"]
         }
       ]
     },

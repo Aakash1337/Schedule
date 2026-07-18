@@ -897,8 +897,14 @@ describe("Today commands", () => {
     expect(screen.getByText("3h 30m of 5h · 7 of 10 tasks")).toBeVisible();
     expect(screen.getByText("Skipped").parentElement).toHaveTextContent("1 task · 30m");
     expect(screen.getByText("Deferred").parentElement).toHaveTextContent("1 task · 30m");
+    expect(screen.getByText("Deferred workload").parentElement).toHaveTextContent(
+      "10% time · 10% tasks",
+    );
     expect(screen.getByText("Dismissed").parentElement).toHaveTextContent("1 task · 30m");
     expect(screen.getByText(/2 additional plan revisions after initial generation/i)).toBeVisible();
+    expect(
+      screen.getByText(/manual review of duration, priority, or relevance; nothing changes/i),
+    ).toBeVisible();
     expect(screen.getByRole("heading", { name: "By planner version" })).toBeVisible();
     expect(screen.getByText("planner-v6 · weights-v4")).toBeVisible();
     expect(screen.getByText(/Completed 75% scheduled time · 75% tasks/)).toBeVisible();
@@ -912,6 +918,33 @@ describe("Today commands", () => {
       todayKey(),
       expect.any(AbortSignal),
     );
+  });
+
+  it("withholds deferred workload rates when prior plans contain no work", async () => {
+    apiMocks.getPlanningOutcomes.mockResolvedValue(
+      planningOutcomes({
+        plansConsidered: 3,
+        versionSegments: [
+          {
+            algorithmVersion: "planner-v6",
+            configVersion: "weights-v4",
+            plansConsidered: 3,
+            plannedTaskCount: 0,
+            completedTaskCount: 0,
+            plannedMinutes: 0,
+            completedMinutes: 0,
+            completionTasksRateBasisPoints: null,
+            completionMinutesRateBasisPoints: null,
+          },
+        ],
+      }),
+    );
+
+    render(<TodayView workspace={workspace} onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText(/3 prior plan days contained no planned items/i)).toBeVisible();
+    expect(screen.queryByText("Deferred workload")).not.toBeInTheDocument();
+    expect(screen.queryByText(/% time · .*% tasks/)).not.toBeInTheDocument();
   });
 
   it("recovers planning outcomes only after explicit retry", async () => {
