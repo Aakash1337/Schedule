@@ -1942,6 +1942,7 @@
           "anchors": [
             "returns an explicit empty prior-30-day window",
             "uses weighted current-head task and minute totals",
+            "breaks down terminal non-completion outcomes by state",
             "rejects duplicate, cross-workspace, out-of-window, or inconsistent plans"
           ]
         },

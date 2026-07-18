@@ -779,7 +779,14 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
     expect(plan.items).toHaveLength(4);
     let headVersion = 1;
     for (const [itemIndex, item] of plan.items.entries()) {
-      const type = itemIndex < 2 ? "completed" : "skipped";
+      const type =
+        itemIndex < 2
+          ? "completed"
+          : itemIndex === 2
+            ? "skipped"
+            : dateIndex === 1
+              ? "dismissed"
+              : "deferred";
       const activityResponse = await page.request.post(
         `/v1/workspaces/${workspace.id}/plans/${date}/items/${item.id}/activity-events`,
         {
@@ -910,6 +917,9 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
   await expect(page.getByRole("heading", { name: "Planning outcomes" })).toBeVisible();
   await expect(page.getByText(/current final revision for 3 prior plan days/i)).toBeVisible();
   await expect(page.getByText("41.67% time · 41.67% tasks")).toBeVisible();
+  await expect(page.getByText("4 tasks · 3h")).toBeVisible();
+  await expect(page.getByText("2 tasks · 1h 30m")).toBeVisible();
+  await expect(page.getByText("1 task · 45m")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Plan Fit outcome summary" })).toBeVisible();
   await expect(page.getByText(/No explicit Plan Fit use is available/)).toBeVisible();
   await expect(page.getByText(/Prefilling alone creates no history/)).toBeVisible();

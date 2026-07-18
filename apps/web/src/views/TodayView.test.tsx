@@ -233,8 +233,14 @@ function planningOutcomes(overrides: Partial<PlanningOutcomes> = {}): PlanningOu
     plansConsidered: 0,
     plannedTaskCount: 0,
     completedTaskCount: 0,
+    skippedTaskCount: 0,
+    deferredTaskCount: 0,
+    dismissedTaskCount: 0,
     plannedMinutes: 0,
     completedMinutes: 0,
+    skippedMinutes: 0,
+    deferredMinutes: 0,
+    dismissedMinutes: 0,
     additionalPlanRevisionCount: 0,
     completionTasksRateBasisPoints: null,
     completionMinutesRateBasisPoints: null,
@@ -844,8 +850,14 @@ describe("Today commands", () => {
         plansConsidered: 4,
         plannedTaskCount: 10,
         completedTaskCount: 7,
+        skippedTaskCount: 1,
+        deferredTaskCount: 1,
+        dismissedTaskCount: 1,
         plannedMinutes: 300,
         completedMinutes: 210,
+        skippedMinutes: 30,
+        deferredMinutes: 30,
+        dismissedMinutes: 30,
         additionalPlanRevisionCount: 2,
         completionTasksRateBasisPoints: 7_000,
         completionMinutesRateBasisPoints: 7_000,
@@ -858,6 +870,9 @@ describe("Today commands", () => {
     expect(screen.getByText(/current final revision for 4 prior plan days/i)).toBeVisible();
     expect(screen.getByText("70% time · 70% tasks")).toBeVisible();
     expect(screen.getByText("3h 30m of 5h · 7 of 10 tasks")).toBeVisible();
+    expect(screen.getByText("Skipped").parentElement).toHaveTextContent("1 task · 30m");
+    expect(screen.getByText("Deferred").parentElement).toHaveTextContent("1 task · 30m");
+    expect(screen.getByText("Dismissed").parentElement).toHaveTextContent("1 task · 30m");
     expect(screen.getByText(/2 additional plan revisions after initial generation/i)).toBeVisible();
     expect(apiMocks.getPlanningOutcomes).toHaveBeenCalledWith(
       workspace.id,
