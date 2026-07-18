@@ -95,6 +95,24 @@ loopback metrics surface private and configure an external uptime/alerting syste
 selecting one operational provider. See [Railway healthchecks](https://docs.railway.com/deployments/healthchecks)
 and [deployment teardown](https://docs.railway.com/deployments/deployment-teardown).
 
+## Public hosted health probe
+
+Run one provider-neutral check against a deployed public origin without a browser or credentials:
+
+```powershell
+$env:SCHEDULE_HOSTED_HEALTH_ORIGIN = "https://schedule.example.com"
+pnpm verify:hosted-health
+```
+
+The probe accepts only one canonical HTTPS origin with a DNS hostname, follows no redirects, sends
+no cookies or authentication, and applies a fixed ten-second timeout to each sequential request. The
+operator or provider remains responsible for choosing the intended public target and its DNS/network
+routing. The probe requires exact `200 {"status":"alive"}` and `200 {"status":"ready"}` responses
+from `/health/live` and `/health/ready`; failures disclose neither response bodies nor transport
+details. This command is a single active check suitable for a provider scheduler. It does not
+schedule itself, retain history, route alerts, inspect worker metrics, or prove the authenticated
+product flow.
+
 ## Release order
 
 The API pre-deploy command runs the built migration entry point. A non-zero migration exit stops
