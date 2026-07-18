@@ -557,6 +557,7 @@ describe("database schema", () => {
         "model_suggestions_hash",
         "model_suggestions",
         "result_schedule_block_id",
+        "result_routine_id",
       ]),
     );
     expect(columnNames).not.toEqual(expect.arrayContaining(["prompt", "summary", "warnings"]));
@@ -567,6 +568,7 @@ describe("database schema", () => {
       expect.arrayContaining([
         "natural_language_proposals_result_work_item_tenant_fk",
         "natural_language_proposals_result_schedule_block_tenant_fk",
+        "natural_language_proposals_result_routine_tenant_fk",
       ]),
     );
     expect(config.indexes.map((constraint) => constraint.config.name)).toEqual(
@@ -654,6 +656,33 @@ describe("database schema", () => {
     expect(migration).toContain("CHECK (COALESCE((");
     expect(migration).toContain('"result_work_item_id" IS NULL');
     expect(migration).toContain('"result_schedule_block_id" IS NOT NULL');
+  });
+
+  it("migrates command-typed routine proposal results with a tenant boundary", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0040_dusty_shinko_yamashiro.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "result_routine_id" uuid');
+    expect(migration).toContain('CONSTRAINT "natural_language_proposals_result_routine_tenant_fk"');
+    expect(migration).toContain('REFERENCES "public"."routines"("workspace_id","id")');
+    expect(migration).toContain(
+      'DROP CONSTRAINT IF EXISTS "natural_language_proposals_lifecycle_valid"',
+    );
+    expect(migration).toContain(
+      'DROP CONSTRAINT IF EXISTS "natural_language_proposals_command_display_bounded"',
+    );
+    expect(migration).toContain('"command_display") BETWEEN 1 AND 64000');
+    expect(migration).toContain(
+      '"command"->>\'type\') = \'work_item.create\' AND "natural_language_proposals"."result_work_item_id" IS NOT NULL AND "natural_language_proposals"."result_schedule_block_id" IS NULL AND "natural_language_proposals"."result_routine_id" IS NULL',
+    );
+    expect(migration).toContain(
+      '"command"->>\'type\') = \'schedule_block.create\' AND "natural_language_proposals"."result_work_item_id" IS NULL AND "natural_language_proposals"."result_schedule_block_id" IS NOT NULL AND "natural_language_proposals"."result_routine_id" IS NULL',
+    );
+    expect(migration).toContain(
+      '"command"->>\'type\') = \'routine.create\' AND "natural_language_proposals"."result_work_item_id" IS NULL AND "natural_language_proposals"."result_schedule_block_id" IS NULL AND "natural_language_proposals"."result_routine_id" IS NOT NULL',
+    );
   });
 
   it("constrains routine weekday arrays at the database boundary", () => {

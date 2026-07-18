@@ -21,17 +21,19 @@ import {
 } from "react";
 
 import { api, ApiError, newIdempotencyKey } from "../api";
-import { Button, EmptyState, ErrorNotice, Field, PageHeader, PageSkeleton } from "../components/ui";
-import { browserTimeZone, formatDay, formatMinutes, formatTime, splitTags } from "../date";
+import { Button, EmptyState, ErrorNotice, PageHeader, PageSkeleton } from "../components/ui";
+import { browserTimeZone, formatDay, formatMinutes, formatTime } from "../date";
+import {
+  createRoutineDraft,
+  parseRoutineDraft,
+  RoutineFields,
+  routineDraftFromRoutine,
+  type RoutineDraft,
+} from "./RoutineEditor";
 import type {
   ActivityEvent,
-  CadencePeriod,
-  EffortLevel,
-  EnergyLevel,
-  PreferenceLevel,
   Routine,
   RoutineDurationInsight,
-  RoutinePriority,
   RoutineSelectionPreferenceKind,
   RoutineSelectionPreferenceState,
   RoutineStatus,
@@ -43,265 +45,6 @@ const routineTabs: readonly { readonly id: RoutineStatus; readonly label: string
   { id: "paused", label: "Paused" },
   { id: "archived", label: "Archived" },
 ];
-
-const priorityOptions: readonly RoutinePriority[] = ["low", "medium", "high", "critical"];
-const effortOptions: readonly EffortLevel[] = ["quick", "short", "medium", "deep"];
-const energyOptions: readonly EnergyLevel[] = ["low", "normal", "high"];
-const preferenceOptions: readonly PreferenceLevel[] = ["enjoyable", "neutral", "unpleasant"];
-const cadenceOptions: readonly { readonly id: CadencePeriod; readonly label: string }[] = [
-  { id: "day", label: "Day" },
-  { id: "week", label: "Week" },
-  { id: "month", label: "Month" },
-  { id: "rolling_days", label: "Rolling days" },
-];
-const weekdayOptions = [
-  { id: 1, label: "Mon" },
-  { id: 2, label: "Tue" },
-  { id: 3, label: "Wed" },
-  { id: 4, label: "Thu" },
-  { id: 5, label: "Fri" },
-  { id: 6, label: "Sat" },
-  { id: 0, label: "Sun" },
-] as const;
-
-type ConsecutivePolicy = "allow" | "discourage" | "prohibit";
-
-interface RoutineDraft {
-  title: string;
-  description: string;
-  priority: RoutinePriority;
-  effort: EffortLevel;
-  energy: EnergyLevel;
-  preference: PreferenceLevel;
-  contexts: string;
-  categories: string;
-  freeForm: string;
-  minimumMinutes: string;
-  expectedMinutes: string;
-  maximumMinutes: string;
-  splittable: boolean;
-  minimumSessionMinutes: string;
-  overheadMinutes: string;
-  period: CadencePeriod;
-  rollingIntervalDays: string;
-  targetCompletions: string;
-  minimumCompletions: string;
-  maximumCompletions: string;
-  minimumSpacingDays: string;
-  consecutivePolicy: ConsecutivePolicy;
-  preferredWeekdays: readonly number[];
-  excludedWeekdays: readonly number[];
-  weekStartsOn: number;
-  startsOn: string | null;
-  pausedUntil: string | null;
-  endsOn: string | null;
-}
-
-type RoutinePayload = Omit<Routine, "id" | "workspaceId" | "version" | "createdAt" | "updatedAt">;
-
-function createDraft(): RoutineDraft {
-  return {
-    title: "",
-    description: "",
-    priority: "medium",
-    effort: "medium",
-    energy: "normal",
-    preference: "neutral",
-    contexts: "",
-    categories: "",
-    freeForm: "",
-    minimumMinutes: "15",
-    expectedMinutes: "30",
-    maximumMinutes: "60",
-    splittable: false,
-    minimumSessionMinutes: "15",
-    overheadMinutes: "0",
-    period: "week",
-    rollingIntervalDays: "7",
-    targetCompletions: "3",
-    minimumCompletions: "",
-    maximumCompletions: "",
-    minimumSpacingDays: "1",
-    consecutivePolicy: "discourage",
-    preferredWeekdays: [],
-    excludedWeekdays: [],
-    weekStartsOn: 1,
-    startsOn: null,
-    pausedUntil: null,
-    endsOn: null,
-  };
-}
-
-function draftFromRoutine(routine: Routine): RoutineDraft {
-  return {
-    title: routine.title,
-    description: routine.description ?? "",
-    priority: routine.tags.priority,
-    effort: routine.tags.effort,
-    energy: routine.tags.energy,
-    preference: routine.tags.preference,
-    contexts: routine.tags.contexts.join(", "),
-    categories: routine.tags.categories.join(", "),
-    freeForm: routine.tags.freeForm.join(", "),
-    minimumMinutes: String(routine.duration.minimumMinutes),
-    expectedMinutes: String(routine.duration.expectedMinutes),
-    maximumMinutes: String(routine.duration.maximumMinutes),
-    splittable: routine.duration.splittable,
-    minimumSessionMinutes: String(
-      routine.duration.minimumSessionMinutes ?? routine.duration.minimumMinutes,
-    ),
-    overheadMinutes: String(routine.duration.overheadMinutes),
-    period: routine.cadence.period,
-    rollingIntervalDays: String(routine.cadence.rollingIntervalDays ?? 7),
-    targetCompletions: String(routine.cadence.targetCompletions),
-    minimumCompletions:
-      routine.cadence.minimumCompletions === null ? "" : String(routine.cadence.minimumCompletions),
-    maximumCompletions:
-      routine.cadence.maximumCompletions === null ? "" : String(routine.cadence.maximumCompletions),
-    minimumSpacingDays: String(routine.cadence.minimumSpacingDays),
-    consecutivePolicy: routine.cadence.prohibitConsecutiveDays
-      ? "prohibit"
-      : routine.cadence.discourageConsecutiveDays
-        ? "discourage"
-        : "allow",
-    preferredWeekdays: routine.cadence.preferredWeekdays,
-    excludedWeekdays: routine.cadence.excludedWeekdays,
-    weekStartsOn: routine.cadence.weekStartsOn,
-    startsOn: routine.cadence.startsOn,
-    pausedUntil: routine.cadence.pausedUntil,
-    endsOn: routine.cadence.endsOn,
-  };
-}
-
-function requiredInteger(text: string, label: string, minimum: number, maximum: number): number {
-  const value = Number(text);
-  if (text.trim().length === 0 || !Number.isInteger(value) || value < minimum || value > maximum) {
-    throw new Error(`${label} must be a whole number from ${minimum} to ${maximum}.`);
-  }
-  return value;
-}
-
-function optionalInteger(
-  text: string,
-  label: string,
-  minimum: number,
-  maximum: number,
-): number | null {
-  if (text.trim().length === 0) return null;
-  return requiredInteger(text, label, minimum, maximum);
-}
-
-function checkedTags(text: string, label: string): string[] {
-  const values = splitTags(text);
-  if (values.length > 32) throw new Error(`${label} can contain at most 32 values.`);
-  if (values.some((value) => value.length > 64)) {
-    throw new Error(`Each ${label.toLowerCase()} value must be 64 characters or fewer.`);
-  }
-  return values;
-}
-
-function parseDraft(
-  draft: RoutineDraft,
-  status: RoutineStatus,
-): { readonly payload: RoutinePayload | null; readonly error: string | null } {
-  try {
-    const title = draft.title.trim();
-    if (title.length === 0) throw new Error("Give the routine a title.");
-    if (title.length > 240) throw new Error("The title must be 240 characters or fewer.");
-    if (draft.description.length > 4_000) {
-      throw new Error("The description must be 4,000 characters or fewer.");
-    }
-
-    const minimumMinutes = requiredInteger(draft.minimumMinutes, "Minimum duration", 1, 43_200);
-    const expectedMinutes = requiredInteger(draft.expectedMinutes, "Expected duration", 1, 43_200);
-    const maximumMinutes = requiredInteger(draft.maximumMinutes, "Maximum duration", 1, 43_200);
-    if (minimumMinutes > expectedMinutes || expectedMinutes > maximumMinutes) {
-      throw new Error("Duration must follow minimum, expected, then maximum.");
-    }
-    const overheadMinutes = requiredInteger(draft.overheadMinutes, "Setup time", 0, 1_440);
-    const minimumSessionMinutes = draft.splittable
-      ? requiredInteger(draft.minimumSessionMinutes, "Minimum session", 1, minimumMinutes)
-      : null;
-
-    const targetCompletions = requiredInteger(draft.targetCompletions, "Cadence target", 1, 10_000);
-    const minimumCompletions = optionalInteger(
-      draft.minimumCompletions,
-      "Cadence minimum",
-      1,
-      10_000,
-    );
-    const maximumCompletions = optionalInteger(
-      draft.maximumCompletions,
-      "Cadence maximum",
-      1,
-      10_000,
-    );
-    if (minimumCompletions !== null && minimumCompletions > targetCompletions) {
-      throw new Error("Cadence minimum cannot be greater than its target.");
-    }
-    if (maximumCompletions !== null && maximumCompletions < targetCompletions) {
-      throw new Error("Cadence maximum cannot be less than its target.");
-    }
-    const minimumSpacingDays = requiredInteger(
-      draft.minimumSpacingDays,
-      "Minimum spacing",
-      0,
-      3_650,
-    );
-    const rollingIntervalDays =
-      draft.period === "rolling_days"
-        ? requiredInteger(draft.rollingIntervalDays, "Rolling window", 1, 3_650)
-        : null;
-
-    const description = draft.description.trim();
-    return {
-      payload: {
-        title,
-        description: description.length === 0 ? null : description,
-        status,
-        tags: {
-          priority: draft.priority,
-          effort: draft.effort,
-          energy: draft.energy,
-          preference: draft.preference,
-          contexts: checkedTags(draft.contexts, "Contexts"),
-          categories: checkedTags(draft.categories, "Categories"),
-          freeForm: checkedTags(draft.freeForm, "Free-form tags"),
-        },
-        duration: {
-          minimumMinutes,
-          expectedMinutes,
-          maximumMinutes,
-          splittable: draft.splittable,
-          minimumSessionMinutes,
-          overheadMinutes,
-        },
-        cadence: {
-          period: draft.period,
-          rollingIntervalDays,
-          targetCompletions,
-          minimumCompletions,
-          maximumCompletions,
-          minimumSpacingDays,
-          preferredWeekdays: draft.preferredWeekdays,
-          excludedWeekdays: draft.excludedWeekdays,
-          discourageConsecutiveDays: draft.consecutivePolicy !== "allow",
-          prohibitConsecutiveDays: draft.consecutivePolicy === "prohibit",
-          weekStartsOn: draft.weekStartsOn,
-          startsOn: draft.startsOn,
-          pausedUntil: draft.pausedUntil,
-          endsOn: draft.endsOn,
-        },
-      },
-      error: null,
-    };
-  } catch (error) {
-    return {
-      payload: null,
-      error: error instanceof Error ? error.message : "Check the routine fields and try again.",
-    };
-  }
-}
 
 function titleCase(value: string): string {
   return value
@@ -658,7 +401,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     editorOpenerRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setEditingRoutine(null);
-    setDraft(createDraft());
+    setDraft(createRoutineDraft());
     setFormError(null);
     setConflictMessage(null);
   }
@@ -668,7 +411,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     selectRoutine(routine.id);
     setEditingRoutine(routine);
-    setDraft(draftFromRoutine(routine));
+    setDraft(routineDraftFromRoutine(routine));
     setFormError(null);
     setConflictMessage(null);
   }
@@ -689,25 +432,6 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     setDraft((current) => (current === null ? null : { ...current, ...changes }));
   }
 
-  function toggleWeekday(kind: "preferred" | "excluded", weekday: number) {
-    if (draft === null) return;
-    const selected = kind === "preferred" ? draft.preferredWeekdays : draft.excludedWeekdays;
-    const next = selected.includes(weekday)
-      ? selected.filter((candidate) => candidate !== weekday)
-      : [...selected, weekday].sort((left, right) => left - right);
-    if (kind === "preferred") {
-      patchDraft({
-        preferredWeekdays: next,
-        excludedWeekdays: draft.excludedWeekdays.filter((candidate) => candidate !== weekday),
-      });
-    } else {
-      patchDraft({
-        excludedWeekdays: next,
-        preferredWeekdays: draft.preferredWeekdays.filter((candidate) => candidate !== weekday),
-      });
-    }
-  }
-
   async function refreshAfterConflict(routineId: string, requestKey: string): Promise<void> {
     if (activeQueryKeyRef.current !== requestKey) return;
     try {
@@ -722,7 +446,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
       setRoutines(authoritativeItems);
       if (editingRoutine?.id === routineId) {
         setEditingRoutine(latest);
-        setDraft(draftFromRoutine(latest));
+        setDraft(routineDraftFromRoutine(latest));
       }
       setSelectedRoutineId((current) =>
         authoritativeItems.some((routine) => routine.id === current) ? current : null,
@@ -739,7 +463,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     event.preventDefault();
     if (draft === null) return;
     const requestKey = activeQueryKey;
-    const result = parseDraft(draft, editingRoutine?.status ?? "active");
+    const result = parseRoutineDraft(draft, editingRoutine?.status ?? "active");
     if (result.payload === null) {
       setFormError(result.error);
       return;
@@ -877,7 +601,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
       );
       if (editingRoutine?.id === updated.id) {
         setEditingRoutine(updated);
-        setDraft(draftFromRoutine(updated));
+        setDraft(routineDraftFromRoutine(updated));
       }
       setDurationInsightReload((current) => current + 1);
       durationInsightHeadingRef.current?.focus();
@@ -1628,344 +1352,12 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
             <ErrorNotice message={formError} onDismiss={() => setFormError(null)} />
           )}
 
-          <section className="routines-form-section" aria-labelledby="routine-basics-heading">
-            <div className="routines-section-heading">
-              <h3 id="routine-basics-heading">Basics</h3>
-              <p>Name the activity and add enough context to recognize it later.</p>
-            </div>
-            <div className="routines-form-grid routines-form-grid-basics">
-              <Field label="Title" className="routines-field-wide">
-                <input
-                  autoFocus
-                  required
-                  maxLength={240}
-                  value={draft.title}
-                  onChange={(event) => patchDraft({ title: event.target.value })}
-                  placeholder="Strength training"
-                />
-              </Field>
-              <Field label="Description" className="routines-field-wide">
-                <textarea
-                  maxLength={4_000}
-                  value={draft.description}
-                  onChange={(event) => patchDraft({ description: event.target.value })}
-                  placeholder="What counts as a useful session?"
-                />
-              </Field>
-            </div>
-          </section>
-
-          <section className="routines-form-section" aria-labelledby="routine-tags-heading">
-            <div className="routines-section-heading">
-              <h3 id="routine-tags-heading">Planning signals</h3>
-              <p>Structured tags affect planning. Lists accept comma-separated values.</p>
-            </div>
-            <div className="routines-form-grid routines-form-grid-tags">
-              <Field label="Priority">
-                <select
-                  value={draft.priority}
-                  onChange={(event) =>
-                    patchDraft({ priority: event.target.value as RoutinePriority })
-                  }
-                >
-                  {priorityOptions.map((option) => (
-                    <option key={option} value={option}>
-                      {titleCase(option)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Effort">
-                <select
-                  value={draft.effort}
-                  onChange={(event) => patchDraft({ effort: event.target.value as EffortLevel })}
-                >
-                  {effortOptions.map((option) => (
-                    <option key={option} value={option}>
-                      {titleCase(option)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Energy">
-                <select
-                  value={draft.energy}
-                  onChange={(event) => patchDraft({ energy: event.target.value as EnergyLevel })}
-                >
-                  {energyOptions.map((option) => (
-                    <option key={option} value={option}>
-                      {titleCase(option)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Preference">
-                <select
-                  value={draft.preference}
-                  onChange={(event) =>
-                    patchDraft({ preference: event.target.value as PreferenceLevel })
-                  }
-                >
-                  {preferenceOptions.map((option) => (
-                    <option key={option} value={option}>
-                      {titleCase(option)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Contexts" hint="Examples: home, computer, errands">
-                <input
-                  value={draft.contexts}
-                  onChange={(event) => patchDraft({ contexts: event.target.value })}
-                  placeholder="home, gym"
-                />
-              </Field>
-              <Field label="Categories" hint="Used to balance the day">
-                <input
-                  value={draft.categories}
-                  onChange={(event) => patchDraft({ categories: event.target.value })}
-                  placeholder="health, maintenance"
-                />
-              </Field>
-              <Field label="Free-form tags" hint="For filtering and your own vocabulary">
-                <input
-                  value={draft.freeForm}
-                  onChange={(event) => patchDraft({ freeForm: event.target.value })}
-                  placeholder="outdoors, solo"
-                />
-              </Field>
-            </div>
-          </section>
-
-          <section className="routines-form-section" aria-labelledby="routine-duration-heading">
-            <div className="routines-section-heading">
-              <h3 id="routine-duration-heading">Duration</h3>
-              <p>Minutes are used to fit routines into the time available that day.</p>
-            </div>
-            <div className="routines-form-grid routines-form-grid-duration">
-              <Field label="Minimum minutes">
-                <input
-                  type="number"
-                  min={1}
-                  max={43_200}
-                  required
-                  value={draft.minimumMinutes}
-                  onChange={(event) => patchDraft({ minimumMinutes: event.target.value })}
-                />
-              </Field>
-              <Field label="Expected minutes">
-                <input
-                  type="number"
-                  min={1}
-                  max={43_200}
-                  required
-                  value={draft.expectedMinutes}
-                  onChange={(event) => patchDraft({ expectedMinutes: event.target.value })}
-                />
-              </Field>
-              <Field label="Maximum minutes">
-                <input
-                  type="number"
-                  min={1}
-                  max={43_200}
-                  required
-                  value={draft.maximumMinutes}
-                  onChange={(event) => patchDraft({ maximumMinutes: event.target.value })}
-                />
-              </Field>
-              <Field label="Setup minutes" hint="Travel, preparation, or cleanup">
-                <input
-                  type="number"
-                  min={0}
-                  max={1_440}
-                  required
-                  value={draft.overheadMinutes}
-                  onChange={(event) => patchDraft({ overheadMinutes: event.target.value })}
-                />
-              </Field>
-              <label className="routines-check">
-                <input
-                  type="checkbox"
-                  checked={draft.splittable}
-                  onChange={(event) => patchDraft({ splittable: event.target.checked })}
-                />
-                <span>
-                  <strong>Allow split sessions</strong>
-                  <small>The planner may use a shorter useful session when time is tight.</small>
-                </span>
-              </label>
-              {draft.splittable ? (
-                <Field label="Minimum session minutes">
-                  <input
-                    type="number"
-                    min={1}
-                    max={draft.minimumMinutes || 43_200}
-                    required
-                    value={draft.minimumSessionMinutes}
-                    onChange={(event) => patchDraft({ minimumSessionMinutes: event.target.value })}
-                  />
-                </Field>
-              ) : null}
-            </div>
-          </section>
-
-          <section className="routines-form-section" aria-labelledby="routine-cadence-heading">
-            <div className="routines-section-heading">
-              <h3 id="routine-cadence-heading">Cadence</h3>
-              <p>A target raises priority while a maximum creates a hard stop for the period.</p>
-            </div>
-            <div className="routines-form-grid routines-form-grid-cadence">
-              <Field label="Period">
-                <select
-                  value={draft.period}
-                  onChange={(event) => patchDraft({ period: event.target.value as CadencePeriod })}
-                >
-                  {cadenceOptions.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              {draft.period === "rolling_days" ? (
-                <Field label="Rolling window days">
-                  <input
-                    type="number"
-                    min={1}
-                    max={3_650}
-                    required
-                    value={draft.rollingIntervalDays}
-                    onChange={(event) => patchDraft({ rollingIntervalDays: event.target.value })}
-                  />
-                </Field>
-              ) : null}
-              <Field label="Target completions">
-                <input
-                  type="number"
-                  min={1}
-                  max={10_000}
-                  required
-                  value={draft.targetCompletions}
-                  onChange={(event) => patchDraft({ targetCompletions: event.target.value })}
-                />
-              </Field>
-              <Field label="Minimum completions" hint="Optional urgency floor">
-                <input
-                  type="number"
-                  min={1}
-                  max={10_000}
-                  value={draft.minimumCompletions}
-                  onChange={(event) => patchDraft({ minimumCompletions: event.target.value })}
-                  placeholder="None"
-                />
-              </Field>
-              <Field label="Maximum completions" hint="Optional hard limit">
-                <input
-                  type="number"
-                  min={1}
-                  max={10_000}
-                  value={draft.maximumCompletions}
-                  onChange={(event) => patchDraft({ maximumCompletions: event.target.value })}
-                  placeholder="None"
-                />
-              </Field>
-              <Field label="Minimum spacing days">
-                <input
-                  type="number"
-                  min={0}
-                  max={3_650}
-                  required
-                  value={draft.minimumSpacingDays}
-                  onChange={(event) => patchDraft({ minimumSpacingDays: event.target.value })}
-                />
-              </Field>
-              <Field label="Consecutive-day policy">
-                <select
-                  value={draft.consecutivePolicy}
-                  onChange={(event) =>
-                    patchDraft({ consecutivePolicy: event.target.value as ConsecutivePolicy })
-                  }
-                >
-                  <option value="allow">Allow</option>
-                  <option value="discourage">Discourage</option>
-                  <option value="prohibit">Prohibit</option>
-                </select>
-              </Field>
-              <Field label="Week starts on">
-                <select
-                  value={draft.weekStartsOn}
-                  onChange={(event) => patchDraft({ weekStartsOn: Number(event.target.value) })}
-                >
-                  {weekdayOptions.map((weekday) => (
-                    <option key={weekday.id} value={weekday.id}>
-                      {weekday.label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            </div>
-
-            <details className="routines-advanced">
-              <summary>Advanced availability</summary>
-              <p>Prefer or exclude weekdays, and optionally limit when this routine is active.</p>
-              <div className="routines-weekday-groups">
-                <fieldset>
-                  <legend>Preferred weekdays</legend>
-                  <div className="routines-weekday-options">
-                    {weekdayOptions.map((weekday) => (
-                      <button
-                        key={weekday.id}
-                        type="button"
-                        aria-pressed={draft.preferredWeekdays.includes(weekday.id)}
-                        onClick={() => toggleWeekday("preferred", weekday.id)}
-                      >
-                        {weekday.label}
-                      </button>
-                    ))}
-                  </div>
-                </fieldset>
-                <fieldset>
-                  <legend>Excluded weekdays</legend>
-                  <div className="routines-weekday-options routines-weekday-options-excluded">
-                    {weekdayOptions.map((weekday) => (
-                      <button
-                        key={weekday.id}
-                        type="button"
-                        aria-pressed={draft.excludedWeekdays.includes(weekday.id)}
-                        onClick={() => toggleWeekday("excluded", weekday.id)}
-                      >
-                        {weekday.label}
-                      </button>
-                    ))}
-                  </div>
-                </fieldset>
-              </div>
-              <div className="routines-form-grid routines-form-grid-dates">
-                <Field label="Starts on" hint="Optional">
-                  <input
-                    type="date"
-                    value={draft.startsOn ?? ""}
-                    onChange={(event) => patchDraft({ startsOn: event.target.value || null })}
-                  />
-                </Field>
-                <Field label="Pause through" hint="Optional temporary pause">
-                  <input
-                    type="date"
-                    value={draft.pausedUntil ?? ""}
-                    onChange={(event) => patchDraft({ pausedUntil: event.target.value || null })}
-                  />
-                </Field>
-                <Field label="Ends on" hint="Optional">
-                  <input
-                    type="date"
-                    min={draft.startsOn ?? undefined}
-                    value={draft.endsOn ?? ""}
-                    onChange={(event) => patchDraft({ endsOn: event.target.value || null })}
-                  />
-                </Field>
-              </div>
-            </details>
-          </section>
+          <RoutineFields
+            draft={draft}
+            disabled={formBusy}
+            autoFocus
+            onChange={(changes) => patchDraft(changes)}
+          />
 
           <div className="routines-editor-footer">
             <Button type="button" variant="quiet" onClick={closeEditor} disabled={formBusy}>

@@ -469,7 +469,29 @@ function mapNaturalLanguageProposal(
       "The stored natural-language proposal review fields are invalid.",
     );
   }
-  const reviewDisplay = `{"dueOn":${JSON.stringify(reviewDueOn)},"planningDurationMinutes":${JSON.stringify(row.reviewPlanningDurationMinutes)},"priority":${JSON.stringify(row.reviewPriority)}}`;
+  const userSelection =
+    typedCommand.type === "routine.create"
+      ? null
+      : {
+          priority: row.reviewPriority,
+          dueOn: reviewDueOn,
+          planningDurationMinutes: row.reviewPlanningDurationMinutes,
+        };
+  if (
+    typedCommand.type === "routine.create" &&
+    (row.reviewPriority !== "none" ||
+      row.reviewDueOn !== null ||
+      row.reviewPlanningDurationMinutes !== null)
+  ) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language routine proposal review fields are invalid.",
+    );
+  }
+  const reviewDisplay =
+    userSelection === null
+      ? "null"
+      : `{"dueOn":${JSON.stringify(userSelection.dueOn)},"planningDurationMinutes":${JSON.stringify(userSelection.planningDurationMinutes)},"priority":${JSON.stringify(userSelection.priority)}}`;
   const reviewHash = createHash("sha256").update(reviewDisplay, "utf8").digest("hex");
   if (reviewHash !== row.reviewHash) {
     throw new DomainError(
@@ -491,6 +513,47 @@ function mapNaturalLanguageProposal(
       "The stored natural-language proposal model suggestions do not match their digest.",
     );
   }
+  const resultWorkItemId = row.resultWorkItemId === null ? null : workItemId(row.resultWorkItemId);
+  const resultScheduleBlockId =
+    row.resultScheduleBlockId === null ? null : scheduleBlockId(row.resultScheduleBlockId);
+  const resultRoutineId = row.resultRoutineId === null ? null : routineId(row.resultRoutineId);
+  const allResultsNull =
+    resultWorkItemId === null && resultScheduleBlockId === null && resultRoutineId === null;
+  const confirmedResultMatchesCommand =
+    (typedCommand.type === "work_item.create" &&
+      resultWorkItemId !== null &&
+      resultScheduleBlockId === null &&
+      resultRoutineId === null) ||
+    (typedCommand.type === "schedule_block.create" &&
+      resultWorkItemId === null &&
+      resultScheduleBlockId !== null &&
+      resultRoutineId === null) ||
+    ((typedCommand.type as string) === "routine.create" &&
+      resultWorkItemId === null &&
+      resultScheduleBlockId === null &&
+      resultRoutineId !== null);
+  if (!(
+    (row.status === "pending" &&
+      row.confirmationKeyHash === null &&
+      allResultsNull &&
+      row.confirmedAt === null &&
+      row.cancelledAt === null) ||
+    (row.status === "confirmed" &&
+      row.confirmationKeyHash !== null &&
+      confirmedResultMatchesCommand &&
+      row.confirmedAt !== null &&
+      row.cancelledAt === null) ||
+    (row.status === "cancelled" &&
+      row.confirmationKeyHash === null &&
+      allResultsNull &&
+      row.confirmedAt === null &&
+      row.cancelledAt !== null)
+  )) {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "The stored natural-language proposal result does not match its command lifecycle.",
+    );
+  }
   return {
     id: row.id,
     workspaceId: workspaceId(row.workspaceId),
@@ -502,18 +565,15 @@ function mapNaturalLanguageProposal(
     commandDisplay: row.commandDisplay,
     command: typedCommand,
     modelSuggestions,
-    userSelection: {
-      priority: row.reviewPriority,
-      dueOn: reviewDueOn,
-      planningDurationMinutes: row.reviewPlanningDurationMinutes,
-    },
+    userSelection,
     provider: row.provider,
     model: row.model,
     status: row.status,
     expiresAt: new Date(row.expiresAt),
     confirmationKeyHash: row.confirmationKeyHash,
-    resultWorkItemId: row.resultWorkItemId,
-    resultScheduleBlockId: row.resultScheduleBlockId,
+    resultWorkItemId,
+    resultScheduleBlockId,
+    resultRoutineId,
     confirmedAt: row.confirmedAt === null ? null : new Date(row.confirmedAt),
     cancelledAt: row.cancelledAt === null ? null : new Date(row.cancelledAt),
     version: row.version,
@@ -4878,9 +4938,9 @@ export class PostgresNaturalLanguageProposalRepository implements NaturalLanguag
         commandDisplay: record.commandDisplay,
         command: record.command as unknown as Record<string, unknown>,
         modelSuggestions: record.modelSuggestions,
-        reviewPriority: record.userSelection.priority,
-        reviewDueOn: record.userSelection.dueOn,
-        reviewPlanningDurationMinutes: record.userSelection.planningDurationMinutes,
+        reviewPriority: record.userSelection?.priority ?? "none",
+        reviewDueOn: record.userSelection?.dueOn ?? null,
+        reviewPlanningDurationMinutes: record.userSelection?.planningDurationMinutes ?? null,
         provider: record.provider,
         model: record.model,
         status: record.status,
@@ -4888,6 +4948,7 @@ export class PostgresNaturalLanguageProposalRepository implements NaturalLanguag
         confirmationKeyHash: record.confirmationKeyHash,
         resultWorkItemId: record.resultWorkItemId,
         resultScheduleBlockId: record.resultScheduleBlockId,
+        resultRoutineId: record.resultRoutineId,
         confirmedAt: record.confirmedAt,
         cancelledAt: record.cancelledAt,
         version: record.version,
@@ -4925,9 +4986,9 @@ export class PostgresNaturalLanguageProposalRepository implements NaturalLanguag
         commandDisplay: record.commandDisplay,
         command: record.command as unknown as Record<string, unknown>,
         modelSuggestions: record.modelSuggestions,
-        reviewPriority: record.userSelection.priority,
-        reviewDueOn: record.userSelection.dueOn,
-        reviewPlanningDurationMinutes: record.userSelection.planningDurationMinutes,
+        reviewPriority: record.userSelection?.priority ?? "none",
+        reviewDueOn: record.userSelection?.dueOn ?? null,
+        reviewPlanningDurationMinutes: record.userSelection?.planningDurationMinutes ?? null,
         provider: record.provider,
         model: record.model,
         status: record.status,
@@ -4935,6 +4996,7 @@ export class PostgresNaturalLanguageProposalRepository implements NaturalLanguag
         confirmationKeyHash: record.confirmationKeyHash,
         resultWorkItemId: record.resultWorkItemId,
         resultScheduleBlockId: record.resultScheduleBlockId,
+        resultRoutineId: record.resultRoutineId,
         confirmedAt: record.confirmedAt,
         cancelledAt: record.cancelledAt,
         version: record.version,
@@ -5081,6 +5143,7 @@ function createNaturalLanguageProposalTransactionContext(
     workspaces: new PostgresWorkspaceRepository(database),
     workItems: new PostgresWorkItemRepository(database),
     scheduleBlocks: new PostgresScheduleBlockRepository(database),
+    routines: new PostgresRoutineRepository(database),
     auditEvents: new PostgresAuditEventRepository(database),
     proposals: new PostgresNaturalLanguageProposalRepository(database),
   };

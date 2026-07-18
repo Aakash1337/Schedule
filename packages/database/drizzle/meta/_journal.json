@@ -281,6 +281,13 @@
       "when": 1784277437833,
       "tag": "0039_lively_smiling_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1784326265522,
+      "tag": "0040_dusty_shinko_yamashiro",
+      "breakpoints": true
     }
   ]
 }

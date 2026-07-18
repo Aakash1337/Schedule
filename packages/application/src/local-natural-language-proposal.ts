@@ -2,15 +2,25 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 
 import {
   DomainError,
+  createCadencePolicy,
+  createDurationRange,
+  createRoutine,
   createScheduleBlock,
+  createStructuredTags,
   createWorkItem,
   isIanaTimeZone,
   isValidLocalDate,
   scheduleBlockId,
+  routineId,
   workItemPriorities,
   workItemId,
   type LocalDate,
   type ScheduleBlock,
+  type Routine,
+  type RoutineStatus,
+  type StructuredTags,
+  type DurationRange,
+  type CadencePolicy,
   type WorkItem,
   type WorkItemPriority,
   type WorkspaceId,
@@ -20,16 +30,18 @@ import type {
   AuditEventRepository,
   Clock,
   ScheduleBlockRepository,
+  RoutineRepository,
   WorkItemRepository,
   WorkspaceRepository,
 } from "./ports.js";
 import type { SchedulingAdvisorUnavailableReason } from "./get-scheduling-advice.js";
 
-export const NATURAL_LANGUAGE_PROPOSAL_VERSION = "schedule.natural-language/v3" as const;
+export const NATURAL_LANGUAGE_PROPOSAL_VERSION = "schedule.natural-language/v4" as const;
+const LEGACY_NATURAL_LANGUAGE_PROPOSAL_VERSION = "schedule.natural-language/v3" as const;
 export const NATURAL_LANGUAGE_PROPOSER_CONTEXT_VERSION =
-  "schedule.natural-language-context/v3" as const;
+  "schedule.natural-language-context/v4" as const;
 export const NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION =
-  "schedule.natural-language-output/v3" as const;
+  "schedule.natural-language-output/v4" as const;
 
 const MAXIMUM_PROMPT_CHARACTERS = 2_000;
 const MAXIMUM_SUMMARY_CHARACTERS = 280;
@@ -38,6 +50,7 @@ const MAXIMUM_WARNINGS = 3;
 const MAXIMUM_PROVIDER_CHARACTERS = 40;
 const MAXIMUM_MODEL_CHARACTERS = 120;
 const MAXIMUM_IDEMPOTENCY_KEY_CHARACTERS = 200;
+const MAXIMUM_COMMAND_DISPLAY_CHARACTERS = 64_000;
 const MAXIMUM_PLANNING_DURATION_MINUTES = 43_200;
 const MAXIMUM_SCHEDULE_BLOCK_DURATION_MILLISECONDS = 24 * 60 * 60_000;
 const DEFAULT_PROPOSAL_TTL_MILLISECONDS = 10 * 60_000;
@@ -59,8 +72,31 @@ export interface NaturalLanguageScheduleBlockCommand {
   readonly timeZone: string;
 }
 
+/** The provider may name a routine, but never chooses its policy fields. */
+export interface NaturalLanguageRoutineProviderCommand {
+  readonly type: "routine.create";
+  readonly title: string;
+}
+
+/** Fully reviewed, user-authored routine snapshot persisted with the proposal. */
+export interface NaturalLanguageRoutineCommand {
+  readonly type: "routine.create";
+  readonly title: string;
+  readonly description: string | null;
+  readonly status: RoutineStatus;
+  readonly tags: StructuredTags;
+  readonly duration: DurationRange;
+  readonly cadence: CadencePolicy;
+}
+
 export type NaturalLanguageProposalCommand =
-  NaturalLanguageWorkItemCommand | NaturalLanguageScheduleBlockCommand;
+  | NaturalLanguageWorkItemCommand
+  | NaturalLanguageScheduleBlockCommand
+  | NaturalLanguageRoutineCommand;
+export type NaturalLanguageProviderCommand =
+  | NaturalLanguageWorkItemCommand
+  | NaturalLanguageScheduleBlockCommand
+  | NaturalLanguageRoutineProviderCommand;
 
 export interface NaturalLanguageProposerContext {
   readonly version: typeof NATURAL_LANGUAGE_PROPOSER_CONTEXT_VERSION;
@@ -84,7 +120,7 @@ export interface NaturalLanguageProposerOutput {
   readonly version: typeof NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION;
   readonly summary: string;
   readonly warnings: readonly string[];
-  readonly command: NaturalLanguageProposalCommand | null;
+  readonly command: NaturalLanguageProviderCommand | null;
   readonly modelSuggestions: NaturalLanguageProposalModelSuggestions | null;
 }
 
@@ -122,7 +158,7 @@ export interface NaturalLanguageProposalRecord {
   readonly commandDisplay: string;
   readonly command: NaturalLanguageProposalCommand;
   readonly modelSuggestions: NaturalLanguageProposalModelSuggestions | null;
-  readonly userSelection: NaturalLanguageProposalUserSelection;
+  readonly userSelection: NaturalLanguageProposalUserSelection | null;
   readonly provider: string;
   readonly model: string | null;
   readonly status: NaturalLanguageProposalStatus;
@@ -130,6 +166,7 @@ export interface NaturalLanguageProposalRecord {
   readonly confirmationKeyHash: string | null;
   readonly resultWorkItemId: string | null;
   readonly resultScheduleBlockId: string | null;
+  readonly resultRoutineId: string | null;
   readonly confirmedAt: Date | null;
   readonly cancelledAt: Date | null;
   readonly version: number;
@@ -157,6 +194,7 @@ export interface NaturalLanguageProposalTransactionContext {
   readonly workspaces: WorkspaceRepository;
   readonly workItems: WorkItemRepository;
   readonly scheduleBlocks: ScheduleBlockRepository;
+  readonly routines: RoutineRepository;
   readonly auditEvents: AuditEventRepository;
   readonly proposals: NaturalLanguageProposalRepository;
 }
@@ -175,7 +213,7 @@ export interface PreparedNaturalLanguageProposal {
   readonly commandDisplay: string;
   readonly command: NaturalLanguageProposalCommand;
   readonly modelSuggestions: NaturalLanguageProposalModelSuggestions | null;
-  readonly userSelection: NaturalLanguageProposalUserSelection;
+  readonly userSelection: NaturalLanguageProposalUserSelection | null;
   readonly provider: string;
   readonly model: string | null;
   readonly status: NaturalLanguageProposalStatus;
@@ -184,7 +222,8 @@ export interface PreparedNaturalLanguageProposal {
 }
 
 export interface GenerateNaturalLanguageProposalCommand {
-  readonly version: typeof NATURAL_LANGUAGE_PROPOSAL_VERSION;
+  readonly version:
+    typeof NATURAL_LANGUAGE_PROPOSAL_VERSION | typeof LEGACY_NATURAL_LANGUAGE_PROPOSAL_VERSION;
   readonly requestId: string;
   readonly workspaceId: WorkspaceId;
   readonly prompt: string;
@@ -223,6 +262,10 @@ export type UpdateNaturalLanguageProposalCommand =
   | (UpdateNaturalLanguageProposalCommandBase & {
       readonly command: NaturalLanguageScheduleBlockCommand;
       readonly userSelection?: never;
+    })
+  | (UpdateNaturalLanguageProposalCommandBase & {
+      readonly command: NaturalLanguageRoutineCommand;
+      readonly userSelection?: never;
     });
 
 export interface CancelNaturalLanguageProposalCommand {
@@ -249,15 +292,30 @@ export type ConfirmNaturalLanguageProposalResult =
       readonly resultType: "work_item";
       readonly workItem: WorkItem;
       readonly scheduleBlock: null;
+      readonly routine: null;
     })
   | (ConfirmNaturalLanguageProposalResultBase & {
       readonly resultType: "schedule_block";
       readonly workItem: null;
       readonly scheduleBlock: ScheduleBlock;
+      readonly routine: null;
+    })
+  | (ConfirmNaturalLanguageProposalResultBase & {
+      readonly resultType: "routine";
+      readonly workItem: null;
+      readonly scheduleBlock: null;
+      readonly routine: Routine;
     });
 
 export interface NaturalLanguagePromptHasher {
   digest(input: {
+    readonly workspaceId: WorkspaceId;
+    readonly requestId: string;
+    readonly prompt: string;
+    readonly referenceDate: LocalDate | null;
+    readonly timeZone: string;
+  }): string;
+  digestLegacyV3(input: {
     readonly workspaceId: WorkspaceId;
     readonly requestId: string;
     readonly prompt: string;
@@ -286,6 +344,28 @@ export class HmacNaturalLanguagePromptHasher implements NaturalLanguagePromptHas
   }): string {
     return createHmac("sha256", this.key)
       .update(NATURAL_LANGUAGE_PROPOSAL_VERSION, "utf8")
+      .update("\0", "utf8")
+      .update(input.workspaceId, "utf8")
+      .update("\0", "utf8")
+      .update(input.requestId, "utf8")
+      .update("\0", "utf8")
+      .update(input.prompt, "utf8")
+      .update("\0", "utf8")
+      .update(input.referenceDate ?? "", "utf8")
+      .update("\0", "utf8")
+      .update(input.timeZone, "utf8")
+      .digest("hex");
+  }
+
+  digestLegacyV3(input: {
+    readonly workspaceId: WorkspaceId;
+    readonly requestId: string;
+    readonly prompt: string;
+    readonly referenceDate: LocalDate | null;
+    readonly timeZone: string;
+  }): string {
+    return createHmac("sha256", this.key)
+      .update(LEGACY_NATURAL_LANGUAGE_PROPOSAL_VERSION, "utf8")
       .update("\0", "utf8")
       .update(input.workspaceId, "utf8")
       .update("\0", "utf8")
@@ -397,13 +477,19 @@ function parseTimeZone(value: unknown): string {
   return value;
 }
 
-function validateVersion(value: unknown): void {
-  if (value !== NATURAL_LANGUAGE_PROPOSAL_VERSION) {
+function validateVersion(
+  value: unknown,
+): typeof NATURAL_LANGUAGE_PROPOSAL_VERSION | typeof LEGACY_NATURAL_LANGUAGE_PROPOSAL_VERSION {
+  if (
+    value !== NATURAL_LANGUAGE_PROPOSAL_VERSION &&
+    value !== LEGACY_NATURAL_LANGUAGE_PROPOSAL_VERSION
+  ) {
     throw new DomainError(
       "natural_language.request_invalid",
       "A supported natural-language proposal version is required.",
     );
   }
+  return value;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -431,7 +517,14 @@ function canonicalize(value: unknown): string {
 export function naturalLanguageProposalCommandDisplay(
   command: NaturalLanguageProposalCommand,
 ): string {
-  return canonicalize(command);
+  const display = canonicalize(command);
+  if (display.length > MAXIMUM_COMMAND_DISPLAY_CHARACTERS) {
+    throw new DomainError(
+      "natural_language.proposal_invalid",
+      "The reviewed proposal is too large to persist.",
+    );
+  }
+  return display;
 }
 
 function parseCanonicalInstant(value: unknown, label: string): Date {
@@ -462,6 +555,9 @@ export function normalizeNaturalLanguageProposalCommand(
     );
   }
   const candidate = value as Readonly<Record<string, unknown>>;
+  if (candidate.type === "routine.create") {
+    return normalizeRoutineCommand(candidate, workspaceId, now);
+  }
   if (candidate.type === "work_item.create") {
     if (!exactKeys(candidate, ["title", "type"]) || typeof candidate.title !== "string") {
       throw new DomainError(
@@ -535,6 +631,193 @@ export function normalizeNaturalLanguageProposalCommand(
     endsAt: block.endsAt.toISOString(),
     timeZone: block.timeZone,
   };
+}
+
+function defaultRoutineCommand(
+  title: string,
+  workspaceId: WorkspaceId,
+  now: Date,
+): NaturalLanguageRoutineCommand {
+  const routine = createRoutine({
+    workspaceId,
+    title,
+    description: null,
+    status: "active",
+    tags: createStructuredTags(),
+    duration: createDurationRange({
+      minimumMinutes: 15,
+      expectedMinutes: 30,
+      maximumMinutes: 60,
+      splittable: false,
+      minimumSessionMinutes: null,
+      overheadMinutes: 0,
+    }),
+    cadence: createCadencePolicy({
+      period: "week",
+      targetCompletions: 3,
+      minimumSpacingDays: 1,
+      discourageConsecutiveDays: true,
+      prohibitConsecutiveDays: false,
+      weekStartsOn: 1,
+    }),
+    now,
+  });
+  return routineCommand(routine);
+}
+
+function routineCommand(routine: Routine): NaturalLanguageRoutineCommand {
+  return {
+    type: "routine.create",
+    title: routine.title,
+    description: routine.description,
+    status: routine.status,
+    tags: routine.tags,
+    duration: routine.duration,
+    cadence: routine.cadence,
+  };
+}
+
+function normalizeRoutineCommand(
+  candidate: Readonly<Record<string, unknown>>,
+  workspaceId: WorkspaceId,
+  now: Date,
+): NaturalLanguageRoutineCommand {
+  if (
+    !exactKeys(candidate, ["cadence", "description", "duration", "status", "tags", "title", "type"])
+  ) {
+    throw new DomainError(
+      "natural_language.proposal_invalid",
+      "The routine review snapshot is invalid.",
+    );
+  }
+  if (
+    typeof candidate.title !== "string" ||
+    (candidate.description !== null && typeof candidate.description !== "string")
+  ) {
+    throw new DomainError(
+      "natural_language.proposal_invalid",
+      "The routine title and description are invalid.",
+    );
+  }
+  if (
+    candidate.description !== null &&
+    (candidate.description.length > 4_000 || hasUnsafeText(candidate.description, true))
+  ) {
+    throw new DomainError(
+      "natural_language.proposal_invalid",
+      "The routine description is invalid.",
+    );
+  }
+  const tags = candidate.tags as StructuredTags;
+  const duration = candidate.duration as DurationRange;
+  const cadence = candidate.cadence as CadencePolicy;
+  if (
+    !tags ||
+    !duration ||
+    !cadence ||
+    typeof tags !== "object" ||
+    typeof duration !== "object" ||
+    typeof cadence !== "object"
+  ) {
+    throw new DomainError("natural_language.proposal_invalid", "The routine policy is invalid.");
+  }
+  if (
+    !exactKeys(tags as unknown as Readonly<Record<string, unknown>>, [
+      "categories",
+      "contexts",
+      "effort",
+      "energy",
+      "freeForm",
+      "preference",
+      "priority",
+    ]) ||
+    !exactKeys(duration as unknown as Readonly<Record<string, unknown>>, [
+      "expectedMinutes",
+      "maximumMinutes",
+      "minimumMinutes",
+      "minimumSessionMinutes",
+      "overheadMinutes",
+      "splittable",
+    ]) ||
+    !exactKeys(cadence as unknown as Readonly<Record<string, unknown>>, [
+      "discourageConsecutiveDays",
+      "endsOn",
+      "excludedWeekdays",
+      "maximumCompletions",
+      "minimumCompletions",
+      "minimumSpacingDays",
+      "pausedUntil",
+      "period",
+      "preferredWeekdays",
+      "prohibitConsecutiveDays",
+      "rollingIntervalDays",
+      "startsOn",
+      "targetCompletions",
+      "weekStartsOn",
+    ])
+  ) {
+    throw new DomainError(
+      "natural_language.proposal_invalid",
+      "The routine policy has unsupported fields.",
+    );
+  }
+  try {
+    const normalizedTags = createStructuredTags(tags);
+    const normalizedDuration = createDurationRange({ ...duration });
+    if (
+      normalizedDuration.minimumMinutes > 43_200 ||
+      normalizedDuration.expectedMinutes > 43_200 ||
+      normalizedDuration.maximumMinutes > 43_200 ||
+      normalizedDuration.overheadMinutes > 1_440
+    )
+      throw new Error("routine duration exceeds API caps");
+    const normalizedCadence = createCadencePolicy({ ...cadence });
+    if (
+      normalizedCadence.minimumSpacingDays > 3_650 ||
+      (normalizedCadence.rollingIntervalDays ?? 0) > 3_650
+    )
+      throw new Error("routine cadence exceeds API caps");
+    const routine = createRoutine({
+      workspaceId,
+      title: candidate.title.normalize("NFC"),
+      description: candidate.description,
+      status: candidate.status as RoutineStatus,
+      tags: normalizedTags,
+      duration: normalizedDuration,
+      cadence: normalizedCadence,
+      now,
+    });
+    if (
+      hasUnsafeText(routine.title) ||
+      (routine.description !== null && hasUnsafeText(routine.description, true))
+    )
+      throw new Error("unsafe routine text");
+    return routineCommand(routine);
+  } catch (error) {
+    if (error instanceof DomainError) throw error;
+    throw new DomainError("natural_language.proposal_invalid", "The routine policy is invalid.");
+  }
+}
+
+function parseProviderCommand(
+  value: unknown,
+  workspaceId: WorkspaceId,
+  now: Date,
+  expectedTimeZone: string,
+): NaturalLanguageProposalCommand {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const candidate = value as Readonly<Record<string, unknown>>;
+    if (candidate.type === "routine.create") {
+      if (!exactKeys(candidate, ["title", "type"]) || typeof candidate.title !== "string") {
+        throw new DomainError(
+          "natural_language.proposal_invalid",
+          "A provider routine proposal may contain only a title.",
+        );
+      }
+      return defaultRoutineCommand(candidate.title.normalize("NFC"), workspaceId, now);
+    }
+  }
+  return normalizeNaturalLanguageProposalCommand(value, workspaceId, now, expectedTimeZone);
 }
 
 function parseUserSelection(value: unknown): NaturalLanguageProposalUserSelection {
@@ -651,6 +934,12 @@ function userSelectionHash(userSelection: NaturalLanguageProposalUserSelection):
 function validatedStoredUserSelection(
   record: NaturalLanguageProposalRecord,
 ): NaturalLanguageProposalUserSelection {
+  if (record.command.type === "routine.create") {
+    throw new DomainError(
+      "natural_language.confirmation_corrupt",
+      "Routine proposals do not have work-item review fields.",
+    );
+  }
   const userSelection = parseStoredUserSelection(record.userSelection);
   if (userSelectionHash(userSelection) !== record.reviewHash) {
     throw new DomainError(
@@ -676,7 +965,7 @@ function validatedStoredCommand(
       "The stored proposal command is invalid.",
     );
   }
-  const commandDisplay = canonicalize(command);
+  const commandDisplay = naturalLanguageProposalCommandDisplay(command);
   if (commandDisplay !== record.commandDisplay || hash(commandDisplay) !== record.commandHash) {
     throw new DomainError(
       "natural_language.confirmation_corrupt",
@@ -728,17 +1017,15 @@ function parseOutput(
   const command =
     candidate.command === null
       ? null
-      : normalizeNaturalLanguageProposalCommand(
-          candidate.command,
-          workspaceId,
-          now,
-          expectedTimeZone,
-        );
+      : parseProviderCommand(candidate.command, workspaceId, now, expectedTimeZone);
   const modelSuggestions = parseModelSuggestions(candidate.modelSuggestions);
-  if (command?.type === "schedule_block.create" && modelSuggestions !== null) {
+  if (
+    (command?.type === "schedule_block.create" || command?.type === "routine.create") &&
+    modelSuggestions !== null
+  ) {
     throw new DomainError(
       "natural_language.proposal_invalid",
-      "Calendar block proposals cannot include work-item planning suggestions.",
+      "Calendar block and routine proposals cannot include work-item planning suggestions.",
     );
   }
   return {
@@ -835,18 +1122,22 @@ export class GenerateNaturalLanguageProposal {
     input: GenerateNaturalLanguageProposalCommand,
     signal?: AbortSignal,
   ): Promise<GenerateNaturalLanguageProposalResult> {
-    validateVersion(input.version);
+    const inputVersion = validateVersion(input.version);
     const requestId = validateRequestId(input.requestId);
     const prompt = normalizePrompt(input.prompt);
     const referenceDate = parseReferenceDate(input.referenceDate);
     const timeZone = parseTimeZone(input.timeZone);
-    const promptHash = this.promptHasher.digest({
+    const promptHashInput = {
       workspaceId: input.workspaceId,
       requestId,
       prompt,
       referenceDate,
       timeZone,
-    });
+    } as const;
+    const promptHash =
+      inputVersion === LEGACY_NATURAL_LANGUAGE_PROPOSAL_VERSION
+        ? this.promptHasher.digestLegacyV3(promptHashInput)
+        : this.promptHasher.digest(promptHashInput);
     const requestedAt = this.clock.now();
     const provider = normalizeProvider(this.proposer.provider);
     const model = normalizeModel(this.proposer.model);
@@ -881,6 +1172,12 @@ export class GenerateNaturalLanguageProposal {
           latencyMs: 0,
         },
       };
+    }
+    if (inputVersion === LEGACY_NATURAL_LANGUAGE_PROPOSAL_VERSION) {
+      throw new DomainError(
+        "natural_language.request_invalid",
+        "Legacy natural-language proposal requests may only replay an existing pending proposal.",
+      );
     }
 
     let providerResult: NaturalLanguageProposerResult;
@@ -953,20 +1250,23 @@ export class GenerateNaturalLanguageProposal {
       };
     }
 
-    const commandDisplay = canonicalize(parsed.command);
+    const commandDisplay = naturalLanguageProposalCommandDisplay(parsed.command);
     const commandHash = hash(commandDisplay);
-    const userSelection: NaturalLanguageProposalUserSelection = {
-      priority: "none",
-      dueOn: null,
-      planningDurationMinutes: null,
-    };
+    const userSelection: NaturalLanguageProposalUserSelection | null =
+      parsed.command.type === "routine.create"
+        ? null
+        : {
+            priority: "none",
+            dueOn: null,
+            planningDurationMinutes: null,
+          };
     const record: NaturalLanguageProposalRecord = {
       id: randomUUID(),
       workspaceId: input.workspaceId,
       requestId,
       promptHash,
       commandHash,
-      reviewHash: userSelectionHash(userSelection),
+      reviewHash: hash(canonicalize(userSelection)),
       modelSuggestionsHash: hash(canonicalize(parsed.modelSuggestions)),
       commandDisplay,
       command: parsed.command,
@@ -979,6 +1279,7 @@ export class GenerateNaturalLanguageProposal {
       confirmationKeyHash: null,
       resultWorkItemId: null,
       resultScheduleBlockId: null,
+      resultRoutineId: null,
       confirmedAt: null,
       cancelledAt: null,
       version: 1,
@@ -1077,7 +1378,7 @@ export class UpdateNaturalLanguageProposal {
           "A proposal cannot be changed into a different command type.",
         );
       }
-      const commandDisplay = canonicalize(command);
+      const commandDisplay = naturalLanguageProposalCommandDisplay(command);
       const commandHash = hash(commandDisplay);
       if (command.type === "schedule_block.create" && input.userSelection !== undefined) {
         throw new DomainError(
@@ -1088,13 +1389,25 @@ export class UpdateNaturalLanguageProposal {
       const userSelection =
         command.type === "work_item.create"
           ? parseUserSelection(input.userSelection)
-          : ({ priority: "none", dueOn: null, planningDurationMinutes: null } as const);
-      const currentUserSelection = validatedStoredUserSelection(current);
-      const nextReviewHash = userSelectionHash(userSelection);
+          : command.type === "routine.create"
+            ? null
+            : ({ priority: "none", dueOn: null, planningDurationMinutes: null } as const);
+      if (command.type !== "work_item.create" && input.userSelection !== undefined) {
+        throw new DomainError(
+          "natural_language.review_invalid",
+          "Only work-item proposals accept review fields.",
+        );
+      }
+      const currentUserSelection =
+        currentCommand.type === "routine.create" ? null : validatedStoredUserSelection(current);
+      const nextReviewHash = hash(canonicalize(userSelection));
       assertPending(current, now);
       if (
         current.commandHash === commandHash &&
-        sameUserSelection(currentUserSelection, userSelection) &&
+        ((currentUserSelection === null && userSelection === null) ||
+          (currentUserSelection !== null &&
+            userSelection !== null &&
+            sameUserSelection(currentUserSelection, userSelection))) &&
         input.expectedVersion <= current.version
       ) {
         return prepared(current);
@@ -1203,212 +1516,297 @@ export class ConfirmNaturalLanguageProposal {
       );
     }
     const confirmationKeyHash = hash(input.idempotencyKey);
-    return this.unitOfWork.run(async ({ auditEvents, proposals, scheduleBlocks, workItems }) => {
-      const current = await proposals.findByIdForUpdate(input.workspaceId, input.proposalId);
-      if (current === null) {
-        throw new DomainError(
-          "natural_language.proposal_not_found",
-          "The proposal does not exist.",
-        );
-      }
-      const now = this.clock.now();
-      if (current.status === "confirmed") {
-        if (current.confirmationKeyHash !== confirmationKeyHash) {
+    return this.unitOfWork.run(
+      async ({ auditEvents, proposals, routines, scheduleBlocks, workItems }) => {
+        const current = await proposals.findByIdForUpdate(input.workspaceId, input.proposalId);
+        if (current === null) {
           throw new DomainError(
-            "natural_language.confirmation_conflict",
-            "The proposal was already confirmed by another request.",
+            "natural_language.proposal_not_found",
+            "The proposal does not exist.",
           );
         }
-        const command = validatedStoredCommand(current, input.workspaceId, now);
-        validatedStoredUserSelection(current);
-        if (command.type === "work_item.create") {
+        const now = this.clock.now();
+        if (current.status === "confirmed") {
+          if (current.confirmationKeyHash !== confirmationKeyHash) {
+            throw new DomainError(
+              "natural_language.confirmation_conflict",
+              "The proposal was already confirmed by another request.",
+            );
+          }
+          const command = validatedStoredCommand(current, input.workspaceId, now);
+          if (command.type === "work_item.create") validatedStoredUserSelection(current);
+          if (command.type === "work_item.create") {
+            if (
+              current.resultWorkItemId !== workItemId(current.id) ||
+              current.resultScheduleBlockId !== null
+            ) {
+              throw new DomainError(
+                "natural_language.confirmation_corrupt",
+                "The confirmed proposal result identity is invalid.",
+              );
+            }
+            const workItem = await workItems.findById(
+              input.workspaceId,
+              workItemId(current.resultWorkItemId),
+            );
+            if (workItem === null) {
+              throw new DomainError(
+                "natural_language.confirmation_corrupt",
+                "The confirmed proposal result is unavailable.",
+              );
+            }
+            return {
+              proposalId: current.id,
+              commandHash: current.commandHash,
+              replayed: true,
+              resultType: "work_item",
+              workItem,
+              scheduleBlock: null,
+              routine: null,
+            };
+          }
           if (
-            current.resultWorkItemId !== workItemId(current.id) ||
-            current.resultScheduleBlockId !== null
+            command.type === "schedule_block.create" &&
+            (current.resultScheduleBlockId !== scheduleBlockId(current.id) ||
+              current.resultWorkItemId !== null ||
+              current.resultRoutineId !== null)
           ) {
             throw new DomainError(
               "natural_language.confirmation_corrupt",
               "The confirmed proposal result identity is invalid.",
             );
           }
-          const workItem = await workItems.findById(
+          if (command.type === "schedule_block.create") {
+            const scheduleBlock = await scheduleBlocks.findById(
+              input.workspaceId,
+              scheduleBlockId(current.resultScheduleBlockId!),
+            );
+            if (scheduleBlock === null) {
+              throw new DomainError(
+                "natural_language.confirmation_corrupt",
+                "The confirmed proposal result is unavailable.",
+              );
+            }
+            return {
+              proposalId: current.id,
+              commandHash: current.commandHash,
+              replayed: true,
+              resultType: "schedule_block",
+              workItem: null,
+              scheduleBlock,
+              routine: null,
+            };
+          }
+          if (
+            current.resultRoutineId !== routineId(current.id) ||
+            current.resultWorkItemId !== null ||
+            current.resultScheduleBlockId !== null
+          )
+            throw new DomainError(
+              "natural_language.confirmation_corrupt",
+              "The confirmed proposal result identity is invalid.",
+            );
+          const routine = await routines.findById(
             input.workspaceId,
-            workItemId(current.resultWorkItemId),
+            routineId(current.resultRoutineId!),
           );
-          if (workItem === null) {
+          if (routine === null)
             throw new DomainError(
               "natural_language.confirmation_corrupt",
               "The confirmed proposal result is unavailable.",
             );
-          }
           return {
             proposalId: current.id,
             commandHash: current.commandHash,
             replayed: true,
+            resultType: "routine",
+            workItem: null,
+            scheduleBlock: null,
+            routine,
+          };
+        }
+        assertPending(current, now);
+        if (current.version !== input.expectedVersion) {
+          throw new DomainError(
+            "natural_language.version_conflict",
+            "The proposal changed before it was confirmed.",
+          );
+        }
+        const command = validatedStoredCommand(current, input.workspaceId, now);
+        const userSelection =
+          command.type === "work_item.create" ? validatedStoredUserSelection(current) : null;
+        let workItem: WorkItem | null = null;
+        let scheduleBlock: ScheduleBlock | null = null;
+        let routine: Routine | null = null;
+        if (command.type === "work_item.create") {
+          const deterministicWorkItemId = workItemId(current.id);
+          const priorWorkItem = await workItems.findById(
+            input.workspaceId,
+            deterministicWorkItemId,
+          );
+          const desiredWorkItem = createWorkItem({
+            id: deterministicWorkItemId,
+            workspaceId: input.workspaceId,
+            parentWorkItemId: null,
+            title: command.title,
+            description: null,
+            status: "backlog",
+            priority: userSelection!.priority,
+            dueOn: userSelection!.dueOn,
+            planningDurationMinutes: userSelection!.planningDurationMinutes,
+            now,
+          });
+          workItem = priorWorkItem ?? desiredWorkItem;
+          if (
+            priorWorkItem !== null &&
+            (priorWorkItem.id !== desiredWorkItem.id ||
+              priorWorkItem.workspaceId !== desiredWorkItem.workspaceId ||
+              priorWorkItem.parentWorkItemId !== null ||
+              priorWorkItem.title !== desiredWorkItem.title ||
+              priorWorkItem.description !== null ||
+              priorWorkItem.status !== "backlog" ||
+              priorWorkItem.priority !== desiredWorkItem.priority ||
+              priorWorkItem.dueOn !== desiredWorkItem.dueOn ||
+              priorWorkItem.planningDurationMinutes !== desiredWorkItem.planningDurationMinutes ||
+              priorWorkItem.version !== 1)
+          ) {
+            throw new DomainError(
+              "natural_language.confirmation_corrupt",
+              "The proposal creation identity is already used by different work.",
+            );
+          }
+          if (priorWorkItem === null) await workItems.insert(workItem);
+        } else if (command.type === "schedule_block.create") {
+          const deterministicScheduleBlockId = scheduleBlockId(current.id);
+          const priorScheduleBlock = await scheduleBlocks.findById(
+            input.workspaceId,
+            deterministicScheduleBlockId,
+          );
+          const desiredScheduleBlock = createScheduleBlock({
+            id: deterministicScheduleBlockId,
+            workspaceId: input.workspaceId,
+            workItemId: null,
+            title: command.title,
+            startsAt: new Date(command.startsAt),
+            endsAt: new Date(command.endsAt),
+            timeZone: command.timeZone,
+            now,
+          });
+          scheduleBlock = priorScheduleBlock ?? desiredScheduleBlock;
+          if (
+            priorScheduleBlock !== null &&
+            (priorScheduleBlock.id !== desiredScheduleBlock.id ||
+              priorScheduleBlock.workspaceId !== desiredScheduleBlock.workspaceId ||
+              priorScheduleBlock.workItemId !== null ||
+              priorScheduleBlock.title !== desiredScheduleBlock.title ||
+              priorScheduleBlock.startsAt.getTime() !== desiredScheduleBlock.startsAt.getTime() ||
+              priorScheduleBlock.endsAt.getTime() !== desiredScheduleBlock.endsAt.getTime() ||
+              priorScheduleBlock.timeZone !== desiredScheduleBlock.timeZone ||
+              priorScheduleBlock.version !== 1)
+          ) {
+            throw new DomainError(
+              "natural_language.confirmation_corrupt",
+              "The proposal creation identity is already used by a different calendar block.",
+            );
+          }
+          if (priorScheduleBlock === null) await scheduleBlocks.insert(scheduleBlock);
+        } else {
+          const deterministicRoutineId = routineId(current.id);
+          const priorRoutine = await routines.findById(input.workspaceId, deterministicRoutineId);
+          const desiredRoutine = createRoutine({
+            id: deterministicRoutineId,
+            workspaceId: input.workspaceId,
+            title: command.title,
+            description: command.description,
+            status: command.status,
+            tags: command.tags,
+            duration: command.duration,
+            cadence: command.cadence,
+            now,
+          });
+          routine = priorRoutine ?? desiredRoutine;
+          if (
+            (priorRoutine !== null &&
+              canonicalize(routineCommand(priorRoutine)) !==
+                canonicalize(routineCommand(desiredRoutine))) ||
+            (priorRoutine !== null && priorRoutine.version !== 1)
+          ) {
+            throw new DomainError(
+              "natural_language.confirmation_corrupt",
+              "The proposal creation identity is already used by a different routine.",
+            );
+          }
+          if (priorRoutine === null) await routines.insert(routine);
+        }
+        const confirmed: NaturalLanguageProposalRecord = {
+          ...current,
+          status: "confirmed",
+          confirmationKeyHash,
+          resultWorkItemId: workItem?.id ?? null,
+          resultScheduleBlockId: scheduleBlock?.id ?? null,
+          resultRoutineId: routine?.id ?? null,
+          confirmedAt: new Date(now),
+          version: current.version + 1,
+          updatedAt: new Date(now),
+        };
+        await proposals.save(confirmed, current.version);
+        await auditEvents.append({
+          workspaceId: input.workspaceId,
+          action: "natural_language.proposal_confirmed",
+          entityType: "natural_language_proposal",
+          entityId: current.id,
+          data: {
+            commandHash: current.commandHash,
+            reviewHash: current.reviewHash,
+            resultType:
+              command.type === "work_item.create"
+                ? "work_item"
+                : command.type === "schedule_block.create"
+                  ? "schedule_block"
+                  : "routine",
+            resultId: workItem?.id ?? scheduleBlock?.id ?? routine?.id ?? null,
+            provider: current.provider,
+            model: current.model,
+          },
+          occurredAt: now,
+        });
+        if (workItem !== null) {
+          return {
+            proposalId: current.id,
+            commandHash: current.commandHash,
+            replayed: false,
             resultType: "work_item",
             workItem,
             scheduleBlock: null,
+            routine: null,
           };
         }
-        if (
-          current.resultScheduleBlockId !== scheduleBlockId(current.id) ||
-          current.resultWorkItemId !== null
-        ) {
+        if (scheduleBlock !== null)
+          return {
+            proposalId: current.id,
+            commandHash: current.commandHash,
+            replayed: false,
+            resultType: "schedule_block",
+            workItem: null,
+            scheduleBlock,
+            routine: null,
+          };
+        if (routine === null) {
           throw new DomainError(
             "natural_language.confirmation_corrupt",
-            "The confirmed proposal result identity is invalid.",
+            "The proposal did not produce a valid result.",
           );
         }
-        const scheduleBlock = await scheduleBlocks.findById(
-          input.workspaceId,
-          scheduleBlockId(current.resultScheduleBlockId),
-        );
-        if (scheduleBlock === null) {
-          throw new DomainError(
-            "natural_language.confirmation_corrupt",
-            "The confirmed proposal result is unavailable.",
-          );
-        }
-        return {
-          proposalId: current.id,
-          commandHash: current.commandHash,
-          replayed: true,
-          resultType: "schedule_block",
-          workItem: null,
-          scheduleBlock,
-        };
-      }
-      assertPending(current, now);
-      if (current.version !== input.expectedVersion) {
-        throw new DomainError(
-          "natural_language.version_conflict",
-          "The proposal changed before it was confirmed.",
-        );
-      }
-      const command = validatedStoredCommand(current, input.workspaceId, now);
-      const userSelection = validatedStoredUserSelection(current);
-      let workItem: WorkItem | null = null;
-      let scheduleBlock: ScheduleBlock | null = null;
-      if (command.type === "work_item.create") {
-        const deterministicWorkItemId = workItemId(current.id);
-        const priorWorkItem = await workItems.findById(input.workspaceId, deterministicWorkItemId);
-        const desiredWorkItem = createWorkItem({
-          id: deterministicWorkItemId,
-          workspaceId: input.workspaceId,
-          parentWorkItemId: null,
-          title: command.title,
-          description: null,
-          status: "backlog",
-          priority: userSelection.priority,
-          dueOn: userSelection.dueOn,
-          planningDurationMinutes: userSelection.planningDurationMinutes,
-          now,
-        });
-        workItem = priorWorkItem ?? desiredWorkItem;
-        if (
-          priorWorkItem !== null &&
-          (priorWorkItem.id !== desiredWorkItem.id ||
-            priorWorkItem.workspaceId !== desiredWorkItem.workspaceId ||
-            priorWorkItem.parentWorkItemId !== null ||
-            priorWorkItem.title !== desiredWorkItem.title ||
-            priorWorkItem.description !== null ||
-            priorWorkItem.status !== "backlog" ||
-            priorWorkItem.priority !== desiredWorkItem.priority ||
-            priorWorkItem.dueOn !== desiredWorkItem.dueOn ||
-            priorWorkItem.planningDurationMinutes !== desiredWorkItem.planningDurationMinutes ||
-            priorWorkItem.version !== 1)
-        ) {
-          throw new DomainError(
-            "natural_language.confirmation_corrupt",
-            "The proposal creation identity is already used by different work.",
-          );
-        }
-        if (priorWorkItem === null) await workItems.insert(workItem);
-      } else {
-        const deterministicScheduleBlockId = scheduleBlockId(current.id);
-        const priorScheduleBlock = await scheduleBlocks.findById(
-          input.workspaceId,
-          deterministicScheduleBlockId,
-        );
-        const desiredScheduleBlock = createScheduleBlock({
-          id: deterministicScheduleBlockId,
-          workspaceId: input.workspaceId,
-          workItemId: null,
-          title: command.title,
-          startsAt: new Date(command.startsAt),
-          endsAt: new Date(command.endsAt),
-          timeZone: command.timeZone,
-          now,
-        });
-        scheduleBlock = priorScheduleBlock ?? desiredScheduleBlock;
-        if (
-          priorScheduleBlock !== null &&
-          (priorScheduleBlock.id !== desiredScheduleBlock.id ||
-            priorScheduleBlock.workspaceId !== desiredScheduleBlock.workspaceId ||
-            priorScheduleBlock.workItemId !== null ||
-            priorScheduleBlock.title !== desiredScheduleBlock.title ||
-            priorScheduleBlock.startsAt.getTime() !== desiredScheduleBlock.startsAt.getTime() ||
-            priorScheduleBlock.endsAt.getTime() !== desiredScheduleBlock.endsAt.getTime() ||
-            priorScheduleBlock.timeZone !== desiredScheduleBlock.timeZone ||
-            priorScheduleBlock.version !== 1)
-        ) {
-          throw new DomainError(
-            "natural_language.confirmation_corrupt",
-            "The proposal creation identity is already used by a different calendar block.",
-          );
-        }
-        if (priorScheduleBlock === null) await scheduleBlocks.insert(scheduleBlock);
-      }
-      const confirmed: NaturalLanguageProposalRecord = {
-        ...current,
-        status: "confirmed",
-        confirmationKeyHash,
-        resultWorkItemId: workItem?.id ?? null,
-        resultScheduleBlockId: scheduleBlock?.id ?? null,
-        confirmedAt: new Date(now),
-        version: current.version + 1,
-        updatedAt: new Date(now),
-      };
-      await proposals.save(confirmed, current.version);
-      await auditEvents.append({
-        workspaceId: input.workspaceId,
-        action: "natural_language.proposal_confirmed",
-        entityType: "natural_language_proposal",
-        entityId: current.id,
-        data: {
-          commandHash: current.commandHash,
-          reviewHash: current.reviewHash,
-          resultType: command.type === "work_item.create" ? "work_item" : "schedule_block",
-          resultId: workItem?.id ?? scheduleBlock?.id ?? null,
-          provider: current.provider,
-          model: current.model,
-        },
-        occurredAt: now,
-      });
-      if (workItem !== null) {
         return {
           proposalId: current.id,
           commandHash: current.commandHash,
           replayed: false,
-          resultType: "work_item",
-          workItem,
+          resultType: "routine",
+          workItem: null,
           scheduleBlock: null,
+          routine,
         };
-      }
-      if (scheduleBlock === null) {
-        throw new DomainError(
-          "natural_language.confirmation_corrupt",
-          "The proposal did not produce a valid result.",
-        );
-      }
-      return {
-        proposalId: current.id,
-        commandHash: current.commandHash,
-        replayed: false,
-        resultType: "schedule_block",
-        workItem: null,
-        scheduleBlock,
-      };
-    });
+      },
+    );
   }
 }

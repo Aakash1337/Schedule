@@ -3035,7 +3035,7 @@ describe("local product API", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          version: "schedule.natural-language/v3",
+          version: "schedule.natural-language/v4",
           requestId: adviceRequestUuid,
           prompt: "Add prepare quarterly report to my list",
           timeZone: "UTC",
@@ -3224,7 +3224,7 @@ describe("local product API", () => {
           generatedCommand = command;
           generatedSignal = signal;
           return {
-            version: "schedule.natural-language/v3",
+            version: "schedule.natural-language/v4",
             requestId: command.requestId,
             status: "proposal",
             reason: null,
@@ -3262,6 +3262,7 @@ describe("local product API", () => {
             resultType: "work_item",
             workItem: createdWorkItem,
             scheduleBlock: null,
+            routine: null,
           };
         },
       }).services,
@@ -3272,7 +3273,7 @@ describe("local product API", () => {
       method: "POST",
       url: baseUrl,
       payload: {
-        version: "schedule.natural-language/v3",
+        version: "schedule.natural-language/v4",
         requestId: adviceRequestUuid,
         prompt: "Add prepare quarterly report to my list",
         referenceDate: "2026-07-15",
@@ -3296,7 +3297,7 @@ describe("local product API", () => {
         method: "POST",
         url: baseUrl,
         payload: {
-          version: "schedule.natural-language/v3",
+          version: "schedule.natural-language/v4",
           requestId: adviceRequestUuid,
           prompt: "Add prepare quarterly report to my list",
           referenceDate: invalidReferenceDate,
@@ -3310,7 +3311,7 @@ describe("local product API", () => {
       method: "POST",
       url: baseUrl,
       payload: {
-        version: "schedule.natural-language/v3",
+        version: "schedule.natural-language/v4",
         requestId: adviceRequestUuid,
         prompt: "Add prepare quarterly report to my list",
         timeZone: "UTC",
@@ -3368,6 +3369,82 @@ describe("local product API", () => {
         timeZone: "UTC",
       },
     });
+
+    const routineCommand = {
+      type: "routine.create",
+      title: "Practice Spanish",
+      description: "Practice spoken Spanish.",
+      status: "active",
+      tags: {
+        priority: "high",
+        effort: "short",
+        energy: "normal",
+        preference: "enjoyable",
+        contexts: ["home"],
+        categories: ["learning"],
+        freeForm: [],
+      },
+      duration: {
+        expectedMinutes: 30,
+        minimumMinutes: 20,
+        maximumMinutes: 45,
+        splittable: false,
+        minimumSessionMinutes: null,
+        overheadMinutes: 0,
+      },
+      cadence: {
+        period: "week",
+        rollingIntervalDays: null,
+        targetCompletions: 3,
+        minimumCompletions: null,
+        maximumCompletions: 4,
+        minimumSpacingDays: 1,
+        preferredWeekdays: [1, 3, 5],
+        excludedWeekdays: [],
+        discourageConsecutiveDays: true,
+        prohibitConsecutiveDays: false,
+        weekStartsOn: 1,
+        startsOn: null,
+        pausedUntil: null,
+        endsOn: null,
+      },
+    } as const;
+    const editedRoutine = await app.inject({
+      method: "PATCH",
+      url: `${baseUrl}/${proposalUuid}`,
+      payload: { expectedVersion: 1, command: routineCommand },
+    });
+    expect(editedRoutine.statusCode).toBe(200);
+    expect(editedCommand).toMatchObject({
+      proposalId: proposalUuid,
+      expectedVersion: 1,
+      command: routineCommand,
+    });
+
+    for (const invalidRoutineCommand of [
+      { ...routineCommand, description: undefined },
+      { ...routineCommand, duration: { ...routineCommand.duration, overheadMinutes: undefined } },
+      { ...routineCommand, userSelection: { priority: "high" } },
+      { ...routineCommand, modelSuggestions: null },
+    ]) {
+      const invalidRoutine = await app.inject({
+        method: "PATCH",
+        url: `${baseUrl}/${proposalUuid}`,
+        payload: { expectedVersion: 1, command: invalidRoutineCommand },
+      });
+      expect(invalidRoutine.statusCode).toBe(400);
+    }
+
+    const routineWithSelection = await app.inject({
+      method: "PATCH",
+      url: `${baseUrl}/${proposalUuid}`,
+      payload: {
+        expectedVersion: 1,
+        command: routineCommand,
+        userSelection: { priority: "high", dueOn: null, planningDurationMinutes: null },
+      },
+    });
+    expect(routineWithSelection.statusCode).toBe(400);
 
     const noncanonicalBlockEdit = await app.inject({
       method: "PATCH",
@@ -3462,7 +3539,7 @@ describe("local product API", () => {
       method: "POST",
       url: baseUrl,
       payload: {
-        version: "schedule.natural-language/v3",
+        version: "schedule.natural-language/v4",
         requestId: adviceRequestUuid,
         prompt: "Add a task",
         timeZone: "UTC",
@@ -3470,6 +3547,70 @@ describe("local product API", () => {
       },
     });
     expect(rejectedCallerControls.statusCode).toBe(400);
+
+    const legacyReplay = await app.inject({
+      method: "POST",
+      url: baseUrl,
+      payload: {
+        version: "schedule.natural-language/v3",
+        requestId: adviceRequestUuid,
+        prompt: "Add a task",
+        timeZone: "UTC",
+      },
+    });
+    expect(legacyReplay.statusCode).toBe(200);
+    expect(legacyReplay.json()).toMatchObject({ version: "schedule.natural-language/v4" });
+    expect(generatedCommand).toMatchObject({ version: "schedule.natural-language/v3" });
+
+    const rejectedUnsupportedVersion = await app.inject({
+      method: "POST",
+      url: baseUrl,
+      payload: {
+        version: "schedule.natural-language/v2",
+        requestId: adviceRequestUuid,
+        prompt: "Add a task",
+        timeZone: "UTC",
+      },
+    });
+    expect(rejectedUnsupportedVersion.statusCode).toBe(400);
+  });
+
+  it("returns the routine confirmation-result union unchanged", async () => {
+    let receivedCommand: unknown;
+    const app = await appWith(
+      createHarness({
+        confirmNaturalLanguageProposal: async (command) => {
+          receivedCommand = command;
+          return {
+            proposalId: proposalUuid,
+            commandHash: "f".repeat(64),
+            replayed: false,
+            resultType: "routine",
+            workItem: null,
+            scheduleBlock: null,
+            routine,
+          };
+        },
+      }).services,
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/natural-language/proposals/${proposalUuid}/confirmations`,
+      headers: { "idempotency-key": "confirm-routine-once" },
+      payload: { expectedVersion: 1 },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      resultType: "routine",
+      workItem: null,
+      scheduleBlock: null,
+      routine: { id: routine.id, title: routine.title },
+    });
+    expect(receivedCommand).toMatchObject({
+      proposalId: proposalUuid,
+      idempotencyKey: "confirm-routine-once",
+    });
   });
 
   it("maps terminal proposal state to gone and redacts corrupt persisted commands", async () => {

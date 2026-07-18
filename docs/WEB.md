@@ -362,11 +362,11 @@ real-model smoke check is a separate operator command, not part of the Chromium 
 ## Natural-language proposal interaction
 
 The Work composer exposes **Describe work** as an optional alternative to ordinary structured quick
-capture. Its inline panel states that the local model can suggest only one backlog title and cannot
-create or change work. The prompt accepts one concrete outcome. **Review proposal** prepares only a
-server-persisted, expiring proposal; the next screen displays the exact command, transient summary
-and warnings, model provenance, expiration time, and the explicit message “Nothing has been created
-yet.”
+capture. Its inline panel states that the local model can propose only one root-backlog item, unlinked
+calendar block, or routine and cannot create or change anything. The prompt accepts one concrete
+outcome. **Review proposal** prepares only a server-persisted, expiring proposal; the next screen
+displays the exact command, transient summary and warnings, model provenance, expiration time, and
+the explicit message “Nothing has been created yet.”
 
 The title remains editable. Priority, optional due date, and optional planning duration appear in a
 separate section labelled as the user's choices rather than model suggestions. Confirming any changed
@@ -375,14 +375,23 @@ so the user can retry without duplicate work. **Cancel proposal** terminally can
 that no item was created. Closing during provider generation aborts that request; workspace changes
 abort and discard every in-flight or displayed proposal so a late response cannot cross workspaces.
 
+For a routine proposal, the title is the only model-authored field. The review shows the ordinary
+routine description, status, tag, duration, and cadence controls, initialized from visible native
+defaults: active; medium priority and effort; normal energy; neutral preference; empty tags;
+15/30/60 minutes; and a weekly target of three with one-day spacing. The user may replace every
+value, including the title, before confirmation. No field is hidden, inferred, preselected by a model
+suggestion, or persisted as a routine while the proposal is only being reviewed.
+
 After a successful confirmation, the returned item is merged into Backlog without a second create
-call. Any active priority filter is cleared when necessary, and focus moves to the new work card so a
-keyboard user receives the same state transition as a pointer user. The ordinary composer remains
-available regardless of model configuration or availability. The panel does not expose provider
-settings, arbitrary commands, automation, or a prompt/model history. Component tests cover cancel,
-edit/confirm/focus, stable-key retry, and a deliberately late success after workspace cancellation.
+call, or the calendar result remains available on the Calendar view. Work announces a routine result
+and closes the proposal; opening Routines then loads the persisted routine through the ordinary API.
+Any active priority filter is cleared when necessary, and focus moves to a new work card. The ordinary
+composer remains available regardless of model configuration or availability. The panel does not
+expose provider settings, arbitrary commands, automation, or a prompt/model history. Component tests
+cover cancel, all three review/confirm paths, stable-key retry, and a deliberately late success after
+workspace cancellation.
 The live Chromium flow uses the built API and production adapter against a controllably held loopback
-model double—without browser interception—to prove full-snapshot persistence, exact created fields,
+model double—without browser interception—to prove reviewed persistence, representative edited fields,
 cancellation, same-key replay, and workspace-switch request abortion.
 
 ## Design system
@@ -416,7 +425,10 @@ scenario. A reminder scenario creates policy, edits a rule, creates a one-off, e
 intents, inserts an execution fixture through the isolated PostgreSQL test boundary, and verifies the
 real product-safe history route and UI at desktop and 320px without request interception. Another
 prepares one title through a strict loopback Ollama double, proves no card exists before confirmation,
-edits and confirms through the real API, verifies focus, and reloads the persisted backlog item. A
+edits and confirms through the real API, verifies focus, and reloads the persisted backlog item. Its
+routine segment proves title-only model authority, visible native defaults, a representative
+user-authored duration/cadence/tag review, and persisted visibility after explicit confirmation. The
+separate PostgreSQL proposal verifier proves that no routine exists before confirmation. A
 Daily Plan Fit scenario creates three fully resolved historical plans, observes a joint
 90-minute/two-task suggestion, dismisses and restores its exact key, rejects a stale selected key
 without creating a plan or receipt, and proves that copying both targets still writes no history. It
@@ -462,6 +474,6 @@ provider remains required.
 - Learned cadence, energy, preference, and adaptive-selection settings
 - Automatic Plan Fit application, upward target expansion, and editable Plan Fit policy
 - Automatic duration-insight application and historical insight-comparison controls
-- Natural-language routine creation, tags/dates/duration, task breakdown, multi-command capture,
-  model-driven plan application, and hosted advisor controls
+- Natural-language task breakdown, multi-command capture, model-authored routine settings, linked
+  blocks, model-driven plan application, and hosted advisor controls
 - Collaboration, sync, automatic reminder execution, live Hermes/WhatsApp delivery, and cloud deployment

@@ -74,7 +74,7 @@ describe("browser E2E runner", () => {
     expect(port).toBeDefined();
     const server = await startFakeOllamaServer(port!);
     const validContext = {
-      version: "schedule.natural-language-context/v3",
+      version: "schedule.natural-language-context/v4",
       requestId: "22222222-2222-4222-8222-222222222222",
       prompt: "Create work",
       referenceDate: "2026-07-15",

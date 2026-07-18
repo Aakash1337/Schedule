@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   config: {
@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => ({
           ? mocks.deploymentHealthDatabase
           : mocks.observabilityDatabase,
   ),
+  loadWebhookDispatchRecord: vi.fn(),
   unitOfWork: {},
   PostgresUnitOfWork: vi.fn(function () {
     return mocks.unitOfWork;
@@ -78,6 +79,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@schedule/config", () => ({ loadWorkerConfig: () => mocks.config }));
 vi.mock("@schedule/database", () => ({
   createDatabase: mocks.createDatabase,
+  loadWebhookDispatchRecord: mocks.loadWebhookDispatchRecord,
   PostgresUnitOfWork: mocks.PostgresUnitOfWork,
 }));
 vi.mock("./notification-materializer.js", () => ({
@@ -98,6 +100,10 @@ vi.mock("./runtime.js", () => ({
 vi.mock("./worker.js", () => ({ runOutboxWorker: mocks.runOutboxWorker }));
 
 describe("worker entrypoint", () => {
+  beforeAll(async () => {
+    await import("./webhook-delivery.js");
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();

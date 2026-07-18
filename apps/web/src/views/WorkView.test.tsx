@@ -6,6 +6,7 @@ import { ApiError } from "../api";
 import type {
   NaturalLanguageProposal,
   NaturalLanguageProposalResult,
+  Routine,
   ScheduleBlock,
   WorkItem,
   WorkItemDependency,
@@ -79,11 +80,18 @@ function naturalLanguageProposal(title = "Prepare quarterly report"): NaturalLan
   };
 }
 
+function malformedWorkItemProposal(): NaturalLanguageProposal {
+  return {
+    ...naturalLanguageProposal(),
+    userSelection: null,
+  } as unknown as NaturalLanguageProposal;
+}
+
 function naturalLanguageResult(
   proposal = naturalLanguageProposal(),
 ): NaturalLanguageProposalResult {
   return {
-    version: "schedule.natural-language/v3",
+    version: "schedule.natural-language/v4",
     requestId: proposal.requestId,
     status: "proposal",
     reason: null,
@@ -121,6 +129,55 @@ function naturalLanguageScheduleBlockProposal(): NaturalLanguageProposal {
       timeZone,
     },
     modelSuggestions: null,
+    userSelection: null,
+  };
+}
+
+function naturalLanguageRoutineProposal(): NaturalLanguageProposal {
+  return {
+    ...naturalLanguageProposal("Practice Spanish"),
+    commandDisplay: JSON.stringify({ title: "Practice Spanish", type: "routine.create" }),
+    command: {
+      type: "routine.create",
+      title: "Practice Spanish",
+      description: null,
+      status: "active",
+      tags: {
+        priority: "medium",
+        effort: "medium",
+        energy: "normal",
+        preference: "neutral",
+        contexts: [],
+        categories: [],
+        freeForm: [],
+      },
+      duration: {
+        minimumMinutes: 15,
+        expectedMinutes: 30,
+        maximumMinutes: 60,
+        splittable: false,
+        minimumSessionMinutes: null,
+        overheadMinutes: 0,
+      },
+      cadence: {
+        period: "week",
+        rollingIntervalDays: null,
+        targetCompletions: 3,
+        minimumCompletions: null,
+        maximumCompletions: null,
+        minimumSpacingDays: 1,
+        preferredWeekdays: [],
+        excludedWeekdays: [],
+        discourageConsecutiveDays: true,
+        prohibitConsecutiveDays: false,
+        weekStartsOn: 1,
+        startsOn: null,
+        pausedUntil: null,
+        endsOn: null,
+      },
+    },
+    modelSuggestions: null,
+    userSelection: null,
   };
 }
 
@@ -254,7 +311,7 @@ describe("work board", () => {
     expect(apiMocks.generateNaturalLanguageProposal).toHaveBeenCalledWith(
       workspace.id,
       expect.objectContaining({
-        version: "schedule.natural-language/v3",
+        version: "schedule.natural-language/v4",
         prompt: "Add prepare the quarterly report to my work list",
         requestId: expect.any(String),
         referenceDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
@@ -278,6 +335,63 @@ describe("work board", () => {
     expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
   });
 
+  it("rejects a malformed generated work-item proposal before it becomes reviewable", async () => {
+    const user = userEvent.setup();
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(
+      naturalLanguageResult(malformedWorkItemProposal()),
+    );
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(screen.getByRole("textbox", { name: /^Describe one/ }), "Add work");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The work-item proposal omitted valid reviewed values.",
+    );
+    expect(screen.queryByRole("heading", { name: "Create one backlog work item" })).toBeNull();
+    expect(apiMocks.confirmNaturalLanguageProposal).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed updated work-item proposal before it can be confirmed", async () => {
+    const user = userEvent.setup();
+    const proposal = naturalLanguageProposal();
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(naturalLanguageResult(proposal));
+    apiMocks.updateNaturalLanguageProposal.mockResolvedValue(malformedWorkItemProposal());
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(screen.getByRole("textbox", { name: /^Describe one/ }), "Add work");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+    const choices = await screen.findByRole("region", { name: "Your reviewed choices" });
+    await user.selectOptions(within(choices).getByRole("combobox", { name: "Priority" }), "urgent");
+    await user.click(screen.getByRole("button", { name: "Create this work item" }));
+
+    await waitFor(() =>
+      expect(apiMocks.updateNaturalLanguageProposal).toHaveBeenCalledWith(
+        workspace.id,
+        proposal.id,
+        {
+          expectedVersion: proposal.version,
+          command: proposal.command,
+          userSelection: {
+            priority: "urgent",
+            dueOn: null,
+            planningDurationMinutes: null,
+          },
+        },
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The work-item proposal omitted valid reviewed values.",
+    );
+    expect(screen.queryByRole("heading", { name: "Create one backlog work item" })).toBeNull();
+    expect(apiMocks.confirmNaturalLanguageProposal).not.toHaveBeenCalled();
+  });
+
   it("reviews, edits, and confirms one unlinked calendar block", async () => {
     const user = userEvent.setup();
     const proposal = naturalLanguageScheduleBlockProposal();
@@ -289,7 +403,13 @@ describe("work board", () => {
       endsAt: new Date(2026, 6, 17, 0, 45).toISOString(),
       timeZone: proposal.command.timeZone,
     };
-    const edited: NaturalLanguageProposal = { ...proposal, command, version: 2 };
+    const edited: NaturalLanguageProposal = {
+      ...proposal,
+      command,
+      modelSuggestions: null,
+      userSelection: null,
+      version: 2,
+    };
     const created: ScheduleBlock = {
       id: proposal.id,
       workspaceId: workspace.id,
@@ -353,6 +473,157 @@ describe("work board", () => {
     expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
     expect(await screen.findByRole("status")).toHaveTextContent(
       "Focused quarterly report was created in Calendar.",
+    );
+  });
+
+  it("reviews every native routine field and confirms one routine without changing the work board", async () => {
+    const user = userEvent.setup();
+    const proposal = naturalLanguageRoutineProposal();
+    if (proposal.command.type !== "routine.create") throw new Error("Expected a routine.");
+    const command = {
+      ...proposal.command,
+      title: "Practice reviewed Spanish",
+      description: "Build conversational Spanish through focused listening.",
+      status: "paused" as const,
+      tags: {
+        priority: "high" as const,
+        effort: "deep" as const,
+        energy: "high" as const,
+        preference: "enjoyable" as const,
+        contexts: ["home", "headphones"],
+        categories: ["language", "growth"],
+        freeForm: ["spanish", "audio"],
+      },
+      duration: {
+        minimumMinutes: 20,
+        expectedMinutes: 50,
+        maximumMinutes: 75,
+        splittable: true,
+        minimumSessionMinutes: 10,
+        overheadMinutes: 5,
+      },
+      cadence: {
+        period: "rolling_days" as const,
+        rollingIntervalDays: 10,
+        targetCompletions: 4,
+        minimumCompletions: 2,
+        maximumCompletions: 6,
+        minimumSpacingDays: 2,
+        preferredWeekdays: [1, 3],
+        excludedWeekdays: [5],
+        discourageConsecutiveDays: true,
+        prohibitConsecutiveDays: true,
+        weekStartsOn: 0,
+        startsOn: "2026-07-20",
+        pausedUntil: "2026-07-22",
+        endsOn: "2026-12-31",
+      },
+    };
+    const routine: Routine = {
+      id: proposal.id,
+      workspaceId: workspace.id,
+      ...command,
+      version: 1,
+      createdAt: "2026-07-14T10:00:01.000Z",
+      updatedAt: "2026-07-14T10:00:01.000Z",
+    };
+    apiMocks.generateNaturalLanguageProposal.mockResolvedValue(naturalLanguageResult(proposal));
+    apiMocks.updateNaturalLanguageProposal.mockResolvedValue({ ...proposal, command, version: 2 });
+    apiMocks.confirmNaturalLanguageProposal.mockResolvedValue({
+      proposalId: proposal.id,
+      commandHash: proposal.commandHash,
+      replayed: false,
+      resultType: "routine",
+      workItem: null,
+      scheduleBlock: null,
+      routine,
+    });
+
+    render(<WorkView workspace={workspace} onNavigate={vi.fn()} />);
+    await screen.findByRole("heading", { name: item.title });
+    await user.click(screen.getByRole("button", { name: "Describe work" }));
+    await user.type(
+      screen.getByRole("textbox", { name: /^Describe one/ }),
+      "Practice Spanish routinely",
+    );
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+    const fields = await screen.findByRole("region", { name: "Reviewed routine fields" });
+    expect(fields).toHaveTextContent("The model suggested only the title");
+    const change = (label: string | RegExp, value: string, role: "textbox" | "spinbutton") =>
+      fireEvent.change(within(fields).getByRole(role, { name: label }), { target: { value } });
+    const select = (label: string, value: string) =>
+      fireEvent.change(within(fields).getByRole("combobox", { name: label }), {
+        target: { value },
+      });
+    change("Title", command.title, "textbox");
+    change("Description", command.description, "textbox");
+    select("Status", "paused");
+    select("Priority", "high");
+    select("Effort", "deep");
+    select("Energy", "high");
+    select("Preference", "enjoyable");
+    for (const [label, value] of [
+      ["Contexts", "home, headphones"],
+      ["Categories", "language, growth"],
+      ["Free-form tags", "spanish, audio"],
+    ] as const) {
+      change(new RegExp(`^${label}`), value, "textbox");
+    }
+    for (const [label, value] of [
+      ["Minimum minutes", "20"],
+      ["Expected minutes", "50"],
+      ["Maximum minutes", "75"],
+      ["Setup minutes", "5"],
+    ] as const) {
+      change(label, value, "spinbutton");
+    }
+    fireEvent.click(within(fields).getByRole("checkbox", { name: /Allow split sessions/ }));
+    change("Minimum session minutes", "10", "spinbutton");
+    select("Period", "rolling_days");
+    for (const [label, value] of [
+      ["Rolling window days", "10"],
+      ["Target completions", "4"],
+      ["Minimum completions", "2"],
+      ["Maximum completions", "6"],
+      ["Minimum spacing days", "2"],
+    ] as const) {
+      change(label, value, "spinbutton");
+    }
+    select("Consecutive-day policy", "prohibit");
+    select("Week starts on", "0");
+    fireEvent.click(within(fields).getByText("Advanced availability"));
+    const preferred = within(fields).getByRole("group", { name: "Preferred weekdays" });
+    const excluded = within(fields).getByRole("group", { name: "Excluded weekdays" });
+    fireEvent.click(within(preferred).getByRole("button", { name: "Mon" }));
+    fireEvent.click(within(preferred).getByRole("button", { name: "Wed" }));
+    fireEvent.click(within(excluded).getByRole("button", { name: "Fri" }));
+    for (const [label, value] of [
+      ["Starts on", command.cadence.startsOn],
+      ["Pause through", command.cadence.pausedUntil],
+      ["Ends on", command.cadence.endsOn],
+    ] as const) {
+      fireEvent.change(within(fields).getByLabelText(new RegExp(`^${label}`)), {
+        target: { value },
+      });
+    }
+    expect(apiMocks.updateNaturalLanguageProposal).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Create this routine" }));
+    expect(apiMocks.updateNaturalLanguageProposal).toHaveBeenCalledWith(
+      workspace.id,
+      proposal.id,
+      { expectedVersion: 1, command },
+      expect.any(AbortSignal),
+    );
+    expect(apiMocks.confirmNaturalLanguageProposal).toHaveBeenCalledWith(
+      workspace.id,
+      proposal.id,
+      2,
+      expect.any(String),
+      expect.any(AbortSignal),
+    );
+    expect(apiMocks.createWorkItem).not.toHaveBeenCalled();
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Practice reviewed Spanish was created in Routines.",
     );
   });
 

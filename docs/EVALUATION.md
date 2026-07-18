@@ -46,7 +46,7 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:database`                   | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
 | `pnpm verify:integration-gateway`        | Verify authenticated reads/commands, including bounded Plan Fit guidance    | Yes, disposable only            |
 | `pnpm verify:hermes-adapter`             | Verify the strict Python plugin boundary and reminder lifecycle             | Yes, disposable only            |
-| `pnpm verify:natural-language-proposals` | Verify private persistence and concurrent exactly-once confirmation         | Yes                             |
+| `pnpm verify:natural-language-proposals` | Verify private three-command review and exactly-once confirmation           | Yes                             |
 | `pnpm verify:webhook-delivery`           | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback     | Yes, disposable only            |
 | `pnpm verify:notification-core`          | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
 | `pnpm verify:notification-materializer`  | Verify bounded automatic ticks, replay, skips, and delivery separation      | Yes, disposable only            |
@@ -64,7 +64,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 129 test files and 2,203 runtime test cases. Three
+The package and script runners currently execute 129 test files and 2,219 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -88,21 +88,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     60.03% |   71.67% |    67.99% | 60.53% |
+| Whole repository, measured |     60.21% |   72.07% |    68.76% | 60.71% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |        95% |   91.67% |    93.49% | 96.01% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     89.96% |    83.9% |    98.51% | 90.87% |
+| Application, measured      |     89.71% |   83.87% |    98.89% | 90.56% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     90.47% |   87.81% |    84.15% | 92.01% |
+| API, measured              |     90.48% |   87.83% |    84.15% | 92.02% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |      92.1% |   87.99% |     93.6% | 94.77% |
 | Worker, required           |        85% |      87% |       89% |    87% |
 | Web, measured              |     86.03% |   79.27% |    84.23% | 86.88% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 12,790 of 21,303 statements, 9,495 of 13,248 branches,
-2,745 of 4,037 functions, and 12,074 of 19,945 lines.
+The whole-repository totals are 12,918 of 21,453 statements, 9,725 of 13,493 branches,
+2,780 of 4,043 functions, and 12,199 of 20,091 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -446,37 +446,45 @@ different bounded timeout for another allowlisted model or machine.
 
 The Work proposal path has independent authority, persistence, transport, API, component, and live
 browser oracles. Application units require keyed and domain-separated prompt fingerprints, no raw
-prompt persistence, one strict command, safe canonical title text, pending-only replay, versioned
-edit/cancel, expiration, tenant isolation, audit rollback, deterministic result identity, exact
-same-key replay, and conflict for another confirmation key. Provider units require a fixed tool-free
-schema, no thinking, strict response validation, and one concurrency budget shared with the Today
-advisor.
+prompt persistence, one strict command, safe canonical title text, title-only routine provider
+authority, pending-only replay, version-3 exact-match recovery without provider work or generation,
+versioned edit/cancel, expiration, tenant isolation, audit rollback, deterministic result identity,
+exact same-key replay, and conflict for another confirmation key. Every successful generation or
+recovery response uses version 4. Provider units require a fixed tool-free schema, no thinking,
+strict response validation, and one concurrency budget shared with the Today advisor.
 
-Schema and repository tests cover request uniqueness, prompt/command/key digest shapes, both strict
-command variants, command-typed tenant result foreign keys, separately
+Schema and repository tests cover request uniqueness, prompt/command/key digest shapes, all three
+strict command variants, command-typed tenant result foreign keys, separately
 persisted advisory suggestions and user review fields, strict suggestion decoding, their independent
 digests, and duration bounds, bounded TTL,
-terminal timestamps, tenant-bound result identity, expiry indexes, canonical JSON revalidation,
-row locking, optimistic saves, and serializable retry. API tests cover strict caller authority,
+terminal timestamps, tenant-bound result identity, expiry indexes, a 64,000-character canonical
+command-display bound, canonical JSON revalidation, row locking, optimistic saves, and serializable
+retry. API tests cover strict caller authority,
 disconnect cancellation, complete no-store behavior, `201` first confirmation versus `200` replay,
 terminal `410` mappings, and redacted corrupt-state failures. Work component and web-client tests
 cover no mutation during review/cancel, encoded routes, abort propagation, suggestions that never
 prefill the form, explicit per-field use, work-item and calendar-block review edits before confirm,
-stable-key ambiguous retry, filter-safe insertion, focus transfer, and workspace-switch invalidation.
+visible native routine defaults, full routine-field review, stable-key ambiguous retry, filter-safe
+insertion, focus transfer, and workspace-switch invalidation.
 
 `pnpm verify:natural-language-proposals` runs production repositories through independent real
 PostgreSQL connection pools. It asserts the schema has no prompt/summary/warnings columns, has the
-three bounded review columns plus the nullable suggestion object and calendar result column, a prompt is not discoverable as an
+three bounded review columns plus the nullable suggestion object and typed calendar/routine result
+columns, a prompt is not discoverable as an
 unkeyed SHA-256 value, no work exists before confirmation, suggestions survive review without
 entering its digest, concurrent same-key calls yield one exact root backlog creation with deliberately
 different reviewed priority/date/duration and one replay, and does the same for one exact unlinked
-calendar block. Competing keys yield one creation and one precise
+calendar block. Its routine path proves the provider authors only a title, Schedule supplies the
+exact visible native defaults, a complete user-authored tag/duration/cadence snapshot creates no
+routine during review, a valid description takes its persisted canonical display beyond 1,000
+characters, concurrent same-key confirmation creates one exact routine and one replay with that
+description, and `result_routine_id` is the proposal-derived ID. Competing keys yield one creation and one precise
 conflict, exactly one confirmation audit exists, and another workspace cannot address the proposal.
 The live Chromium scenario uses the built API and production adapter against a strict in-process
 IPv4-loopback Ollama double. It proves the card is absent during review, applies suggestions only
 after their explicit controls are activated, persists the edited title,
-confirms both command variants through the real HTTP/database path, moves focus to the work-item
-result, displays the calendar result, and reloads without
+confirms all three command variants through the real HTTP/database path, moves focus to the work-item
+or routine result, displays the calendar result, and reloads without
 browser interception. These checks establish model-command authority, user-field ownership, privacy,
 concurrency, and UI behavior; they do not score real-model title quality.
 
@@ -620,8 +628,9 @@ The audit deliberately leaves these visible instead of turning them into false g
   explicit routine ranking preferences and deterministic alternative comparison and selection, plus
   explicit reminder setup, rule/one-off changes, materialization, safe execution history, and
   a 320px reminder layout, deterministic Daily Plan Fit prefill/dismissal/reset, stale-key rejection,
-  explicit generation receipts, resolved outcomes, and revision disclosure, plus local proposal
-  review/edit/confirm/replay/cancel/reload behavior against a strict loopback model double. They do
+  explicit generation receipts, resolved outcomes, and revision disclosure, plus local work-item,
+  calendar-block, and routine proposal review/edit/confirm/replay/cancel/reload behavior against a
+  strict loopback model double. They do
   not cover every browser, every responsive breakpoint, every validation branch, Calendar
   interaction, or the duration-calibration approval flow;
 - work-item dependencies have domain, application, repository, API, component, and real PostgreSQL
@@ -646,9 +655,10 @@ The audit deliberately leaves these visible instead of turning them into false g
   automatically, feed outcomes into scoring, or use a model; and
 - the local-model advisor has CI unit/component evidence for its configuration, application,
   transport, API, and UI boundaries, while a real Ollama/Gemma call remains an operator-run smoke
-  check. The separate Work capture supports one reviewed backlog title with CI and PostgreSQL/browser
-  evidence, but there is no CI real-model invocation, quality benchmark, natural-language routine or
-  multi-task creation, task breakdown, automatic plan or calibration application, hosted provider,
+  check. The separate Work capture supports one reviewed root-backlog item, unlinked calendar block,
+  or routine with CI and PostgreSQL/browser evidence, but there is no CI real-model invocation,
+  quality benchmark, multi-task creation, task breakdown, model-authored routine settings, automatic
+  plan or calibration application, hosted provider,
   or connection between advisor output and either Hermes path. The deterministic stdout helper does
   not invoke the advisor, the provider-neutral delivery runtime does not invoke a model, and live
   WhatsApp delivery is not established; and

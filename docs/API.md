@@ -68,7 +68,7 @@ Daily Plan Fit projection for local agents without exposing its evidence key or 
   one exact raw `http://127.0.0.1:<port>` Ollama origin and an allowlisted local Gemma model; it does
   not use DNS, redirects, proxies, tools, or credentials.
 - Natural-language proposals are separately disabled by default, use that same transport policy,
-  persist no prompt or free-form model prose, and cannot create work without a versioned,
+  persist no prompt or free-form model prose, and cannot create an entity without a versioned,
   idempotent confirmation request.
 - Local mode caps an installation at 20 workspaces; each workspace is capped at 500 routines, 5,000 activity events, 2,000 plan revisions, and 50 revisions for one date. Planning reads at most 2,001 dependency rows whose dependents are active opted-in candidates and fails closed with `planning.work_item_dependency_pool_too_large` when more than 2,000 relevant rows exist.
 - Plan responses expose the original planning request, input hash, and algorithm versions, but not routine snapshots or activity history from the complete persisted input snapshot.
@@ -86,7 +86,7 @@ Daily Plan Fit projection for local agents without exposing its evidence key or 
 | `PATCH`  | `/v1/workspaces/{workspaceId}/work-items/{workItemId}`                                         | Version-checked work-item update                          |
 | `POST`   | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/subtasks`                                | Create a direct child (`201`)                             |
 | `GET`    | `/v1/workspaces/{workspaceId}/work-items/{workItemId}/subtasks`                                | List a bounded direct-child page                          |
-| `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals`                                      | Prepare one review-only item or calendar-block proposal   |
+| `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals`                                      | Prepare one review-only item, block, or routine proposal  |
 | `PATCH`  | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}`                         | Replace the version-checked reviewed command snapshot     |
 | `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}/cancellations`           | Cancel a pending proposal without creating anything       |
 | `POST`   | `/v1/workspaces/{workspaceId}/natural-language/proposals/{proposalId}/confirmations`           | Idempotently confirm and create the exact reviewed result |
@@ -501,7 +501,7 @@ default and accepts only one versioned prompt request:
 
 ```json
 {
-  "version": "schedule.natural-language/v3",
+  "version": "schedule.natural-language/v4",
   "requestId": "11111111-1111-4111-8111-111111111111",
   "prompt": "Turn my launch notes into one urgent checklist task due tomorrow",
   "referenceDate": "2026-07-15",
@@ -512,26 +512,38 @@ default and accepts only one versioned prompt request:
 `referenceDate` is an optional real local Gregorian date (or `null`) used to resolve explicit
 relative dates. `timeZone` is the browser's required IANA zone; a proposed calendar block must retain
 that exact zone. The caller cannot supply a command, provider, model, options, tools, destination
-ID, reviewed priority, reviewed date, reviewed duration, tags, or other mutation fields. A successful `200` response contains transient summary and
-warning text plus either one pending `work_item.create`, one pending unlinked
-`schedule_block.create`, `no_proposal`, or a bounded unavailable
+ID, reviewed priority, reviewed date, reviewed duration, tags, or other mutation fields. A successful
+`200` response contains transient summary and warning text plus either one pending
+`work_item.create`, one pending unlinked `schedule_block.create`, one pending `routine.create`,
+`no_proposal`, or a bounded unavailable
 reason. Preparing a proposal does not create a work item or hold a database transaction open during
 inference. Reusing the same request UUID with the same normalized prompt, reference date, and time
 zone fingerprint inputs returns the still-pending stored proposal without another provider call;
 reusing it for a different request context returns `409 natural_language.request_conflict`.
 
+New generation requires the shown `schedule.natural-language/v4` value. The route accepts version 3
+only for an exact workspace/request-ID/context match to an existing pending version-3 proposal. It
+does not dispatch the provider or insert a row in that case, and the replay response always reports
+version 4. A version-3 request with no matching pending proposal is invalid and cannot start new
+generation.
+
 The response's proposal has an ID, request ID, exact canonical command and command hash,
 provider/model identifiers, `pending` status, expiration instant, positive optimistic version,
-immutable `modelSuggestions`, and `userSelection` initialized to `none`/`null`/`null` for priority,
-due date, and planning duration. Suggestions are either `null` or an exact object containing nullable
+immutable `modelSuggestions`, and an applicable `userSelection`. Work-item selection initializes to
+`none`/`null`/`null` for priority, due date, and planning duration; calendar and routine selection is
+`null`. Suggestions are either `null` or an exact object containing nullable
 `priority` (`low`, `medium`, `high`, or `urgent`), absolute `dueOn`, and bounded
 `planningDurationMinutes`; at least one value is present. They are advisory response data and do not
-prefill or modify `userSelection`.
+prefill or modify `userSelection`. A routine provider command contains only `type` and `title`, and
+`modelSuggestions` must be `null`. Schedule expands that title into the complete visible native
+routine default snapshot returned for review.
 The prompt, provider summary, warnings, raw envelope, and provider errors are not persisted. Schedule
 stores only a deployment-keyed prompt, reference-date, and time-zone fingerprint for request-conflict detection.
 The validated suggestion object and its independent canonical digest are persisted separately from
 the command and reviewed snapshot so the same pending proposal can be replayed without another model
-call and structurally valid storage corruption fails closed. Every response in
+call and structurally valid storage corruption fails closed. Canonical command display is bounded to
+64,000 characters so a complete valid routine review can retain its description and structured
+settings without becoming unbounded. Every response in
 this route family, including validation and errors, uses `Cache-Control: no-store`.
 
 Editing sends the complete reviewed snapshot to the proposal item route:
@@ -563,6 +575,58 @@ An unlinked calendar-block review instead has no work-item fields:
 }
 ```
 
+A routine review has no `userSelection`. Every routine field is required and replaces the complete
+review snapshot:
+
+```json
+{
+  "expectedVersion": 1,
+  "command": {
+    "type": "routine.create",
+    "title": "Practice piano",
+    "description": null,
+    "status": "active",
+    "tags": {
+      "priority": "medium",
+      "effort": "medium",
+      "energy": "normal",
+      "preference": "neutral",
+      "contexts": [],
+      "categories": [],
+      "freeForm": []
+    },
+    "duration": {
+      "minimumMinutes": 15,
+      "expectedMinutes": 30,
+      "maximumMinutes": 60,
+      "splittable": false,
+      "minimumSessionMinutes": null,
+      "overheadMinutes": 0
+    },
+    "cadence": {
+      "period": "week",
+      "rollingIntervalDays": null,
+      "targetCompletions": 3,
+      "minimumCompletions": null,
+      "maximumCompletions": null,
+      "minimumSpacingDays": 1,
+      "preferredWeekdays": [],
+      "excludedWeekdays": [],
+      "discourageConsecutiveDays": true,
+      "prohibitConsecutiveDays": false,
+      "weekStartsOn": 1,
+      "startsOn": null,
+      "pausedUntil": null,
+      "endsOn": null
+    }
+  }
+}
+```
+
+The routine title is the only model-authored routine value. The shown status, tags, duration, and
+cadence are Schedule-owned native defaults until the user reviews or edits them. The routine update
+accepts no model options, suggestions, or `userSelection`.
+
 `userSelection` is authored by the user after inference. A browser may copy one displayed model
 suggestion into its editable draft only after an explicit per-field action; Schedule does not do so
 automatically. Priority is `none`, `low`, `medium`, `high`, or `urgent`; due date is a real local Gregorian
@@ -573,19 +637,19 @@ the requested title and all three review fields already equal the stored winner 
 version is not from the future; this exact semantic replay returns the current version without
 another audit and lets a client recover when the original successful response was lost. A proposal
 cannot change command type during review. Calendar-block instants must be canonical UTC values, end
-after start, span at most 24 hours, and retain a valid IANA zone. An accepted change increments its
-version and appends an audit event. Cancellation requires the exact current version. Neither command
-creates work.
+after start, span at most 24 hours, and retain a valid IANA zone. Routine fields must satisfy the same
+domain and API bounds as native routine creation. An accepted change increments its version and
+appends an audit event. Cancellation requires the exact current version. No edit creates an entity.
 
 Confirmation sends `{ "expectedVersion": 2 }` and requires an `Idempotency-Key`. The first accepted
 call returns `201` with the proposal ID, command hash, `replayed: false`, `resultType`, and exactly one
-non-null `workItem` or `scheduleBlock`. The exact same key returns the original result with `200` and
+non-null `workItem`, `scheduleBlock`, or `routine`. The exact same key returns the original result with `200` and
 `replayed: true`; a different key
 after confirmation returns `409 natural_language.confirmation_conflict`. One serializable
 transaction locks and revalidates the proposal, expiration, version, canonical command digest,
 reviewed fields, and deterministic result identity before creating either one root backlog work item
-with the reviewed priority, due date, and duration or one unlinked calendar block, marking
-confirmation, and auditing it.
+with the reviewed priority, due date, and duration, one unlinked calendar block, or one routine from
+the complete user-reviewed snapshot, marking confirmation, and auditing it.
 The suggestions and review fields have separate canonical digests; neither the model
 command hash nor the review digest includes advisory suggestions. Same-key replay also verifies that
 the stored result identity is the proposal-derived ID.
@@ -593,7 +657,7 @@ Concurrent confirmations therefore create one result and one confirmation audit.
 proposals return `404`; expired, cancelled, or already-consumed proposal operations return `410`;
 corrupt stored commands fail as a redacted `500`.
 
-There is intentionally no proposal-list or proposal-read route in version 3. Pending proposals are
+There is intentionally no proposal-list or proposal-read route in version 4. Pending proposals are
 short-lived interaction state, not a prompt or model-output history. See
 [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md) for the complete trust and persistence contract.
 

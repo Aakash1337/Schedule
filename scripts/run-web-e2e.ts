@@ -358,7 +358,7 @@ function proposalRequestContext(value: unknown): {
   if (
     JSON.stringify(Object.keys(context).sort()) !==
       JSON.stringify(["prompt", "referenceDate", "requestId", "timeZone", "version"]) ||
-    context.version !== "schedule.natural-language-context/v3" ||
+    context.version !== "schedule.natural-language-context/v4" ||
     typeof context.requestId !== "string" ||
     typeof context.prompt !== "string" ||
     !(context.referenceDate === null || typeof context.referenceDate === "string") ||
@@ -418,34 +418,42 @@ export async function startFakeOllamaServer(port: number): Promise<FakeOllamaSer
         response.off("close", markPrematureClose);
         if (request.destroyed || response.destroyed) return;
       }
-      const output = context.prompt.includes("calendar block E2E")
+      const output = context.prompt.includes("routine E2E")
         ? {
-            version: "schedule.natural-language-output/v3",
-            summary: "Prepared one reviewable calendar block.",
+            version: "schedule.natural-language-output/v4",
+            summary: "Prepared one reviewable routine title.",
             warnings: [],
-            command: {
-              type: "schedule_block.create",
-              title: "Review the quarterly report",
-              startsAt: "2026-07-17T14:00:00.000Z",
-              endsAt: "2026-07-17T15:00:00.000Z",
-              timeZone: context.timeZone,
-            },
+            command: { type: "routine.create", title: "Practice Spanish" },
             modelSuggestions: null,
           }
-        : {
-            version: "schedule.natural-language-output/v3",
-            summary: "Prepared one reviewable backlog title.",
-            warnings: [],
-            command: {
-              type: "work_item.create",
-              title: "Prepare the launch checklist",
-            },
-            modelSuggestions: {
-              priority: "high",
-              dueOn: "2026-07-18",
-              planningDurationMinutes: 45,
-            },
-          };
+        : context.prompt.includes("calendar block E2E")
+          ? {
+              version: "schedule.natural-language-output/v4",
+              summary: "Prepared one reviewable calendar block.",
+              warnings: [],
+              command: {
+                type: "schedule_block.create",
+                title: "Review the quarterly report",
+                startsAt: "2026-07-17T14:00:00.000Z",
+                endsAt: "2026-07-17T15:00:00.000Z",
+                timeZone: context.timeZone,
+              },
+              modelSuggestions: null,
+            }
+          : {
+              version: "schedule.natural-language-output/v4",
+              summary: "Prepared one reviewable backlog title.",
+              warnings: [],
+              command: {
+                type: "work_item.create",
+                title: "Prepare the launch checklist",
+              },
+              modelSuggestions: {
+                priority: "high",
+                dueOn: "2026-07-18",
+                planningDurationMinutes: 45,
+              },
+            };
       sendJson(response, 200, {
         done: true,
         message: {
