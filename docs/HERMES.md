@@ -12,15 +12,14 @@ by itself proves that WhatsApp or a phone received a message.
 
 ## Provider-neutral reminder-delivery adapter foundation
 
-Schedule includes a separate, provider-neutral adapter foundation for a future Hermes/WhatsApp
-reminder process. It consumes the existing `schedule:delivery` claim/receipt API without adding
+Schedule includes a separate, provider-neutral adapter foundation and runnable process boundary for
+a Hermes/WhatsApp reminder adapter. It consumes the existing `schedule:delivery` claim/receipt API without adding
 provider, destination, recipient, conversation, or account data to Schedule.
 
-This is not yet a running WhatsApp transport. The repository now provides a supervised,
-provider-neutral polling boundary and a dormant `HermesWhatsAppTransport` bridge, but an actual
-Hermes client, human/account binding, provider-specific conclusive reconciliation, and external
-process bootstrap still depend on the operator's Hermes installation and must be supplied before
-real delivery can be enabled.
+This is not a repository-supplied WhatsApp transport. The process is disabled by default and loads
+only an absolute operator-owned client module when explicitly enabled. An actual authenticated Hermes
+client, human/account binding, provider-specific conclusive reconciliation, and live phone smoke still
+depend on the operator's Hermes installation and must be supplied before real delivery can be enabled.
 
 ### Components
 
@@ -62,6 +61,64 @@ real delivery can be enabled.
   process does not begin polling until health is listening. Shutdown prevents another claim, waits
   for the current runner cycle, and then closes health; it does not invent a receipt or force-release
   an ambiguous reservation.
+- `runHermesReminderProcess` and `dist/process-main.js`, which compose the existing gateway, runtime
+  role dedupe store, bridge, runner, supervisor, and loopback health surface. Disabled mode loads no
+  provider module, Schedule credential, or database. Enabled mode requires an absolute local ESM
+  factory and closes its dedicated one-connection database client on every normal or failed exit.
+
+### Runnable process bootstrap
+
+Build the package, then start the process in its default disabled state:
+
+```powershell
+pnpm --filter @schedule/hermes-reminders build
+pnpm hermes-reminders:start
+```
+
+With no additional variables it binds `127.0.0.1:9465`, serves liveness, returns not-ready, and
+performs no Schedule, database, provider, or module I/O. Stop it with `SIGINT` or `SIGTERM`.
+
+Enabled mode requires the four integration values below. The health and initialization timeout
+values show their defaults:
+
+```dotenv
+HERMES_REMINDER_PROCESS_MODE=enabled
+HERMES_REMINDER_HEALTH_HOST=127.0.0.1
+HERMES_REMINDER_HEALTH_PORT=9465
+HERMES_REMINDER_CLIENT_INITIALIZATION_TIMEOUT_MS=30000
+HERMES_REMINDER_SCHEDULE_URL=https://schedule.example.com
+HERMES_REMINDER_SCHEDULE_TOKEN=<delivery-only-workspace-token>
+HERMES_REMINDER_DEDUPE_DATABASE_URL=postgres://dedicated_runtime_role:<password>@<host>/<database>
+HERMES_REMINDER_CLIENT_MODULE=<absolute-local-path-to-schedule-hermes-client.mjs>
+```
+
+The database URL must authenticate as the dedicated execute-only runtime role created after
+`migratePostgresDeliveryDedupeStore` and `grantPostgresDeliveryDedupeRuntimeRole`; the process never
+runs privileged migrations. The Schedule URL must be HTTPS except for an exact loopback HTTP origin.
+The token must have only `schedule:delivery` authority.
+
+The absolute local `.mjs` or ESM `.js` module must export one named one-argument factory. A POSIX
+path looks like `/absolute/operator-owned/schedule-hermes-client.mjs`; a Windows path looks like
+`C:\absolute\operator-owned\schedule-hermes-client.mjs`. Relative paths and UNC, network-share, or
+device paths are rejected:
+
+```js
+export async function createHermesDeliveryClient(initializationSignal) {
+  // Stop and clean up partial initialization when this signal aborts.
+  return operatorOwnedHermesDeliveryClient;
+}
+```
+
+The returned object must implement the existing `HermesDeliveryClient` `reconcile` and `send`
+methods plus an asynchronous `close` method. The process calls `close` on every normal or failed
+runtime exit and on a client returned after its initialization boundary has already expired. The
+module is trusted executable code, not a sandbox or provider plug-in marketplace. It owns provider
+credentials, the approved account/destination binding, circuit breaking, and the strength of a
+conclusive `not_found`. Schedule passes it only the bounded message and stable dedupe key described
+below. Changing mode, credentials, database role, or module requires a controlled process restart.
+Import plus factory initialization share one 100–120,000 ms bounded window, default 30,000 ms. Its
+signal requires the factory to cancel and clean partial resources on shutdown or timeout. Startup
+and fatal logs contain only fixed failure classes.
 
 ### Dormant Hermes client bridge
 
@@ -91,10 +148,11 @@ message.
 
 ### Supervised runtime boundary
 
-The supervisor is a library boundary for an external adapter process, not an auto-starting service.
-Its default kill switch is off: omitting the `enabled` hook performs no Schedule claim. A real
-bootstrap must supply an explicit operator-controlled hook, the concrete `ReminderTransport`, the
-shared dedupe-store client, and a delivery-only Schedule gateway credential.
+The supervisor remains an inert library unless explicitly run. Its default kill switch is off:
+omitting the `enabled` hook performs no Schedule claim. The shipped process uses a static fail-safe
+mode gate: disabled performs no claim; enabled is selected only by complete validated configuration
+and remains on until signal-driven shutdown or restart. It supplies the existing bridge, shared
+dedupe-store client, and delivery-only Schedule gateway credential without inventing a provider API.
 
 Only one `runOnce` call can be active per supervisor and a second `run` call is rejected. Polling and
 retry sleeps accept an abort signal, but an abort does not cancel or detach an already-running
@@ -188,9 +246,7 @@ Before enabling a real process, provide and verify:
    whose `not_found` reconciliation is conclusive across the provider's consistency window;
 2. an explicit human/account binding lifecycle;
 3. provider authentication, secret rotation, and circuit breaking;
-4. an external process bootstrap and explicit operator control source for the fail-safe `enabled`
-   hook;
-5. an opt-in live smoke test using a non-production recipient.
+4. an opt-in live smoke test using a non-production recipient.
 
 Inbound messages, natural-language interpretation, command confirmation, provider callbacks, and
 hosted binding UI are separate follow-on slices. Schedule's existing structured prepare/confirm
@@ -210,7 +266,10 @@ disablement, per-claim control checks,
 single-flight polling, non-overlap, bounded jitter and failure budgets, fatal error sanitization,
 invalid injected-hook handling, graceful in-flight shutdown, runtime sibling supervision, and the
 real loopback live/ready HTTP surface. The HTTP tests use a real ephemeral loopback server and no
-provider network. `pnpm verify:hermes-dedupe-store` additionally creates a nonce PostgreSQL database and proves
+provider network. Process tests additionally cover disabled no-I/O startup, strict enabled
+configuration, absolute module loading, bounded and abort-aware factory initialization,
+factory-result validation, failure redaction, dependency composition, and database closure.
+`pnpm verify:hermes-dedupe-store` additionally creates a nonce PostgreSQL database and proves
 atomic multi-replica exclusion, payload binding before and after delivery, digest-only token storage,
 idempotent delivery and release, expired-reservation takeover, stale-owner fencing, database-clock
 budget and horizon rejection, bounded row-lock waits, checksum/catalog migration attestation,

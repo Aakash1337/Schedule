@@ -2406,8 +2406,8 @@
         "anchor": "## Delivery lifecycle"
       },
       "limitations": [
-        "Schedule exposes fenced pull claims and bounded receipts and now includes a dormant reconcile-before-send Hermes/WhatsApp client bridge, but no live authenticated provider client or human/account binding.",
-        "Periodic intent materialization, a shared PostgreSQL adapter dedupe store, fail-safe supervised polling, and adapter-side exact reconciliation semantics are implemented; external provider bootstrap/control wiring and provider-specific conclusive reconciliation remain absent.",
+        "Schedule exposes fenced pull claims and bounded receipts and now includes a disabled-by-default runnable Hermes process that loads an operator-owned reconcile-before-send client module, but no live authenticated provider client or human/account binding.",
+        "Periodic intent materialization, a shared PostgreSQL adapter dedupe store, fail-safe supervised polling, a loopback process health boundary, and adapter-side exact reconciliation semantics are implemented; provider-specific conclusive reconciliation remains operator-supplied.",
         "Delivered dedupe tombstone cleanup is intentionally disabled until Schedule exposes an authoritative replay-retention watermark.",
         "Dead-letter redrive is not implemented in this slice."
       ],
@@ -2499,6 +2499,27 @@
             "does not poll until health is listening and rejects a port collision",
             "propagates a sanitized sibling cleanup failure when the primary lifecycle succeeds",
             "preserves a primary failure when sibling cleanup also fails"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/hermes-reminders/src/process.test.ts",
+          "command": "unit",
+          "anchors": [
+            "stays disabled without loading enabled-only secrets",
+            "accepts one explicit enabled composition with an absolute local ESM factory",
+            "rejects unsafe enabled composition without retaining values",
+            "loads only the named factory from an absolute file URL",
+            "redacts $code module failures",
+            "bounds a pending client-module import",
+            "keeps the standalone process alive through a sanitized initialization timeout",
+            "does not initialize enabled dependencies when startup is already aborted",
+            "stops startup while client factory initialization is pending",
+            "serves real disabled liveness without becoming ready",
+            "runs disabled loopback health without opening provider or database dependencies",
+            "wires explicit enabled dependencies and always closes the client and database",
+            "closes the client when database initialization fails",
+            "preserves a runtime failure while closing its database"
           ]
         },
         {

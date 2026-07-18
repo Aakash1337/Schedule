@@ -97,7 +97,7 @@ provider-monitoring, backup-restore, or broad-sync claim.
 
 ## Current scorecard
 
-The package and script runners currently execute 136 test files and 2,363 runtime test cases. Three
+The package and script runners currently execute 137 test files and 2,388 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -110,7 +110,7 @@ an independent product feature.
 | Critical implemented features with CI-registered integration or drills |      42 / 42 |
 | Partial features with an explicit limitation                           |        4 / 4 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          354 |
+| CI-registered evidence items                                           |          355 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -121,7 +121,7 @@ quality levels. Scope rows aggregate every file matched by the corresponding rec
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |      59.6% |   72.47% |    68.06% |  60.1% |
+| Whole repository, measured |     59.71% |   72.52% |    68.13% | 60.23% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     95.12% |   91.89% |    93.49% | 96.13% |
 | Domain, required           |        91% |      82% |       92% |    93% |
@@ -134,8 +134,8 @@ quality levels. Scope rows aggregate every file matched by the corresponding rec
 | Web, measured              |     84.53% |   77.24% |    83.02% | 87.29% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The latest whole-repository run covered 13,579 of 22,781 statements, 10,371 of 14,310 branches,
-2,898 of 4,258 functions, and 12,816 of 21,323 lines.
+The latest whole-repository run covered 13,697 of 22,938 statements, 10,440 of 14,396 branches,
+2,925 of 4,293 functions, and 12,928 of 21,461 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -599,8 +599,8 @@ The audit deliberately leaves these visible instead of turning them into false g
   PostgreSQL evidence for catch-up boundaries, concurrent exact-once ticks, recreated-pool restart
   replay, unconfigured-workspace skips, and no outbox/delivery side effects. It does not process-kill
   a materialization mid-transaction; graceful shutdown waits for that transaction because the use
-  case has no cancellation signal. A separate dormant Hermes adapter foundation adds unit and
-  loopback-HTTP evidence for
+  case has no cancellation signal. A separate Hermes adapter foundation adds unit and loopback-HTTP
+  evidence for
   claim/send/receipt ordering, delivered dedupe replay, lease-budget refusal, contention and
   ambiguity without attempt consumption, bounded failure mapping, strict envelope validation, and
   URL/error redaction. Its disposable PostgreSQL verifier additionally covers a shared digest-only
@@ -612,11 +612,14 @@ The audit deliberately leaves these visible instead of turning them into false g
   table access, and restart durability. Its supervised runtime adds fail-safe default disablement,
   per-claim operator control, single-flight polling, bounded full-jitter retry/failure budgets, fixed
   fatal classifications, graceful in-flight shutdown, sibling-service supervision, and real
-  loopback live/ready HTTP evidence without private identifiers. Delivered tombstone cleanup remains
-  disabled until Schedule exposes an authoritative replay retention watermark. It still has no
-  concrete external provider/account binding, a live authenticated provider client,
-  provider-specific conclusive reconciliation, external provider bootstrap, live phone verification,
-  or dead-letter redrive control;
+  loopback live/ready HTTP evidence without private identifiers. Its process tests cover strict
+  disabled/enabled configuration, disabled no-I/O liveness, absolute operator-module loading,
+  bounded and abort-aware initialization, factory validation, failure redaction, dependency
+  composition, and database closure. Delivered
+  tombstone cleanup remains disabled until Schedule exposes an authoritative replay retention
+  watermark. It still has no concrete external provider/account binding, a live authenticated
+  provider client, provider-specific conclusive reconciliation, live phone verification, or
+  dead-letter redrive control;
 - worker observability has unit and disposable-PostgreSQL evidence for loopback-only binding,
   liveness/readiness separation, fixed-cardinality Prometheus text, live outbox/reminder queue
   aggregates, materialization/outbox instrumentation, private-data exclusion, database-failure
