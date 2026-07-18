@@ -421,6 +421,8 @@ describe("runtime configuration", () => {
     const config = loadWorkerConfig({});
     expect(config.WORKER_OBSERVABILITY_MODE).toBe("disabled");
     expect(config.WORKER_OBSERVABILITY_PORT).toBe(9_464);
+    expect(config.WORKER_DEPLOYMENT_HEALTH_MODE).toBe("disabled");
+    expect(config.PORT).toBeUndefined();
     expect(config.NOTIFICATION_MATERIALIZATION_MODE).toBe("disabled");
     expect(config.NOTIFICATION_MATERIALIZATION_INTERVAL_MS).toBe(60_000);
     expect(config.NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS).toBe(300_000);
@@ -447,6 +449,28 @@ describe("runtime configuration", () => {
     expect(() => loadWorkerConfig({ WORKER_OBSERVABILITY_PORT: "0" })).toThrow();
     expect(() => loadWorkerConfig({ WORKER_OBSERVABILITY_PORT: "65536" })).toThrow();
     expect(() => loadWorkerConfig({ WORKER_OBSERVABILITY_MODE: "public" })).toThrow();
+  });
+
+  it("requires Railway worker health to use its production platform port", () => {
+    const config = loadWorkerConfig({
+      NODE_ENV: "production",
+      WORKER_DEPLOYMENT_HEALTH_MODE: "railway",
+      PORT: "10002",
+    });
+    expect(config.WORKER_DEPLOYMENT_HEALTH_MODE).toBe("railway");
+    expect(config.PORT).toBe(10_002);
+    expect(() =>
+      loadWorkerConfig({ WORKER_DEPLOYMENT_HEALTH_MODE: "railway", PORT: "10002" }),
+    ).toThrow(/production mode/i);
+    expect(() =>
+      loadWorkerConfig({
+        NODE_ENV: "production",
+        WORKER_DEPLOYMENT_HEALTH_MODE: "railway",
+      }),
+    ).toThrow(/PORT/);
+    expect(() => loadWorkerConfig({ PORT: "0" })).toThrow();
+    expect(() => loadWorkerConfig({ PORT: "65536" })).toThrow();
+    expect(() => loadWorkerConfig({ WORKER_DEPLOYMENT_HEALTH_MODE: "public" })).toThrow();
   });
 
   it("coerces bounded automatic notification materialization controls", () => {

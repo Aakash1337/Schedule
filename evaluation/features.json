@@ -2491,7 +2491,7 @@
         "anchor": "## Metric contract"
       },
       "limitations": [
-        "The listener is loopback-only and disabled by default; no scraper, time-series retention, hosted dashboard, or alert-delivery service is installed.",
+        "The metrics listener is loopback-only and disabled by default; no scraper, time-series retention, hosted dashboard, or alert-delivery service is installed. Railway deployment readiness uses a separate metrics-free listener.",
         "Process counters reset on worker restart, and this slice does not monitor future browser authentication or provider-specific transport."
       ],
       "evidence": [
@@ -2529,6 +2529,51 @@
           "anchors": [
             "Worker observability verification passed loopback binding, dedicated read-only database isolation, bounded health semantics, database queue gauges, retention-aware attempt gauges, fixed-cardinality metrics, redaction, database-failure signaling, and shutdown"
           ]
+        }
+      ]
+    },
+    {
+      "id": "railway-worker-deployment-readiness",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/DEPLOYMENT.md",
+        "anchor": "## Worker deployment readiness"
+      },
+      "limitations": [
+        "The listener is an explicit Railway production mode on the injected PORT and exposes only liveness and database readiness; it is not a general public worker API and never exposes metrics.",
+        "Railway uses the endpoint while promoting a deployment, not for continuous monitoring. Uptime monitoring, queue alerts, dashboards, and alert routing remain separate operational choices."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/config/src/config.test.ts",
+          "command": "unit",
+          "anchors": ["requires Railway worker health to use its production platform port"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/observability.test.ts",
+          "command": "unit",
+          "anchors": ["binds deployment health on all interfaces without exposing metrics"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/index.test.ts",
+          "command": "unit",
+          "anchors": ["runs Railway deployment readiness as a critical worker service"]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/verify-railway-deployment.test.ts",
+          "command": "unit",
+          "anchors": ["gates the worker on database readiness without a competing migration"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-oci-runtime.ts",
+          "command": "oci-runtime",
+          "anchors": ["Railway worker deployment readiness also passed"]
         }
       ]
     },

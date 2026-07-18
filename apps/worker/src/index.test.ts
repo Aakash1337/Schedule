@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
     OUTBOX_MAX_ATTEMPTS: 3,
     WORKER_OBSERVABILITY_MODE: "disabled" as "disabled" | "loopback",
     WORKER_OBSERVABILITY_PORT: 9_464,
+    WORKER_DEPLOYMENT_HEALTH_MODE: "disabled" as "disabled" | "railway",
+    PORT: undefined as number | undefined,
     NOTIFICATION_MATERIALIZATION_MODE: "disabled" as "disabled" | "enabled",
     NOTIFICATION_MATERIALIZATION_INTERVAL_MS: 60_000,
     NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS: 300_000,
@@ -23,8 +25,18 @@ const mocks = vi.hoisted(() => ({
   },
   database: { close: vi.fn(async () => undefined) },
   observabilityDatabase: { close: vi.fn(async () => undefined) },
-  createDatabase: vi.fn((_databaseUrl: string, maxConnections: number) =>
-    maxConnections === 1 ? mocks.observabilityDatabase : mocks.database,
+  deploymentHealthDatabase: { close: vi.fn(async () => undefined) },
+  createDatabase: vi.fn(
+    (
+      _databaseUrl: string,
+      maxConnections: number,
+      options?: { readonly applicationName?: string },
+    ) =>
+      maxConnections !== 1
+        ? mocks.database
+        : options?.applicationName === "schedule-worker-deployment-health"
+          ? mocks.deploymentHealthDatabase
+          : mocks.observabilityDatabase,
   ),
   unitOfWork: {},
   PostgresUnitOfWork: vi.fn(function () {
@@ -38,6 +50,7 @@ const mocks = vi.hoisted(() => ({
     return mocks.telemetry;
   }),
   runWorkerObservabilityServer: vi.fn(async () => undefined),
+  runWorkerDeploymentHealthServer: vi.fn(async () => undefined),
   runNonCriticalWorkerService: vi.fn(
     async (service: (signal: AbortSignal) => Promise<void>, signal: AbortSignal) => {
       try {
@@ -74,6 +87,7 @@ vi.mock("./notification-materializer.js", () => ({
 }));
 vi.mock("./observability.js", () => ({
   WorkerTelemetry: mocks.WorkerTelemetry,
+  runWorkerDeploymentHealthServer: mocks.runWorkerDeploymentHealthServer,
   runWorkerObservabilityServer: mocks.runWorkerObservabilityServer,
 }));
 vi.mock("./runtime.js", () => ({
@@ -91,6 +105,8 @@ describe("worker entrypoint", () => {
     mocks.config.WEBHOOK_DELIVERY_MODE = "disabled";
     mocks.config.NOTIFICATION_MATERIALIZATION_MODE = "disabled";
     mocks.config.WORKER_OBSERVABILITY_MODE = "disabled";
+    mocks.config.WORKER_DEPLOYMENT_HEALTH_MODE = "disabled";
+    mocks.config.PORT = undefined;
   });
 
   it("wires signals, runs the worker, and closes its database", async () => {
@@ -114,6 +130,7 @@ describe("worker entrypoint", () => {
     expect(mocks.createNotificationMaterializationDependencies).not.toHaveBeenCalled();
     expect(mocks.runNotificationMaterializationWorker).not.toHaveBeenCalled();
     expect(mocks.runWorkerObservabilityServer).not.toHaveBeenCalled();
+    expect(mocks.runWorkerDeploymentHealthServer).not.toHaveBeenCalled();
   });
 
   it("starts automatic materialization only when explicitly enabled", async () => {
@@ -174,6 +191,30 @@ describe("worker entrypoint", () => {
       expect.any(AbortSignal),
     );
     expect(mocks.observabilityDatabase.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs Railway deployment readiness as a critical worker service", async () => {
+    mocks.config.WORKER_DEPLOYMENT_HEALTH_MODE = "railway";
+    mocks.config.PORT = 10_002;
+
+    await import("./index.js");
+
+    expect(mocks.createDatabase).toHaveBeenCalledWith("postgres://unused", 1, {
+      readOnly: true,
+      statementTimeoutMs: 5_000,
+      applicationName: "schedule-worker-deployment-health",
+    });
+    expect(mocks.runWorkerDeploymentHealthServer).toHaveBeenCalledWith(
+      {
+        port: 10_002,
+        database: mocks.deploymentHealthDatabase,
+        databaseOperationTimeoutMs: 5_000,
+      },
+      expect.any(AbortSignal),
+    );
+    expect(mocks.runNonCriticalWorkerService).not.toHaveBeenCalled();
+    expect(mocks.runWorkerServices.mock.calls[0]?.[0]).toHaveLength(2);
+    expect(mocks.deploymentHealthDatabase.close).toHaveBeenCalledTimes(1);
   });
 
   it("keeps primary processing alive when optional observability fails", async () => {

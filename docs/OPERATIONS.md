@@ -9,7 +9,8 @@ the fixed unprivileged identity `10001:10001` with a read-only root filesystem, 
 permitted, effective, bounding, and ambient Linux capability masks, and `no-new-privileges`. Each
 process receives only a bounded in-memory `/tmp` mount.
 The same drill proves production health/readiness, disabled product and integration routes,
-loopback-only worker diagnostics, and graceful worker shutdown. It uses no provider credentials or
+loopback-only worker diagnostics, a metrics-free deployment health port, and graceful worker
+shutdown. It uses no provider credentials or
 persistent volume and removes its uniquely named Compose project and images on completion.
 
 This is a hardened runtime portability gate, not a hosted deployment. It does not enable browser

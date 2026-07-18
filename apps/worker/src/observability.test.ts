@@ -8,6 +8,7 @@ import type { DatabaseConnection } from "@schedule/database";
 import {
   collectOperationalDatabaseSnapshot,
   renderWorkerMetrics,
+  runWorkerDeploymentHealthServer,
   runWorkerObservabilityServer,
   WorkerTelemetry,
   type OperationalDatabaseSnapshot,
@@ -40,6 +41,7 @@ function databaseWithSql(
 async function startServer(
   database: DatabaseConnection,
   telemetry = new WorkerTelemetry(),
+  deploymentHealth = false,
 ): Promise<{
   readonly baseUrl: string;
   readonly controller: AbortController;
@@ -52,20 +54,18 @@ async function startServer(
   const address = new Promise<AddressInfo>((resolve) => {
     resolveAddress = resolve;
   });
-  const stopped = runWorkerObservabilityServer(
-    {
-      port: 0,
-      database,
-      telemetry,
-      onListening: (bound, server) => {
-        boundServer = server;
-        resolveAddress?.(bound);
-      },
-    },
-    controller.signal,
-  );
+  const onListening = (bound: AddressInfo, server: Server) => {
+    boundServer = server;
+    resolveAddress?.(bound);
+  };
+  const stopped = deploymentHealth
+    ? runWorkerDeploymentHealthServer({ port: 0, database, onListening }, controller.signal)
+    : runWorkerObservabilityServer(
+        { port: 0, database, telemetry, onListening },
+        controller.signal,
+      );
   const bound = await address;
-  expect(bound.address).toBe("127.0.0.1");
+  expect(bound.address).toBe(deploymentHealth ? "0.0.0.0" : "127.0.0.1");
   if (boundServer === undefined) throw new Error("Test server did not expose its listener.");
   return {
     baseUrl: `http://127.0.0.1:${bound.port}`,
@@ -249,6 +249,61 @@ describe("worker observability HTTP server", () => {
 
     running.controller.abort("test complete");
     await running.stopped;
+  });
+
+  it("binds deployment health on all interfaces without exposing metrics", async () => {
+    const privateFailure = "postgres://private-user:private-password@db.internal";
+    const sql = vi
+      .fn()
+      .mockResolvedValueOnce([{ healthy: 1 }])
+      .mockRejectedValueOnce(new Error(privateFailure));
+    const running = await startServer(databaseWithSql(sql), new WorkerTelemetry(), true);
+    controllers.push(running.controller);
+    servers.push(running.stopped);
+
+    expect((await fetch(`${running.baseUrl}/health/live`)).status).toBe(200);
+    expect((await fetch(`${running.baseUrl}/health/ready`)).status).toBe(200);
+    const unavailable = await fetch(`${running.baseUrl}/health/ready`);
+    expect(unavailable.status).toBe(503);
+    expect(await unavailable.text()).not.toContain(privateFailure);
+    expect((await fetch(`${running.baseUrl}/metrics`)).status).toBe(404);
+    expect((await fetch(`${running.baseUrl}/health/live`, { method: "POST" })).status).toBe(405);
+
+    running.controller.abort("test complete");
+    await running.stopped;
+  });
+
+  it("shares deployment readiness and drains the in-flight probe before shutdown", async () => {
+    let resolveProbe: ((rows: readonly { readonly healthy: number }[]) => void) | undefined;
+    const sql = vi.fn(
+      async () =>
+        new Promise<readonly { readonly healthy: number }[]>((resolve) => {
+          resolveProbe = resolve;
+        }),
+    );
+    const running = await startServer(databaseWithSql(sql), new WorkerTelemetry(), true);
+    controllers.push(running.controller);
+    servers.push(running.stopped);
+
+    const first = fetch(`${running.baseUrl}/health/ready`);
+    await vi.waitFor(() => expect(sql).toHaveBeenCalledTimes(1));
+    const second = fetch(`${running.baseUrl}/health/ready`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(sql).toHaveBeenCalledTimes(1);
+
+    let stopped = false;
+    void running.stopped.then(() => {
+      stopped = true;
+    });
+    running.controller.abort("test complete");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(stopped).toBe(false);
+
+    resolveProbe?.([{ healthy: 1 }]);
+    expect((await first).status).toBe(200);
+    expect((await second).status).toBe(200);
+    await running.stopped;
+    expect(stopped).toBe(true);
   });
 
   it("keeps liveness up while readiness and database metrics fail safely", async () => {

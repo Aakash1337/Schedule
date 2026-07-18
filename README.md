@@ -268,6 +268,7 @@ the database and exits before listening. Disabled mode remains route-closed.
 
 These are provider-neutral runtime prerequisites, not a hosted release. TLS ingress, deployment
 manifests for a lean Railway API/worker deployment now live under `infra/deploy/railway`; see the
-[hosted deployment guide](./docs/DEPLOYMENT.md). A live environment, managed secrets/backups,
+[hosted deployment guide](./docs/DEPLOYMENT.md). Both services have database-backed Railway
+promotion checks; the worker listener exposes no metrics. A live environment, managed secrets/backups,
 continuous monitoring, workspace administration, the broader product surface, synchronization, and
 a broader hosted product interface remain to be implemented and verified.
