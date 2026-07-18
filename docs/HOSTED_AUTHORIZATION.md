@@ -589,18 +589,20 @@ wildcard fallback, so it cannot shadow `/v1`, `/health`, or future product route
 framing denial, and MIME sniffing denial. Fingerprinted assets are immutable for one year. Static
 requests sit outside the hosted API's per-source request budget.
 
-The browser reads only `{ authenticated }`, the active workspace page, one bounded current-state
-work-item page of up to 21 rows across all statuses while displaying at most 20, the narrow current-day
-projection and concurrency fences above, the bounded Plan Fit projection while no plan exists, the
+The browser reads only `{ authenticated }`, the active workspace page, the complete staged
+work-item sync bootstrap or delta for the selected workspace while displaying 20 rows at a time, the
+narrow current-day projection and concurrency fences above, the bounded Plan Fit projection while no plan exists, the
 thresholded Plan Fit outcome aggregate, the created workspace, and the created work item. It never receives provider tokens, user or session identifiers, membership state, or
 roles. A signed-in user may create or choose one active workspace, review Today and the bounded
-work-item pages, submit one title with optional scheduling fields, move one visible backlog item to started or done, or
+in-memory work-item pages, submit one title with optional scheduling fields, move one visible backlog item to started or done, or
 explicitly dismiss, restore, or prefill one exact Plan Fit suggestion and build the missing current-day revision from one editable window and two limits, or
 start/complete/skip one actionable Today item. The script
 copies the exact host-only CSRF cookie into the existing header for all strict mutations; the server
 remains authoritative for identity, membership, defaults, validation, and optimistic versions. The
-page cannot regenerate an existing plan, filter, generally edit fields, reopen, cancel, consume the
-sync protocol, rename/delete a workspace, or administer membership or accounts.
+page stages sync continuations atomically in memory, performs delta reconciliation after successful
+local mutations, and falls back once to a fresh bootstrap on `410`. It cannot regenerate an existing
+plan, filter, generally edit fields, reopen, cancel, persist offline state, poll in the background,
+rename/delete a workspace, or administer membership or accounts.
 
 ## Deliberately absent
 
@@ -614,7 +616,7 @@ the only transaction-coupled hosted mutations. The bounded backlog, current-day,
 thresholded outcome aggregate, separate current-state work-item page, and the work-item-only sync v1
 pull protocol are the hosted product-data reads; all other product routes remain local-only and
 require their own authority before future hosted exposure. The offset current-state page remains
-independent and does not implement synchronization.
+independent and does not implement synchronization; the browser shell consumes sync v1 instead.
 
 ## Concrete OIDC composition
 

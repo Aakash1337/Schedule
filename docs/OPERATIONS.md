@@ -547,7 +547,8 @@ Do not enable OIDC mode until TLS ingress, trusted proxy ranges, secret injectio
 database backups are in place. First login atomically creates one `My Schedule` workspace and active
 membership. The current slice can discover active memberships but has no hosted workspace
 administration, broad product API, or shipped offline/bidirectional sync client. The same-origin shell
-does not consume the separate server-side work-item sync protocol.
+consumes the server-side work-item sync protocol online in memory, without durable cursors,
+background polling, or uploads.
 
 Rotate PKCE by adding the new key, selecting it as primary, restarting, and retaining old keys for at
 least the five-minute login lifetime plus deployment skew before a later restart removes them.

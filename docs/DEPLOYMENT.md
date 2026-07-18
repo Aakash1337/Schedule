@@ -144,8 +144,9 @@ Before attaching a production domain:
 2. Deploy staging with production-shaped variables and a separate database.
 3. Run `pnpm verify:hosted-staging` with the exact staging host/workspace confirmations; it checks
    `/health/live`, `/health/ready`, manual real-OIDC login, session, workspace discovery, Today,
-   the current work-item snapshot, capture, Done, and logout through public HTTPS. Treat the
-   work-item page as a current-state read, not proof of the separate sync protocol.
+   the sync-backed work-item view, capture, Done, and logout through public HTTPS. The browser view
+   uses an in-memory bootstrap followed by mutation-triggered deltas; this does not prove offline or
+   background synchronization.
 4. Force a failed migration and confirm the previous deployment remains active.
 5. Run `pnpm verify:oci-runtime`, then use only a provider-approved staging database drill to confirm
    API liveness remains available while readiness fails, the worker exits nonzero, the schema
@@ -159,7 +160,7 @@ common CI markers, requires one exact canonical HTTPS host containing `staging` 
 operator-designated workspace prefixed with `staging` or `smoke`, and an exact host/workspace
 mutation confirmation. It accepts no identity-provider credentials, opens a fresh
 browser profile, and requires the operator to complete the real OIDC login manually. It then checks
-health, session, workspace selection, Today, the current work-item snapshot, create, Done, and
+health, session, workspace selection, Today, the sync-backed work-item view, create, Done, and
 logout. It stores no trace, screenshot, or video, and deliberately leaves one completed, auditable
 work item in that dedicated workspace: there is no cleanup route.
 

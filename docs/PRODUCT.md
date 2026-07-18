@@ -758,12 +758,12 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   restarts that share the hosted secret; bounded retention expiry returns `410` and requires a fresh
   bootstrap. Global change capture defaults off, so a never-enrolled local database writes no
   full-upsert journal; hosted startup enrolls its database once and retention remains required
-  thereafter. This is server pull
-  infrastructure only, not a browser/offline client, upload path, conflict resolver, push channel, or
-  cross-entity synchronization.
+  thereafter. The hosted browser consumes this pull boundary through atomic in-memory bootstrap and
+  mutation-triggered delta reconciliation. It is not a durable/offline client, background poller,
+  upload path, conflict resolver, push channel, or cross-entity synchronization.
 - Implemented narrow hosted UI: a same-origin capture shell can sign in, select one active
   workspace or create another, review Today and page through current work items from every status in
-  fixed groups of 20 using one-row lookahead, create one title with optional priority, due date, and
+  fixed local groups of 20 after a complete sync traversal, create one title with optional priority, due date, and
   planning duration, and move a visible backlog item to started or done. Non-backlog work items are
   read-only in this shell. It can generate a missing revision-1 Today plan from one
   browser-local window plus minute/task limits, and start, complete, or skip one actionable Today item
@@ -773,8 +773,8 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   atomic use receipt with the final edited targets. **Not now** and **Show again** append reversible,
   idempotent disposition events for only that exact suggestion without changing the manual limits
   or creating a plan. A compact descriptive outcome summary loads independently and never changes
-  planning. Each work-item page is a fresh current-state offset read, not a frozen multi-page
-  snapshot, offline copy, or change feed. The shell exposes
+  planning. The shell stages bootstrap/delta continuations atomically, retains one selected-workspace
+  checkpoint only in memory, and performs no background or offline synchronization. It exposes
   no provider tokens, identity metadata, general editing, workspace rename/delete or membership
   administration, or local-only routes.
 - Deferred: hosted workspace rename/delete and membership administration, the broader product API and interface, account

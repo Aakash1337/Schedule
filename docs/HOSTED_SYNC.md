@@ -1,13 +1,14 @@
 # Hosted work-item sync protocol v1
 
 Schedule exposes a narrow, authenticated pull protocol for reconstructing and following one
-workspace's work items. It is server-side infrastructure for a future client, not an offline client,
-local cache, upload queue, conflict resolver, or push channel. It covers work items only.
+workspace's work items. The hosted browser shell consumes it through an online, in-memory client;
+there is no durable local cache, offline client, upload queue, conflict resolver, or push channel.
+It covers work items only.
 
 The existing offset endpoint at
 `GET /v1/hosted/workspaces/:workspaceId/work-items/snapshot` remains an independent current-state
-pagination endpoint used by the hosted browser shell. It may shift between requests and has no sync
-semantics. Sync consumers use only the two routes below.
+pagination endpoint. It may shift between requests and has no sync semantics. The hosted browser
+shell now uses only the two sync routes below for work-item reconciliation.
 
 ## Protocol flow
 
@@ -26,8 +27,13 @@ page together with its continuation cursor. Once bootstrap traversal ends, it se
 `checkpoint` to the changes route and atomically applies each returned page in response order until
 the delta `nextCursor` is null. Only then can it promote the staged set and persist that terminal
 delta `checkpoint`; it must not render or publish a partially caught-up stage. Later polls send the
-saved checkpoint to the changes route and repeat the pinned-delta traversal. Schedule does not
-currently ship that consumer or its durable local transaction.
+saved checkpoint to the changes route and repeat the pinned-delta traversal.
+
+The browser implementation stages every bootstrap or delta continuation in memory and publishes the
+collection only after the complete traversal succeeds. It keeps one checkpoint for the selected
+workspace, discards it on workspace change or sign-out, and performs a delta after successful local
+mutations or an explicit retry. A `410` starts exactly one fresh bootstrap recovery. It does not
+persist data or cursors, poll in the background, or synchronize while the page is closed.
 
 Bootstrap pages are ordered by immutable work-item ID and retain the first page's checkpoint. A
 per-row database fence prevents values written after that checkpoint from leaking into bootstrap;
@@ -136,7 +142,7 @@ client discards its partial state and starts a fresh bootstrap.
 
 ## Deliberate limits
 
-Protocol v1 has no browser-shell integration, shipped offline store, background polling policy,
-client-side atomic apply implementation, upload/bidirectional synchronization, merge policy, conflict
-resolution, push notification, or synchronization for routines, plans, calendar blocks, reminders,
-memberships, or workspace administration. The ordinary optimistic write APIs remain authoritative.
+The browser integration is online and in-memory only. Protocol v1 has no shipped offline store,
+background polling policy, upload/bidirectional synchronization, merge policy, conflict resolution,
+push notification, or synchronization for routines, plans, calendar blocks, reminders, memberships,
+or workspace administration. The ordinary optimistic write APIs remain authoritative.

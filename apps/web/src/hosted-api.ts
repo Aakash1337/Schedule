@@ -47,6 +47,24 @@ export interface HostedWorkItemSnapshotPage {
   readonly offset: number;
 }
 
+export interface HostedWorkItemSyncBootstrapPage {
+  readonly protocolVersion: 1;
+  readonly items: readonly HostedWorkItemSnapshot[];
+  readonly checkpoint: string;
+  readonly nextCursor: string | null;
+}
+
+export type HostedWorkItemSyncChange =
+  | { readonly type: "upsert"; readonly item: HostedWorkItemSnapshot }
+  | { readonly type: "delete"; readonly workItemId: string };
+
+export interface HostedWorkItemSyncDeltaPage {
+  readonly protocolVersion: 1;
+  readonly changes: readonly HostedWorkItemSyncChange[];
+  readonly checkpoint: string;
+  readonly nextCursor: string | null;
+}
+
 export type HostedTodayActivityState =
   "pending" | "started" | "completed" | "skipped" | "deferred" | "dismissed";
 export type HostedTodayActivityType = "started" | "completed" | "skipped";
@@ -191,6 +209,14 @@ export const hostedApi = {
   ) =>
     request<HostedWorkItemSnapshotPage>(
       `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/work-items/snapshot?limit=${pagination.limit}&offset=${pagination.offset}`,
+    ),
+  bootstrapWorkItemSync: (workspaceId: string, cursor?: string) =>
+    request<HostedWorkItemSyncBootstrapPage>(
+      `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/work-items/sync/bootstrap?limit=200${cursor === undefined ? "" : `&cursor=${encodeURIComponent(cursor)}`}`,
+    ),
+  listWorkItemSyncChanges: (workspaceId: string, cursor: string) =>
+    request<HostedWorkItemSyncDeltaPage>(
+      `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/work-items/sync/changes?limit=200&cursor=${encodeURIComponent(cursor)}`,
     ),
   getToday: (workspaceId: string, date: string) =>
     request<HostedToday>(

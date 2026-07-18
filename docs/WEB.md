@@ -27,8 +27,8 @@ pnpm dev
 
 The same package builds a separate `hosted.html` entry for explicit OIDC mode. It reuses the product
 controls and visual tokens but includes only session bootstrap, active-workspace discovery, sign
-in/out, name-only workspace creation, one current-day snapshot, one bounded all-status current-state
-work-item page, narrow Today/work-item actions, and one backlog form with optional priority, due date,
+in/out, name-only workspace creation, one current-day snapshot, one online in-memory all-status
+work-item sync collection, narrow Today/work-item actions, and one backlog form with optional priority, due date,
 and planning duration. Before a first plan it may also read one bounded Plan Fit projection and expose
 explicit exact-key dismissal/reset and a joint-target prefill. A separate fixed last-28-use read
 shows only thresholded descriptive outcome counts and rates. The API serves that build from the same origin, so the
@@ -42,11 +42,12 @@ storage, and sends the exact script-readable CSRF proof on
 mutations, and treats session, access, throttling, and availability failures as bounded states. It
 shows the browser-local day's existing plan through titles, durations, and activity states, plus up to
 20 current work items across every status with title, status, and optional description, priority, due
-date, and planned duration. The work-item read
-requests one additional row only to decide whether **Next** is available; **Previous** and **Next**
-move in fixed offset steps of 20 without claiming a frozen multi-page snapshot. Optional capture
-fields stay behind one disclosure. The two reads fail and retry independently; capture refreshes only
-the work-item page. Only a visible `backlog` item offers **Start** and **Done**, using its snapshot
+date, and planned duration. The work-item client stages every bootstrap or delta continuation before
+publishing the collection, then **Previous** and **Next** move through local groups of 20 without
+another read. It retains one selected-workspace checkpoint only in memory, retries an expired delta
+with one fresh bootstrap, and performs no background or offline synchronization. Optional capture
+fields stay behind one disclosure. Today and work-item reconciliation fail and retry independently;
+capture refreshes work items through a delta. Only a visible `backlog` item offers **Start** and **Done**, using its snapshot
 version; every other status is read-only in this shell.
 Pending Today items offer Start, Done, and Skip; started items offer Done and Skip; terminal items
 offer none.

@@ -52,6 +52,9 @@ Daily Plan Fit projection for local agents without exposing its evidence key or 
   miss or a valid signed checkpoint, after-position, or pinned through-position ahead of the restored
   database head returns `410 hosted_sync.cursor_expired` and requires a new bootstrap. See
   [HOSTED_SYNC.md](./HOSTED_SYNC.md) for the staged apply, cursor, retention, and recovery contract.
+  The hosted browser shell now stages these pages in memory, publishes only complete traversals,
+  keeps one selected-workspace checkpoint, and uses local 20-row presentation pages. It stores
+  nothing offline and does not poll or upload through this protocol.
   `GET /v1/hosted/workspaces/{workspaceId}/today?date=YYYY-MM-DD` returns only an existing current
   plan's identity/head fence, item IDs/titles/scheduled minutes/activity states, and total minutes.
   `GET /v1/hosted/workspaces/{workspaceId}/daily-plan-fit-insight?forDate=YYYY-MM-DD` returns only

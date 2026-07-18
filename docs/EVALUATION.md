@@ -85,7 +85,7 @@ provider-monitoring, backup-restore, or broad-sync claim.
 
 ## Current scorecard
 
-The package and script runners currently execute 133 test files and 2,317 runtime test cases. Three
+The package and script runners currently execute 134 test files and 2,328 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -623,10 +623,9 @@ The audit deliberately leaves these visible instead of turning them into false g
   membership through a downstream work mutation. The unchanged fixed first-20 backlog projection has
   route, client, and database evidence; optional capture scheduling fields have route, component,
   browser, and database evidence. A separate
-  authenticated current-state work-item page has route, client, component, built-browser, and real
-  PostgreSQL/Fastify evidence for all statuses, the full current projection except workspace identity,
-  fixed 20-row display pages with one-row next-page lookahead, generic tenant denial, no-store
-  responses, and no read mutation while leaving the fixed capture backlog endpoint unchanged. It
+  authenticated current-state work-item page has route, client, and real PostgreSQL/Fastify evidence
+  for all statuses, the full current projection except workspace identity, generic tenant denial,
+  no-store responses, and no read mutation while leaving the fixed capture backlog endpoint unchanged. It
   is explicitly a current-state page, not a frozen multi-page snapshot, change feed, tombstone
   stream, or offline synchronization protocol. Separate work-item sync v1 application and route
   units enforce canonical cursor bounds, fail-closed page validation, workspace/stage-bound opaque
@@ -639,8 +638,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   suppression, staged bootstrap plus frozen delta reconstruction, retention expiry/fresh bootstrap,
   tenant isolation, and workspace-cascade cleanup. Cleanup-command units independently cover bounded
   parsing, aggregate-only output, connection closure, and malformed purge state. This evidence does
-  not implement an offline cache, client-side atomic apply, uploads, conflicts, push, or cross-entity
-  synchronization. The narrow existing-plan Today projection has route,
+  not implement a durable/offline cache, uploads, conflicts, push, or cross-entity synchronization.
+  The hosted browser now has API-client, reconciliation-unit, component, and built-
+  Chromium evidence for full staged bootstrap, pinned paged deltas, atomic publication, local 20-row
+  display pages, stable ordering, upsert/delete application, stale-workspace suppression, exact
+  single-bootstrap `410` recovery, and checkpoint clearing on workspace change or sign-out. It keeps
+  no durable or offline state and does not poll, upload, merge, or synchronize other entities. The narrow existing-plan Today projection has route,
   component, browser, and database evidence, including authenticated missing-plan behavior. The
   missing-plan mutation has route/client/component evidence for a same-local-date window, bounded
   minute/task targets, strict input, exact ambiguous retry, and fixed planner defaults. The real
@@ -664,14 +667,15 @@ The audit deliberately leaves these visible instead of turning them into false g
   receipt before a fixed, thresholded aggregate read returns counts and null low-sample rates without
   dates, IDs, or raw totals, then checks logout and
   cleanup. A separate built Chromium flow covers signed-out/authenticated capture, first-workspace
-  creation, optional scheduling-field capture, work-item paging with a read-only completed row and
-  backlog-only status actions, first-plan controls, Today and status-only completion, current-page refresh,
+  creation, optional scheduling-field capture, one sync bootstrap per workspace, local work-item
+  paging with a read-only completed row and backlog-only status actions, empty and mutation delta
+  reconciliation, first-plan controls, Today and status-only completion,
   exact Plan Fit dismissal/reset and prefill without auto-generation, a descriptive outcome summary,
   exact CSRF/idempotency forwarding, and 360-pixel
   layout. Disabled-mode route closure and redacted startup failure remain independently verified.
   This capture-shell evidence does not cover a real external provider, TLS ingress, workspace
   rename/delete or membership administration, the broader product API/interface, public deployment,
-  or consumption of the separate sync protocol;
+  offline persistence, background polling, or bidirectional synchronization;
 - ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a
