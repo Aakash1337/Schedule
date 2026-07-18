@@ -187,7 +187,7 @@ describe("unified planner candidates", () => {
       workItemId("deadline-outside"),
     ]);
     expect(plan.inputSnapshot).toMatchObject({
-      config: { algorithmVersion: "deterministic-planner-v6", configVersion: "default-weights-v4" },
+      config: { algorithmVersion: "deterministic-planner-v7", configVersion: "default-weights-v5" },
       workItems: expect.arrayContaining([expect.objectContaining({ dueOn: "2026-07-15" })]),
     });
     const repeated = generateDailyPlan({

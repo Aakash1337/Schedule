@@ -150,7 +150,11 @@ describe("deterministic daily planning", () => {
 
     expect(satisfiedEvaluation.eligible).toBe(true);
     expect(satisfiedEvaluation.targetReached).toBe(true);
+    expect(satisfiedEvaluation.postTargetRepetitionSteps).toBe(1);
     expect(satisfiedEvaluation.score).toBeLessThan(neglectedEvaluation.score);
+    expect(satisfiedEvaluation.reasons).toContain(
+      "The cadence target is satisfied; 1 repetition decay step(s) divide its seeded selection weight by 10 each, with a floor of 1.",
+    );
   });
 
   it("honors spacing and immutable completion reversals", () => {
@@ -772,6 +776,24 @@ describe("deterministic daily planning", () => {
     ).toThrowError(DomainError);
   });
 
+  it.each([
+    ["decay base below two", { postTargetRepetitionDecayBase: 1 }],
+    ["fractional decay base", { postTargetRepetitionDecayBase: 2.5 }],
+    ["unbounded decay base", { postTargetRepetitionDecayBase: 1_000_001 }],
+    ["zero post-target floor", { postTargetSelectionWeightFloor: 0 }],
+    ["post-target floor above the ordinary floor", { postTargetSelectionWeightFloor: 101 }],
+  ])("rejects invalid post-target probability configuration: %s", (_label, override) => {
+    expect(() =>
+      generateDailyPlan({
+        request: request("invalid-post-target-config"),
+        routines: [routine("configured-decay")],
+        events: [],
+        config: { ...DEFAULT_PLANNER_CONFIG, ...override },
+        generatedAt,
+      }),
+    ).toThrowError(DomainError);
+  });
+
   it("fits both the requested time and task count without exceeding hard bounds", () => {
     const plan = generateDailyPlan({
       request: request("fit-seed", {
@@ -850,7 +872,7 @@ describe("deterministic daily planning", () => {
     const satisfied = routine("already-done", { target: 1, maximum: 2 });
     const events = [event("already-done-completion", satisfied, "completed", "2026-07-14")];
     let satisfiedSelections = 0;
-    for (let seed = 0; seed < 300; seed += 1) {
+    for (let seed = 0; seed < 2_000; seed += 1) {
       const plan = generateDailyPlan({
         request: request(`simulation-${seed}`, {
           targetMinutes: 30,
@@ -867,6 +889,81 @@ describe("deterministic daily planning", () => {
 
     expect(satisfiedSelections).toBeGreaterThan(0);
     expect(satisfiedSelections).toBeLessThan(30);
+  });
+
+  it("makes a third weekly completion extremely unlikely without hard exclusion", () => {
+    const due = routine("weekly-due", { target: 1, maximum: 4 });
+    const repeated = routine("weekly-repeated", { target: 1, maximum: 4 });
+    const events = [
+      event("weekly-repeated-1", repeated, "completed", "2026-07-13"),
+      event("weekly-repeated-2", repeated, "completed", "2026-07-14"),
+      event("weekly-repeated-3", repeated, "completed", "2026-07-15"),
+    ];
+    const evaluation = evaluateRoutineForPlan(repeated, events, request());
+    const singleTaskLimits = {
+      targetMinutes: 30,
+      maximumMinutes: 30,
+      targetTaskCount: 1,
+      maximumTaskCount: 1,
+    } as const;
+    expect(evaluation.eligible).toBe(true);
+    expect(evaluation.postTargetRepetitionSteps).toBe(3);
+
+    let repeatedSelections = 0;
+    for (let seed = 0; seed < 2_000; seed += 1) {
+      const plan = generateDailyPlan({
+        request: request(`weekly-repetition-${seed}`, singleTaskLimits),
+        routines: [due, repeated],
+        events,
+        generatedAt,
+      });
+      if (plan.items[0]?.routineId === repeated.id) repeatedSelections += 1;
+    }
+
+    expect(repeatedSelections).toBeLessThan(5);
+    const floorSelection = generateDailyPlan({
+      request: request("weekly-repetition-11659", singleTaskLimits),
+      routines: [due, repeated],
+      events,
+      generatedAt,
+    });
+    expect(floorSelection.items[0]?.routineId).toBe(repeated.id);
+  });
+
+  it("snapshots repetition decay and replays it independently of input order", () => {
+    const due = routine("replay-due", { target: 1, maximum: 4 });
+    const repeated = routine("replay-repeated", { target: 1, maximum: 4 });
+    const events = [
+      event("replay-repeated-1", repeated, "completed", "2026-07-13"),
+      event("replay-repeated-2", repeated, "completed", "2026-07-14"),
+      event("replay-repeated-3", repeated, "completed", "2026-07-15"),
+    ];
+    const input = {
+      id: dailyPlanId("repetition-decay-replay"),
+      request: request("repetition-decay-replay"),
+      routines: [due, repeated],
+      events,
+      generatedAt,
+    };
+    const first = generateDailyPlan(input);
+    const replay = generateDailyPlan({
+      ...input,
+      routines: [...input.routines].reverse(),
+      events: [...input.events].reverse(),
+    });
+
+    expect(first).toMatchObject({
+      algorithmVersion: "deterministic-planner-v7",
+      configVersion: "default-weights-v5",
+      inputSnapshot: {
+        config: {
+          postTargetRepetitionDecayBase: 10,
+          postTargetSelectionWeightFloor: 1,
+        },
+      },
+    });
+    expect(replay.inputHash).toBe(first.inputHash);
+    expect(replay.items).toEqual(first.items);
   });
 
   it("projects stable non-primary alternatives without changing the primary plan", () => {

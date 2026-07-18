@@ -96,7 +96,10 @@
           "level": "unit",
           "file": "packages/domain/src/daily-planning.test.ts",
           "command": "unit",
-          "anchors": ["retains a low but nonzero exploration rate after the cadence target is met"]
+          "anchors": [
+            "retains a low but nonzero exploration rate after the cadence target is met",
+            "makes a third weekly completion extremely unlikely without hard exclusion"
+          ]
         }
       ]
     },
@@ -111,6 +114,12 @@
           "file": "packages/domain/src/planner-evaluation.test.ts",
           "command": "unit",
           "anchors": ["is repeatable across seeds and preserves plan-item invariants"]
+        },
+        {
+          "level": "unit",
+          "file": "packages/domain/src/daily-planning.test.ts",
+          "command": "unit",
+          "anchors": ["snapshots repetition decay and replays it independently of input order"]
         },
         {
           "level": "integration",
@@ -1569,11 +1578,20 @@
       "risk": "normal",
       "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 3 — Transparent adaptation" },
       "limitations": [
-        "Routine-duration calibration, Daily Plan Fit guidance with explicit use receipts, descriptive outcome history, and bounded weighted outcome rates, explicit routine ranking preferences, and reversible exact-key dismissal/reset are implemented; inferred cadence, day/time, energy, preference, and category-balance signals remain deferred.",
-        "Suggestions are never applied automatically, and adaptive probabilistic selection beyond the deterministic planner, upward Plan Fit expansion, causal effectiveness analysis, and outcome-driven learning remain deferred.",
+        "Routine-duration calibration, Daily Plan Fit guidance with explicit use receipts, descriptive outcome history and bounded weighted outcome rates, explicit routine ranking preferences, reversible exact-key dismissal/reset, and fixed versioned post-target repetition decay are implemented; inferred cadence, day/time, energy, preference, and category-balance signals remain deferred.",
+        "Suggestions are never applied automatically, and learned or outcome-tuned probability policies, upward Plan Fit expansion, causal effectiveness analysis, and outcome-driven learning remain deferred.",
         "The statistical thresholds and lifecycle have contract evidence but no production effectiveness data or causal validation, and no local or hosted model participates."
       ],
       "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/daily-planning.test.ts",
+          "command": "unit",
+          "anchors": [
+            "makes a third weekly completion extremely unlikely without hard exclusion",
+            "snapshots repetition decay and replays it independently of input order"
+          ]
+        },
         {
           "level": "unit",
           "file": "packages/domain/src/routine-duration-insight.test.ts",

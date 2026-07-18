@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-16
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement and alternative-selection revisions, deterministic read-only comparison of up to three distinct alternatives, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items with direct prerequisites and arbitrary-depth subtasks, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v6 selects both reusable routines and explicitly opted-in one-time leaf work items, applies temporary routine feedback and explicit bounded routine selection preferences, and hard-excludes parent containers and work with unmet prerequisites from new selection and unlocked regeneration retention. A locked nonterminal item remains anchored under the existing user-authority rules. The planner also adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent routine-duration insight with explicit approval, evidence-backed Daily Plan Fit guidance with explicit use receipts and read-only outcome history, and reversible user-authored routine ranking preferences; none applies automatically, and the descriptive history does not enter planner scoring. Broader inferred preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. The Work interface may separately prepare one expiring, editable backlog-title proposal plus conservative review-only suggestions for its existing priority, due-date, and duration fields; no work or reviewed value exists until explicit user action and audited, exactly-once confirmation. A provider-neutral authenticated gateway provides Today reads, credential-scoped work-item discovery including hierarchy, reviewed create/reparent/detach mutations, and least-privilege reminder delivery claims/receipts for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. A deterministic reminder-policy core stores versioned profiles and rules, explicit one-offs, concurrency-safe immutable intents, an opt-in local periodic materializer, and a provider-neutral fenced delivery lifecycle without performing provider transport. See [API.md](./API.md), [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md), [REMINDERS.md](./REMINDERS.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language routine creation, model-driven task breakdown, multi-command capture, automatic advisor application or calibration, hosted model providers, generalized undo, recurrence authoring, phone delivery, a live authenticated Hermes client and provider binding, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement and alternative-selection revisions, deterministic read-only comparison of up to three distinct alternatives, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items with direct prerequisites and arbitrary-depth subtasks, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v7 selects both reusable routines and explicitly opted-in one-time leaf work items, applies temporary routine feedback, explicit bounded routine selection preferences, and fixed versioned post-target repetition decay, and hard-excludes parent containers and work with unmet prerequisites from new selection and unlocked regeneration retention. A locked nonterminal item remains anchored under the existing user-authority rules. The planner also adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent routine-duration insight with explicit approval, evidence-backed Daily Plan Fit guidance with explicit use receipts and read-only outcome history, and reversible user-authored routine ranking preferences; none applies automatically, and the descriptive history does not enter planner scoring. Broader inferred preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. The Work interface may separately prepare one expiring, editable backlog-title proposal plus conservative review-only suggestions for its existing priority, due-date, and duration fields; no work or reviewed value exists until explicit user action and audited, exactly-once confirmation. A provider-neutral authenticated gateway provides Today reads, credential-scoped work-item discovery including hierarchy, reviewed create/reparent/detach mutations, and least-privilege reminder delivery claims/receipts for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. A deterministic reminder-policy core stores versioned profiles and rules, explicit one-offs, concurrency-safe immutable intents, an opt-in local periodic materializer, and a provider-neutral fenced delivery lifecycle without performing provider transport. See [API.md](./API.md), [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md), [REMINDERS.md](./REMINDERS.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language routine creation, model-driven task breakdown, multi-command capture, automatic advisor application or calibration, hosted model providers, generalized undo, recurrence authoring, phone delivery, a live authenticated Hermes client and provider binding, and public hosting remain deferred.
 
 The local reminder interface now configures profiles, rules, and one-offs; manually materializes
 intents; and presents separate planned and product-safe execution histories. An operator may also
@@ -166,7 +166,7 @@ Example:
 }
 ```
 
-Reaching a target sharply reduces selection probability. Reaching a hard maximum makes the routine ineligible until the period resets. A target is not a maximum unless explicitly configured as one.
+Reaching a target sharply reduces selection probability. The default versioned rule divides seeded selection weight by 10 once for each completion at or beyond the target and stops at a nonzero floor of 1. Reaching a hard maximum makes the routine ineligible until the period resets. A target is not a maximum unless explicitly configured as one.
 
 ## 6. Duration and capacity
 
@@ -303,12 +303,14 @@ Weights are versioned configuration. Scores and component contributions are save
 
 Scores are converted into weighted probabilities. The planner then evaluates candidate combinations rather than rolling independently for every item. This preserves variety while fitting the plan as a whole.
 
-The algorithm should support:
+The implemented algorithm provides:
 
-- A low probability floor for eligible, target-satisfied activities when exploration is allowed
-- A temperature setting that controls how predictable or varied selection is
+- A versioned multiplicative repetition decay and low nonzero floor for eligible,
+  target-satisfied routines
 - A deterministic daily random seed so refreshing does not arbitrarily change the plan
 - A new seed only when the user explicitly regenerates or edits planning inputs
+
+User-editable temperature and learned probability tuning remain deferred.
 
 ### 7.5 Combination optimization
 
@@ -340,8 +342,9 @@ For a routine targeted three times per week:
 
 - Before the target is met, cadence deficit raises its score.
 - A completion lowers its immediate score through spacing and repetition penalties.
-- Three completions satisfy the target and sharply reduce its probability.
-- If exploration is enabled, it retains a very small probability until its maximum is reached.
+- Three completions satisfy the target and apply one decay step; each later completion in the same
+  cadence period applies another.
+- Its nonzero floor preserves a very small seeded selection probability until its maximum is reached.
 - At the maximum, it becomes ineligible for the remainder of the period.
 - Near the end of a period, unmet minimums receive increasing urgency.
 
@@ -663,9 +666,11 @@ Success is not simply "more tasks completed." Useful measures include realistic 
   planner/configuration groups with a three-day rate gate
 - Implemented: explicit append-only **More often**, **Less often**, and resettable routine ranking
   preferences for future plans, with bounded visible score contribution and no current-plan mutation
+- Implemented: fixed, versioned post-target repetition decay in the seeded selection weight, with a
+  nonzero exploration floor and no learned or outcome-driven tuning
 - Deferred: inferred cadence, day/time, energy, preference, and category-balance signals
-- Deferred: automatic application, adaptive probabilistic selection, causal outcome analysis and
-  learned policies, upward Plan Fit expansion, editable Plan Fit policy, and algorithm comparison tools
+- Deferred: automatic application, learned or outcome-tuned probability policies, causal outcome
+  analysis, upward Plan Fit expansion, editable Plan Fit policy, and algorithm comparison tools
 
 ### Phase 4 — Local-model advisor
 
@@ -753,7 +758,7 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
 
 - Default duration and task-count targets
 - Whether minimum cadence is a hard commitment or an urgency signal
-- Default exploration probability after a target is met
+- Whether production evidence warrants user-editable exploration controls beyond the fixed default
 - How partial completion contributes to cadence
 - How much calendar auto-placement occurs versus simple task selection
 - Whether and how to add a hosted model provider after authentication and explicit cloud consent
