@@ -14,7 +14,8 @@ reminder-delivery adapter foundation—are documented in the [Hermes guide](./do
 The optional loopback worker health and metrics contract is in
 [docs/OBSERVABILITY.md](./docs/OBSERVABILITY.md).
 The opt-in hosted OIDC and workspace-authorization boundary is in
-[docs/HOSTED_AUTHORIZATION.md](./docs/HOSTED_AUTHORIZATION.md).
+[docs/HOSTED_AUTHORIZATION.md](./docs/HOSTED_AUTHORIZATION.md). The separate, narrow server-side
+work-item pull protocol is in [docs/HOSTED_SYNC.md](./docs/HOSTED_SYNC.md).
 The local model's explicit, review-before-write capture contract is documented in
 [docs/NATURAL_LANGUAGE.md](./docs/NATURAL_LANGUAGE.md).
 
@@ -150,7 +151,8 @@ logout, automatic first-login default-workspace membership, and a narrow members
 product slice with bounded per-source throttling. An authenticated collection can list the caller's
 active workspace page or create one name-only workspace while rechecking the browser session in the
 same transaction. A same-origin hosted capture shell can sign in, create or select one active workspace,
-review the browser-local day's existing plan and the first 20 backlog items, and add one title with
+review the browser-local day's existing plan, page through current work items across statuses in groups
+of 20, and add one title with
 optional priority, due date, and planning duration through an authorized mutation. A visible backlog
 item can be moved only to started or done with an
 optimistic version. A pending Today item can be started, completed, or skipped, and a started item can
@@ -162,7 +164,10 @@ prefill retains the reviewed evidence key, and generation revalidates that key w
 recording the final user-edited caps. The existing planner/day lock makes an exact request replay
 deterministic and rejects changed input.
 The shell does not regenerate plans or provide general work-item editing,
-workspace rename/delete or membership administration, the broader product API, or synchronization.
+workspace rename/delete or membership administration, or the broader product API. A separate
+authenticated work-item sync v1 can keyset-bootstrap current items and follow a pinned,
+tombstone-bearing delta window. The capture shell does not consume it, and Schedule does not ship
+an offline store, upload path, merge policy, or cross-entity sync client.
 Partial sets and non-empty mixed-case aliases or unknown companions fail startup without disclosing values.
 Health and system-information endpoints
 intentionally remain available independently of the product Host guard for local diagnostics.
@@ -299,8 +304,9 @@ API, and the worker. It also preserves the migrated schema through a disposable 
 proves API readiness recovery without an API restart, and verifies worker fail-fast and restart
 behavior. Complete secret-manager-fed `HOSTED_API_MODE=oidc` configuration now activates
 the hardened authorization-code lifecycle, nonce-bound verification, browser sessions, first-login
-workspace bootstrap, transaction-authorized hosted work-item and Today mutations, and bounded
-hosted Plan Fit guidance with reversible exact-key dismissal/reset and atomic explicit-use receipts.
+workspace bootstrap, transaction-authorized hosted work-item and Today mutations, bounded
+hosted Plan Fit guidance with reversible exact-key dismissal/reset and atomic explicit-use receipts,
+and the workspace-scoped work-item sync v1 pull routes.
 The same boundary exposes only a thresholded descriptive outcome aggregate, never per-use history.
 Provider discovery,
 JWKS, and token exchange use bounded direct HTTPS with pinned address policy; failed preflight closes
@@ -310,5 +316,5 @@ These are provider-neutral runtime prerequisites, not a hosted release. TLS ingr
 manifests for a lean Railway API/worker deployment now live under `infra/deploy/railway`; see the
 [hosted deployment guide](./docs/DEPLOYMENT.md). Both services have database-backed Railway
 promotion checks; the worker listener exposes no metrics. A live environment, managed secrets/backups,
-continuous monitoring, workspace rename/delete and membership administration, the broader product surface, synchronization, and
+continuous monitoring, workspace rename/delete and membership administration, the broader product surface, offline/bidirectional synchronization, and
 a broader hosted product interface remain to be implemented and verified.

@@ -49,6 +49,10 @@ HOSTED_LOGIN_PKCE_KEYS=primary:<sealed-base64url-32-byte-key>
 HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID=primary
 ```
 
+The API purpose-derives durable work-item sync cursor signing from `HOSTED_SESSION_PEPPER`; there is
+no additional sync secret. Every API replica must receive the same value. Rotating it intentionally
+signs out browser sessions and forces sync consumers to authenticate and bootstrap again.
+
 Do not set `API_PORT`; the API uses `API_PORT` when explicitly supplied and otherwise honors the
 platform `PORT`. Keep `API_TRUSTED_PROXIES` empty unless the provider publishes exact ingress
 addresses or CIDRs that have been verified. An empty list is safer than trusting all forwarded
@@ -97,6 +101,10 @@ The API pre-deploy command runs the built migration entry point. A non-zero migr
 that API deployment before traffic moves. The worker deliberately does not run migrations, avoiding
 two services racing the same ledger.
 
+Migration `0041` leaves global work-item capture disabled. The first OIDC API startup performs the
+database's one-way enrollment before returning the app to its listener; failure stops startup. Treat
+that first hosted start as irreversible for the database and schedule bounded retention before it.
+
 For the first release, deploy the API and wait for `/health/ready` before deploying the worker.
 Railway promotes the worker only after its readiness succeeds, but the new process may claim work
 while promotion is still pending. Outbox leases, fencing tokens, and insert-only reminder
@@ -113,7 +121,15 @@ database saturation, and worker queue growth.
 
 Enable managed backup retention and point-in-time recovery for PostgreSQL, then perform a restore
 drill before production. Record recovery-point and recovery-time targets. The local Compose restore
-scripts are not a hosted recovery mechanism.
+scripts are not a hosted recovery mechanism. Hosted backups must include the work-item sync capability
+singleton, state, change log, migration ledger, row fence, enum, and initializer/capture/protection
+functions and triggers; restoring only current work items loses the cursor/change-history boundary and
+is not a valid protocol recovery.
+
+Schedule does not prune sync history automatically. Run the bounded `pnpm hosted-sync:cleanup`
+procedure from [HOSTED_SYNC.md](./HOSTED_SYNC.md) through an explicitly scheduled operator job, choose
+a retention window longer than the supported client-disconnection interval, and alert on repeated
+`410 hosted_sync.cursor_expired` responses or sustained change-log growth.
 
 Rollback application code by promoting the previous API and worker images together. Do not reverse
 schema migrations in place during an incident. Expand/contract migrations should keep the previous
@@ -124,12 +140,12 @@ recovery.
 
 Before attaching a production domain:
 
-1. Run `pnpm check` and `pnpm verify:oci-runtime` locally.
+1. Run `pnpm check`, `pnpm verify:hosted-work-item-sync`, and `pnpm verify:oci-runtime` locally.
 2. Deploy staging with production-shaped variables and a separate database.
 3. Run `pnpm verify:hosted-staging` with the exact staging host/workspace confirmations; it checks
    `/health/live`, `/health/ready`, manual real-OIDC login, session, workspace discovery, Today,
    the current work-item snapshot, capture, Done, and logout through public HTTPS. Treat the
-   work-item page as a current-state read, not proof of synchronization.
+   work-item page as a current-state read, not proof of the separate sync protocol.
 4. Force a failed migration and confirm the previous deployment remains active.
 5. Run `pnpm verify:oci-runtime`, then use only a provider-approved staging database drill to confirm
    API liveness remains available while readiness fails, the worker exits nonzero, the schema
@@ -149,7 +165,7 @@ work item in that dedicated workspace: there is no cleanup route.
 
 This gate exists but has not been executed here against external staging. It is not CI evidence:
 CI cannot exercise a public HTTPS ingress or external OIDC. It makes no claim of live production,
-provider monitoring, backup restore, or broad synchronization.
+provider monitoring, backup restore, a deployed offline client, or broad synchronization.
 
 Railway references: [config as code](https://docs.railway.com/config-as-code),
 [pre-deploy commands](https://docs.railway.com/deployments/pre-deploy-command),

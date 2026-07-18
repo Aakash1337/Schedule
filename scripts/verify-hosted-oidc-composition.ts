@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { loadApiConfig } from "../packages/config/src/index.js";
-import { createDatabase } from "../packages/database/src/index.js";
+import { createDatabase, type DatabaseConnection } from "../packages/database/src/index.js";
 import {
   exportJWK,
   generateKeyPair,
@@ -37,9 +40,84 @@ import {
 } from "../apps/api/src/hosted-auth-lifecycle.js";
 import type { HostedWebShell } from "../apps/api/src/hosted-web-shell.js";
 
-const databaseUrl =
-  process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule";
+function requireLocalVerificationDatabaseUrl(rawUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error("Hosted OIDC composition verification requires a local PostgreSQL database.");
+  }
+  if (
+    !["postgres:", "postgresql:"].includes(url.protocol) ||
+    url.hostname !== "127.0.0.1" ||
+    url.pathname.length <= 1 ||
+    url.username.length === 0 ||
+    url.password.length === 0 ||
+    url.search.length > 0 ||
+    url.hash.length > 0
+  ) {
+    throw new Error("Hosted OIDC composition verification requires a local PostgreSQL database.");
+  }
+  return url.toString();
+}
+
+const sourceDatabaseUrl = requireLocalVerificationDatabaseUrl(
+  process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule",
+);
 const nonce = randomUUID().replaceAll("-", "");
+const verificationDatabase = `schedule_host_oidc_verify_${nonce}`;
+const verificationDatabasePattern = /^schedule_host_oidc_verify_[a-f0-9]{32}$/u;
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function databaseUrlFor(databaseName: string): string {
+  const url = new URL(sourceDatabaseUrl);
+  url.pathname = `/${databaseName}`;
+  return url.toString();
+}
+
+function quotedVerificationDatabase(): string {
+  if (!verificationDatabasePattern.test(verificationDatabase)) {
+    throw new Error("Unsafe hosted OIDC composition verification database identifier.");
+  }
+  return `"${verificationDatabase}"`;
+}
+
+async function applyCurrentMigrations(databaseUrl: string): Promise<void> {
+  const executable =
+    process.platform === "win32"
+      ? (process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe")
+      : "pnpm";
+  const args =
+    process.platform === "win32"
+      ? ["/d", "/s", "/c", "pnpm.cmd", "--filter", "@schedule/database", "run", "db:migrate"]
+      : ["--filter", "@schedule/database", "run", "db:migrate"];
+  await new Promise<void>((resolve, reject) => {
+    const output: Buffer[] = [];
+    const child = spawn(executable, args, {
+      cwd: repositoryRoot,
+      env: { ...process.env, DATABASE_URL: databaseUrl, NODE_ENV: "test" },
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout?.on("data", (chunk: Buffer) => output.push(chunk));
+    child.stderr?.on("data", (chunk: Buffer) => output.push(chunk));
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) return resolve();
+      const diagnostic = Buffer.concat(output)
+        .toString("utf8")
+        .replaceAll(databaseUrl, "[DISPOSABLE_DATABASE_URL]")
+        .trim();
+      reject(
+        new Error(
+          `Hosted OIDC composition migration failed with exit code ${String(code)}${diagnostic === "" ? "" : `: ${diagnostic}`}`,
+        ),
+      );
+    });
+  });
+}
+
+const disposableDatabaseUrl = databaseUrlFor(verificationDatabase);
 const origin = "https://schedule.example.com";
 const issuer = `https://login.example.com/${nonce}`;
 const clientId = `schedule-composition-${nonce}`;
@@ -56,7 +134,7 @@ const sessionPepper = `composition-session-pepper-${nonce}`;
 const pkceKey = Buffer.alloc(32, 17).toString("base64url");
 const config = loadApiConfig({
   NODE_ENV: "test",
-  DATABASE_URL: databaseUrl,
+  DATABASE_URL: disposableDatabaseUrl,
   HOSTED_API_MODE: "oidc",
   HOSTED_PUBLIC_ORIGIN: origin,
   HOSTED_OIDC_ISSUER: issuer,
@@ -180,14 +258,21 @@ const transport = (async (resource: string, options: RequestInit) => {
   throw new Error("Unexpected in-process OIDC provider request.");
 }) as HostedOidcCompositionTransport;
 
-const database = createDatabase(databaseUrl, 4, {
-  applicationName: "schedule-hosted-oidc-composition-verifier",
-});
+const adminConnection = createDatabase(databaseUrlFor("postgres"), 1);
+let databaseCreated = false;
+let database: DatabaseConnection | null = null;
 let app: Awaited<ReturnType<typeof prepareHostedApiApp>>["app"] | null = null;
 let verificationError: unknown;
-let cleanupFailed = false;
+const cleanupFailures: string[] = [];
 
 try {
+  await adminConnection.sql.unsafe(`create database ${quotedVerificationDatabase()}`);
+  databaseCreated = true;
+  await applyCurrentMigrations(disposableDatabaseUrl);
+  database = createDatabase(disposableDatabaseUrl, 4, {
+    applicationName: "schedule-hosted-oidc-composition-verifier",
+  });
+  const activeDatabase = database;
   const prepared = await prepareHostedApiApp(
     config,
     database,
@@ -612,7 +697,7 @@ try {
   // EVIDENCE: hosted-work-item-snapshot-postgres
   // The separate current-state page includes non-backlog rows without widening the capture backlog.
   const loadWorkItemSnapshotState = async () => {
-    const items = await database.sql<
+    const items = await activeDatabase.sql<
       {
         id: string;
         parentWorkItemId: string | null;
@@ -636,7 +721,7 @@ try {
       where workspace_id = ${createdWorkspaceBody.id}
       order by created_at, id
     `;
-    const [audit] = await database.sql<{ count: number }[]>`
+    const [audit] = await activeDatabase.sql<{ count: number }[]>`
       select count(*)::integer as count
       from audit_events
       where workspace_id = ${createdWorkspaceBody.id}
@@ -1152,96 +1237,45 @@ try {
 } catch (error) {
   verificationError = error;
 } finally {
-  try {
-    await app?.close();
-  } catch {
-    cleanupFailed = true;
-  }
-  let accounts: { userId: string; workspaceId: string | null }[] = [];
-  try {
-    accounts = await database.sql<{ userId: string; workspaceId: string | null }[]>`
-      select identity.user_id as "userId", membership.workspace_id as "workspaceId"
-      from external_identities as identity
-      left join workspace_memberships as membership on membership.user_id = identity.user_id
-      where identity.issuer = ${issuer} and identity.subject = ${subject}
-    `;
-  } catch {
-    cleanupFailed = true;
-  }
-  for (const userId of new Set(accounts.map((account) => account.userId))) {
-    for (const operation of [
-      () => database.sql`delete from browser_sessions where user_id = ${userId}`,
-      () => database.sql`delete from external_identities where user_id = ${userId}`,
-      () => database.sql`
-        delete from users where id = ${userId}
-          and not exists (select 1 from external_identities where user_id = ${userId})
-      `,
-    ]) {
-      try {
-        await operation();
-      } catch {
-        cleanupFailed = true;
-      }
-    }
+  const cleanup = async (label: string, operation: () => Promise<unknown>): Promise<void> => {
     try {
-      const [remainingUser] = await database.sql<{ sessions: number; users: number }[]>`
-        select
-          (select count(*)::integer from browser_sessions where user_id = ${userId}) as sessions,
-          (select count(*)::integer from users where id = ${userId}) as users
+      await operation();
+    } catch {
+      // Driver errors can contain connection URLs; retain only fixed labels.
+      cleanupFailures.push(label);
+    }
+  };
+  if (app !== null) await cleanup("Fastify application", () => app!.close());
+  if (database !== null) {
+    await cleanup("disposable database connection", () => database!.close());
+  }
+  if (databaseCreated) {
+    await cleanup("disposable database", () =>
+      adminConnection.sql.unsafe(
+        `drop database if exists ${quotedVerificationDatabase()} with (force)`,
+      ),
+    );
+    await cleanup("disposable database removal check", async () => {
+      const [remaining] = await adminConnection.sql<{ exists: boolean }[]>`
+        select exists(select 1 from pg_database where datname = ${verificationDatabase}) as exists
       `;
-      if (remainingUser?.sessions !== 0 || remainingUser.users !== 0) cleanupFailed = true;
-    } catch {
-      cleanupFailed = true;
-    }
+      if (remaining?.exists !== false) throw new Error("Disposable database remains.");
+    });
   }
-  for (const workspaceId of new Set(accounts.flatMap(({ workspaceId }) => workspaceId ?? []))) {
-    try {
-      await database.sql.begin(async (sql) => {
-        await sql`select set_config('schedule.allow_activity_event_mutation', 'on', true)`;
-        await sql`select set_config('schedule.allow_audit_event_mutation', 'on', true)`;
-        await sql`select set_config('schedule.allow_plan_interaction_event_mutation', 'on', true)`;
-        await sql`select set_config('schedule.allow_plan_mutation_change', 'on', true)`;
-        await sql`select set_config('schedule.allow_daily_plan_fit_insight_feedback_event_change', 'on', true)`;
-        await sql`delete from workspaces where id = ${workspaceId}`;
-      });
-    } catch {
-      cleanupFailed = true;
-    }
-  }
-  try {
-    await database.sql`
-      delete from hosted_login_transactions where issuer = ${issuer} and client_id = ${clientId}
-    `;
-    const [remaining] = await database.sql<
-      { identities: number; transactions: number; workspaces: number; workItems: number }[]
-    >`
-      select
-        (select count(*)::integer from external_identities
-          where issuer = ${issuer} and subject = ${subject}) as identities,
-        (select count(*)::integer from hosted_login_transactions
-          where issuer = ${issuer} and client_id = ${clientId}) as transactions,
-        (select count(*)::integer from workspaces
-          where id = any(${accounts.flatMap(({ workspaceId }) => workspaceId ?? [])}::uuid[])) as workspaces,
-        (select count(*)::integer from work_items
-          where workspace_id = any(${accounts.flatMap(({ workspaceId }) => workspaceId ?? [])}::uuid[])) as "workItems"
-    `;
-    if (
-      remaining?.identities !== 0 ||
-      remaining.transactions !== 0 ||
-      remaining.workspaces !== 0 ||
-      remaining.workItems !== 0
-    ) {
-      cleanupFailed = true;
-    }
-  } catch {
-    cleanupFailed = true;
-  }
-  try {
-    await database.close();
-  } catch {
-    cleanupFailed = true;
-  }
+  await cleanup("administrative database connection", () => adminConnection.close());
 }
 
-if (verificationError !== undefined) throw verificationError;
-if (cleanupFailed) throw new Error("Hosted OIDC composition verification cleanup failed.");
+if (verificationError !== undefined) {
+  if (cleanupFailures.length > 0) {
+    throw new AggregateError(
+      [verificationError],
+      `Hosted OIDC composition verification failed and cleanup also failed for: ${cleanupFailures.join(", ")}.`,
+    );
+  }
+  throw verificationError;
+}
+if (cleanupFailures.length > 0) {
+  throw new Error(
+    `Hosted OIDC composition verification cleanup failed for: ${cleanupFailures.join(", ")}.`,
+  );
+}

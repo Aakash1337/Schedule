@@ -36,6 +36,7 @@
     "hosted-runtime-preflight": { "command": "pnpm check", "ci": true },
     "hosted-runtime-gate": { "command": "pnpm verify:database", "ci": true },
     "hosted-mutation-authorization": { "command": "pnpm verify:database", "ci": true },
+    "hosted-work-item-sync": { "command": "pnpm verify:database", "ci": true },
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
     "notification-migrations": { "command": "pnpm verify:database", "ci": true },
     "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
@@ -3151,7 +3152,7 @@
       },
       "limitations": [
         "The start/callback composition is installed only after complete HOSTED_API_MODE=oidc preflight; disabled mode remains route-closed.",
-        "A consumed authorization code is attempted once and never retried. Account management, synchronization, and the broader hosted product surface remain deferred."
+        "A consumed authorization code is attempted once and never retried. Account management, offline/bidirectional or cross-entity synchronization clients, and the broader hosted product surface remain deferred; server work-item sync v1 is a separate implemented pull boundary."
       ],
       "evidence": [
         {
@@ -3292,7 +3293,7 @@
       },
       "limitations": [
         "The identity/session factory is active only in explicit OIDC mode; disabled mode remains route-closed and first login creates one default workspace membership.",
-        "Workspace rename/delete and membership administration, the broader product surface, synchronization, and public deployment remain deferred. Machine integration credentials remain a separate trust boundary."
+        "Workspace rename/delete and membership administration, the broader product surface, offline/bidirectional or cross-entity synchronization clients, and public deployment remain deferred. Server work-item sync v1 is a separate implemented pull boundary; machine integration credentials remain a separate trust boundary."
       ],
       "evidence": [
         {
@@ -3370,7 +3371,7 @@
         "anchor": "# Hosted request authorization and OIDC runtime"
       },
       "limitations": [
-        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery and name-only creation, bounded backlog, current-state all-status work-item, and existing-plan Today reads, transaction-coupled title plus optional priority/due-date/planning-duration create, status-only update, and Today Start/Done/Skip. The narrow same-origin shell consumes the current-state work-item page in fixed 20-row displays with one-row lookahead and exposes status actions only for backlog rows. Workspace rename/delete and membership administration, a broader public end-user product surface, and synchronization remain unimplemented; the offset work-item page is not a frozen sync snapshot or change feed.",
+        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery and name-only creation, bounded backlog, current-state all-status work-item, and existing-plan Today reads, transaction-coupled title plus optional priority/due-date/planning-duration create, status-only update, and Today Start/Done/Skip. The narrow same-origin shell consumes the current-state work-item page in fixed 20-row displays with one-row lookahead and exposes status actions only for backlog rows. A separate work-item-only pull protocol is registered below; the shell does not consume it. Workspace rename/delete and membership administration, a broader public end-user product surface, and offline, bidirectional, or cross-entity synchronization remain unimplemented; the offset work-item page is not a frozen sync snapshot or change feed.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users.",
         "The headed, mutation-capable staging gate is operator-assisted and deliberately excluded from CI integration evidence: CI-safe configuration anchors live in scripts/hosted-staging-config.test.ts, while the manual source/spec anchor is apps/web/e2e-staging/hosted-staging.spec.ts, operator-assisted hosted staging smoke. It refuses common CI markers and requires a staging-marked HTTPS host, a staging-prefixed operator-designated workspace, exact mutation confirmation, and manual real OIDC in a fresh profile without identity-provider credentials. It leaves one completed auditable work item without a cleanup route. It exists but has not been executed here against external staging; CI cannot prove public ingress or external OIDC, and it makes no production, provider-monitoring, backup-restore, or broad-sync claim."
       ],
@@ -3489,7 +3490,7 @@
         "anchor": "## Hosted capture shell"
       },
       "limitations": [
-        "The shell can authenticate, create or discover active workspaces, show one existing browser-local current-day plan, page through current work items from every status in fixed 20-row displays with one-row lookahead, create one title with optional priority, due date, and planning duration, move one visible backlog item to started or done, and start, complete, or skip one actionable Today item with exact ambiguous retry. Non-backlog work-item rows are read-only. It cannot filter, edit existing fields, reopen, cancel, schedule, rename/delete workspaces, administer membership, or synchronize product data; each offset page is a fresh current-state read rather than a frozen or offline snapshot.",
+        "The shell can authenticate, create or discover active workspaces, show one existing browser-local current-day plan, page through current work items from every status in fixed 20-row displays with one-row lookahead, create one title with optional priority, due date, and planning duration, move one visible backlog item to started or done, and start, complete, or skip one actionable Today item with exact ambiguous retry. Non-backlog work-item rows are read-only. It cannot filter, edit existing fields, reopen, cancel, schedule, rename/delete workspaces, administer membership, consume server work-item sync v1, or maintain offline state; each offset page is a fresh current-state read rather than a frozen or offline snapshot.",
         "The built-browser gate uses an in-browser API double; an external identity provider and public TLS ingress still require a staging smoke."
       ],
       "evidence": [
@@ -3637,7 +3638,7 @@
       },
       "limitations": [
         "The endpoint returns only the stable first 20 backlog IDs, titles, optimistic versions, priorities, due dates, and planning durations. It has no filters, pagination controls, totals, descriptions, hierarchy, or synchronization semantics and does not mix in the separate Today projection.",
-        "A separate bounded offset page may contain items from every current status and returns full work-item fields except workspaceId. The hosted shell requests 21 rows, renders at most 20, and uses only the extra row to expose Next; it independently reads every page and has no frozen snapshot boundary, change feed, tombstones, watermark, conflict handling, or offline semantics.",
+        "A separate bounded offset page may contain items from every current status and returns full work-item fields except workspaceId. The hosted shell requests 21 rows, renders at most 20, and uses only the extra row to expose Next; it independently reads every page and has no frozen snapshot boundary, change feed, tombstones, watermark, conflict handling, or offline semantics. The dedicated sync v1 routes do not change this endpoint's contract.",
         "Read authorization follows the documented preflight linearization: a committed revocation fences the next request but cannot retract an already-authorized in-flight read."
       ],
       "evidence": [
@@ -3693,6 +3694,96 @@
           "command": "hosted-oidc-composition-db",
           "anchors": [
             "unchanged bounded backlog read and a full-field current-state work-item page with stable pages, non-backlog visibility, tenant redaction, and no read mutation"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-work-item-sync",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_SYNC.md",
+        "anchor": "# Hosted work-item sync protocol v1"
+      },
+      "limitations": [
+        "Protocol v1 is a workspace-authorized server pull boundary for work items only. It has no browser/offline client, durable local apply implementation, upload or merge path, conflict resolver, push channel, or cross-entity synchronization.",
+        "Bootstrap is a staged keyset traversal plus catch-up delta, not a server-held or byte-stable snapshot session. Consumers must atomically stage each page with its continuation and publish only after the pinned delta completes.",
+        "Global capture defaults disabled, so a never-enrolled local database accumulates no full-upsert journal. Hosted startup performs a one-way database enrollment; capture and bounded retention remain active requirements if hosted mode is later disabled.",
+        "Bounded operator retention intentionally expires old cursors with 410 and requires a fresh bootstrap; the same recovery covers a valid signed position ahead of the database head after point-in-time restore. The existing offset work-item snapshot remains an independent non-sync page."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/hosted-work-item-sync.test.ts",
+          "command": "unit",
+          "anchors": [
+            "accepts only canonical unsigned PostgreSQL bigint cursors",
+            "normalizes and forwards a bounded checkpointed bootstrap page",
+            "fails closed on malformed, leaking, or non-progressing bootstrap pages",
+            "returns full upserts and identity-minimal deletes within one frozen change window",
+            "fails closed on malformed change envelopes, ordering, payloads, and continuations",
+            "preserves canonical store failures and contains unexpected adapter errors"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/hosted-work-item-sync.test.ts",
+          "command": "unit",
+          "anchors": [
+            "captures a fenced keyset bootstrap checkpoint in a repeatable-read transaction",
+            "pins contiguous delta pages and maps upserts plus identity-minimal tombstones",
+            "distinguishes invalid, expired, and corrupt positions",
+            "enables capture once under a row lock and is idempotent",
+            "fails closed when the singleton is missing",
+            "advances the floor before deleting one bounded contiguous expired prefix",
+            "defines transactional state and immutable typed changes without redundant indexes",
+            "migrates cursor capture, guarded retention, and zero-history backfill"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["derives a stable domain-separated hosted sync cursor key"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/dormant-hosted-oidc-runtime.test.ts",
+          "command": "unit",
+          "anchors": [
+            "enables hosted work-item capture exactly once after app assembly",
+            "fails closed and releases the database when capture activation fails"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-work-item-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "round-trips pinned bootstrap and delta pages with signed stage-bound cursors",
+            "rejects malformed, tampered, wrong-mode, and wrong-workspace sync cursors",
+            "strictly bounds sync queries before calling services",
+            "maps expired sync cursors to 410 and redacts internal sync corruption"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/cleanup-hosted-work-item-sync.test.ts",
+          "command": "unit",
+          "anchors": [
+            "parses conservative defaults, inclusive bounds, and split or inline options",
+            "purges bounded batches to empty and reports aggregate counts only",
+            "closes on failure and rejects malformed purge state",
+            "rejects a positive deletion with a partial cursor identity"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-work-item-sync.ts",
+          "command": "hosted-work-item-sync",
+          "anchors": [
+            "Hosted work-item sync verification passed populated upgrade, AFTER-trigger conflicts and guards, generic and direct-activity mutations, concurrent cursors, rollback, tombstones, bootstrap/delta reconstruction, frozen paging, retention resync, corruption fail-closed, tenant isolation, and cascade cleanup"
           ]
         }
       ]

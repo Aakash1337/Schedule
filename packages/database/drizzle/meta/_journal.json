@@ -288,6 +288,13 @@
       "when": 1784326265522,
       "tag": "0040_dusty_shinko_yamashiro",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1784349976452,
+      "tag": "0041_hosted_work_item_sync",
+      "breakpoints": true
     }
   ]
 }

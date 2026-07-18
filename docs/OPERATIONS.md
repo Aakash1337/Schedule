@@ -531,26 +531,56 @@ manager and set `HOSTED_OIDC_PREFLIGHT_MODE=enabled`:
 Startup parses and freezes the complete set, performs one bounded provider discovery, constructs the
 dependency graph, and only then builds the API app. Failure exits before listening through a stable
 redacted error. Disabled mode logs only the preflight result and keeps routes closed. OIDC mode
-registers login, callback, session, logout, active workspace discovery, and the single hosted
-work-item read/create collection, reports the capability, and throttles the hosted surface with
+registers login, callback, session, logout, active workspace discovery, the narrow hosted
+work-item/Today surface, and work-item sync v1, reports the capability, and throttles the hosted surface with
 `HOSTED_RATE_LIMIT_PER_MINUTE`. Source tracking is bounded to 4,096 least-recently used client
 addresses per API process.
+
+Migration `0041` leaves its global work-item capture capability disabled. On a never-enrolled database,
+local and explicit disabled API modes leave it off and do not accumulate the full-upsert change journal.
+OIDC mode assembles the app, performs the database's one-way capture enrollment, and only then returns
+it to the listener; activation failure closes startup. Each trigger mutation shares the enrollment
+lock, so pre-enrollment writes remain at cursor zero without history and later writes begin at cursor
+one. Enrollment cannot be reversed by switching modes.
 
 Do not enable OIDC mode until TLS ingress, trusted proxy ranges, secret injection, migrations, and
 database backups are in place. First login atomically creates one `My Schedule` workspace and active
 membership. The current slice can discover active memberships but has no hosted workspace
-administration, broad product API, or sync protocol. Its same-origin shell can read only the first
-20 backlog IDs/titles and create one backlog title.
+administration, broad product API, or shipped offline/bidirectional sync client. The same-origin shell
+does not consume the separate server-side work-item sync protocol.
 
 Rotate PKCE by adding the new key, selecting it as primary, restarting, and retaining old keys for at
 least the five-minute login lifetime plus deployment skew before a later restart removes them.
 Changing the login pepper invalidates outstanding logins; changing the session pepper signs out all
-browser sessions. Provider metadata and secrets do not hot-reload. Disable preflight or change its
+browser sessions and invalidates work-item sync cursors purpose-derived from that secret. Provider
+metadata and secrets do not hot-reload. Disable preflight or change its
 configuration only through a controlled restart. Run `pnpm verify:hosted-runtime-preflight` before
 deploying a changed secret layout. Run `pnpm verify:hosted-oidc-composition-db` to exercise enabled
 configuration, production route assembly, first-login provisioning, authenticated work creation,
 bounded backlog reading, logout, and cleanup against PostgreSQL without contacting an external
 provider.
+
+## Hosted work-item sync retention
+
+After one-way enrollment, work-item changes remain captured even if hosted mode is later disabled.
+They are retained until an operator runs the bounded cleanup; neither the API nor worker schedules it.
+Use the same private PostgreSQL connection and start with the conservative defaults:
+
+```powershell
+pnpm hosted-sync:cleanup -- --retention-days 90 --batch-size 250 --max-batches 100
+```
+
+`retention-days` is bounded to 30–3,650, `batch-size` to 1–1,000, and `max-batches` to 1–1,000.
+Each transaction deletes only a contiguous expired prefix for one workspace and advances its retained
+cursor floor atomically. The command returns aggregate JSON only. If `limitReached` is true, rerun it
+or intentionally raise the batch allowance; do not treat the partial bounded run as failure.
+
+Choose retention longer than the maximum supported client-disconnection interval. A consumer behind
+the retained floor receives `410 hosted_sync.cursor_expired` and must discard partial bootstrap state
+and begin again. The same recovery applies when point-in-time restore leaves a valid signed cursor
+ahead of the restored workspace head. Monitor that status plus log-table growth. Keep this job
+separate from migrations, backups, and request-serving processes, and see
+[HOSTED_SYNC.md](./HOSTED_SYNC.md) for protocol and recovery semantics.
 
 ## Routine verification
 
@@ -565,8 +595,12 @@ pnpm verify:database
 pnpm verify:backup-restore
 ```
 
-`verify:database` includes hosted-identity persistence, enabled OIDC composition, and populated
-migration drills. They prove exact concurrent identity/default-workspace provisioning, bounded exact
+`verify:database` includes hosted-identity persistence, enabled OIDC composition, hosted work-item
+sync, and populated migration drills. The focused `pnpm verify:hosted-work-item-sync` command proves
+disabled-by-default populated upgrade, one-way enrollment, transactional trigger capture, staged
+bootstrap and pinned delta reconstruction, retention expiry and fresh bootstrap, tenant isolation,
+and cascade cleanup against disposable PostgreSQL. The broader
+hosted drills prove exact concurrent identity/default-workspace provisioning, bounded exact
 identity keys, digest-only session storage, rotation and revocation boundaries, binary membership
 authorization including post-revocation fencing, hosted workspace provisioning beyond the local
 worker cap, principal-bound workspace creation with post-rotation denial, and preservation of

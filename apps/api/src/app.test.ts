@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import Fastify from "fastify";
 
 import { buildApp, isAllowedLocalProductHost, type HostedApiOptions } from "./app.js";
+import { deriveHostedWorkItemSyncCursorSigningKey } from "./hosted-api-runtime.js";
 import { installErrorHandler } from "./http-errors.js";
 import { installIpRateLimit } from "./product-routes.js";
 
@@ -12,6 +13,20 @@ afterEach(async () => {
 });
 
 describe("API infrastructure", () => {
+  it("derives a stable domain-separated hosted sync cursor key", () => {
+    const first = deriveHostedWorkItemSyncCursorSigningKey("a".repeat(32));
+    const repeated = deriveHostedWorkItemSyncCursorSigningKey("a".repeat(32));
+    const other = deriveHostedWorkItemSyncCursorSigningKey("b".repeat(32));
+
+    expect(first).toHaveLength(32);
+    expect(first.toString("hex")).toBe(
+      "5076a790a1b97a33a8b78e733a82187fdeb55023ccd93071f14ef67223d6d9fe",
+    );
+    expect(first).toEqual(repeated);
+    expect(first).not.toEqual(other);
+    expect(first).not.toEqual(Buffer.from("a".repeat(32)));
+  });
+
   it("accepts only well-formed loopback authorities for the local product API", () => {
     for (const host of [
       "localhost",
@@ -111,6 +126,8 @@ describe("API infrastructure", () => {
       "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/probe",
       "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items",
       "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items/snapshot",
+      "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items/sync/bootstrap",
+      "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items/sync/changes?cursor=unreachable",
       "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/today/00000000-0000-4000-8000-000000000002/activity-events?date=2026-07-16",
     ]) {
       for (const method of ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] as const) {
@@ -159,9 +176,12 @@ describe("API infrastructure", () => {
       },
       workspaces: { listWorkspaces: vi.fn(), createWorkspace: vi.fn() },
       workItems: {
+        syncCursorSigningKey: Buffer.alloc(32, 7),
         createWorkItem: vi.fn(),
         listWorkItems: vi.fn(),
         listWorkItemSnapshot: vi.fn(),
+        bootstrapWorkItemSync: vi.fn(),
+        listWorkItemSyncChanges: vi.fn(),
         updateWorkItemStatus: vi.fn(),
       },
       today: {
@@ -230,6 +250,18 @@ describe("API infrastructure", () => {
     });
     expect(protectedWorkSnapshot.statusCode).toBe(401);
     expect(hostedApi.workItems.listWorkItemSnapshot).not.toHaveBeenCalled();
+    const protectedSyncBootstrap = await protectedApp.inject({
+      method: "GET",
+      url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items/sync/bootstrap",
+    });
+    expect(protectedSyncBootstrap.statusCode).toBe(401);
+    expect(hostedApi.workItems.bootstrapWorkItemSync).not.toHaveBeenCalled();
+    const protectedSyncChanges = await protectedApp.inject({
+      method: "GET",
+      url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items/sync/changes?cursor=invalid",
+    });
+    expect(protectedSyncChanges.statusCode).toBe(401);
+    expect(hostedApi.workItems.listWorkItemSyncChanges).not.toHaveBeenCalled();
     const protectedWorkUpdate = await protectedApp.inject({
       method: "PATCH",
       url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items/00000000-0000-4000-8000-000000000002",

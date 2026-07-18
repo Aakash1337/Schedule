@@ -1,4 +1,8 @@
 import {
+  HostedWorkItemSyncStoreError,
+  type HostedWorkItemSyncChangePage,
+} from "@schedule/application";
+import {
   DomainError,
   browserSessionId,
   createWorkItem,
@@ -14,6 +18,8 @@ import {
   HOSTED_WORK_ITEM_COLLECTION_ROUTE,
   HOSTED_WORK_ITEM_RESOURCE_ROUTE,
   HOSTED_WORK_ITEM_SNAPSHOT_ROUTE,
+  HOSTED_WORK_ITEM_SYNC_BOOTSTRAP_ROUTE,
+  HOSTED_WORK_ITEM_SYNC_CHANGES_ROUTE,
   registerHostedWorkItemBoundary,
   type HostedWorkItemServices,
 } from "./hosted-work-item-routes.js";
@@ -35,6 +41,7 @@ const authorization = Object.freeze({
   sessionId: SESSION_ID,
   workspaceId: WORKSPACE_ID,
 });
+const syncCursorSigningKey = Buffer.alloc(32, 7);
 
 const apps: FastifyInstance[] = [];
 
@@ -44,11 +51,22 @@ afterEach(async () => {
 
 function servicesWith(overrides: Partial<HostedWorkItemServices> = {}): HostedWorkItemServices {
   return {
+    syncCursorSigningKey,
     createWorkItem: vi.fn(async () => {
       throw new Error("Unexpected hosted work-item create.");
     }),
     listWorkItems: vi.fn(async () => ({ items: [], limit: 20, offset: 0 })),
     listWorkItemSnapshot: vi.fn(async () => ({ items: [], limit: 100, offset: 0 })),
+    bootstrapWorkItemSync: vi.fn(async () => ({
+      items: [],
+      checkpoint: "0",
+      nextAfterId: null,
+    })),
+    listWorkItemSyncChanges: vi.fn(async () => ({
+      changes: [],
+      throughCursor: "0",
+      nextAfterCursor: null,
+    })),
     updateWorkItemStatus: vi.fn(async () => {
       throw new Error("Unexpected hosted work-item update.");
     }),
@@ -58,6 +76,7 @@ function servicesWith(overrides: Partial<HostedWorkItemServices> = {}): HostedWo
 
 async function createHostedApp(
   services: Partial<HostedWorkItemServices>,
+  permittedWorkspace = WORKSPACE_ID,
 ): Promise<FastifyInstance> {
   const app = Fastify();
   apps.push(app);
@@ -69,7 +88,7 @@ async function createHostedApp(
       authenticator: { authenticate: async () => principal },
       authorizer: {
         execute: async (candidate, requestedWorkspace) =>
-          candidate.userId === USER_ID && requestedWorkspace === WORKSPACE_ID
+          candidate.userId === USER_ID && requestedWorkspace === permittedWorkspace
             ? Object.freeze({ ...candidate, workspaceId: requestedWorkspace })
             : null,
       },
@@ -346,6 +365,321 @@ describe("hosted work-item routes", () => {
     expect(otherTenant.statusCode).toBe(404);
     expect(otherTenant.body).not.toContain(WORKSPACE_ID);
     expect(listWorkItemSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("round-trips pinned bootstrap and delta pages with signed stage-bound cursors", async () => {
+    const original = createWorkItem({
+      workspaceId: WORKSPACE_ID,
+      title: "Synced work",
+      description: "Complete projection",
+      priority: "high",
+      dueOn: localDate("2026-07-22"),
+      planningDurationMinutes: 45,
+      now: new Date("2026-07-15T09:00:00.000Z"),
+    });
+    const updated = updateWorkItem(original, {
+      status: "in_progress",
+      now: new Date("2026-07-16T10:30:00.000Z"),
+    });
+    const bootstrapWorkItemSync = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [original], checkpoint: "5", nextAfterId: original.id })
+      .mockResolvedValueOnce({ items: [], checkpoint: "5", nextAfterId: null });
+    const listWorkItemSyncChanges = vi
+      .fn<() => Promise<HostedWorkItemSyncChangePage>>()
+      .mockResolvedValueOnce({
+        changes: [{ type: "upsert", cursor: "6", item: updated }],
+        throughCursor: "7",
+        nextAfterCursor: "6",
+      })
+      .mockResolvedValueOnce({
+        changes: [{ type: "delete", cursor: "7", workItemId: original.id }],
+        throughCursor: "7",
+        nextAfterCursor: null,
+      });
+    const app = await createHostedApp({ bootstrapWorkItemSync, listWorkItemSyncChanges });
+    const bootstrapPath = HOSTED_WORK_ITEM_SYNC_BOOTSTRAP_ROUTE.replace(
+      ":workspaceId",
+      WORKSPACE_ID,
+    );
+    const changesPath = HOSTED_WORK_ITEM_SYNC_CHANGES_ROUTE.replace(":workspaceId", WORKSPACE_ID);
+
+    const firstBootstrap = await app.inject({ method: "GET", url: bootstrapPath });
+    const firstBody = firstBootstrap.json<{
+      checkpoint: string;
+      nextCursor: string;
+      items: unknown[];
+    }>();
+    const finalBootstrap = await app.inject({
+      method: "GET",
+      url: `${bootstrapPath}?limit=200&cursor=${encodeURIComponent(firstBody.nextCursor)}`,
+    });
+    const firstChanges = await app.inject({
+      method: "GET",
+      url: `${changesPath}?cursor=${encodeURIComponent(firstBody.checkpoint)}`,
+    });
+    const firstChangesBody = firstChanges.json<{
+      checkpoint: string;
+      nextCursor: string;
+      changes: unknown[];
+    }>();
+    const finalChanges = await app.inject({
+      method: "GET",
+      url: `${changesPath}?limit=1&cursor=${encodeURIComponent(firstChangesBody.nextCursor)}`,
+    });
+
+    expect(firstBootstrap.statusCode).toBe(200);
+    expect(firstBootstrap.headers["cache-control"]).toBe("no-store");
+    expect(firstBootstrap.json()).toEqual({
+      protocolVersion: 1,
+      items: [
+        {
+          id: original.id,
+          parentWorkItemId: null,
+          title: "Synced work",
+          description: "Complete projection",
+          status: "backlog",
+          priority: "high",
+          dueOn: "2026-07-22",
+          planningDurationMinutes: 45,
+          version: 1,
+          createdAt: "2026-07-15T09:00:00.000Z",
+          updatedAt: "2026-07-15T09:00:00.000Z",
+        },
+      ],
+      checkpoint: expect.stringMatching(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/u),
+      nextCursor: expect.stringMatching(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/u),
+    });
+    expect(finalBootstrap.json()).toEqual({
+      protocolVersion: 1,
+      items: [],
+      checkpoint: firstBody.checkpoint,
+      nextCursor: null,
+    });
+    expect(bootstrapWorkItemSync).toHaveBeenNthCalledWith(1, {
+      authorization,
+      limit: 100,
+    });
+    expect(bootstrapWorkItemSync).toHaveBeenNthCalledWith(2, {
+      authorization,
+      limit: 200,
+      checkpoint: "5",
+      afterId: original.id,
+    });
+
+    expect(firstChanges.statusCode).toBe(200);
+    expect(firstChanges.json()).toEqual({
+      protocolVersion: 1,
+      changes: [
+        {
+          type: "upsert",
+          item: {
+            id: updated.id,
+            parentWorkItemId: null,
+            title: "Synced work",
+            description: "Complete projection",
+            status: "in_progress",
+            priority: "high",
+            dueOn: "2026-07-22",
+            planningDurationMinutes: 45,
+            version: 2,
+            createdAt: "2026-07-15T09:00:00.000Z",
+            updatedAt: "2026-07-16T10:30:00.000Z",
+          },
+        },
+      ],
+      checkpoint: expect.stringMatching(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/u),
+      nextCursor: expect.stringMatching(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/u),
+    });
+    expect(finalChanges.json()).toEqual({
+      protocolVersion: 1,
+      changes: [{ type: "delete", workItemId: original.id }],
+      checkpoint: firstChangesBody.checkpoint,
+      nextCursor: null,
+    });
+    expect(listWorkItemSyncChanges).toHaveBeenNthCalledWith(1, {
+      authorization,
+      limit: 100,
+      afterCursor: "5",
+    });
+    expect(listWorkItemSyncChanges).toHaveBeenNthCalledWith(2, {
+      authorization,
+      limit: 1,
+      afterCursor: "6",
+      throughCursor: "7",
+    });
+  });
+
+  it("rejects malformed, tampered, wrong-mode, and wrong-workspace sync cursors", async () => {
+    const continuationItem = createWorkItem({
+      workspaceId: WORKSPACE_ID,
+      title: "Continue sync",
+      now: new Date("2026-07-15T09:00:00.000Z"),
+    });
+    const bootstrapWorkItemSync = vi.fn().mockResolvedValue({
+      items: [continuationItem],
+      checkpoint: "5",
+      nextAfterId: continuationItem.id,
+    });
+    const listWorkItemSyncChanges = vi.fn().mockResolvedValue({
+      changes: [{ type: "delete", cursor: "6", workItemId: continuationItem.id }],
+      throughCursor: "7",
+      nextAfterCursor: "6",
+    });
+    const app = await createHostedApp({ bootstrapWorkItemSync, listWorkItemSyncChanges });
+    const bootstrapPath = HOSTED_WORK_ITEM_SYNC_BOOTSTRAP_ROUTE.replace(
+      ":workspaceId",
+      WORKSPACE_ID,
+    );
+    const changesPath = HOSTED_WORK_ITEM_SYNC_CHANGES_ROUTE.replace(":workspaceId", WORKSPACE_ID);
+    const bootstrap = await app.inject({ method: "GET", url: bootstrapPath });
+    const bootstrapBody = bootstrap.json<{ checkpoint: string; nextCursor: string }>();
+    const checkpoint = bootstrapBody.checkpoint;
+    const delta = await app.inject({
+      method: "GET",
+      url: `${changesPath}?cursor=${encodeURIComponent(checkpoint)}`,
+    });
+    const deltaCursor = delta.json<{ nextCursor: string }>().nextCursor;
+    expect(bootstrap.statusCode).toBe(200);
+    expect(delta.statusCode).toBe(200);
+    bootstrapWorkItemSync.mockClear();
+    listWorkItemSyncChanges.mockClear();
+    const last = checkpoint.at(-1);
+    const tampered = `${checkpoint.slice(0, -1)}${last === "A" ? "B" : "A"}`;
+
+    for (const url of [
+      `${bootstrapPath}?cursor=${encodeURIComponent(checkpoint)}`,
+      `${changesPath}?cursor=${encodeURIComponent(bootstrapBody.nextCursor)}`,
+      `${bootstrapPath}?cursor=${encodeURIComponent(deltaCursor)}`,
+      `${changesPath}?cursor=${encodeURIComponent(tampered)}`,
+      `${changesPath}?cursor=not-a-token`,
+    ]) {
+      const response = await app.inject({ method: "GET", url });
+      expect(response.statusCode, url).toBe(400);
+      expect(response.headers["cache-control"], url).toBe("no-store");
+    }
+    expect(listWorkItemSyncChanges).not.toHaveBeenCalled();
+
+    const otherChanges = vi.fn();
+    const otherApp = await createHostedApp(
+      { listWorkItemSyncChanges: otherChanges },
+      OTHER_WORKSPACE_ID,
+    );
+    const otherPath = HOSTED_WORK_ITEM_SYNC_CHANGES_ROUTE.replace(
+      ":workspaceId",
+      OTHER_WORKSPACE_ID,
+    );
+    const wrongWorkspace = await otherApp.inject({
+      method: "GET",
+      url: `${otherPath}?cursor=${encodeURIComponent(checkpoint)}`,
+    });
+    expect(wrongWorkspace.statusCode).toBe(400);
+    expect(otherChanges).not.toHaveBeenCalled();
+
+    const denied = await app.inject({
+      method: "GET",
+      url: `${otherPath}?cursor=not-a-token`,
+    });
+    expect(denied.statusCode).toBe(404);
+    expect(denied.json()).toMatchObject({ error: { code: "workspace.not_found" } });
+
+    const revokedApp = await createHostedApp({
+      bootstrapWorkItemSync: vi
+        .fn()
+        .mockRejectedValue(new DomainError("workspace.not_found", "private sync state detail")),
+    });
+    const revoked = await revokedApp.inject({ method: "GET", url: bootstrapPath });
+    expect(revoked.statusCode).toBe(404);
+    expect(revoked.body).not.toContain("private sync state detail");
+  });
+
+  it("strictly bounds sync queries before calling services", async () => {
+    const bootstrapWorkItemSync = vi.fn();
+    const listWorkItemSyncChanges = vi.fn();
+    const app = await createHostedApp({ bootstrapWorkItemSync, listWorkItemSyncChanges });
+    const bootstrapPath = HOSTED_WORK_ITEM_SYNC_BOOTSTRAP_ROUTE.replace(
+      ":workspaceId",
+      WORKSPACE_ID,
+    );
+    const changesPath = HOSTED_WORK_ITEM_SYNC_CHANGES_ROUTE.replace(":workspaceId", WORKSPACE_ID);
+
+    for (const query of [
+      "limit=0",
+      "limit=201",
+      "limit=01",
+      "limit=%2B1",
+      "limit=%201",
+      "limit=1.0",
+      "limit=1e2",
+      "limit=1&limit=2",
+      "offset=0",
+      "cursor=a.b&cursor=c.d",
+    ]) {
+      const response = await app.inject({ method: "GET", url: `${bootstrapPath}?${query}` });
+      expect(response.statusCode, query).toBe(400);
+    }
+    expect((await app.inject({ method: "GET", url: changesPath })).statusCode).toBe(400);
+    expect(bootstrapWorkItemSync).not.toHaveBeenCalled();
+    expect(listWorkItemSyncChanges).not.toHaveBeenCalled();
+  });
+
+  it("maps expired sync cursors to 410 and redacts internal sync corruption", async () => {
+    const continuationItem = createWorkItem({
+      workspaceId: WORKSPACE_ID,
+      title: "Expiring sync",
+      now: new Date("2026-07-15T09:00:00.000Z"),
+    });
+    const bootstrapWorkItemSync = vi
+      .fn()
+      .mockResolvedValueOnce({
+        items: [continuationItem],
+        checkpoint: "5",
+        nextAfterId: continuationItem.id,
+      })
+      .mockRejectedValueOnce(new HostedWorkItemSyncStoreError("expired"));
+    const listWorkItemSyncChanges = vi
+      .fn()
+      .mockRejectedValueOnce(new HostedWorkItemSyncStoreError("expired"))
+      .mockRejectedValueOnce(new HostedWorkItemSyncStoreError("corrupt"))
+      .mockRejectedValueOnce(new HostedWorkItemSyncStoreError("invalid"));
+    const app = await createHostedApp({ bootstrapWorkItemSync, listWorkItemSyncChanges });
+    const bootstrapPath = HOSTED_WORK_ITEM_SYNC_BOOTSTRAP_ROUTE.replace(
+      ":workspaceId",
+      WORKSPACE_ID,
+    );
+    const changesPath = HOSTED_WORK_ITEM_SYNC_CHANGES_ROUTE.replace(":workspaceId", WORKSPACE_ID);
+    const bootstrap = await app.inject({ method: "GET", url: bootstrapPath });
+    const bootstrapBody = bootstrap.json<{ checkpoint: string; nextCursor: string }>();
+    const checkpoint = bootstrapBody.checkpoint;
+    const url = `${changesPath}?cursor=${encodeURIComponent(checkpoint)}`;
+
+    const expiredBootstrap = await app.inject({
+      method: "GET",
+      url: `${bootstrapPath}?cursor=${encodeURIComponent(bootstrapBody.nextCursor)}`,
+    });
+    expect(expiredBootstrap.statusCode).toBe(410);
+    expect(expiredBootstrap.headers["cache-control"]).toBe("no-store");
+    expect(expiredBootstrap.json()).toMatchObject({
+      error: {
+        code: "hosted_sync.cursor_expired",
+        message: "The sync cursor is no longer available. Start a fresh bootstrap.",
+      },
+    });
+    const expired = await app.inject({ method: "GET", url });
+    expect(expired.statusCode).toBe(410);
+    expect(expired.json()).toMatchObject({
+      error: {
+        code: "hosted_sync.cursor_expired",
+        message: "The sync cursor is no longer available. Start a fresh bootstrap.",
+      },
+    });
+    const corrupt = await app.inject({ method: "GET", url });
+    expect(corrupt.statusCode).toBe(500);
+    expect(corrupt.json()).toMatchObject({
+      error: { code: "internal.unexpected_error", message: "An unexpected error occurred." },
+    });
+    expect(corrupt.body).not.toContain("corrupt");
+    expect((await app.inject({ method: "GET", url })).statusCode).toBe(400);
   });
 
   it("rejects identity-bearing and malformed bodies before calling the service", async () => {

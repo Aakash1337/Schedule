@@ -18,6 +18,7 @@ export * from "./list-work-item-children.js";
 export * from "./list-work-item-dependencies.js";
 export * from "./update-work-item.js";
 export * from "./update-hosted-work-item-status.js";
+export * from "./hosted-work-item-sync.js";
 export * from "./webhook-security.js";
 export * from "./create-workspace.js";
 export * from "./get-workspace.js";
