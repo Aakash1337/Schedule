@@ -79,6 +79,23 @@ def _envelope(data: object) -> dict[str, object]:
     }
 
 
+def _schedule_block(**changes: object) -> dict[str, object]:
+    block: dict[str, object] = {
+        "id": "60000000-0000-4000-8000-000000000001",
+        "workspaceId": "10000000-0000-4000-8000-000000000001",
+        "workItemId": None,
+        "title": "Deep work",
+        "startsAt": "2026-07-16T14:00:00.000Z",
+        "endsAt": "2026-07-16T15:00:00.000Z",
+        "timeZone": "America/New_York",
+        "version": 2,
+        "createdAt": "2026-07-15T12:00:00.000Z",
+        "updatedAt": "2026-07-15T13:00:00.000Z",
+    }
+    block.update(changes)
+    return block
+
+
 @contextmanager
 def _server(*responses: tuple[int, dict[str, str], bytes]):
     fixture = _Fixture()
@@ -314,6 +331,100 @@ class ScheduleClientTests(unittest.TestCase):
                         )
                 self.assertNotIn("MUST_NOT_ESCAPE", str(caught.exception))
 
+    def test_lists_a_strict_bounded_page_of_overlapping_schedule_blocks(self) -> None:
+        page = {
+            "items": [
+                _schedule_block(
+                    startsAt="2026-07-16T09:30:00-04:00",
+                    endsAt="2026-07-16T10:30:00-04:00",
+                ),
+                _schedule_block(
+                    id="60000000-0000-4000-8000-000000000002",
+                    startsAt="2026-07-16T15:00:00.000Z",
+                    endsAt="2026-07-16T16:00:00.000Z",
+                ),
+            ],
+            "page": {"limit": 2, "offset": 7},
+        }
+        with _server(_json_response(200, _envelope(page))) as (port, fixture):
+            client = ScheduleClient(ScheduleClientConfig(port=port, token=self.token))
+            self.assertEqual(
+                client.list_schedule_blocks(
+                    "2026-07-16T10:00:00-04:00",
+                    "2026-07-17T10:00:00-04:00",
+                    limit=2,
+                    offset=7,
+                ),
+                page,
+            )
+        self.assertEqual(
+            fixture.requests[0]["target"],
+            "/v1/integrations/schedule-blocks?from=2026-07-16T10%3A00%3A00-04%3A00"
+            "&to=2026-07-17T10%3A00%3A00-04%3A00&limit=2&offset=7",
+        )
+
+    def test_rejects_hostile_schedule_block_pages(self) -> None:
+        first = _schedule_block()
+        later = _schedule_block(
+            id="60000000-0000-4000-8000-000000000002",
+            startsAt="2026-07-16T16:00:00.000Z",
+            endsAt="2026-07-16T17:00:00.000Z",
+        )
+        invalid_pages = (
+            {"items": [first], "page": {"limit": 100, "offset": 0}, "extra": True},
+            {"items": [{**first, "providerSecret": "MUST_NOT_ESCAPE"}], "page": {"limit": 100, "offset": 0}},
+            {
+                "items": [{**first, "id": "6000000A-0000-4000-8000-000000000001"}],
+                "page": {"limit": 100, "offset": 0},
+            },
+            {"items": [{**first, "workItemId": "not-a-uuid"}], "page": {"limit": 100, "offset": 0}},
+            {
+                "items": [{**first, "title": " "}],
+                "page": {"limit": 100, "offset": 0},
+            },
+            {"items": [{**first, "startsAt": "2026-07-16T15:00:00Z"}], "page": {"limit": 100, "offset": 0}},
+            {
+                "items": [
+                    {
+                        **first,
+                        "startsAt": "2026-07-16T13:00:00Z",
+                        "endsAt": "2026-07-16T14:00:00Z",
+                    }
+                ],
+                "page": {"limit": 100, "offset": 0},
+            },
+            {
+                "items": [
+                    {
+                        **first,
+                        "startsAt": "2026-07-17T14:00:00Z",
+                        "endsAt": "2026-07-17T15:00:00Z",
+                    }
+                ],
+                "page": {"limit": 100, "offset": 0},
+            },
+            {"items": [{**first, "timeZone": "not a zone"}], "page": {"limit": 100, "offset": 0}},
+            {"items": [{**first, "version": True}], "page": {"limit": 100, "offset": 0}},
+            {"items": [{**first, "updatedAt": "2026-07-15T11:59:59Z"}], "page": {"limit": 100, "offset": 0}},
+            {"items": [{**first, "endsAt": "2026-07-16T14:00:00Z"}], "page": {"limit": 100, "offset": 0}},
+            {"items": [{**later, "workspaceId": str(uuid4())}, first], "page": {"limit": 100, "offset": 0}},
+            {"items": [later, first], "page": {"limit": 100, "offset": 0}},
+            {"items": [first, later], "page": {"limit": 99, "offset": 0}},
+            {"items": [first, later], "page": {"limit": 100.0, "offset": 0}},
+            {"items": [first, later], "page": {"limit": 1, "offset": 0}},
+        )
+        for invalid in invalid_pages:
+            with self.subTest(invalid=invalid):
+                with _server(_json_response(200, _envelope(invalid))) as (port, _fixture):
+                    client = ScheduleClient(ScheduleClientConfig(port=port, token=self.token))
+                    with self.assertRaisesRegex(
+                        ScheduleAdapterError, "^schedule_blocks_invalid$"
+                    ) as caught:
+                        client.list_schedule_blocks(
+                            "2026-07-16T14:00:00Z", "2026-07-17T14:00:00Z"
+                        )
+                self.assertNotIn("MUST_NOT_ESCAPE", str(caught.exception))
+
     def test_prepares_then_confirms_with_distinct_request_and_replay_keys(self) -> None:
         request_id = str(uuid4())
         confirmation_id = str(uuid4())
@@ -408,6 +519,121 @@ class ScheduleClientTests(unittest.TestCase):
             json.loads(confirm_request["body"]),
             {"version": INTEGRATION_VERSION, "confirmationId": confirmation_id},
         )
+
+    def test_prepares_and_projects_confirmed_schedule_block_cancellation(self) -> None:
+        request_id = str(uuid4())
+        confirmation_id = str(uuid4())
+        command = {
+            "type": "schedule_block.cancel",
+            "scheduleBlockId": "60000000-0000-4000-8000-000000000001",
+            "expectedVersion": 2,
+        }
+        command_display = json.dumps(command, separators=(",", ":"), sort_keys=True)
+        command_hash = hashlib.sha256(command_display.encode("utf-8")).hexdigest()
+        prepared = {
+            "confirmationId": confirmation_id,
+            "requestId": request_id,
+            "commandHash": command_hash,
+            "command": command,
+            "commandDisplay": command_display,
+            "summary": "Cancel one calendar block.",
+            "expiresAt": "2026-07-15T07:01:00.000Z",
+        }
+        receipt = {
+            "receiptVersion": 2,
+            "confirmationId": confirmation_id,
+            "operation": "schedule_block.cancel",
+            "commandHash": command_hash,
+            "outcome": {
+                "type": "schedule_block.cancelled",
+                "scheduleBlock": _schedule_block(),
+            },
+        }
+        with _server(
+            _json_response(201, _envelope(prepared)),
+            _json_response(200, _envelope(receipt)),
+        ) as (port, fixture):
+            client = ScheduleClient(ScheduleClientConfig(port=port, token=self.token))
+            self.assertEqual(client.prepare_change(request_id, command), prepared)
+            safe = client.confirm_change(
+                confirmation_id,
+                str(uuid4()),
+                "schedule_block.cancel",
+                command_hash,
+            )
+        self.assertEqual(
+            safe["outcome"],
+            {
+                "type": "schedule_block.cancelled",
+                "scheduleBlock": {
+                    "id": command["scheduleBlockId"],
+                    "version": command["expectedVersion"],
+                },
+            },
+        )
+        self.assertNotIn("Deep work", json.dumps(safe))
+        self.assertEqual(json.loads(fixture.requests[0]["body"])["command"], command)
+
+    def test_rejects_hostile_schedule_block_cancellation_receipts(self) -> None:
+        confirmation_id = str(uuid4())
+        command_hash = "d" * 64
+        valid = {
+            "receiptVersion": 2,
+            "confirmationId": confirmation_id,
+            "operation": "schedule_block.cancel",
+            "commandHash": command_hash,
+            "outcome": {
+                "type": "schedule_block.cancelled",
+                "scheduleBlock": _schedule_block(),
+            },
+        }
+        invalid_receipts = (
+            {key: value for key, value in valid.items() if key != "receiptVersion"},
+            {**valid, "receiptVersion": 1},
+            {**valid, "outcome": {**valid["outcome"], "type": "schedule_block.updated"}},
+            {
+                **valid,
+                "outcome": {
+                    **valid["outcome"],
+                    "scheduleBlock": {**_schedule_block(), "private": "MUST_NOT_ESCAPE"},
+                },
+            },
+            {
+                **valid,
+                "outcome": {
+                    **valid["outcome"],
+                    "scheduleBlock": _schedule_block(endsAt="2026-07-16T13:59:59Z"),
+                },
+            },
+            {
+                **valid,
+                "outcome": {
+                    **valid["outcome"],
+                    "scheduleBlock": _schedule_block(timeZone="not a zone"),
+                },
+            },
+            {
+                **valid,
+                "outcome": {
+                    **valid["outcome"],
+                    "scheduleBlock": _schedule_block(updatedAt="2026-07-15T11:59:59Z"),
+                },
+            },
+        )
+        for receipt in invalid_receipts:
+            with self.subTest(receipt=receipt):
+                with _server(_json_response(200, _envelope(receipt))) as (port, _fixture):
+                    client = ScheduleClient(ScheduleClientConfig(port=port, token=self.token))
+                    with self.assertRaisesRegex(
+                        ScheduleAdapterError, "^schedule_confirmed_change_invalid$"
+                    ) as caught:
+                        client.confirm_change(
+                            confirmation_id,
+                            str(uuid4()),
+                            "schedule_block.cancel",
+                            command_hash,
+                        )
+                self.assertNotIn("MUST_NOT_ESCAPE", str(caught.exception))
 
     def test_projects_strict_one_off_reminder_management_receipts(self) -> None:
         confirmation_id = str(uuid4())
@@ -853,6 +1079,18 @@ class ScheduleClientTests(unittest.TestCase):
             lambda: client.list_one_off_reminders(
                 "2026-07-01T00:00:00Z", "2026-08-02T00:00:00Z"
             ),
+            lambda: client.list_schedule_blocks(
+                "2026-07-17T00:00:00Z", "2026-07-16T00:00:00Z"
+            ),
+            lambda: client.list_schedule_blocks(
+                "2026-07-01T00:00:00Z", "2026-10-03T00:00:01Z"
+            ),
+            lambda: client.list_schedule_blocks(
+                "2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z", limit=True
+            ),
+            lambda: client.list_schedule_blocks(
+                "2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z", offset=-1
+            ),
             lambda: client.prepare_change("not-a-uuid", {"type": "work_item.create"}),
             lambda: client.prepare_change(
                 str(uuid4()),
@@ -879,6 +1117,22 @@ class ScheduleClientTests(unittest.TestCase):
                 {
                     "type": "one_off_reminder.cancel",
                     "oneOffReminderId": str(uuid4()),
+                    "expectedVersion": True,
+                },
+            ),
+            lambda: client.prepare_change(
+                str(uuid4()),
+                {
+                    "type": "schedule_block.cancel",
+                    "scheduleBlockId": "6000000A-0000-4000-8000-000000000001",
+                    "expectedVersion": 1,
+                },
+            ),
+            lambda: client.prepare_change(
+                str(uuid4()),
+                {
+                    "type": "schedule_block.cancel",
+                    "scheduleBlockId": str(uuid4()),
                     "expectedVersion": True,
                 },
             ),

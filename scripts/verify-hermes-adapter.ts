@@ -45,6 +45,16 @@ const materializationRange = {
   from: "2026-07-15T07:00:00.000Z",
   through: "2026-07-18T00:00:00.000Z",
 } as const;
+const scheduleBlockTitle = "Hermes adapter verification block";
+const scheduleBlockStartsAt = "2026-07-16T10:00:00.000Z";
+const scheduleBlockEndsAt = "2026-07-16T11:00:00.000Z";
+const updatedScheduleBlockTitle = "Hermes adapter verification block rescheduled";
+const updatedScheduleBlockStartsAt = "2026-07-15T07:15:00.000Z";
+const updatedScheduleBlockEndsAt = "2026-07-15T08:15:00.000Z";
+const scheduleBlockRange = {
+  from: "2026-07-15T00:00:00.000Z",
+  through: "2026-07-17T00:00:00.000Z",
+} as const;
 const subprocessOutputLimitBytes = 64 * 1024;
 const subprocessTimeoutMs = 60_000;
 
@@ -52,6 +62,9 @@ type ReminderOperation =
   "one_off_reminder.create" | "one_off_reminder.update" | "one_off_reminder.cancel";
 type ReminderOutcomeType =
   "one_off_reminder.created" | "one_off_reminder.updated" | "one_off_reminder.cancelled";
+type ScheduleBlockOperation = "schedule_block.update" | "schedule_block.cancel";
+type ScheduleBlockOutcomeType = "schedule_block.updated" | "schedule_block.cancelled";
+type VerificationOperation = ReminderOperation | ScheduleBlockOperation;
 
 interface ProcessResult {
   readonly stdout: string;
@@ -59,9 +72,25 @@ interface ProcessResult {
 
 interface HarnessPrepareResult {
   readonly phase: "prepare";
-  readonly operation: ReminderOperation;
+  readonly operation: VerificationOperation;
   readonly confirmationId: string;
   readonly commandHash: string;
+}
+
+interface HarnessScheduleBlockConfirmResult {
+  readonly phase: "schedule-block-confirm";
+  readonly operation: ScheduleBlockOperation;
+  readonly confirmationId: string;
+  readonly receiptHash: string;
+  readonly outcomeType: ScheduleBlockOutcomeType;
+  readonly scheduleBlockId: string;
+  readonly scheduleBlockVersion: number;
+}
+
+interface HarnessScheduleBlockListResult {
+  readonly phase: "schedule-block-list";
+  readonly scheduleBlockId: string;
+  readonly scheduleBlockVersion: number;
 }
 
 interface HarnessConfirmResult {
@@ -107,6 +136,12 @@ type VerificationPhase =
   | "update-confirm"
   | "cancel-prepare"
   | "cancel-confirm"
+  | "schedule-block-create"
+  | "schedule-block-list"
+  | "schedule-block-update-prepare"
+  | "schedule-block-update-confirm"
+  | "schedule-block-cancel-prepare"
+  | "schedule-block-cancel-confirm"
   | "final-state";
 
 const expectedVerificationChecks = [
@@ -116,6 +151,12 @@ const expectedVerificationChecks = [
   "no-mutation-before-confirmation",
   "one-off-reminder-intent-invalidation",
   "exact-once-confirmation",
+  "schedule-block-discovery",
+  "schedule-block-no-mutation-before-confirmation",
+  "schedule-block-intent-invalidation",
+  "schedule-block-delivery-command-invalidation",
+  "schedule-block-exact-once-confirmation",
+  "schedule-block-cancellation",
 ] as const;
 const completedVerificationChecks = new Set<string>();
 
@@ -197,6 +238,37 @@ class LiveAdapterContract(unittest.TestCase):
                 "reminderId": reminder["id"],
                 "reminderVersion": reminder["version"],
             }
+        elif phase == "schedule-block-list":
+            page = client.list_schedule_blocks(
+                os.environ["SCHEDULE_VERIFY_RANGE_FROM"],
+                os.environ["SCHEDULE_VERIFY_RANGE_THROUGH"],
+                limit=2,
+                offset=0,
+            )
+            self.assertEqual(page["page"], {"limit": 2, "offset": 0})
+            self.assertEqual(len(page["items"]), 1)
+            block = page["items"][0]
+            self.assertEqual(block["id"], os.environ["SCHEDULE_VERIFY_SCHEDULE_BLOCK_ID"])
+            self.assertEqual(
+                block["workspaceId"], os.environ["SCHEDULE_VERIFY_WORKSPACE_ID"]
+            )
+            self.assertIsNone(block["workItemId"])
+            self.assertEqual(block["title"], os.environ["SCHEDULE_VERIFY_SCHEDULE_BLOCK_TITLE"])
+            self.assertEqual(
+                block["startsAt"], os.environ["SCHEDULE_VERIFY_SCHEDULE_BLOCK_STARTS_AT"]
+            )
+            self.assertEqual(
+                block["endsAt"], os.environ["SCHEDULE_VERIFY_SCHEDULE_BLOCK_ENDS_AT"]
+            )
+            self.assertEqual(block["timeZone"], "UTC")
+            self.assertEqual(
+                block["version"], int(os.environ["SCHEDULE_VERIFY_SCHEDULE_BLOCK_VERSION"])
+            )
+            result = {
+                "phase": "schedule-block-list",
+                "scheduleBlockId": block["id"],
+                "scheduleBlockVersion": block["version"],
+            }
         elif phase == "confirm":
             self.assertTrue(confirmation_id)
             confirmed = client.confirm_change(
@@ -212,30 +284,50 @@ class LiveAdapterContract(unittest.TestCase):
                 "one_off_reminder.create": "one_off_reminder.created",
                 "one_off_reminder.update": "one_off_reminder.updated",
                 "one_off_reminder.cancel": "one_off_reminder.cancelled",
+                "schedule_block.update": "schedule_block.updated",
+                "schedule_block.cancel": "schedule_block.cancelled",
             }[operation]
             self.assertEqual(confirmed["outcome"]["type"], expected_type)
-            reminder = confirmed["outcome"]["oneOffReminder"]
-            effective_field = "cancelledAt" if operation == "one_off_reminder.cancel" else "scheduledFor"
-            self.assertEqual(set(reminder), {"id", "version", effective_field})
-            expected_id = os.environ.get("SCHEDULE_VERIFY_REMINDER_ID")
-            if expected_id:
-                self.assertEqual(reminder["id"], expected_id)
-            self.assertEqual(reminder["version"], int(os.environ["SCHEDULE_VERIFY_REMINDER_VERSION"]))
-            self.assertEqual(
-                reminder[effective_field],
-                os.environ["SCHEDULE_VERIFY_EFFECTIVE_AT"],
-            )
             canonical = json.dumps(confirmed, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
-            result = {
-                "phase": "confirm",
-                "operation": operation,
-                "confirmationId": confirmed["confirmationId"],
-                "receiptHash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
-                "outcomeType": confirmed["outcome"]["type"],
-                "reminderId": reminder["id"],
-                "reminderVersion": reminder["version"],
-                "effectiveAt": reminder[effective_field],
-            }
+            if operation in {"schedule_block.update", "schedule_block.cancel"}:
+                block = confirmed["outcome"]["scheduleBlock"]
+                self.assertEqual(set(block), {"id", "version"})
+                self.assertEqual(block["id"], os.environ["SCHEDULE_VERIFY_SCHEDULE_BLOCK_ID"])
+                self.assertEqual(
+                    block["version"],
+                    int(os.environ["SCHEDULE_VERIFY_SCHEDULE_BLOCK_VERSION"]),
+                )
+                result = {
+                    "phase": "schedule-block-confirm",
+                    "operation": operation,
+                    "confirmationId": confirmed["confirmationId"],
+                    "receiptHash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                    "outcomeType": confirmed["outcome"]["type"],
+                    "scheduleBlockId": block["id"],
+                    "scheduleBlockVersion": block["version"],
+                }
+            else:
+                reminder = confirmed["outcome"]["oneOffReminder"]
+                effective_field = "cancelledAt" if operation == "one_off_reminder.cancel" else "scheduledFor"
+                self.assertEqual(set(reminder), {"id", "version", effective_field})
+                expected_id = os.environ.get("SCHEDULE_VERIFY_REMINDER_ID")
+                if expected_id:
+                    self.assertEqual(reminder["id"], expected_id)
+                self.assertEqual(reminder["version"], int(os.environ["SCHEDULE_VERIFY_REMINDER_VERSION"]))
+                self.assertEqual(
+                    reminder[effective_field],
+                    os.environ["SCHEDULE_VERIFY_EFFECTIVE_AT"],
+                )
+                result = {
+                    "phase": "confirm",
+                    "operation": operation,
+                    "confirmationId": confirmed["confirmationId"],
+                    "receiptHash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                    "outcomeType": confirmed["outcome"]["type"],
+                    "reminderId": reminder["id"],
+                    "reminderVersion": reminder["version"],
+                    "effectiveAt": reminder[effective_field],
+                }
         else:
             self.fail("unsupported verification phase")
         print("SCHEDULE_HERMES_VERIFY=" + json.dumps(result, separators=(",", ":"), sort_keys=True))
@@ -359,8 +451,21 @@ const reminderOutcomes: Readonly<Record<ReminderOperation, ReminderOutcomeType>>
   "one_off_reminder.cancel": "one_off_reminder.cancelled",
 };
 
+const scheduleBlockOutcomes: Readonly<Record<ScheduleBlockOperation, ScheduleBlockOutcomeType>> = {
+  "schedule_block.update": "schedule_block.updated",
+  "schedule_block.cancel": "schedule_block.cancelled",
+};
+
 function isReminderOperation(value: unknown): value is ReminderOperation {
   return typeof value === "string" && Object.hasOwn(reminderOutcomes, value);
+}
+
+function isScheduleBlockOperation(value: unknown): value is ScheduleBlockOperation {
+  return typeof value === "string" && Object.hasOwn(scheduleBlockOutcomes, value);
+}
+
+function isVerificationOperation(value: unknown): value is VerificationOperation {
+  return isReminderOperation(value) || isScheduleBlockOperation(value);
 }
 
 function assertUuid(value: unknown): asserts value is string {
@@ -372,7 +477,13 @@ function assertUuid(value: unknown): asserts value is string {
 
 function parseHarnessResult(
   stdout: string,
-): HarnessPrepareResult | HarnessConfirmResult | HarnessListResult | HarnessPlanFitResult {
+):
+  | HarnessPrepareResult
+  | HarnessConfirmResult
+  | HarnessListResult
+  | HarnessPlanFitResult
+  | HarnessScheduleBlockConfirmResult
+  | HarnessScheduleBlockListResult {
   const lines = stdout.split(/\r?\n/u).filter((line) => line.startsWith("SCHEDULE_HERMES_VERIFY="));
   assert.equal(lines.length, 1, "Hermes harness must emit exactly one result marker");
   const value = JSON.parse(lines[0]!.slice("SCHEDULE_HERMES_VERIFY=".length)) as unknown;
@@ -387,7 +498,7 @@ function parseHarnessResult(
       "phase",
     ]);
     assertUuid(record.confirmationId);
-    assert.ok(isReminderOperation(record.operation));
+    assert.ok(isVerificationOperation(record.operation));
     assert.match(String(record.commandHash), /^[a-f0-9]{64}$/u);
     return record as unknown as HarnessPrepareResult;
   }
@@ -402,6 +513,38 @@ function parseHarnessResult(
     assert.equal(record.status, "insufficient_history");
     assert.equal(record.sampleCount, 0);
     return record as unknown as HarnessPlanFitResult;
+  }
+  if (record.phase === "schedule-block-list") {
+    assert.deepEqual(Object.keys(record).sort(), [
+      "phase",
+      "scheduleBlockId",
+      "scheduleBlockVersion",
+    ]);
+    assertUuid(record.scheduleBlockId);
+    assert.ok(
+      Number.isInteger(record.scheduleBlockVersion) && Number(record.scheduleBlockVersion) > 0,
+    );
+    return record as unknown as HarnessScheduleBlockListResult;
+  }
+  if (record.phase === "schedule-block-confirm") {
+    assert.deepEqual(Object.keys(record).sort(), [
+      "confirmationId",
+      "operation",
+      "outcomeType",
+      "phase",
+      "receiptHash",
+      "scheduleBlockId",
+      "scheduleBlockVersion",
+    ]);
+    assertUuid(record.confirmationId);
+    assertUuid(record.scheduleBlockId);
+    assert.ok(isScheduleBlockOperation(record.operation));
+    assert.match(String(record.receiptHash), /^[a-f0-9]{64}$/u);
+    assert.equal(record.outcomeType, scheduleBlockOutcomes[record.operation]);
+    assert.ok(
+      Number.isInteger(record.scheduleBlockVersion) && Number(record.scheduleBlockVersion) > 0,
+    );
+    return record as unknown as HarnessScheduleBlockConfirmResult;
   }
   assert.equal(record.phase, "confirm");
   assert.deepEqual(Object.keys(record).sort(), [
@@ -443,7 +586,14 @@ async function runPythonUnitTests(pythonExecutable: string): Promise<void> {
 async function runLiveHarness(
   pythonExecutable: string,
   environment: NodeJS.ProcessEnv,
-): Promise<HarnessPrepareResult | HarnessConfirmResult | HarnessListResult | HarnessPlanFitResult> {
+): Promise<
+  | HarnessPrepareResult
+  | HarnessConfirmResult
+  | HarnessListResult
+  | HarnessPlanFitResult
+  | HarnessScheduleBlockConfirmResult
+  | HarnessScheduleBlockListResult
+> {
   const result = await runProcess(pythonExecutable, ["-c", liveHarness], {
     ...environment,
     PYTHONDONTWRITEBYTECODE: "1",
@@ -503,7 +653,7 @@ try {
     {
       workspaceId: workspaceId(targetWorkspaceId),
       name: "Hermes adapter verifier",
-      scopes: ["schedule:read", "schedule:write"],
+      scopes: ["schedule:read", "schedule:write", "schedule:delivery"],
       secretHash: hashIntegrationCredentialSecret(secret, pepper),
     },
   );
@@ -552,7 +702,7 @@ try {
   assert.deepEqual(await snapshotPlanFitReadState(), planFitStateBefore);
   completedVerificationChecks.add("plan-fit-read");
 
-  const prepare = async (operation: ReminderOperation, command: object) => {
+  const prepare = async (operation: VerificationOperation, command: object) => {
     const requestId = randomUUID();
     const result = await runLiveHarness(pythonExecutable, {
       ...harnessEnvironment,
@@ -571,6 +721,7 @@ try {
     effectiveAt: string,
     reminderId?: string,
   ) => {
+    assert.ok(isReminderOperation(prepared.operation));
     const environment = {
       ...harnessEnvironment,
       SCHEDULE_VERIFY_PHASE: "confirm",
@@ -587,6 +738,31 @@ try {
     assert.equal(first.phase, "confirm");
     assert.equal(first.operation, prepared.operation);
     assert.equal(first.reminderVersion, reminderVersion);
+    assert.deepEqual(replay, first);
+    return first;
+  };
+  const confirmScheduleBlockAndReplay = async (
+    prepared: HarnessPrepareResult,
+    scheduleBlockId: string,
+    scheduleBlockVersion: number,
+  ) => {
+    assert.ok(isScheduleBlockOperation(prepared.operation));
+    const environment = {
+      ...harnessEnvironment,
+      SCHEDULE_VERIFY_PHASE: "confirm",
+      SCHEDULE_VERIFY_OPERATION: prepared.operation,
+      SCHEDULE_VERIFY_CONFIRMATION_ID: prepared.confirmationId,
+      SCHEDULE_VERIFY_COMMAND_HASH: prepared.commandHash,
+      SCHEDULE_VERIFY_IDEMPOTENCY_KEY: randomUUID(),
+      SCHEDULE_VERIFY_SCHEDULE_BLOCK_ID: scheduleBlockId,
+      SCHEDULE_VERIFY_SCHEDULE_BLOCK_VERSION: String(scheduleBlockVersion),
+    };
+    const first = await runLiveHarness(pythonExecutable, environment);
+    const replay = await runLiveHarness(pythonExecutable, environment);
+    assert.equal(first.phase, "schedule-block-confirm");
+    assert.equal(first.operation, prepared.operation);
+    assert.equal(first.scheduleBlockId, scheduleBlockId);
+    assert.equal(first.scheduleBlockVersion, scheduleBlockVersion);
     assert.deepEqual(replay, first);
     return first;
   };
@@ -890,6 +1066,305 @@ try {
   });
   completedVerificationChecks.add("one-off-reminder-intent-invalidation");
   completedVerificationChecks.add("exact-once-confirmation");
+
+  verificationPhase = "schedule-block-create";
+  const scheduleRuleResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${targetWorkspaceId}/notification-rules`,
+    payload: { kind: "schedule_block_lead", leadMinutes: 15 },
+  });
+  assert.equal(scheduleRuleResponse.statusCode, 201, scheduleRuleResponse.body);
+  const scheduleBlockResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${targetWorkspaceId}/schedule-blocks`,
+    payload: {
+      title: scheduleBlockTitle,
+      startsAt: scheduleBlockStartsAt,
+      endsAt: scheduleBlockEndsAt,
+      timeZone: "UTC",
+    },
+  });
+  assert.equal(scheduleBlockResponse.statusCode, 201, scheduleBlockResponse.body);
+  const scheduleBlock = scheduleBlockResponse.json<{
+    readonly id: string;
+    readonly version: number;
+  }>();
+  assert.equal(scheduleBlock.version, 1);
+
+  const isolatedWorkspaceResponse = await app.inject({
+    method: "POST",
+    url: "/v1/workspaces",
+    payload: { name: "Hermes adapter isolated schedule" },
+  });
+  assert.equal(isolatedWorkspaceResponse.statusCode, 201, isolatedWorkspaceResponse.body);
+  const isolatedWorkspaceId = isolatedWorkspaceResponse.json<{ readonly id: string }>().id;
+  const isolatedScheduleBlockResponse = await app.inject({
+    method: "POST",
+    url: `/v1/workspaces/${isolatedWorkspaceId}/schedule-blocks`,
+    payload: {
+      title: "Hermes adapter foreign block",
+      startsAt: scheduleBlockStartsAt,
+      endsAt: scheduleBlockEndsAt,
+      timeZone: "UTC",
+    },
+  });
+  assert.equal(isolatedScheduleBlockResponse.statusCode, 201, isolatedScheduleBlockResponse.body);
+  const isolatedScheduleBlockId = isolatedScheduleBlockResponse.json<{ readonly id: string }>().id;
+
+  const scheduleBlockState = async (expected: {
+    readonly title: string;
+    readonly startsAt: string;
+    readonly endsAt: string;
+    readonly version: number;
+    readonly targetCount: number;
+    readonly intentCount: number;
+    readonly deletedAuditCount: number;
+  }) => {
+    const [state] = await activeConnection.sql<
+      {
+        target_count: number;
+        matching_count: number;
+        isolated_count: number;
+        intent_count: number;
+        deleted_audit_count: number;
+      }[]
+    >`
+      select
+        (
+          select count(*)::int from schedule_blocks
+          where workspace_id = ${targetWorkspaceId} and id = ${scheduleBlock.id}
+        ) as target_count,
+        (
+          select count(*)::int from schedule_blocks
+          where workspace_id = ${targetWorkspaceId}
+            and id = ${scheduleBlock.id}
+            and title = ${expected.title}
+            and starts_at = ${expected.startsAt}::timestamptz
+            and ends_at = ${expected.endsAt}::timestamptz
+            and time_zone = 'UTC'
+            and version = ${expected.version}
+        ) as matching_count,
+        (
+          select count(*)::int from schedule_blocks
+          where workspace_id = ${isolatedWorkspaceId} and id = ${isolatedScheduleBlockId}
+        ) as isolated_count,
+        (
+          select count(*)::int from notification_intents
+          where workspace_id = ${targetWorkspaceId} and schedule_block_id = ${scheduleBlock.id}
+        ) as intent_count,
+        (
+          select count(*)::int from audit_events
+          where workspace_id = ${targetWorkspaceId}
+            and entity_id = ${scheduleBlock.id}
+            and action = 'schedule_block.deleted'
+        ) as deleted_audit_count
+    `;
+    assert.deepEqual(state, {
+      target_count: expected.targetCount,
+      matching_count: expected.targetCount,
+      isolated_count: 1,
+      intent_count: expected.intentCount,
+      deleted_audit_count: expected.deletedAuditCount,
+    });
+    return state;
+  };
+  const originalScheduleBlock = {
+    title: scheduleBlockTitle,
+    startsAt: scheduleBlockStartsAt,
+    endsAt: scheduleBlockEndsAt,
+    version: 1,
+    targetCount: 1,
+    intentCount: 1,
+    deletedAuditCount: 0,
+  } as const;
+  await materialize();
+  await scheduleBlockState(originalScheduleBlock);
+
+  verificationPhase = "schedule-block-list";
+  // EVIDENCE: hermes-adapter-schedule-block-discovery
+  // The real Python adapter discovers only its credential workspace and returns exact mutation IDs.
+  const scheduleStateBeforeDiscovery = await snapshotPlanFitReadState();
+  const discoveredScheduleBlock = await runLiveHarness(pythonExecutable, {
+    ...harnessEnvironment,
+    SCHEDULE_VERIFY_PHASE: "schedule-block-list",
+    SCHEDULE_VERIFY_RANGE_FROM: scheduleBlockRange.from,
+    SCHEDULE_VERIFY_RANGE_THROUGH: scheduleBlockRange.through,
+    SCHEDULE_VERIFY_WORKSPACE_ID: targetWorkspaceId,
+    SCHEDULE_VERIFY_SCHEDULE_BLOCK_ID: scheduleBlock.id,
+    SCHEDULE_VERIFY_SCHEDULE_BLOCK_TITLE: scheduleBlockTitle,
+    SCHEDULE_VERIFY_SCHEDULE_BLOCK_STARTS_AT: scheduleBlockStartsAt,
+    SCHEDULE_VERIFY_SCHEDULE_BLOCK_ENDS_AT: scheduleBlockEndsAt,
+    SCHEDULE_VERIFY_SCHEDULE_BLOCK_VERSION: "1",
+  });
+  assert.equal(discoveredScheduleBlock.phase, "schedule-block-list");
+  assert.equal(discoveredScheduleBlock.scheduleBlockId, scheduleBlock.id);
+  assert.equal(discoveredScheduleBlock.scheduleBlockVersion, 1);
+  assert.deepEqual(await snapshotPlanFitReadState(), scheduleStateBeforeDiscovery);
+  completedVerificationChecks.add("schedule-block-discovery");
+
+  verificationPhase = "schedule-block-update-prepare";
+  const scheduleBlockUpdate = await prepare("schedule_block.update", {
+    type: "schedule_block.update",
+    scheduleBlockId: discoveredScheduleBlock.scheduleBlockId,
+    expectedVersion: discoveredScheduleBlock.scheduleBlockVersion,
+    title: updatedScheduleBlockTitle,
+    startsAt: updatedScheduleBlockStartsAt,
+    endsAt: updatedScheduleBlockEndsAt,
+  });
+  await scheduleBlockState(originalScheduleBlock);
+
+  verificationPhase = "schedule-block-update-confirm";
+  const updatedScheduleBlock = await confirmScheduleBlockAndReplay(
+    scheduleBlockUpdate,
+    scheduleBlock.id,
+    2,
+  );
+  assert.equal(updatedScheduleBlock.outcomeType, "schedule_block.updated");
+  const rescheduledBlockState = {
+    title: updatedScheduleBlockTitle,
+    startsAt: updatedScheduleBlockStartsAt,
+    endsAt: updatedScheduleBlockEndsAt,
+    version: 2,
+    targetCount: 1,
+    intentCount: 0,
+    deletedAuditCount: 0,
+  } as const;
+  await scheduleBlockState(rescheduledBlockState);
+
+  verificationPhase = "schedule-block-list";
+  const rediscoveredScheduleBlock = await runLiveHarness(pythonExecutable, {
+    ...harnessEnvironment,
+    SCHEDULE_VERIFY_PHASE: "schedule-block-list",
+    SCHEDULE_VERIFY_RANGE_FROM: scheduleBlockRange.from,
+    SCHEDULE_VERIFY_RANGE_THROUGH: scheduleBlockRange.through,
+    SCHEDULE_VERIFY_WORKSPACE_ID: targetWorkspaceId,
+    SCHEDULE_VERIFY_SCHEDULE_BLOCK_ID: scheduleBlock.id,
+    SCHEDULE_VERIFY_SCHEDULE_BLOCK_TITLE: updatedScheduleBlockTitle,
+    SCHEDULE_VERIFY_SCHEDULE_BLOCK_STARTS_AT: updatedScheduleBlockStartsAt,
+    SCHEDULE_VERIFY_SCHEDULE_BLOCK_ENDS_AT: updatedScheduleBlockEndsAt,
+    SCHEDULE_VERIFY_SCHEDULE_BLOCK_VERSION: "2",
+  });
+  assert.equal(rediscoveredScheduleBlock.phase, "schedule-block-list");
+  assert.equal(rediscoveredScheduleBlock.scheduleBlockId, scheduleBlock.id);
+  assert.equal(rediscoveredScheduleBlock.scheduleBlockVersion, 2);
+  await materialize();
+  await scheduleBlockState({ ...rescheduledBlockState, intentCount: 1 });
+
+  const scheduleDeliveryClaimResponse = await app.inject({
+    method: "POST",
+    url: "/v1/integrations/reminder-deliveries/claim",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      "idempotency-key": "hermes-schedule-block-delivery-claim",
+    },
+    payload: { version: "schedule.integration/v1" },
+  });
+  assert.equal(scheduleDeliveryClaimResponse.statusCode, 200, scheduleDeliveryClaimResponse.body);
+  const scheduleDelivery = scheduleDeliveryClaimResponse.json<{
+    readonly data: {
+      readonly command: {
+        readonly deliveryId: string;
+        readonly intentId: string;
+        readonly targetType: string;
+      } | null;
+    };
+  }>().data.command;
+  assert.ok(scheduleDelivery);
+  assert.equal(scheduleDelivery.targetType, "schedule_block");
+  const [claimedScheduleDelivery] = await activeConnection.sql<
+    { readonly status: string; readonly completed_at: Date | null }[]
+  >`
+    select status, completed_at
+    from notification_delivery_commands
+    where workspace_id = ${targetWorkspaceId}
+      and id = ${scheduleDelivery.deliveryId}
+      and intent_id = ${scheduleDelivery.intentId}
+  `;
+  assert.deepEqual(claimedScheduleDelivery, { status: "processing", completed_at: null });
+
+  verificationPhase = "schedule-block-cancel-prepare";
+  const scheduleBlockCancellation = await prepare("schedule_block.cancel", {
+    type: "schedule_block.cancel",
+    scheduleBlockId: rediscoveredScheduleBlock.scheduleBlockId,
+    expectedVersion: rediscoveredScheduleBlock.scheduleBlockVersion,
+  });
+  await scheduleBlockState({ ...rescheduledBlockState, intentCount: 1 });
+  completedVerificationChecks.add("schedule-block-no-mutation-before-confirmation");
+
+  verificationPhase = "schedule-block-cancel-confirm";
+  const cancelledScheduleBlock = await confirmScheduleBlockAndReplay(
+    scheduleBlockCancellation,
+    scheduleBlock.id,
+    2,
+  );
+  assert.equal(cancelledScheduleBlock.outcomeType, "schedule_block.cancelled");
+  await scheduleBlockState({
+    ...rescheduledBlockState,
+    targetCount: 0,
+    intentCount: 0,
+    deletedAuditCount: 1,
+  });
+  const [invalidatedScheduleDelivery] = await activeConnection.sql<
+    { readonly status: string; readonly completed_at: Date | string | null }[]
+  >`
+    select status, completed_at
+    from notification_delivery_commands
+    where workspace_id = ${targetWorkspaceId} and id = ${scheduleDelivery.deliveryId}
+  `;
+  assert.equal(invalidatedScheduleDelivery?.status, "invalidated");
+  assert.ok(
+    invalidatedScheduleDelivery?.completed_at !== null &&
+      Number.isFinite(new Date(String(invalidatedScheduleDelivery?.completed_at)).getTime()),
+  );
+
+  verificationPhase = "final-state";
+  const [scheduleFinalState] = await activeConnection.sql<
+    {
+      confirmation_count: number;
+      consumed_confirmation_count: number;
+      request_count: number;
+      succeeded_request_count: number;
+      prepared_audit_count: number;
+      confirmed_audit_count: number;
+      deletion_audit_count: number;
+      deletion_audit_matching_count: number;
+    }[]
+  >`
+    select
+      (select count(*)::int from integration_confirmations where credential_id = ${credential.id}) as confirmation_count,
+      (select count(*)::int from integration_confirmations where credential_id = ${credential.id} and consumed_at is not null) as consumed_confirmation_count,
+      (select count(*)::int from integration_requests where credential_id = ${credential.id}) as request_count,
+      (select count(*)::int from integration_requests where credential_id = ${credential.id} and status = 'succeeded') as succeeded_request_count,
+      (select count(*)::int from audit_events where workspace_id = ${targetWorkspaceId} and action = 'integration.command_prepared') as prepared_audit_count,
+      (select count(*)::int from audit_events where workspace_id = ${targetWorkspaceId} and action = 'integration.command_confirmed') as confirmed_audit_count,
+      (select count(*)::int from audit_events where workspace_id = ${targetWorkspaceId} and entity_id = ${scheduleBlock.id} and action = 'schedule_block.deleted') as deletion_audit_count,
+      (
+        select count(*)::int from audit_events
+        where workspace_id = ${targetWorkspaceId}
+          and entity_id = ${scheduleBlock.id}
+          and action = 'schedule_block.deleted'
+          and data ->> 'source' = 'integration'
+          and data ->> 'title' = ${updatedScheduleBlockTitle}
+          and data ->> 'startsAt' = ${updatedScheduleBlockStartsAt}
+          and data ->> 'endsAt' = ${updatedScheduleBlockEndsAt}
+          and data ->> 'version' = '2'
+      ) as deletion_audit_matching_count
+  `;
+  assert.deepEqual(scheduleFinalState, {
+    confirmation_count: 5,
+    consumed_confirmation_count: 5,
+    request_count: 5,
+    succeeded_request_count: 5,
+    prepared_audit_count: 5,
+    confirmed_audit_count: 5,
+    deletion_audit_count: 1,
+    deletion_audit_matching_count: 1,
+  });
+  completedVerificationChecks.add("schedule-block-intent-invalidation");
+  completedVerificationChecks.add("schedule-block-delivery-command-invalidation");
+  completedVerificationChecks.add("schedule-block-exact-once-confirmation");
+  completedVerificationChecks.add("schedule-block-cancellation");
 } catch (error) {
   verificationFailure = error;
 }

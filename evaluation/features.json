@@ -1135,7 +1135,7 @@
         "anchor": "## Verification and safe rollout"
       },
       "limitations": [
-        "CI verifies strict read-only Daily Plan Fit guidance, bounded one-off reminder discovery, and explicitly confirmed create, reschedule, and cancellation through the production Python client, deterministic loopback fakes, and a real Schedule gateway with disposable PostgreSQL; it does not load the plugin inside a live Hermes runtime.",
+        "CI verifies strict read-only Daily Plan Fit guidance, bounded one-off reminder and calendar-block discovery, and explicitly confirmed reminder management plus calendar-block rescheduling/deletion through the production Python client, deterministic loopback fakes, and a real Schedule gateway with disposable PostgreSQL; it does not load the plugin inside a live Hermes runtime.",
         "Live WhatsApp delivery remains operator-run and requires an explicit WHATSAPP_HOME_CHANNEL; the local stdout reminder smoke does not establish phone delivery."
       ],
       "evidence": [
@@ -1147,9 +1147,13 @@
             "test_environment_accepts_only_an_exact_loopback_origin",
             "test_reads_only_strict_actionable_daily_plan_fit_guidance",
             "test_lists_strict_one_off_reminders_in_a_bounded_range",
+            "test_lists_a_strict_bounded_page_of_overlapping_schedule_blocks",
+            "test_rejects_hostile_schedule_block_pages",
             "test_prepares_then_confirms_with_distinct_request_and_replay_keys",
             "test_projects_strict_one_off_reminder_management_receipts",
             "test_rejects_hostile_one_off_reminder_receipts",
+            "test_prepares_and_projects_confirmed_schedule_block_cancellation",
+            "test_rejects_hostile_schedule_block_cancellation_receipts",
             "test_rejects_prepare_integrity_drift_before_exposing_a_confirmation",
             "test_rejects_mismatched_or_overbroad_confirmation_receipts",
             "test_bounds_and_redacts_rejected_or_malformed_responses"
@@ -1163,7 +1167,7 @@
             "test_persists_only_keyed_binding_and_opaque_confirmation_metadata",
             "test_rejects_a_different_sender_even_inside_the_same_session",
             "test_claim_blocks_cancel_until_the_remote_attempt_finishes",
-            "test_accepts_fresh_reminder_operations_and_rejects_unknown_operations",
+            "test_accepts_fresh_management_operations_and_rejects_unknown_operations",
             "test_upgrades_populated_legacy_state_without_losing_a_claim",
             "test_fails_closed_on_current_schema_constraint_drift",
             "test_rejects_a_stale_async_turn_context_after_a_newer_turn_arrives",
@@ -1188,6 +1192,8 @@
             "test_prepare_does_not_confirm_and_requires_the_exact_phrase_in_a_later_turn",
             "test_hook_context_drives_writes_while_read_tools_remain_bounded",
             "test_plan_fit_rejects_argument_drift_without_calling_schedule",
+            "test_schedule_block_list_requires_its_range_and_rejects_argument_drift",
+            "test_schedule_block_cancellation_keeps_sender_bound_later_turn_confirmation",
             "test_missing_sender_context_fails_closed_without_breaking_the_hook",
             "test_a_newer_turn_invalidates_a_stale_async_tool_context",
             "test_retry_reuses_the_same_idempotency_key_then_consumes_the_pending_change",
@@ -1235,6 +1241,12 @@
             "hermes-adapter-one-off-reminder-discovery",
             "hermes-adapter-one-off-reminder-intent-invalidation",
             "hermes-adapter-exact-once-confirmation",
+            "hermes-adapter-schedule-block-discovery",
+            "schedule-block-no-mutation-before-confirmation",
+            "schedule-block-intent-invalidation",
+            "schedule-block-delivery-command-invalidation",
+            "schedule-block-exact-once-confirmation",
+            "schedule-block-cancellation",
             "Hermes adapter verification passed"
           ]
         }

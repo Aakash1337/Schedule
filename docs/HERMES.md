@@ -224,8 +224,8 @@ reads/DML and DDL, restart durability, and exact cleanup of the nonce database a
 
 The Hermes Schedule plugin is the local, opt-in adapter between a Hermes conversation and
 Schedule's authenticated integration gateway. It can read the authoritative Today plan, bounded
-Daily Plan Fit guidance, and work items, prepare one of Schedule's strict structured
-commands—including one-off reminder creation—and
+Daily Plan Fit guidance, work items, one-off reminders, and calendar blocks; prepare one of
+Schedule's strict structured commands—including reminder creation and calendar-block cancellation—and
 confirm that exact command only after a separate human turn. A companion script produces a deterministic daily-plan reminder on
 standard output without invoking an LLM.
 
@@ -308,7 +308,7 @@ hermes plugins list --enabled
 ```
 
 Then run the installed native registration verifier with Hermes's Python. It performs fresh
-plugin discovery and checks the exact seven tools, their `schedule` toolset, and the observer-only
+plugin discovery and checks the exact eight tools, their `schedule` toolset, and the observer-only
 turn hook. The verifier itself does not invoke a tool, call Schedule, query a model, or send a
 message. Native discovery does import and initialize every enabled plugin under Hermes's normal
 trusted-plugin model, so run it only against an installation whose enabled plugins you trust:
@@ -327,7 +327,7 @@ HermesHome="$(python3 ./integrations/hermes-schedule/install.py home)"
   "$HermesHome/plugins/hermes-schedule/verify_native.py"
 ```
 
-The verifier's success line is `plugin=enabled tools=7 toolset=schedule hook=pre_llm_call`; Hermes or
+The verifier's success line is `plugin=enabled tools=8 toolset=schedule hook=pre_llm_call`; Hermes or
 another enabled plugin may emit its own diagnostics. A disabled plugin, load error, origin or
 registration drift, or the wrong Python environment fails closed. This deliberately pins native
 Hermes registration bookkeeping and verifies neither credential validity, gateway lifecycle, a
@@ -360,13 +360,14 @@ pending-confirmation table schema fails closed instead of being rewritten.
 
 ### Conversation contract
 
-The plugin registers seven tools:
+The plugin registers eight tools:
 
 | Tool                              | Purpose                                                                | Required Schedule scope                 |
 | --------------------------------- | ---------------------------------------------------------------------- | --------------------------------------- |
 | `schedule_today`                  | Read one existing authoritative Today plan                             | `schedule:read`                         |
 | `schedule_daily_plan_fit`         | Read bounded deterministic target guidance for one local date          | `schedule:read`                         |
 | `schedule_list_work_items`        | Read a bounded, filtered work-item page                                | `schedule:read`                         |
+| `schedule_list_schedule_blocks`   | Read a bounded, paginated range of overlapping calendar blocks         | `schedule:read`                         |
 | `schedule_list_one_off_reminders` | Read one bounded time range of one-off reminders                       | `schedule:read`                         |
 | `schedule_prepare_change`         | Validate and persist one exact structured command without executing it | `schedule:write`                        |
 | `schedule_confirm_change`         | Execute the one pending prepared command after human confirmation      | `schedule:write`                        |
@@ -382,6 +383,18 @@ counts, and nullable joint minute/task targets; it rejects any extra response fi
 evidence key. Hermes should present targets only when status is `suggested` and disposition is
 `available`. The tool performs no confirmation or write, cannot apply or dismiss the suggestion, and
 receives no Plan Fit history, outcome rates, raw evidence, workspace identity, or timestamps.
+
+For calendar changes, Hermes first calls `schedule_list_schedule_blocks` with an increasing,
+explicit-offset half-open `[from,to)` range of at most 93 days. Pages contain at most 200 blocks in
+`startsAt,endsAt,id` order and echo canonical `limit` and `offset` values. Every block includes its
+current positive version. The credential, not a tool argument, selects the workspace; offset pages
+are fresh reads rather than a frozen snapshot, so Hermes must rediscover before preparing a write.
+After discovery, `schedule_block.update` can reschedule an exact block and
+`schedule_block.cancel` can delete it using the returned ID and `expectedVersion`. Both still need a
+separate confirmation turn. Cancellation removes pending intents for that block through the
+notification repository, which also invalidates already-materialized pending or claimed delivery
+commands before deleting the block. It records an integration-sourced deletion audit; it does not
+send a phone message or delete a linked work item.
 
 For “remind me” requests, Hermes may propose the strict `one_off_reminder.create` command with a title
 and explicit-offset `scheduledFor` instant. The workspace reminder profile must already exist.
@@ -535,17 +548,20 @@ pnpm verify:hermes-adapter
 It runs deterministic Python tests plus a disposable PostgreSQL and real Fastify integration flow.
 Through the production Python client, the gate first reads a strict non-mutating Plan Fit
 projection without writing or entering confirmation state, then creates, discovers, reschedules, and
-cancels one reminder. It verifies no mutation before confirmation, exact receipt replay, versions
-`1` through `3`, one persistent source row, and pending-intent invalidation after update and
-cancellation. It does not contact WhatsApp and does not prove phone delivery.
+cancels one reminder. It also discovers one tenant-scoped calendar block, confirms a reschedule,
+rediscovers version 2, and separately confirms deletion. It verifies no mutation before
+confirmation, exact receipt replay, tenant isolation, reminder source persistence, calendar-block
+deletion audit data, and pending-intent invalidation after updates or cancellation. It does not
+contact WhatsApp and does not prove phone delivery.
 
 Use this rollout order:
 
 1. Verify the plugin with the disposable automated gate.
 2. Install it disabled, set secrets in the Hermes service environment, then enable it explicitly.
 3. Run `verify_native.py` with Hermes's Python, then restart every long-running Hermes process.
-4. Exercise `schedule_today`, `schedule_daily_plan_fit`, `schedule_list_work_items`, and
-   `schedule_list_one_off_reminders` against the intended workspace.
+4. Exercise `schedule_today`, `schedule_daily_plan_fit`, `schedule_list_work_items`,
+   `schedule_list_schedule_blocks`, and `schedule_list_one_off_reminders` against the intended
+   workspace.
 5. Prepare a harmless test change, inspect every canonical field, and cancel it.
 6. Prepare another bounded test, confirm from the same sender/session/platform on a later turn, and
    verify the result through Schedule.
@@ -558,8 +574,9 @@ Use this rollout order:
 
 - Version 1 is local-only. The strict loopback URL deliberately excludes hosted Schedule instances.
 - The plugin exposes only the integration gateway's current read surfaces and structured command
-  vocabulary. It does not add recurrence authoring, dependency editing, plan generation, deletes,
-  arbitrary SQL, or a general Schedule natural-language API.
+  vocabulary. Its only delete is confirmed deletion of an exact versioned calendar block. It does
+  not add recurrence authoring, dependency editing, plan generation, arbitrary deletes, arbitrary
+  SQL, or a general Schedule natural-language API.
 - Plan Fit access is guidance-only: no evidence key, feedback commands, use receipts, outcome history,
   effectiveness rates, prefill, or generation crosses the Hermes tool boundary.
 - Natural-language interpretation occurs in Hermes and can be wrong. Nothing is written until the

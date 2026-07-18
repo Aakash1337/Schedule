@@ -11,6 +11,7 @@ from .tools import (
     handle_schedule_confirm_change,
     handle_schedule_daily_plan_fit,
     handle_schedule_list_one_off_reminders,
+    handle_schedule_list_schedule_blocks,
     handle_schedule_list_work_items,
     handle_schedule_prepare_change,
     handle_schedule_today,
@@ -36,6 +37,12 @@ _TOOLS = (
         schemas.SCHEDULE_LIST_ONE_OFF_REMINDERS,
         handle_schedule_list_one_off_reminders,
         "⏰",
+    ),
+    (
+        "schedule_list_schedule_blocks",
+        schemas.SCHEDULE_LIST_SCHEDULE_BLOCKS,
+        handle_schedule_list_schedule_blocks,
+        "🗓️",
     ),
     (
         "schedule_prepare_change",

@@ -189,6 +189,7 @@ describe("schedule block management", () => {
       expectedVersion: 1,
     });
     expect(test.blocks).toEqual([]);
+    expect(test.invalidatedTargets).toEqual([`schedule_block:${block.id}`]);
     expect(test.audits).toHaveLength(1);
     expect(test.audits[0]).toMatchObject({
       action: "schedule_block.deleted",

@@ -11,8 +11,9 @@ enable background intent materialization. Neither path implies that an external 
 message.
 
 Separately, an opt-in local Hermes plugin calls the authenticated read/write gateway, discovers
-bounded one-off reminder ranges, and supports explicitly confirmed creation, rescheduling, and
-cancellation bound to the same sender/session/platform identity. It also includes a deterministic
+bounded one-off reminder ranges and calendar-block pages, and supports explicitly confirmed
+reminder management plus calendar-block rescheduling and deletion bound to the same
+sender/session/platform identity. It also includes a deterministic
 stdout Today helper. It does not make the provider-neutral delivery runtime or live WhatsApp
 delivery complete. See [HERMES.md](./HERMES.md).
 
@@ -727,9 +728,9 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   reconcile-before-send Hermes client bridge, while a live authenticated provider client,
   provider-specific conclusive reconciliation, external bootstrap/control wiring, and human/account
   binding remain follow-on work
-- Implemented local adapter: disabled-by-default Hermes tools for authenticated Today, work-item, and
-  bounded one-off reminder reads plus sender/session/platform-bound confirmed reminder creation,
-  rescheduling, and cancellation; a deterministic stdout Today helper and checked runtime-only
+- Implemented local adapter: disabled-by-default Hermes tools for authenticated Today, work-item,
+  bounded calendar-block, and bounded one-off reminder reads plus sender/session/platform-bound
+  confirmed reminder management and calendar-block rescheduling/deletion; a deterministic stdout Today helper and checked runtime-only
   installer remain separate from the delivery-claim runtime, and live WhatsApp still requires the
   operator's `WHATSAPP_HOME_CHANNEL` and self-chat smoke
 - Implemented narrow hosted runtime: complete `HOSTED_API_MODE=oidc` configuration activates exact

@@ -12,6 +12,7 @@ import os
 import re
 from typing import Any, Mapping
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 INTEGRATION_VERSION = "schedule.integration/v1"
@@ -41,6 +42,7 @@ _OPERATIONS = frozenset(
         "work_item.update",
         "schedule_block.create",
         "schedule_block.update",
+        "schedule_block.cancel",
         "plan_item.activity",
         "one_off_reminder.create",
         "one_off_reminder.update",
@@ -306,6 +308,68 @@ class ScheduleClient:
             previous = key
         return page
 
+    def list_schedule_blocks(
+        self,
+        from_inclusive: str,
+        through_exclusive: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        code = "schedule_block_range_invalid"
+        start = _instant(from_inclusive, code)
+        end = _instant(through_exclusive, code)
+        start_at = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        end_at = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        if not (0 < (end_at - start_at).total_seconds() <= 93 * 86_400):
+            raise ScheduleAdapterError(code)
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not (1 <= limit <= 200)
+        ):
+            raise ScheduleAdapterError("schedule_block_filter_invalid")
+        if (
+            isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or not (0 <= offset <= 1_000_000)
+        ):
+            raise ScheduleAdapterError("schedule_block_filter_invalid")
+        query = {
+            "from": start,
+            "to": end,
+            "limit": str(limit),
+            "offset": str(offset),
+        }
+        data = self._request(
+            "GET", f"/v1/integrations/schedule-blocks?{urlencode(query)}"
+        )
+        page = _exact_object(data, {"items", "page"}, "schedule_blocks_invalid")
+        if not isinstance(page["items"], list) or len(page["items"]) > limit:
+            raise ScheduleAdapterError("schedule_blocks_invalid")
+        paging = _exact_object(
+            page["page"], {"limit", "offset"}, "schedule_blocks_invalid"
+        )
+        if not _same_json(paging, {"limit": limit, "offset": offset}):
+            raise ScheduleAdapterError("schedule_blocks_invalid")
+        previous: tuple[datetime, datetime, str] | None = None
+        workspace_id: str | None = None
+        for value in page["items"]:
+            block = self._validate_schedule_block(value, "schedule_blocks_invalid")
+            if workspace_id is None:
+                workspace_id = block["workspaceId"]
+            elif block["workspaceId"] != workspace_id:
+                raise ScheduleAdapterError("schedule_blocks_invalid")
+            starts_at = datetime.fromisoformat(block["startsAt"].replace("Z", "+00:00"))
+            ends_at = datetime.fromisoformat(block["endsAt"].replace("Z", "+00:00"))
+            key = (starts_at, ends_at, block["id"])
+            if not (starts_at < end_at and ends_at > start_at) or (
+                previous is not None and key <= previous
+            ):
+                raise ScheduleAdapterError("schedule_blocks_invalid")
+            previous = key
+        return page
+
     def prepare_change(self, request_id: str, command: Mapping[str, Any]) -> dict[str, Any]:
         _uuid(request_id, "schedule_request_id_invalid")
         if not isinstance(command, Mapping):
@@ -316,6 +380,8 @@ class ScheduleClient:
             "one_off_reminder.cancel",
         }:
             self._validate_one_off_command(command)
+        elif command.get("type") == "schedule_block.cancel":
+            self._validate_schedule_block_cancel_command(command)
         data = self._request(
             "POST",
             "/v1/integrations/commands/prepare",
@@ -587,6 +653,61 @@ class ScheduleClient:
             _instant(command["scheduledFor"], code)
 
     @staticmethod
+    def _validate_schedule_block_cancel_command(command: Mapping[str, Any]) -> None:
+        code = "schedule_command_invalid"
+        _exact_object(command, {"type", "scheduleBlockId", "expectedVersion"}, code)
+        _uuid(command["scheduleBlockId"], code)
+        _positive_integer(command["expectedVersion"], code)
+
+    @staticmethod
+    def _validate_schedule_block(value: Any, code: str) -> dict[str, Any]:
+        block = _exact_object(
+            value,
+            {
+                "id",
+                "workspaceId",
+                "workItemId",
+                "title",
+                "startsAt",
+                "endsAt",
+                "timeZone",
+                "version",
+                "createdAt",
+                "updatedAt",
+            },
+            code,
+        )
+        _uuid(block["id"], code)
+        _uuid(block["workspaceId"], code)
+        if block["workItemId"] is not None:
+            _uuid(block["workItemId"], code)
+        if block["title"] is not None:
+            title = _bounded_text(block["title"], 240, code)
+            if title != title.strip():
+                raise ScheduleAdapterError(code)
+        starts_at = datetime.fromisoformat(
+            _instant(block["startsAt"], code).replace("Z", "+00:00")
+        )
+        ends_at = datetime.fromisoformat(
+            _instant(block["endsAt"], code).replace("Z", "+00:00")
+        )
+        time_zone = _bounded_text(block["timeZone"], 80, code)
+        try:
+            ZoneInfo(time_zone)
+        except (UnicodeError, ValueError, ZoneInfoNotFoundError) as error:
+            raise ScheduleAdapterError(code) from error
+        _positive_integer(block["version"], code)
+        created_at = datetime.fromisoformat(
+            _instant(block["createdAt"], code).replace("Z", "+00:00")
+        )
+        updated_at = datetime.fromisoformat(
+            _instant(block["updatedAt"], code).replace("Z", "+00:00")
+        )
+        if ends_at <= starts_at or updated_at < created_at:
+            raise ScheduleAdapterError(code)
+        return block
+
+    @staticmethod
     def _validate_one_off_reminder(value: Any, code: str) -> dict[str, Any]:
         reminder = _exact_object(
             value,
@@ -657,48 +778,29 @@ class ScheduleClient:
                     "version": item["version"],
                 },
             }
-        if operation in {"schedule_block.create", "schedule_block.update"}:
+        if operation in {
+            "schedule_block.create",
+            "schedule_block.update",
+            "schedule_block.cancel",
+        }:
+            if operation == "schedule_block.cancel" and receipt_version != 2:
+                raise ScheduleAdapterError("schedule_confirmed_change_invalid")
             outcome = _exact_object(
                 value, {"type", "scheduleBlock"}, "schedule_confirmed_change_invalid"
             )
-            expected_type = (
-                "schedule_block.created"
-                if operation == "schedule_block.create"
-                else "schedule_block.updated"
-            )
+            expected_type = {
+                "schedule_block.create": "schedule_block.created",
+                "schedule_block.update": "schedule_block.updated",
+                "schedule_block.cancel": "schedule_block.cancelled",
+            }[operation]
             if outcome["type"] != expected_type:
                 raise ScheduleAdapterError("schedule_confirmed_change_invalid")
-            block = _exact_object(
-                outcome["scheduleBlock"],
-                {
-                    "id",
-                    "workspaceId",
-                    "workItemId",
-                    "title",
-                    "startsAt",
-                    "endsAt",
-                    "timeZone",
-                    "version",
-                    "createdAt",
-                    "updatedAt",
-                },
-                "schedule_confirmed_change_invalid",
+            block = ScheduleClient._validate_schedule_block(
+                outcome["scheduleBlock"], "schedule_confirmed_change_invalid"
             )
-            _uuid(block["id"], "schedule_confirmed_change_invalid")
-            _uuid(block["workspaceId"], "schedule_confirmed_change_invalid")
-            if block["workItemId"] is not None:
-                _uuid(block["workItemId"], "schedule_confirmed_change_invalid")
-            if block["title"] is not None:
-                _bounded_text(
-                    block["title"], 240, "schedule_confirmed_change_invalid", allow_empty=True
-                )
-            for field in ("startsAt", "endsAt", "createdAt", "updatedAt"):
-                _bounded_text(block[field], 64, "schedule_confirmed_change_invalid")
-            _bounded_text(block["timeZone"], 80, "schedule_confirmed_change_invalid")
-            version = _positive_integer(block["version"], "schedule_confirmed_change_invalid")
             return {
                 "type": expected_type,
-                "scheduleBlock": {"id": block["id"], "version": version},
+                "scheduleBlock": {"id": block["id"], "version": block["version"]},
             }
 
         if operation in {

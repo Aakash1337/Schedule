@@ -584,6 +584,11 @@ export type IntegrationCommand =
       readonly timeZone?: string;
     }
   | {
+      readonly type: "schedule_block.cancel";
+      readonly scheduleBlockId: string;
+      readonly expectedVersion: number;
+    }
+  | {
       readonly type: "one_off_reminder.create";
       readonly title: string;
       readonly scheduledFor: string;
@@ -662,7 +667,8 @@ export type IntegrationCommandOutcome =
       readonly workItem: IntegrationWorkItemDto;
     }
   | {
-      readonly type: "schedule_block.created" | "schedule_block.updated";
+      readonly type:
+        "schedule_block.created" | "schedule_block.updated" | "schedule_block.cancelled";
       readonly scheduleBlock: IntegrationScheduleBlockDto;
     }
   | {
@@ -744,7 +750,7 @@ export interface IntegrationPlanItemActivityDto {
 }
 
 export interface ConfirmedIntegrationCommandResult {
-  /** Version 2 adds hierarchy fields and is required for one-off reminder receipts. */
+  /** Version 2 adds hierarchy fields and is required for newer reminder/cancellation receipts. */
   readonly receiptVersion?: 1 | 2;
   readonly confirmationId: string;
   readonly operation: IntegrationCommand["type"];

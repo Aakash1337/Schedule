@@ -96,6 +96,14 @@ SCHEDULE_BLOCK_UPDATE = _strict(
     },
     ["type", "scheduleBlockId", "expectedVersion"],
 )
+SCHEDULE_BLOCK_CANCEL = _strict(
+    {
+        "type": {"const": "schedule_block.cancel"},
+        "scheduleBlockId": UUID,
+        "expectedVersion": POSITIVE_VERSION,
+    },
+    ["type", "scheduleBlockId", "expectedVersion"],
+)
 PLAN_ITEM_ACTIVITY = _strict(
     {
         "type": {"const": "plan_item.activity"},
@@ -185,6 +193,7 @@ INTEGRATION_COMMAND = {
         WORK_ITEM_UPDATE,
         SCHEDULE_BLOCK_CREATE,
         SCHEDULE_BLOCK_UPDATE,
+        SCHEDULE_BLOCK_CANCEL,
         PLAN_ITEM_ACTIVITY,
         ONE_OFF_REMINDER_CREATE,
         ONE_OFF_REMINDER_UPDATE,
@@ -229,6 +238,23 @@ SCHEDULE_LIST_ONE_OFF_REMINDERS = {
         "Use returned IDs and versions before preparing an update or cancellation."
     ),
     "parameters": _strict({"from": INSTANT, "to": INSTANT}, ["from", "to"]),
+}
+
+SCHEDULE_LIST_SCHEDULE_BLOCKS = {
+    "name": "schedule_list_schedule_blocks",
+    "description": (
+        "List a bounded page of calendar blocks overlapping an explicit-offset range of at most "
+        "93 days. Use returned IDs and versions before preparing an update or cancellation."
+    ),
+    "parameters": _strict(
+        {
+            "from": INSTANT,
+            "to": INSTANT,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 1_000_000},
+        },
+        ["from", "to"],
+    ),
 }
 
 SCHEDULE_PREPARE_CHANGE = {

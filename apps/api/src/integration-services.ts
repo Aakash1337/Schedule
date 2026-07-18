@@ -7,6 +7,7 @@ import {
   GetIntegrationDailyPlanFitInsight,
   GetIntegrationToday,
   ListIntegrationOneOffReminders,
+  ListIntegrationScheduleBlocks,
   ListIntegrationWorkItems,
   PrepareIntegrationCommand,
   RecordNotificationDeliveryReceipt,
@@ -59,6 +60,7 @@ export function createIntegrationServices(
   const getToday = new GetIntegrationToday(unitOfWork, clock);
   const getDailyPlanFitInsight = new GetIntegrationDailyPlanFitInsight(unitOfWork, clock);
   const listWorkItems = new ListIntegrationWorkItems(unitOfWork, clock);
+  const listScheduleBlocks = new ListIntegrationScheduleBlocks(unitOfWork, clock);
   const listOneOffReminders = new ListIntegrationOneOffReminders(unitOfWork, clock);
   const prepareCommand = new PrepareIntegrationCommand(
     unitOfWork,
@@ -81,6 +83,7 @@ export function createIntegrationServices(
     getToday: (input) => getToday.execute(input),
     getDailyPlanFitInsight: (input) => getDailyPlanFitInsight.execute(input),
     listWorkItems: (input) => listWorkItems.execute(input),
+    listScheduleBlocks: (input) => listScheduleBlocks.execute(input),
     listOneOffReminders: (input) => listOneOffReminders.execute(input),
     prepareCommand: (input) => prepareCommand.execute(input),
     confirmCommand: (input) => confirmCommand.execute(input),

@@ -56,6 +56,7 @@ export class DeleteScheduleBlock {
           );
         }
         const occurredAt = this.clock.now();
+        await notifications.deleteIntentsForTarget(command.workspaceId, "schedule_block", block.id);
         await scheduleBlocks.delete(block, command.expectedVersion);
         await auditEvents.append({
           workspaceId: command.workspaceId,

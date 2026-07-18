@@ -1,5 +1,5 @@
 name: hermes-schedule
-version: 0.4.0
+version: 0.5.0
 description: "Read Schedule and prepare explicitly confirmed changes through the local authenticated integration gateway."
 author: Schedule contributors
 kind: standalone
@@ -8,6 +8,7 @@ provides_tools:
   - schedule_daily_plan_fit
   - schedule_list_work_items
   - schedule_list_one_off_reminders
+  - schedule_list_schedule_blocks
   - schedule_prepare_change
   - schedule_confirm_change
   - schedule_cancel_change

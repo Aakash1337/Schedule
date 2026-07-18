@@ -263,12 +263,13 @@ class ConfirmationStateTests(unittest.TestCase):
                         sender_id=sender,
                     )
 
-    def test_accepts_fresh_reminder_operations_and_rejects_unknown_operations(self) -> None:
+    def test_accepts_fresh_management_operations_and_rejects_unknown_operations(self) -> None:
         for index, operation in enumerate(
             (
                 "one_off_reminder.create",
                 "one_off_reminder.update",
                 "one_off_reminder.cancel",
+                "schedule_block.cancel",
             )
         ):
             session = f"reminder-session-{index}"
@@ -387,6 +388,27 @@ class ConfirmationStateTests(unittest.TestCase):
             expires_at="2099-07-15T07:01:00.000Z",
         )
         self.assertEqual(created.operation, "one_off_reminder.create")
+
+        block_context = restarted.capture_turn(
+            session_id="post-upgrade-block",
+            turn_id="turn-1",
+            user_message="cancel calendar block",
+            platform="whatsapp",
+            sender_id="block-sender",
+        )
+        block_attempt = restarted.begin_prepare(
+            "post-upgrade-block", "1" * 64, block_context
+        )
+        cancelled = restarted.create_pending(
+            "post-upgrade-block",
+            turn_context=block_context,
+            confirmation_id=str(uuid4()),
+            command_hash="2" * 64,
+            operation="schedule_block.cancel",
+            request_id=block_attempt.request_id,
+            expires_at="2099-07-15T07:01:00.000Z",
+        )
+        self.assertEqual(cancelled.operation, "schedule_block.cancel")
 
     def test_fails_closed_on_current_schema_constraint_drift(self) -> None:
         context = self._capture()

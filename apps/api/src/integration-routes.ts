@@ -9,9 +9,11 @@ import type {
   IntegrationDailyPlanFitInsightResult,
   IntegrationPrincipal,
   IntegrationOneOffReminderListResult,
+  IntegrationScheduleBlockPageResult,
   IntegrationTodayResult,
   IntegrationWorkItemPageResult,
   ListIntegrationOneOffRemindersQuery,
+  ListIntegrationScheduleBlocksQuery,
   ListIntegrationWorkItemsQuery,
   PreparedIntegrationCommand,
   NotificationDeliveryReceiptResult,
@@ -46,6 +48,9 @@ export interface IntegrationServices {
     readonly forDate: string;
   }): Promise<IntegrationDailyPlanFitInsightResult>;
   listWorkItems(input: ListIntegrationWorkItemsQuery): Promise<IntegrationWorkItemPageResult>;
+  listScheduleBlocks(
+    input: ListIntegrationScheduleBlocksQuery,
+  ): Promise<IntegrationScheduleBlockPageResult>;
   listOneOffReminders(
     input: ListIntegrationOneOffRemindersQuery,
   ): Promise<IntegrationOneOffReminderListResult>;
@@ -158,6 +163,12 @@ const updateScheduleBlockCommand = z
     { message: "At least one schedule block change is required." },
   );
 
+const cancelScheduleBlockCommand = z.strictObject({
+  type: z.literal("schedule_block.cancel"),
+  scheduleBlockId: canonicalUuid,
+  expectedVersion,
+});
+
 const createOneOffReminderCommand = z.strictObject({
   type: z.literal("one_off_reminder.create"),
   title: z
@@ -229,6 +240,7 @@ const integrationCommand = z.union([
   updateWorkItemCommand,
   createScheduleBlockCommand,
   updateScheduleBlockCommand,
+  cancelScheduleBlockCommand,
   createOneOffReminderCommand,
   updateOneOffReminderCommand,
   cancelOneOffReminderCommand,
@@ -284,6 +296,20 @@ const workItemsQuery = z.strictObject({
   limit: canonicalPageValue(1, 200, 100),
   offset: canonicalPageValue(0, 1_000_000, 0),
 });
+const scheduleBlocksQuery = z
+  .strictObject({
+    from: instant,
+    to: instant,
+    limit: canonicalPageValue(1, 200, 100),
+    offset: canonicalPageValue(0, 1_000_000, 0),
+  })
+  .refine(
+    (query) => {
+      const range = new Date(query.to).getTime() - new Date(query.from).getTime();
+      return range > 0 && range <= 93 * 86_400_000;
+    },
+    { message: "The schedule range must increase and cannot exceed 93 days." },
+  );
 const oneOffRemindersQuery = z.strictObject({ from: instant, to: instant }).refine(
   (query) => {
     const range = new Date(query.to).getTime() - new Date(query.from).getTime();
@@ -456,6 +482,33 @@ export async function registerIntegrationRoutes(
       offset: query.offset,
     });
     return envelope(randomUUID(), result);
+  });
+
+  app.get("/v1/integrations/schedule-blocks", async (request, reply) => {
+    const principal = await authenticate(request, reply, "schedule:read");
+    const query = parseRequest(scheduleBlocksQuery, request.query);
+    const result = await services.listScheduleBlocks({
+      principal,
+      fromInclusive: query.from,
+      throughExclusive: query.to,
+      limit: query.limit,
+      offset: query.offset,
+    });
+    return envelope(randomUUID(), {
+      items: result.items.map((item) => ({
+        id: item.id,
+        workspaceId: item.workspaceId,
+        workItemId: item.workItemId,
+        title: item.title,
+        startsAt: item.startsAt,
+        endsAt: item.endsAt,
+        timeZone: item.timeZone,
+        version: item.version,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      })),
+      page: { limit: result.page.limit, offset: result.page.offset },
+    });
   });
 
   app.get("/v1/integrations/one-off-reminders", async (request, reply) => {
