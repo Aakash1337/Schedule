@@ -180,8 +180,9 @@ content. This webhook is not used as a reminder. Reminder policy decisions, dura
 provider-neutral supervised delivery polling are implemented, with polling disabled by default.
 Provider/account binding, a live Hermes client, provider-specific reconciliation, and external
 bootstrap are not part of this release. Separately, the opt-in local Hermes plugin can read and
-manage bounded one-off reminders through the authenticated gateway's explicit-confirmation flow and
-offers a deterministic stdout Today helper; its installer is dry with respect to secrets, plugin
+manage bounded one-off reminders, discover calendar blocks, and confirm block rescheduling or
+cancellation through the authenticated gateway's explicit-confirmation flow. It also offers a
+deterministic stdout Today helper; its installer is dry with respect to secrets, plugin
 enablement, cron, and messaging. Live WhatsApp delivery remains incomplete until the operator
 configures `WHATSAPP_HOME_CHANNEL` and verifies an operator-owned self-chat. Automatic
 local intent materialization is available but disabled by default; set

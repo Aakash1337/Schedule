@@ -32,6 +32,7 @@ import {
   GetIntegrationToday,
   ListIntegrationCredentials,
   ListIntegrationOneOffReminders,
+  ListIntegrationScheduleBlocks,
   ListIntegrationWorkItems,
   PrepareIntegrationCommand,
   ProvisionIntegrationCredential,
@@ -117,6 +118,14 @@ function createHarness() {
     limit: number;
     offset: number;
   }[] = [];
+  const scheduleBlockListCalls: {
+    workspaceId: string;
+    fromInclusive: Date;
+    throughExclusive: Date;
+    limit: number;
+    offset: number;
+  }[] = [];
+  const scheduleBlockDeletes: string[] = [];
   const oneOffReminderListCalls: {
     workspaceId: string;
     fromInclusive: Date;
@@ -295,7 +304,29 @@ function createHarness() {
       findById: async (workspaceIdValue, id) =>
         scheduleBlocks.find((item) => item.workspaceId === workspaceIdValue && item.id === id) ??
         null,
-      listOverlapping: async () => scheduleBlocks,
+      listOverlapping: async (workspaceIdValue, fromInclusive, throughExclusive, limit, offset) => {
+        scheduleBlockListCalls.push({
+          workspaceId: workspaceIdValue,
+          fromInclusive,
+          throughExclusive,
+          limit,
+          offset,
+        });
+        return scheduleBlocks
+          .filter(
+            (block) =>
+              block.workspaceId === workspaceIdValue &&
+              block.startsAt < throughExclusive &&
+              block.endsAt > fromInclusive,
+          )
+          .sort(
+            (left, right) =>
+              left.startsAt.getTime() - right.startsAt.getTime() ||
+              left.endsAt.getTime() - right.endsAt.getTime() ||
+              left.id.localeCompare(right.id),
+          )
+          .slice(offset, offset + limit);
+      },
       insert: async (block) => {
         scheduleBlocks.push(block);
       },
@@ -306,7 +337,17 @@ function createHarness() {
         if (index < 0) throw new Error("schedule version conflict");
         scheduleBlocks[index] = block;
       },
-      delete: async () => undefined,
+      delete: async (block, expectedVersion) => {
+        const index = scheduleBlocks.findIndex(
+          (candidate) =>
+            candidate.workspaceId === block.workspaceId &&
+            candidate.id === block.id &&
+            candidate.version === expectedVersion,
+        );
+        if (index < 0) throw new Error("schedule version conflict");
+        scheduleBlocks.splice(index, 1);
+        scheduleBlockDeletes.push(block.id);
+      },
     },
     auditEvents: {
       append: async (event) => {
@@ -455,6 +496,7 @@ function createHarness() {
         requests: copy(requests),
         workItems: copy(workItems),
         scheduleBlocks: copy(scheduleBlocks),
+        scheduleBlockDeletes: copy(scheduleBlockDeletes),
         oneOffReminders: copy(oneOffReminders),
         audits: copy(audits),
         activityInputs: copy(activityInputs),
@@ -471,6 +513,7 @@ function createHarness() {
         replace(requests, snapshot.requests);
         replace(workItems, snapshot.workItems);
         replace(scheduleBlocks, snapshot.scheduleBlocks);
+        replace(scheduleBlockDeletes, snapshot.scheduleBlockDeletes);
         replace(oneOffReminders, snapshot.oneOffReminders);
         replace(audits, snapshot.audits);
         replace(activityInputs, snapshot.activityInputs);
@@ -505,6 +548,7 @@ function createHarness() {
     requests,
     workItems,
     scheduleBlocks,
+    scheduleBlockDeletes,
     oneOffReminders,
     fitEvidence,
     audits,
@@ -519,6 +563,7 @@ function createHarness() {
       return hierarchyLocks;
     },
     workItemListCalls,
+    scheduleBlockListCalls,
     oneOffReminderListCalls,
     getUnitOfWorkRuns() {
       return unitOfWorkRuns;
@@ -545,6 +590,7 @@ function createHarness() {
       getToday: new GetIntegrationToday(unitOfWork, clock),
       getDailyPlanFitInsight: new GetIntegrationDailyPlanFitInsight(unitOfWork, clock),
       listWorkItems: new ListIntegrationWorkItems(unitOfWork, clock),
+      listScheduleBlocks: new ListIntegrationScheduleBlocks(unitOfWork, clock),
       listOneOffReminders: new ListIntegrationOneOffReminders(unitOfWork, clock),
       prepare: new PrepareIntegrationCommand(unitOfWork, clock),
       confirm: new ConfirmIntegrationCommand(unitOfWork, clock),
@@ -911,6 +957,208 @@ describe("integration work-item reads", () => {
   });
 });
 
+describe("integration schedule-block reads", () => {
+  it("lists one bounded tenant page in stable overlap order with public DTOs", async () => {
+    const test = createHarness();
+    const earlyShort = createScheduleBlock({
+      id: scheduleBlockId("60000000-0000-4000-8000-000000000001"),
+      workspaceId: WORKSPACE_ID,
+      title: "Short",
+      startsAt: new Date("2026-07-14T09:00:00.000Z"),
+      endsAt: new Date("2026-07-14T09:30:00.000Z"),
+      timeZone: "UTC",
+      now: BASE_NOW,
+    });
+    const earlyLong = createScheduleBlock({
+      id: scheduleBlockId("60000000-0000-4000-8000-000000000002"),
+      workspaceId: WORKSPACE_ID,
+      title: "Long",
+      startsAt: new Date("2026-07-14T09:00:00.000Z"),
+      endsAt: new Date("2026-07-14T10:00:00.000Z"),
+      timeZone: "UTC",
+      now: BASE_NOW,
+    });
+    const later = createScheduleBlock({
+      id: scheduleBlockId("60000000-0000-4000-8000-000000000003"),
+      workspaceId: WORKSPACE_ID,
+      startsAt: new Date("2026-07-14T10:00:00.000Z"),
+      endsAt: new Date("2026-07-14T11:00:00.000Z"),
+      timeZone: "America/La_Paz",
+      now: BASE_NOW,
+    });
+    test.scheduleBlocks.push(
+      later,
+      earlyLong,
+      earlyShort,
+      createScheduleBlock({
+        id: scheduleBlockId("60000000-0000-4000-8000-000000000004"),
+        workspaceId: WORKSPACE_ID,
+        startsAt: new Date("2026-07-14T07:00:00.000Z"),
+        endsAt: new Date("2026-07-14T08:00:00.000Z"),
+        timeZone: "UTC",
+        now: BASE_NOW,
+      }),
+      createScheduleBlock({
+        id: scheduleBlockId("60000000-0000-4000-8000-000000000005"),
+        workspaceId: OTHER_WORKSPACE_ID,
+        startsAt: new Date("2026-07-14T09:00:00.000Z"),
+        endsAt: new Date("2026-07-14T10:00:00.000Z"),
+        timeZone: "UTC",
+        now: BASE_NOW,
+      }),
+    );
+
+    const result = await test.services.listScheduleBlocks.execute({
+      principal: { ...test.principal, workspaceId: OTHER_WORKSPACE_ID, scopes: [] },
+      fromInclusive: "2026-07-14T08:00:00.000Z",
+      throughExclusive: "2026-07-14T12:00:00.000Z",
+      limit: 2,
+      offset: 1,
+    });
+
+    expect(result).toEqual({
+      items: [
+        expect.objectContaining({
+          id: earlyLong.id,
+          workspaceId: WORKSPACE_ID,
+          startsAt: "2026-07-14T09:00:00.000Z",
+          endsAt: "2026-07-14T10:00:00.000Z",
+          version: 1,
+        }),
+        expect.objectContaining({
+          id: later.id,
+          workspaceId: WORKSPACE_ID,
+          timeZone: "America/La_Paz",
+          version: 1,
+        }),
+      ],
+      page: { limit: 2, offset: 1 },
+    });
+    expect(test.scheduleBlockListCalls).toEqual([
+      {
+        workspaceId: WORKSPACE_ID,
+        fromInclusive: new Date("2026-07-14T08:00:00.000Z"),
+        throughExclusive: new Date("2026-07-14T12:00:00.000Z"),
+        limit: 2,
+        offset: 1,
+      },
+    ]);
+    expect(test.audits).toHaveLength(0);
+
+    const defaults = await test.services.listScheduleBlocks.execute({
+      principal: test.principal,
+      fromInclusive: "2026-07-14T08:00:00.000Z",
+      throughExclusive: "2026-07-14T12:00:00.000Z",
+    });
+    expect(defaults.items.map((block) => block.id)).toEqual([
+      earlyShort.id,
+      earlyLong.id,
+      later.id,
+    ]);
+    expect(defaults.page).toEqual({ limit: 100, offset: 0 });
+  });
+
+  it("revalidates read authorization and credential workspace before listing", async () => {
+    const denied = createHarness();
+    denied.credentials[0] = { ...denied.credentials[0]!, scopes: ["schedule:write"] };
+    await expect(
+      denied.services.listScheduleBlocks.execute({
+        principal: denied.principal,
+        fromInclusive: "2026-07-14T00:00:00.000Z",
+        throughExclusive: "2026-07-15T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "integration.scope_denied" });
+    expect(denied.scheduleBlockListCalls).toHaveLength(0);
+
+    const revoked = createHarness();
+    revoked.credentials[0] = {
+      ...revoked.credentials[0]!,
+      active: false,
+      revokedAt: BASE_NOW,
+    };
+    await expect(
+      revoked.services.listScheduleBlocks.execute({
+        principal: revoked.principal,
+        fromInclusive: "2026-07-14T00:00:00.000Z",
+        throughExclusive: "2026-07-15T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "integration.authentication_failed" });
+
+    const missing = createHarness();
+    missing.credentials.push({
+      ...missing.credentials[0]!,
+      id: OTHER_CREDENTIAL_ID,
+      workspaceId: OTHER_WORKSPACE_ID,
+    });
+    await expect(
+      missing.services.listScheduleBlocks.execute({
+        principal: {
+          credentialId: OTHER_CREDENTIAL_ID,
+          workspaceId: WORKSPACE_ID,
+          scopes: ["schedule:read"],
+        },
+        fromInclusive: "2026-07-14T00:00:00.000Z",
+        throughExclusive: "2026-07-15T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "workspace.not_found" });
+    expect(missing.scheduleBlockListCalls).toHaveLength(0);
+  });
+
+  it("rejects malformed, non-increasing, and overlong ranges before opening a transaction", async () => {
+    const invalidRanges = [
+      ["2026-07-14T00:00:00", "2026-07-15T00:00:00.000Z"],
+      ["not-an-instant", "2026-07-15T00:00:00.000Z"],
+      ["2026-07-15T00:00:00.000Z", "2026-07-15T00:00:00.000Z"],
+      ["2026-07-16T00:00:00.000Z", "2026-07-15T00:00:00.000Z"],
+      ["2026-01-01T00:00:00.000Z", "2026-04-04T00:00:00.001Z"],
+    ] as const;
+    for (const [fromInclusive, throughExclusive] of invalidRanges) {
+      const test = createHarness();
+      expect(() =>
+        test.services.listScheduleBlocks.execute({
+          principal: test.principal,
+          fromInclusive,
+          throughExclusive,
+        }),
+      ).toThrow(expect.objectContaining({ code: "integration.schedule_block_range_invalid" }));
+      expect(test.getUnitOfWorkRuns()).toBe(0);
+    }
+
+    const boundary = createHarness();
+    await expect(
+      boundary.services.listScheduleBlocks.execute({
+        principal: boundary.principal,
+        fromInclusive: "2026-01-01T00:00:00.000Z",
+        throughExclusive: "2026-04-04T00:00:00.000Z",
+      }),
+    ).resolves.toEqual({ items: [], page: { limit: 100, offset: 0 } });
+  });
+
+  it("rejects invalid paging before opening a transaction", () => {
+    for (const page of [
+      { limit: 0 },
+      { limit: 201 },
+      { limit: 1.5 },
+      { offset: -1 },
+      { offset: 1_000_001 },
+      { offset: 0.5 },
+    ]) {
+      const test = createHarness();
+      expect(() =>
+        test.services.listScheduleBlocks.execute({
+          principal: test.principal,
+          fromInclusive: "2026-07-14T00:00:00.000Z",
+          throughExclusive: "2026-07-15T00:00:00.000Z",
+          ...page,
+        }),
+      ).toThrow(
+        expect.objectContaining({ code: expect.stringMatching(/^integration\.schedule_block_/) }),
+      );
+      expect(test.getUnitOfWorkRuns()).toBe(0);
+    }
+  });
+});
+
 describe("integration one-off reminder reads", () => {
   it("returns one bounded credential-scoped range with current IDs and versions", async () => {
     const test = createHarness();
@@ -1124,6 +1372,14 @@ describe("integration Today and preparation", () => {
       },
       {
         command: {
+          type: "schedule_block.cancel",
+          scheduleBlockId: "60000000-0000-4000-8000-000000000001",
+          expectedVersion: 2,
+        },
+        summary: "Cancel schedule block 60000000-0000-4000-8000-000000000001.",
+      },
+      {
+        command: {
           type: "one_off_reminder.update",
           oneOffReminderId: "70000000-0000-4000-8000-000000000001",
           expectedVersion: 1,
@@ -1297,6 +1553,22 @@ describe("integration Today and preparation", () => {
         expectedVersion: 1,
       },
       {
+        type: "schedule_block.cancel",
+        scheduleBlockId: "60000000-0000-4000-8000-AAAAAAAAAAAA",
+        expectedVersion: 1,
+      },
+      {
+        type: "schedule_block.cancel",
+        scheduleBlockId: "60000000-0000-4000-8000-000000000001",
+        expectedVersion: 0,
+      },
+      {
+        type: "schedule_block.cancel",
+        scheduleBlockId: "60000000-0000-4000-8000-000000000001",
+        expectedVersion: 1,
+        reason: "unsupported",
+      },
+      {
         type: "schedule_block.create",
         startsAt: "2026-07-13T15:00:00.000Z",
         endsAt: "2026-07-13T14:00:00.000Z",
@@ -1343,7 +1615,7 @@ describe("integration Today and preparation", () => {
       ).toThrow(
         expect.objectContaining({
           code: expect.stringMatching(
-            /^integration\.(?:command_invalid|parent_work_item_id_invalid|one_off_reminder_id_invalid)$/,
+            /^integration\.(?:command_invalid|parent_work_item_id_invalid|one_off_reminder_id_invalid|schedule_block_id_invalid)$/,
           ),
         }),
       );
@@ -1616,6 +1888,212 @@ describe("integration confirmation execution", () => {
       }),
     ).rejects.toMatchObject({ code: "integration.receipt_corrupt" });
     expect(test.findCredentialByIdForUpdate).toHaveBeenCalledTimes(6);
+  });
+
+  it("cancels and exactly replays a discovered schedule block with an audit snapshot", async () => {
+    const test = createHarness();
+    const block = {
+      ...createScheduleBlock({
+        id: scheduleBlockId("60000000-0000-4000-8000-000000000001"),
+        workspaceId: WORKSPACE_ID,
+        workItemId: SOURCE_WORK_ITEM_ID,
+        title: "Focus",
+        startsAt: new Date("2026-07-14T14:00:00.000Z"),
+        endsAt: new Date("2026-07-14T15:00:00.000Z"),
+        timeZone: "America/La_Paz",
+        now: new Date("2026-07-12T10:00:00.000Z"),
+      }),
+      version: 2,
+      updatedAt: new Date("2026-07-13T10:00:00.000Z"),
+    };
+    test.scheduleBlocks.push(block);
+
+    const prepared = await test.services.prepare.execute({
+      principal: test.principal,
+      requestId: "schedule-block-cancel",
+      command: {
+        type: "schedule_block.cancel",
+        scheduleBlockId: block.id,
+        expectedVersion: 2,
+      },
+    });
+    expect(prepared.summary).toBe(`Cancel schedule block ${block.id}.`);
+    expect(test.scheduleBlocks).toEqual([block]);
+    expect(test.scheduleBlockDeletes).toHaveLength(0);
+
+    const first = await test.services.confirm.execute({
+      principal: test.principal,
+      confirmationId: prepared.confirmationId,
+      idempotencyKey: "schedule-block-cancel-confirm",
+    });
+    const replay = await test.services.confirm.execute({
+      principal: test.principal,
+      confirmationId: prepared.confirmationId,
+      idempotencyKey: "schedule-block-cancel-confirm",
+    });
+
+    expect(replay).toEqual(first);
+    expect(first).toEqual({
+      receiptVersion: 2,
+      confirmationId: prepared.confirmationId,
+      operation: "schedule_block.cancel",
+      commandHash: prepared.commandHash,
+      outcome: {
+        type: "schedule_block.cancelled",
+        scheduleBlock: {
+          id: block.id,
+          workspaceId: WORKSPACE_ID,
+          workItemId: SOURCE_WORK_ITEM_ID,
+          title: "Focus",
+          startsAt: "2026-07-14T14:00:00.000Z",
+          endsAt: "2026-07-14T15:00:00.000Z",
+          timeZone: "America/La_Paz",
+          version: 2,
+          createdAt: "2026-07-12T10:00:00.000Z",
+          updatedAt: "2026-07-13T10:00:00.000Z",
+        },
+      },
+    });
+    expect(test.scheduleBlocks).toHaveLength(0);
+    expect(test.scheduleBlockDeletes).toEqual([block.id]);
+    // Explicit invalidation also fences delivery-command snapshots before the intent rows disappear.
+    expect(test.invalidatedTargets).toEqual([`schedule_block:${block.id}:all`]);
+    expect(test.audits).toEqual([
+      expect.objectContaining({ action: "integration.command_prepared" }),
+      {
+        workspaceId: WORKSPACE_ID,
+        action: "schedule_block.deleted",
+        entityType: "schedule_block",
+        entityId: block.id,
+        data: {
+          workItemId: SOURCE_WORK_ITEM_ID,
+          title: "Focus",
+          startsAt: "2026-07-14T14:00:00.000Z",
+          endsAt: "2026-07-14T15:00:00.000Z",
+          timeZone: "America/La_Paz",
+          version: 2,
+          createdAt: "2026-07-12T10:00:00.000Z",
+          updatedAt: "2026-07-13T10:00:00.000Z",
+          source: "integration",
+        },
+        occurredAt: BASE_NOW,
+      },
+      expect.objectContaining({
+        action: "integration.command_confirmed",
+        entityType: "schedule_block",
+        entityId: block.id,
+        data: expect.objectContaining({
+          operation: "schedule_block.cancel",
+          outcome: "schedule_block.cancelled",
+        }),
+      }),
+    ]);
+
+    const stored = test.requests[0]!.result!;
+    if (stored.outcome.type !== "schedule_block.cancelled") throw new Error("unexpected outcome");
+    test.requests[0] = {
+      ...test.requests[0]!,
+      result: {
+        ...stored,
+        outcome: {
+          ...stored.outcome,
+          scheduleBlock: { ...stored.outcome.scheduleBlock, version: 3 },
+        },
+      },
+    };
+    await expect(
+      test.services.confirm.execute({
+        principal: test.principal,
+        confirmationId: prepared.confirmationId,
+        idempotencyKey: "schedule-block-cancel-confirm",
+      }),
+    ).rejects.toMatchObject({ code: "integration.receipt_corrupt" });
+
+    test.requests[0] = {
+      ...test.requests[0]!,
+      result: {
+        ...stored,
+        outcome: {
+          ...stored.outcome,
+          scheduleBlock: { ...stored.outcome.scheduleBlock, title: " " },
+        },
+      },
+    };
+    await expect(
+      test.services.confirm.execute({
+        principal: test.principal,
+        confirmationId: prepared.confirmationId,
+        idempotencyKey: "schedule-block-cancel-confirm",
+      }),
+    ).rejects.toMatchObject({ code: "integration.receipt_corrupt" });
+  });
+
+  it("rolls back stale and foreign-tenant schedule-block cancellations", async () => {
+    const stale = createHarness();
+    const current = {
+      ...createScheduleBlock({
+        id: scheduleBlockId("60000000-0000-4000-8000-000000000011"),
+        workspaceId: WORKSPACE_ID,
+        startsAt: new Date("2026-07-14T14:00:00.000Z"),
+        endsAt: new Date("2026-07-14T15:00:00.000Z"),
+        timeZone: "UTC",
+        now: BASE_NOW,
+      }),
+      version: 2,
+    };
+    stale.scheduleBlocks.push(current);
+    const stalePreparation = await stale.services.prepare.execute({
+      principal: stale.principal,
+      requestId: "schedule-block-cancel-stale",
+      command: {
+        type: "schedule_block.cancel",
+        scheduleBlockId: current.id,
+        expectedVersion: 1,
+      },
+    });
+    await expect(
+      stale.services.confirm.execute({
+        principal: stale.principal,
+        confirmationId: stalePreparation.confirmationId,
+        idempotencyKey: "schedule-block-cancel-stale-confirm",
+      }),
+    ).rejects.toMatchObject({ code: "schedule_block.version_conflict" });
+    expect(stale.scheduleBlocks).toEqual([current]);
+    expect(stale.scheduleBlockDeletes).toHaveLength(0);
+    expect(stale.requests).toHaveLength(0);
+    expect(stale.confirmations[0]?.consumedAt).toBeNull();
+    expect(stale.audits.map((event) => event.action)).toEqual(["integration.command_prepared"]);
+
+    const foreign = createHarness();
+    const foreignBlock = createScheduleBlock({
+      id: scheduleBlockId("60000000-0000-4000-8000-000000000012"),
+      workspaceId: OTHER_WORKSPACE_ID,
+      startsAt: new Date("2026-07-14T14:00:00.000Z"),
+      endsAt: new Date("2026-07-14T15:00:00.000Z"),
+      timeZone: "UTC",
+      now: BASE_NOW,
+    });
+    foreign.scheduleBlocks.push(foreignBlock);
+    const foreignPreparation = await foreign.services.prepare.execute({
+      principal: foreign.principal,
+      requestId: "schedule-block-cancel-foreign",
+      command: {
+        type: "schedule_block.cancel",
+        scheduleBlockId: foreignBlock.id,
+        expectedVersion: 1,
+      },
+    });
+    await expect(
+      foreign.services.confirm.execute({
+        principal: foreign.principal,
+        confirmationId: foreignPreparation.confirmationId,
+        idempotencyKey: "schedule-block-cancel-foreign-confirm",
+      }),
+    ).rejects.toMatchObject({ code: "schedule_block.not_found" });
+    expect(foreign.scheduleBlocks).toEqual([foreignBlock]);
+    expect(foreign.scheduleBlockDeletes).toHaveLength(0);
+    expect(foreign.requests).toHaveLength(0);
+    expect(foreign.confirmations[0]?.consumedAt).toBeNull();
   });
 
   it("canonicalizes, executes, clears, and replays work-item due dates", async () => {

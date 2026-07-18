@@ -117,6 +117,7 @@ Daily Plan Fit projection for local agents without exposing its evidence key or 
 | `GET`    | `/v1/workspaces/{workspaceId}/notification-intents?from={instant}&to={instant}`                | List insert-only materialized intents                     |
 | `POST`   | `/v1/workspaces/{workspaceId}/notification-intents/materializations`                           | Materialize a bounded policy window                       |
 | `GET`    | `/v1/workspaces/{workspaceId}/notification-deliveries?from={instant}&to={instant}`             | List product-safe delivery execution history              |
+| `GET`    | `/v1/integrations/schedule-blocks?from={instant}&to={instant}&limit={n}&offset={n}`            | Credential-scoped bounded calendar-block discovery        |
 | `POST`   | `/v1/integrations/reminder-deliveries/claim`                                                   | Claim one due reminder with `schedule:delivery`           |
 | `POST`   | `/v1/integrations/reminder-deliveries/receipt`                                                 | Record one fenced, bounded delivery outcome               |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines`                                                        | Create a routine (`201`)                                  |

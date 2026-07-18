@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import importlib
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import sys
 import tempfile
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -74,8 +76,41 @@ class NativeVerificationTests(unittest.TestCase):
                 sys.path[:] = previous_path
 
     def test_accepts_the_exact_native_registration(self) -> None:
+        self.assertEqual(len(verifier.EXPECTED_TOOLS), 8)
         manager, registry = native_state()
         verifier.verify_registration(manager, registry)
+
+    def test_main_reports_the_eight_tool_native_surface(self) -> None:
+        manager, registry = native_state()
+        hermes_cli = ModuleType("hermes_cli")
+        hermes_plugins = ModuleType("hermes_cli.plugins")
+        hermes_plugins.discover_plugins = lambda *, force: None
+        hermes_plugins.get_plugin_manager = lambda: manager
+        hermes_cli.plugins = hermes_plugins
+        tools = ModuleType("tools")
+        tool_registry = ModuleType("tools.registry")
+        tool_registry.registry = registry
+        tools.registry = tool_registry
+        output = StringIO()
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "hermes_cli": hermes_cli,
+                    "hermes_cli.plugins": hermes_plugins,
+                    "tools": tools,
+                    "tools.registry": tool_registry,
+                },
+            ),
+            patch.object(verifier, "_prepare_hermes_import_root", return_value=PLUGIN_ROOT),
+            patch.object(verifier, "_require_module_origin"),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(verifier.main(), 0)
+        self.assertEqual(
+            output.getvalue().strip(),
+            "plugin=enabled tools=8 toolset=schedule hook=pre_llm_call",
+        )
 
     def test_rejects_a_disabled_plugin(self) -> None:
         manager, registry = native_state(enabled=False)

@@ -35,6 +35,7 @@ from hermes_schedule.tools import (  # noqa: E402
     handle_schedule_confirm_change,
     handle_schedule_daily_plan_fit,
     handle_schedule_list_one_off_reminders,
+    handle_schedule_list_schedule_blocks,
     handle_schedule_list_work_items,
     handle_schedule_prepare_change,
     handle_schedule_today,
@@ -53,6 +54,7 @@ class _FakeClient:
         self.confirmation_id = str(uuid4())
         self.work_item_id = str(uuid4())
         self.reminder_ranges: list[tuple[str, str]] = []
+        self.block_ranges: list[tuple[str, str, int, int]] = []
         self.plan_fit_dates: list[str] = []
 
     def get_today(self, local_date: str) -> dict[str, object]:
@@ -88,6 +90,12 @@ class _FakeClient:
         self.reminder_ranges.append((start, end))
         return {"items": []}
 
+    def list_schedule_blocks(
+        self, start: str, end: str, *, limit: int, offset: int
+    ) -> dict[str, object]:
+        self.block_ranges.append((start, end, limit, offset))
+        return {"items": [], "page": {"limit": limit, "offset": offset}}
+
     def prepare_change(self, request_id: str, command: dict[str, object]) -> dict[str, object]:
         self.prepare_calls.append((request_id, dict(command)))
         display = _canonical(command)
@@ -111,6 +119,17 @@ class _FakeClient:
         self.confirm_calls.append((confirmation_id, idempotency_key))
         if self.fail_first_confirmation and len(self.confirm_calls) == 1:
             raise ScheduleAdapterError("schedule_unavailable", retryable=True)
+        if expected_operation == "schedule_block.cancel":
+            return {
+                "receiptVersion": 2,
+                "confirmationId": confirmation_id,
+                "operation": expected_operation,
+                "commandHash": expected_command_hash,
+                "outcome": {
+                    "type": "schedule_block.cancelled",
+                    "scheduleBlock": {"id": self.work_item_id, "version": 3},
+                },
+            }
         return {
             "receiptVersion": 2,
             "confirmationId": confirmation_id,
@@ -227,14 +246,30 @@ class ScheduleToolTests(unittest.TestCase):
                 session_id="session-private",
             )
         )
+        blocks = json.loads(
+            handle_schedule_list_schedule_blocks(
+                {
+                    "from": "2026-07-15T00:00:00-04:00",
+                    "to": "2026-07-16T00:00:00-04:00",
+                    "limit": 20,
+                    "offset": 40,
+                },
+                session_id="session-private",
+            )
+        )
         self.assertEqual(today["data"]["date"], "2026-07-15")
         self.assertEqual(plan_fit["data"]["suggestedTargetMinutes"], 90)
         self.assertEqual(self.client.plan_fit_dates, ["2026-07-15"])
         self.assertEqual(work_items["data"]["page"], {"limit": 12, "offset": 0})
         self.assertEqual(reminders["data"], {"items": []})
+        self.assertEqual(blocks["data"]["page"], {"limit": 20, "offset": 40})
         self.assertEqual(
             self.client.reminder_ranges,
             [("2026-07-15T00:00:00-04:00", "2026-07-16T00:00:00-04:00")],
+        )
+        self.assertEqual(
+            self.client.block_ranges,
+            [("2026-07-15T00:00:00-04:00", "2026-07-16T00:00:00-04:00", 20, 40)],
         )
 
         capture_turn(
@@ -258,6 +293,64 @@ class ScheduleToolTests(unittest.TestCase):
                     result["error"]["code"], "schedule_tool_arguments_invalid"
                 )
         self.assertEqual(self.client.plan_fit_dates, [])
+
+    def test_schedule_block_list_requires_its_range_and_rejects_argument_drift(self) -> None:
+        for arguments in (
+            {},
+            {"from": "2026-07-15T00:00:00Z"},
+            {
+                "from": "2026-07-15T00:00:00Z",
+                "to": "2026-07-16T00:00:00Z",
+                "workspaceId": "private",
+            },
+        ):
+            with self.subTest(arguments=arguments):
+                result = json.loads(
+                    handle_schedule_list_schedule_blocks(
+                        arguments, session_id="session-private"
+                    )
+                )
+                self.assertEqual(
+                    result["error"]["code"], "schedule_tool_arguments_invalid"
+                )
+        self.assertEqual(self.client.block_ranges, [])
+
+    def test_schedule_block_cancellation_keeps_sender_bound_later_turn_confirmation(self) -> None:
+        self._turn("turn-one", "cancel the block")
+        command = {
+            "type": "schedule_block.cancel",
+            "scheduleBlockId": self.client.work_item_id,
+            "expectedVersion": 3,
+        }
+        prepared = json.loads(
+            handle_schedule_prepare_change(
+                {"command": command}, session_id="session-private"
+            )
+        )
+        challenge = prepared["confirmation"]["challenge"]
+        same_turn = json.loads(
+            handle_schedule_confirm_change(
+                {"challenge": challenge}, session_id="session-private"
+            )
+        )
+        self.assertEqual(
+            same_turn["error"]["code"], "schedule_confirmation_requires_later_turn"
+        )
+        self.assertEqual(self.client.confirm_calls, [])
+
+        self._turn("turn-two", f"CONFIRM SCHEDULE {challenge}")
+        confirmed = json.loads(
+            handle_schedule_confirm_change(
+                {"challenge": challenge}, session_id="session-private"
+            )
+        )
+        self.assertEqual(
+            confirmed["data"]["outcome"],
+            {
+                "type": "schedule_block.cancelled",
+                "scheduleBlock": {"id": self.client.work_item_id, "version": 3},
+            },
+        )
 
     def test_missing_sender_context_fails_closed_without_breaking_the_hook(self) -> None:
         self.assertIsNone(

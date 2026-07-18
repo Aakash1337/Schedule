@@ -64,6 +64,7 @@ const DUMMY_SECRET_HASH = "0".repeat(64);
 const DEFAULT_CONFIRMATION_TTL_MILLISECONDS = 10 * 60 * 1_000;
 const MAXIMUM_INTEGRATION_ONE_OFF_REMINDERS = 100;
 const MAXIMUM_INTEGRATION_REMINDER_RANGE_MILLISECONDS = 31 * 86_400_000;
+const MAXIMUM_INTEGRATION_SCHEDULE_RANGE_MILLISECONDS = 93 * 86_400_000;
 
 export interface IntegrationCredentialDto {
   readonly id: string;
@@ -138,6 +139,22 @@ export interface ListIntegrationWorkItemsQuery {
 
 export interface IntegrationWorkItemPageResult {
   readonly items: readonly IntegrationWorkItemDto[];
+  readonly page: {
+    readonly limit: number;
+    readonly offset: number;
+  };
+}
+
+export interface ListIntegrationScheduleBlocksQuery {
+  readonly principal: IntegrationPrincipal;
+  readonly fromInclusive: unknown;
+  readonly throughExclusive: unknown;
+  readonly limit?: unknown;
+  readonly offset?: unknown;
+}
+
+export interface IntegrationScheduleBlockPageResult {
+  readonly items: readonly IntegrationScheduleBlockDto[];
   readonly page: {
     readonly limit: number;
     readonly offset: number;
@@ -583,6 +600,7 @@ function optionalWorkItemPriority(value: unknown): (typeof workItemPriorities)[n
 
 function boundedIntegrationPageValue(
   value: unknown,
+  resource: "work_item" | "schedule_block",
   field: "limit" | "offset",
   defaultValue: number,
   minimum: number,
@@ -591,7 +609,7 @@ function boundedIntegrationPageValue(
   if (value === undefined) return defaultValue;
   if (!Number.isInteger(value) || typeof value !== "number" || value < minimum || value > maximum) {
     throw new DomainError(
-      `integration.work_item_${field}_invalid`,
+      `integration.${resource}_${field}_invalid`,
       `${field} must be a whole number between ${minimum} and ${maximum}.`,
     );
   }
@@ -608,8 +626,15 @@ export class ListIntegrationWorkItems {
     const now = validIntegrationNow(this.clock);
     const status = optionalWorkItemStatus(query.status);
     const priority = optionalWorkItemPriority(query.priority);
-    const limit = boundedIntegrationPageValue(query.limit, "limit", 100, 1, 200);
-    const offset = boundedIntegrationPageValue(query.offset, "offset", 0, 0, 1_000_000);
+    const limit = boundedIntegrationPageValue(query.limit, "work_item", "limit", 100, 1, 200);
+    const offset = boundedIntegrationPageValue(
+      query.offset,
+      "work_item",
+      "offset",
+      0,
+      0,
+      1_000_000,
+    );
     return this.unitOfWork.run(async ({ credentials, workspaces, workItems }) => {
       const credential = await revalidateIntegrationCredential(
         credentials,
@@ -622,6 +647,65 @@ export class ListIntegrationWorkItems {
       }
       const items = await workItems.list(credential.workspaceId, status, priority, limit, offset);
       return { items: items.map(toWorkItemDto), page: { limit, offset } };
+    });
+  }
+}
+
+export class ListIntegrationScheduleBlocks {
+  constructor(
+    private readonly unitOfWork: IntegrationUnitOfWork,
+    private readonly clock: Clock,
+  ) {}
+
+  execute(query: ListIntegrationScheduleBlocksQuery): Promise<IntegrationScheduleBlockPageResult> {
+    const now = validIntegrationNow(this.clock);
+    const fromInclusive = parseInstant(
+      query.fromInclusive,
+      "from",
+      "integration.schedule_block_range_invalid",
+    );
+    const throughExclusive = parseInstant(
+      query.throughExclusive,
+      "to",
+      "integration.schedule_block_range_invalid",
+    );
+    if (
+      throughExclusive <= fromInclusive ||
+      throughExclusive.getTime() - fromInclusive.getTime() >
+        MAXIMUM_INTEGRATION_SCHEDULE_RANGE_MILLISECONDS
+    ) {
+      throw new DomainError(
+        "integration.schedule_block_range_invalid",
+        "The schedule-block range must increase and cannot exceed 93 days.",
+      );
+    }
+    const limit = boundedIntegrationPageValue(query.limit, "schedule_block", "limit", 100, 1, 200);
+    const offset = boundedIntegrationPageValue(
+      query.offset,
+      "schedule_block",
+      "offset",
+      0,
+      0,
+      1_000_000,
+    );
+    return this.unitOfWork.run(async ({ credentials, scheduleBlocks, workspaces }) => {
+      const credential = await revalidateIntegrationCredential(
+        credentials,
+        query.principal,
+        "schedule:read",
+        now,
+      );
+      if ((await workspaces.findById(credential.workspaceId)) === null) {
+        throw new DomainError("workspace.not_found", "The workspace does not exist.");
+      }
+      const items = await scheduleBlocks.listOverlapping(
+        credential.workspaceId,
+        fromInclusive,
+        throughExclusive,
+        limit,
+        offset,
+      );
+      return { items: items.map(toScheduleBlockDto), page: { limit, offset } };
     });
   }
 }
@@ -1025,6 +1109,16 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
       }
       break;
     }
+    case "schedule_block.cancel": {
+      assertCommandObject(
+        command,
+        ["type", "scheduleBlockId", "expectedVersion"],
+        ["type", "scheduleBlockId", "expectedVersion"],
+      );
+      requireCanonicalUuid(command.scheduleBlockId, "schedule_block_id");
+      requireInteger(command.expectedVersion, "expectedVersion");
+      break;
+    }
     case "one_off_reminder.create": {
       assertCommandObject(
         command,
@@ -1308,6 +1402,8 @@ function rawCommandSummary(command: IntegrationCommand): string {
       if (command.timeZone !== undefined) changes.push(`set time zone to ${command.timeZone}`);
       return `Update schedule block ${command.scheduleBlockId}: ${changes.join("; ")}.`;
     }
+    case "schedule_block.cancel":
+      return `Cancel schedule block ${command.scheduleBlockId}.`;
     case "one_off_reminder.create":
       return `Create one-off reminder ${quoted(command.title)} for ${command.scheduledFor}.`;
     case "one_off_reminder.update": {
@@ -1494,6 +1590,20 @@ function toScheduleBlockDto(block: ScheduleBlock): IntegrationScheduleBlockDto {
     endsAt: block.endsAt.toISOString(),
     createdAt: block.createdAt.toISOString(),
     updatedAt: block.updatedAt.toISOString(),
+  };
+}
+
+function scheduleBlockAuditSnapshot(block: ScheduleBlock): Readonly<Record<string, unknown>> {
+  return {
+    workItemId: block.workItemId,
+    title: block.title,
+    startsAt: block.startsAt.toISOString(),
+    endsAt: block.endsAt.toISOString(),
+    timeZone: block.timeZone,
+    version: block.version,
+    createdAt: block.createdAt.toISOString(),
+    updatedAt: block.updatedAt.toISOString(),
+    source: "integration",
   };
 }
 
@@ -1764,6 +1874,34 @@ async function dispatchCommand(
         );
       }
       return { type: "schedule_block.updated", scheduleBlock: toScheduleBlockDto(updated) };
+    }
+    case "schedule_block.cancel": {
+      const id = scheduleBlockId(command.scheduleBlockId);
+      const current = await context.scheduleBlocks.findById(credential.workspaceId, id);
+      if (current === null) {
+        throw new DomainError("schedule_block.not_found", "The schedule block does not exist.");
+      }
+      if (current.version !== command.expectedVersion) {
+        throw new DomainError(
+          "schedule_block.version_conflict",
+          "The schedule block changed before this cancellation could be applied.",
+        );
+      }
+      await context.notifications.deleteIntentsForTarget(
+        credential.workspaceId,
+        "schedule_block",
+        current.id,
+      );
+      await context.scheduleBlocks.delete(current, command.expectedVersion);
+      await context.auditEvents.append({
+        workspaceId: credential.workspaceId,
+        action: "schedule_block.deleted",
+        entityType: "schedule_block",
+        entityId: current.id,
+        data: scheduleBlockAuditSnapshot(current),
+        occurredAt: now,
+      });
+      return { type: "schedule_block.cancelled", scheduleBlock: toScheduleBlockDto(current) };
     }
     case "one_off_reminder.create": {
       if ((await context.notifications.findProfile(credential.workspaceId)) === null) {
@@ -2109,13 +2247,20 @@ function validReceiptOutcome(
       (command.type === "work_item.create" || item.id === command.workItemId)
     );
   }
-  if (command.type === "schedule_block.create" || command.type === "schedule_block.update") {
+  if (
+    command.type === "schedule_block.create" ||
+    command.type === "schedule_block.update" ||
+    command.type === "schedule_block.cancel"
+  ) {
     const expectedType =
       command.type === "schedule_block.create"
         ? "schedule_block.created"
-        : "schedule_block.updated";
+        : command.type === "schedule_block.update"
+          ? "schedule_block.updated"
+          : "schedule_block.cancelled";
     const block = objectValue(outcome.scheduleBlock);
     return (
+      (command.type !== "schedule_block.cancel" || receiptVersion === 2) &&
       outcome.type === expectedType &&
       exactKeys(outcome, ["type", "scheduleBlock"]) &&
       block !== null &&
@@ -2134,7 +2279,11 @@ function validReceiptOutcome(
       block.workspaceId === workspaceIdValue &&
       isUuidText(block.id) &&
       (block.workItemId === null || isUuidText(block.workItemId)) &&
-      isNullableString(block.title, 240) &&
+      (block.title === null ||
+        (typeof block.title === "string" &&
+          block.title.length >= 1 &&
+          block.title.length <= 240 &&
+          block.title === block.title.trim())) &&
       isInstantText(block.startsAt) &&
       isInstantText(block.endsAt) &&
       new Date(block.endsAt).getTime() > new Date(block.startsAt).getTime() &&
@@ -2144,7 +2293,9 @@ function validReceiptOutcome(
       isPositiveInteger(block.version) &&
       isInstantText(block.createdAt) &&
       isInstantText(block.updatedAt) &&
-      (command.type === "schedule_block.create" || block.id === command.scheduleBlockId)
+      new Date(block.updatedAt).getTime() >= new Date(block.createdAt).getTime() &&
+      (command.type === "schedule_block.create" || block.id === command.scheduleBlockId) &&
+      (command.type !== "schedule_block.cancel" || block.version === command.expectedVersion)
     );
   }
   if (

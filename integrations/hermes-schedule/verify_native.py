@@ -14,6 +14,7 @@ EXPECTED_HANDLERS = {
     "schedule_daily_plan_fit": "handle_schedule_daily_plan_fit",
     "schedule_list_work_items": "handle_schedule_list_work_items",
     "schedule_list_one_off_reminders": "handle_schedule_list_one_off_reminders",
+    "schedule_list_schedule_blocks": "handle_schedule_list_schedule_blocks",
     "schedule_prepare_change": "handle_schedule_prepare_change",
     "schedule_confirm_change": "handle_schedule_confirm_change",
     "schedule_cancel_change": "handle_schedule_cancel_change",
@@ -126,7 +127,7 @@ def main() -> int:
         print("Hermes Schedule native verification failed: plugin discovery failed.", file=sys.stderr)
         return 1
 
-    print("plugin=enabled tools=7 toolset=schedule hook=pre_llm_call")
+    print("plugin=enabled tools=8 toolset=schedule hook=pre_llm_call")
     return 0
 
 

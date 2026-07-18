@@ -28,6 +28,7 @@ _OPERATIONS = frozenset(
         "work_item.update",
         "schedule_block.create",
         "schedule_block.update",
+        "schedule_block.cancel",
         "plan_item.activity",
         "one_off_reminder.create",
         "one_off_reminder.update",

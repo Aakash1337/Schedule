@@ -64,7 +64,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 129 test files and 2,230 runtime test cases. Three
+The package and script runners currently execute 129 test files and 2,241 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -88,7 +88,7 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     60.22% |   72.23% |    68.71% | 60.72% |
+| Whole repository, measured |     59.99% |   72.20% |    68.68% | 60.48% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     95.12% |   91.89% |    93.49% | 96.13% |
 | Domain, required           |        91% |      82% |       92% |    93% |
@@ -101,8 +101,8 @@ quality levels.
 | Web, measured              |     86.03% |   79.27% |    84.23% | 86.88% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 12,918 of 21,453 statements, 9,725 of 13,493 branches,
-2,780 of 4,043 functions, and 12,199 of 20,091 lines.
+The whole-repository totals are 13,003 of 21,672 statements, 9,807 of 13,582 branches,
+2,796 of 4,071 functions, and 12,284 of 20,308 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -535,7 +535,10 @@ The audit deliberately leaves these visible instead of turning them into false g
   installation into a temporary Hermes home, a strict non-mutating Plan Fit read, and a disposable
   PostgreSQL/real Fastify one-off-reminder lifecycle: create, bounded discovery, reschedule, and
   cancellation with no mutation before confirmation, exact receipt replay, version progression,
-  audit counts, and pending-intent invalidation. CI does not load an installed Hermes runtime; the
+  audit counts, and pending-intent invalidation. The same gate discovers a tenant-scoped calendar
+  block, confirms and replays its reschedule, rediscovers its new version, then confirms and replays
+  deletion while proving foreign-row isolation, deletion audit data, delivery-command invalidation,
+  and intent removal. CI does not load an installed Hermes runtime; the
   separate operator-run native
   registration probe can prove that an enabled installation exposes the exact Schedule tools and
   hook. None of these checks exercises a WhatsApp account, phone delivery, provider receipt, or

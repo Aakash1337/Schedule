@@ -91,6 +91,26 @@ function integrationServices(): IntegrationServices {
           page: { limit: 100, offset: 0 },
         }) as never,
     ),
+    listScheduleBlocks: vi.fn(
+      async () =>
+        ({
+          items: [
+            {
+              id: RESOURCE_ID,
+              workspaceId: WORKSPACE_ID,
+              workItemId: null,
+              title: "Deep work",
+              startsAt: "2026-07-13T13:00:00.000Z",
+              endsAt: "2026-07-13T14:30:00.000Z",
+              timeZone: "America/La_Paz",
+              version: 2,
+              createdAt: "2026-07-13T12:00:00.000Z",
+              updatedAt: "2026-07-13T12:30:00.000Z",
+            },
+          ],
+          page: { limit: 100, offset: 0 },
+        }) as never,
+    ),
     listOneOffReminders: vi.fn(
       async () =>
         ({
@@ -672,6 +692,155 @@ describe("integration gateway routes", () => {
     });
   });
 
+  it("lists an exact credential-scoped schedule-block page with omitted paging defaults", async () => {
+    const services = integrationServices();
+    vi.mocked(services.listScheduleBlocks).mockResolvedValueOnce({
+      items: [
+        {
+          id: RESOURCE_ID,
+          workspaceId: WORKSPACE_ID,
+          workItemId: null,
+          title: "Deep work",
+          startsAt: "2026-07-13T13:00:00.000Z",
+          endsAt: "2026-07-13T14:30:00.000Z",
+          timeZone: "America/La_Paz",
+          version: 2,
+          createdAt: "2026-07-13T12:00:00.000Z",
+          updatedAt: "2026-07-13T12:30:00.000Z",
+          adapterSecret: "must-not-escape",
+        },
+      ],
+      page: { limit: 100, offset: 0, adapterSecret: "must-not-escape" },
+      adapterSecret: "must-not-escape",
+    } as never);
+    const app = await integrationApp(services);
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/integrations/schedule-blocks?from=2026-07-13T00%3A00%3A00-04%3A00&to=2026-07-20T00%3A00%3A00-04%3A00",
+      headers: { authorization: AUTHORIZATION },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({
+      version: INTEGRATION_API_VERSION,
+      requestId: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      ),
+      data: {
+        items: [
+          {
+            id: RESOURCE_ID,
+            workspaceId: WORKSPACE_ID,
+            workItemId: null,
+            title: "Deep work",
+            startsAt: "2026-07-13T13:00:00.000Z",
+            endsAt: "2026-07-13T14:30:00.000Z",
+            timeZone: "America/La_Paz",
+            version: 2,
+            createdAt: "2026-07-13T12:00:00.000Z",
+            updatedAt: "2026-07-13T12:30:00.000Z",
+          },
+        ],
+        page: { limit: 100, offset: 0 },
+      },
+    });
+    expect(response.body).not.toContain("must-not-escape");
+    expect(services.listScheduleBlocks).toHaveBeenCalledWith({
+      principal: expect.objectContaining({ workspaceId: WORKSPACE_ID }),
+      fromInclusive: "2026-07-13T00:00:00-04:00",
+      throughExclusive: "2026-07-20T00:00:00-04:00",
+      limit: 100,
+      offset: 0,
+    });
+    expect(services.authenticateCredential).toHaveBeenCalledWith({
+      credentialId: CREDENTIAL_ID,
+      secret: SECRET,
+      requiredScope: "schedule:read",
+    });
+  });
+
+  it("passes explicit canonical schedule-block paging", async () => {
+    const services = integrationServices();
+    vi.mocked(services.listScheduleBlocks).mockResolvedValueOnce({
+      items: [],
+      page: { limit: 25, offset: 50 },
+    } as never);
+    const app = await integrationApp(services);
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/integrations/schedule-blocks?from=2026-07-13T00%3A00%3A00Z&to=2026-10-14T00%3A00%3A00Z&limit=25&offset=50",
+      headers: { authorization: AUTHORIZATION },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toEqual({ items: [], page: { limit: 25, offset: 50 } });
+    expect(services.listScheduleBlocks).toHaveBeenCalledWith({
+      principal: expect.objectContaining({ credentialId: CREDENTIAL_ID }),
+      fromInclusive: "2026-07-13T00:00:00Z",
+      throughExclusive: "2026-10-14T00:00:00Z",
+      limit: 25,
+      offset: 50,
+    });
+  });
+
+  it("rejects strict schedule-block query drift before reading", async () => {
+    const services = integrationServices();
+    const app = await integrationApp(services);
+    const validRange = "from=2026-07-13T00%3A00%3A00.000Z&to=2026-07-14T00%3A00%3A00.000Z";
+
+    for (const query of [
+      "",
+      "to=2026-07-14T00%3A00%3A00.000Z",
+      "from=2026-07-13T00%3A00%3A00.000Z",
+      "from=2026-02-30T00%3A00%3A00.000Z&to=2026-03-01T00%3A00%3A00.000Z",
+      "from=2026-07-13T00%3A00%3A00&to=2026-07-14T00%3A00%3A00.000Z",
+      "from=2026-07-14T00%3A00%3A00.000Z&to=2026-07-13T00%3A00%3A00.000Z",
+      "from=2026-07-13T00%3A00%3A00.000Z&to=2026-10-15T00%3A00%3A00.000Z",
+      `${validRange}&workspaceId=${WORKSPACE_ID}`,
+      `${validRange}&limit=0`,
+      `${validRange}&limit=201`,
+      `${validRange}&limit=01`,
+      `${validRange}&limit=1e2`,
+      `${validRange}&limit=%2B1`,
+      `${validRange}&offset=-1`,
+      `${validRange}&offset=1000001`,
+      `${validRange}&offset=`,
+    ]) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/v1/integrations/schedule-blocks?${query}`,
+        headers: { authorization: AUTHORIZATION },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe("request.validation_failed");
+      expect(response.headers["cache-control"]).toBe("no-store");
+    }
+    expect(services.listScheduleBlocks).not.toHaveBeenCalled();
+  });
+
+  it("requires schedule:read credentials before validating schedule-block queries", async () => {
+    const services = integrationServices();
+    vi.mocked(services.authenticateCredential).mockRejectedValueOnce(
+      new DomainError("integration.scope_denied", "credential lacks schedule:read"),
+    );
+    const app = await integrationApp(services);
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/integrations/schedule-blocks?unknown=value",
+      headers: { authorization: AUTHORIZATION },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json().error.code).toBe("integration.scope_denied");
+    expect(services.authenticateCredential).toHaveBeenCalledWith({
+      credentialId: CREDENTIAL_ID,
+      secret: SECRET,
+      requiredScope: "schedule:read",
+    });
+    expect(services.listScheduleBlocks).not.toHaveBeenCalled();
+  });
+
   it("lists one strict reminder range and rejects query drift before reading", async () => {
     const services = integrationServices();
     const app = await integrationApp(services);
@@ -836,6 +1005,11 @@ describe("integration gateway routes", () => {
       endsAt: "2026-07-13T15:30:00-04:00",
     },
     {
+      type: "schedule_block.cancel",
+      scheduleBlockId: RESOURCE_ID,
+      expectedVersion: 3,
+    },
+    {
       type: "one_off_reminder.create",
       title: "Call the clinic",
       scheduledFor: "2026-07-13T09:30:00-04:00",
@@ -992,6 +1166,22 @@ describe("integration gateway routes", () => {
         type: "schedule_block.update",
         scheduleBlockId: RESOURCE_ID,
         expectedVersion: 1,
+      }),
+      preparePayload({
+        type: "schedule_block.cancel",
+        scheduleBlockId: RESOURCE_ID,
+        expectedVersion: 0,
+      }),
+      preparePayload({
+        type: "schedule_block.cancel",
+        scheduleBlockId: "00000000-0000-4000-8000-AAAAAAAAAAAA",
+        expectedVersion: 1,
+      }),
+      preparePayload({
+        type: "schedule_block.cancel",
+        scheduleBlockId: RESOURCE_ID,
+        expectedVersion: 1,
+        reason: "unsupported",
       }),
       preparePayload({
         type: "plan_item.activity",

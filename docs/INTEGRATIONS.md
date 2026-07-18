@@ -123,6 +123,7 @@ The version 1 routes are:
 | `GET`  | `/v1/integrations/today?date=DATE`                             | `schedule:read`     | Read the credential workspace's current plan                  |
 | `GET`  | `/v1/integrations/daily-plan-fit-insight?forDate=DATE`         | `schedule:read`     | Read bounded deterministic target guidance                    |
 | `GET`  | `/v1/integrations/work-items?status=&priority=&limit=&offset=` | `schedule:read`     | Discover the credential workspace's backlog/Kanban work items |
+| `GET`  | `/v1/integrations/schedule-blocks?from=&to=&limit=&offset=`    | `schedule:read`     | Discover overlapping calendar blocks in one bounded range     |
 | `GET`  | `/v1/integrations/one-off-reminders?from=&to=`                 | `schedule:read`     | Discover one bounded range of one-off reminders               |
 | `POST` | `/v1/integrations/commands/prepare`                            | `schedule:write`    | Validate and prepare one exact mutation                       |
 | `POST` | `/v1/integrations/commands/confirm`                            | `schedule:write`    | Execute one prepared mutation idempotently                    |
@@ -185,6 +186,21 @@ duplicate or skipped item between pages, and re-read a selected work item from a
 response before it prepares `work_item.update`. The latest returned `version` must be supplied as
 `expectedVersion`; a conflict is a signal to re-read and ask again, never to overwrite the newer
 state.
+
+### Schedule-block discovery
+
+`GET /v1/integrations/schedule-blocks?from=&to=&limit=&offset=` lists calendar blocks from only the
+credential workspace that overlap the half-open `[from,to)` range. Both boundaries are required
+explicit-offset ISO instants. The range must increase and cannot exceed 93 days. `limit` defaults
+to `100` and accepts canonical integers from `1` through `200`; `offset` defaults to `0` and accepts
+canonical integers through `1000000`. Unknown fields, noncanonical paging values, and a supplied
+workspace identifier are rejected.
+
+The no-store response is `{items,page}`. Each item is the existing public schedule-block DTO:
+`id`, `workspaceId`, nullable `workItemId` and `title`, `startsAt`, `endsAt`, `timeZone`, `version`,
+`createdAt`, and `updatedAt`. Results are ordered by `startsAt,endsAt,id`. As with work-item offset
+pages, concurrent edits can move later results; an adapter must rediscover the exact ID and version
+before preparing an update or cancellation.
 
 ### One-off reminder discovery
 
@@ -381,6 +397,7 @@ Commands are strict JSON objects discriminated by `type`:
 | `work_item.update`        | `workItemId`, `expectedVersion`, and at least one change                                                | `parentWorkItemId`, `title`, `description`, `status`, `priority`, `planningDurationMinutes`, `dueOn` |
 | `schedule_block.create`   | `startsAt`, `endsAt`, `timeZone`                                                                        | `workItemId`, `title`                                                                                |
 | `schedule_block.update`   | `scheduleBlockId`, `expectedVersion`, and at least one change                                           | `workItemId`, `title`, `startsAt`, `endsAt`, `timeZone`                                              |
+| `schedule_block.cancel`   | `scheduleBlockId`, `expectedVersion`                                                                    | none                                                                                                 |
 | `one_off_reminder.create` | `title`, `scheduledFor`                                                                                 | none                                                                                                 |
 | `one_off_reminder.update` | `oneOffReminderId`, `expectedVersion`, and at least one change                                          | `title`, `scheduledFor`                                                                              |
 | `one_off_reminder.cancel` | `oneOffReminderId`, `expectedVersion`                                                                   | none                                                                                                 |
@@ -409,6 +426,14 @@ rescheduling is therefore an update. Update and cancellation require the current
 invalidates only that source's pending intents in the same transaction. Cancellation is terminal and
 does not delete the source. The normal materializer still decides when to create a delivery intent;
 confirmation does not contact Hermes or WhatsApp.
+
+`schedule_block.cancel` permanently deletes one credential-workspace block only when
+`expectedVersion` still matches. It returns a version-2 `schedule_block.cancelled` receipt with the
+deleted public block snapshot, removes that block's pending notification intents through the
+notification repository, invalidates already-materialized pending or claimed delivery commands,
+and appends both the deletion and normal confirmed-command audits in the same transaction. A stale
+version conflicts without deleting anything; a foreign block is reported as absent. It does not
+delete the linked work item or contact a calendar or messaging provider.
 
 ### Errors
 
@@ -656,7 +681,8 @@ security-sensitive recovery.
   accepts a chat message, audio, image, or natural-language instruction. The repository-owned local
   plugin uses Hermes's native hooks and tools instead.
 - The local plugin can find credential-scoped Today, bounded Daily Plan Fit guidance, backlog/Kanban
-  data, and bounded one-off reminder ranges, then prepare strict structured commands and require a
+  data, bounded calendar-block pages, and bounded one-off reminder ranges, then prepare strict
+  structured commands and require a
   separate HMAC-bound confirmation turn. Plan Fit history, effectiveness, feedback, use receipts, and
   generation remain absent. Hermes still owns message ingestion and intent interpretation, while its
   platform connector supplies sender, session, and platform identity.
@@ -676,8 +702,10 @@ security-sensitive recovery.
 - The plugin's deterministic reminder helper emits one bounded Today summary to standard output.
   It is independent of Schedule's policy and delivery-receipt engine. WhatsApp is not complete until
   the Hermes operator configures `WHATSAPP_HOME_CHANNEL` and verifies a private self-chat.
-- Version 1 does not create workspaces, routines, plans, or credentials over HTTP; delete commands
-  are intentionally absent.
+- Version 1 does not create workspaces, routines, plans, or credentials over HTTP. Workspace,
+  routine, plan, and credential deletion commands remain unavailable; exact versioned
+  calendar-block deletion is supported through `schedule_block.cancel` with `scheduleBlockId` and
+  `expectedVersion`.
 - The integration API is machine-to-machine authentication for one workspace, not hosted end-user
   authentication or multi-device synchronization.
 - Schedule confirmation proves possession of a Schedule credential. The local plugin adds one-use

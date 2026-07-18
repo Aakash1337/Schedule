@@ -30,6 +30,7 @@ class PluginRegistrationTests(unittest.TestCase):
                 "schedule_daily_plan_fit",
                 "schedule_list_work_items",
                 "schedule_list_one_off_reminders",
+                "schedule_list_schedule_blocks",
                 "schedule_prepare_change",
                 "schedule_confirm_change",
                 "schedule_cancel_change",
@@ -45,6 +46,7 @@ class PluginRegistrationTests(unittest.TestCase):
         reminder = plugin.schemas.ONE_OFF_REMINDER_CREATE
         reminder_update = plugin.schemas.ONE_OFF_REMINDER_UPDATE
         reminder_cancel = plugin.schemas.ONE_OFF_REMINDER_CANCEL
+        block_cancel = plugin.schemas.SCHEDULE_BLOCK_CANCEL
 
         self.assertEqual(create["parentWorkItemId"]["oneOf"][1], {"type": "null"})
         self.assertEqual(update["parentWorkItemId"]["oneOf"][1], {"type": "null"})
@@ -60,6 +62,7 @@ class PluginRegistrationTests(unittest.TestCase):
         self.assertIn(reminder, plugin.schemas.INTEGRATION_COMMAND["oneOf"])
         self.assertIn(reminder_update, plugin.schemas.INTEGRATION_COMMAND["oneOf"])
         self.assertIn(reminder_cancel, plugin.schemas.INTEGRATION_COMMAND["oneOf"])
+        self.assertIn(block_cancel, plugin.schemas.INTEGRATION_COMMAND["oneOf"])
         self.assertEqual(reminder["required"], ["type", "title", "scheduledFor"])
         self.assertFalse(reminder["additionalProperties"])
         self.assertEqual(reminder["properties"]["title"]["maxLength"], 240)
@@ -75,9 +78,19 @@ class PluginRegistrationTests(unittest.TestCase):
         )
         self.assertFalse(reminder_cancel["additionalProperties"])
         self.assertEqual(
+            block_cancel["required"],
+            ["type", "scheduleBlockId", "expectedVersion"],
+        )
+        self.assertFalse(block_cancel["additionalProperties"])
+        self.assertEqual(
             plugin.schemas.SCHEDULE_LIST_ONE_OFF_REMINDERS["parameters"]["required"],
             ["from", "to"],
         )
+        block_list = plugin.schemas.SCHEDULE_LIST_SCHEDULE_BLOCKS["parameters"]
+        self.assertEqual(block_list["required"], ["from", "to"])
+        self.assertFalse(block_list["additionalProperties"])
+        self.assertEqual(block_list["properties"]["limit"]["maximum"], 200)
+        self.assertEqual(block_list["properties"]["offset"]["maximum"], 1_000_000)
         self.assertEqual(
             plugin.schemas.SCHEDULE_DAILY_PLAN_FIT["parameters"],
             {
