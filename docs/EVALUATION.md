@@ -101,8 +101,8 @@ quality levels.
 | Web, measured              |     86.03% |   79.27% |    84.23% | 86.88% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 12,918 of 21,453 statements, 9,725 of 13,493 branches,
-2,780 of 4,043 functions, and 12,199 of 20,091 lines.
+The whole-repository totals are 13,003 of 21,672 statements, 9,807 of 13,582 branches,
+2,796 of 4,071 functions, and 12,284 of 20,308 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global

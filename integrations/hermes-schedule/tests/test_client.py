@@ -555,7 +555,10 @@ class ScheduleClientTests(unittest.TestCase):
         ) as (port, fixture):
             client = ScheduleClient(ScheduleClientConfig(port=port, token=self.token))
             self.assertEqual(client.prepare_change(request_id, command), prepared)
-            safe = client.confirm_change(
+            restarted_client = ScheduleClient(
+                ScheduleClientConfig(port=port, token=self.token)
+            )
+            safe = restarted_client.confirm_change(
                 confirmation_id,
                 str(uuid4()),
                 "schedule_block.cancel",
@@ -576,7 +579,18 @@ class ScheduleClientTests(unittest.TestCase):
 
     def test_rejects_hostile_schedule_block_cancellation_receipts(self) -> None:
         confirmation_id = str(uuid4())
-        command_hash = "d" * 64
+        block = _schedule_block()
+        command_hash = hashlib.sha256(
+            json.dumps(
+                {
+                    "type": "schedule_block.cancel",
+                    "scheduleBlockId": block["id"],
+                    "expectedVersion": block["version"],
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
         valid = {
             "receiptVersion": 2,
             "confirmationId": confirmation_id,
@@ -584,7 +598,7 @@ class ScheduleClientTests(unittest.TestCase):
             "commandHash": command_hash,
             "outcome": {
                 "type": "schedule_block.cancelled",
-                "scheduleBlock": _schedule_block(),
+                "scheduleBlock": block,
             },
         }
         invalid_receipts = (
@@ -617,6 +631,22 @@ class ScheduleClientTests(unittest.TestCase):
                 "outcome": {
                     **valid["outcome"],
                     "scheduleBlock": _schedule_block(updatedAt="2026-07-15T11:59:59Z"),
+                },
+            },
+            {
+                **valid,
+                "outcome": {
+                    **valid["outcome"],
+                    "scheduleBlock": _schedule_block(
+                        id="60000000-0000-4000-8000-000000000002"
+                    ),
+                },
+            },
+            {
+                **valid,
+                "outcome": {
+                    **valid["outcome"],
+                    "scheduleBlock": _schedule_block(version=3),
                 },
             },
         )

@@ -471,13 +471,30 @@ class ScheduleClient:
             raise ScheduleAdapterError("schedule_confirmed_change_invalid")
         if data["operation"] != expected_operation:
             raise ScheduleAdapterError("schedule_confirmed_change_invalid")
+        safe_outcome = self._safe_confirmation_outcome(
+            data["outcome"], expected_operation, receipt_version
+        )
+        if expected_operation == "schedule_block.cancel":
+            block = safe_outcome["scheduleBlock"]
+            bound_command = {
+                "type": expected_operation,
+                "scheduleBlockId": block["id"],
+                "expectedVersion": block["version"],
+            }
+            canonical = json.dumps(
+                bound_command,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            bound_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            if not hmac.compare_digest(bound_hash, expected_command_hash):
+                raise ScheduleAdapterError("schedule_confirmed_change_invalid")
         safe_receipt = {
             "confirmationId": confirmation_id,
             "operation": expected_operation,
             "commandHash": expected_command_hash,
-            "outcome": self._safe_confirmation_outcome(
-                data["outcome"], expected_operation, receipt_version
-            ),
+            "outcome": safe_outcome,
         }
         if receipt_version is not None:
             safe_receipt["receiptVersion"] = receipt_version

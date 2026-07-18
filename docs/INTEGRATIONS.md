@@ -702,8 +702,10 @@ security-sensitive recovery.
 - The plugin's deterministic reminder helper emits one bounded Today summary to standard output.
   It is independent of Schedule's policy and delivery-receipt engine. WhatsApp is not complete until
   the Hermes operator configures `WHATSAPP_HOME_CHANNEL` and verifies a private self-chat.
-- Version 1 does not create workspaces, routines, plans, or credentials over HTTP; delete commands
-  are intentionally absent.
+- Version 1 does not create workspaces, routines, plans, or credentials over HTTP. Workspace,
+  routine, plan, and credential deletion commands remain unavailable; exact versioned
+  calendar-block deletion is supported through `schedule_block.cancel` with `scheduleBlockId` and
+  `expectedVersion`.
 - The integration API is machine-to-machine authentication for one workspace, not hosted end-user
   authentication or multi-device synchronization.
 - Schedule confirmation proves possession of a Schedule credential. The local plugin adds one-use
