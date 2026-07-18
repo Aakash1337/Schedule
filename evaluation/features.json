@@ -3769,6 +3769,7 @@
             "does not restart an expired catch-up entered from delta recovery",
             "restarts an initial bootstrap when its catch-up cursor expires",
             "discards an expired bootstrap continuation and restarts fresh once",
+            "rejects unsupported bootstrap and delta protocol versions before applying them",
             "rejects repeated bootstrap and delta cursors instead of looping"
           ]
         },

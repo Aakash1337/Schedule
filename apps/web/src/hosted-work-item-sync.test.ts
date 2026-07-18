@@ -323,6 +323,37 @@ describe("hosted work-item sync reconciliation", () => {
     expect(bootstrapWorkItemSync).toHaveBeenCalledTimes(4);
   });
 
+  it("rejects unsupported bootstrap and delta protocol versions before applying them", async () => {
+    const bootstrapFixture = fixture();
+    bootstrapFixture.bootstrapWorkItemSync.mockResolvedValue({
+      protocolVersion: 2,
+      items: [item("ignored", "2026-07-18T08:00:00.000Z")],
+      checkpoint: "ignored",
+      nextCursor: null,
+    } as never);
+    await expect(reconcileHostedWorkItems(bootstrapFixture.api, workspace, null)).rejects.toThrow(
+      "Unsupported hosted work-item sync protocol: 2.",
+    );
+    expect(bootstrapFixture.listWorkItemSyncChanges).not.toHaveBeenCalled();
+
+    const deltaFixture = fixture();
+    deltaFixture.listWorkItemSyncChanges.mockResolvedValue({
+      protocolVersion: 2,
+      changes: [{ type: "delete", workItemId: "kept" }],
+      checkpoint: "ignored",
+      nextCursor: null,
+    } as never);
+    const previous = {
+      workspaceId: workspace,
+      checkpoint: "current",
+      items: [item("kept", "2026-07-18T08:00:00.000Z")],
+    };
+    await expect(reconcileHostedWorkItems(deltaFixture.api, workspace, previous)).rejects.toThrow(
+      "Unsupported hosted work-item sync protocol: 2.",
+    );
+    expect(previous.items.map(({ id }) => id)).toEqual(["kept"]);
+  });
+
   it("rejects repeated bootstrap and delta cursors instead of looping", async () => {
     const bootstrapFixture = fixture();
     bootstrapFixture.bootstrapWorkItemSync

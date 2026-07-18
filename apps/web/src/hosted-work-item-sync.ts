@@ -33,6 +33,12 @@ function sortedItems(items: ReadonlyMap<string, HostedWorkItemSnapshot>) {
   );
 }
 
+function assertProtocolVersion(page: { readonly protocolVersion: number }): void {
+  if (page.protocolVersion !== 1) {
+    throw new Error(`Unsupported hosted work-item sync protocol: ${page.protocolVersion}.`);
+  }
+}
+
 function assertCheckpoint(current: string | undefined, received: string): string {
   if (current !== undefined && current !== received) {
     throw new Error("Hosted work-item sync checkpoint changed during pagination.");
@@ -57,6 +63,7 @@ async function bootstrap(
 
   for (;;) {
     const page = await api.bootstrapWorkItemSync(workspaceId, cursor);
+    assertProtocolVersion(page);
     checkpoint = assertCheckpoint(checkpoint, page.checkpoint);
     for (const item of page.items) items.set(item.id, { ...item });
     if (page.nextCursor === null) {
@@ -78,6 +85,7 @@ async function delta(
 
   for (;;) {
     const page = await api.listWorkItemSyncChanges(workspaceId, cursor);
+    assertProtocolVersion(page);
     checkpoint = assertCheckpoint(checkpoint, page.checkpoint);
     for (const change of page.changes) {
       if (change.type === "delete") items.delete(change.workItemId);
