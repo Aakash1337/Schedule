@@ -92,6 +92,19 @@ describe("GetPlanningOutcomes", () => {
       deferredMinutes: 0,
       dismissedMinutes: 0,
       additionalPlanRevisionCount: 1,
+      versionSegments: [
+        {
+          algorithmVersion: "planner-v6",
+          configVersion: "weights-v4",
+          plansConsidered: 1,
+          plannedTaskCount: 1,
+          completedTaskCount: 1,
+          plannedMinutes: 30,
+          completedMinutes: 30,
+          completionTasksRateBasisPoints: null,
+          completionMinutesRateBasisPoints: null,
+        },
+      ],
     });
     const dates = test.findCurrentForDates.mock.calls[0]?.[1];
     expect(dates).toHaveLength(30);

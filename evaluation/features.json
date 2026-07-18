@@ -1932,7 +1932,7 @@
       },
       "limitations": [
         "The fixed prior-30-day summary uses authoritative current heads and scheduled rather than stopwatch duration; its revision count means only additional revisions beyond each initial plan.",
-        "The descriptive aggregate may span planner versions and is not telemetry, causal comparison, planner input, model input, or automatic adaptation."
+        "The top-level aggregate may span planner versions; exact algorithm/configuration segments withhold rates until three plan days and are not telemetry, a version ranking, causal comparison, planner input, model input, or automatic adaptation."
       ],
       "evidence": [
         {
@@ -1941,6 +1941,7 @@
           "command": "unit",
           "anchors": [
             "returns an explicit empty prior-30-day window",
+            "groups weighted outcomes by exact planner and configuration version",
             "uses weighted current-head task and minute totals",
             "breaks down terminal non-completion outcomes by state",
             "rejects duplicate, cross-workspace, out-of-window, or inconsistent plans"

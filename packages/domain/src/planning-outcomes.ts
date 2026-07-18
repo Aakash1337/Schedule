@@ -9,6 +9,19 @@ import { invariant } from "./errors.js";
 import type { WorkspaceId } from "./ids.js";
 
 export const planningOutcomesLookbackDays = 30;
+const minimumPlanningOutcomeVersionPlansForRates = 3;
+
+export interface PlanningOutcomeVersionSegment {
+  readonly algorithmVersion: string;
+  readonly configVersion: string;
+  readonly plansConsidered: number;
+  readonly plannedTaskCount: number;
+  readonly completedTaskCount: number;
+  readonly plannedMinutes: number;
+  readonly completedMinutes: number;
+  readonly completionTasksRateBasisPoints: number | null;
+  readonly completionMinutesRateBasisPoints: number | null;
+}
 
 /** Descriptive current-head outcomes. These values never alter planning or model input. */
 export interface PlanningOutcomes {
@@ -29,6 +42,17 @@ export interface PlanningOutcomes {
   readonly additionalPlanRevisionCount: number;
   readonly completionTasksRateBasisPoints: number | null;
   readonly completionMinutesRateBasisPoints: number | null;
+  readonly versionSegments: readonly PlanningOutcomeVersionSegment[];
+}
+
+interface MutableVersionSegment {
+  readonly algorithmVersion: string;
+  readonly configVersion: string;
+  plansConsidered: number;
+  plannedTaskCount: number;
+  completedTaskCount: number;
+  plannedMinutes: number;
+  completedMinutes: number;
 }
 
 function safeAdd(left: number, right: number): number {
@@ -44,6 +68,10 @@ function safeAdd(left: number, right: number): number {
 function rate(numerator: number, denominator: number): number | null {
   if (denominator === 0) return null;
   return Number((BigInt(numerator) * 10_000n + BigInt(denominator) / 2n) / BigInt(denominator));
+}
+
+function ordinal(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /** Aggregates one authoritative current plan per prior local date using weighted totals. */
@@ -71,6 +99,7 @@ export function calculatePlanningOutcomes(
   let deferredMinutes = 0;
   let dismissedMinutes = 0;
   let additionalPlanRevisionCount = 0;
+  const segmentsByAlgorithm = new Map<string, Map<string, MutableVersionSegment>>();
 
   for (const plan of plans) {
     invariant(
@@ -94,7 +123,35 @@ export function calculatePlanningOutcomes(
       "planning.outcomes_revision_invalid",
       "A planning-outcomes plan revision must be positive.",
     );
+    invariant(
+      plan.algorithmVersion.trim().length > 0 &&
+        plan.algorithmVersion.length <= 120 &&
+        plan.configVersion.trim().length > 0 &&
+        plan.configVersion.length <= 120,
+      "planning.outcomes_version_invalid",
+      "Planning outcomes require bounded planner and configuration versions.",
+    );
     dates.add(plan.date);
+
+    let segmentsByConfig = segmentsByAlgorithm.get(plan.algorithmVersion);
+    if (segmentsByConfig === undefined) {
+      segmentsByConfig = new Map();
+      segmentsByAlgorithm.set(plan.algorithmVersion, segmentsByConfig);
+    }
+    let segment = segmentsByConfig.get(plan.configVersion);
+    if (segment === undefined) {
+      segment = {
+        algorithmVersion: plan.algorithmVersion,
+        configVersion: plan.configVersion,
+        plansConsidered: 0,
+        plannedTaskCount: 0,
+        completedTaskCount: 0,
+        plannedMinutes: 0,
+        completedMinutes: 0,
+      };
+      segmentsByConfig.set(plan.configVersion, segment);
+    }
+    segment.plansConsidered = safeAdd(segment.plansConsidered, 1);
 
     let planMinutes = 0;
     for (const item of plan.items) {
@@ -105,11 +162,15 @@ export function calculatePlanningOutcomes(
       );
       plannedTaskCount = safeAdd(plannedTaskCount, 1);
       plannedMinutes = safeAdd(plannedMinutes, item.scheduledMinutes);
+      segment.plannedTaskCount = safeAdd(segment.plannedTaskCount, 1);
+      segment.plannedMinutes = safeAdd(segment.plannedMinutes, item.scheduledMinutes);
       planMinutes = safeAdd(planMinutes, item.scheduledMinutes);
       switch (item.activityState) {
         case "completed":
           completedTaskCount = safeAdd(completedTaskCount, 1);
           completedMinutes = safeAdd(completedMinutes, item.scheduledMinutes);
+          segment.completedTaskCount = safeAdd(segment.completedTaskCount, 1);
+          segment.completedMinutes = safeAdd(segment.completedMinutes, item.scheduledMinutes);
           break;
         case "skipped":
           skippedTaskCount = safeAdd(skippedTaskCount, 1);
@@ -133,6 +194,26 @@ export function calculatePlanningOutcomes(
     additionalPlanRevisionCount = safeAdd(additionalPlanRevisionCount, plan.requestRevision - 1);
   }
 
+  const versionSegments = [...segmentsByAlgorithm.values()]
+    .flatMap((segmentsByConfig) => [...segmentsByConfig.values()])
+    .map((segment): PlanningOutcomeVersionSegment => ({
+      ...segment,
+      completionTasksRateBasisPoints:
+        segment.plansConsidered < minimumPlanningOutcomeVersionPlansForRates
+          ? null
+          : rate(segment.completedTaskCount, segment.plannedTaskCount),
+      completionMinutesRateBasisPoints:
+        segment.plansConsidered < minimumPlanningOutcomeVersionPlansForRates
+          ? null
+          : rate(segment.completedMinutes, segment.plannedMinutes),
+    }))
+    .sort(
+      (left, right) =>
+        right.plansConsidered - left.plansConsidered ||
+        ordinal(left.algorithmVersion, right.algorithmVersion) ||
+        ordinal(left.configVersion, right.configVersion),
+    );
+
   return {
     forDate,
     windowStartedOn,
@@ -151,5 +232,6 @@ export function calculatePlanningOutcomes(
     additionalPlanRevisionCount,
     completionTasksRateBasisPoints: rate(completedTaskCount, plannedTaskCount),
     completionMinutesRateBasisPoints: rate(completedMinutes, plannedMinutes),
+    versionSegments,
   };
 }

@@ -368,8 +368,11 @@ They require exactly the 30 local dates before the selected date, one authoritat
 date, weighted task and scheduled-minute totals, current completed-state projection, half-up basis
 points, explicit zero-denominator handling, and an additional-revision count. Invalid dates,
 cross-workspace plans, duplicate dates, inconsistent totals, retry, and the three-plan display gate
-are covered. The implementation reuses an existing bounded repository projection and adds no schema,
-telemetry, or planner input; it is not evidence of causal improvement or a planner-version comparison.
+are covered. Exact algorithm/configuration segments additionally require collision-safe grouping,
+weighted totals, deterministic count/version ordering, and `null` rates below three plan days. The
+implementation reuses an existing bounded repository projection and adds no schema, telemetry, or
+planner input. The built Chromium lifecycle renders a qualifying exact version pair and its explicit
+non-causal boundary. The groups are not evidence of causal improvement or a planner-version ranking.
 
 ### Daily-plan alternative evidence
 

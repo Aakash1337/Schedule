@@ -225,6 +225,68 @@ interface PlanningOutcomesSummaryProps {
   readonly onRetry: () => void;
 }
 
+function PlanningOutcomeVersionSegments({
+  segments,
+}: {
+  readonly segments: PlanningOutcomes["versionSegments"];
+}) {
+  if (segments.length === 0) return null;
+  return (
+    <section
+      className="today-plan-fit-history"
+      aria-labelledby="today-planning-outcomes-versions-heading"
+    >
+      <div className="today-plan-fit-history-heading">
+        <h3 id="today-planning-outcomes-versions-heading">By planner version</h3>
+        <span>Observational groups</span>
+      </div>
+      <p>
+        Final current revisions grouped by their planner and configuration. These results do not
+        show that a version caused an outcome.
+      </p>
+      <ul className="today-plan-fit-history-list">
+        {segments.map((segment) => {
+          const remaining = Math.max(0, minimumPlanningOutcomePlans - segment.plansConsidered);
+          return (
+            <li key={JSON.stringify([segment.algorithmVersion, segment.configVersion])}>
+              <div>
+                <strong className="today-planning-outcomes-version">
+                  {segment.algorithmVersion} · {segment.configVersion}
+                </strong>
+                <span>
+                  {segment.plansConsidered} plan {segment.plansConsidered === 1 ? "day" : "days"}
+                </span>
+              </div>
+              {segment.plansConsidered < minimumPlanningOutcomePlans ? (
+                <p>
+                  {segment.plansConsidered} of {minimumPlanningOutcomePlans} plan days with this
+                  exact version {segment.plansConsidered === 1 ? "is" : "are"} available
+                  {segment.plannedTaskCount === 0 ? ", but none contains planned items" : ""}. Rates
+                  need at least {remaining} more within the current window
+                  {segment.plannedTaskCount === 0 ? " and some planned work" : ""}.
+                </p>
+              ) : segment.plannedTaskCount === 0 ? (
+                <p>
+                  {segment.plansConsidered} plan days with this exact version contained no planned
+                  items.
+                </p>
+              ) : (
+                <p>
+                  Completed {formatBasisPoints(segment.completionMinutesRateBasisPoints)} scheduled
+                  time · {formatBasisPoints(segment.completionTasksRateBasisPoints)} tasks. Totals:{" "}
+                  {formatMinutes(segment.completedMinutes)} of{" "}
+                  {formatMinutes(segment.plannedMinutes)} · {segment.completedTaskCount} of{" "}
+                  {segment.plannedTaskCount} tasks.
+                </p>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 function PlanningOutcomesSummary({
   outcomes,
   loading,
@@ -300,6 +362,9 @@ function PlanningOutcomesSummary({
           </p>
         </>
       )}
+      {error === null && outcomes !== null && outcomes.plansConsidered > 0 ? (
+        <PlanningOutcomeVersionSegments segments={outcomes.versionSegments} />
+      ) : null}
     </section>
   );
 }

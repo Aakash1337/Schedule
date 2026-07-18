@@ -77,7 +77,74 @@ describe("planning outcomes", () => {
       additionalPlanRevisionCount: 0,
       completionTasksRateBasisPoints: null,
       completionMinutesRateBasisPoints: null,
+      versionSegments: [],
     });
+  });
+
+  it("groups weighted outcomes by exact planner and configuration version", () => {
+    const values = [
+      plan(1, "2026-07-11", [item(1, 30, "completed")], {
+        algorithmVersion: "planner-v7",
+        configVersion: "weights-v5",
+      }),
+      plan(2, "2026-07-12", [item(2, 60, "skipped")], {
+        algorithmVersion: "planner-v7",
+        configVersion: "weights-v5",
+      }),
+      plan(3, "2026-07-13", [item(3, 30, "completed")], {
+        algorithmVersion: "planner-v7",
+        configVersion: "weights-v5",
+      }),
+      plan(4, "2026-07-14", [item(4, 45, "completed")], {
+        algorithmVersion: "planner-v6",
+        configVersion: "weights-b",
+      }),
+      plan(5, "2026-07-15", [item(5, 15, "completed")], {
+        algorithmVersion: "planner-v6",
+        configVersion: "weights-a",
+      }),
+    ];
+
+    const outcomes = calculatePlanningOutcomes(workspace, localDate("2026-07-16"), values);
+    expect(outcomes.versionSegments).toEqual([
+      {
+        algorithmVersion: "planner-v7",
+        configVersion: "weights-v5",
+        plansConsidered: 3,
+        plannedTaskCount: 3,
+        completedTaskCount: 2,
+        plannedMinutes: 120,
+        completedMinutes: 60,
+        completionTasksRateBasisPoints: 6_667,
+        completionMinutesRateBasisPoints: 5_000,
+      },
+      {
+        algorithmVersion: "planner-v6",
+        configVersion: "weights-a",
+        plansConsidered: 1,
+        plannedTaskCount: 1,
+        completedTaskCount: 1,
+        plannedMinutes: 15,
+        completedMinutes: 15,
+        completionTasksRateBasisPoints: null,
+        completionMinutesRateBasisPoints: null,
+      },
+      {
+        algorithmVersion: "planner-v6",
+        configVersion: "weights-b",
+        plansConsidered: 1,
+        plannedTaskCount: 1,
+        completedTaskCount: 1,
+        plannedMinutes: 45,
+        completedMinutes: 45,
+        completionTasksRateBasisPoints: null,
+        completionMinutesRateBasisPoints: null,
+      },
+    ]);
+    expect(
+      calculatePlanningOutcomes(workspace, localDate("2026-07-16"), [...values].reverse())
+        .versionSegments,
+    ).toEqual(outcomes.versionSegments);
   });
 
   it("uses weighted current-head task and minute totals", () => {
@@ -151,5 +218,10 @@ describe("planning outcomes", () => {
         plan(4, "2026-07-13", [item(4, 30, "completed")], { totalMinutes: 31 }),
       ]),
     ).toThrowError(/consistent/i);
+    expect(() =>
+      calculatePlanningOutcomes(workspace, localDate("2026-07-16"), [
+        plan(5, "2026-07-12", [item(5, 30, "completed")], { configVersion: " " }),
+      ]),
+    ).toThrowError(/versions/i);
   });
 });

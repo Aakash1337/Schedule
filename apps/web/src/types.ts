@@ -443,6 +443,18 @@ export interface DailyPlanFitEffectiveness {
   readonly completionTasksRateBasisPoints: number | null;
 }
 
+export interface PlanningOutcomeVersionSegment {
+  readonly algorithmVersion: string;
+  readonly configVersion: string;
+  readonly plansConsidered: number;
+  readonly plannedTaskCount: number;
+  readonly completedTaskCount: number;
+  readonly plannedMinutes: number;
+  readonly completedMinutes: number;
+  readonly completionTasksRateBasisPoints: number | null;
+  readonly completionMinutesRateBasisPoints: number | null;
+}
+
 /** Current-head completion totals for the 30 dates before the selected local date. */
 export interface PlanningOutcomes {
   readonly forDate: string;
@@ -462,6 +474,7 @@ export interface PlanningOutcomes {
   readonly additionalPlanRevisionCount: number;
   readonly completionTasksRateBasisPoints: number | null;
   readonly completionMinutesRateBasisPoints: number | null;
+  readonly versionSegments: readonly PlanningOutcomeVersionSegment[];
 }
 
 export type SchedulingAdviceUnavailableReason =

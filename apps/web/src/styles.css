@@ -1410,6 +1410,7 @@
   gap: 10px;
 }
 
+.today-plan-fit-history-heading h3,
 .today-plan-fit-history-heading h4 {
   margin: 0;
   font-size: 0.8rem;
@@ -1441,6 +1442,10 @@
 
 .today-plan-fit-history-list strong {
   font-size: 0.74rem;
+}
+
+.today-planning-outcomes-version {
+  overflow-wrap: anywhere;
 }
 
 .today-form-row {
