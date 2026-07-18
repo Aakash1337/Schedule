@@ -137,6 +137,42 @@ describe("deterministic daily planning", () => {
     expect(evaluation.exclusionCodes).toContain("maximum_reached");
   });
 
+  it("counts recent deferrals with skips and dismissals in bounded skip fatigue", () => {
+    const candidate = routine("fatigue-candidate");
+    const unrelated = routine("fatigue-unrelated");
+    const recent = [
+      event("fatigue-skip", candidate, "skipped", "2026-07-10"),
+      event("fatigue-defer", candidate, "deferred", "2026-07-11"),
+      event("fatigue-dismiss", candidate, "dismissed", "2026-07-12"),
+    ];
+    const combined = evaluateRoutineForPlan(candidate, recent, request());
+    const fatigueWeight = DEFAULT_PLANNER_CONFIG.score.skipFatigue;
+    const withNoise = evaluateRoutineForPlan(
+      candidate,
+      [
+        ...recent,
+        event("fatigue-old", candidate, "deferred", "2026-07-08"),
+        event("fatigue-future", candidate, "deferred", "2026-07-16"),
+        event("fatigue-unrelated-event", unrelated, "deferred", "2026-07-14"),
+      ],
+      request(),
+    );
+    const capped = evaluateRoutineForPlan(
+      candidate,
+      [
+        ...recent,
+        event("fatigue-fourth", candidate, "deferred", "2026-07-13"),
+        event("fatigue-fifth", candidate, "skipped", "2026-07-14"),
+      ],
+      request(),
+    );
+
+    expect(combined.scoreComponents.skipFatigue).toBe(3 * fatigueWeight);
+    expect(combined.periodCompletions).toBe(0);
+    expect(withNoise.scoreComponents.skipFatigue).toBe(combined.scoreComponents.skipFatigue);
+    expect(capped.scoreComponents.skipFatigue).toBe(4 * fatigueWeight);
+  });
+
   it("heavily lowers weight after a target but keeps the routine eligible below its maximum", () => {
     const satisfied = routine("satisfied", { target: 3, maximum: 4 });
     const neglected = routine("neglected", { target: 3, maximum: 4 });
@@ -922,7 +958,7 @@ describe("deterministic daily planning", () => {
 
     expect(repeatedSelections).toBeLessThan(5);
     const floorSelection = generateDailyPlan({
-      request: request("weekly-repetition-11659", singleTaskLimits),
+      request: request("weekly-repetition-4679", singleTaskLimits),
       routines: [due, repeated],
       events,
       generatedAt,
@@ -953,7 +989,7 @@ describe("deterministic daily planning", () => {
     });
 
     expect(first).toMatchObject({
-      algorithmVersion: "deterministic-planner-v7",
+      algorithmVersion: "deterministic-planner-v8",
       configVersion: "default-weights-v5",
       inputSnapshot: {
         config: {

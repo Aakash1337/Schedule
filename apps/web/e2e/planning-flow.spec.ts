@@ -908,7 +908,7 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
   await expect(page.getByText("2 tasks · 1h 30m")).toBeVisible();
   await expect(page.getByText("1 task · 45m")).toBeVisible();
   await expect(page.getByRole("heading", { name: "By planner version" })).toBeVisible();
-  await expect(page.getByText("deterministic-planner-v7 · default-weights-v5")).toBeVisible();
+  await expect(page.getByText("deterministic-planner-v8 · default-weights-v5")).toBeVisible();
   await expect(page.getByText(/Completed 41.67% scheduled time · 41.67% tasks/)).toBeVisible();
   await expect(page.getByText(/do not show that a version caused an outcome/i)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Plan Fit outcome summary" })).toBeVisible();
