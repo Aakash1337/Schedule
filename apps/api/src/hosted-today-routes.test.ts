@@ -7,11 +7,13 @@ import {
   planItemId,
   userId,
   workspaceId,
+  type DailyPlanFitInsight,
 } from "@schedule/domain";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE,
   HOSTED_TODAY_ROUTE,
   HOSTED_TODAY_ACTIVITY_ROUTE,
   registerHostedTodayBoundary,
@@ -25,6 +27,7 @@ const WORKSPACE_ID = workspaceId("00000000-0000-4000-8000-000000000301");
 const OTHER_WORKSPACE_ID = workspaceId("00000000-0000-4000-8000-000000000302");
 const PLAN_ID = dailyPlanId("00000000-0000-4000-8000-000000000401");
 const ITEM_ID = planItemId("00000000-0000-4000-8000-000000000501");
+const PLAN_FIT_INSIGHT_KEY = "a".repeat(64);
 const principal = {
   userId: USER_ID,
   sessionId: SESSION_ID,
@@ -46,6 +49,7 @@ async function createHostedApp(
   getToday: HostedTodayServices["getToday"],
   recordActivity: HostedTodayServices["recordActivity"] = vi.fn(),
   generateToday: HostedTodayServices["generateToday"] = vi.fn(),
+  getDailyPlanFitInsight: HostedTodayServices["getDailyPlanFitInsight"] = vi.fn(),
 ): Promise<FastifyInstance> {
   const app = Fastify();
   apps.push(app);
@@ -62,7 +66,7 @@ async function createHostedApp(
             : null,
       },
     },
-    { getToday, generateToday, recordActivity },
+    { getToday, getDailyPlanFitInsight, generateToday, recordActivity },
   );
   await app.ready();
   return app;
@@ -74,6 +78,10 @@ function todayPath(workspace: string = WORKSPACE_ID): string {
 
 function todayActivityPath(workspace: string = WORKSPACE_ID, item: string = ITEM_ID): string {
   return `${HOSTED_TODAY_ACTIVITY_ROUTE.replace(":workspaceId", workspace).replace(":itemId", item)}?date=2026-07-16`;
+}
+
+function planFitInsightPath(workspace: string = WORKSPACE_ID): string {
+  return `${HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE.replace(":workspaceId", workspace)}?forDate=2026-07-16`;
 }
 
 describe("hosted Today route", () => {
@@ -168,7 +176,78 @@ describe("hosted Today route", () => {
     expect(getToday).toHaveBeenCalledOnce();
   });
 
-  it("generates one bounded first plan with canonical authority and an exact retry key", async () => {
+  it("returns only authorized bounded Plan Fit guidance", async () => {
+    const getDailyPlanFitInsight = vi.fn(
+      async () =>
+        ({
+          forDate: localDate("2026-07-16"),
+          status: "suggested",
+          disposition: "available",
+          sampleCount: 3,
+          minimumSamples: 3,
+          suggestedTargetMinutes: 90,
+          suggestedTargetTaskCount: 2,
+          insightKey: PLAN_FIT_INSIGHT_KEY,
+          dismissedAt: null,
+          windowStartedOn: localDate("2026-04-17"),
+          windowEndedOn: localDate("2026-07-15"),
+          lookbackDays: 90,
+          maximumSamples: 28,
+          evaluatedAt: new Date("2026-07-16T08:00:00.000Z"),
+          typicalPlannedMinutes: 180,
+          typicalCompletedMinutes: 90,
+          materialThresholdMinutes: 45,
+          typicalPlannedTaskCount: 4,
+          typicalCompletedTaskCount: 2,
+          materialThresholdTaskCount: 1,
+        }) satisfies DailyPlanFitInsight,
+    );
+    const app = await createHostedApp(vi.fn(), vi.fn(), vi.fn(), getDailyPlanFitInsight);
+
+    const response = await app.inject({
+      method: "GET",
+      url: planFitInsightPath(WORKSPACE_ID.toUpperCase()),
+      headers: { "x-workspace-id": OTHER_WORKSPACE_ID },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      forDate: "2026-07-16",
+      status: "suggested",
+      disposition: "available",
+      sampleCount: 3,
+      minimumSamples: 3,
+      suggestedTargetMinutes: 90,
+      suggestedTargetTaskCount: 2,
+      insightKey: PLAN_FIT_INSIGHT_KEY,
+    });
+    expect(response.body).not.toContain("typicalPlannedMinutes");
+    expect(getDailyPlanFitInsight).toHaveBeenCalledWith({
+      authorization,
+      forDate: localDate("2026-07-16"),
+    });
+  });
+
+  it("rejects invalid Plan Fit dates and redacts revoked access", async () => {
+    const getDailyPlanFitInsight = vi
+      .fn()
+      .mockRejectedValue(new DomainError("workspace.not_found", "private membership detail"));
+    const app = await createHostedApp(vi.fn(), vi.fn(), vi.fn(), getDailyPlanFitInsight);
+    const base = HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE.replace(":workspaceId", WORKSPACE_ID);
+
+    for (const query of ["forDate=2026-02-30", "forDate=2026-07-16&limit=20", "forDate="]) {
+      expect((await app.inject({ method: "GET", url: `${base}?${query}` })).statusCode).toBe(400);
+    }
+    const denied = await app.inject({ method: "GET", url: planFitInsightPath(OTHER_WORKSPACE_ID) });
+    const revoked = await app.inject({ method: "GET", url: planFitInsightPath() });
+
+    expect(denied.statusCode).toBe(404);
+    expect(revoked.statusCode).toBe(404);
+    expect(revoked.body).not.toContain("private membership detail");
+    expect(getDailyPlanFitInsight).toHaveBeenCalledOnce();
+  });
+
+  it("generates one bounded first plan with an exact reviewed Plan Fit key", async () => {
     const generateToday = vi.fn(async () => undefined);
     const app = await createHostedApp(vi.fn(), vi.fn(), generateToday);
 
@@ -188,6 +267,7 @@ describe("hosted Today route", () => {
         },
         targetMinutes: 180,
         targetTaskCount: 4,
+        planFitInsightKey: PLAN_FIT_INSIGHT_KEY,
       },
     });
 
@@ -204,6 +284,7 @@ describe("hosted Today route", () => {
       },
       targetMinutes: 180,
       targetTaskCount: 4,
+      planFitInsightKey: PLAN_FIT_INSIGHT_KEY,
       idempotencyKey: "hosted-first-plan-1",
     });
   });
@@ -219,6 +300,7 @@ describe("hosted Today route", () => {
       },
       targetMinutes: 180,
       targetTaskCount: 4,
+      planFitInsightKey: null,
     };
     const attempts = [
       { payload: { ...valid, timeZone: "Mars/Olympus_Mons" }, key: "plan-1" },
@@ -239,7 +321,8 @@ describe("hosted Today route", () => {
       { payload: { ...valid, targetMinutes: 0 }, key: "plan-4" },
       { payload: { ...valid, targetMinutes: 1_441 }, key: "plan-5" },
       { payload: { ...valid, targetTaskCount: 65 }, key: "plan-6" },
-      { payload: { ...valid, availableContexts: ["private"] }, key: "plan-7" },
+      { payload: { ...valid, planFitInsightKey: "not-a-key" }, key: "plan-7" },
+      { payload: { ...valid, availableContexts: ["private"] }, key: "plan-8" },
       { payload: valid, key: " " },
     ];
 

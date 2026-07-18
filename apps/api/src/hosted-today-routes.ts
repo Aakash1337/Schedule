@@ -1,5 +1,6 @@
 import type { CurrentDailyPlan, HostedWorkspaceAuthorization } from "@schedule/application";
 import {
+  dailyPlanFitInsightKeyPattern,
   dailyPlanId,
   DomainError,
   instantToLocalDate,
@@ -8,6 +9,7 @@ import {
   localDate,
   planItemId,
   type DailyPlanId,
+  type DailyPlanFitInsight,
   type LocalDate,
   type PlanItemId,
 } from "@schedule/domain";
@@ -24,6 +26,11 @@ import { parseRequest } from "./http-errors.js";
 
 const hostedTodayQuery = z.strictObject({
   date: z
+    .string()
+    .refine(isValidLocalDate, "Expected a valid Gregorian date in YYYY-MM-DD format."),
+});
+const hostedDailyPlanFitInsightQuery = z.strictObject({
+  forDate: z
     .string()
     .refine(isValidLocalDate, "Expected a valid Gregorian date in YYYY-MM-DD format."),
 });
@@ -55,6 +62,7 @@ const hostedTodayGenerationBody = z.strictObject({
   }),
   targetMinutes: z.number().int().min(1).max(1_440),
   targetTaskCount: z.number().int().min(1).max(64),
+  planFitInsightKey: z.string().regex(dailyPlanFitInsightKeyPattern).nullable().optional(),
 });
 const hostedTodayGenerationRequest = z
   .strictObject({ query: hostedTodayQuery, body: hostedTodayGenerationBody })
@@ -89,10 +97,17 @@ const idempotencyKey = z.string().trim().min(1).max(160);
 
 export const HOSTED_TODAY_ROUTE = "/v1/hosted/workspaces/:workspaceId/today";
 export const HOSTED_TODAY_ACTIVITY_ROUTE = `${HOSTED_TODAY_ROUTE}/:itemId/activity-events`;
+export const HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE =
+  "/v1/hosted/workspaces/:workspaceId/daily-plan-fit-insight";
 
 export interface HostedTodayInput {
   readonly authorization: HostedWorkspaceAuthorization;
   readonly date: LocalDate;
+}
+
+export interface HostedDailyPlanFitInsightInput {
+  readonly authorization: HostedWorkspaceAuthorization;
+  readonly forDate: LocalDate;
 }
 
 export interface HostedTodayActivityInput {
@@ -113,11 +128,13 @@ export interface HostedTodayGenerationInput {
   readonly window: Readonly<{ startsAt: Date; endsAt: Date }>;
   readonly targetMinutes: number;
   readonly targetTaskCount: number;
+  readonly planFitInsightKey: string | null;
   readonly idempotencyKey: string;
 }
 
 export interface HostedTodayServices {
   getToday(input: HostedTodayInput): Promise<CurrentDailyPlan>;
+  getDailyPlanFitInsight(input: HostedDailyPlanFitInsightInput): Promise<DailyPlanFitInsight>;
   generateToday(input: HostedTodayGenerationInput): Promise<void>;
   recordActivity(input: HostedTodayActivityInput): Promise<void>;
 }
@@ -156,6 +173,27 @@ async function registerHostedTodayRoutes(
     };
   });
 
+  app.get(HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE, async (request) => {
+    const query = parseRequest(hostedDailyPlanFitInsightQuery, request.query);
+    const authorization = access.authorization(request);
+    const insight = await withHostedWorkspaceNotFoundRedacted(() =>
+      services.getDailyPlanFitInsight({
+        authorization,
+        forDate: localDate(query.forDate),
+      }),
+    );
+    return {
+      forDate: insight.forDate,
+      status: insight.status,
+      disposition: insight.disposition,
+      sampleCount: insight.sampleCount,
+      minimumSamples: insight.minimumSamples,
+      suggestedTargetMinutes: insight.suggestedTargetMinutes,
+      suggestedTargetTaskCount: insight.suggestedTargetTaskCount,
+      insightKey: insight.insightKey,
+    };
+  });
+
   app.post(HOSTED_TODAY_ROUTE, async (request, reply) => {
     const parsed = parseRequest(hostedTodayGenerationRequest, {
       query: request.query,
@@ -174,6 +212,7 @@ async function registerHostedTodayRoutes(
         },
         targetMinutes: parsed.body.targetMinutes,
         targetTaskCount: parsed.body.targetTaskCount,
+        planFitInsightKey: parsed.body.planFitInsightKey ?? null,
         idempotencyKey: key,
       }),
     );

@@ -6,6 +6,7 @@ import { browserTimeZone, formatMinutes, localDateTimeToIso, todayKey } from "./
 import {
   hostedApi,
   HostedApiError,
+  type HostedDailyPlanFitInsight,
   type HostedGenerateToday,
   type HostedToday,
   type HostedTodayActivityState,
@@ -109,6 +110,7 @@ export function HostedApp() {
   const refocusTitleAfterCapture = useRef(false);
   const todayHeading = useRef<HTMLHeadingElement>(null);
   const refocusTodayAfterGeneration = useRef(false);
+  const planningTargetMinutesInput = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<string | null>(null);
@@ -121,6 +123,12 @@ export function HostedApp() {
   const [todayError, setTodayError] = useState<string | null>(null);
   const [todayRefresh, setTodayRefresh] = useState(0);
   const [todayDate, setTodayDate] = useState(() => todayKey());
+  const [planFitInsight, setPlanFitInsight] = useState<HostedDailyPlanFitInsight | null>(null);
+  const [planFitLoading, setPlanFitLoading] = useState(false);
+  const [planFitError, setPlanFitError] = useState(false);
+  const [planFitNotice, setPlanFitNotice] = useState<string | null>(null);
+  const [planFitRefresh, setPlanFitRefresh] = useState(0);
+  const [selectedPlanFitInsightKey, setSelectedPlanFitInsightKey] = useState<string | null>(null);
   const [todayRetry, setTodayRetry] = useState<TodayActionIntent | null>(null);
   const [todayGenerationRetry, setTodayGenerationRetry] = useState<TodayGenerationIntent | null>(
     null,
@@ -238,6 +246,7 @@ export function HostedApp() {
     setToday(null);
     setTodayLoading(true);
     setTodayError(null);
+    setPlanFitNotice(null);
     void hostedApi
       .getToday(selectedWorkspaceId, todayDate)
       .then((result) => {
@@ -278,12 +287,94 @@ export function HostedApp() {
     };
   }, [mode, selectedWorkspaceId, todayDate, todayRefresh]);
 
+  useEffect(() => {
+    if (
+      mode !== "ready" ||
+      selectedWorkspaceId === null ||
+      todayLoading ||
+      today?.planId !== null
+    ) {
+      if (mode !== "ready" || selectedWorkspaceId === null || today?.planId !== null) {
+        setPlanFitInsight(null);
+        setPlanFitLoading(false);
+        setPlanFitError(false);
+        setSelectedPlanFitInsightKey(null);
+      }
+      return;
+    }
+    let active = true;
+    setPlanFitInsight(null);
+    setPlanFitLoading(true);
+    setPlanFitError(false);
+    void hostedApi
+      .getDailyPlanFitInsight(selectedWorkspaceId, todayDate)
+      .then((insight) => {
+        if (!active) return;
+        setPlanFitInsight(insight);
+        setSelectedPlanFitInsightKey((key) => (key === insight.insightKey ? key : null));
+      })
+      .catch((insightError: unknown) => {
+        if (!active) return;
+        if (insightError instanceof HostedApiError && insightError.status === 401) {
+          setMode("signed-out");
+          setError(publicError(insightError));
+          return;
+        }
+        setPlanFitError(true);
+      })
+      .finally(() => {
+        if (active) setPlanFitLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [mode, planFitRefresh, selectedWorkspaceId, today?.planId, todayDate, todayLoading]);
+
   const selectedWorkspace = useMemo(
     () => workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
     [selectedWorkspaceId, workspaces],
   );
   const mutationBusy =
     busy || generatingToday || updatingItem !== null || updatingTodayItem !== null;
+  const planFitSuggestion =
+    planFitInsight?.status === "suggested" &&
+    planFitInsight.disposition === "available" &&
+    planFitInsight.insightKey !== null &&
+    planFitInsight.suggestedTargetMinutes !== null &&
+    planFitInsight.suggestedTargetTaskCount !== null
+      ? {
+          insightKey: planFitInsight.insightKey,
+          sampleCount: planFitInsight.sampleCount,
+          targetMinutes: planFitInsight.suggestedTargetMinutes,
+          targetTaskCount: planFitInsight.suggestedTargetTaskCount,
+        }
+      : null;
+  const planFitStatusMessage =
+    planFitInsight === null || planFitSuggestion !== null
+      ? null
+      : planFitInsight.status === "insufficient_history"
+        ? `Plan Fit needs ${planFitInsight.minimumSamples} resolved plans; ${planFitInsight.sampleCount} available.`
+        : planFitInsight.status === "aligned"
+          ? "Recent completed plans are aligned; no lower targets are suggested."
+          : planFitInsight.disposition === "dismissed"
+            ? "The current Plan Fit suggestion is dismissed."
+            : null;
+  const planFitSuggestionApplied =
+    planFitSuggestion !== null &&
+    selectedPlanFitInsightKey === planFitSuggestion.insightKey &&
+    Number(planningTargetMinutes) === planFitSuggestion.targetMinutes &&
+    Number(planningTargetTaskCount) === planFitSuggestion.targetTaskCount;
+  const planFitAnnouncement =
+    planFitNotice ??
+    (planFitLoading
+      ? "Checking recent plan fit."
+      : planFitError
+        ? "Plan Fit guidance is unavailable."
+        : planFitSuggestion === null
+          ? (planFitStatusMessage ?? "")
+          : planFitSuggestionApplied
+            ? `Using ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}. You can still edit both limits.`
+            : `Plan Fit suggests ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}.`);
 
   function selectWorkspace(id: string) {
     localStorage.setItem(selectedWorkspaceKey, id);
@@ -298,6 +389,11 @@ export function HostedApp() {
     setTodayError(null);
     setTodayRetry(null);
     setTodayGenerationRetry(null);
+    setPlanFitInsight(null);
+    setPlanFitLoading(false);
+    setPlanFitError(false);
+    setPlanFitNotice(null);
+    setSelectedPlanFitInsightKey(null);
     refocusTodayAfterGeneration.current = false;
   }
 
@@ -482,10 +578,21 @@ export function HostedApp() {
           generationError.status === 429 ||
           generationError.status >= 500;
         if (!ambiguous) setTodayGenerationRetry(null);
+        const stalePlanFit =
+          known &&
+          generationError.status === 409 &&
+          generationError.code === "daily_plan_fit_insight.evidence_conflict";
+        if (stalePlanFit) {
+          setSelectedPlanFitInsightKey(null);
+          setPlanFitNotice("Recent plan history changed. Review the refreshed Plan Fit guidance.");
+          setPlanFitRefresh((value) => value + 1);
+        }
         setTodayError(
-          known && generationError.status === 409
-            ? "Today already has a different plan. Refresh it before trying again."
-            : publicError(generationError),
+          stalePlanFit
+            ? null
+            : known && generationError.status === 409
+              ? "Today already has a different plan. Refresh it before trying again."
+              : publicError(generationError),
         );
       }
     } finally {
@@ -526,10 +633,21 @@ export function HostedApp() {
       window: { startsAt, endsAt },
       targetMinutes,
       targetTaskCount,
+      planFitInsightKey: selectedPlanFitInsightKey,
       idempotencyKey: crypto.randomUUID(),
     };
     setTodayGenerationRetry(intent);
     void submitTodayGeneration(intent);
+  }
+
+  function applyPlanFitSuggestion() {
+    if (planFitSuggestion === null) return;
+    setPlanningTargetMinutes(String(planFitSuggestion.targetMinutes));
+    setPlanningTargetTaskCount(String(planFitSuggestion.targetTaskCount));
+    setSelectedPlanFitInsightKey(planFitSuggestion.insightKey);
+    setPlanFitNotice(null);
+    setTodayError(null);
+    planningTargetMinutesInput.current?.focus();
   }
 
   async function logout() {
@@ -794,6 +912,51 @@ export function HostedApp() {
                     <p>Choose one work window and cap both time and task count.</p>
                     <span>{timeZone}</span>
                   </div>
+                  <p className="sr-only" role="status" aria-atomic="true">
+                    {planFitAnnouncement}
+                  </p>
+                  {planFitNotice === null ? null : (
+                    <p className="hosted-plan-fit-state">{planFitNotice}</p>
+                  )}
+                  {planFitLoading ? (
+                    <p className="hosted-plan-fit-state">Checking recent plan fit…</p>
+                  ) : planFitError ? (
+                    <div className="hosted-plan-fit-state">
+                      <span>Plan Fit guidance is unavailable.</span>
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        onClick={() => setPlanFitRefresh((value) => value + 1)}
+                      >
+                        Retry guidance
+                      </Button>
+                    </div>
+                  ) : planFitSuggestion === null ? (
+                    planFitStatusMessage === null ? null : (
+                      <p className="hosted-plan-fit-state">{planFitStatusMessage}</p>
+                    )
+                  ) : (
+                    <div className="hosted-plan-fit-suggestion">
+                      <div>
+                        <strong>Recent Plan Fit</strong>
+                        <p>
+                          {planFitSuggestionApplied
+                            ? `Using ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}. You can still edit both limits.`
+                            : `Based on ${planFitSuggestion.sampleCount} resolved plans, try ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}.`}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        disabled={mutationBusy || planFitSuggestionApplied}
+                        onClick={applyPlanFitSuggestion}
+                      >
+                        {planFitSuggestionApplied
+                          ? "Suggestion applied"
+                          : `Use ${formatMinutes(planFitSuggestion.targetMinutes)} and ${planFitSuggestion.targetTaskCount} ${planFitSuggestion.targetTaskCount === 1 ? "task" : "tasks"}`}
+                      </Button>
+                    </div>
+                  )}
                   <div className="hosted-plan-fields">
                     <Field label="Work window starts">
                       <input
@@ -815,6 +978,7 @@ export function HostedApp() {
                     </Field>
                     <Field label="Time budget (minutes)">
                       <input
+                        ref={planningTargetMinutesInput}
                         type="number"
                         inputMode="numeric"
                         min={1}

@@ -35,11 +35,16 @@ not authorize these product routes.
   `expectedVersion` and `status=in_progress|done`.
   `GET /v1/hosted/workspaces/{workspaceId}/today?date=YYYY-MM-DD` returns only an existing current
   plan's identity/head fence, item IDs/titles/scheduled minutes/activity states, and total minutes.
-  A strict CSRF-protected `POST` to that same URL creates only revision 1 from one same-local-date
+  `GET /v1/hosted/workspaces/{workspaceId}/daily-plan-fit-insight?forDate=YYYY-MM-DD` returns only
+  bounded deterministic status, sample counts, nullable joint targets, and the exact nullable
+  evidence key; reading it writes nothing and exposes no plan or activity history.
+  A strict CSRF-protected `POST` to the `/today` URL creates only revision 1 from one same-local-date
   offset window, an IANA time zone, `targetMinutes` from 1 through 1,440, `targetTaskCount` from 1
-  through 64, and a required `Idempotency-Key`. The runtime fixes balanced fit, null energy, empty
-  contexts, and derives the deterministic seed from the key. An exact retry returns `204`; a
-  different request after revision 1 exists returns `409`.
+  through 64, an optional nullable exact Plan Fit evidence key, and a required `Idempotency-Key`.
+  The runtime fixes balanced fit, null energy, empty contexts, and derives the deterministic seed
+  from the request key. An exact Plan Fit selection is revalidated and receipted atomically with the
+  plan; stale evidence writes neither. An exact retry returns `204`; a different request after
+  revision 1 exists returns `409`.
   CSRF-protected `POST /v1/hosted/workspaces/{workspaceId}/today/{itemId}/activity-events?date=YYYY-MM-DD`
   accepts only the expected plan/head, `started|completed|skipped`, one offset timestamp, and a required
   `Idempotency-Key`; the server derives the plan time zone and reauthorizes in the write transaction.

@@ -3,6 +3,7 @@ import {
   CreateHostedWorkspaceForPrincipal,
   CreateHostedWorkItem,
   GenerateDailyPlan,
+  GetDailyPlanFitInsight,
   GetCurrentDailyPlan,
   ListHostedWorkspaces,
   ListWorkItems,
@@ -45,10 +46,11 @@ async function hostedApiOptions(
   const listWorkspaces = new ListHostedWorkspaces(identityUnitOfWork);
   const createWorkspace = new CreateHostedWorkspaceForPrincipal(identityUnitOfWork);
   const productUnitOfWork = new PostgresUnitOfWork(database);
+  const clock = { now: () => new Date() };
   const listWorkItems = new ListWorkItems(productUnitOfWork);
   const getCurrentDailyPlan = new GetCurrentDailyPlan(productUnitOfWork);
+  const getDailyPlanFitInsight = new GetDailyPlanFitInsight(productUnitOfWork, clock);
   const hostedMutationUnitOfWork = new PostgresHostedMutationUnitOfWork(database);
-  const clock = { now: () => new Date() };
   const createWorkItem = new CreateHostedWorkItem(hostedMutationUnitOfWork, clock);
   const updateWorkItemStatus = new UpdateHostedWorkItemStatus(hostedMutationUnitOfWork, clock);
   let webShell: Awaited<ReturnType<HostedWebShellLoader>>;
@@ -84,6 +86,11 @@ async function hostedApiOptions(
     today: {
       getToday: ({ authorization, date }) =>
         getCurrentDailyPlan.execute({ workspaceId: authorization.workspaceId, date }),
+      getDailyPlanFitInsight: ({ authorization, forDate }) =>
+        getDailyPlanFitInsight.execute({
+          workspaceId: authorization.workspaceId,
+          forDate,
+        }),
       generateToday: async ({
         authorization,
         date,
@@ -91,6 +98,7 @@ async function hostedApiOptions(
         window,
         targetMinutes,
         targetTaskCount,
+        planFitInsightKey,
         idempotencyKey,
       }) => {
         const service = new GenerateDailyPlan(
@@ -110,6 +118,7 @@ async function hostedApiOptions(
             availableContexts: [],
             seed: `hosted-today:${idempotencyKey}`,
             requestRevision: 1,
+            ...(planFitInsightKey === null ? {} : { planFitInsightKey }),
           }),
         });
       },

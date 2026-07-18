@@ -76,6 +76,35 @@ describe("hosted web API client", () => {
     );
   });
 
+  it("reads bounded hosted Plan Fit guidance for one explicit date", async () => {
+    const insight = {
+      forDate: "2026-07-16",
+      status: "suggested",
+      disposition: "available",
+      sampleCount: 3,
+      minimumSamples: 3,
+      suggestedTargetMinutes: 90,
+      suggestedTargetTaskCount: 2,
+      insightKey: "a".repeat(64),
+    } as const;
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify(insight), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(hostedApi.getDailyPlanFitInsight("workspace/one", "2026-07-16")).resolves.toEqual(
+      insight,
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/hosted/workspaces/workspace%2Fone/daily-plan-fit-insight?forDate=2026-07-16",
+      expect.objectContaining({ method: "GET", credentials: "same-origin" }),
+    );
+  });
+
   it("copies the exact CSRF cookie into hosted mutations", async () => {
     const token = "a".repeat(43);
     vi.spyOn(document, "cookie", "get").mockReturnValue(
@@ -225,6 +254,7 @@ describe("hosted web API client", () => {
       },
       targetMinutes: 180,
       targetTaskCount: 4,
+      planFitInsightKey: "f".repeat(64),
       idempotencyKey: "first-plan-1",
     });
     const [, options] = fetchMock.mock.calls[0] ?? [];
@@ -242,6 +272,7 @@ describe("hosted web API client", () => {
           },
           targetMinutes: 180,
           targetTaskCount: 4,
+          planFitInsightKey: "f".repeat(64),
         }),
       }),
     );

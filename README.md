@@ -154,7 +154,10 @@ optimistic version. A pending Today item can be started, completed, or skipped, 
 be completed or skipped,
 through an idempotent, head-fenced mutation that reauthorizes in the write transaction. When Today
 has no plan, the shell can create revision 1 from one browser-local window plus minute and task caps;
-the existing planner/day lock makes an exact request replay deterministic and rejects changed input.
+it first loads bounded deterministic Plan Fit guidance without changing either cap. Only an explicit
+prefill retains the reviewed evidence key, and generation revalidates that key while atomically
+recording the final user-edited caps. The existing planner/day lock makes an exact request replay
+deterministic and rejects changed input.
 The shell does not regenerate plans or provide general work-item editing,
 workspace rename/delete or membership administration, the broader product API, or synchronization.
 Partial sets and non-empty mixed-case aliases or unknown companions fail startup without disclosing values.
@@ -213,10 +216,11 @@ unlinked calendar-block proposal and display it in Calendar, all without browser
 
 Run `pnpm verify:hosted-web-e2e` for the separate built OIDC capture entry. Its strict browser double
 checks signed-out and authenticated states, workspace choice, bounded backlog refresh, exact CSRF
-forwarding, optional scheduling-field capture, first-plan generation, Today completion, idempotency forwarding, and
+forwarding, optional scheduling-field capture, explicit Plan Fit prefill, first-plan generation,
+Today completion, idempotency forwarding, and
 360-pixel layout; the
 PostgreSQL composition verifier covers the real hosted server boundary, exact plan replay/conflict,
-and atomic Today completion.
+atomic Today completion, and one exact Plan Fit use receipt after a read-only guidance request.
 
 With PostgreSQL running, verify backlog/Kanban, hierarchy, work-item prerequisites, and calendar
 management, routine creation and optimistic updates, duration calibration and Daily Plan Fit,
@@ -276,7 +280,8 @@ runtime images use a fixed non-root identity; the executable OCI smoke gate addi
 read-only root filesystem, dropped Linux capabilities, and `no-new-privileges` for migrations, the
 API, and the worker. Complete secret-manager-fed `HOSTED_API_MODE=oidc` configuration now activates
 the hardened authorization-code lifecycle, nonce-bound verification, browser sessions, first-login
-workspace bootstrap, and transaction-authorized hosted work-item and Today mutations. Provider discovery,
+workspace bootstrap, transaction-authorized hosted work-item and Today mutations, and bounded
+hosted Plan Fit guidance with atomic explicit-use receipts. Provider discovery,
 JWKS, and token exchange use bounded direct HTTPS with pinned address policy; failed preflight closes
 the database and exits before listening. Disabled mode remains route-closed.
 
