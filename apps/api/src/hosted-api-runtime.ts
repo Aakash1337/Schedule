@@ -2,6 +2,7 @@ import {
   AuthorizeHostedWorkspace,
   CreateHostedWorkspaceForPrincipal,
   CreateHostedWorkItem,
+  GenerateDailyPlan,
   GetCurrentDailyPlan,
   ListHostedWorkspaces,
   ListWorkItems,
@@ -10,6 +11,7 @@ import {
   UpdateHostedWorkItemStatus,
 } from "@schedule/application";
 import type { ApiConfig } from "@schedule/config";
+import { createDailyPlanningRequest } from "@schedule/domain";
 import {
   PostgresHostedMutationUnitOfWork,
   PostgresIdentityUnitOfWork,
@@ -82,6 +84,35 @@ async function hostedApiOptions(
     today: {
       getToday: ({ authorization, date }) =>
         getCurrentDailyPlan.execute({ workspaceId: authorization.workspaceId, date }),
+      generateToday: async ({
+        authorization,
+        date,
+        timeZone,
+        window,
+        targetMinutes,
+        targetTaskCount,
+        idempotencyKey,
+      }) => {
+        const service = new GenerateDailyPlan(
+          new TransactionallyAuthorizedHostedUnitOfWork(hostedMutationUnitOfWork, authorization),
+          clock,
+        );
+        await service.execute({
+          request: createDailyPlanningRequest({
+            workspaceId: authorization.workspaceId,
+            date,
+            timeZone,
+            availableWindows: [window],
+            targetMinutes,
+            targetTaskCount,
+            fitPreference: "balanced",
+            energy: null,
+            availableContexts: [],
+            seed: `hosted-today:${idempotencyKey}`,
+            requestRevision: 1,
+          }),
+        });
+      },
       recordActivity: async ({ authorization, ...command }) => {
         const expectedPlan = await productUnitOfWork.run(({ dailyPlans }) =>
           dailyPlans.findById(authorization.workspaceId, command.expectedPlanId),

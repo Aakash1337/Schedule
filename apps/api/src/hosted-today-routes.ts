@@ -2,6 +2,8 @@ import type { CurrentDailyPlan, HostedWorkspaceAuthorization } from "@schedule/a
 import {
   dailyPlanId,
   DomainError,
+  instantToLocalDate,
+  isIanaTimeZone,
   isValidLocalDate,
   localDate,
   planItemId,
@@ -40,6 +42,49 @@ const hostedTodayActivityBody = z.strictObject({
   type: hostedTodayActivityType,
   occurredAt: z.string().datetime({ offset: true }),
 });
+const hostedTodayGenerationBody = z.strictObject({
+  timeZone: z
+    .string()
+    .trim()
+    .min(1)
+    .max(80)
+    .refine(isIanaTimeZone, "Expected a valid IANA time zone."),
+  window: z.strictObject({
+    startsAt: z.string().datetime({ offset: true }),
+    endsAt: z.string().datetime({ offset: true }),
+  }),
+  targetMinutes: z.number().int().min(1).max(1_440),
+  targetTaskCount: z.number().int().min(1).max(64),
+});
+const hostedTodayGenerationRequest = z
+  .strictObject({ query: hostedTodayQuery, body: hostedTodayGenerationBody })
+  .superRefine(({ query, body }, context) => {
+    const startsAt = new Date(body.window.startsAt);
+    const endsAt = new Date(body.window.endsAt);
+    if (
+      !isIanaTimeZone(body.timeZone) ||
+      !Number.isFinite(startsAt.getTime()) ||
+      !Number.isFinite(endsAt.getTime())
+    )
+      return;
+    if (endsAt <= startsAt) {
+      context.addIssue({
+        code: "custom",
+        path: ["body", "window", "endsAt"],
+        message: "The planning window must end after it starts.",
+      });
+      return;
+    }
+    const startsOn = instantToLocalDate(startsAt, body.timeZone);
+    const endsOn = instantToLocalDate(new Date(endsAt.getTime() - 1), body.timeZone);
+    if (startsOn !== query.date || endsOn !== query.date) {
+      context.addIssue({
+        code: "custom",
+        path: ["body", "window"],
+        message: "The planning window must stay within the requested local date.",
+      });
+    }
+  });
 const idempotencyKey = z.string().trim().min(1).max(160);
 
 export const HOSTED_TODAY_ROUTE = "/v1/hosted/workspaces/:workspaceId/today";
@@ -61,8 +106,19 @@ export interface HostedTodayActivityInput {
   readonly idempotencyKey: string;
 }
 
+export interface HostedTodayGenerationInput {
+  readonly authorization: HostedWorkspaceAuthorization;
+  readonly date: LocalDate;
+  readonly timeZone: string;
+  readonly window: Readonly<{ startsAt: Date; endsAt: Date }>;
+  readonly targetMinutes: number;
+  readonly targetTaskCount: number;
+  readonly idempotencyKey: string;
+}
+
 export interface HostedTodayServices {
   getToday(input: HostedTodayInput): Promise<CurrentDailyPlan>;
+  generateToday(input: HostedTodayGenerationInput): Promise<void>;
   recordActivity(input: HostedTodayActivityInput): Promise<void>;
 }
 
@@ -98,6 +154,30 @@ async function registerHostedTodayRoutes(
       })),
       totalMinutes: current.plan.totalMinutes,
     };
+  });
+
+  app.post(HOSTED_TODAY_ROUTE, async (request, reply) => {
+    const parsed = parseRequest(hostedTodayGenerationRequest, {
+      query: request.query,
+      body: request.body,
+    });
+    const authorization = access.authorization(request);
+    const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+    await withHostedWorkspaceNotFoundRedacted(() =>
+      services.generateToday({
+        authorization,
+        date: localDate(parsed.query.date),
+        timeZone: parsed.body.timeZone,
+        window: {
+          startsAt: new Date(parsed.body.window.startsAt),
+          endsAt: new Date(parsed.body.window.endsAt),
+        },
+        targetMinutes: parsed.body.targetMinutes,
+        targetTaskCount: parsed.body.targetTaskCount,
+        idempotencyKey: key,
+      }),
+    );
+    return reply.code(204).send();
   });
 
   app.post(HOSTED_TODAY_ACTIVITY_ROUTE, async (request, reply) => {

@@ -48,6 +48,14 @@ export interface HostedToday {
   readonly totalMinutes: number;
 }
 
+export interface HostedGenerateToday {
+  readonly timeZone: string;
+  readonly window: Readonly<{ startsAt: string; endsAt: string }>;
+  readonly targetMinutes: number;
+  readonly targetTaskCount: number;
+  readonly idempotencyKey: string;
+}
+
 export class HostedApiError extends Error {
   constructor(
     readonly status: number,
@@ -131,6 +139,21 @@ export const hostedApi = {
   getToday: (workspaceId: string, date: string) =>
     request<HostedToday>(
       `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/today?date=${encodeURIComponent(date)}`,
+    ),
+  generateToday: (workspaceId: string, date: string, command: HostedGenerateToday) =>
+    request<void>(
+      `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/today?date=${encodeURIComponent(date)}`,
+      {
+        method: "POST",
+        json: {
+          timeZone: command.timeZone,
+          window: command.window,
+          targetMinutes: command.targetMinutes,
+          targetTaskCount: command.targetTaskCount,
+        },
+        csrf: true,
+        idempotencyKey: command.idempotencyKey,
+      },
     ),
   recordTodayActivity: (
     workspaceId: string,

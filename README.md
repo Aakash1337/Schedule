@@ -151,8 +151,10 @@ optional priority, due date, and planning duration through an authorized mutatio
 item can be moved only to started or done with an
 optimistic version. A pending Today item can be started, completed, or skipped, and a started item can
 be completed or skipped,
-through an idempotent, head-fenced mutation that reauthorizes in the write transaction. The shell
-does not generate plans or provide general work-item editing,
+through an idempotent, head-fenced mutation that reauthorizes in the write transaction. When Today
+has no plan, the shell can create revision 1 from one browser-local window plus minute and task caps;
+the existing planner/day lock makes an exact request replay deterministic and rejects changed input.
+The shell does not regenerate plans or provide general work-item editing,
 workspace rename/delete or membership administration, the broader product API, or synchronization.
 Partial sets and non-empty mixed-case aliases or unknown companions fail startup without disclosing values.
 Health and system-information endpoints
@@ -210,9 +212,10 @@ interception.
 
 Run `pnpm verify:hosted-web-e2e` for the separate built OIDC capture entry. Its strict browser double
 checks signed-out and authenticated states, workspace choice, bounded backlog refresh, exact CSRF
-forwarding, optional scheduling-field capture, Today completion, idempotency forwarding, and
+forwarding, optional scheduling-field capture, first-plan generation, Today completion, idempotency forwarding, and
 360-pixel layout; the
-PostgreSQL composition verifier covers the real hosted server boundary and atomic Today completion.
+PostgreSQL composition verifier covers the real hosted server boundary, exact plan replay/conflict,
+and atomic Today completion.
 
 With PostgreSQL running, verify backlog/Kanban, hierarchy, work-item prerequisites, and calendar
 management, routine creation and optimistic updates, duration calibration and Daily Plan Fit,

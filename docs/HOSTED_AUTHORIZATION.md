@@ -445,7 +445,7 @@ intent invalidation. The route cannot reopen, cancel, block, reparent, or otherw
 
 `GET /v1/hosted/workspaces/:workspaceId/today?date=YYYY-MM-DD` crosses the same hosted cookie and
 workspace-membership preflight. It accepts exactly one real Gregorian local date and reads only an
-already-generated current plan; it never generates or changes one. A missing plan returns that date
+already-generated current plan; the GET never generates or changes one. A missing plan returns that date
 with null plan/head identity, an empty item list, and zero minutes.
 
 The response projects only the current plan ID and head version, ordered item IDs/titles/scheduled
@@ -454,6 +454,25 @@ plan-detail surface. It omits source identity, time zone, scores, reasons, warni
 The browser supplies its current local date because
 workspaces do not yet own a persisted time zone. Authorization failures use the same generic tenant
 denial, `Cache-Control: no-store`, and read-side revocation boundary as the backlog snapshot.
+
+## Transaction-coupled hosted first-plan generation
+
+`POST /v1/hosted/workspaces/:workspaceId/today?date=YYYY-MM-DD` accepts one strict body containing
+an IANA `timeZone`, one offset-bearing `{ startsAt, endsAt }` window, a positive `targetMinutes`
+bounded to 1–1,440, and a positive `targetTaskCount` bounded to 1–64. Both ends must define a
+positive window wholly inside the requested date in that zone. Unknown fields, multiple windows,
+planner configuration, energy, contexts, source choices, minimums, maximums, revisions, and
+Plan Fit inputs are rejected. A required 1–160 character `Idempotency-Key` is not persisted as a
+separate receipt; the runtime prefixes it into the existing deterministic planner seed.
+
+The runtime fixes balanced fit, null energy, empty contexts, and revision 1, then invokes the
+existing `GenerateDailyPlan` through `TransactionallyAuthorizedHostedUnitOfWork`. The ordinary
+planner day lock therefore serializes competing requests while the same transaction rechecks user,
+session, workspace, and membership before reading candidates and persisting the plan. An exact
+request/key replay returns the existing revision with `204` and no second plan. A different seed or
+input after revision 1 exists fails with `409`; the browser retains the exact intent only across an
+ambiguous transport failure and otherwise refreshes Today. There is no regeneration, multi-window
+calendar exclusion, stored planning profile, or hosted planner-settings surface.
 
 ## Transaction-coupled hosted Today action
 
@@ -490,10 +509,11 @@ IDs/titles/versions plus priority/due-date/planning-duration summaries, the narr
 work item. It never receives provider tokens, user or session identifiers, membership state, or
 roles. A signed-in user may create or choose one active workspace, review Today and the bounded
 backlog snapshot, submit one title with optional scheduling fields, move one visible backlog item to started or done, or
+build the missing current-day revision from one editable window and two limits, or
 start/complete/skip one actionable Today item. The script
 copies the exact host-only CSRF cookie into the existing header for all strict mutations; the server
 remains authoritative for identity, membership, defaults, validation, and optimistic versions. The
-page cannot generate a plan, page, filter, edit fields, reopen, cancel, schedule, synchronize work,
+page cannot regenerate an existing plan, page, filter, generally edit fields, reopen, cancel, synchronize work,
 rename/delete a workspace, or administer membership or accounts.
 
 ## Deliberately absent
@@ -503,7 +523,7 @@ broader hosted product interface or route set, account-management API, role mode
 protocol, or verified public deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. Name-only workspace creation, narrow scheduling-field work creation, status-only update, and the
-start/complete/skip Today action are the only transaction-coupled hosted mutations. The bounded backlog and current-day projections are the
+first-plan generation and start/complete/skip Today action are the only transaction-coupled hosted mutations. The bounded backlog and current-day projections are the
 only hosted product-data reads; all other product routes remain local-only and require their own
 authority before future hosted exposure.
 
@@ -581,11 +601,13 @@ routes at `404`.
 hosted route graph with a strict in-process provider, and drives login, callback, one-time replay
 denial, hardened shell delivery, default-workspace discovery, authenticated transaction-coupled
 work creation, session bootstrap, CSRF denial, logout, and cleanup against PostgreSQL. It also
-proves an authenticated Today completion, exact replay without duplicate activity, one head advance,
-atomic source completion, and that the local unauthenticated workspace routes are absent.
+proves exact first-plan replay, different-input conflict, one persisted planner revision without
+synthetic rows, an authenticated Today completion, exact replay without duplicate activity, one
+head advance, atomic source completion, and that the local unauthenticated workspace routes are absent.
 `pnpm verify:hosted-web-e2e` builds the isolated hosted browser entry and exercises signed-out and
-authenticated capture in Chromium. It verifies workspace selection, optional scheduling-field payloads, Today
-completion, exact CSRF/idempotency forwarding, success feedback, 360-pixel overflow, and mobile action sizing with a strict
+authenticated capture in Chromium. It verifies workspace selection, optional scheduling-field payloads,
+first-plan controls, Today completion, exact CSRF/idempotency forwarding, success feedback,
+360-pixel overflow, and mobile action sizing with a strict
 in-browser API double. It does not claim external-provider or public-ingress coverage.
 `pnpm verify:hosted-login-transactions` migrates a disposable database and proves digest-only state
 and browser binding, authenticated PKCE recovery, exact provider/redirect binding, twelve-way

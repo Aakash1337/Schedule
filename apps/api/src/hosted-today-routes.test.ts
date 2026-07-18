@@ -45,6 +45,7 @@ afterEach(async () => {
 async function createHostedApp(
   getToday: HostedTodayServices["getToday"],
   recordActivity: HostedTodayServices["recordActivity"] = vi.fn(),
+  generateToday: HostedTodayServices["generateToday"] = vi.fn(),
 ): Promise<FastifyInstance> {
   const app = Fastify();
   apps.push(app);
@@ -61,7 +62,7 @@ async function createHostedApp(
             : null,
       },
     },
-    { getToday, recordActivity },
+    { getToday, generateToday, recordActivity },
   );
   await app.ready();
   return app;
@@ -165,6 +166,121 @@ describe("hosted Today route", () => {
     });
     expect(revoked.body).not.toContain("private membership detail");
     expect(getToday).toHaveBeenCalledOnce();
+  });
+
+  it("generates one bounded first plan with canonical authority and an exact retry key", async () => {
+    const generateToday = vi.fn(async () => undefined);
+    const app = await createHostedApp(vi.fn(), vi.fn(), generateToday);
+
+    const response = await app.inject({
+      method: "POST",
+      url: todayPath(WORKSPACE_ID.toUpperCase()),
+      headers: {
+        "idempotency-key": "  hosted-first-plan-1  ",
+        "x-user-id": "spoofed",
+        "x-workspace-id": OTHER_WORKSPACE_ID,
+      },
+      payload: {
+        timeZone: "America/La_Paz",
+        window: {
+          startsAt: "2026-07-16T13:00:00.000Z",
+          endsAt: "2026-07-16T21:00:00.000Z",
+        },
+        targetMinutes: 180,
+        targetTaskCount: 4,
+      },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.body).toBe("");
+    expect(generateToday).toHaveBeenCalledWith({
+      authorization,
+      date: localDate("2026-07-16"),
+      timeZone: "America/La_Paz",
+      window: {
+        startsAt: new Date("2026-07-16T13:00:00.000Z"),
+        endsAt: new Date("2026-07-16T21:00:00.000Z"),
+      },
+      targetMinutes: 180,
+      targetTaskCount: 4,
+      idempotencyKey: "hosted-first-plan-1",
+    });
+  });
+
+  it("rejects invalid, cross-day, or over-broad hosted plan requests before mutation", async () => {
+    const generateToday = vi.fn();
+    const app = await createHostedApp(vi.fn(), vi.fn(), generateToday);
+    const valid = {
+      timeZone: "America/La_Paz",
+      window: {
+        startsAt: "2026-07-16T13:00:00.000Z",
+        endsAt: "2026-07-16T21:00:00.000Z",
+      },
+      targetMinutes: 180,
+      targetTaskCount: 4,
+    };
+    const attempts = [
+      { payload: { ...valid, timeZone: "Mars/Olympus_Mons" }, key: "plan-1" },
+      {
+        payload: {
+          ...valid,
+          window: { ...valid.window, endsAt: "2026-07-16T12:00:00.000Z" },
+        },
+        key: "plan-2",
+      },
+      {
+        payload: {
+          ...valid,
+          window: { ...valid.window, startsAt: "2026-07-15T13:00:00.000Z" },
+        },
+        key: "plan-3",
+      },
+      { payload: { ...valid, targetMinutes: 0 }, key: "plan-4" },
+      { payload: { ...valid, targetMinutes: 1_441 }, key: "plan-5" },
+      { payload: { ...valid, targetTaskCount: 65 }, key: "plan-6" },
+      { payload: { ...valid, availableContexts: ["private"] }, key: "plan-7" },
+      { payload: valid, key: " " },
+    ];
+
+    for (const attempt of attempts) {
+      const response = await app.inject({
+        method: "POST",
+        url: todayPath(),
+        headers: { "idempotency-key": attempt.key },
+        payload: attempt.payload,
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    expect(generateToday).not.toHaveBeenCalled();
+  });
+
+  it("redacts revoked membership details from hosted plan generation", async () => {
+    const generateToday = vi
+      .fn()
+      .mockRejectedValue(new DomainError("workspace.not_found", "private membership detail"));
+    const app = await createHostedApp(vi.fn(), vi.fn(), generateToday);
+
+    const response = await app.inject({
+      method: "POST",
+      url: todayPath(),
+      headers: { "idempotency-key": "revoked-plan" },
+      payload: {
+        timeZone: "America/La_Paz",
+        window: {
+          startsAt: "2026-07-16T13:00:00.000Z",
+          endsAt: "2026-07-16T21:00:00.000Z",
+        },
+        targetMinutes: 180,
+        targetTaskCount: 4,
+      },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({
+      error: { code: "workspace.not_found", message: "The requested workspace does not exist." },
+    });
+    expect(response.body).not.toContain("private membership detail");
   });
 
   it("records only a bounded Today action with canonical authority and idempotency", async () => {

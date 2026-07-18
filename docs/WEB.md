@@ -46,7 +46,7 @@ Pending Today items offer Start, Done, and Skip; started items offer Done and Sk
 offer none.
 An ambiguous Today failure explicitly retries the same timestamp/key, while a stale head discards
 the intent and requires a fresh read. A successful action refreshes both Today and backlog.
-The shell cannot generate a plan, page, filter, edit fields, reopen, cancel, synchronize work,
+The shell cannot regenerate an existing plan, page, filter, edit fields, reopen, cancel, synchronize work,
 rename/delete workspaces, or administer membership.
 
 ## Information architecture
@@ -427,8 +427,12 @@ a dedicated Chromium job and retains traces, screenshots, and video when it fail
 
 The hosted verifier builds its isolated entry and uses a strict in-browser API double to exercise
 signed-out and authenticated capture, exact request verification, workspace selection, Today
-completion, and mobile layout. The PostgreSQL/OIDC composition verifier separately covers the real
-server/database transaction and exact replay. A staging HTTPS smoke with the selected identity
+first-plan generation, completion, and mobile layout. The missing-plan form uses the browser IANA
+zone, one editable same-day window, and independent minute/task caps; after generation it disappears
+in favor of the authoritative Today projection and focus moves to the persistent Today heading.
+Ambiguous retries retain the exact request key and
+window. The PostgreSQL/OIDC composition verifier separately covers the real server/database
+transaction, deterministic replay, and conflicting-input rejection. A staging HTTPS smoke with the selected identity
 provider remains required.
 
 ## Deliberately deferred

@@ -14,6 +14,9 @@ test("captures one hosted backlog item with responsive request verification", as
   let capturedTodayBody: unknown;
   let capturedTodayCsrf: string | undefined;
   let capturedTodayIdempotency: string | undefined;
+  let capturedPlanBody: unknown;
+  let capturedPlanCsrf: string | undefined;
+  let capturedPlanIdempotency: string | undefined;
   let requestedTodayDate: string | null = null;
   const existing = {
     id: "00000000-0000-4000-8000-000000000009",
@@ -39,6 +42,7 @@ test("captures one hosted backlog item with responsive request verification", as
   const todayPlanId = "00000000-0000-4000-8000-000000000012";
   let todayHeadVersion = 5;
   let todayActivityState: "pending" | "completed" = "pending";
+  let todayGenerated = false;
   let backlog: (typeof existing | typeof created)[] = [existing];
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
@@ -63,14 +67,30 @@ test("captures one hosted backlog item with responsive request verification", as
     if (request.method() === "GET" && url.pathname.endsWith("/today")) {
       requestedTodayDate = url.searchParams.get("date");
       await route.fulfill({
-        json: {
-          date: requestedTodayDate,
-          planId: todayPlanId,
-          headVersion: todayHeadVersion,
-          items: [{ ...todayItem, activityState: todayActivityState }],
-          totalMinutes: 45,
-        },
+        json: todayGenerated
+          ? {
+              date: requestedTodayDate,
+              planId: todayPlanId,
+              headVersion: todayHeadVersion,
+              items: [{ ...todayItem, activityState: todayActivityState }],
+              totalMinutes: 45,
+            }
+          : {
+              date: requestedTodayDate,
+              planId: null,
+              headVersion: null,
+              items: [],
+              totalMinutes: 0,
+            },
       });
+      return;
+    }
+    if (request.method() === "POST" && url.pathname.endsWith("/today")) {
+      capturedPlanBody = request.postDataJSON();
+      capturedPlanCsrf = request.headers()["x-schedule-csrf"];
+      capturedPlanIdempotency = request.headers()["idempotency-key"];
+      todayGenerated = true;
+      await route.fulfill({ status: 204, body: "" });
       return;
     }
     if (
@@ -108,11 +128,28 @@ test("captures one hosted backlog item with responsive request verification", as
   await page.goto("/hosted.html");
   await expect(page.getByRole("heading", { name: "What needs doing?" })).toBeVisible();
   await expect(page.getByText(existing.title)).toBeVisible();
-  await expect(page.getByText(todayItem.title)).toBeVisible();
-  await expect(page.getByText("45m · Pending")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Build today’s plan" })).toBeVisible();
   expect(requestedTodayDate).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
   await page.getByRole("combobox", { name: "Workspace" }).selectOption(workspaces[1]!.id);
   await page.setViewportSize({ width: 360, height: 740 });
+  await page.getByLabel("Work window starts").fill("10:00");
+  await page.getByLabel("Work window ends").fill("16:30");
+  await page.getByRole("spinbutton", { name: "Time budget (minutes)" }).fill("240");
+  await page.getByRole("spinbutton", { name: "Task limit" }).fill("5");
+  for (const input of [
+    page.getByLabel("Work window starts"),
+    page.getByLabel("Work window ends"),
+    page.getByRole("spinbutton", { name: "Time budget (minutes)" }),
+    page.getByRole("spinbutton", { name: "Task limit" }),
+  ]) {
+    expect((await input.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  }
+  const buildPlanButton = page.getByRole("button", { name: "Build plan" });
+  expect((await buildPlanButton.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  await buildPlanButton.click();
+  await expect(page.getByText("Built today’s plan.")).toBeVisible();
+  await expect(page.getByText(todayItem.title)).toBeVisible();
+  await expect(page.getByText("45m · Pending")).toBeVisible();
   const skipButton = page.getByRole("button", { name: `Skip ${todayItem.title} in Today` });
   await expect(skipButton).toBeVisible();
   const actionLayout = await page.evaluate(() => {
@@ -161,6 +198,21 @@ test("captures one hosted backlog item with responsive request verification", as
   expect(capturedCsrf).toBe(csrfToken);
   expect(capturedStatusBody).toEqual({ expectedVersion: existing.version, status: "done" });
   expect(capturedStatusCsrf).toBe(csrfToken);
+  expect(capturedPlanBody).toEqual({
+    timeZone: expect.any(String),
+    window: {
+      startsAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/u),
+      endsAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/u),
+    },
+    targetMinutes: 240,
+    targetTaskCount: 5,
+  });
+  const planWindow = (capturedPlanBody as { window: { startsAt: string; endsAt: string } }).window;
+  expect(new Date(planWindow.endsAt).getTime() - new Date(planWindow.startsAt).getTime()).toBe(
+    390 * 60_000,
+  );
+  expect(capturedPlanCsrf).toBe(csrfToken);
+  expect(capturedPlanIdempotency).toMatch(/^[0-9a-f-]{36}$/u);
   expect(capturedTodayBody).toEqual({
     expectedPlanId: todayPlanId,
     expectedHeadVersion: 5,
