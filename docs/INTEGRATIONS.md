@@ -122,6 +122,7 @@ The version 1 routes are:
 | ------ | -------------------------------------------------------------- | ------------------- | ------------------------------------------------------------- |
 | `GET`  | `/v1/integrations/today?date=DATE`                             | `schedule:read`     | Read the credential workspace's current plan                  |
 | `GET`  | `/v1/integrations/work-items?status=&priority=&limit=&offset=` | `schedule:read`     | Discover the credential workspace's backlog/Kanban work items |
+| `GET`  | `/v1/integrations/one-off-reminders?from=&to=`                 | `schedule:read`     | Discover one bounded range of one-off reminders               |
 | `POST` | `/v1/integrations/commands/prepare`                            | `schedule:write`    | Validate and prepare one exact mutation                       |
 | `POST` | `/v1/integrations/commands/confirm`                            | `schedule:write`    | Execute one prepared mutation idempotently                    |
 | `POST` | `/v1/integrations/reminder-deliveries/claim`                   | `schedule:delivery` | Claim at most one due Schedule reminder                       |
@@ -167,6 +168,15 @@ duplicate or skipped item between pages, and re-read a selected work item from a
 response before it prepares `work_item.update`. The latest returned `version` must be supplied as
 `expectedVersion`; a conflict is a signal to re-read and ask again, never to overwrite the newer
 state.
+
+### One-off reminder discovery
+
+`GET /v1/integrations/one-off-reminders?from=&to=` returns the credential workspace's one-off
+reminders whose `scheduledFor` is in the half-open `[from,to)` range. Both values must be strict
+explicit-offset instants; the range must increase and cannot exceed 31 days. Results are ordered by
+`scheduledFor,id`, include cancelled sources, and fail with
+`integration.one_off_reminder_result_limit` instead of truncating when more than 100 match. The route
+accepts no workspace or filter fields and revalidates `schedule:read` before accessing the workspace.
 
 ### Reminder delivery
 
@@ -335,8 +345,9 @@ credential that prepared it and only before expiry.
 
 New successful responses include `receiptVersion: 2` and identify the confirmation,
 normalized operation, command hash, and typed `outcome`. Work-item outcomes contain `workItem`,
-schedule-block outcomes contain `scheduleBlock`, and plan-item activity outcomes contain
-`planItemActivity`. A replay returns the same stored result rather than re-running the command.
+schedule-block outcomes contain `scheduleBlock`, one-off reminder outcomes contain
+`oneOffReminder`, and plan-item activity outcomes contain `planItemActivity`. A replay returns the
+same stored result rather than re-running the command.
 Unversioned durable receipts created before deadline support are replayed unchanged and may omit
 `receiptVersion`, `dueOn`, and `parentWorkItemId`. Version 1 receipts include `dueOn` but predate
 hierarchy and omit `parentWorkItemId`. Adapters must treat either missing legacy field as `null`.
@@ -354,6 +365,8 @@ Commands are strict JSON objects discriminated by `type`:
 | `schedule_block.create`   | `startsAt`, `endsAt`, `timeZone`                                                                        | `workItemId`, `title`                                                                                |
 | `schedule_block.update`   | `scheduleBlockId`, `expectedVersion`, and at least one change                                           | `workItemId`, `title`, `startsAt`, `endsAt`, `timeZone`                                              |
 | `one_off_reminder.create` | `title`, `scheduledFor`                                                                                 | none                                                                                                 |
+| `one_off_reminder.update` | `oneOffReminderId`, `expectedVersion`, and at least one change                                          | `title`, `scheduledFor`                                                                              |
+| `one_off_reminder.cancel` | `oneOffReminderId`, `expectedVersion`                                                                   | none                                                                                                 |
 | `plan_item.activity`      | `date`, `itemId`, `expectedPlanId`, `expectedHeadVersion`, `activityType`, `occurredAt`, and `timeZone` | `durationMinutes`, `reason`, `metadata`                                                              |
 
 The allowed work status, priority, timestamp, duration, metadata, and version values are the same as
@@ -373,8 +386,12 @@ field means to leave it unchanged where updates allow that. Unknown fields and u
 are rejected.
 
 `one_off_reminder.create` requires an existing workspace reminder profile and an ISO timestamp with
-an explicit offset. Confirmation creates only the versioned one-off source. The normal materializer
-still decides when to create its delivery intent; confirmation does not contact Hermes or WhatsApp.
+an explicit offset. `one_off_reminder.update` changes the title, scheduled instant, or both;
+rescheduling is therefore an update. Update and cancellation require the current ID and positive
+`expectedVersion` and preserve workspace isolation. An actual update or first cancellation
+invalidates only that source's pending intents in the same transaction. Cancellation is terminal and
+does not delete the source. The normal materializer still decides when to create a delivery intent;
+confirmation does not contact Hermes or WhatsApp.
 
 ### Errors
 
@@ -544,15 +561,15 @@ transitions, stale-token fencing, indexed expiry recovery, source invalidation, 
 privacy-field exclusion, and empty-claim replay.
 
 The separate Hermes adapter verifier exercises the native plugin boundary plus a disposable
-PostgreSQL and real Fastify one-off-reminder prepare/confirm flow:
+PostgreSQL and real Fastify one-off-reminder lifecycle:
 
 ```powershell
 pnpm verify:hermes-adapter
 ```
 
-It proves local/stdout behavior and no mutation before explicit confirmation. It does not contact
-WhatsApp; see [HERMES.md](./HERMES.md#verification-and-safe-rollout) for the operator-run delivery
-smoke.
+It proves bounded discovery, no mutation before explicit confirmation, exact replay of create,
+reschedule, and cancellation, and pending-intent invalidation. It does not contact WhatsApp; see
+[HERMES.md](./HERMES.md#verification-and-safe-rollout) for the operator-run delivery smoke.
 
 ## Retention and cleanup
 
@@ -619,10 +636,10 @@ security-sensitive recovery.
 - The Hermes runtime and WhatsApp transport remain external dependencies. No Schedule endpoint
   accepts a chat message, audio, image, or natural-language instruction. The repository-owned local
   plugin uses Hermes's native hooks and tools instead.
-- The local plugin can find credential-scoped Today and backlog/Kanban data, prepare strict
-  structured commands, and require a separate HMAC-bound confirmation turn. Hermes still owns
-  message ingestion and intent interpretation, while its platform connector supplies sender,
-  session, and platform identity.
+- The local plugin can find credential-scoped Today, backlog/Kanban data, and bounded one-off reminder
+  ranges, then prepare strict structured commands and require a separate HMAC-bound confirmation
+  turn. Hermes still owns message ingestion and intent interpretation, while its platform connector
+  supplies sender, session, and platform identity.
 - A separate tested reminder-delivery foundation consumes the `schedule:delivery` claim/receipt
   contract with shared PostgreSQL dedupe and fail-safe loopback supervision. It has no standalone
   provider bootstrap, concrete WhatsApp transport, provider reconciliation, or human/account

@@ -589,6 +589,18 @@ export type IntegrationCommand =
       readonly scheduledFor: string;
     }
   | {
+      readonly type: "one_off_reminder.update";
+      readonly oneOffReminderId: string;
+      readonly expectedVersion: number;
+      readonly title?: string;
+      readonly scheduledFor?: string;
+    }
+  | {
+      readonly type: "one_off_reminder.cancel";
+      readonly oneOffReminderId: string;
+      readonly expectedVersion: number;
+    }
+  | {
       readonly type: "plan_item.activity";
       readonly date: string;
       readonly expectedPlanId: string;
@@ -654,7 +666,8 @@ export type IntegrationCommandOutcome =
       readonly scheduleBlock: IntegrationScheduleBlockDto;
     }
   | {
-      readonly type: "one_off_reminder.created";
+      readonly type:
+        "one_off_reminder.created" | "one_off_reminder.updated" | "one_off_reminder.cancelled";
       readonly oneOffReminder: IntegrationOneOffReminderDto;
     }
   | {
@@ -697,7 +710,7 @@ export interface IntegrationOneOffReminderDto {
   readonly workspaceId: string;
   readonly title: string;
   readonly scheduledFor: string;
-  readonly cancelledAt: null;
+  readonly cancelledAt: string | null;
   readonly version: number;
   readonly createdAt: string;
   readonly updatedAt: string;

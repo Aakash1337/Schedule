@@ -9,6 +9,7 @@ from .tools import (
     capture_turn,
     handle_schedule_cancel_change,
     handle_schedule_confirm_change,
+    handle_schedule_list_one_off_reminders,
     handle_schedule_list_work_items,
     handle_schedule_prepare_change,
     handle_schedule_today,
@@ -22,6 +23,12 @@ _TOOLS = (
         schemas.SCHEDULE_LIST_WORK_ITEMS,
         handle_schedule_list_work_items,
         "📋",
+    ),
+    (
+        "schedule_list_one_off_reminders",
+        schemas.SCHEDULE_LIST_ONE_OFF_REMINDERS,
+        handle_schedule_list_one_off_reminders,
+        "⏰",
     ),
     (
         "schedule_prepare_change",

@@ -5,6 +5,7 @@ import {
   ClaimNotificationDelivery,
   ConfirmIntegrationCommand,
   GetIntegrationToday,
+  ListIntegrationOneOffReminders,
   ListIntegrationWorkItems,
   PrepareIntegrationCommand,
   RecordNotificationDeliveryReceipt,
@@ -56,6 +57,7 @@ export function createIntegrationServices(
   );
   const getToday = new GetIntegrationToday(unitOfWork, clock);
   const listWorkItems = new ListIntegrationWorkItems(unitOfWork, clock);
+  const listOneOffReminders = new ListIntegrationOneOffReminders(unitOfWork, clock);
   const prepareCommand = new PrepareIntegrationCommand(
     unitOfWork,
     clock,
@@ -76,6 +78,7 @@ export function createIntegrationServices(
     authenticateCredential: (input) => authenticateCredential.execute(input),
     getToday: (input) => getToday.execute(input),
     listWorkItems: (input) => listWorkItems.execute(input),
+    listOneOffReminders: (input) => listOneOffReminders.execute(input),
     prepareCommand: (input) => prepareCommand.execute(input),
     confirmCommand: (input) => confirmCommand.execute(input),
     claimNotificationDelivery: (input) => claimNotificationDelivery.execute(input),

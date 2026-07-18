@@ -27,6 +27,12 @@ INSTANT = {
     "maxLength": 64,
     "pattern": r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
 }
+REMINDER_TITLE = {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 240,
+    "pattern": r"^(?:\S|\S.*\S)$",
+}
 
 
 def _strict(properties: dict, required: list[str]) -> dict:
@@ -145,15 +151,32 @@ PLAN_ITEM_ACTIVITY = _strict(
 ONE_OFF_REMINDER_CREATE = _strict(
     {
         "type": {"const": "one_off_reminder.create"},
-        "title": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 240,
-            "pattern": r"^(?:\S|\S.*\S)$",
-        },
+        "title": REMINDER_TITLE,
         "scheduledFor": INSTANT,
     },
     ["type", "title", "scheduledFor"],
+)
+ONE_OFF_REMINDER_UPDATE = _strict(
+    {
+        "type": {"const": "one_off_reminder.update"},
+        "oneOffReminderId": UUID,
+        "expectedVersion": POSITIVE_VERSION,
+        "title": REMINDER_TITLE,
+        "scheduledFor": INSTANT,
+    },
+    ["type", "oneOffReminderId", "expectedVersion"],
+)
+ONE_OFF_REMINDER_UPDATE["anyOf"] = [
+    {"required": ["title"]},
+    {"required": ["scheduledFor"]},
+]
+ONE_OFF_REMINDER_CANCEL = _strict(
+    {
+        "type": {"const": "one_off_reminder.cancel"},
+        "oneOffReminderId": UUID,
+        "expectedVersion": POSITIVE_VERSION,
+    },
+    ["type", "oneOffReminderId", "expectedVersion"],
 )
 
 INTEGRATION_COMMAND = {
@@ -164,6 +187,8 @@ INTEGRATION_COMMAND = {
         SCHEDULE_BLOCK_UPDATE,
         PLAN_ITEM_ACTIVITY,
         ONE_OFF_REMINDER_CREATE,
+        ONE_OFF_REMINDER_UPDATE,
+        ONE_OFF_REMINDER_CANCEL,
     ]
 }
 
@@ -185,6 +210,15 @@ SCHEDULE_LIST_WORK_ITEMS = {
         },
         [],
     ),
+}
+
+SCHEDULE_LIST_ONE_OFF_REMINDERS = {
+    "name": "schedule_list_one_off_reminders",
+    "description": (
+        "List up to 100 one-off reminders in an explicit-offset time range of at most 31 days. "
+        "Use returned IDs and versions before preparing an update or cancellation."
+    ),
+    "parameters": _strict({"from": INSTANT, "to": INSTANT}, ["from", "to"]),
 }
 
 SCHEDULE_PREPARE_CHANGE = {

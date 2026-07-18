@@ -264,26 +264,34 @@ class ConfirmationStateTests(unittest.TestCase):
                     )
 
     def test_accepts_fresh_reminder_operations_and_rejects_unknown_operations(self) -> None:
-        reminder_context = self.state.capture_turn(
-            session_id="reminder-session",
-            turn_id="turn-1",
-            user_message="create a reminder",
-            platform="whatsapp",
-            sender_id="reminder-sender",
-        )
-        reminder_attempt = self.state.begin_prepare(
-            "reminder-session", "8" * 64, reminder_context
-        )
-        pending = self.state.create_pending(
-            "reminder-session",
-            turn_context=reminder_context,
-            confirmation_id=str(uuid4()),
-            command_hash="9" * 64,
-            operation="one_off_reminder.create",
-            request_id=reminder_attempt.request_id,
-            expires_at="2099-07-15T07:01:00.000Z",
-        )
-        self.assertEqual(pending.operation, "one_off_reminder.create")
+        for index, operation in enumerate(
+            (
+                "one_off_reminder.create",
+                "one_off_reminder.update",
+                "one_off_reminder.cancel",
+            )
+        ):
+            session = f"reminder-session-{index}"
+            reminder_context = self.state.capture_turn(
+                session_id=session,
+                turn_id="turn-1",
+                user_message="manage a reminder",
+                platform="whatsapp",
+                sender_id="reminder-sender",
+            )
+            reminder_attempt = self.state.begin_prepare(
+                session, str(index) * 64, reminder_context
+            )
+            pending = self.state.create_pending(
+                session,
+                turn_context=reminder_context,
+                confirmation_id=str(uuid4()),
+                command_hash=str(index + 3) * 64,
+                operation=operation,
+                request_id=reminder_attempt.request_id,
+                expires_at="2099-07-15T07:01:00.000Z",
+            )
+            self.assertEqual(pending.operation, operation)
 
         unknown_context = self.state.capture_turn(
             session_id="unknown-session",

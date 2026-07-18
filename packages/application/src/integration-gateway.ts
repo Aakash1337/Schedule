@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   DomainError,
   activityEventTypes,
+  cancelOneOffReminder,
   createOneOffReminder,
   createScheduleBlock,
   createWorkItem,
@@ -11,10 +12,12 @@ import {
   isValidLocalDate,
   isPlanItemActivityActionType,
   localDate,
+  oneOffReminderId,
   planItemId,
   planItemActivityStates,
   scheduleBlockId,
   updateScheduleBlock,
+  updateOneOffReminder,
   updateWorkItem,
   workItemId,
   workItemPriorities,
@@ -54,6 +57,8 @@ import { assertValidWorkItemParent } from "./work-item-hierarchy.js";
 const GENERIC_AUTHENTICATION_MESSAGE = "The integration credential could not be authenticated.";
 const DUMMY_SECRET_HASH = "0".repeat(64);
 const DEFAULT_CONFIRMATION_TTL_MILLISECONDS = 10 * 60 * 1_000;
+const MAXIMUM_INTEGRATION_ONE_OFF_REMINDERS = 100;
+const MAXIMUM_INTEGRATION_REMINDER_RANGE_MILLISECONDS = 31 * 86_400_000;
 
 export interface IntegrationCredentialDto {
   readonly id: string;
@@ -119,6 +124,16 @@ export interface IntegrationWorkItemPageResult {
   };
 }
 
+export interface ListIntegrationOneOffRemindersQuery {
+  readonly principal: IntegrationPrincipal;
+  readonly fromInclusive: unknown;
+  readonly throughExclusive: unknown;
+}
+
+export interface IntegrationOneOffReminderListResult {
+  readonly items: readonly IntegrationOneOffReminderDto[];
+}
+
 export interface PrepareIntegrationCommandInput {
   readonly principal: IntegrationPrincipal;
   readonly requestId: string;
@@ -164,6 +179,15 @@ function normalizeUuid(value: unknown, field: string): string {
     throw new DomainError(`integration.${field}_invalid`, `${field} must be a UUID.`);
   }
   return normalized.toLowerCase();
+}
+
+function requireCanonicalUuid(value: unknown, field: string): void {
+  if (value !== normalizeUuid(value, field)) {
+    throw new DomainError(
+      `integration.${field}_invalid`,
+      `${field} must be a canonical lowercase UUID.`,
+    );
+  }
 }
 
 function isScope(value: unknown): value is IntegrationCredentialScope {
@@ -526,6 +550,63 @@ export class ListIntegrationWorkItems {
   }
 }
 
+export class ListIntegrationOneOffReminders {
+  constructor(
+    private readonly unitOfWork: IntegrationUnitOfWork,
+    private readonly clock: Clock,
+  ) {}
+
+  execute(
+    query: ListIntegrationOneOffRemindersQuery,
+  ): Promise<IntegrationOneOffReminderListResult> {
+    const now = validIntegrationNow(this.clock);
+    const fromInclusive = parseInstant(
+      query.fromInclusive,
+      "from",
+      "integration.one_off_reminder_range_invalid",
+    );
+    const throughExclusive = parseInstant(
+      query.throughExclusive,
+      "to",
+      "integration.one_off_reminder_range_invalid",
+    );
+    if (
+      throughExclusive <= fromInclusive ||
+      throughExclusive.getTime() - fromInclusive.getTime() >
+        MAXIMUM_INTEGRATION_REMINDER_RANGE_MILLISECONDS
+    ) {
+      throw new DomainError(
+        "integration.one_off_reminder_range_invalid",
+        "The reminder range must increase and cannot exceed 31 days.",
+      );
+    }
+    return this.unitOfWork.run(async ({ credentials, notifications, workspaces }) => {
+      const credential = await revalidateIntegrationCredential(
+        credentials,
+        query.principal,
+        "schedule:read",
+        now,
+      );
+      if ((await workspaces.findById(credential.workspaceId)) === null) {
+        throw new DomainError("workspace.not_found", "The workspace does not exist.");
+      }
+      const reminders = await notifications.listOneOffReminders(
+        credential.workspaceId,
+        fromInclusive,
+        throughExclusive,
+        MAXIMUM_INTEGRATION_ONE_OFF_REMINDERS + 1,
+      );
+      if (reminders.length > MAXIMUM_INTEGRATION_ONE_OFF_REMINDERS) {
+        throw new DomainError(
+          "integration.one_off_reminder_result_limit",
+          "Too many reminders match this range; request a narrower range.",
+        );
+      }
+      return { items: reminders.map(toOneOffReminderDto) };
+    });
+  }
+}
+
 function hasOwn(value: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
@@ -609,8 +690,14 @@ function requireInteger(value: unknown, field: string, minimum = 1, maximum = 2_
   }
 }
 
-function parseInstant(value: unknown, field: string): Date {
-  requireTextBounds(value, field, 1, 64);
+function parseInstant(
+  value: unknown,
+  field: string,
+  errorCode = "integration.command_invalid",
+): Date {
+  if (typeof value !== "string" || value.length < 1 || value.length > 64) {
+    throw new DomainError(errorCode, `${field} must be an ISO timestamp.`);
+  }
   const text = value as string;
   const match =
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
@@ -629,13 +716,23 @@ function parseInstant(value: unknown, field: string): Date {
     (offsetHour !== undefined && offsetHour > 23) ||
     (offsetMinute !== undefined && offsetMinute > 59)
   ) {
-    throw new DomainError("integration.command_invalid", `${field} must be an ISO timestamp.`);
+    throw new DomainError(errorCode, `${field} must be an ISO timestamp.`);
   }
   const date = new Date(text);
   if (!Number.isFinite(date.getTime())) {
-    throw new DomainError("integration.command_invalid", `${field} must be an ISO timestamp.`);
+    throw new DomainError(errorCode, `${field} must be an ISO timestamp.`);
   }
   return date;
+}
+
+function requireOneOffReminderTitle(value: unknown): void {
+  requireTextBounds(value, "title", 1, 240, true);
+  if (value !== (value as string).trim()) {
+    throw new DomainError(
+      "integration.command_invalid",
+      "title must not contain leading or trailing whitespace.",
+    );
+  }
 }
 
 function validateMetadata(value: unknown): void {
@@ -691,7 +788,7 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
       );
       requireTextBounds(command.title, "title", 1, 240, true);
       if (hasOwn(command, "parentWorkItemId") && command.parentWorkItemId !== null) {
-        normalizeUuid(command.parentWorkItemId, "parent_work_item_id");
+        requireCanonicalUuid(command.parentWorkItemId, "parent_work_item_id");
       }
       requireOptionalText(command, "description", true);
       if (typeof command.description === "string" && command.description.length > 4_000) {
@@ -729,7 +826,7 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
         ],
         ["type", "workItemId", "expectedVersion"],
       );
-      normalizeUuid(command.workItemId, "work_item_id");
+      requireCanonicalUuid(command.workItemId, "work_item_id");
       requireInteger(command.expectedVersion, "expectedVersion");
       if (
         ![
@@ -748,7 +845,7 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
         );
       }
       if (hasOwn(command, "parentWorkItemId") && command.parentWorkItemId !== null) {
-        normalizeUuid(command.parentWorkItemId, "parent_work_item_id");
+        requireCanonicalUuid(command.parentWorkItemId, "parent_work_item_id");
       }
       requireOptionalText(command, "title");
       requireOptionalText(command, "description", true);
@@ -780,7 +877,7 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
         ["type", "startsAt", "endsAt", "timeZone"],
       );
       if (hasOwn(command, "workItemId") && command.workItemId !== null) {
-        normalizeUuid(command.workItemId, "work_item_id");
+        requireCanonicalUuid(command.workItemId, "work_item_id");
       }
       requireOptionalText(command, "title", true);
       if (typeof command.title === "string" && command.title.length > 240) {
@@ -812,7 +909,7 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
         ],
         ["type", "scheduleBlockId", "expectedVersion"],
       );
-      normalizeUuid(command.scheduleBlockId, "schedule_block_id");
+      requireCanonicalUuid(command.scheduleBlockId, "schedule_block_id");
       requireInteger(command.expectedVersion, "expectedVersion");
       if (
         !["workItemId", "title", "startsAt", "endsAt", "timeZone"].some((field) =>
@@ -825,7 +922,7 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
         );
       }
       if (hasOwn(command, "workItemId") && command.workItemId !== null) {
-        normalizeUuid(command.workItemId, "work_item_id");
+        requireCanonicalUuid(command.workItemId, "work_item_id");
       }
       requireOptionalText(command, "title", true);
       if (typeof command.title === "string" && command.title.length > 240) {
@@ -858,14 +955,36 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
         ["type", "title", "scheduledFor"],
         ["type", "title", "scheduledFor"],
       );
-      requireTextBounds(command.title, "title", 1, 240, true);
-      if (command.title !== command.title.trim()) {
+      requireOneOffReminderTitle(command.title);
+      parseInstant(command.scheduledFor, "scheduledFor");
+      break;
+    }
+    case "one_off_reminder.update": {
+      assertCommandObject(
+        command,
+        ["type", "oneOffReminderId", "expectedVersion", "title", "scheduledFor"],
+        ["type", "oneOffReminderId", "expectedVersion"],
+      );
+      requireCanonicalUuid(command.oneOffReminderId, "one_off_reminder_id");
+      requireInteger(command.expectedVersion, "expectedVersion");
+      if (!hasOwn(command, "title") && !hasOwn(command, "scheduledFor")) {
         throw new DomainError(
           "integration.command_invalid",
-          "title must not contain leading or trailing whitespace.",
+          "A one-off reminder update must contain at least one change.",
         );
       }
-      parseInstant(command.scheduledFor, "scheduledFor");
+      if (hasOwn(command, "title")) requireOneOffReminderTitle(command.title);
+      if (hasOwn(command, "scheduledFor")) parseInstant(command.scheduledFor, "scheduledFor");
+      break;
+    }
+    case "one_off_reminder.cancel": {
+      assertCommandObject(
+        command,
+        ["type", "oneOffReminderId", "expectedVersion"],
+        ["type", "oneOffReminderId", "expectedVersion"],
+      );
+      requireCanonicalUuid(command.oneOffReminderId, "one_off_reminder_id");
+      requireInteger(command.expectedVersion, "expectedVersion");
       break;
     }
     case "plan_item.activity": {
@@ -897,8 +1016,8 @@ function validateIntegrationCommand(command: IntegrationCommand): IntegrationCom
       );
       requireText(command.date, "date");
       localDate(command.date);
-      normalizeUuid(command.expectedPlanId, "plan_id");
-      normalizeUuid(command.itemId, "plan_item_id");
+      requireCanonicalUuid(command.expectedPlanId, "plan_id");
+      requireCanonicalUuid(command.itemId, "plan_item_id");
       requireInteger(command.expectedHeadVersion, "expectedHeadVersion");
       if (
         typeof command.activityType !== "string" ||
@@ -1115,6 +1234,15 @@ function rawCommandSummary(command: IntegrationCommand): string {
     }
     case "one_off_reminder.create":
       return `Create one-off reminder ${quoted(command.title)} for ${command.scheduledFor}.`;
+    case "one_off_reminder.update": {
+      const changes = [
+        command.title === undefined ? null : `set title to ${quoted(command.title)}`,
+        command.scheduledFor === undefined ? null : `set scheduled time to ${command.scheduledFor}`,
+      ].filter((value): value is string => value !== null);
+      return `Update one-off reminder ${command.oneOffReminderId}: ${changes.join("; ")}.`;
+    }
+    case "one_off_reminder.cancel":
+      return `Cancel one-off reminder ${command.oneOffReminderId}.`;
     case "plan_item.activity": {
       const details = [
         `on plan date ${command.date}`,
@@ -1299,7 +1427,7 @@ function toOneOffReminderDto(reminder: OneOffReminder): IntegrationOneOffReminde
     workspaceId: reminder.workspaceId,
     title: reminder.title,
     scheduledFor: reminder.scheduledFor.toISOString(),
-    cancelledAt: null,
+    cancelledAt: reminder.cancelledAt?.toISOString() ?? null,
     version: reminder.version,
     createdAt: reminder.createdAt.toISOString(),
     updatedAt: reminder.updatedAt.toISOString(),
@@ -1342,6 +1470,48 @@ async function requireWorkItem(
   const item = await context.workItems.findById(workspaceIdValue, workItemId(id));
   if (item === null) throw new DomainError("work_item.not_found", "The work item does not exist.");
   return item;
+}
+
+async function requireOneOffReminder(
+  context: IntegrationTransactionContext,
+  workspaceIdValue: WorkspaceId,
+  id: string,
+): Promise<OneOffReminder> {
+  const reminder = await context.notifications.findOneOffReminder(
+    workspaceIdValue,
+    oneOffReminderId(id),
+  );
+  if (reminder === null) {
+    throw new DomainError("one_off_reminder.not_found", "The one-off reminder does not exist.");
+  }
+  return reminder;
+}
+
+async function persistOneOffReminderChange(
+  context: IntegrationTransactionContext,
+  current: OneOffReminder,
+  updated: OneOffReminder,
+  action: "one_off_reminder.updated" | "one_off_reminder.cancelled",
+): Promise<void> {
+  if (updated === current) return;
+  await context.notifications.saveOneOffReminder(updated, current.version);
+  const invalidatedIntents = await context.notifications.deleteIntentsForOneOff(
+    updated.workspaceId,
+    updated.id,
+  );
+  await context.auditEvents.append({
+    workspaceId: updated.workspaceId,
+    action,
+    entityType: "one_off_reminder",
+    entityId: updated.id,
+    data: {
+      source: "integration",
+      previousVersion: current.version,
+      version: updated.version,
+      invalidatedIntents,
+    },
+    occurredAt: updated.updatedAt,
+  });
 }
 
 async function dispatchCommand(
@@ -1546,6 +1716,50 @@ async function dispatchCommand(
         oneOffReminder: toOneOffReminderDto(reminder),
       };
     }
+    case "one_off_reminder.update": {
+      const current = await requireOneOffReminder(
+        context,
+        credential.workspaceId,
+        command.oneOffReminderId,
+      );
+      if (current.version !== command.expectedVersion) {
+        throw new DomainError(
+          "one_off_reminder.version_conflict",
+          "The one-off reminder changed before this update could be applied.",
+        );
+      }
+      const updated = updateOneOffReminder(current, {
+        ...(command.title === undefined ? {} : { title: command.title }),
+        ...(command.scheduledFor === undefined
+          ? {}
+          : { scheduledFor: parseInstant(command.scheduledFor, "scheduledFor") }),
+        now,
+      });
+      await persistOneOffReminderChange(context, current, updated, "one_off_reminder.updated");
+      return {
+        type: "one_off_reminder.updated",
+        oneOffReminder: toOneOffReminderDto(updated),
+      };
+    }
+    case "one_off_reminder.cancel": {
+      const current = await requireOneOffReminder(
+        context,
+        credential.workspaceId,
+        command.oneOffReminderId,
+      );
+      if (current.version !== command.expectedVersion) {
+        throw new DomainError(
+          "one_off_reminder.version_conflict",
+          "The one-off reminder changed before this cancellation could be applied.",
+        );
+      }
+      const cancelled = cancelOneOffReminder(current, now);
+      await persistOneOffReminderChange(context, current, cancelled, "one_off_reminder.cancelled");
+      return {
+        type: "one_off_reminder.cancelled",
+        oneOffReminder: toOneOffReminderDto(cancelled),
+      };
+    }
     case "plan_item.activity": {
       const nestedIdempotencyKey = `integration:${createHash("sha256")
         .update(`${credential.id}|${confirmation.requestId}|${confirmation.commandHash}`)
@@ -1597,10 +1811,11 @@ function outcomeEntity(outcome: IntegrationCommandOutcome): {
         .scheduleBlock.id,
     };
   }
-  if (outcome.type === "one_off_reminder.created") {
+  if (outcome.type.startsWith("one_off_reminder.")) {
     return {
       entityType: "one_off_reminder",
-      entityId: outcome.oneOffReminder.id,
+      entityId: (outcome as Extract<IntegrationCommandOutcome, { oneOffReminder: unknown }>)
+        .oneOffReminder.id,
     };
   }
   return {
@@ -1856,11 +2071,21 @@ function validReceiptOutcome(
       (command.type === "schedule_block.create" || block.id === command.scheduleBlockId)
     );
   }
-  if (command.type === "one_off_reminder.create") {
+  if (
+    command.type === "one_off_reminder.create" ||
+    command.type === "one_off_reminder.update" ||
+    command.type === "one_off_reminder.cancel"
+  ) {
+    const expectedType =
+      command.type === "one_off_reminder.create"
+        ? "one_off_reminder.created"
+        : command.type === "one_off_reminder.update"
+          ? "one_off_reminder.updated"
+          : "one_off_reminder.cancelled";
     const reminder = objectValue(outcome.oneOffReminder);
     return (
       receiptVersion === 2 &&
-      outcome.type === "one_off_reminder.created" &&
+      outcome.type === expectedType &&
       exactKeys(outcome, ["type", "oneOffReminder"]) &&
       reminder !== null &&
       exactKeys(reminder, [
@@ -1875,13 +2100,37 @@ function validReceiptOutcome(
       ]) &&
       isUuidText(reminder.id) &&
       reminder.workspaceId === workspaceIdValue &&
-      reminder.title === command.title.trim() &&
+      (command.type === "one_off_reminder.create" || reminder.id === command.oneOffReminderId) &&
+      typeof reminder.title === "string" &&
+      reminder.title === reminder.title.trim() &&
+      reminder.title.length >= 1 &&
+      reminder.title.length <= 240 &&
+      (command.type === "one_off_reminder.create"
+        ? reminder.title === command.title
+        : command.type === "one_off_reminder.update" && command.title !== undefined
+          ? reminder.title === command.title
+          : true) &&
       isInstantText(reminder.scheduledFor) &&
-      new Date(reminder.scheduledFor).getTime() === new Date(command.scheduledFor).getTime() &&
-      reminder.cancelledAt === null &&
+      (command.type === "one_off_reminder.create"
+        ? new Date(reminder.scheduledFor).getTime() === new Date(command.scheduledFor).getTime()
+        : command.type === "one_off_reminder.update" && command.scheduledFor !== undefined
+          ? new Date(reminder.scheduledFor).getTime() === new Date(command.scheduledFor).getTime()
+          : true) &&
+      (command.type === "one_off_reminder.cancel"
+        ? isInstantText(reminder.cancelledAt)
+        : reminder.cancelledAt === null) &&
       isPositiveInteger(reminder.version) &&
+      (command.type === "one_off_reminder.create"
+        ? reminder.version === 1
+        : reminder.version === command.expectedVersion ||
+          reminder.version === command.expectedVersion + 1) &&
       isInstantText(reminder.createdAt) &&
-      isInstantText(reminder.updatedAt)
+      isInstantText(reminder.updatedAt) &&
+      new Date(reminder.updatedAt).getTime() >= new Date(reminder.createdAt).getTime() &&
+      (command.type !== "one_off_reminder.cancel" ||
+        (typeof reminder.cancelledAt === "string" &&
+          new Date(reminder.cancelledAt).getTime() === new Date(reminder.updatedAt).getTime() &&
+          new Date(reminder.cancelledAt).getTime() >= new Date(reminder.createdAt).getTime()))
     );
   }
   const activity = objectValue(outcome.planItemActivity);
@@ -1960,6 +2209,7 @@ export class ConfirmIntegrationCommand {
           input.principal,
           "schedule:write",
           now,
+          { lockForUpdate: true },
         );
         const confirmation = await context.confirmations.findByIdForUpdate(
           credential.id,

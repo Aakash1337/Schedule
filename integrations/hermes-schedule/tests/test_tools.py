@@ -33,6 +33,7 @@ from hermes_schedule.tools import (  # noqa: E402
     configure_for_testing,
     handle_schedule_cancel_change,
     handle_schedule_confirm_change,
+    handle_schedule_list_one_off_reminders,
     handle_schedule_list_work_items,
     handle_schedule_prepare_change,
     handle_schedule_today,
@@ -50,6 +51,7 @@ class _FakeClient:
         self.fail_first_confirmation = fail_first_confirmation
         self.confirmation_id = str(uuid4())
         self.work_item_id = str(uuid4())
+        self.reminder_ranges: list[tuple[str, str]] = []
 
     def get_today(self, local_date: str) -> dict[str, object]:
         return {
@@ -67,6 +69,10 @@ class _FakeClient:
                 "offset": filters.get("offset", 0),
             },
         }
+
+    def list_one_off_reminders(self, start: str, end: str) -> dict[str, object]:
+        self.reminder_ranges.append((start, end))
+        return {"items": []}
 
     def prepare_change(self, request_id: str, command: dict[str, object]) -> dict[str, object]:
         self.prepare_calls.append((request_id, dict(command)))
@@ -193,8 +199,22 @@ class ScheduleToolTests(unittest.TestCase):
                 {"status": "planned", "limit": 12}, session_id="session-private"
             )
         )
+        reminders = json.loads(
+            handle_schedule_list_one_off_reminders(
+                {
+                    "from": "2026-07-15T00:00:00-04:00",
+                    "to": "2026-07-16T00:00:00-04:00",
+                },
+                session_id="session-private",
+            )
+        )
         self.assertEqual(today["data"]["date"], "2026-07-15")
         self.assertEqual(work_items["data"]["page"], {"limit": 12, "offset": 0})
+        self.assertEqual(reminders["data"], {"items": []})
+        self.assertEqual(
+            self.client.reminder_ranges,
+            [("2026-07-15T00:00:00-04:00", "2026-07-16T00:00:00-04:00")],
+        )
 
         capture_turn(
             session_id="session-private",

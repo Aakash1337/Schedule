@@ -28,6 +28,7 @@ class PluginRegistrationTests(unittest.TestCase):
             [
                 "schedule_today",
                 "schedule_list_work_items",
+                "schedule_list_one_off_reminders",
                 "schedule_prepare_change",
                 "schedule_confirm_change",
                 "schedule_cancel_change",
@@ -41,6 +42,8 @@ class PluginRegistrationTests(unittest.TestCase):
         update = plugin.schemas.WORK_ITEM_UPDATE["properties"]
         activity = plugin.schemas.PLAN_ITEM_ACTIVITY["properties"]
         reminder = plugin.schemas.ONE_OFF_REMINDER_CREATE
+        reminder_update = plugin.schemas.ONE_OFF_REMINDER_UPDATE
+        reminder_cancel = plugin.schemas.ONE_OFF_REMINDER_CANCEL
 
         self.assertEqual(create["parentWorkItemId"]["oneOf"][1], {"type": "null"})
         self.assertEqual(update["parentWorkItemId"]["oneOf"][1], {"type": "null"})
@@ -54,23 +57,40 @@ class PluginRegistrationTests(unittest.TestCase):
         self.assertEqual(activity["metadata"]["propertyNames"]["pattern"], r".*\S.*")
         self.assertIn("[1-8]", plugin.schemas.UUID["pattern"])
         self.assertIn(reminder, plugin.schemas.INTEGRATION_COMMAND["oneOf"])
+        self.assertIn(reminder_update, plugin.schemas.INTEGRATION_COMMAND["oneOf"])
+        self.assertIn(reminder_cancel, plugin.schemas.INTEGRATION_COMMAND["oneOf"])
         self.assertEqual(reminder["required"], ["type", "title", "scheduledFor"])
         self.assertFalse(reminder["additionalProperties"])
         self.assertEqual(reminder["properties"]["title"]["maxLength"], 240)
         self.assertEqual(reminder["properties"]["title"]["pattern"], r"^(?:\S|\S.*\S)$")
         self.assertEqual(reminder["properties"]["scheduledFor"], plugin.schemas.INSTANT)
+        self.assertEqual(
+            reminder_update["required"],
+            ["type", "oneOffReminderId", "expectedVersion"],
+        )
+        self.assertEqual(
+            reminder_update["anyOf"],
+            [{"required": ["title"]}, {"required": ["scheduledFor"]}],
+        )
+        self.assertFalse(reminder_cancel["additionalProperties"])
+        self.assertEqual(
+            plugin.schemas.SCHEDULE_LIST_ONE_OFF_REMINDERS["parameters"]["required"],
+            ["from", "to"],
+        )
 
     def test_registration_isolates_schema_instances_from_consumer_mutation(self) -> None:
         first = FakePluginContext()
         plugin.register(first)
-        first_create = first.tools[2]["schema"]["parameters"]["properties"]["command"][
-            "oneOf"
-        ][0]
+        first_prepare = next(entry for entry in first.tools if entry["name"] == "schedule_prepare_change")
+        first_create = first_prepare["schema"]["parameters"]["properties"]["command"]["oneOf"][0]
         first_create["properties"]["title"]["maxLength"] = 1
 
         second = FakePluginContext()
         plugin.register(second)
-        second_create = second.tools[2]["schema"]["parameters"]["properties"]["command"][
+        second_prepare = next(
+            entry for entry in second.tools if entry["name"] == "schedule_prepare_change"
+        )
+        second_create = second_prepare["schema"]["parameters"]["properties"]["command"][
             "oneOf"
         ][0]
         self.assertEqual(second_create["properties"]["title"]["maxLength"], 240)

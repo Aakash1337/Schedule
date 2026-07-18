@@ -294,25 +294,36 @@ pending-confirmation table schema fails closed instead of being rewritten.
 
 ### Conversation contract
 
-The plugin registers five tools:
+The plugin registers six tools:
 
-| Tool                       | Purpose                                                                | Required Schedule scope                 |
-| -------------------------- | ---------------------------------------------------------------------- | --------------------------------------- |
-| `schedule_today`           | Read one existing authoritative Today plan                             | `schedule:read`                         |
-| `schedule_list_work_items` | Read a bounded, filtered work-item page                                | `schedule:read`                         |
-| `schedule_prepare_change`  | Validate and persist one exact structured command without executing it | `schedule:write`                        |
-| `schedule_confirm_change`  | Execute the one pending prepared command after human confirmation      | `schedule:write`                        |
-| `schedule_cancel_change`   | Remove the local pending exchange without executing it                 | none beyond the existing local exchange |
+| Tool                              | Purpose                                                                | Required Schedule scope                 |
+| --------------------------------- | ---------------------------------------------------------------------- | --------------------------------------- |
+| `schedule_today`                  | Read one existing authoritative Today plan                             | `schedule:read`                         |
+| `schedule_list_work_items`        | Read a bounded, filtered work-item page                                | `schedule:read`                         |
+| `schedule_list_one_off_reminders` | Read one bounded time range of one-off reminders                       | `schedule:read`                         |
+| `schedule_prepare_change`         | Validate and persist one exact structured command without executing it | `schedule:write`                        |
+| `schedule_confirm_change`         | Execute the one pending prepared command after human confirmation      | `schedule:write`                        |
+| `schedule_cancel_change`          | Remove the local pending exchange without executing it                 | none beyond the existing local exchange |
 
 Hermes may interpret a natural-language request, but Schedule does not receive or interpret the raw
 WhatsApp message. The model must select a command from the versioned vocabulary in
 [INTEGRATIONS.md](./INTEGRATIONS.md#commands). Schedule validates that command using the same domain
 and optimistic-concurrency rules as every other integration client.
 
-For “remind me” requests, Hermes may propose only the strict `one_off_reminder.create` command with a
-title and explicit-offset `scheduledFor` instant. The workspace reminder profile must already exist.
-The separate confirmation turn creates the Schedule reminder source exactly once; it neither sends a
-message immediately nor bypasses normal materialization and delivery policy.
+For “remind me” requests, Hermes may propose the strict `one_off_reminder.create` command with a title
+and explicit-offset `scheduledFor` instant. The workspace reminder profile must already exist.
+Hermes can discover existing reminders with `schedule_list_one_off_reminders` over an increasing,
+explicit-offset `[from,to)` range of at most 31 days. The result contains at most 100 reminders in
+`scheduledFor,id` order, including cancelled reminders, so the model should ask for clarification
+rather than guess when a result is ambiguous.
+
+After discovery, `one_off_reminder.update` changes the title, scheduled instant, or both;
+`one_off_reminder.cancel` marks the source cancelled. Both require the returned ID and current
+positive `expectedVersion`. A reschedule is an update, not a distinct command. Each write still
+requires a separate confirmation turn and executes exactly once; an actual update or first
+cancellation invalidates that source's pending materialized intents. None sends a message immediately
+or bypasses normal materialization and delivery policy. `schedule_cancel_change` only abandons a
+locally pending confirmation; it does not cancel an already-created Schedule reminder.
 
 Preparation must occur inside a captured Hermes turn. On success, the plugin verifies Schedule's
 canonical command display and SHA-256 command hash, stores the pending exchange, and returns the
@@ -449,15 +460,17 @@ pnpm verify:hermes-adapter
 ```
 
 It runs deterministic Python tests plus a disposable PostgreSQL and real Fastify integration flow.
-The gate verifies a one-off reminder command through the production Python client, including no
-mutation before confirmation and idempotent single execution after confirmation. It does not contact WhatsApp and does not prove
-phone delivery.
+Through the production Python client, the gate creates, discovers, reschedules, and cancels one
+reminder. It verifies no mutation before confirmation, exact receipt replay, versions `1` through
+`3`, one persistent source row, and pending-intent invalidation after update and cancellation. It
+does not contact WhatsApp and does not prove phone delivery.
 
 Use this rollout order:
 
 1. Verify the plugin with the disposable automated gate.
 2. Install it disabled, set secrets in the Hermes service environment, then enable and restart.
-3. Exercise `schedule_today` and `schedule_list_work_items` against the intended workspace.
+3. Exercise `schedule_today`, `schedule_list_work_items`, and
+   `schedule_list_one_off_reminders` against the intended workspace.
 4. Prepare a harmless test change, inspect every canonical field, and cancel it.
 5. Prepare another bounded test, confirm from the same sender/session/platform on a later turn, and
    verify the result through Schedule.
@@ -474,9 +487,9 @@ Use this rollout order:
   arbitrary SQL, or a general Schedule natural-language API.
 - Natural-language interpretation occurs in Hermes and can be wrong. Nothing is written until the
   exact server-validated command is presented and separately confirmed.
-- The reminder is a deterministic snapshot, not a durable Schedule reminder engine. It has no quiet
-  hours, snooze, escalation, provider delivery receipt, phone read receipt, or Schedule-side delivery
-  history.
+- The stdout Today helper is a deterministic snapshot, not a durable Schedule reminder engine. It
+  has no snooze, escalation, provider delivery receipt, phone read receipt, or Schedule-side delivery
+  history. Schedule-managed one-offs use the separate reminder-policy and delivery-intent core.
 - The adapter polls Schedule when invoked. Privacy-thin `schedule.changed.v1` webhooks remain a
   separate refresh mechanism and do not trigger this local plugin.
 - One token is bound to one workspace. Multiple workspaces require distinct credentials and isolated
