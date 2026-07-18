@@ -131,7 +131,9 @@ Before attaching a production domain:
    the current work-item snapshot, capture, Done, and logout through public HTTPS. Treat the
    work-item page as a current-state read, not proof of synchronization.
 4. Force a failed migration and confirm the previous deployment remains active.
-5. Stop PostgreSQL and confirm readiness fails while liveness remains available.
+5. Run `pnpm verify:oci-runtime`, then use only a provider-approved staging database drill to confirm
+   API liveness remains available while readiness fails, the worker exits nonzero, the schema
+   survives, API readiness recovers without an API restart, and a restarted worker becomes ready.
 6. Restore the latest backup into an isolated database and run the database verification suite.
 
 ## Operator-assisted staging gate

@@ -5,6 +5,7 @@ import {
   parseMigrationCount,
   parsePublishedApiPort,
   parseRuntimeSecurityProbe,
+  parseSingleContainerId,
   runtimeSmokeProjectName,
   runtimeSecurityProbeArguments,
 } from "./verify-oci-runtime.js";
@@ -24,6 +25,14 @@ describe("OCI runtime smoke guards", () => {
     expect(() =>
       runtimeSmokeProjectName({ OCI_RUNTIME_SMOKE_PROJECT: "schedule-runtime-smoke-UPPER" }),
     ).toThrow("must start");
+  });
+
+  it("parses exactly one canonical service container identifier", () => {
+    expect(parseSingleContainerId("a1b2c3d4e5f6\n", "postgres")).toBe("a1b2c3d4e5f6");
+    expect(() => parseSingleContainerId("a1b2c3d4e5f6\nb1c2d3e4f5a6", "worker")).toThrow(
+      "worker container",
+    );
+    expect(() => parseSingleContainerId("container-name", "api")).toThrow("api container");
   });
 
   it("parses only loopback API port mappings", () => {
