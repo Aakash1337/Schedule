@@ -32,6 +32,7 @@
     "integration:credentials": "tsx scripts/integration-credentials.ts",
     "integration:cleanup": "tsx scripts/cleanup-integration-history.ts",
     "hosted-sync:cleanup": "tsx scripts/cleanup-hosted-work-item-sync.ts",
+    "hermes-reminders:start": "pnpm --filter @schedule/hermes-reminders start",
     "webhooks": "tsx scripts/webhook-endpoints.ts",
     "db:backup": "tsx scripts/backup-database.ts",
     "db:restore": "tsx scripts/restore-database.ts",

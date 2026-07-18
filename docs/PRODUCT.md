@@ -722,12 +722,12 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   `schedule.changed.v1` invalidations; these are refresh hints, not reminders or a messaging adapter
 - Implemented foundation: deterministic reminder profiles, rules, one-offs, exact-once intent
   materialization, an opt-in bounded local materialization worker, and provider-neutral claim/receipt
-  state; a separate dormant Hermes adapter core now enforces lease budget, dedupe ordering, bounded
+  state; a separate Hermes adapter core now enforces lease budget, dedupe ordering, bounded
   outcomes, a strict Schedule HTTP client, shared PostgreSQL side-effect fencing, fail-safe
   single-flight polling with loopback health and graceful shutdown, and a dormant
-  reconcile-before-send Hermes client bridge, while a live authenticated provider client,
-  provider-specific conclusive reconciliation, external bootstrap/control wiring, and human/account
-  binding remain follow-on work
+  reconcile-before-send Hermes client bridge. A disabled-by-default process now composes those
+  boundaries through an absolute operator-owned client factory, while a live authenticated provider
+  client, provider-specific conclusive reconciliation, and human/account binding remain follow-on work
 - Implemented local adapter: disabled-by-default Hermes tools for authenticated Today, work-item,
   bounded calendar-block, and bounded one-off reminder reads plus sender/session/platform-bound
   confirmed reminder management and calendar-block rescheduling/deletion; a deterministic stdout Today helper and checked runtime-only
