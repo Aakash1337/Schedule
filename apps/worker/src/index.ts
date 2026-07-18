@@ -3,6 +3,10 @@ import { createDatabase, PostgresUnitOfWork } from "@schedule/database";
 
 import { OutboxDispatcher } from "./dispatcher.js";
 import {
+  createHostedSyncCleanupDependencies,
+  runHostedSyncCleanupWorker,
+} from "./hosted-sync-cleanup.js";
+import {
   createNotificationMaterializationDependencies,
   runNotificationMaterializationWorker,
 } from "./notification-materializer.js";
@@ -46,6 +50,13 @@ const deploymentHealthDatabase =
         statementTimeoutMs: 5_000,
         applicationName: "schedule-worker-deployment-health",
       });
+const hostedSyncCleanupDatabase =
+  config.HOSTED_WORK_ITEM_SYNC_CLEANUP_MODE === "enabled"
+    ? createDatabase(config.DATABASE_URL, 1, {
+        statementTimeoutMs: 2_000,
+        applicationName: "schedule-worker-hosted-sync-cleanup",
+      })
+    : null;
 const dispatcher = new OutboxDispatcher(
   config.WEBHOOK_DELIVERY_MODE === "enabled"
     ? new Map([
@@ -102,6 +113,13 @@ if (config.NOTIFICATION_MATERIALIZATION_MODE === "enabled") {
   );
 }
 
+if (hostedSyncCleanupDatabase !== null) {
+  const dependencies = createHostedSyncCleanupDependencies(hostedSyncCleanupDatabase);
+  services.push((signal) =>
+    runHostedSyncCleanupWorker(config, dependencies, signal, undefined, telemetry),
+  );
+}
+
 await runWorkerRuntime({
   run: async () => {
     const observability =
@@ -133,6 +151,7 @@ await runWorkerRuntime({
       database.close(),
       ...(observabilityDatabase === null ? [] : [observabilityDatabase.close()]),
       ...(deploymentHealthDatabase === null ? [] : [deploymentHealthDatabase.close()]),
+      ...(hostedSyncCleanupDatabase === null ? [] : [hostedSyncCleanupDatabase.close()]),
     ]);
     const failure = results.find(
       (result): result is PromiseRejectedResult => result.status === "rejected",

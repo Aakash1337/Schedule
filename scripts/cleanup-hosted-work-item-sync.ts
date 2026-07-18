@@ -52,6 +52,7 @@ interface PurgeResult {
   readonly workspaceId: string | null;
   readonly minimumCursor: string | null;
   readonly deletedChanges: number;
+  readonly contended?: boolean;
 }
 
 export interface HostedWorkItemSyncCleanupDependencies<Connection extends CleanupConnection> {
@@ -169,16 +170,18 @@ export async function cleanupHostedWorkItemSync<Connection extends CleanupConnec
         !Number.isSafeInteger(result.deletedChanges) ||
         result.deletedChanges < 0 ||
         result.deletedChanges > options.batchSize ||
+        (result.contended !== undefined && typeof result.contended !== "boolean") ||
         (result.deletedChanges === 0
           ? result.workspaceId !== null || result.minimumCursor !== null
           : result.workspaceId === null ||
             result.minimumCursor === null ||
+            result.contended === true ||
             !/^[1-9][0-9]*$/u.test(result.minimumCursor))
       ) {
         throw new Error("Sync cleanup received an invalid purge result.");
       }
       if (result.deletedChanges === 0) {
-        limitReached = false;
+        limitReached = result.contended === true;
         break;
       }
       batches += 1;

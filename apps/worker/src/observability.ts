@@ -8,6 +8,7 @@ import {
 } from "@schedule/database";
 
 import type { NotificationMaterializationCycleSummary } from "./notification-materializer.js";
+import type { HostedSyncCleanupCycleSummary } from "./hosted-sync-cleanup.js";
 
 const LOOPBACK_HOST = "127.0.0.1";
 const PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
@@ -28,6 +29,10 @@ export interface OutboxWorkerTelemetry {
 
 export interface NotificationMaterializationTelemetry {
   recordNotificationMaterializationCycle(summary: NotificationMaterializationCycleSummary): void;
+}
+
+export interface HostedSyncCleanupTelemetry {
+  recordHostedSyncCleanupCycle(summary: HostedSyncCleanupCycleSummary): void;
 }
 
 export interface WorkerTelemetrySnapshot {
@@ -51,6 +56,15 @@ export interface WorkerTelemetrySnapshot {
   readonly materializationSuppressedCandidates: number;
   readonly materializationLastCompletedTimestampSeconds: number;
   readonly materializationLastSuccessfulTimestampSeconds: number;
+  readonly hostedSyncCleanupCycles: number;
+  readonly hostedSyncCleanupFailures: number;
+  readonly hostedSyncCleanupContention: number;
+  readonly hostedSyncCleanupBatches: number;
+  readonly hostedSyncCleanupDeletedChanges: number;
+  readonly hostedSyncCleanupLimitReached: number;
+  readonly hostedSyncCleanupAborted: number;
+  readonly hostedSyncCleanupLastCompletedTimestampSeconds: number;
+  readonly hostedSyncCleanupLastSuccessfulTimestampSeconds: number;
 }
 
 type MutableTelemetryState = {
@@ -73,7 +87,7 @@ function addSaturated(current: number, increment = 1): number {
 }
 
 export class WorkerTelemetry
-  implements OutboxWorkerTelemetry, NotificationMaterializationTelemetry
+  implements OutboxWorkerTelemetry, NotificationMaterializationTelemetry, HostedSyncCleanupTelemetry
 {
   readonly #clock: TelemetryClock;
   readonly #startedAtMs: number;
@@ -97,6 +111,15 @@ export class WorkerTelemetry
     materializationSuppressedCandidates: 0,
     materializationLastCompletedTimestampSeconds: 0,
     materializationLastSuccessfulTimestampSeconds: 0,
+    hostedSyncCleanupCycles: 0,
+    hostedSyncCleanupFailures: 0,
+    hostedSyncCleanupContention: 0,
+    hostedSyncCleanupBatches: 0,
+    hostedSyncCleanupDeletedChanges: 0,
+    hostedSyncCleanupLimitReached: 0,
+    hostedSyncCleanupAborted: 0,
+    hostedSyncCleanupLastCompletedTimestampSeconds: 0,
+    hostedSyncCleanupLastSuccessfulTimestampSeconds: 0,
   };
 
   constructor(clock: TelemetryClock = () => new Date()) {
@@ -180,6 +203,39 @@ export class WorkerTelemetry
       summary.failedWorkspaces === 0
     ) {
       this.#state.materializationLastSuccessfulTimestampSeconds = completedAtSeconds;
+    }
+  }
+
+  recordHostedSyncCleanupCycle(summary: HostedSyncCleanupCycleSummary): void {
+    const completedAtSeconds = Math.floor(validClockInstant(this.#clock).getTime() / 1_000);
+    this.#state.hostedSyncCleanupCycles = addSaturated(this.#state.hostedSyncCleanupCycles);
+    this.#state.hostedSyncCleanupBatches = addSaturated(
+      this.#state.hostedSyncCleanupBatches,
+      summary.batches,
+    );
+    this.#state.hostedSyncCleanupDeletedChanges = addSaturated(
+      this.#state.hostedSyncCleanupDeletedChanges,
+      summary.deletedChanges,
+    );
+    if (summary.failed) {
+      this.#state.hostedSyncCleanupFailures = addSaturated(this.#state.hostedSyncCleanupFailures);
+    }
+    if (summary.contended) {
+      this.#state.hostedSyncCleanupContention = addSaturated(
+        this.#state.hostedSyncCleanupContention,
+      );
+    }
+    if (summary.limitReached) {
+      this.#state.hostedSyncCleanupLimitReached = addSaturated(
+        this.#state.hostedSyncCleanupLimitReached,
+      );
+    }
+    if (summary.aborted) {
+      this.#state.hostedSyncCleanupAborted = addSaturated(this.#state.hostedSyncCleanupAborted);
+    }
+    this.#state.hostedSyncCleanupLastCompletedTimestampSeconds = completedAtSeconds;
+    if (!summary.failed && !summary.contended && !summary.limitReached && !summary.aborted) {
+      this.#state.hostedSyncCleanupLastSuccessfulTimestampSeconds = completedAtSeconds;
     }
   }
 
@@ -460,6 +516,60 @@ export function renderWorkerMetrics(
       "Unix timestamp of the last failure-free materialization cycle.",
       "gauge",
       telemetry.materializationLastSuccessfulTimestampSeconds,
+    ),
+    metric(
+      "schedule_hosted_sync_cleanup_cycles_total",
+      "Hosted work-item sync retention cycles.",
+      "counter",
+      telemetry.hostedSyncCleanupCycles,
+    ),
+    metric(
+      "schedule_hosted_sync_cleanup_failures_total",
+      "Failed hosted work-item sync retention cycles.",
+      "counter",
+      telemetry.hostedSyncCleanupFailures,
+    ),
+    metric(
+      "schedule_hosted_sync_cleanup_contention_total",
+      "Hosted work-item sync retention cycles deferred behind another database transaction.",
+      "counter",
+      telemetry.hostedSyncCleanupContention,
+    ),
+    metric(
+      "schedule_hosted_sync_cleanup_batches_total",
+      "Hosted work-item sync retention batches that deleted changes.",
+      "counter",
+      telemetry.hostedSyncCleanupBatches,
+    ),
+    metric(
+      "schedule_hosted_sync_cleanup_deleted_changes_total",
+      "Hosted work-item sync changes deleted by retention.",
+      "counter",
+      telemetry.hostedSyncCleanupDeletedChanges,
+    ),
+    metric(
+      "schedule_hosted_sync_cleanup_limit_reached_total",
+      "Hosted work-item sync retention cycles that exhausted their batch cap.",
+      "counter",
+      telemetry.hostedSyncCleanupLimitReached,
+    ),
+    metric(
+      "schedule_hosted_sync_cleanup_aborted_total",
+      "Hosted work-item sync retention cycles interrupted by shutdown.",
+      "counter",
+      telemetry.hostedSyncCleanupAborted,
+    ),
+    metric(
+      "schedule_hosted_sync_cleanup_last_completed_timestamp_seconds",
+      "Unix timestamp of the last completed hosted sync retention cycle.",
+      "gauge",
+      telemetry.hostedSyncCleanupLastCompletedTimestampSeconds,
+    ),
+    metric(
+      "schedule_hosted_sync_cleanup_last_successful_timestamp_seconds",
+      "Unix timestamp of the last complete hosted sync retention cycle.",
+      "gauge",
+      telemetry.hostedSyncCleanupLastSuccessfulTimestampSeconds,
     ),
     metric(
       "schedule_outbox_ready",

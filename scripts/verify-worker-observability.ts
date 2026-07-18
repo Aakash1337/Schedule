@@ -265,6 +265,15 @@ try {
     workspaceLimitExceeded: false,
     aborted: false,
   });
+  telemetry.recordHostedSyncCleanupCycle({
+    batches: 1,
+    deletedChanges: 250,
+    workspacesTouched: 1,
+    failed: false,
+    contended: false,
+    limitReached: false,
+    aborted: false,
+  });
 
   controller = new AbortController();
   let resolveAddress: ((address: AddressInfo) => void) | undefined;
@@ -304,6 +313,9 @@ try {
   assert.match(metrics, /schedule_outbox_dead_letter 1\n/);
   assert.match(metrics, /schedule_outbox_claimed_total 1\n/);
   assert.match(metrics, /schedule_notification_materialization_created_intents_total 2\n/);
+  assert.match(metrics, /schedule_hosted_sync_cleanup_cycles_total 1\n/);
+  assert.match(metrics, /schedule_hosted_sync_cleanup_deleted_changes_total 250\n/);
+  assert.match(metrics, /schedule_hosted_sync_cleanup_contention_total 0\n/);
   assert.match(metrics, /schedule_notification_intents_ready 1\n/);
   assert.match(metrics, /# TYPE schedule_notification_delivery_attempt_records gauge\n/);
   assert.match(metrics, /schedule_notification_delivery_attempt_records 0\n/);

@@ -99,6 +99,15 @@ describe("worker telemetry", () => {
       workspaceLimitExceeded: false,
       aborted: false,
     });
+    telemetry.recordHostedSyncCleanupCycle({
+      batches: 2,
+      deletedChanges: 275,
+      workspacesTouched: 2,
+      failed: false,
+      contended: false,
+      limitReached: false,
+      aborted: false,
+    });
 
     const snapshot = telemetry.snapshot();
     expect(snapshot).toMatchObject({
@@ -117,6 +126,11 @@ describe("worker telemetry", () => {
       materializationSuppressedCandidates: 5,
       materializationLastCompletedTimestampSeconds: 1_784_059_205,
       materializationLastSuccessfulTimestampSeconds: 1_784_059_205,
+      hostedSyncCleanupCycles: 1,
+      hostedSyncCleanupBatches: 2,
+      hostedSyncCleanupDeletedChanges: 275,
+      hostedSyncCleanupLastCompletedTimestampSeconds: 1_784_059_205,
+      hostedSyncCleanupLastSuccessfulTimestampSeconds: 1_784_059_205,
     });
     expect(Object.isFrozen(snapshot)).toBe(true);
   });
@@ -140,6 +154,37 @@ describe("worker telemetry", () => {
       materializationLimitExceeded: 1,
       materializationAborted: 1,
       materializationLastSuccessfulTimestampSeconds: 0,
+    });
+
+    telemetry.recordHostedSyncCleanupCycle({
+      batches: 0,
+      deletedChanges: 0,
+      workspacesTouched: 0,
+      failed: false,
+      contended: true,
+      limitReached: false,
+      aborted: false,
+    });
+    expect(telemetry.snapshot()).toMatchObject({
+      hostedSyncCleanupContention: 1,
+      hostedSyncCleanupLastSuccessfulTimestampSeconds: 0,
+    });
+
+    telemetry.recordHostedSyncCleanupCycle({
+      batches: 1,
+      deletedChanges: 250,
+      workspacesTouched: 1,
+      failed: true,
+      contended: false,
+      limitReached: true,
+      aborted: true,
+    });
+    expect(telemetry.snapshot()).toMatchObject({
+      hostedSyncCleanupFailures: 1,
+      hostedSyncCleanupContention: 1,
+      hostedSyncCleanupLimitReached: 1,
+      hostedSyncCleanupAborted: 1,
+      hostedSyncCleanupLastSuccessfulTimestampSeconds: 0,
     });
   });
 
@@ -192,6 +237,7 @@ describe("Prometheus rendering", () => {
     expect(output).toContain("schedule_worker_database_up 1");
     expect(output).toContain("# TYPE schedule_notification_delivery_attempt_records gauge");
     expect(output).toContain("schedule_notification_delivery_attempt_records 11");
+    expect(output).toContain("# TYPE schedule_hosted_sync_cleanup_cycles_total counter");
     expect(output).not.toContain("{");
     expect(output).not.toContain("workspaceId");
     expect(output.endsWith("\n")).toBe(true);

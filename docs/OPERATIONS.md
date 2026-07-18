@@ -564,14 +564,28 @@ provider.
 ## Hosted work-item sync retention
 
 After one-way enrollment, work-item changes remain captured even if hosted mode is later disabled.
-They are retained until an operator runs the bounded cleanup; neither the API nor worker schedules it.
-Use the same private PostgreSQL connection and start with the conservative defaults:
+They remain retained until either the opt-in worker cleanup or the bounded operator command removes
+them. Automatic cleanup is disabled by default; configure the worker with the conservative defaults:
+
+```dotenv
+HOSTED_WORK_ITEM_SYNC_CLEANUP_MODE=enabled
+HOSTED_WORK_ITEM_SYNC_CLEANUP_INTERVAL_MS=3600000
+HOSTED_WORK_ITEM_SYNC_CLEANUP_RETENTION_DAYS=90
+HOSTED_WORK_ITEM_SYNC_CLEANUP_BATCH_SIZE=250
+HOSTED_WORK_ITEM_SYNC_CLEANUP_MAX_BATCHES=20
+```
+
+The worker uses a dedicated one-connection pool, a two-second per-statement timeout, sequential
+non-overlapping batches, and aggregate-only logs and metrics. Failures retry on the next interval and
+do not change readiness. The explicit fallback uses the same private PostgreSQL database:
 
 ```powershell
 pnpm hosted-sync:cleanup -- --retention-days 90 --batch-size 250 --max-batches 100
 ```
 
-`retention-days` is bounded to 30–3,650, `batch-size` to 1–1,000, and `max-batches` to 1–1,000.
+Automatic cleanup bounds the interval to 60,000–3,600,000 milliseconds, retention to 30–3,650 days,
+the batch size to 1–500, and a cycle to 1–20 batches. The manual command permits 1–1,000 rows per
+batch and 1–1,000 batches per supervised invocation.
 Each transaction deletes only a contiguous expired prefix for one workspace and advances its retained
 cursor floor atomically. The command returns aggregate JSON only. If `limitReached` is true, rerun it
 or intentionally raise the batch allowance; do not treat the partial bounded run as failure.
@@ -579,8 +593,9 @@ or intentionally raise the batch allowance; do not treat the partial bounded run
 Choose retention longer than the maximum supported client-disconnection interval. A consumer behind
 the retained floor receives `410 hosted_sync.cursor_expired` and must discard partial bootstrap state
 and begin again. The same recovery applies when point-in-time restore leaves a valid signed cursor
-ahead of the restored workspace head. Monitor that status plus log-table growth. Keep this job
-separate from migrations, backups, and request-serving processes, and see
+ahead of the restored workspace head. Monitor that status plus cleanup freshness, failures, cap
+exhaustion, and log-table growth. Keep manual cleanup separate from migrations, backups, and
+request-serving processes, and see
 [HOSTED_SYNC.md](./HOSTED_SYNC.md) for protocol and recovery semantics.
 
 ## Routine verification

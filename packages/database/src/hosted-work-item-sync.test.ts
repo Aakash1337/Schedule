@@ -314,6 +314,7 @@ describe("purgeHostedWorkItemSyncChanges", () => {
       workspaceId: workspace,
       deletedChanges: 2,
       minimumCursor: "3",
+      contended: false,
     });
 
     expect(queries).toHaveLength(4);
@@ -323,6 +324,23 @@ describe("purgeHostedWorkItemSyncChanges", () => {
     expect(queries[2]?.text).toContain("update hosted_work_item_sync_states");
     expect(queries[3]?.text).toContain("delete from hosted_work_item_sync_changes");
   });
+
+  it.each([true, false])(
+    "distinguishes cleanup lock contention from an empty backlog (%s)",
+    async (eligible) => {
+      const now = new Date("2026-07-18T12:00:00.000Z");
+      const { connection, queries } = database([[], [{ eligible }]]);
+
+      await expect(purgeHostedWorkItemSyncChanges(connection, { now })).resolves.toMatchObject({
+        workspaceId: null,
+        deletedChanges: 0,
+        minimumCursor: null,
+        contended: eligible,
+      });
+      expect(queries).toHaveLength(2);
+      expect(queries[1]?.text).toContain("select exists");
+    },
+  );
 
   it.each([
     ["invalid date", { now: new Date(Number.NaN) }],

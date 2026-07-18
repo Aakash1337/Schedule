@@ -82,6 +82,21 @@ const workerSchema = baseSchema.extend({
     .min(1_000)
     .max(3_600_000)
     .default(300_000),
+  HOSTED_WORK_ITEM_SYNC_CLEANUP_MODE: z.enum(["disabled", "enabled"]).default("disabled"),
+  HOSTED_WORK_ITEM_SYNC_CLEANUP_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(60_000)
+    .max(3_600_000)
+    .default(3_600_000),
+  HOSTED_WORK_ITEM_SYNC_CLEANUP_RETENTION_DAYS: z.coerce
+    .number()
+    .int()
+    .min(30)
+    .max(3_650)
+    .default(90),
+  HOSTED_WORK_ITEM_SYNC_CLEANUP_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(250),
+  HOSTED_WORK_ITEM_SYNC_CLEANUP_MAX_BATCHES: z.coerce.number().int().min(1).max(20).default(20),
   WEBHOOK_DELIVERY_MODE: z.enum(["disabled", "enabled"]).default("disabled"),
   WEBHOOK_MASTER_KEYS: z.string().max(4_096).default(""),
   WEBHOOK_ACTIVE_MASTER_KEY_ID: z.string().max(32).default(""),
