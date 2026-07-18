@@ -10,8 +10,13 @@ permitted, effective, bounding, and ambient Linux capability masks, and `no-new-
 process receives only a bounded in-memory `/tmp` mount.
 The same drill proves production health/readiness, disabled product and integration routes,
 loopback-only worker diagnostics, a metrics-free deployment health port, and graceful worker
-shutdown. It uses no provider credentials or
-persistent volume and removes its uniquely named Compose project and images on completion.
+shutdown. Its data-preserving outage phase administratively blocks new connections to the
+disposable `schedule` database and terminates existing sessions while PostgreSQL remains running.
+The API must stay live and become not ready, the worker must exit nonzero, and recovery must preserve
+the migration ledger and schema, restore API readiness without restarting the API, and return a
+restarted worker to both health surfaces. The cleanup path re-enables database connections before
+removing the uniquely named Compose project and temporary images. It uses no provider credentials or
+persistent volume.
 
 This is a hardened runtime portability gate, not a hosted deployment. It does not enable browser
 authentication, public product routes, managed backups, monitoring, TLS, synchronization, or any

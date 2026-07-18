@@ -42,6 +42,11 @@ deadline backed by a PostgreSQL statement timeout, which is the authoritative qu
 mechanism. A bind, listener, or query failure emits only a
 fixed diagnostic classification; primary outbox and reminder processing continues.
 
+The disposable `pnpm verify:oci-runtime` drill separately proves the primary runtime contract: a
+database outage leaves the API live but not ready, causes the worker's critical processing service
+to exit nonzero, preserves the migrated schema, and allows API and worker readiness to recover. This
+bounded local drill is release evidence, not continuous monitoring or a hosted recovery guarantee.
+
 Example local checks:
 
 ```powershell

@@ -19,6 +19,8 @@ const migrationJournal = path.join(
 const COMMAND_TIMEOUT_MS = 12 * 60 * 1_000;
 const CAPTURE_LIMIT_BYTES = 64 * 1_024;
 const TERMINATION_GRACE_MS = 5_000;
+const OUTAGE_RECOVERY_TIMEOUT_MS = 35_000;
+const OUTAGE_RECOVERY_RETRY_MS = 250;
 const RUNTIME_UID = 10_001;
 const RUNTIME_GID = 10_001;
 const EMPTY_CAPABILITY_MASK = "0000000000000000";
@@ -200,6 +202,14 @@ export function parseMigrationCount(output: string): number {
   return Number(output.trim());
 }
 
+export function parseSingleContainerId(output: string, service: string): string {
+  const value = output.trim();
+  if (!/^[a-f0-9]{12,64}$/u.test(value)) {
+    throw new Error(`Docker did not return the ${service} container identifier.`);
+  }
+  return value;
+}
+
 export function runtimeSecurityProbeArguments(
   compose: readonly string[],
   service: RuntimeService,
@@ -297,6 +307,210 @@ async function requireJson(
   }
 }
 
+async function waitForJson(
+  url: string,
+  expectedStatus: number,
+  expectedBody: Readonly<Record<string, unknown>>,
+): Promise<void> {
+  const deadline = Date.now() + OUTAGE_RECOVERY_TIMEOUT_MS;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    if (interruptedBy !== null) {
+      throw new Error(`OCI runtime verification interrupted by ${interruptedBy}.`);
+    }
+    try {
+      await requireJson(url, expectedStatus, expectedBody);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, OUTAGE_RECOVERY_RETRY_MS));
+  }
+  throw new Error(
+    `Timed out waiting for ${new URL(url).pathname} to return ${String(expectedStatus)}.`,
+    { cause: lastError },
+  );
+}
+
+async function assertMigrationAndSchema(
+  compose: readonly string[],
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  const appliedMigrations = parseMigrationCount(
+    await runCommand(
+      "docker",
+      [
+        ...compose,
+        "exec",
+        "--no-TTY",
+        "postgres",
+        "psql",
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+        "--username",
+        "schedule",
+        "--dbname",
+        "schedule",
+        "--command",
+        "select count(*) from drizzle.__drizzle_migrations",
+      ],
+      environment,
+      true,
+    ),
+  );
+  if (appliedMigrations !== expectedMigrationCount()) {
+    throw new Error("Built image did not apply the complete migration journal.");
+  }
+  const schemaReady = await runCommand(
+    "docker",
+    [
+      ...compose,
+      "exec",
+      "--no-TTY",
+      "postgres",
+      "psql",
+      "--no-psqlrc",
+      "--tuples-only",
+      "--no-align",
+      "--username",
+      "schedule",
+      "--dbname",
+      "schedule",
+      "--command",
+      "select concat((to_regclass('public.workspaces') is not null)::int,(to_regclass('public.routines') is not null)::int,(to_regclass('public.work_items') is not null)::int,(to_regclass('public.notification_delivery_commands') is not null)::int,(to_regclass('public.external_identities') is not null)::int)",
+    ],
+    environment,
+    true,
+  );
+  if (schemaReady !== "11111") throw new Error("Built image produced an incomplete schema.");
+}
+
+async function waitForWorkerFailure(
+  workerId: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  const deadline = Date.now() + OUTAGE_RECOVERY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (interruptedBy !== null) {
+      throw new Error(`OCI runtime verification interrupted by ${interruptedBy}.`);
+    }
+    const state = await runCommand(
+      "docker",
+      [
+        "inspect",
+        "--format",
+        "{{if .State.Running}}running{{else}}{{.State.ExitCode}}{{end}}",
+        workerId,
+      ],
+      environment,
+      true,
+    );
+    if (state !== "running") {
+      if (parseContainerExitCode(state) === 0) {
+        throw new Error("Worker exited cleanly during the database outage.");
+      }
+      return;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, OUTAGE_RECOVERY_RETRY_MS));
+  }
+  throw new Error("Worker did not fail fast during the bounded database outage.");
+}
+
+async function assertWorkerHealth(
+  compose: readonly string[],
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  await runCommand(
+    "docker",
+    [
+      ...compose,
+      "exec",
+      "--no-TTY",
+      "worker",
+      "node",
+      "-e",
+      "Promise.all([['http://127.0.0.1:9464/health/live',200],['http://127.0.0.1:9464/health/ready',200],['http://127.0.0.1:9464/metrics',200],['http://127.0.0.1:4001/health/live',200],['http://127.0.0.1:4001/health/ready',200],['http://127.0.0.1:4001/metrics',404]].map(async([url,status])=>{const r=await fetch(url);if(r.status!==status)throw new Error('unhealthy')})).catch(()=>process.exit(1))",
+    ],
+    environment,
+  );
+}
+
+async function runPostgresAdmin(
+  postgresId: string,
+  environment: NodeJS.ProcessEnv,
+  statement: string,
+  allowAfterInterruption = false,
+): Promise<void> {
+  await runCommand(
+    "docker",
+    [
+      "exec",
+      postgresId,
+      "psql",
+      "--no-psqlrc",
+      "--set",
+      "ON_ERROR_STOP=1",
+      "--username",
+      "schedule",
+      "--dbname",
+      "postgres",
+      "--command",
+      statement,
+    ],
+    environment,
+    false,
+    allowAfterInterruption,
+  );
+}
+
+async function setScheduleConnections(
+  postgresId: string,
+  environment: NodeJS.ProcessEnv,
+  allowed: boolean,
+  allowAfterInterruption = false,
+): Promise<void> {
+  await runPostgresAdmin(
+    postgresId,
+    environment,
+    `alter database schedule allow_connections = ${allowed ? "true" : "false"}`,
+    allowAfterInterruption,
+  );
+}
+
+async function terminateScheduleBackends(
+  postgresId: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  await runPostgresAdmin(
+    postgresId,
+    environment,
+    "select pg_terminate_backend(pid) from pg_stat_activity where datname = 'schedule' and pid <> pg_backend_pid()",
+  );
+}
+
+async function assertOwnedContainer(
+  containerId: string,
+  projectName: string,
+  owner: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  const labels = await runCommand(
+    "docker",
+    [
+      "inspect",
+      "--format",
+      '{{ index .Config.Labels "com.docker.compose.project" }}|{{ index .Config.Labels "io.schedule.runtime-smoke.owner" }}',
+      containerId,
+    ],
+    environment,
+    true,
+  );
+  if (labels !== `${projectName}|${owner}`) {
+    throw new Error("PostgreSQL container is not owned by this verification.");
+  }
+}
+
 async function assertProjectUnused(
   projectName: string,
   environment: NodeJS.ProcessEnv,
@@ -370,6 +584,8 @@ export async function verifyOciRuntime(): Promise<void> {
   const apiImage = `schedule-api-runtime-smoke:${imageTag}`;
   const workerImage = `schedule-worker-runtime-smoke:${imageTag}`;
   let composeAttempted = false;
+  let postgresId: string | null = null;
+  let scheduleConnectionsMayBeDisabled = false;
   let primaryError: unknown = null;
   let cleanupError: unknown = null;
 
@@ -397,54 +613,17 @@ export async function verifyOciRuntime(): Promise<void> {
       ),
     );
     await runCommand("docker", [...compose, "run", "--rm", "migrate"], environment);
-    const appliedMigrations = parseMigrationCount(
+    await assertMigrationAndSchema(compose, environment);
+    postgresId = parseSingleContainerId(
       await runCommand(
         "docker",
-        [
-          ...compose,
-          "exec",
-          "--no-TTY",
-          "postgres",
-          "psql",
-          "--no-psqlrc",
-          "--tuples-only",
-          "--no-align",
-          "--username",
-          "schedule",
-          "--dbname",
-          "schedule",
-          "--command",
-          "select count(*) from drizzle.__drizzle_migrations",
-        ],
+        [...compose, "ps", "--status", "running", "--quiet", "postgres"],
         environment,
         true,
       ),
+      "postgres",
     );
-    if (appliedMigrations !== expectedMigrationCount()) {
-      throw new Error("Built image did not apply the complete migration journal.");
-    }
-    const schemaReady = await runCommand(
-      "docker",
-      [
-        ...compose,
-        "exec",
-        "--no-TTY",
-        "postgres",
-        "psql",
-        "--no-psqlrc",
-        "--tuples-only",
-        "--no-align",
-        "--username",
-        "schedule",
-        "--dbname",
-        "schedule",
-        "--command",
-        "select concat((to_regclass('public.workspaces') is not null)::int,(to_regclass('public.routines') is not null)::int,(to_regclass('public.work_items') is not null)::int,(to_regclass('public.notification_delivery_commands') is not null)::int,(to_regclass('public.external_identities') is not null)::int)",
-      ],
-      environment,
-      true,
-    );
-    if (schemaReady !== "11111") throw new Error("Built image produced an incomplete schema.");
+    await assertOwnedContainer(postgresId, projectName, owner, environment);
     await runCommand(
       "docker",
       [...compose, "up", "--detach", "--wait", "api", "worker"],
@@ -500,29 +679,35 @@ export async function verifyOciRuntime(): Promise<void> {
       integrationEndpointsEnabled: false,
       hostedEndpointsEnabled: false,
     });
-
-    await runCommand(
-      "docker",
-      [
-        ...compose,
-        "exec",
-        "--no-TTY",
-        "worker",
-        "node",
-        "-e",
-        "Promise.all([['http://127.0.0.1:9464/health/live',200],['http://127.0.0.1:9464/health/ready',200],['http://127.0.0.1:9464/metrics',200],['http://127.0.0.1:4001/health/live',200],['http://127.0.0.1:4001/health/ready',200],['http://127.0.0.1:4001/metrics',404]].map(async([url,status])=>{const r=await fetch(url);if(r.status!==status)throw new Error('unhealthy')})).catch(()=>process.exit(1))",
-      ],
-      environment,
+    const apiId = parseSingleContainerId(
+      await runCommand(
+        "docker",
+        [...compose, "ps", "--status", "running", "--quiet", "api"],
+        environment,
+        true,
+      ),
+      "api",
     );
-    const workerId = await runCommand(
+    const initialApiState = await runCommand(
       "docker",
-      [...compose, "ps", "--all", "--quiet", "worker"],
+      ["inspect", "--format", "{{.State.Running}}:{{.RestartCount}}", apiId],
       environment,
       true,
     );
-    if (!/^[a-f0-9]{12,64}$/u.test(workerId)) {
-      throw new Error("Docker did not return the worker container identifier.");
+    if (initialApiState !== "true:0") {
+      throw new Error("API did not start once as the expected running container.");
     }
+
+    await assertWorkerHealth(compose, environment);
+    let workerId = parseSingleContainerId(
+      await runCommand(
+        "docker",
+        [...compose, "ps", "--all", "--quiet", "worker"],
+        environment,
+        true,
+      ),
+      "worker",
+    );
     const runningWorkerId = await runCommand(
       "docker",
       [...compose, "ps", "--status", "running", "--quiet", "worker"],
@@ -532,6 +717,59 @@ export async function verifyOciRuntime(): Promise<void> {
     if (runningWorkerId !== workerId) {
       throw new Error("Worker was not running immediately before the shutdown check.");
     }
+    scheduleConnectionsMayBeDisabled = true;
+    await setScheduleConnections(postgresId, environment, false);
+    await terminateScheduleBackends(postgresId, environment);
+    try {
+      await requireJson(`${apiBaseUrl}/health/live`, 200, { status: "alive" });
+      await waitForJson(`${apiBaseUrl}/health/ready`, 503, { status: "not_ready" });
+      const apiStillRunning = await runCommand(
+        "docker",
+        ["inspect", "--format", "{{.State.Running}}", apiId],
+        environment,
+        true,
+      );
+      if (apiStillRunning !== "true") {
+        throw new Error("API did not remain running during the database outage.");
+      }
+      const postgresStillRunning = await runCommand(
+        "docker",
+        ["inspect", "--format", "{{.State.Running}}", postgresId],
+        environment,
+        true,
+      );
+      if (postgresStillRunning !== "true") {
+        throw new Error("Database did not remain running during the administrative outage.");
+      }
+      await waitForWorkerFailure(workerId, environment);
+    } finally {
+      if (scheduleConnectionsMayBeDisabled) {
+        await setScheduleConnections(postgresId, environment, true, true);
+        scheduleConnectionsMayBeDisabled = false;
+      }
+    }
+    await assertMigrationAndSchema(compose, environment);
+    await waitForJson(`${apiBaseUrl}/health/ready`, 200, { status: "ready" });
+    const recoveredApiState = await runCommand(
+      "docker",
+      ["inspect", "--format", "{{.State.Running}}:{{.RestartCount}}", apiId],
+      environment,
+      true,
+    );
+    if (recoveredApiState !== initialApiState) {
+      throw new Error("API restarted instead of recovering readiness in place.");
+    }
+    await runCommand("docker", [...compose, "up", "--detach", "--wait", "worker"], environment);
+    workerId = parseSingleContainerId(
+      await runCommand(
+        "docker",
+        [...compose, "ps", "--status", "running", "--quiet", "worker"],
+        environment,
+        true,
+      ),
+      "worker",
+    );
+    await assertWorkerHealth(compose, environment);
     await runCommand("docker", [...compose, "stop", "--timeout", "20", "worker"], environment);
     const runningAfterStop = await runCommand(
       "docker",
@@ -553,7 +791,7 @@ export async function verifyOciRuntime(): Promise<void> {
       throw new Error(`OCI runtime verification interrupted by ${interruptedBy}.`);
     }
     process.stdout.write(
-      "OCI runtime verification passed hardened non-root containers, hosted web assets, migrations, fail-closed API health, loopback worker health, and graceful shutdown. Railway worker deployment readiness also passed.\n",
+      "OCI runtime verification passed hardened non-root containers, hosted web assets, migrations, database outage recovery, fail-closed API health, loopback worker health, and graceful shutdown. Railway worker deployment readiness also passed.\n",
     );
   } catch (error) {
     primaryError = error;
@@ -569,6 +807,14 @@ export async function verifyOciRuntime(): Promise<void> {
       ).catch(() => undefined);
     }
   } finally {
+    if (scheduleConnectionsMayBeDisabled && postgresId !== null) {
+      try {
+        await setScheduleConnections(postgresId, environment, true, true);
+        scheduleConnectionsMayBeDisabled = false;
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    }
     if (composeAttempted) {
       try {
         const ownership = await projectOwnership(projectName, owner, environment);

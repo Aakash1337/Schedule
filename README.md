@@ -295,7 +295,9 @@ The API and worker are ordinary OCI-compatible Node processes. PostgreSQL is the
 Core packages do not depend on a hosting provider, queue vendor, or cloud SDK. The production
 runtime images use a fixed non-root identity; the executable OCI smoke gate additionally enforces a
 read-only root filesystem, dropped Linux capabilities, and `no-new-privileges` for migrations, the
-API, and the worker. Complete secret-manager-fed `HOSTED_API_MODE=oidc` configuration now activates
+API, and the worker. It also preserves the migrated schema through a disposable database outage,
+proves API readiness recovery without an API restart, and verifies worker fail-fast and restart
+behavior. Complete secret-manager-fed `HOSTED_API_MODE=oidc` configuration now activates
 the hardened authorization-code lifecycle, nonce-bound verification, browser sessions, first-login
 workspace bootstrap, transaction-authorized hosted work-item and Today mutations, and bounded
 hosted Plan Fit guidance with reversible exact-key dismissal/reset and atomic explicit-use receipts.

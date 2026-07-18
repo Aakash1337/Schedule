@@ -9,8 +9,11 @@ The CI-only `pnpm verify:oci-runtime` gate builds and executes the production AP
 images against disposable PostgreSQL. It verifies the fixed non-root identity, read-only root
 filesystem from the root mount flags, empty inheritable/permitted/effective/bounding/ambient
 capability sets, `no-new-privileges`, migrations, live/ready health, fail-closed production product
-routes, worker loopback diagnostics, and graceful shutdown. It is provider neutral and does not
-count as evidence that public hosting or synchronization is implemented.
+routes, worker loopback diagnostics, graceful shutdown, and a data-preserving database outage. The
+outage must degrade API readiness without losing API liveness, fail the worker nonzero, preserve the
+migration ledger and schema, recover API readiness without an API restart, and return the restarted
+worker to health. It is provider neutral and does not count as evidence that public hosting,
+provider recovery, or synchronization is implemented.
 
 ## Evidence model
 
@@ -81,7 +84,7 @@ provider-monitoring, backup-restore, or broad-sync claim.
 
 ## Current scorecard
 
-The package and script runners currently execute 130 test files and 2,269 runtime test cases. Three
+The package and script runners currently execute 130 test files and 2,270 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -105,7 +108,7 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     60.06% |   72.29% |    68.71% | 60.55% |
+| Whole repository, measured |     59.89% |   72.16% |    68.55% | 60.37% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     95.12% |   91.89% |    93.49% | 96.13% |
 | Domain, required           |        91% |      82% |       92% |    93% |
@@ -118,8 +121,8 @@ quality levels.
 | Web, measured              |     86.13% |   80.25% |    83.77% |  87.1% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 13,041 of 21,711 statements, 9,852 of 13,627 branches,
-2,801 of 4,076 functions, and 12,320 of 20,345 lines.
+The whole-repository totals are 13,047 of 21,783 statements, 9,854 of 13,655 branches,
+2,802 of 4,087 functions, and 12,326 of 20,415 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
