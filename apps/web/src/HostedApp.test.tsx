@@ -1032,6 +1032,19 @@ describe("hosted capture shell", () => {
       activityState: "pending" as const,
     };
     const sourceItem = snapshotItem({ id: "work-item-1", title: item.title });
+    let finishSnapshotRefresh: () => void = () => undefined;
+    const pendingSnapshotRefresh = new Promise<{
+      items: HostedWorkItemSnapshot[];
+      limit: number;
+      offset: number;
+    }>((resolve) => {
+      finishSnapshotRefresh = () =>
+        resolve({
+          items: [{ ...sourceItem, status: "done", version: 2 }],
+          limit: 21,
+          offset: 0,
+        });
+    });
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
     apiMocks.listWorkItemSnapshot
@@ -1040,11 +1053,7 @@ describe("hosted capture shell", () => {
         limit: 21,
         offset: 0,
       })
-      .mockResolvedValueOnce({
-        items: [{ ...sourceItem, status: "done", version: 2 }],
-        limit: 21,
-        offset: 0,
-      });
+      .mockReturnValueOnce(pendingSnapshotRefresh);
     apiMocks.getToday
       .mockResolvedValueOnce({
         date: todayKey(),
@@ -1083,6 +1092,11 @@ describe("hosted capture shell", () => {
     expect(
       screen.queryByRole("button", { name: `Complete ${item.title} in Today` }),
     ).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: `Start ${item.title}` })).toBeDisabled();
+      expect(screen.getByRole("button", { name: `Complete ${item.title}` })).toBeDisabled();
+    });
+    await act(async () => finishSnapshotRefresh());
     expect(
       await screen.findByText("Done", { selector: ".hosted-backlog-meta" }),
     ).toBeInTheDocument();

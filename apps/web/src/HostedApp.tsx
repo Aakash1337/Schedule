@@ -1385,7 +1385,7 @@ export function HostedApp() {
                             busy={
                               updatingItem?.id === item.id && updatingItem.status === "in_progress"
                             }
-                            disabled={mutationBusy}
+                            disabled={mutationBusy || workItemsLoading}
                             onClick={() => void updateStatus(item, "in_progress")}
                           >
                             Start
@@ -1395,7 +1395,7 @@ export function HostedApp() {
                             variant="quiet"
                             aria-label={`Complete ${item.title}`}
                             busy={updatingItem?.id === item.id && updatingItem.status === "done"}
-                            disabled={mutationBusy}
+                            disabled={mutationBusy || workItemsLoading}
                             onClick={() => void updateStatus(item, "done")}
                           >
                             Done
