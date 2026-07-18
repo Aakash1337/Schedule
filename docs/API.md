@@ -34,6 +34,13 @@ Daily Plan Fit projection for local agents without exposing its evidence key or 
   to null. Create and list responses use the same narrow projection. Its item versions support a strict
   `PATCH /v1/hosted/workspaces/{workspaceId}/work-items/{workItemId}` body containing only
   `expectedVersion` and `status=in_progress|done`.
+  A separate `GET /v1/hosted/workspaces/{workspaceId}/work-items/snapshot?limit=100&offset=0`
+  returns a page containing items from all current statuses in stable `createdAt,id` order. `limit`
+  is 1–200 and `offset` is 0–1,000,000. Each row contains the complete current work-item projection
+  except `workspaceId`: parent, title, description, status, scheduling fields, optimistic version,
+  and timestamps. It is an authenticated, no-store current-state page for future reconciliation
+  work, not a frozen multi-page snapshot, change feed, tombstone stream, or offline synchronization
+  protocol.
   `GET /v1/hosted/workspaces/{workspaceId}/today?date=YYYY-MM-DD` returns only an existing current
   plan's identity/head fence, item IDs/titles/scheduled minutes/activity states, and total minutes.
   `GET /v1/hosted/workspaces/{workspaceId}/daily-plan-fit-insight?forDate=YYYY-MM-DD` returns only

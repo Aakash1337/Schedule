@@ -110,6 +110,7 @@ describe("API infrastructure", () => {
       "/v1/hosted/workspaces",
       "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/probe",
       "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items",
+      "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items/snapshot",
       "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/today/00000000-0000-4000-8000-000000000002/activity-events?date=2026-07-16",
     ]) {
       for (const method of ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] as const) {
@@ -160,6 +161,7 @@ describe("API infrastructure", () => {
       workItems: {
         createWorkItem: vi.fn(),
         listWorkItems: vi.fn(),
+        listWorkItemSnapshot: vi.fn(),
         updateWorkItemStatus: vi.fn(),
       },
       today: {
@@ -222,6 +224,12 @@ describe("API infrastructure", () => {
     });
     expect(protectedWorkList.statusCode).toBe(401);
     expect(hostedApi.workItems.listWorkItems).not.toHaveBeenCalled();
+    const protectedWorkSnapshot = await protectedApp.inject({
+      method: "GET",
+      url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items/snapshot",
+    });
+    expect(protectedWorkSnapshot.statusCode).toBe(401);
+    expect(hostedApi.workItems.listWorkItemSnapshot).not.toHaveBeenCalled();
     const protectedWorkUpdate = await protectedApp.inject({
       method: "PATCH",
       url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items/00000000-0000-4000-8000-000000000002",

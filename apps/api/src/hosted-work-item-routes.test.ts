@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   HOSTED_WORK_ITEM_COLLECTION_ROUTE,
   HOSTED_WORK_ITEM_RESOURCE_ROUTE,
+  HOSTED_WORK_ITEM_SNAPSHOT_ROUTE,
   registerHostedWorkItemBoundary,
   type HostedWorkItemServices,
 } from "./hosted-work-item-routes.js";
@@ -47,6 +48,7 @@ function servicesWith(overrides: Partial<HostedWorkItemServices> = {}): HostedWo
       throw new Error("Unexpected hosted work-item create.");
     }),
     listWorkItems: vi.fn(async () => ({ items: [], limit: 20, offset: 0 })),
+    listWorkItemSnapshot: vi.fn(async () => ({ items: [], limit: 100, offset: 0 })),
     updateWorkItemStatus: vi.fn(async () => {
       throw new Error("Unexpected hosted work-item update.");
     }),
@@ -214,6 +216,136 @@ describe("hosted work-item routes", () => {
     expect(revoked.statusCode).toBe(404);
     expect(revoked.body).not.toContain("private membership detail");
     expect(listWorkItems).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns a stable full-field current-state work-item page with default and forwarded pages", async () => {
+    const parent = createWorkItem({
+      workspaceId: WORKSPACE_ID,
+      title: "Parent",
+      now: new Date("2026-07-15T08:00:00.000Z"),
+    });
+    const original = createWorkItem({
+      workspaceId: WORKSPACE_ID,
+      parentWorkItemId: parent.id,
+      title: "Snapshot task",
+      description: "Full current state",
+      status: "planned",
+      priority: "urgent",
+      dueOn: localDate("2026-07-22"),
+      planningDurationMinutes: 75,
+      now: new Date("2026-07-15T09:00:00.000Z"),
+    });
+    const item = updateWorkItem(original, {
+      status: "in_progress",
+      now: new Date("2026-07-16T10:30:00.000Z"),
+    });
+    const listWorkItemSnapshot = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [item], limit: 100, offset: 0 })
+      .mockResolvedValueOnce({ items: [], limit: 200, offset: 1_000_000 });
+    const app = await createHostedApp({ listWorkItemSnapshot });
+    const path = HOSTED_WORK_ITEM_SNAPSHOT_ROUTE.replace(
+      ":workspaceId",
+      WORKSPACE_ID.toUpperCase(),
+    );
+
+    const defaults = await app.inject({ method: "GET", url: path });
+    const paged = await app.inject({
+      method: "GET",
+      url: `${path}?limit=200&offset=1000000`,
+    });
+
+    expect(defaults.statusCode).toBe(200);
+    expect(defaults.headers["cache-control"]).toBe("no-store");
+    expect(defaults.json()).toEqual({
+      items: [
+        {
+          id: item.id,
+          parentWorkItemId: parent.id,
+          title: "Snapshot task",
+          description: "Full current state",
+          status: "in_progress",
+          priority: "urgent",
+          dueOn: "2026-07-22",
+          planningDurationMinutes: 75,
+          version: 2,
+          createdAt: "2026-07-15T09:00:00.000Z",
+          updatedAt: "2026-07-16T10:30:00.000Z",
+        },
+      ],
+      limit: 100,
+      offset: 0,
+    });
+    expect(defaults.body).not.toContain(WORKSPACE_ID);
+    expect(paged.statusCode).toBe(200);
+    expect(paged.json()).toEqual({ items: [], limit: 200, offset: 1_000_000 });
+    expect(listWorkItemSnapshot).toHaveBeenNthCalledWith(1, {
+      authorization,
+      limit: 100,
+      offset: 0,
+    });
+    expect(listWorkItemSnapshot).toHaveBeenNthCalledWith(2, {
+      authorization,
+      limit: 200,
+      offset: 1_000_000,
+    });
+  });
+
+  it("rejects non-canonical snapshot pages before calling the service", async () => {
+    const listWorkItemSnapshot = vi.fn();
+    const app = await createHostedApp({ listWorkItemSnapshot });
+    const path = HOSTED_WORK_ITEM_SNAPSHOT_ROUTE.replace(":workspaceId", WORKSPACE_ID);
+
+    for (const query of [
+      "limit=0",
+      "limit=201",
+      "limit=01",
+      "limit=%2B1",
+      "limit=%201",
+      "limit=1.0",
+      "limit=1e2",
+      "limit=1&limit=2",
+      "offset=-1",
+      "offset=1000001",
+      "offset=01",
+      "offset=%2B1",
+      "offset=%201",
+      "offset=1.0",
+      "offset=1e2",
+      "offset=1&offset=2",
+      "status=backlog",
+      "limit=1&workspaceId=00000000-0000-4000-8000-000000000302",
+    ]) {
+      const response = await app.inject({ method: "GET", url: `${path}?${query}` });
+      expect(response.statusCode, query).toBe(400);
+      expect(response.headers["cache-control"], query).toBe("no-store");
+    }
+    expect(listWorkItemSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("redacts unavailable snapshot membership and never crosses the workspace boundary", async () => {
+    const listWorkItemSnapshot = vi
+      .fn()
+      .mockRejectedValue(new DomainError("workspace.not_found", "private membership detail"));
+    const app = await createHostedApp({ listWorkItemSnapshot });
+    const permittedPath = HOSTED_WORK_ITEM_SNAPSHOT_ROUTE.replace(":workspaceId", WORKSPACE_ID);
+    const deniedPath = HOSTED_WORK_ITEM_SNAPSHOT_ROUTE.replace(":workspaceId", OTHER_WORKSPACE_ID);
+
+    const revoked = await app.inject({ method: "GET", url: permittedPath });
+    const otherTenant = await app.inject({ method: "GET", url: deniedPath });
+
+    expect(revoked.statusCode).toBe(404);
+    expect(revoked.headers["cache-control"]).toBe("no-store");
+    expect(revoked.json()).toMatchObject({
+      error: {
+        code: "workspace.not_found",
+        message: "The requested workspace does not exist.",
+      },
+    });
+    expect(revoked.body).not.toContain("private membership detail");
+    expect(otherTenant.statusCode).toBe(404);
+    expect(otherTenant.body).not.toContain(WORKSPACE_ID);
+    expect(listWorkItemSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it("rejects identity-bearing and malformed bodies before calling the service", async () => {

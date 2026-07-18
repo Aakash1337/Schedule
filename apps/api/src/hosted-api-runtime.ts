@@ -86,6 +86,12 @@ async function hostedApiOptions(
           limit: 20,
           offset: 0,
         }),
+      listWorkItemSnapshot: ({ authorization, limit, offset }) =>
+        listWorkItems.execute({
+          workspaceId: authorization.workspaceId,
+          limit,
+          offset,
+        }),
       createWorkItem: ({ authorization, command }) =>
         createWorkItem.execute(authorization, command),
       updateWorkItemStatus: ({ authorization, command }) =>

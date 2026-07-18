@@ -22,6 +22,7 @@ import {
   HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE,
   HOSTED_TODAY_ACTIVITY_ROUTE,
 } from "../apps/api/src/hosted-today-routes.js";
+import { HOSTED_WORK_ITEM_SNAPSHOT_ROUTE } from "../apps/api/src/hosted-work-item-routes.js";
 import { HOSTED_WORKSPACE_LIST_ROUTE } from "../apps/api/src/hosted-workspace-routes.js";
 import {
   HOSTED_CSRF_COOKIE_NAME,
@@ -608,6 +609,93 @@ try {
   });
   assert.deepEqual(emptyBacklog.json(), { items: [], limit: 20, offset: 0 });
 
+  // EVIDENCE: hosted-work-item-snapshot-postgres
+  // The separate current-state page includes non-backlog rows without widening the capture backlog.
+  const loadWorkItemSnapshotState = async () => {
+    const items = await database.sql<
+      {
+        id: string;
+        parentWorkItemId: string | null;
+        title: string;
+        description: string | null;
+        status: string;
+        priority: string;
+        dueOn: string | null;
+        planningDurationMinutes: number | null;
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+      }[]
+    >`
+      select id::text, parent_work_item_id::text as "parentWorkItemId", title, description,
+        status::text, priority::text, due_on::text as "dueOn",
+        planning_duration_minutes as "planningDurationMinutes", version,
+        to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
+        to_char(updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "updatedAt"
+      from work_items
+      where workspace_id = ${createdWorkspaceBody.id}
+      order by created_at, id
+    `;
+    const [audit] = await database.sql<{ count: number }[]>`
+      select count(*)::integer as count
+      from audit_events
+      where workspace_id = ${createdWorkspaceBody.id}
+    `;
+    return { items, auditCount: audit?.count ?? -1 };
+  };
+  const snapshotStateBefore = await loadWorkItemSnapshotState();
+  const expectedSnapshotItems = snapshotStateBefore.items.map((item) => ({ ...item }));
+  const snapshotRoute = HOSTED_WORK_ITEM_SNAPSHOT_ROUTE.replace(
+    ":workspaceId",
+    createdWorkspaceBody.id,
+  );
+  const fullSnapshot = await app.inject({
+    method: "GET",
+    url: snapshotRoute,
+    headers: { cookie: cookiePair(sessionCookie) },
+  });
+  assert.equal(fullSnapshot.statusCode, 200, fullSnapshot.body);
+  assert.equal(fullSnapshot.headers["cache-control"], "no-store");
+  assert.deepEqual(fullSnapshot.json(), {
+    items: expectedSnapshotItems,
+    limit: 100,
+    offset: 0,
+  });
+  assert.deepEqual(
+    fullSnapshot
+      .json<{ items: { id: string; status: string }[] }>()
+      .items.map(({ id, status }) => ({ id, status })),
+    [
+      { id: createdWorkItemBody.id, status: "done" },
+      { id: plannedWorkItemBody.id, status: "done" },
+    ],
+  );
+  assert.doesNotMatch(fullSnapshot.body, /workspaceId|userId|sessionId|membership|issuer|subject/u);
+
+  for (const [offset, expectedItem] of expectedSnapshotItems.entries()) {
+    const page: Awaited<ReturnType<typeof prepared.app.inject>> = await app.inject({
+      method: "GET",
+      url: `${snapshotRoute}?limit=1&offset=${String(offset)}`,
+      headers: { cookie: cookiePair(sessionCookie) },
+    });
+    assert.deepEqual(page.json(), { items: [expectedItem], limit: 1, offset });
+  }
+  const maximumSnapshotPage = await app.inject({
+    method: "GET",
+    url: `${snapshotRoute}?limit=200&offset=1000000`,
+    headers: { cookie: cookiePair(sessionCookie) },
+  });
+  assert.deepEqual(maximumSnapshotPage.json(), { items: [], limit: 200, offset: 1_000_000 });
+  for (const query of ["limit=0", "limit=201", "offset=1000001", "limit=01"]) {
+    const invalidPage: Awaited<ReturnType<typeof prepared.app.inject>> = await app.inject({
+      method: "GET",
+      url: `${snapshotRoute}?${query}`,
+      headers: { cookie: cookiePair(sessionCookie) },
+    });
+    assert.equal(invalidPage.statusCode, 400, invalidPage.body);
+  }
+  assert.deepEqual(await loadWorkItemSnapshotState(), snapshotStateBefore);
+
   const [persisted] = await database.sql<
     {
       users: number;
@@ -710,6 +798,30 @@ try {
     activityLocalDate: "2026-07-16",
     consumed: 1,
   });
+
+  await database.sql`
+    update workspace_memberships
+    set status = 'revoked', revoked_at = clock_timestamp(),
+      version = version + 1, updated_at = clock_timestamp()
+    where user_id = ${hostedAccount.userId}
+      and workspace_id = ${discoveredWorkspaceId}
+  `;
+  const deniedSnapshot = await app.inject({
+    method: "GET",
+    url: HOSTED_WORK_ITEM_SNAPSHOT_ROUTE.replace(":workspaceId", discoveredWorkspaceId),
+    headers: { cookie: cookiePair(sessionCookie) },
+  });
+  assert.equal(deniedSnapshot.statusCode, 404, deniedSnapshot.body);
+  const deniedSnapshotBody = deniedSnapshot.json<{
+    error: { code: string; message: string };
+    requestId: string;
+  }>();
+  assert.deepEqual(deniedSnapshotBody.error, {
+    code: "workspace.not_found",
+    message: "The requested workspace does not exist.",
+  });
+  assert.match(deniedSnapshotBody.requestId, /^req-/u);
+  assert.doesNotMatch(deniedSnapshot.body, /revoked|membership|user|session/u);
 
   // EVIDENCE: hosted-plan-fit-guidance-postgres
   // Read-only guidance stays explicit; exact use is receipted inside hosted plan generation.
@@ -1035,7 +1147,7 @@ try {
   assert.deepEqual(requestCounts, { discovery: 1, token: 1, jwks: 1 });
 
   console.log(
-    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read and empty Today read and a transaction-authorized status update, plus principal-bound workspace creation. Hosted capture scheduling fields were restricted, projected, and persisted exactly. Hosted first-plan generation proved exact replay, conflicting-input rejection, one persisted revision, and planner-selected work without synthetic plan rows. Hosted Today completion also proved exact idempotent replay, one activity append, one head advance, and atomic source completion, while a stale head left no residue and the generated plan time zone remained authoritative. Hosted Plan Fit guidance proved bounded authorized projection, exact dismissal and reset replay, stale-key rollback, one persisted plan, one atomic use receipt, and one thresholded aggregate outcome read.",
+    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus unchanged bounded backlog read and a full-field current-state work-item page with stable pages, non-backlog visibility, tenant redaction, and no read mutation, plus empty Today read and a transaction-authorized status update, plus principal-bound workspace creation. Hosted capture scheduling fields were restricted, projected, and persisted exactly. Hosted first-plan generation proved exact replay, conflicting-input rejection, one persisted revision, and planner-selected work without synthetic plan rows. Hosted Today completion also proved exact idempotent replay, one activity append, one head advance, and atomic source completion, while a stale head left no residue and the generated plan time zone remained authoritative. Hosted Plan Fit guidance proved bounded authorized projection, exact dismissal and reset replay, stale-key rollback, one persisted plan, one atomic use receipt, and one thresholded aggregate outcome read.",
   );
 } catch (error) {
   verificationError = error;
