@@ -518,8 +518,10 @@ The audit deliberately leaves these visible instead of turning them into false g
   installation into a temporary Hermes home, and a disposable PostgreSQL/real Fastify one-off-reminder
   lifecycle: create, bounded discovery, reschedule, and cancellation with no mutation before
   confirmation, exact receipt replay, version progression, audit counts, and pending-intent
-  invalidation. Neither verifier loads a live Hermes runtime or exercises a WhatsApp account, phone
-  delivery, provider receipt, or natural-language quality benchmark;
+  invalidation. CI does not load an installed Hermes runtime; the separate operator-run native
+  registration probe can prove that an enabled installation exposes the exact Schedule tools and
+  hook. None of these checks exercises a WhatsApp account, phone delivery, provider receipt, or
+  natural-language quality benchmark;
 - the outbound webhook verifier covers real PostgreSQL endpoint/secret lifecycles, workspace
   isolation, default-empty and replacement subscription state, privacy-thin automatic Today-change
   fan-out, deterministic event identity, immutable delivery/outbox linkage, dead-letter metadata,

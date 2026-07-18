@@ -241,8 +241,9 @@ when its environment can be isolated from the interactive plugin.
 
 The repository-owned source is [`integrations/hermes-schedule`](../integrations/hermes-schedule).
 Its installer copies only the plugin runtime and deterministic reminder files into the active
-Hermes home. It does not read or write secrets, enable the plugin, restart Hermes, create a cron
-job, or send a message:
+Hermes home. `HERMES_HOME` wins when set; otherwise the native Windows default is
+`%LOCALAPPDATA%\hermes` and other platforms use `~/.hermes`. It does not read or write secrets,
+enable the plugin, restart Hermes, create a cron job, or send a message:
 
 ```powershell
 python .\integrations\hermes-schedule\install.py check
@@ -266,6 +267,32 @@ $env:SCHEDULE_HERMES_BINDING_KEY = [Convert]::ToBase64String($BindingBytes).Trim
 hermes plugins enable hermes-schedule
 hermes plugins list --enabled
 ```
+
+Then run the installed native registration verifier with Hermes's Python. It performs fresh
+plugin discovery and checks the exact six tools, their `schedule` toolset, and the observer-only
+turn hook. The verifier itself does not invoke a tool, call Schedule, query a model, or send a
+message. Native discovery does import and initialize every enabled plugin under Hermes's normal
+trusted-plugin model, so run it only against an installation whose enabled plugins you trust:
+
+```powershell
+$HermesHome = python .\integrations\hermes-schedule\install.py home
+& "$HermesHome\hermes-agent\venv\Scripts\python.exe" `
+  "$HermesHome\plugins\hermes-schedule\verify_native.py"
+```
+
+On POSIX, use the matching virtual-environment path:
+
+```bash
+HermesHome="$(python3 ./integrations/hermes-schedule/install.py home)"
+"$HermesHome/hermes-agent/venv/bin/python" \
+  "$HermesHome/plugins/hermes-schedule/verify_native.py"
+```
+
+The verifier's success line is `plugin=enabled tools=6 toolset=schedule hook=pre_llm_call`; Hermes or
+another enabled plugin may emit its own diagnostics. A disabled plugin, load error, origin or
+registration drift, or the wrong Python environment fails closed. This deliberately pins native
+Hermes registration bookkeeping and verifies neither credential validity, gateway lifecycle, a
+Schedule request, nor phone delivery.
 
 `SCHEDULE_INTEGRATION_URL` has no implicit value and is required. Its accepted form is exactly
 `http://127.0.0.1:<port>`, with a canonical decimal port from 1024 through 65535: no `localhost`,
@@ -468,15 +495,16 @@ does not contact WhatsApp and does not prove phone delivery.
 Use this rollout order:
 
 1. Verify the plugin with the disposable automated gate.
-2. Install it disabled, set secrets in the Hermes service environment, then enable and restart.
-3. Exercise `schedule_today`, `schedule_list_work_items`, and
+2. Install it disabled, set secrets in the Hermes service environment, then enable it explicitly.
+3. Run `verify_native.py` with Hermes's Python, then restart every long-running Hermes process.
+4. Exercise `schedule_today`, `schedule_list_work_items`, and
    `schedule_list_one_off_reminders` against the intended workspace.
-4. Prepare a harmless test change, inspect every canonical field, and cancel it.
-5. Prepare another bounded test, confirm from the same sender/session/platform on a later turn, and
+5. Prepare a harmless test change, inspect every canonical field, and cancel it.
+6. Prepare another bounded test, confirm from the same sender/session/platform on a later turn, and
    verify the result through Schedule.
-6. Run `reminder.py` directly and inspect standard output.
-7. Create a `--deliver local` no-agent cron job and trigger it once.
-8. Configure `WHATSAPP_HOME_CHANNEL` to the operator's own self-chat, then perform one live delivery
+7. Run `reminder.py` directly and inspect standard output.
+8. Create a `--deliver local` no-agent cron job and trigger it once.
+9. Configure `WHATSAPP_HOME_CHANNEL` to the operator's own self-chat, then perform one live delivery
    smoke. Record only opaque message or delivery identifiers, never the token or message contents.
 
 ### Limitations

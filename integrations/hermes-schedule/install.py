@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install or check the local Hermes Schedule plugin without touching secrets."""
+"""Locate, install, or check the local Hermes Schedule plugin without touching secrets."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ PLUGIN_FILES = (
     "schemas.py",
     "state.py",
     "tools.py",
+    "verify_native.py",
 )
 REMINDER_FILES = ("client.py", "reminder.py")
 
@@ -30,7 +31,13 @@ class HermesInstallError(Exception):
 
 def default_hermes_home() -> Path:
     configured = os.environ.get("HERMES_HOME", "").strip()
-    return Path(configured).expanduser() if configured else Path.home() / ".hermes"
+    if configured:
+        return Path(configured).expanduser()
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+        return base / "hermes"
+    return Path.home() / ".hermes"
 
 
 def _digest(path: Path) -> str:
@@ -136,10 +143,13 @@ def install(hermes_home: Path, source: Path, replace: bool = False) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check", "install"))
+    parser.add_argument("action", choices=("home", "check", "install"))
     parser.add_argument("--hermes-home", type=Path, default=default_hermes_home())
     parser.add_argument("--replace", action="store_true", help="Replace an outdated installation")
     arguments = parser.parse_args(argv)
+    if arguments.action == "home":
+        print(arguments.hermes_home)
+        return 0
     source = Path(__file__).resolve().parent
     try:
         if arguments.action == "install":
@@ -151,7 +161,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"plugin={plugin_status} reminder={reminder_status}")
     if arguments.action == "install":
         print(
-            "Files are installed disabled; configure secrets, enable the plugin, and restart Hermes."
+            "Files installed; enablement is unchanged. Configure secrets, explicitly enable if "
+            "needed, and restart Hermes."
         )
     return 0 if plugin_status == reminder_status == "current" else 1
 
