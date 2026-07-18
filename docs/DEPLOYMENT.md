@@ -126,13 +126,28 @@ Before attaching a production domain:
 
 1. Run `pnpm check` and `pnpm verify:oci-runtime` locally.
 2. Deploy staging with production-shaped variables and a separate database.
-3. Confirm `/health/live` and `/health/ready`, then complete login, callback, workspace discovery,
-   hosted Today/backlog reads, the bounded all-status current work-item page, capture, authorized work
-   creation/status update, idempotent Today completion, logout, and session revocation through public
-   HTTPS. Treat the work-item page as a current-state read, not proof of synchronization.
+3. Run `pnpm verify:hosted-staging` with the exact staging host/workspace confirmations; it checks
+   `/health/live`, `/health/ready`, manual real-OIDC login, session, workspace discovery, Today,
+   the current work-item snapshot, capture, Done, and logout through public HTTPS. Treat the
+   work-item page as a current-state read, not proof of synchronization.
 4. Force a failed migration and confirm the previous deployment remains active.
 5. Stop PostgreSQL and confirm readiness fails while liveness remains available.
 6. Restore the latest backup into an isolated database and run the database verification suite.
+
+## Operator-assisted staging gate
+
+`pnpm verify:hosted-staging` is a headed, mutation-capable, staging-only launch gate. It refuses
+common CI markers, requires one exact canonical HTTPS host containing `staging` or `smoke`, an
+operator-designated workspace prefixed with `staging` or `smoke`, and an exact host/workspace
+mutation confirmation. It accepts no identity-provider credentials, opens a fresh
+browser profile, and requires the operator to complete the real OIDC login manually. It then checks
+health, session, workspace selection, Today, the current work-item snapshot, create, Done, and
+logout. It stores no trace, screenshot, or video, and deliberately leaves one completed, auditable
+work item in that dedicated workspace: there is no cleanup route.
+
+This gate exists but has not been executed here against external staging. It is not CI evidence:
+CI cannot exercise a public HTTPS ingress or external OIDC. It makes no claim of live production,
+provider monitoring, backup restore, or broad synchronization.
 
 Railway references: [config as code](https://docs.railway.com/config-as-code),
 [pre-deploy commands](https://docs.railway.com/deployments/pre-deploy-command),

@@ -228,6 +228,17 @@ PostgreSQL composition verifier covers the real hosted server boundary, exact pl
 atomic Today completion, exact Plan Fit dismissal/reset replay and stale-key rejection, and one exact
 Plan Fit use receipt plus one bounded aggregate outcome read after an explicit guidance selection.
 
+`pnpm verify:hosted-staging` is separate, operator-assisted staging-only evidence. It is headed and
+mutation-capable, requires a staging-marked HTTPS host, a staging-prefixed workspace, and exact
+host/workspace confirmation, accepts no identity-provider
+credentials, and uses a fresh browser profile for manual real-OIDC login. It checks health, session,
+workspace, Today, snapshot, create, Done, and logout; it saves no trace, screenshot, or video and
+leaves one completed auditable item in the operator-designated staging workspace (there is no
+cleanup route).
+It has not been executed here against external staging. CI cannot exercise public ingress or an
+external identity provider, so this is not a live-production, monitoring, backup-restore, or sync
+claim.
+
 With PostgreSQL running, verify backlog/Kanban, hierarchy, work-item prerequisites, and calendar
 management, routine creation and optimistic updates, duration calibration and Daily Plan Fit,
 stable activity-history pagination, idempotent routine and Today-item activity recording,
