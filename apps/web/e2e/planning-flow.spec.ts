@@ -913,6 +913,18 @@ test("renders planning outcomes and derives, prefills, and restores Plan Fit", a
   await expect(page.getByText("deterministic-planner-v8 · default-weights-v5")).toBeVisible();
   await expect(page.getByText(/Completed 41.67% scheduled time · 41.67% tasks/)).toBeVisible();
   await expect(page.getByText(/do not show that a version caused an outcome/i)).toBeVisible();
+  const targetMinutes = page.getByRole("spinbutton", { name: /^Target minutes/ });
+  const targetTasks = page.getByRole("spinbutton", { name: /^Target tasks/ });
+  await expect(targetMinutes).toHaveValue("180");
+  await expect(targetTasks).toHaveValue("4");
+  await page.getByRole("button", { name: "Review today's targets" }).click();
+  await expect(targetMinutes).toBeFocused();
+  await expect(targetMinutes).toHaveValue("180");
+  await expect(targetTasks).toHaveValue("4");
+  const currentPlanAfterReview = await page.request.get(
+    `/v1/workspaces/${workspace.id}/plans/2026-07-14/current`,
+  );
+  expect(currentPlanAfterReview.status()).toBe(404);
   await expect(page.getByRole("heading", { name: "Plan Fit outcome summary" })).toBeVisible();
   await expect(page.getByText(/No explicit Plan Fit use is available/)).toBeVisible();
   await expect(page.getByText(/Prefilling alone creates no history/)).toBeVisible();

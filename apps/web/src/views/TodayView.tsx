@@ -229,6 +229,8 @@ interface PlanningOutcomesSummaryProps {
   readonly loading: boolean;
   readonly error: string | null;
   readonly onRetry: () => void;
+  readonly onReviewTargets: (() => void) | null;
+  readonly reviewTargetsDisabled: boolean;
 }
 
 function PlanningOutcomeVersionSegments({
@@ -298,8 +300,12 @@ function PlanningOutcomesSummary({
   loading,
   error,
   onRetry,
+  onReviewTargets,
+  reviewTargetsDisabled,
 }: PlanningOutcomesSummaryProps) {
   const remaining = Math.max(0, minimumPlanningOutcomePlans - (outcomes?.plansConsidered ?? 0));
+  const hasDeferredWorkload =
+    outcomes !== null && (outcomes.deferredTaskCount > 0 || outcomes.deferredMinutes > 0);
   return (
     <section className="today-plan-fit" aria-labelledby="today-planning-outcomes-heading">
       <div className="today-plan-fit-history-heading">
@@ -377,6 +383,18 @@ function PlanningOutcomesSummary({
             Final states only. Repeated deferrals can prompt a manual review of duration, priority,
             or relevance; nothing changes automatically.
           </p>
+          {hasDeferredWorkload && onReviewTargets !== null ? (
+            <div className="today-plan-fit-actions">
+              <Button
+                type="button"
+                variant="quiet"
+                disabled={reviewTargetsDisabled}
+                onClick={onReviewTargets}
+              >
+                Review today's targets
+              </Button>
+            </div>
+          ) : null}
         </>
       )}
       {error === null && outcomes !== null && outcomes.plansConsidered > 0 ? (
@@ -2497,6 +2515,8 @@ export function TodayView({ workspace, onNavigate }: WorkspaceViewProps) {
           loading={planningOutcomesLoading}
           error={planningOutcomesError}
           onRetry={() => void loadPlanningOutcomes()}
+          onReviewTargets={plan === null ? () => targetMinutesRef.current?.focus() : null}
+          reviewTargetsDisabled={commandInProgress}
         />
       ) : null}
 

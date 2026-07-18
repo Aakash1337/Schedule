@@ -303,6 +303,10 @@ guidance, prompts, or automatic adaptation. It uses scheduled rather than stopwa
 top-level aggregate may span versions; the exact observational groups make that mixture visible but
 do not rank versions, establish causality, or claim that the planner improved an outcome.
 
+When qualifying outcomes include deferred workload and Today has no current plan, **Review today's
+targets** moves focus to the existing editable time and task targets. It does not prefill, change,
+save, or submit either target, and it does not generate or regenerate a plan.
+
 ## Duration-calibration boundary
 
 Routine-duration calibration is a read-only interpretation of activity history, not another planner
