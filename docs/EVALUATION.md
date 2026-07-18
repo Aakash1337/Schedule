@@ -64,7 +64,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 128 test files and 2,170 runtime test cases. Three
+The package and script runners currently execute 129 test files and 2,196 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -77,7 +77,7 @@ an independent product feature.
 | Critical implemented features with CI-registered integration or drills |      41 / 41 |
 | Partial features with an explicit limitation                           |        4 / 4 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          338 |
+| CI-registered evidence items                                           |          339 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -88,7 +88,7 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |      59.9% |   71.54% |    67.85% |  60.4% |
+| Whole repository, measured |     60.01% |   71.64% |    67.98% | 60.51% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     94.97% |    91.6% |    93.47% | 95.98% |
 | Domain, required           |        91% |      82% |       92% |    93% |
@@ -101,8 +101,8 @@ quality levels.
 | Web, measured              |     86.03% |   79.27% |    84.23% | 86.88% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 12,716 of 21,228 statements, 9,431 of 13,182 branches,
-2,727 of 4,019 functions, and 12,009 of 19,880 lines.
+The whole-repository totals are 12,780 of 21,293 statements, 9,484 of 13,237 branches,
+2,744 of 4,036 functions, and 12,063 of 19,934 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -567,8 +567,9 @@ The audit deliberately leaves these visible instead of turning them into false g
   fatal classifications, graceful in-flight shutdown, sibling-service supervision, and real
   loopback live/ready HTTP evidence without private identifiers. Delivered tombstone cleanup remains
   disabled until Schedule exposes an authoritative replay retention watermark. It still has no
-  concrete external provider/account binding, provider reconciliation, external provider bootstrap,
-  live phone verification, or dead-letter redrive control;
+  concrete external provider/account binding, a live authenticated provider client,
+  provider-specific conclusive reconciliation, external provider bootstrap, live phone verification,
+  or dead-letter redrive control;
 - worker observability has unit and disposable-PostgreSQL evidence for loopback-only binding,
   liveness/readiness separation, fixed-cardinality Prometheus text, live outbox/reminder queue
   aggregates, materialization/outbox instrumentation, private-data exclusion, database-failure

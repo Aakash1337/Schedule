@@ -17,9 +17,10 @@ reminder process. It consumes the existing `schedule:delivery` claim/receipt API
 provider, destination, recipient, conversation, or account data to Schedule.
 
 This is not yet a running WhatsApp transport. The repository now provides a supervised,
-provider-neutral polling boundary, but the concrete Hermes send API, human/account binding,
-provider reconciliation contract, and external process bootstrap still depend on the Hermes
-installation and must be supplied before real delivery can be enabled.
+provider-neutral polling boundary and a dormant `HermesWhatsAppTransport` bridge, but an actual
+Hermes client, human/account binding, provider-specific conclusive reconciliation, and external
+process bootstrap still depend on the operator's Hermes installation and must be supplied before
+real delivery can be enabled.
 
 ### Components
 
@@ -37,6 +38,12 @@ installation and must be supplied before real delivery can be enabled.
 - `ReminderTransport`, the port a concrete Hermes integration must implement. Repeated delivery with
   the same dedupe key must be provider-idempotent or conclusively reconciled. An implementation that
   can only blind-resend ambiguous submissions is not compatible.
+- `HermesWhatsAppTransport`, an inert adapter-side implementation of that port. It asks an injected
+  `HermesDeliveryClient` to reconcile the Schedule `dedupeKey` before every submission, sends only
+  after a conclusive `not_found`, maps exact accepted/retryable/permanent results to fixed
+  Schedule-owned codes, and turns any ambiguous, extended, malformed, or thrown client result into
+  one fixed redacted error. Importing or constructing the class does not start polling or connect to
+  Hermes.
 - `DeliveryDedupeStore`, the shared persistence port. Multiple adapter replicas must share one
   implementation. Reservations bind the stable command hash and fence updates with an opaque token;
   a mismatched payload fails permanently rather than reusing a dedupe identity for different text.
@@ -55,6 +62,32 @@ installation and must be supplied before real delivery can be enabled.
   process does not begin polling until health is listening. Shutdown prevents another claim, waits
   for the current runner cycle, and then closes health; it does not invent a receipt or force-release
   an ambiguous reservation.
+
+### Dormant Hermes client bridge
+
+`HermesDeliveryClient` is the narrow operator-side port still requiring a real implementation. Its
+`reconcile(dedupeKey, signal)` result may be `accepted`, conclusively `not_found`, or `ambiguous`.
+Only conclusive absence allows `send({ dedupeKey, message }, signal)`. A send may be known accepted,
+known retryable failure, known permanent failure, or ambiguous. Accepted means the configured
+Hermes/provider boundary accepted or conclusively reconciled the stable key; it does not claim a
+phone displayed or read the message.
+
+The bridge sends only the stable Schedule delivery identity under `dedupeKey` and a bounded display
+message. The current gateway uses the delivery UUID as that dedupe identity. The bridge strips line,
+C0/C1, and bidirectional display controls from the untrusted reminder title and never passes the
+Schedule claim token, credential, separate intent field, lease, provider destination, or account
+binding to the client. It never forwards a provider failure code or diagnostic into Schedule: known
+failures become only `hermes.retryable_failure` or `hermes.permanent_failure`. A missing or
+control-only title becomes `Schedule reminder`. The actual client owns its configured
+operator-approved destination outside Schedule.
+
+Every client result has an exact key set. Unknown fields, contradictory data, invalid retry bounds,
+an explicit ambiguous result, an abort, or any thrown raw provider error becomes
+`HermesDeliveryAmbiguousError` with a fixed message and no cause. The runner therefore preserves its
+durable reservation and records no Schedule failure receipt. On a later claim, the bridge reconciles
+the same dedupe key again before considering a send. A real client's `not_found` result must account
+for provider consistency and be strong enough that a resend cannot duplicate an already accepted
+message.
 
 ### Supervised runtime boundary
 
@@ -151,7 +184,8 @@ payloads, or raw exceptions.
 
 Before enabling a real process, provide and verify:
 
-1. the exact Hermes/WhatsApp send and reconciliation contract;
+1. an authenticated `HermesDeliveryClient` implementation whose send is idempotent by dedupe key and
+   whose `not_found` reconciliation is conclusive across the provider's consistency window;
 2. an explicit human/account binding lifecycle;
 3. provider authentication, secret rotation, and circuit breaking;
 4. an external process bootstrap and explicit operator control source for the fail-safe `enabled`
@@ -164,11 +198,15 @@ gateway remains authoritative for any future conversational mutation.
 
 ### Verification
 
-The package's normal tests cover successful ordering, empty claims, delivered replay without a
-second send, lease-budget refusal, reservation contention, payload conflict, known failure release,
-ambiguous-send preservation, malformed transport results, exact HTTP request contracts, strict
-streaming response limits and hard timeout, outbound receipt validation, URL safety, and fixed HTTP
-failure classification. They also cover fail-safe default disablement, per-claim control checks,
+The package's normal tests cover Hermes-client reconciliation before send, accepted replay without a
+second submission, minimal sanitized message projection, exact result schemas, bounded known-failure
+mapping, ambiguous and raw-error redaction, later reconciliation after an ambiguous submission, and
+preservation of the runner reservation and Schedule attempt. They also cover successful ordering,
+empty claims, delivered replay without a second send, lease-budget refusal, reservation contention,
+payload conflict, known failure release, ambiguous-send preservation, malformed transport results,
+exact HTTP request contracts, strict streaming response limits and hard timeout, outbound receipt
+validation, URL safety, and fixed HTTP failure classification. They cover fail-safe default
+disablement, per-claim control checks,
 single-flight polling, non-overlap, bounded jitter and failure budgets, fatal error sanitization,
 invalid injected-hook handling, graceful in-flight shutdown, runtime sibling supervision, and the
 real loopback live/ready HTTP surface. The HTTP tests use a real ephemeral loopback server and no

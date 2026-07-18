@@ -464,4 +464,4 @@ provider remains required.
 - Automatic duration-insight application and historical insight-comparison controls
 - Natural-language routine creation, tags/dates/duration, task breakdown, multi-command capture,
   model-driven plan application, and hosted advisor controls
-- Collaboration, sync, automatic reminder execution, Hermes/WhatsApp transport, and cloud deployment
+- Collaboration, sync, automatic reminder execution, live Hermes/WhatsApp delivery, and cloud deployment
