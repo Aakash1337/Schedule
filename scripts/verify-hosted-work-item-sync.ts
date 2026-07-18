@@ -982,6 +982,52 @@ try {
   `;
   assert.equal(changeGuard?.enabled, "O");
   assert.ok(changeGuard, "change guard and database clock must be readable");
+  let markRetentionLocksReady!: () => void;
+  let releaseRetentionLocks!: () => void;
+  const retentionLocksReady = new Promise<void>((resolve) => (markRetentionLocksReady = resolve));
+  const retentionLocksRelease = new Promise<void>((resolve) => (releaseRetentionLocks = resolve));
+  const retentionLockTransaction = blocker.sql.begin(async (transaction) => {
+    const locked = await transaction<{ workspaceId: string }[]>`
+      select state.workspace_id::text as "workspaceId"
+      from hosted_work_item_sync_states as state
+      where exists (
+        select 1 from hosted_work_item_sync_changes as change
+        where change.workspace_id = state.workspace_id
+          and change.cursor = state.minimum_cursor + 1
+          and change.recorded_at < ${new Date(
+            new Date(changeGuard.now).getTime() - 30 * 86_400_000,
+          ).toISOString()}::timestamptz
+      )
+      for update
+    `;
+    assert.ok(locked.some((row) => row.workspaceId === retentionWorkspace));
+    markRetentionLocksReady();
+    await retentionLocksRelease;
+  });
+  try {
+    await Promise.race([
+      retentionLocksReady,
+      retentionLockTransaction.then(() => {
+        throw new Error("Retention lock transaction exited before reaching its barrier.");
+      }),
+    ]);
+    const contended = await purgeHostedWorkItemSyncChanges(connection, {
+      now: new Date(changeGuard.now),
+      minimumRetentionMs: 30 * 86_400_000,
+      batchSize: 100,
+    });
+    assert.deepEqual(
+      {
+        workspaceId: contended.workspaceId,
+        deletedChanges: contended.deletedChanges,
+        contended: contended.contended,
+      },
+      { workspaceId: null, deletedChanges: 0, contended: true },
+    );
+  } finally {
+    releaseRetentionLocks();
+    await retentionLockTransaction;
+  }
   let purge: Awaited<ReturnType<typeof purgeHostedWorkItemSyncChanges>> | undefined;
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const result = await purgeHostedWorkItemSyncChanges(connection, {
@@ -1092,5 +1138,5 @@ if (cleanupFailures.length > 0) {
   );
 }
 process.stdout.write(
-  `Hosted work-item sync verification passed populated upgrade, AFTER-trigger conflicts and guards, generic and direct-activity mutations, concurrent cursors, rollback, tombstones, bootstrap/delta reconstruction, frozen paging, retention resync, corruption fail-closed, tenant isolation, and cascade cleanup in ${databaseName}\n`,
+  `Hosted work-item sync verification passed populated upgrade, AFTER-trigger conflicts and guards, generic and direct-activity mutations, concurrent cursors, rollback, tombstones, bootstrap/delta reconstruction, frozen paging, retention contention and resync, corruption fail-closed, tenant isolation, and cascade cleanup in ${databaseName}\n`,
 );

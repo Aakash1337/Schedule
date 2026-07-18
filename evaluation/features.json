@@ -3722,7 +3722,7 @@
         "Protocol v1 is a workspace-authorized pull boundary for work items only. The hosted browser client applies it online in memory; there is no durable/offline store, background poller, upload or merge path, conflict resolver, push channel, or cross-entity synchronization.",
         "Bootstrap is a staged keyset traversal plus catch-up delta, not a server-held or byte-stable snapshot session. Consumers must atomically stage each page with its continuation and publish only after the pinned delta completes.",
         "Global capture defaults disabled, so a never-enrolled local database accumulates no full-upsert journal. Hosted startup performs a one-way database enrollment; capture and bounded retention remain active requirements if hosted mode is later disabled.",
-        "Bounded operator retention intentionally expires old cursors with 410 and requires a fresh bootstrap; the same recovery covers a valid signed position ahead of the database head after point-in-time restore. The existing offset work-item snapshot remains an independent non-sync page."
+        "Bounded opt-in worker or operator retention intentionally expires old cursors with 410 and requires a fresh bootstrap; the same recovery covers a valid signed position ahead of the database head after point-in-time restore. The existing offset work-item snapshot remains an independent non-sync page."
       ],
       "evidence": [
         {
@@ -3749,6 +3749,7 @@
             "enables capture once under a row lock and is idempotent",
             "fails closed when the singleton is missing",
             "advances the floor before deleting one bounded contiguous expired prefix",
+            "distinguishes cleanup lock contention from an empty backlog (%s)",
             "defines transactional state and immutable typed changes without redundant indexes",
             "migrates cursor capture, guarded retention, and zero-history backfill"
           ]
@@ -3824,8 +3825,31 @@
           "anchors": [
             "parses conservative defaults, inclusive bounds, and split or inline options",
             "purges bounded batches to empty and reports aggregate counts only",
+            "reports lock contention as an incomplete bounded run",
             "closes on failure and rejects malformed purge state",
             "rejects a positive deletion with a partial cursor identity"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/hosted-sync-cleanup.test.ts",
+          "command": "unit",
+          "anchors": [
+            "does no work while disabled and records an enabled cycle interrupted before it starts",
+            "uses one clock instant, drains sequential batches, and emits aggregate-only evidence",
+            "reports a bounded backlog when every configured batch deletes changes",
+            "distinguishes another transaction's lock from an empty backlog",
+            "redacts database failures and returns them for retry telemetry",
+            "waits for the configured interval and retries a failed cycle",
+            "finishes an in-flight batch and stops before starting another during shutdown"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/index.test.ts",
+          "command": "unit",
+          "anchors": [
+            "starts hosted sync cleanup with a bounded dedicated database only when enabled"
           ]
         },
         {
@@ -3833,7 +3857,7 @@
           "file": "scripts/verify-hosted-work-item-sync.ts",
           "command": "hosted-work-item-sync",
           "anchors": [
-            "Hosted work-item sync verification passed populated upgrade, AFTER-trigger conflicts and guards, generic and direct-activity mutations, concurrent cursors, rollback, tombstones, bootstrap/delta reconstruction, frozen paging, retention resync, corruption fail-closed, tenant isolation, and cascade cleanup"
+            "Hosted work-item sync verification passed populated upgrade, AFTER-trigger conflicts and guards, generic and direct-activity mutations, concurrent cursors, rollback, tombstones, bootstrap/delta reconstruction, frozen paging, retention contention and resync, corruption fail-closed, tenant isolation, and cascade cleanup"
           ]
         }
       ]

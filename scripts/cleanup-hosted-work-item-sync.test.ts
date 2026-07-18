@@ -84,6 +84,26 @@ describe("hosted work-item sync cleanup", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("reports lock contention as an incomplete bounded run", async () => {
+    const close = vi.fn(async () => undefined);
+    await expect(
+      cleanupHostedWorkItemSync(
+        { retentionDays: 90, batchSize: 250, maxBatches: 100 },
+        {
+          connection: { close },
+          now: () => new Date(),
+          purgeBatch: async () => ({
+            workspaceId: null,
+            minimumCursor: null,
+            deletedChanges: 0,
+            contended: true,
+          }),
+        },
+      ),
+    ).resolves.toMatchObject({ batches: 0, deletedChanges: 0, limitReached: true });
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("rejects a positive deletion with a partial cursor identity", async () => {
     const close = vi.fn(async () => undefined);
     await expect(

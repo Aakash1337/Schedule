@@ -62,11 +62,14 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:backup-restore`             | Verify archive/schema/content/sequence fidelity                             | Yes                             |
 | `pnpm verify:recovery-state-machine`     | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
 | `pnpm verify:web-e2e`                    | Exercise the built browser, API, migrations, and PostgreSQL planning loop   | Own disposable Compose database |
-| `pnpm eval:full`                         | Run every evaluation layer above, including Chromium                        | Yes, with the recovery sentinel |
+| `pnpm eval:full`                         | Run feature/coverage, local integration, recovery, and Chromium web gates   | Yes, with the recovery sentinel |
 
 The destructive recovery command requires the explicit environment guards documented in
 [`OPERATIONS.md`](./OPERATIONS.md). CI supplies those guards only inside its disposable Compose
 project.
+
+`eval:full` does not run provider/account-dependent, hosted staging, hosted-browser, OCI-runtime, or
+local-model smoke commands; run those explicit gates when their prerequisites are available.
 
 ### External hosted health probe
 
@@ -94,7 +97,7 @@ provider-monitoring, backup-restore, or broad-sync claim.
 
 ## Current scorecard
 
-The package and script runners currently execute 135 test files and 2,350 runtime test cases. Three
+The package and script runners currently execute 136 test files and 2,363 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -107,7 +110,7 @@ an independent product feature.
 | Critical implemented features with CI-registered integration or drills |      42 / 42 |
 | Partial features with an explicit limitation                           |        4 / 4 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          352 |
+| CI-registered evidence items                                           |          354 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -118,23 +121,21 @@ quality levels. Scope rows aggregate every file matched by the corresponding rec
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.46% |   72.24% |    68.01% | 59.96% |
+| Whole repository, measured |      59.6% |   72.47% |    68.06% |  60.1% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     95.12% |   91.89% |    93.49% | 96.13% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     90.05% |   84.67% |    98.94% | 90.92% |
+| Application, measured      |     89.99% |    84.6% |    98.94% | 90.88% |
 | Application, required      |        83% |      76% |       98% |    83% |
 | API, measured              |     90.54% |   87.68% |    84.09% | 92.05% |
 | API, required              |        73% |      69% |       57% |    74% |
-| Worker, measured           |      92.1% |   87.99% |     93.6% | 94.77% |
+| Worker, measured           |     91.59% |   88.37% |     90.9% | 94.31% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     84.31% |   76.86% |    82.76% | 87.15% |
+| Web, measured              |     84.53% |   77.24% |    83.02% | 87.29% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 13,424 of 22,573 statements, 10,235 of 14,167 branches,
-2,869 of 4,218 functions, and 12,671 of 21,131 lines. Two of three full runs produced these exact
-totals; the other was lower by two statement hits, two branch hits, and one line hit, with identical
-denominators and function totals.
+The latest whole-repository run covered 13,579 of 22,781 statements, 10,371 of 14,310 branches,
+2,898 of 4,258 functions, and 12,816 of 21,323 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -644,10 +645,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   disabled capability/state. Its disposable PostgreSQL/Fastify verifier covers a populated upgrade,
   cursor-zero pre-enrollment mutation, cursor-one capture after enrollment, trigger capture through
   ordinary and direct plan-activity writers, concurrent gap-free workspace cursors, rollback, no-op
-  suppression, staged bootstrap plus frozen delta reconstruction, retention expiry/fresh bootstrap,
-  tenant isolation, and workspace-cascade cleanup. Cleanup-command units independently cover bounded
-  parsing, aggregate-only output, connection closure, and malformed purge state. This evidence does
-  not implement a durable/offline cache, uploads, conflicts, push, or cross-entity synchronization.
+  suppression, staged bootstrap plus frozen delta reconstruction, cleanup-lock contention, retention
+  expiry/fresh bootstrap, tenant isolation, and workspace-cascade cleanup. Cleanup-command units independently cover bounded
+  parsing, aggregate-only output, connection closure, and malformed purge state. Worker units cover
+  disabled-by-default scheduling, fixed-time bounded cycles, aggregate-only failure evidence,
+  dedicated-pool closure, retryable failures, and graceful shutdown. This evidence does not implement
+  a durable/offline cache, uploads, conflicts, push, or cross-entity synchronization.
   The hosted browser now has API-client, reconciliation-unit, component, and built-
   Chromium evidence for full staged bootstrap, pinned paged deltas, atomic publication, local 20-row
   display pages, stable ordering, upsert/delete application, stale-workspace suppression, exact

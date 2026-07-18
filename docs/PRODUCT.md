@@ -758,7 +758,9 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   restarts that share the hosted secret; bounded retention expiry returns `410` and requires a fresh
   bootstrap. Global change capture defaults off, so a never-enrolled local database writes no
   full-upsert journal; hosted startup enrolls its database once and retention remains required
-  thereafter. The hosted browser consumes this pull boundary through atomic in-memory bootstrap and
+  thereafter. An opt-in worker runs bounded, observable retention cycles on a dedicated database
+  connection, while the operator command remains available. The hosted browser consumes this pull
+  boundary through atomic in-memory bootstrap and
   mutation-triggered delta reconciliation. It is not a durable/offline client, background poller,
   upload path, conflict resolver, push channel, or cross-entity synchronization.
 - Implemented narrow hosted UI: a same-origin capture shell can sign in, select one active

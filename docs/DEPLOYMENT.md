@@ -65,6 +65,7 @@ NODE_ENV=production
 LOG_LEVEL=info
 DATABASE_URL=${{Postgres.DATABASE_URL}}
 NOTIFICATION_MATERIALIZATION_MODE=disabled
+HOSTED_WORK_ITEM_SYNC_CLEANUP_MODE=disabled
 WEBHOOK_DELIVERY_MODE=disabled
 WORKER_OBSERVABILITY_MODE=disabled
 WORKER_DEPLOYMENT_HEALTH_MODE=railway
@@ -121,7 +122,8 @@ two services racing the same ledger.
 
 Migration `0041` leaves global work-item capture disabled. The first OIDC API startup performs the
 database's one-way enrollment before returning the app to its listener; failure stops startup. Treat
-that first hosted start as irreversible for the database and schedule bounded retention before it.
+that first hosted start as irreversible for the database and either enable bounded worker retention
+or schedule the operator command before it.
 
 For the first release, deploy the API and wait for `/health/ready` before deploying the worker.
 Railway promotes the worker only after its readiness succeeds, but the new process may claim work
@@ -144,10 +146,11 @@ singleton, state, change log, migration ledger, row fence, enum, and initializer
 functions and triggers; restoring only current work items loses the cursor/change-history boundary and
 is not a valid protocol recovery.
 
-Schedule does not prune sync history automatically. Run the bounded `pnpm hosted-sync:cleanup`
-procedure from [HOSTED_SYNC.md](./HOSTED_SYNC.md) through an explicitly scheduled operator job, choose
-a retention window longer than the supported client-disconnection interval, and alert on repeated
-`410 hosted_sync.cursor_expired` responses or sustained change-log growth.
+Automatic sync retention is available but disabled by default. Either enable the worker settings in
+[HOSTED_SYNC.md](./HOSTED_SYNC.md) or run its bounded `pnpm hosted-sync:cleanup` procedure through an
+operator job. Choose a retention window longer than the supported client-disconnection interval and
+alert on stale cleanup success, cleanup failures or cap exhaustion, repeated
+`410 hosted_sync.cursor_expired` responses, and sustained change-log growth.
 
 Rollback application code by promoting the previous API and worker images together. Do not reverse
 schema migrations in place during an incident. Expand/contract migrations should keep the previous

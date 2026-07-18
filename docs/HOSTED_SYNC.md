@@ -121,24 +121,43 @@ functions, non-internal triggers, constraints, and indexes.
 
 ## Retention and fresh bootstrap
 
-Change history is pruned only by the explicit operator command; the API and worker do not run it
-automatically:
+Change history can be pruned by the worker or by an explicit operator command. Automatic cleanup is
+off by default. Enable it on the worker with:
+
+```dotenv
+HOSTED_WORK_ITEM_SYNC_CLEANUP_MODE=enabled
+HOSTED_WORK_ITEM_SYNC_CLEANUP_INTERVAL_MS=3600000
+HOSTED_WORK_ITEM_SYNC_CLEANUP_RETENTION_DAYS=90
+HOSTED_WORK_ITEM_SYNC_CLEANUP_BATCH_SIZE=250
+HOSTED_WORK_ITEM_SYNC_CLEANUP_MAX_BATCHES=20
+```
+
+Each non-overlapping cycle uses one clock instant and a dedicated one-connection pool with a
+two-second per-statement PostgreSQL timeout. A failed cycle emits aggregate-only telemetry and retries
+after the configured interval; shutdown finishes its bounded in-flight statement and starts no new
+batch. Cleanup is not part of worker readiness.
+
+The manual fallback remains:
 
 ```powershell
 pnpm hosted-sync:cleanup -- --retention-days 90 --batch-size 250 --max-batches 100
 ```
 
-The default retention is 90 days, bounded from 30 through 3,650 days. A batch deletes from 1 through
-1,000 changes (default 250), and one invocation runs from 1 through 1,000 batches (default 100). Each
-database transaction removes only one contiguous expired prefix for one workspace and advances that
-workspace's retained floor atomically. Concurrent cleanup workers skip locked workspace state.
+The default retention is 90 days, bounded from 30 through 3,650 days. Automatic cleanup runs every
+one minute through one hour (default one hour), deletes 1–500 changes per batch (default 250), and
+runs 1–20 batches per cycle (default 20). The manual command accepts 1–1,000 changes per batch and
+1–1,000 batches per invocation (defaults 250 and 100) for supervised backlog recovery. Each database
+transaction removes only one contiguous expired prefix for one workspace and advances that
+workspace's retained floor atomically. Concurrent cleanup workers skip locked workspace state and
+report transaction contention rather than claiming the backlog is empty.
 
 The command prints only aggregate `batches`, `deletedChanges`, `workspacesTouched`, and
-`limitReached`. A true `limitReached` means the bounded run exhausted its batch allowance; run it
-again or increase the allowed batch count. Operators should choose a retention window longer than
-the supported client-disconnection interval, schedule the command explicitly, and monitor database
-growth plus `410` rates. Any cursor behind the advanced floor is intentionally unrecoverable; the
-client discards its partial state and starts a fresh bootstrap.
+`limitReached`. A true `limitReached` means the bounded run exhausted its batch allowance; let the
+next cycle continue, run the command again, or intentionally increase the allowance. Operators
+should choose a retention window longer than the supported client-disconnection interval and
+monitor cleanup freshness, failures, cap exhaustion, database growth, and `410` rates. Any cursor
+behind the advanced floor is intentionally unrecoverable; the client discards its partial state and
+starts a fresh bootstrap.
 
 ## Deliberate limits
 

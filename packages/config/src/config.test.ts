@@ -426,6 +426,11 @@ describe("runtime configuration", () => {
     expect(config.NOTIFICATION_MATERIALIZATION_MODE).toBe("disabled");
     expect(config.NOTIFICATION_MATERIALIZATION_INTERVAL_MS).toBe(60_000);
     expect(config.NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS).toBe(300_000);
+    expect(config.HOSTED_WORK_ITEM_SYNC_CLEANUP_MODE).toBe("disabled");
+    expect(config.HOSTED_WORK_ITEM_SYNC_CLEANUP_INTERVAL_MS).toBe(3_600_000);
+    expect(config.HOSTED_WORK_ITEM_SYNC_CLEANUP_RETENTION_DAYS).toBe(90);
+    expect(config.HOSTED_WORK_ITEM_SYNC_CLEANUP_BATCH_SIZE).toBe(250);
+    expect(config.HOSTED_WORK_ITEM_SYNC_CLEANUP_MAX_BATCHES).toBe(20);
     expect(config.WEBHOOK_DELIVERY_MODE).toBe("disabled");
     expect(config.WEBHOOK_MASTER_KEYS).toEqual([]);
     expect(config.WEBHOOK_MASTER_KEYS_BY_ID.size).toBe(0);
@@ -491,6 +496,30 @@ describe("runtime configuration", () => {
     expect(() =>
       loadWorkerConfig({ NOTIFICATION_MATERIALIZATION_LOOKAHEAD_MS: "3600001" }),
     ).toThrow();
+  });
+
+  it("coerces bounded hosted sync cleanup controls", () => {
+    const config = loadWorkerConfig({
+      HOSTED_WORK_ITEM_SYNC_CLEANUP_MODE: "enabled",
+      HOSTED_WORK_ITEM_SYNC_CLEANUP_INTERVAL_MS: "60000",
+      HOSTED_WORK_ITEM_SYNC_CLEANUP_RETENTION_DAYS: "30",
+      HOSTED_WORK_ITEM_SYNC_CLEANUP_BATCH_SIZE: "500",
+      HOSTED_WORK_ITEM_SYNC_CLEANUP_MAX_BATCHES: "1",
+    });
+
+    expect(config.HOSTED_WORK_ITEM_SYNC_CLEANUP_MODE).toBe("enabled");
+    expect(config.HOSTED_WORK_ITEM_SYNC_CLEANUP_INTERVAL_MS).toBe(60_000);
+    expect(config.HOSTED_WORK_ITEM_SYNC_CLEANUP_RETENTION_DAYS).toBe(30);
+    expect(config.HOSTED_WORK_ITEM_SYNC_CLEANUP_BATCH_SIZE).toBe(500);
+    expect(config.HOSTED_WORK_ITEM_SYNC_CLEANUP_MAX_BATCHES).toBe(1);
+    expect(() =>
+      loadWorkerConfig({ HOSTED_WORK_ITEM_SYNC_CLEANUP_INTERVAL_MS: "59999" }),
+    ).toThrow();
+    expect(() =>
+      loadWorkerConfig({ HOSTED_WORK_ITEM_SYNC_CLEANUP_RETENTION_DAYS: "29" }),
+    ).toThrow();
+    expect(() => loadWorkerConfig({ HOSTED_WORK_ITEM_SYNC_CLEANUP_BATCH_SIZE: "501" })).toThrow();
+    expect(() => loadWorkerConfig({ HOSTED_WORK_ITEM_SYNC_CLEANUP_MAX_BATCHES: "21" })).toThrow();
   });
 
   it("parses a canonical keyring and requires an active configured key before enabling delivery", () => {

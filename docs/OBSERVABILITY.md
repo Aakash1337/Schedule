@@ -105,6 +105,23 @@ An unconfigured workspace is an expected skip, not a failed cycle. A success tim
 when workspace discovery succeeds, the local workspace cap is respected, no unexpected workspace
 fails, and shutdown does not interrupt the cycle.
 
+### Hosted work-item sync retention
+
+- `schedule_hosted_sync_cleanup_cycles_total`
+- `schedule_hosted_sync_cleanup_failures_total`
+- `schedule_hosted_sync_cleanup_contention_total`
+- `schedule_hosted_sync_cleanup_batches_total`
+- `schedule_hosted_sync_cleanup_deleted_changes_total`
+- `schedule_hosted_sync_cleanup_limit_reached_total`
+- `schedule_hosted_sync_cleanup_aborted_total`
+- `schedule_hosted_sync_cleanup_last_completed_timestamp_seconds`
+- `schedule_hosted_sync_cleanup_last_successful_timestamp_seconds`
+
+The success timestamp advances only when a cycle finishes without a database/result failure, another
+database transaction holding every eligible row, shutdown interruption, or exhausted batch cap.
+Metrics and logs contain aggregate counts only; they do not expose workspace IDs, cursors, or database
+errors.
+
 ### Provider-neutral reminder delivery
 
 - `schedule_notification_intents_ready`
@@ -142,6 +159,9 @@ These are starting operational thresholds, not hard-coded product policy:
    renewal failures, or shutdown deadlines.
 6. When an adapter is expected to poll, warn when ready notification intents or delivery commands
    remain older than the adapter's declared poll and retry budget.
+7. When hosted sync cleanup is enabled, warn on any failure, sustained contention, or cap exhaustion
+   and when the last success is older than the greater of three configured intervals or three hours.
+   Suppress the freshness alert until the first cycle has had time to finish.
 
 Alert on rates and sustained age, not on ordinary nonzero work queues. Expected unconfigured
 workspace skips are diagnostic only.

@@ -378,6 +378,8 @@ export interface PurgeHostedWorkItemSyncChangesResult {
   readonly workspaceId: string | null;
   readonly deletedChanges: number;
   readonly minimumCursor: string | null;
+  /** True when eligible state existed but another transaction held every candidate lock. */
+  readonly contended: boolean;
 }
 
 function boundedInteger(value: number, minimum: number, maximum: number, name: string): void {
@@ -425,7 +427,28 @@ export async function purgeHostedWorkItemSyncChanges(
       limit 1
     `;
     if (state === undefined) {
-      return { cutoff, workspaceId: null, deletedChanges: 0, minimumCursor: null };
+      const [eligibility] = await transaction<{ eligible: boolean }[]>`
+        select exists (
+          select 1
+          from hosted_work_item_sync_states as state
+          where exists (
+            select 1 from hosted_work_item_sync_changes as change
+            where change.workspace_id = state.workspace_id
+              and change.cursor = state.minimum_cursor + 1
+              and change.recorded_at < ${cutoff.toISOString()}::timestamptz
+          )
+        ) as eligible
+      `;
+      if (eligibility === undefined || typeof eligibility.eligible !== "boolean") {
+        throw syncError("corrupt");
+      }
+      return {
+        cutoff,
+        workspaceId: null,
+        deletedChanges: 0,
+        minimumCursor: null,
+        contended: eligibility.eligible,
+      };
     }
     const head = parseStoredCursor(state.headCursor);
     const minimum = parseStoredCursor(state.minimumCursor);
@@ -475,6 +498,7 @@ export async function purgeHostedWorkItemSyncChanges(
       workspaceId: state.workspaceId,
       deletedChanges: deleted.length,
       minimumCursor: updated[0]!.minimumCursor,
+      contended: false,
     };
   });
 }
