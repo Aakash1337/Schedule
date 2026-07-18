@@ -98,6 +98,7 @@
           "command": "unit",
           "anchors": [
             "retains a low but nonzero exploration rate after the cadence target is met",
+            "counts recent deferrals with skips and dismissals in bounded skip fatigue",
             "makes a third weekly completion extremely unlikely without hard exclusion"
           ]
         }

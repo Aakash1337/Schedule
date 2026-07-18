@@ -64,7 +64,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 129 test files and 2,219 runtime test cases. Three
+The package and script runners currently execute 129 test files and 2,229 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -88,9 +88,9 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     60.21% |   72.07% |    68.76% | 60.71% |
+| Whole repository, measured |     60.21% |    72.2% |     68.7% | 60.72% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |        95% |   91.67% |    93.49% | 96.01% |
+| Domain, measured           |     95.12% |   91.89% |    93.49% | 96.13% |
 | Domain, required           |        91% |      82% |       92% |    93% |
 | Application, measured      |     89.71% |   83.87% |    98.89% | 90.56% |
 | Application, required      |        83% |      76% |       98% |    83% |
@@ -161,7 +161,7 @@ interface behavior. Domain tests cover tenant-scoped edge construction, self-ref
 validation, mixed-case equality for persisted PostgreSQL UUIDs without folding arbitrary domain IDs,
 done-only satisfaction across every direct prerequisite, canonical ordering and snapshot hashing,
 prerequisite projections outside the candidate list, malformed and duplicate input, and dependency-
-aware replanning with explicit nonterminal anchors. Planner v7 reports
+aware replanning with explicit nonterminal anchors. Planner v8 reports
 `work_item_dependency_unsatisfied` without changing work-item status or deadline scoring.
 
 Application tests cover graph-lock call ordering, same-tenant endpoint validation, exact duplicate-add

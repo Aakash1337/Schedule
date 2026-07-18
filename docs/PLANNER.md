@@ -1,4 +1,4 @@
-# Deterministic Planner v7
+# Deterministic Planner v8
 
 This document describes the first implemented planner contract. The broader product intent remains in [PRODUCT.md](./PRODUCT.md).
 
@@ -40,7 +40,7 @@ The planner is implemented as a pure domain operation in `packages/domain/src/da
 - `minimumSpacingDays: 1` means one full local date must remain between completions. A Monday completion is therefore ineligible on Tuesday and eligible again on Wednesday.
 - `pausedUntil` is inclusive: a routine becomes eligible on the following local date.
 - Reaching a target reduces selection weight. Reaching a maximum is a hard exclusion.
-- Suggestions, skips, and dismissals do not count as cadence completions.
+- Suggestions, skips, deferrals, and dismissals do not count as cadence completions.
 - A completion reversal removes its referenced completion from derived cadence history without deleting either event.
 - **Not today** ends on its request local date. **Not this week** ends on the routine cadence's
   `weekStartsOn` boundary. Neither uses the server's local date or modifies cadence history.
@@ -49,7 +49,7 @@ The planner is implemented as a pure domain operation in `packages/domain/src/da
 
 1. Canonically sort routines, opted-in work items, work-item dependency projections, activity events, the latest applicable routine-feedback event per routine, and bounded explicit routine selection preference events.
 2. Apply routine exclusions for temporary feedback, lifecycle, dates, weekdays, context, cadence maximum, spacing, consecutive-day prohibition, and minimum duration fit. Apply work-item exclusions when its planning duration is absent, its status is not `backlog`, `planned`, or `in_progress`, any direct prerequisite status is not `done`, or its full duration cannot fit a window. A due date never bypasses these exclusions.
-3. Score eligible routines with integer components for priority, cadence deficit, minimum urgency, neglect, preferred weekday, energy/context fit, preference, recent frequency, consecutive-day repetition, skip fatigue, and explicit selection preference. The selection preference uses the latest eight directional events after the latest reset inside the inclusive prior 90 local days, at 100 points per event and clamped to `[-400, 400]`. Score eligible one-time work from explicit priority plus deadline pressure. The default 14-day horizon gives future work a linearly increasing increment as its local due date approaches, gives work due today the `workItemDeadlineDueToday` increment, and gives overdue work a capped increment. A due date outside the horizon adds an explicit zero-pressure explanation. One-time work has no cadence, activity-history, or routine-preference score.
+3. Score eligible routines with integer components for priority, cadence deficit, minimum urgency, neglect, preferred weekday, energy/context fit, preference, recent frequency, consecutive-day repetition, skip fatigue, and explicit selection preference. Skip fatigue counts same-routine `skipped`, `deferred`, and `dismissed` activity on the request date or prior six local dates equally, caps the count at four, and does not change cadence completion evidence. The selection preference uses the latest eight directional events after the latest reset inside the inclusive prior 90 local days, at 100 points per event and clamped to `[-400, 400]`. Score eligible one-time work from explicit priority plus deadline pressure. The default 14-day horizon gives future work a linearly increasing increment as its local due date approaches, gives work due today the `workItemDeadlineDueToday` increment, and gives overdue work a capped increment. A due date outside the horizon adds an explicit zero-pressure explanation. One-time work has no cadence, activity-history, or routine-preference score.
 4. Convert the scores to integer selection weights with a nonzero ordinary exploration floor. For a
    routine at or beyond its cadence target, apply one integer division by the versioned repetition
    decay base for each completion at or beyond the target, stopping at a smaller nonzero post-target
@@ -84,7 +84,7 @@ remain independent reservations rather than planner candidates or automatic plac
 
 ## Determinism contract
 
-For the same canonical input snapshot, request revision, seed, algorithm version, configuration version, and PRNG version, the planner returns the same item selection and explanations regardless of input array order. Planner algorithm v7 owns the canonical dependency and routine-selection-preference projections plus bounded post-target repetition decay and their snapshot and hash semantics. Preference events are tenant/date filtered, ordered by routine then ingestion sequence and ID, reset-trimmed, and bounded before snapshotting. Expired, future, and reset-discarded preference history is hash-neutral. The `default-weights-v5` configuration owns the resulting visible score component, decay base, and nonzero post-target floor.
+For the same canonical input snapshot, request revision, seed, algorithm version, configuration version, and PRNG version, the planner returns the same item selection and explanations regardless of input array order. Planner algorithm v8 owns the canonical dependency and routine-selection-preference projections, bounded post-target repetition decay, and the skipped/deferred/dismissed fatigue classification plus their snapshot and hash semantics. Preference events are tenant/date filtered, ordered by routine then ingestion sequence and ID, reset-trimmed, and bounded before snapshotting. Expired, future, and reset-discarded preference history is hash-neutral. The unchanged `default-weights-v5` configuration owns the visible preference component, fatigue weight, decay base, and nonzero post-target floor.
 
 The generated plan ID and generation timestamp are supplied by the caller when strict byte-for-byte replay is required. The persisted input hash intentionally changes when any input fact changes, even if the final selected items remain the same.
 

@@ -40,7 +40,7 @@ import {
   type PlanningWorkItemDependency,
 } from "./work-item-dependency.js";
 
-export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v7";
+export const PLANNER_ALGORITHM_VERSION = "deterministic-planner-v8";
 export const PLANNER_CONFIG_VERSION = "default-weights-v5";
 export const PLANNER_PRNG_VERSION = "mulberry32-v1";
 const MAXIMUM_PLANNER_SCORE_COMPONENT = 1_000_000;
@@ -754,14 +754,17 @@ export function evaluateRoutineForPlan(
     routine.cadence.discourageConsecutiveDays && streak > 0
       ? streak * config.score.consecutiveDay
       : 0;
-  const recentSkips = events.filter((event) => {
-    if (event.routineId !== routine.id || !["skipped", "dismissed"].includes(event.type)) {
+  const recentFatigueSignals = events.filter((event) => {
+    if (
+      event.routineId !== routine.id ||
+      !["skipped", "deferred", "dismissed"].includes(event.type)
+    ) {
       return false;
     }
     const distance = daysBetweenLocalDates(event.localDate, request.date);
     return distance >= 0 && distance < 7;
   }).length;
-  scoreComponents.skipFatigue = Math.min(recentSkips, 4) * config.score.skipFatigue;
+  scoreComponents.skipFatigue = Math.min(recentFatigueSignals, 4) * config.score.skipFatigue;
   const selectionPreferenceScore = routineSelectionPreferenceScore(
     selectionPreferenceFeedback,
     request.workspaceId,
