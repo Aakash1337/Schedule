@@ -13,12 +13,15 @@ import {
   type HostedToday,
   type HostedTodayActivityState,
   type HostedTodayActivityType,
-  type HostedWorkItem,
   type HostedWorkItemPriority,
+  type HostedWorkItemSnapshot,
+  type HostedWorkItemStatus,
   type HostedWorkspace,
 } from "./hosted-api";
 
 const selectedWorkspaceKey = "schedule.hostedWorkspace";
+const workItemPageSize = 20;
+const workItemFetchLimit = workItemPageSize + 1;
 
 interface TodayActionIntent {
   readonly workspaceId: string;
@@ -47,26 +50,30 @@ function publicError(error: unknown): string {
     if (error.status === 401) return "Your session ended. Sign in again.";
     if (error.status === 403) return "Request verification expired. Reload and try again.";
     if (error.status === 404) return "Workspace access changed. Reload before capturing more work.";
-    if (error.status === 409) return "This item changed. Refresh the backlog and try again.";
+    if (error.status === 409) return "This item changed. Refresh the work items and try again.";
     if (error.status === 429) return "Too many requests. Wait a moment and try again.";
     if (error.status === 503) return "Schedule is temporarily unavailable.";
   }
   return "Schedule could not be reached.";
 }
 
-function titleCase(value: HostedTodayActivityState | HostedWorkItemPriority): string {
-  return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
+function titleCase(
+  value: HostedTodayActivityState | HostedWorkItemPriority | HostedWorkItemStatus,
+): string {
+  const label = value.replaceAll("_", " ");
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
 }
 
-function backlogMeta(item: HostedWorkItem): string | null {
+function workItemMeta(item: HostedWorkItemSnapshot): string {
   const parts = [
+    titleCase(item.status),
     ...(item.priority === "none" ? [] : [`${titleCase(item.priority)} priority`]),
     ...(item.dueOn === null ? [] : [`Due ${item.dueOn}`]),
     ...(item.planningDurationMinutes === null
       ? []
       : [`${formatMinutes(item.planningDurationMinutes)} planned`]),
   ];
-  return parts.length === 0 ? null : parts.join(" · ");
+  return parts.join(" · ");
 }
 
 function formatBasisPoints(value: number | null): string {
@@ -144,10 +151,11 @@ export function HostedApp() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<string | null>(null);
-  const [backlogItems, setBacklogItems] = useState<readonly HostedWorkItem[]>([]);
-  const [backlogLoading, setBacklogLoading] = useState(true);
-  const [backlogError, setBacklogError] = useState<string | null>(null);
-  const [backlogRefresh, setBacklogRefresh] = useState(0);
+  const [workItems, setWorkItems] = useState<readonly HostedWorkItemSnapshot[]>([]);
+  const [workItemOffset, setWorkItemOffset] = useState(0);
+  const [workItemsLoading, setWorkItemsLoading] = useState(true);
+  const [workItemsError, setWorkItemsError] = useState<string | null>(null);
+  const [workItemsRefresh, setWorkItemsRefresh] = useState(0);
   const [today, setToday] = useState<HostedToday | null>(null);
   const [todayLoading, setTodayLoading] = useState(true);
   const [todayError, setTodayError] = useState<string | null>(null);
@@ -250,19 +258,21 @@ export function HostedApp() {
 
   useEffect(() => {
     if (mode !== "ready" || selectedWorkspaceId === null) {
-      setBacklogItems([]);
-      setBacklogLoading(false);
-      setBacklogError(null);
+      setWorkItems([]);
+      setWorkItemsLoading(false);
+      setWorkItemsError(null);
       return;
     }
     let active = true;
-    setBacklogItems([]);
-    setBacklogLoading(true);
-    setBacklogError(null);
+    setWorkItemsLoading(true);
+    setWorkItemsError(null);
     void hostedApi
-      .listWorkItems(selectedWorkspaceId)
+      .listWorkItemSnapshot(selectedWorkspaceId, {
+        limit: workItemFetchLimit,
+        offset: workItemOffset,
+      })
       .then((page) => {
-        if (active) setBacklogItems(page.items);
+        if (active) setWorkItems(page.items);
       })
       .catch((listError: unknown) => {
         if (!active) return;
@@ -271,15 +281,15 @@ export function HostedApp() {
           setError(publicError(listError));
           return;
         }
-        setBacklogError(publicError(listError));
+        setWorkItemsError(publicError(listError));
       })
       .finally(() => {
-        if (active) setBacklogLoading(false);
+        if (active) setWorkItemsLoading(false);
       });
     return () => {
       active = false;
     };
-  }, [backlogRefresh, mode, selectedWorkspaceId]);
+  }, [mode, selectedWorkspaceId, workItemOffset, workItemsRefresh]);
 
   useEffect(() => {
     if (mode !== "ready" || selectedWorkspaceId === null) {
@@ -425,6 +435,8 @@ export function HostedApp() {
     () => workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
     [selectedWorkspaceId, workspaces],
   );
+  const visibleWorkItems = workItems.slice(0, workItemPageSize);
+  const hasNextWorkItemPage = workItems.length > workItemPageSize;
   const mutationBusy =
     busy ||
     generatingToday ||
@@ -481,9 +493,10 @@ export function HostedApp() {
     setSelectedWorkspaceId(id);
     setConfirmation(null);
     setError(null);
-    setBacklogItems([]);
-    setBacklogLoading(true);
-    setBacklogError(null);
+    setWorkItemOffset(0);
+    setWorkItems([]);
+    setWorkItemsLoading(true);
+    setWorkItemsError(null);
     setToday(null);
     setTodayLoading(true);
     setTodayError(null);
@@ -530,7 +543,7 @@ export function HostedApp() {
       setPlanningDuration("");
       refocusTitleAfterCapture.current = true;
       setConfirmation(`Added “${capturedTitle}” to ${selectedWorkspace.name}.`);
-      setBacklogRefresh((value) => value + 1);
+      setWorkItemsRefresh((value) => value + 1);
     } catch (captureError) {
       if (captureError instanceof HostedApiError && captureError.status === 401) {
         setMode("signed-out");
@@ -564,24 +577,30 @@ export function HostedApp() {
     }
   }
 
-  async function updateStatus(item: HostedWorkItem, status: "in_progress" | "done") {
+  async function updateStatus(item: HostedWorkItemSnapshot, status: "in_progress" | "done") {
     if (selectedWorkspace === null) return;
     setUpdatingItem({ id: item.id, status });
-    setBacklogError(null);
+    setWorkItemsError(null);
     setConfirmation(null);
     try {
       await hostedApi.updateWorkItemStatus(selectedWorkspace.id, item, status);
       setConfirmation(
         status === "done" ? `Completed “${item.title}”.` : `Started “${item.title}”.`,
       );
-      setBacklogItems((items) => items.filter((candidate) => candidate.id !== item.id));
-      setBacklogRefresh((value) => value + 1);
+      setWorkItems((items) =>
+        items.map((candidate) =>
+          candidate.id === item.id
+            ? { ...candidate, status, version: candidate.version + 1 }
+            : candidate,
+        ),
+      );
+      setWorkItemsRefresh((value) => value + 1);
     } catch (updateError) {
       if (updateError instanceof HostedApiError && updateError.status === 401) {
         setMode("signed-out");
         setError(publicError(updateError));
       } else {
-        setBacklogError(publicError(updateError));
+        setWorkItemsError(publicError(updateError));
       }
     } finally {
       setUpdatingItem(null);
@@ -606,7 +625,7 @@ export function HostedApp() {
       setTodayRetry(null);
       setConfirmation(`${titleCase(intent.type)} “${intent.title}”.`);
       setTodayRefresh((value) => value + 1);
-      setBacklogRefresh((value) => value + 1);
+      setWorkItemsRefresh((value) => value + 1);
     } catch (activityError) {
       const known = activityError instanceof HostedApiError;
       if (known && activityError.status === 401) {
@@ -1321,40 +1340,43 @@ export function HostedApp() {
             </div>
             <div className="hosted-backlog" aria-labelledby="hosted-backlog-title">
               <div className="hosted-backlog-heading">
-                <h2 id="hosted-backlog-title">Backlog snapshot</h2>
-                <span>First 20</span>
+                <h2 id="hosted-backlog-title">Work items</h2>
+                <span>
+                  Page {Math.floor(workItemOffset / workItemPageSize) + 1}
+                  {workItemsLoading && visibleWorkItems.length > 0 ? " · Refreshing…" : ""}
+                </span>
               </div>
-              {backlogLoading ? (
+              {workItemsLoading && visibleWorkItems.length === 0 ? (
                 <p className="hosted-backlog-state" role="status">
-                  Loading backlog…
+                  Loading work items…
                 </p>
-              ) : backlogError !== null ? (
+              ) : workItemsError !== null ? (
                 <ErrorNotice
-                  message={backlogError}
+                  message={workItemsError}
                   action={
                     <Button
                       type="button"
                       variant="quiet"
-                      onClick={() => setBacklogRefresh((value) => value + 1)}
+                      onClick={() => setWorkItemsRefresh((value) => value + 1)}
                     >
-                      Retry backlog
+                      Retry work items
                     </Button>
                   }
                 />
-              ) : backlogItems.length === 0 ? (
-                <p className="hosted-backlog-state">No backlog items yet.</p>
+              ) : visibleWorkItems.length === 0 ? (
+                <p className="hosted-backlog-state">No work items yet.</p>
               ) : (
                 <ul className="hosted-backlog-list">
-                  {backlogItems.map((item) => {
-                    const meta = backlogMeta(item);
-                    return (
-                      <li key={item.id}>
-                        <span className="hosted-backlog-copy">
-                          <span className="hosted-backlog-title">{item.title}</span>
-                          {meta === null ? null : (
-                            <span className="hosted-backlog-meta">{meta}</span>
-                          )}
-                        </span>
+                  {visibleWorkItems.map((item) => (
+                    <li key={item.id}>
+                      <span className="hosted-backlog-copy">
+                        <span className="hosted-backlog-title">{item.title}</span>
+                        <span className="hosted-backlog-meta">{workItemMeta(item)}</span>
+                        {item.description === null ? null : (
+                          <span className="hosted-backlog-description">{item.description}</span>
+                        )}
+                      </span>
+                      {item.status !== "backlog" ? null : (
                         <span className="hosted-backlog-actions">
                           <Button
                             type="button"
@@ -1379,11 +1401,45 @@ export function HostedApp() {
                             Done
                           </Button>
                         </span>
-                      </li>
-                    );
-                  })}
+                      )}
+                    </li>
+                  ))}
                 </ul>
               )}
+              <nav className="hosted-backlog-pagination" aria-label="Work item pages">
+                <Button
+                  type="button"
+                  variant="quiet"
+                  disabled={mutationBusy || workItemsLoading || workItemOffset === 0}
+                  onClick={() => {
+                    setWorkItemsLoading(true);
+                    setWorkItems([]);
+                    setWorkItemOffset((offset) => Math.max(0, offset - workItemPageSize));
+                  }}
+                >
+                  Previous
+                </Button>
+                <span aria-live="polite">
+                  Page {Math.floor(workItemOffset / workItemPageSize) + 1}
+                </span>
+                <Button
+                  type="button"
+                  variant="quiet"
+                  disabled={
+                    mutationBusy ||
+                    workItemsLoading ||
+                    workItemsError !== null ||
+                    !hasNextWorkItemPage
+                  }
+                  onClick={() => {
+                    setWorkItemsLoading(true);
+                    setWorkItems([]);
+                    setWorkItemOffset((offset) => offset + workItemPageSize);
+                  }}
+                >
+                  Next
+                </Button>
+              </nav>
             </div>
           </section>
         )}

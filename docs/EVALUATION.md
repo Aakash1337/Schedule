@@ -591,11 +591,13 @@ The audit deliberately leaves these visible instead of turning them into false g
   metadata/JWKS/token HTTPS, bounded client tracking, generic tenant denial, and transaction-coupled
   work creation. Active workspace discovery and principal-bound name-only creation have application,
   route, browser, and database evidence; creation rechecks the locked user/session and proves the new
-  membership through a downstream work mutation. The fixed first-20 backlog projection and optional
-  capture scheduling fields have route, component, browser, and database evidence. A separate
-  authenticated current-state work-item page has route and real PostgreSQL/Fastify evidence for all statuses,
-  the full current projection except workspace identity, stable bounded offset pages, generic tenant
-  denial, no-store responses, and no read mutation while leaving the capture backlog unchanged. It
+  membership through a downstream work mutation. The unchanged fixed first-20 backlog projection has
+  route, client, and database evidence; optional capture scheduling fields have route, component,
+  browser, and database evidence. A separate
+  authenticated current-state work-item page has route, client, component, built-browser, and real
+  PostgreSQL/Fastify evidence for all statuses, the full current projection except workspace identity,
+  fixed 20-row display pages with one-row next-page lookahead, generic tenant denial, no-store
+  responses, and no read mutation while leaving the fixed capture backlog endpoint unchanged. It
   is explicitly a current-state page, not a frozen multi-page snapshot, change feed, tombstone
   stream, or offline synchronization protocol. The narrow existing-plan Today projection has route,
   component, browser, and database evidence, including authenticated missing-plan behavior. The
@@ -609,7 +611,7 @@ The audit deliberately leaves these visible instead of turning them into false g
   three choices and completion; the shared database composition path records one completion twice
   with the same intent and observes one activity, one interaction, one head advance, and atomic source
   completion. Together they exercise bounded membership-scoped reads and writes
-  without identity, role, description, planner-reason, or time-zone metadata. The enabled composition
+  without identity, role, planner-reason, or time-zone metadata. The enabled composition
   verifier parses production configuration, builds the real route graph with a strict in-process
   provider, proves local product routes absent, drives login, the hardened same-origin capture
   shell, discovery, workspace creation, bounded backlog and full current-state work-item reads,
@@ -621,7 +623,8 @@ The audit deliberately leaves these visible instead of turning them into false g
   receipt before a fixed, thresholded aggregate read returns counts and null low-sample rates without
   dates, IDs, or raw totals, then checks logout and
   cleanup. A separate built Chromium flow covers signed-out/authenticated capture, first-workspace
-  creation, optional scheduling-field capture, first-plan controls, Today and status-only completion, backlog refresh,
+  creation, optional scheduling-field capture, work-item paging with a read-only completed row and
+  backlog-only status actions, first-plan controls, Today and status-only completion, current-page refresh,
   exact Plan Fit dismissal/reset and prefill without auto-generation, a descriptive outcome summary,
   exact CSRF/idempotency forwarding, and 360-pixel
   layout. Disabled-mode route closure and redacted startup failure remain independently verified.

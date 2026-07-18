@@ -272,6 +272,26 @@
   gap: 2px;
 }
 
+.hosted-backlog-description {
+  max-width: 70ch;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.hosted-backlog-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.hosted-backlog-pagination > span {
+  color: var(--ink-faint);
+  font-size: 0.82rem;
+}
+
 .hosted-today-copy {
   display: grid;
   min-width: 0;
@@ -400,6 +420,7 @@
 
   .hosted-topbar .button,
   .hosted-backlog-actions .button,
+  .hosted-backlog-pagination .button,
   .hosted-workspace-create summary,
   .hosted-capture-details summary {
     min-height: 44px;

@@ -3356,7 +3356,7 @@
         "anchor": "# Hosted request authorization and OIDC runtime"
       },
       "limitations": [
-        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery and name-only creation, bounded backlog, current-state all-status work-item, and existing-plan Today reads, transaction-coupled title plus optional priority/due-date/planning-duration create, status-only update, and Today Start/Done/Skip, plus one narrow same-origin capture shell. Workspace rename/delete and membership administration, a broader public end-user product surface, and synchronization remain unimplemented; the offset work-item page is not a frozen sync snapshot or change feed.",
+        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery and name-only creation, bounded backlog, current-state all-status work-item, and existing-plan Today reads, transaction-coupled title plus optional priority/due-date/planning-duration create, status-only update, and Today Start/Done/Skip. The narrow same-origin shell consumes the current-state work-item page in fixed 20-row displays with one-row lookahead and exposes status actions only for backlog rows. Workspace rename/delete and membership administration, a broader public end-user product surface, and synchronization remain unimplemented; the offset work-item page is not a frozen sync snapshot or change feed.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [
@@ -3463,7 +3463,7 @@
         "anchor": "## Hosted capture shell"
       },
       "limitations": [
-        "The shell can authenticate, create or discover active workspaces, show one existing browser-local current-day plan and the first 20 backlog items with scheduling summaries, create one title with optional priority, due date, and planning duration, move one visible backlog item to started or done, and start, complete, or skip one actionable Today item with exact ambiguous retry. It cannot generate plans, page, filter, edit existing fields, reopen, cancel, schedule, rename/delete workspaces, administer membership, or synchronize product data.",
+        "The shell can authenticate, create or discover active workspaces, show one existing browser-local current-day plan, page through current work items from every status in fixed 20-row displays with one-row lookahead, create one title with optional priority, due date, and planning duration, move one visible backlog item to started or done, and start, complete, or skip one actionable Today item with exact ambiguous retry. Non-backlog work-item rows are read-only. It cannot filter, edit existing fields, reopen, cancel, schedule, rename/delete workspaces, administer membership, or synchronize product data; each offset page is a fresh current-state read rather than a frozen or offline snapshot.",
         "The built-browser gate uses an in-browser API double; an external identity provider and public TLS ingress still require a staging smoke."
       ],
       "evidence": [
@@ -3482,6 +3482,7 @@
           "command": "unit",
           "anchors": [
             "uses only the same-origin session and bounded hosted read routes",
+            "reads one bounded current-state work-item page",
             "copies the exact CSRF cookie into hosted mutations",
             "sends only a workspace name through the verified hosted collection",
             "sends only optimistic status fields for hosted workflow updates",
@@ -3494,12 +3495,15 @@
           "command": "unit",
           "anchors": [
             "offers provider sign-in without exposing product controls",
-            "restores workspace choice, lists its backlog, and refreshes after capture",
-            "keeps capture usable while a failed backlog read is explicitly retried",
+            "restores workspace choice, lists its work items, and refreshes after capture",
+            "keeps capture usable while a failed work-item read is explicitly retried",
+            "returns to sign-in when the work-item read discovers an expired session",
+            "pages through all work-item statuses with backlog-only actions",
+            "resets work-item paging and ignores a stale page when the workspace changes",
             "shows the current local day and refreshes it when the workspace changes",
             "keeps capture usable while a failed Today read is explicitly retried",
             "refreshes Today after the browser crosses local midnight",
-            "starts one backlog item with its optimistic version and refreshes the snapshot",
+            "keeps a transitioned work item visible after a backlog status update",
             "keeps a stale status update explicit and retryable",
             "returns to sign-in when capture discovers an expired session",
             "creates the first workspace before enabling capture",
@@ -3607,7 +3611,7 @@
       },
       "limitations": [
         "The endpoint returns only the stable first 20 backlog IDs, titles, optimistic versions, priorities, due dates, and planning durations. It has no filters, pagination controls, totals, descriptions, hierarchy, or synchronization semantics and does not mix in the separate Today projection.",
-        "A separate bounded offset page may contain items from every current status and returns full work-item fields except workspaceId. It is independently read on every request and has no frozen snapshot boundary, change feed, tombstones, watermark, conflict handling, or offline semantics.",
+        "A separate bounded offset page may contain items from every current status and returns full work-item fields except workspaceId. The hosted shell requests 21 rows, renders at most 20, and uses only the extra row to expose Next; it independently reads every page and has no frozen snapshot boundary, change feed, tombstones, watermark, conflict handling, or offline semantics.",
         "Read authorization follows the documented preflight linearization: a committed revocation fences the next request but cannot retract an already-authorized in-flight read."
       ],
       "evidence": [
@@ -3634,15 +3638,21 @@
           "level": "unit",
           "file": "apps/web/src/hosted-api.test.ts",
           "command": "unit",
-          "anchors": ["uses only the same-origin session and bounded hosted read routes"]
+          "anchors": [
+            "uses only the same-origin session and bounded hosted read routes",
+            "reads one bounded current-state work-item page"
+          ]
         },
         {
           "level": "unit",
           "file": "apps/web/src/HostedApp.test.tsx",
           "command": "unit",
           "anchors": [
-            "restores workspace choice, lists its backlog, and refreshes after capture",
-            "keeps capture usable while a failed backlog read is explicitly retried"
+            "restores workspace choice, lists its work items, and refreshes after capture",
+            "keeps capture usable while a failed work-item read is explicitly retried",
+            "returns to sign-in when the work-item read discovers an expired session",
+            "pages through all work-item statuses with backlog-only actions",
+            "resets work-item paging and ignores a stale page when the workspace changes"
           ]
         },
         {
@@ -3765,7 +3775,7 @@
           "file": "apps/web/src/HostedApp.test.tsx",
           "command": "unit",
           "anchors": [
-            "completes one Today item and refreshes Today plus its source backlog",
+            "completes one Today item and refreshes Today plus its source work item",
             "retries an ambiguous Today action with the exact same intent",
             "refreshes instead of replaying a stale Today action"
           ]
@@ -4061,7 +4071,7 @@
           "file": "apps/web/src/HostedApp.test.tsx",
           "command": "unit",
           "anchors": [
-            "starts one backlog item with its optimistic version and refreshes the snapshot",
+            "keeps a transitioned work item visible after a backlog status update",
             "keeps a stale status update explicit and retryable"
           ]
         },

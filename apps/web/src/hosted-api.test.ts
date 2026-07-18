@@ -105,6 +105,44 @@ describe("hosted web API client", () => {
     );
   });
 
+  it("reads one bounded current-state work-item page", async () => {
+    const page = {
+      items: [
+        {
+          id: "item-1",
+          parentWorkItemId: null,
+          title: "Prepare release",
+          description: "Check the final artifacts.",
+          status: "in_progress",
+          priority: "high",
+          dueOn: "2026-07-20",
+          planningDurationMinutes: 75,
+          version: 3,
+          createdAt: "2026-07-16T12:00:00.000Z",
+          updatedAt: "2026-07-17T12:00:00.000Z",
+        },
+      ],
+      limit: 21,
+      offset: 20,
+    } as const;
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify(page), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      hostedApi.listWorkItemSnapshot("workspace/one", { limit: 21, offset: 20 }),
+    ).resolves.toEqual(page);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/hosted/workspaces/workspace%2Fone/work-items/snapshot?limit=21&offset=20",
+      expect.objectContaining({ method: "GET", credentials: "same-origin" }),
+    );
+  });
+
   it("reads the fixed bounded hosted Plan Fit effectiveness projection", async () => {
     const effectiveness = {
       usesConsidered: 4,

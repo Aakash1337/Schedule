@@ -27,9 +27,9 @@ pnpm dev
 
 The same package builds a separate `hosted.html` entry for explicit OIDC mode. It reuses the product
 controls and visual tokens but includes only session bootstrap, active-workspace discovery, sign
-in/out, name-only workspace creation, one current-day snapshot, one fixed first-page backlog
-snapshot, narrow Today/backlog actions, and one backlog form with optional priority, due date, and
-planning duration. Before a first plan it may also read one bounded Plan Fit projection and expose
+in/out, name-only workspace creation, one current-day snapshot, one bounded all-status current-state
+work-item page, narrow Today/work-item actions, and one backlog form with optional priority, due date,
+and planning duration. Before a first plan it may also read one bounded Plan Fit projection and expose
 explicit exact-key dismissal/reset and a joint-target prefill. A separate fixed last-28-use read
 shows only thresholded descriptive outcome counts and rates. The API serves that build from the same origin, so the
 browser never needs CORS, provider tokens, or a second frontend service. The local application and
@@ -40,14 +40,18 @@ disclosure when a workspace is selected. It shows a selector only when more than
 membership exists, immediately selects a successful creation, stores only that selection in browser
 storage, and sends the exact script-readable CSRF proof on
 mutations, and treats session, access, throttling, and availability failures as bounded states. It
-shows the browser-local day's existing plan through titles, durations, and activity states, plus the
-first 20 backlog items with scheduling summaries. Optional capture fields stay behind one disclosure.
-The two reads fail and retry independently; capture refreshes only the
-backlog. Each visible backlog item can be moved only to started or done with its snapshot version.
+shows the browser-local day's existing plan through titles, durations, and activity states, plus up to
+20 current work items across every status with title, status, and optional description, priority, due
+date, and planned duration. The work-item read
+requests one additional row only to decide whether **Next** is available; **Previous** and **Next**
+move in fixed offset steps of 20 without claiming a frozen multi-page snapshot. Optional capture
+fields stay behind one disclosure. The two reads fail and retry independently; capture refreshes only
+the work-item page. Only a visible `backlog` item offers **Start** and **Done**, using its snapshot
+version; every other status is read-only in this shell.
 Pending Today items offer Start, Done, and Skip; started items offer Done and Skip; terminal items
 offer none.
 An ambiguous Today failure explicitly retries the same timestamp/key, while a stale head discards
-the intent and requires a fresh read. A successful action refreshes both Today and backlog.
+the intent and requires a fresh read. A successful action refreshes both Today and the work-item page.
 When no current plan exists, Plan Fit loads independently and never blocks the manual window or
 targets. Only **Use …** copies both targets and retains the reviewed evidence key; generation remains
 a separate submit and any later target edits are preserved in the atomic use receipt. Changed
@@ -60,8 +64,9 @@ The Plan Fit outcome summary loads for the selected workspace independently of T
 It shows no rate until three settled, unrevised uses exist, has its own retry, and ignores a late
 response after workspace selection changes. It exposes no usage rows, dates, IDs, or raw workload
 totals and explicitly avoids improvement or causal claims.
-The shell cannot regenerate an existing plan, page, filter, edit fields, reopen, cancel, synchronize work,
-rename/delete workspaces, or administer membership.
+The shell cannot regenerate an existing plan, filter, edit fields, reopen, cancel, synchronize work,
+rename/delete workspaces, or administer membership. Its offset paging is a fresh current-state read,
+not offline storage, a change feed, or a frozen reconciliation boundary.
 
 ## Information architecture
 
@@ -455,8 +460,9 @@ database; a leaked port or failed cleanup makes the command fail. GitHub CI runs
 a dedicated Chromium job and retains traces, screenshots, and video when it fails.
 
 The hosted verifier builds its isolated entry and uses a strict in-browser API double to exercise
-signed-out and authenticated capture, exact request verification, workspace selection, Today
-first-plan generation, explicit Plan Fit prefill, completion, and mobile layout. The missing-plan form uses the browser IANA
+signed-out and authenticated capture, exact request verification, workspace selection, bounded
+work-item paging with a read-only completed row and backlog-only actions, Today first-plan generation, explicit Plan Fit
+prefill, completion, and mobile layout. The missing-plan form uses the browser IANA
 zone, one editable same-day window, and independent minute/task caps; after generation it disappears
 in favor of the authoritative Today projection and focus moves to the persistent Today heading.
 Ambiguous retries retain the exact request key, reviewed Plan Fit key, and
