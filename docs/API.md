@@ -10,7 +10,19 @@ not authorize these product routes.
 
 - Development defaults to `local_unauthenticated` and binds to `127.0.0.1`.
 - Production is always `disabled`; configuration rejects attempts to enable unauthenticated routes in production or on a non-loopback application bind.
-- This mode must not be exposed to an untrusted network. Authentication and authorization are required before public hosting.
+- `HOSTED_API_MODE` is a separate fail-closed gate. It defaults to `disabled`; `oidc` requires one
+  complete validated registration, `HOSTED_OIDC_PREFLIGHT_MODE=enabled`, the complete bounded secret
+  set, and `PRODUCT_API_MODE=disabled`. Enabled startup completes provider discovery before listening,
+  installs the four browser lifecycle routes and the membership-authorized hosted work-item read/create,
+  applies `HOSTED_RATE_LIMIT_PER_MINUTE`, and reports `hostedEndpointsEnabled: true`. Partial,
+  malformed, mixed-case, and unknown non-empty `HOSTED_*` values fail startup without disclosure.
+- Hosted mode is still a narrow API slice, not a complete public product: workspace provisioning,
+  and administration are not public routes. First login creates one default workspace and active
+  membership atomically; `GET /v1/hosted/workspaces?limit=20&offset=0` returns only the authenticated
+  principal's active workspace page. A fixed
+  `GET /v1/hosted/workspaces/{workspaceId}/work-items` returns only the first 20 backlog IDs/titles.
+  Workspace detail reads, most product routes, synchronization, ingress/TLS, and deployment
+  automation remain separate requirements.
 - CORS is disabled, JSON bodies are limited to 256 KiB, request objects reject unknown fields, and error responses do not include stack traces.
 - Product routes reject missing, malformed, or non-loopback `Host` authorities before routing. This protects the unauthenticated loopback service from browser DNS-rebinding attacks; `localhost`, IPv4 `127.0.0.0/8`, and IPv6 loopback (`[::1]`) are accepted with an optional valid port. Health and system-information endpoints remain outside this product-route guard for local process and container diagnostics.
 - Accepted UUID values in product-route paths and bodies are canonicalized to lowercase before service dispatch and identity comparison; responses therefore use the canonical spelling.
@@ -74,8 +86,11 @@ not authorize these product routes.
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissals`                | Dismiss one exact insight (`200` or `409`)             |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight/dismissal-resets`          | Restore one exact insight (`200` or `409`)             |
 | `GET`    | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight?forDate={YYYY-MM-DD}`                     | Derive read-only joint target guidance                 |
+| `GET`    | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/usages?limit=5`                           | List bounded explicit-use outcomes                     |
+| `GET`    | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/effectiveness?limit=28`                   | Summarize bounded explicit-use outcomes                |
 | `POST`   | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/dismissals`                               | Dismiss one exact target suggestion                    |
 | `POST`   | `/v1/workspaces/{workspaceId}/daily-plan-fit-insight/dismissal-resets`                         | Restore one exact target suggestion                    |
+| `GET`    | `/v1/workspaces/{workspaceId}/planning-outcomes?forDate={YYYY-MM-DD}`                          | Summarize the prior 30 current plan heads              |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | List stable, cursor-paginated history (`200`)          |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/activity-events`                            | Idempotently record activity (`200`)                   |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans`                                                           | Create revision 1 or retry an exact revision           |
@@ -382,9 +397,42 @@ returns the original event. Semantic key reuse returns
 `409 daily_plan_fit_insight.disposition_conflict`. A changed evidence snapshot has a different key,
 so it can surface as available despite an older dismissal.
 
-Neither the read nor feedback routes edit planning targets, create a plan revision, mutate a Today
-head, or affect planner input and scoring. Copying a suggestion into editable target fields is a
-client action; the ordinary explicit plan-generation request remains the only creation step.
+Copying a suggestion into editable target fields is a client action and performs no API mutation.
+When the user subsequently submits ordinary revision-1 generation, the otherwise strict plan body
+may include nullable `planFitInsightKey`. The server locks the date and workspace feedback stream,
+recomputes current evidence, and requires that exact key to remain an available suggestion. A stale
+key returns `409 daily_plan_fit_insight.evidence_conflict` without creating a plan or event.
+Successful generation stores the plan and one immutable `used` receipt in the same transaction. The
+receipt preserves the exact evidence and suggested pair, generated plan ID, and final user-edited
+targets. Exact plan retry requires the matching receipt and cannot duplicate it; mismatched provenance
+returns `409 daily_plan_fit_insight.usage_replay_conflict`. Mutation endpoints intentionally reject
+the provenance key because later revisions are reported against the original explicit use.
+
+`GET .../daily-plan-fit-insight/usages` accepts `limit` 1–28, defaults to 5, and returns newest uses
+only for the requested workspace. Each item contains the usage ID, date, evidence key and timestamp,
+source plan ID, nullable current-plan identity/revision/head version, `revisedSinceUsage`, suggested
+and applied targets, `usedExactSuggestion`, and nullable planned/completed minute and task totals.
+`status` is `pending` until every item in the current plan is terminal, `resolved` after that point,
+or `not_evaluable` when there is no nonempty current plan. Partial completion totals are deliberately
+withheld. Reads never append feedback, move a head, regenerate, or alter planner scoring.
+
+`GET .../daily-plan-fit-insight/effectiveness` accepts `limit` 1–28 and defaults to 28. It returns no
+usage identities, dates, evidence keys, or item content. Instead it reports the bounded sample size;
+resolved, pending, and not-evaluable status counts; an overlapping revised count; exact-versus-edited
+use counts; and auditable integer target, scheduled, and completed totals. Only resolved outcomes
+whose current head is still the source plan contribute to totals or rates. Target-scheduled rates are
+weighted scheduled totals divided by the actual submitted targets; plan-completed rates are weighted
+completed totals divided by scheduled totals. Rates are half-up integer basis points and are `null`
+without an eligible denominator. Pending, not-evaluable, and later-revised outcomes remain counted but
+are excluded from every rate. The summary is descriptive current-head reporting, not a causal effect,
+improvement score, planner input, learned policy, or model signal.
+
+`GET .../planning-outcomes` requires one real Gregorian `forDate` and summarizes the preceding 30
+local dates. It uses at most one authoritative current head per date and returns the window bounds,
+plan-day count, weighted planned/completed task and scheduled-minute totals, additional revisions
+beyond revision 1, and half-up completion rates in integer basis points. Rates are `null` when their
+planned denominator is zero. The route is read-only and does not write telemetry, compare planner
+versions, infer causality, or influence planning or model input.
 
 Routine activity history is ordered by newest ingestion first and accepts `limit` from 1–200 (default 50) plus an opaque, integrity-protected `cursor`. The cursor is bound to its workspace and routine. The first page captures a high-water mark, so later appends do not shift subsequent pages. A non-null `page.nextCursor` retrieves the next page. Local cursor signing keys are process-bound, so clients should restart pagination after an API restart.
 

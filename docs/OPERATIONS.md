@@ -500,6 +500,45 @@ rules, or one-offs and cannot retract an in-flight provider side effect. Externa
 its own adapter-side kill switch when implemented. See
 [REMINDERS.md](./REMINDERS.md).
 
+## Hosted OIDC preflight and activation
+
+Hosted routes remain disabled by default. To validate production OIDC configuration and provider
+reachability without exposing routes, keep `HOSTED_API_MODE=disabled`. To activate the narrow hosted
+surface, set `HOSTED_API_MODE=oidc`. In either case inject these values through the platform secret
+manager and set `HOSTED_OIDC_PREFLIGHT_MODE=enabled`:
+
+- the complete non-secret `HOSTED_PUBLIC_ORIGIN`, `HOSTED_OIDC_ISSUER`, and
+  `HOSTED_OIDC_CLIENT_ID` registration;
+- `HOSTED_OIDC_TOKEN_AUTH_METHOD` plus `HOSTED_OIDC_CLIENT_SECRET` unless the method is `none`;
+- independent `HOSTED_LOGIN_TRANSACTION_PEPPER` and `HOSTED_SESSION_PEPPER` values of at least 32
+  UTF-8 bytes;
+- `HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID` and one to sixteen comma-delimited
+  `key-id:base64url-32-byte-key` entries in `HOSTED_LOGIN_PKCE_KEYS`.
+
+Startup parses and freezes the complete set, performs one bounded provider discovery, constructs the
+dependency graph, and only then builds the API app. Failure exits before listening through a stable
+redacted error. Disabled mode logs only the preflight result and keeps routes closed. OIDC mode
+registers login, callback, session, logout, active workspace discovery, and the single hosted
+work-item read/create collection, reports the capability, and throttles the hosted surface with
+`HOSTED_RATE_LIMIT_PER_MINUTE`. Source tracking is bounded to 4,096 least-recently used client
+addresses per API process.
+
+Do not enable OIDC mode until TLS ingress, trusted proxy ranges, secret injection, migrations, and
+database backups are in place. First login atomically creates one `My Schedule` workspace and active
+membership. The current slice can discover active memberships but has no hosted workspace
+administration, broad product API, or sync protocol. Its same-origin shell can read only the first
+20 backlog IDs/titles and create one backlog title.
+
+Rotate PKCE by adding the new key, selecting it as primary, restarting, and retaining old keys for at
+least the five-minute login lifetime plus deployment skew before a later restart removes them.
+Changing the login pepper invalidates outstanding logins; changing the session pepper signs out all
+browser sessions. Provider metadata and secrets do not hot-reload. Disable preflight or change its
+configuration only through a controlled restart. Run `pnpm verify:hosted-runtime-preflight` before
+deploying a changed secret layout. Run `pnpm verify:hosted-oidc-composition-db` to exercise enabled
+configuration, production route assembly, first-login provisioning, authenticated work creation,
+bounded backlog reading, logout, and cleanup against PostgreSQL without contacting an external
+provider.
+
 ## Routine verification
 
 For an existing database, preserve the backup-before-migration order:
@@ -513,12 +552,13 @@ pnpm verify:database
 pnpm verify:backup-restore
 ```
 
-`verify:database` includes the dormant hosted-identity persistence and populated migration drills.
-They prove exact concurrent identity provisioning, bounded exact identity keys, digest-only session
-storage, rotation and revocation boundaries, binary membership authorization including
-post-revocation fencing, hosted workspace provisioning beyond the local worker cap, and
-preservation of workspace/product data when a user is deleted. These checks do not enable hosted
-authentication or change the local API boundary; see [HOSTED_IDENTITY.md](./HOSTED_IDENTITY.md) and
+`verify:database` includes hosted-identity persistence, enabled OIDC composition, and populated
+migration drills. They prove exact concurrent identity/default-workspace provisioning, bounded exact
+identity keys, digest-only session storage, rotation and revocation boundaries, binary membership
+authorization including post-revocation fencing, hosted workspace provisioning beyond the local
+worker cap, and preservation of workspace/product data when a user is deleted. The verifier uses a
+strict in-process provider and does not prove external-provider or public-ingress operation; see
+[HOSTED_IDENTITY.md](./HOSTED_IDENTITY.md) and
 [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md).
 
 Run the separately guarded `pnpm verify:recovery-state-machine` command from the preceding section

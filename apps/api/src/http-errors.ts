@@ -66,6 +66,7 @@ export function parseRequest<Output>(schema: ZodType<Output>, value: unknown): O
 }
 
 function domainStatus(error: DomainError): number {
+  if (error.code === "hosted.authentication_failed") return 401;
   if (error.code === "integration.authentication_failed") return 401;
   if (error.code === "integration.scope_denied") return 403;
   if (
@@ -101,6 +102,8 @@ function domainStatus(error: DomainError): number {
 
 function publicDomainMessage(error: DomainError): string {
   switch (error.code) {
+    case "hosted.authentication_failed":
+      return "Authentication failed.";
     case "integration.authentication_failed":
       return "Authentication failed.";
     case "integration.scope_denied":
@@ -161,7 +164,10 @@ function isInternalIntegrationFailure(error: DomainError): boolean {
 }
 
 function isInternalPlanningFailure(error: DomainError): boolean {
-  return INTERNAL_PLANNING_FAILURES.has(error.code);
+  return (
+    INTERNAL_PLANNING_FAILURES.has(error.code) ||
+    (error.code.startsWith("planning.outcomes_") && error.code !== "planning.outcomes_date_invalid")
+  );
 }
 
 function isInternalNaturalLanguageFailure(error: DomainError): boolean {
@@ -240,7 +246,9 @@ export function installErrorHandler(app: FastifyInstance): void {
       },
       requestId: request.id,
     };
-    if (status === 401) reply.header("www-authenticate", "Bearer");
+    if (status === 401 && code === "integration.authentication_failed") {
+      reply.header("www-authenticate", "Bearer");
+    }
     void reply.code(status).send(body);
   });
 }

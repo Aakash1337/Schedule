@@ -23,6 +23,19 @@
     "notification-materializer": { "command": "pnpm verify:database", "ci": true },
     "worker-observability": { "command": "pnpm verify:database", "ci": true },
     "hosted-identity": { "command": "pnpm verify:database", "ci": true },
+    "hosted-login-transactions": { "command": "pnpm verify:database", "ci": true },
+    "oidc-id-token-verifier": { "command": "pnpm check", "ci": true },
+    "oidc-authorization-request": { "command": "pnpm check", "ci": true },
+    "oidc-remote-jwks": { "command": "pnpm check", "ci": true },
+    "oidc-provider-metadata": { "command": "pnpm check", "ci": true },
+    "oidc-token-exchange": { "command": "pnpm check", "ci": true },
+    "oidc-direct-https": { "command": "pnpm check", "ci": true },
+    "hosted-oidc-lifecycle": { "command": "pnpm check", "ci": true },
+    "hosted-oidc-composition": { "command": "pnpm check", "ci": true },
+    "hosted-oidc-composition-db": { "command": "pnpm verify:database", "ci": true },
+    "hosted-runtime-preflight": { "command": "pnpm check", "ci": true },
+    "hosted-runtime-gate": { "command": "pnpm verify:database", "ci": true },
+    "hosted-mutation-authorization": { "command": "pnpm verify:database", "ci": true },
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
     "notification-migrations": { "command": "pnpm verify:database", "ci": true },
     "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
@@ -33,6 +46,10 @@
     "oci-runtime": { "command": "pnpm verify:oci-runtime", "ci": true },
     "browser-e2e": {
       "command": "pnpm verify:web-e2e",
+      "ci": true
+    },
+    "hosted-browser-e2e": {
+      "command": "pnpm verify:hosted-web-e2e",
       "ci": true
     }
   },
@@ -519,7 +536,7 @@
             "canonicalizes uppercase dependency UUID params and bodies before dispatch",
             "canonicalizes mixed-case self dependencies before domain validation",
             "maps dependency self-reference, cycle, and missing-item errors",
-            "redacts and code-only logs corrupt planning work-item graphs"
+            "redacts and code-only logs corrupt planning projections"
           ]
         },
         {
@@ -1155,6 +1172,17 @@
         },
         {
           "level": "unit",
+          "file": "integrations/hermes-schedule/tests/test_install.py",
+          "command": "hermes-adapter",
+          "anchors": [
+            "test_installs_only_runtime_and_reminder_files",
+            "test_requires_explicit_replace_for_changed_files",
+            "test_check_does_not_create_the_hermes_home",
+            "test_rejects_an_incomplete_source_bundle"
+          ]
+        },
+        {
+          "level": "unit",
           "file": "scripts/hermes-verification-safety.test.ts",
           "command": "unit",
           "anchors": [
@@ -1514,9 +1542,9 @@
       "risk": "normal",
       "contract": { "file": "docs/PRODUCT.md", "anchor": "### Phase 3 — Transparent adaptation" },
       "limitations": [
-        "Routine-duration calibration, Daily Plan Fit guidance, explicit routine ranking preferences, and reversible exact-key dismissal/reset are implemented; inferred cadence, day/time, energy, preference, and category-balance signals remain deferred.",
-        "Suggestions are never applied automatically, and adaptive probabilistic selection beyond the deterministic planner, upward Plan Fit expansion, and historical insight comparison remain deferred.",
-        "The statistical thresholds have contract evidence but no production outcome data, and no local or hosted model participates."
+        "Routine-duration calibration, Daily Plan Fit guidance with explicit use receipts, descriptive outcome history, and bounded weighted outcome rates, explicit routine ranking preferences, and reversible exact-key dismissal/reset are implemented; inferred cadence, day/time, energy, preference, and category-balance signals remain deferred.",
+        "Suggestions are never applied automatically, and adaptive probabilistic selection beyond the deterministic planner, upward Plan Fit expansion, causal effectiveness analysis, and outcome-driven learning remain deferred.",
+        "The statistical thresholds and lifecycle have contract evidence but no production effectiveness data or causal validation, and no local or hosted model participates."
       ],
       "evidence": [
         {
@@ -1703,7 +1731,7 @@
       },
       "limitations": [
         "Version 1 is downward-only and uses a fixed 90-day, three-to-28-sample median policy; it does not learn or recommend target increases.",
-        "Using a suggestion only prefills editable fields, and there is no automatic generation, historical outcome comparison, or model participation."
+        "Selecting a suggestion only prefills editable fields; explicit generation records an immutable receipt, descriptive pending, resolved, and not-evaluable history with later revision disclosed separately, and bounded weighted outcome rates, but there is no automatic generation, causal effectiveness inference, outcome-driven scoring, or model participation."
       ],
       "evidence": [
         {
@@ -1719,7 +1747,30 @@
             "rejects cross-workspace and duplicate evidence",
             "fails closed when one evidence plan exceeds the item bound",
             "resolves the latest exact-key dismissal and reset",
+            "keeps a used event separate from exact-key dismissal state",
             "normalizes idempotency and validates nonnegative completed medians"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/domain/src/daily-plan-fit-usage-outcome.test.ts",
+          "command": "unit",
+          "anchors": [
+            "reports only terminal completed workload and preserves edited-target provenance",
+            "withholds partial outcomes and identifies a later current revision",
+            "marks missing or empty current plans as not evaluable",
+            "rejects non-usage events and cross-date evidence"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/domain/src/daily-plan-fit-effectiveness.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns explicit zero totals and unavailable rates for an empty bounded sample",
+            "uses weighted resolved-unrevised totals while counting every outcome transparently",
+            "rounds half-up in basis points and never clamps transparent target-fill anomalies",
+            "fails closed on duplicate, cross-workspace, or malformed resolved evidence"
           ]
         },
         {
@@ -1738,14 +1789,43 @@
         },
         {
           "level": "unit",
+          "file": "packages/application/src/generate-daily-plan.test.ts",
+          "command": "unit",
+          "anchors": [
+            "atomically records an exact Plan Fit use and replays one receipt",
+            "rejects stale Plan Fit evidence before creating a plan or usage event"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/list-daily-plan-fit-usage-outcomes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns bounded explicit uses joined to current resolved plans",
+            "returns immediately without querying plans when no use receipts exist",
+            "rejects invalid bounds and missing workspaces"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/get-daily-plan-fit-effectiveness.test.ts",
+          "command": "unit",
+          "anchors": [
+            "forwards the bounded workspace query and returns deterministic descriptive totals",
+            "preserves list validation and workspace failures"
+          ]
+        },
+        {
+          "level": "unit",
           "file": "packages/database/src/repositories.test.ts",
           "command": "unit",
           "anchors": [
             "rejects unbounded history requests before querying",
             "maps one bounded current-head query and skips malformed target snapshots",
             "fails closed when one current plan exceeds the item projection bound",
-            "uses one canonical workspace advisory lock across UUID casing",
+            "uses one canonical workspace lock and a physical SSI guard across UUID casing",
             "loads the latest exact key and bounded idempotency receipt",
+            "lists only bounded used events in reverse ingestion order",
             "lets PostgreSQL allocate the sequence and targets workspace idempotency",
             "replays equivalent feedback but rejects changed semantics"
           ]
@@ -1761,8 +1841,9 @@
           "file": "apps/api/src/product-routes.test.ts",
           "command": "unit",
           "anchors": [
-            "serves and records exact-key Daily Plan Fit guidance for an explicit local date",
-            "validates Plan Fit payloads and maps stale evidence to conflict"
+            "serves planning outcomes and exact-key Daily Plan Fit guidance for one local date",
+            "validates Plan Fit payloads and maps stale evidence to conflict",
+            "generates and retrieves an exact plan revision without exposing its input snapshot"
           ]
         },
         {
@@ -1771,6 +1852,8 @@
           "command": "unit",
           "anchors": [
             "retrieves a Daily Plan Fit insight for an explicit local date",
+            "retrieves bounded Plan Fit usage outcomes",
+            "retrieves a bounded Plan Fit effectiveness summary",
             "records an idempotent Plan Fit %s"
           ]
         },
@@ -1780,6 +1863,14 @@
           "command": "unit",
           "anchors": [
             "prefills both Plan Fit targets without generating until the user submits",
+            "shows bounded read-only outcomes for explicitly generated Plan Fit choices",
+            "keeps Plan Fit outcome history visible while the current plan is present",
+            "keeps Plan Fit outcomes visible while guidance is still loading",
+            "keeps Plan Fit outcomes visible when guidance fails to load",
+            "keeps Plan Fit outcomes visible when there is no current guidance",
+            "keeps the specific announcement when selected Plan Fit evidence changes at generation",
+            "recovers the independent Plan Fit outcome summary only after explicit retry",
+            "aborts and ignores Plan Fit outcome summaries from a previous workspace",
             "announces Plan Fit loading without changing either target",
             "aborts and ignores Plan Fit results from the previous workspace",
             "dismisses and restores only the exact Plan Fit evidence key",
@@ -1790,7 +1881,84 @@
           "level": "integration",
           "file": "scripts/verify-planner-db.ts",
           "command": "planner-db",
-          "anchors": ["daily-plan-fit-insight-postgres"]
+          "anchors": [
+            "daily-plan-fit-insight-postgres",
+            "stale Plan Fit evidence must not create a plan revision",
+            "reading or prefilling a Plan Fit suggestion must not record usage",
+            "a queued Plan Fit dismissal must win before selected generation without a write",
+            "outcome history reads must not mutate planner heads",
+            "Plan Fit usage history must remain tenant-scoped",
+            "a partially terminal Plan Fit use must remain pending",
+            "prefilling alone must not affect the descriptive aggregate",
+            "pending uses must be counted but excluded from every aggregate rate",
+            "resolved unrevised uses must expose weighted target-fill and completion rates",
+            "a later current revision must remain visible but cannot enter descriptive rates",
+            "retries, outcome reads, activity, and revision must not duplicate the immutable use event"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "apps/web/e2e/planning-flow.spec.ts",
+          "command": "browser-e2e",
+          "anchors": ["derives, prefills, and explicitly restores a Daily Plan Fit suggestion"]
+        }
+      ]
+    },
+    {
+      "id": "planning-outcomes-summary",
+      "status": "implemented",
+      "risk": "normal",
+      "contract": {
+        "file": "docs/PLANNER.md",
+        "anchor": "## Planning outcomes"
+      },
+      "limitations": [
+        "The fixed prior-30-day summary uses authoritative current heads and scheduled rather than stopwatch duration; its revision count means only additional revisions beyond each initial plan.",
+        "The descriptive aggregate may span planner versions and is not telemetry, causal comparison, planner input, model input, or automatic adaptation."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/planning-outcomes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "returns an explicit empty prior-30-day window",
+            "uses weighted current-head task and minute totals",
+            "rejects duplicate, cross-workspace, out-of-window, or inconsistent plans"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/get-planning-outcomes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "loads one fixed prior-30-day current-head window",
+            "rejects invalid dates before opening a transaction and missing workspaces inside it"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "serves planning outcomes and exact-key Daily Plan Fit guidance for one local date",
+            "validates Plan Fit payloads and maps stale evidence to conflict"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/api.test.ts",
+          "command": "unit",
+          "anchors": ["retrieves planning outcomes for the dates before one local date"]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/TodayView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "shows weighted prior-plan outcomes without changing planning",
+            "recovers planning outcomes only after explicit retry"
+          ]
         },
         {
           "level": "integration",
@@ -2365,16 +2533,577 @@
       ]
     },
     {
+      "id": "hosted-runtime-disabled-gate",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Runtime configuration gate"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/config/src/config.test.ts",
+          "command": "unit",
+          "anchors": [
+            "provides safe local defaults",
+            "requires complete preflight configuration before enabling hosted OIDC",
+            "stages one immutable complete non-secret hosted OIDC registration",
+            "rejects a partial hosted OIDC registration",
+            "rejects unknown hosted companions without disclosing them",
+            "rejects an invalid or premature hosted preflight without disclosing values"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": [
+            "exposes only infrastructure capabilities for now",
+            "keeps the dormant hosted identity foundation unreachable over HTTP"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-login-transaction-foundation",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Login transaction foundation"
+      },
+      "limitations": [
+        "The transaction services are reachable only through complete HOSTED_API_MODE=oidc configuration; disabled mode retains route closure.",
+        "A hosted deployment must source the HMAC pepper and AES-GCM key ring from a secret manager. Rotation remains restart-based."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/hosted-login-transaction.test.ts",
+          "command": "unit",
+          "anchors": [
+            "creates a bounded S256 transaction without plaintext state or browser binding",
+            "is usable strictly before expiry and consumes exactly once in the domain"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/hosted-login-transaction.test.ts",
+          "command": "unit",
+          "anchors": [
+            "issues independent 256-bit values with purpose-separated digests",
+            "protects PKCE verifiers with transaction-bound authenticated encryption and key rotation",
+            "persists no plaintext bearer values and consumes the exact transaction once",
+            "rejects expiry at the exact boundary and prunes in bounded read-committed batches",
+            "fails closed before consumption when protected PKCE material is corrupted"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": [
+            "persists only bounded hosted login coordination material",
+            "migrates hosted login coordination without plaintext bearer columns"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/hosted-login-transaction.test.ts",
+          "command": "unit",
+          "anchors": [
+            "keeps pre-authentication repositories in a separate transaction context",
+            "retries serialization failures without retrying unrelated failures"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/backup-database.test.ts",
+          "command": "unit",
+          "anchors": [
+            "keeps the current database allowlist aligned with the latest migration snapshot"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-login-transactions.ts",
+          "command": "hosted-login-transactions",
+          "anchors": [
+            "Hosted login transaction verification passed digest-only state and browser binding, protected PKCE recovery, exact provider and redirect binding, concurrent single-use consumption, database-clock expiry, corruption rollback, redaction, and bounded cleanup"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "oidc-id-token-verifier-foundation",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## OIDC ID-token verifier"
+      },
+      "limitations": [
+        "The enabled callback invokes the verifier after one token exchange using the consumed issuer/client/nonce; disabled mode keeps the callback unreachable.",
+        "The complete factory binds discovery, token exchange, and remote JWKS to one exact configured issuer and direct connection-safe transport; untrusted token headers never select a network location."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/oidc-id-token-verifier.test.ts",
+          "command": "oidc-id-token-verifier",
+          "anchors": [
+            "returns only the exact verified issuer and subject",
+            "rejects a token with %s",
+            "rejects a token with %s before resolving a key",
+            "rejects symmetric and unsecured algorithms before resolving a key",
+            "maps a signing-key resolver outage to a stable redacted operational failure",
+            "bounds a stalled signing-key resolver with the same stable operational failure",
+            "fails closed on invalid verifier policy: %s"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "oidc-authorization-request-foundation",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## OIDC authorization-request builder"
+      },
+      "limitations": [
+        "The enabled login route invokes the deterministic builder after transaction creation and emits the separate browser-binding cookie; disabled mode keeps the route unreachable.",
+        "Separate trusted provider-metadata and token-exchange adapters now exist but are composed with the builder only in tests. Only bounded, non-reserved query parameters already present in its validated authorization endpoint are retained; request-time arbitrary provider parameters are not accepted."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/hosted-login-transaction.test.ts",
+          "command": "oidc-authorization-request",
+          "anchors": [
+            "returns exact validated provider bindings for authorization request construction"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/oidc-authorization-request.test.ts",
+          "command": "oidc-authorization-request",
+          "anchors": [
+            "builds one deterministic authorization-code request from exact transaction values",
+            "percent-encodes trusted values without allowing parameter injection",
+            "retains trusted non-reserved authorization endpoint query parameters",
+            "rejects invalid trusted configuration: %s",
+            "rejects inconsistent issued transaction material: %s",
+            "bounds the final percent-encoded authorization URL",
+            "requires the transaction to remain usable at the exact trusted clock boundary",
+            "maps clock and hostile getter failures to the stable redacted error",
+            "never exposes supplied configuration or transaction values in its failure"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "oidc-direct-https-transport",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Direct OIDC HTTPS transport"
+      },
+      "limitations": [
+        "Enabled OIDC startup and callbacks use the direct transport for discovery, JWKS, and token exchange; disabled mode registers no consumer route.",
+        "The existing bounded OIDC callers own hard deadlines, status/content/cache/body validation, and retry policy. This transport performs one DNS lookup and one pinned direct HTTPS attempt, never follows redirects, and adds no retry."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/oidc-direct-https-transport.test.ts",
+          "command": "oidc-direct-https",
+          "anchors": [
+            "classifies %s as public=%s",
+            "snapshots only a bounded all-public DNS answer set",
+            "makes one direct GET through a pinned public address while preserving TLS hostname checks",
+            "preserves the strict token POST shape without synthesizing proxy headers",
+            "rejects unsafe target %s before DNS",
+            "rejects %s before DNS",
+            "rejects a mixed DNS set before opening a request",
+            "detaches an unresolved DNS lookup when the caller aborts",
+            "redacts DNS and HTTPS failures"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "oidc-remote-jwks-foundation",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Pinned remote-JWKS resolver"
+      },
+      "limitations": [
+        "The provider-scoped resolver is used by the enabled OIDC composition and remains unreachable while hosted mode is disabled.",
+        "Exact URL binding, redirect denial, and response bounds in this adapter are not a complete SSRF defense by themselves. The production factory injects the direct transport that enforces DNS, resolved-IP, proxy, rebinding, and TLS policy."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/oidc-remote-jwks-resolver.test.ts",
+          "command": "oidc-remote-jwks",
+          "anchors": [
+            "binds an exact provider snapshot to a frozen cached resolver",
+            "reads accessor-backed configuration exactly once",
+            "makes one exact, credential-free GET and caches a valid key",
+            "maps %s to one redacted verifier availability error",
+            "hard-bounds an abort-ignoring transport and allows a later retry",
+            "treats an unknown key as invalid credentials without attacker-driven reloads during cooldown",
+            "refreshes once after cooldown and accepts provider key rotation",
+            "refreshes a matching cached key set after its five-minute maximum age",
+            "shares one in-flight JWKS request across concurrent verification",
+            "rejects token-controlled jku before the resolver can reach transport"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "oidc-provider-metadata-foundation",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Trusted OIDC discovery/provider metadata"
+      },
+      "limitations": [
+        "Enabled startup freezes one provider-metadata snapshot through the direct HTTPS transport; automatic metadata refresh remains absent.",
+        "The complete factory composes discovery with authorization, token exchange, remote JWKS, and ID-token verification; disabled mode keeps the graph unreachable."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/oidc-provider-metadata.test.ts",
+          "command": "oidc-provider-metadata",
+          "anchors": [
+            "retrieves one exact provider document and returns a frozen compatible snapshot",
+            "derives the official discovery path for a %s",
+            "reads configuration once and isolates the provider snapshot from later mutation",
+            "maps %s to one redacted unavailable error",
+            "rejects redirect evidence and a mismatched final response URL",
+            "rejects incompatible provider metadata: %s",
+            "rejects authorization endpoint collision with %s",
+            "shares a cold request, caches only success, and retries after failure",
+            "hard-bounds a transport that ignores its abort signal",
+            "clears its hard-deadline timer after a successful response",
+            "feeds only validated frozen values into authorization, token, and JWKS boundaries"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/oidc-bounded-json-fetch.test.ts",
+          "command": "oidc-provider-metadata",
+          "anchors": [
+            "rejects an already-aborted upstream signal without invoking transport",
+            "handles an upstream abort triggered synchronously during transport invocation",
+            "rejects a later upstream abort even when transport ignores it and clears the deadline"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "oidc-authorization-code-token-exchange-foundation",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## OIDC authorization-code token exchange"
+      },
+      "limitations": [
+        "The enabled callback invokes the strict exchanger after consuming state/browser binding and before verifier, provisioning, and session ports. Disabled mode keeps it unreachable.",
+        "Each consumed code is attempted at most once per invocation and is never retried after an ambiguous failure. The returned compact ID token remains untrusted; only the separately configured nonce-bound verifier may turn it into an issuer/subject identity. Access and refresh tokens are discarded."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/oidc-authorization-code-token-exchange.test.ts",
+          "command": "oidc-token-exchange",
+          "anchors": [
+            "makes one exact Basic-authenticated POST and returns only a frozen ID token",
+            "uses client_secret_post without leaking an Authorization header",
+            "uses the public-client method with client_id and no credential",
+            "form-encodes an opaque authorization code without parameter injection",
+            "snapshots accessor-backed configuration exactly once",
+            "rejects and redacts %s",
+            "rejects token-endpoint query collision with %s",
+            "rejects %s before transport",
+            "treats a %s authorization code as rejected without transport",
+            "maps %s to one redacted availability error",
+            "rejects and redacts a %s",
+            "maps a bounded invalid_grant rejection to null without exposing provider details",
+            "returns null for an unusable successful response: %s",
+            "hard-bounds a transport that ignores abort and never retries",
+            "hard-bounds a response body that never finishes",
+            "clears the hard-deadline timer after a successful response"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/oidc-provider-metadata.test.ts",
+          "command": "oidc-provider-metadata",
+          "anchors": [
+            "feeds only validated frozen values into authorization, token, and JWKS boundaries"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-oidc-lifecycle-composition",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Authentication lifecycle contract"
+      },
+      "limitations": [
+        "The start/callback composition is installed only after complete HOSTED_API_MODE=oidc preflight; disabled mode remains route-closed.",
+        "A consumed authorization code is attempted once and never retried. Account management, synchronization, and the broader hosted product surface remain deferred."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-auth-lifecycle.test.ts",
+          "command": "unit",
+          "anchors": [
+            "starts one exact transaction and redirects with one hardened browser binding",
+            "consumes, exchanges, verifies, provisions, and redirects exactly once",
+            "rejects %s before consuming the transaction",
+            "maps a deterministic %s rejection to one generic 401 without session issuance",
+            "rejects an inconsistent consumed %s before code exchange",
+            "redacts an internal %s callback failure and clears the binding"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-browser-session.test.ts",
+          "command": "unit",
+          "anchors": ["round-trips one hardened OIDC login-binding cookie"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-oidc-concrete-composition",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Concrete OIDC composition"
+      },
+      "limitations": [
+        "The production server passes the factory output to buildApp only in explicit OIDC mode; disabled preflight retains it without route exposure.",
+        "Provider discovery occurs once during async construction and freezes the complete provider snapshot. A future reload must replace the whole dependency graph; periodic expired-login pruning remains a separate operations responsibility."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/dormant-hosted-oidc-composition.test.ts",
+          "command": "hosted-oidc-composition",
+          "anchors": [
+            "constructs one frozen complete dependency graph from one provider snapshot",
+            "feeds the discovered authorization and token endpoints into their concrete adapters",
+            "rejects invalid local %s before provider discovery",
+            "snapshots registration and client authentication across asynchronous discovery",
+            "redacts incompatible provider metadata without exposing configured secrets"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-oidc-composition.ts",
+          "command": "hosted-oidc-composition-db",
+          "anchors": [
+            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-oidc-runtime-preflight",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Production runtime preflight"
+      },
+      "limitations": [
+        "The operator must inject the accepted values through a platform secret manager. Configuration is immutable for one process lifetime: PKCE key overlap supports restart-based rotation, while either single HMAC pepper rotation intentionally invalidates its corresponding login or session credentials.",
+        "HOSTED_API_MODE=oidc requires complete preflight, disables the local product surface, and registers only the narrow hosted route set; disabled mode reports the capability off and keeps every hosted route absent."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/config/src/config.test.ts",
+          "command": "hosted-runtime-preflight",
+          "anchors": [
+            "loads one immutable hosted OIDC preflight with rotating PKCE keys",
+            "accepts explicit public-client preflight without a client secret",
+            "rejects an invalid or premature hosted preflight without disclosing values"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/api/src/dormant-hosted-oidc-runtime.test.ts",
+          "command": "hosted-runtime-preflight",
+          "anchors": [
+            "maps construction failures to one stable error without secret disclosure",
+            "closes the shared database when activated preflight fails",
+            "preflights before building the normal route-closed app"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-runtime-gate.ts",
+          "command": "hosted-runtime-gate",
+          "anchors": [
+            "Hosted runtime gate verification passed startup rejection without secret disclosure, disabled capability reporting, and dormant route closure"
+          ]
+        }
+      ]
+    },
+    {
       "id": "hosted-identity-persistence-foundation",
-      "status": "partial",
+      "status": "implemented",
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_IDENTITY.md",
         "anchor": "# Hosted identity persistence foundation"
       },
       "limitations": [
-        "The foundation is dormant: no browser route, cookie, identity provider, CSRF policy, or deployment flag exposes it.",
-        "Public hosted authentication and synchronization remain deferred, and machine integration credentials remain a separate trust boundary."
+        "The identity/session factory is active only in explicit OIDC mode; disabled mode remains route-closed and first login creates one default workspace membership.",
+        "Hosted workspace administration, the broader product surface, synchronization, and public deployment remain deferred. Machine integration credentials remain a separate trust boundary."
       ],
       "evidence": [
         {
@@ -2393,7 +3122,7 @@
           "file": "packages/application/src/hosted-identity.test.ts",
           "command": "unit",
           "anchors": [
-            "provisions an exact identity once under read-committed lock semantics",
+            "provisions an exact identity and default workspace once under read-committed lock semantics",
             "locks the user before the session after a non-locking ownership probe",
             "rotates without extending absolute lifetime and rejects replay of the old token",
             "revokes one membership without revoking the user's global session and can reactivate it"
@@ -2428,7 +3157,7 @@
           "file": "scripts/verify-hosted-identity.ts",
           "command": "hosted-identity",
           "anchors": [
-            "Hosted identity verification passed exact concurrent provisioning, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
+            "Hosted identity verification passed exact concurrent provisioning with one default workspace, active membership discovery, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
           ]
         },
         {
@@ -2447,10 +3176,10 @@
       "risk": "critical",
       "contract": {
         "file": "docs/HOSTED_AUTHORIZATION.md",
-        "anchor": "# Dormant hosted request authorization seam"
+        "anchor": "# Hosted request authorization and OIDC runtime"
       },
       "limitations": [
-        "The seam is not registered in buildApp: provider verification, browser cookie and CSRF transport, public end-user routes, transaction-coupled product mutations, and synchronization remain unimplemented.",
+        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery, one transaction-coupled work-item create, and one narrow same-origin capture shell. Workspace administration, a broader public end-user product surface, and synchronization remain unimplemented.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [
@@ -2464,14 +3193,309 @@
         },
         {
           "level": "unit",
+          "file": "apps/api/src/hosted-browser-session.test.ts",
+          "command": "unit",
+          "anchors": [
+            "resolves exactly one bounded canonical session cookie without trusting spoofed headers",
+            "round-trips one hardened OIDC login-binding cookie",
+            "serializes and clears a host-only server-expiring browser session",
+            "accepts only the exact configured origin and matching double-submit proof",
+            "issues independent script-readable host-only CSRF cookies and clears them exactly"
+          ]
+        },
+        {
+          "level": "unit",
           "file": "apps/api/src/hosted-auth-boundary.test.ts",
           "command": "unit",
           "anchors": [
             "authenticates once and exposes only an immutable authorized context",
             "makes malformed and all denied workspace access indistinguishable",
             "redacts internal %s failures behind one temporary-unavailability response",
+            "rejects unsafe browser requests before authentication and workspace authorization",
+            "crosses the dormant boundary with one real cookie resolution and exact CSRF proof",
             "keeps concurrent request principals isolated",
             "refuses to register an unscoped route inside the hosted workspace boundary"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-auth-lifecycle.test.ts",
+          "command": "unit",
+          "anchors": [
+            "reports an %s session without exposing identity",
+            "starts one exact transaction and redirects with one hardened browser binding",
+            "consumes, exchanges, verifies, provisions, and redirects exactly once",
+            "rejects %s before consuming the transaction",
+            "maps a deterministic %s rejection to one generic 401 without session issuance",
+            "rejects a provisioned identity with a mismatched %s",
+            "revokes the exact presented session and clears both browser cookies",
+            "redacts an internal %s callback failure and clears the binding"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": [
+            "keeps the dormant hosted identity foundation unreachable over HTTP",
+            "registers the hosted lifecycle and protected workspace surface only when supplied",
+            "bounds rate-limit client tracking under source churn"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/api/src/dormant-hosted-oidc-runtime.test.ts",
+          "command": "hosted-runtime-preflight",
+          "anchors": [
+            "closes the shared database when activated preflight fails",
+            "closes the shared database when the hosted shell cannot load"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-identity.ts",
+          "command": "hosted-identity",
+          "anchors": [
+            "Hosted identity verification passed exact concurrent provisioning with one default workspace, active membership discovery, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-oidc-composition.ts",
+          "command": "hosted-oidc-composition-db",
+          "anchors": [
+            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-oci-runtime.ts",
+          "command": "oci-runtime",
+          "anchors": [
+            "OCI runtime verification passed hardened non-root containers, hosted web assets"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-capture-shell",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Hosted capture shell"
+      },
+      "limitations": [
+        "The shell can authenticate, discover active workspaces, show the first 20 backlog titles, and create one title-only backlog item. It cannot page, filter, edit, complete, schedule, administer, or synchronize product data.",
+        "The built-browser gate uses an in-browser API double; an external identity provider and public TLS ingress still require a staging smoke."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-web-shell.test.ts",
+          "command": "unit",
+          "anchors": [
+            "loads and serves only the bounded build output with hardened caching",
+            "redacts invalid or missing build output"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/hosted-api.test.ts",
+          "command": "unit",
+          "anchors": [
+            "uses only the same-origin session and bounded hosted read routes",
+            "copies the exact CSRF cookie into hosted mutations",
+            "fails before sending when request verification is absent"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/HostedApp.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "offers provider sign-in without exposing product controls",
+            "restores workspace choice, lists its backlog, and refreshes after capture",
+            "keeps capture usable while a failed backlog read is explicitly retried",
+            "returns to sign-in when capture discovers an expired session",
+            "keeps revoked users out of capture until an active workspace exists"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/e2e-hosted/capture-flow.spec.ts",
+          "command": "hosted-browser-e2e",
+          "anchors": [
+            "captures one hosted backlog item with responsive request verification",
+            "keeps capture unavailable before sign-in"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-oidc-composition.ts",
+          "command": "hosted-oidc-composition-db",
+          "anchors": [
+            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-workspace-discovery",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Authenticated workspace discovery"
+      },
+      "limitations": [
+        "The endpoint lists only the authenticated principal's active memberships. Workspace creation, detail reads, administration, roles, and totals remain absent."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/hosted-identity.test.ts",
+          "command": "unit",
+          "anchors": ["lists only the principal's active hosted workspaces with bounded paging"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-workspace-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "lists only the authenticated principal's bounded workspace page",
+            "rejects unauthenticated and malformed requests before workspace reads",
+            "redacts workspace repository failures"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/schema.test.ts",
+          "command": "unit",
+          "anchors": ["migrates the bounded hosted membership discovery index"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-identity.ts",
+          "command": "hosted-identity",
+          "anchors": [
+            "Hosted identity verification passed exact concurrent provisioning with one default workspace, active membership discovery, bounded identity keys"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-oidc-composition.ts",
+          "command": "hosted-oidc-composition-db",
+          "anchors": [
+            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-bounded-backlog-read",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Bounded hosted backlog read"
+      },
+      "limitations": [
+        "The endpoint returns only the stable first 20 backlog IDs and titles. It has no filters, pagination controls, totals, descriptions, mutations, Today data, or synchronization semantics.",
+        "Read authorization follows the documented preflight linearization: a committed revocation fences the next request but cannot retract an already-authorized in-flight read."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-work-item-routes.test.ts",
+          "command": "unit",
+          "anchors": ["returns one redacted fixed backlog page from canonical authority"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": [
+            "registers the hosted lifecycle and protected workspace surface only when supplied"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/hosted-api.test.ts",
+          "command": "unit",
+          "anchors": ["uses only the same-origin session and bounded hosted read routes"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/HostedApp.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "restores workspace choice, lists its backlog, and refreshes after capture",
+            "keeps capture usable while a failed backlog read is explicitly retried"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/e2e-hosted/capture-flow.spec.ts",
+          "command": "hosted-browser-e2e",
+          "anchors": ["captures one hosted backlog item with responsive request verification"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-oidc-composition.ts",
+          "command": "hosted-oidc-composition-db",
+          "anchors": [
+            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-transaction-coupled-work-item-create",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Transaction-coupled work-item create"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/hosted-mutation-authorization.test.ts",
+          "command": "unit",
+          "anchors": [
+            "reauthorizes before one product operation and forwards transaction options",
+            "fails closed on %s before product work",
+            "propagates repository failures without starting product work"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/create-hosted-work-item.test.ts",
+          "command": "unit",
+          "anchors": [
+            "derives authority from the request context and writes in the same transaction"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/repositories.test.ts",
+          "command": "unit",
+          "anchors": [
+            "wires hosted reauthorization into one product transaction",
+            "retries hosted mutations after a serialization failure"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-work-item-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "derives canonical authority from the boundary and ignores spoofed headers",
+            "rejects identity-bearing and malformed bodies before calling the service",
+            "maps transaction authorization denial without exposing auth detail",
+            "redacts internal transaction failures",
+            "fails closed before route services when the composed boundary returns inconsistent access"
           ]
         },
         {
@@ -2482,10 +3506,18 @@
         },
         {
           "level": "integration",
-          "file": "scripts/verify-hosted-identity.ts",
-          "command": "hosted-identity",
+          "file": "scripts/verify-hosted-mutation-authorization.ts",
+          "command": "hosted-mutation-authorization",
           "anchors": [
-            "Hosted identity verification passed exact concurrent provisioning, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation"
+            "Hosted mutation verification passed exact user/session/workspace/membership locking, cross-tenant denial, logout/disable/expiry fencing, both revocation linearizations, and rollback isolation"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-oidc-composition.ts",
+          "command": "hosted-oidc-composition-db",
+          "anchors": [
+            "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
           ]
         }
       ]

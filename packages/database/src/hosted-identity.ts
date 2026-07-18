@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 
 import type {
   BrowserSessionRepository,
@@ -46,6 +46,7 @@ type HostedUserRow = typeof hostedUsers.$inferSelect;
 type ExternalIdentityRow = typeof externalIdentities.$inferSelect;
 type BrowserSessionRow = typeof browserSessions.$inferSelect;
 type WorkspaceMembershipRow = typeof workspaceMemberships.$inferSelect;
+type WorkspaceRow = typeof workspaces.$inferSelect;
 
 function mapHostedUser(row: HostedUserRow): HostedUser {
   return {
@@ -93,6 +94,15 @@ function mapWorkspaceMembership(row: WorkspaceMembershipRow): WorkspaceMembershi
     version: row.version,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function mapWorkspace(row: WorkspaceRow): Workspace {
+  return {
+    id: workspaceId(row.id),
+    name: row.name,
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
   };
 }
 
@@ -288,6 +298,22 @@ class PostgresHostedWorkspaceRepository implements HostedWorkspaceRepository {
 
   async insert(workspace: Workspace): Promise<void> {
     await this.database.insert(workspaces).values(workspace);
+  }
+
+  async listActiveForUser(
+    id: UserId,
+    limit: number,
+    offset: number,
+  ): Promise<readonly Workspace[]> {
+    const rows = await this.database
+      .select({ workspace: workspaces })
+      .from(workspaceMemberships)
+      .innerJoin(workspaces, eq(workspaces.id, workspaceMemberships.workspaceId))
+      .where(and(eq(workspaceMemberships.userId, id), eq(workspaceMemberships.status, "active")))
+      .orderBy(asc(workspaceMemberships.workspaceId))
+      .limit(limit)
+      .offset(offset);
+    return rows.map(({ workspace }) => mapWorkspace(workspace));
   }
 }
 

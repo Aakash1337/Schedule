@@ -36,6 +36,12 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm eval:features`                     | Validate feature-to-evidence traceability                                   | No                              |
 | `pnpm eval:planner`                      | Run deterministic planner quality scenarios                                 | No                              |
 | `pnpm test:coverage`                     | Run every unit/component test and enforce coverage floors                   | No                              |
+| `pnpm verify:oidc-token-exchange`        | Verify the one-shot OIDC code/token boundary and verifier handoff           | No                              |
+| `pnpm verify:oidc-direct-https`          | Verify DNS-pinned, proxy-free direct OIDC HTTPS egress                      | No                              |
+| `pnpm verify:hosted-oidc-lifecycle`      | Verify OIDC start/callback composition and hardened browser binding         | No                              |
+| `pnpm verify:hosted-oidc-composition`    | Verify the concrete hosted OIDC dependency graph                            | No                              |
+| `pnpm verify:hosted-oidc-composition-db` | Drive login, workspace discovery, and authorized work create                | Yes                             |
+| `pnpm verify:hosted-runtime-preflight`   | Verify secret parsing, startup construction, cleanup, and route gating      | No                              |
 | `pnpm eval`                              | Validate traceability and run the covered test suite                        | No                              |
 | `pnpm verify:database`                   | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
 | `pnpm verify:natural-language-proposals` | Verify private persistence and concurrent exactly-once confirmation         | Yes                             |
@@ -56,8 +62,8 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 81 test files and 1,196 runtime test cases. Three
-additional Playwright specifications contain eight live Chromium integration scenarios. Parameterized
+The package and script runners currently execute 119 test files and 2,017 runtime test cases. Three
+additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
 
@@ -65,11 +71,11 @@ an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      32 / 32 |
-| Critical implemented features with CI-registered integration or drills |      18 / 18 |
-| Partial features with an explicit limitation                           |        2 / 2 |
-| Deferred features explicitly tracked as not passing                    |        1 / 1 |
-| CI-registered evidence items                                           |          165 |
+| Implemented features with CI-registered evidence                       |      47 / 47 |
+| Critical implemented features with CI-registered integration or drills |      31 / 31 |
+| Partial features with an explicit limitation                           |        5 / 5 |
+| Deferred features explicitly tracked as not passing                    |        0 / 0 |
+| CI-registered evidence items                                           |          265 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -80,21 +86,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.17% |   70.46% |    67.22% | 59.58% |
+| Whole repository, measured |     59.01% |   70.52% |    66.77% | 59.54% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |     96.52% |   92.21% |    97.14% | 97.56% |
+| Domain, measured           |     94.75% |   91.41% |    93.35% | 95.79% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     90.54% |   84.47% |    99.24% | 91.28% |
+| Application, measured      |     89.81% |   83.27% |    98.61% | 90.78% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     86.49% |   75.97% |    75.50% | 87.87% |
+| API, measured              |     90.40% |   87.52% |    85.02% | 92.02% |
 | API, required              |        73% |      69% |       57% |    74% |
-| Worker, measured           |     92.26% |   89.18% |    91.11% | 95.14% |
+| Worker, measured           |     92.01% |   88.02% |    93.25% | 94.63% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     84.63% |   72.68% |    73.07% | 85.08% |
+| Web, measured              |     82.38% |   73.83% |    77.38% | 85.49% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 8,351 of 14,112 statements, 6,154 of 8,733 branches,
-1,856 of 2,761 functions, and 7,883 of 13,230 lines.
+The whole-repository totals are 11,536 of 19,546 statements, 8,496 of 12,047 branches,
+2,488 of 3,726 functions, and 10,895 of 18,296 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -311,28 +317,59 @@ order and evaluation time. Domain and repository bounds fail closed above 512 it
 candidate-derived total row ceiling. The calculation units verify half-up medians, the
 30-minute/20% and one-task/25%
 materiality thresholds, safe 30-minute/one-task floors, downward-only joint suggestions, canonical
-SHA-256 keys, and exact-key dismissal/reset resolution.
+SHA-256 keys, exact-key dismissal/reset resolution, and a separate pure outcome projection. Outcome
+units require a canonical `used` event, preserve suggested-versus-applied targets, withhold partial
+completion, distinguish pending/resolved/not-evaluable plans, and identify a later current revision.
+Aggregate units partition every use by status and exact-versus-edited provenance, exclude revised or
+unsettled outcomes from weighted totals, keep target-fill and plan-completion denominators separate,
+round half-up basis points, remain permutation invariant, and fail closed on duplicate, cross-tenant,
+or malformed resolved evidence. Today component evidence withholds those rates until three settled,
+unrevised uses are available.
 
 Application units require tenant-first lookup, the bounded 90-day/90-candidate repository request,
-lowercase-canonical workspace locking, read-committed feedback transactions, evidence revalidation before append, exact
-idempotent replay before recalculation, semantic-key conflict rejection, and valid disposition
-transitions. Repository and schema tests cover one bounded current-head projection, malformed target
-exclusion, deterministic item grouping, tenant-bound append-only feedback, database-allocated
-ingestion order, and workspace-scoped idempotency. API units cover explicit local-date validation,
-strict lowercase SHA-256 feedback payloads, required idempotency, service delegation, and `409`
-mapping for stale evidence. Web API and Today component units cover all visible states, retry,
-stale-response protection, exact-key hide/restore, accessible focus and announcements, and the
-central authority rule: using a suggestion only prefills both fields and cannot generate a plan.
+lowercase-canonical workspace locking, a physical SSI guard for serializable waiters, read-committed
+disposition transactions, serializable atomic generation receipts, evidence revalidation before append, exact idempotent replay before
+recalculation, semantic-key conflict rejection, and valid disposition transitions. Usage-list units
+require a bounded tenant read and one bulk current-head lookup; the summary use case reuses that exact
+read and opens no second transaction. Repository and schema tests cover one
+bounded current-head projection, malformed target exclusion, deterministic item grouping,
+tenant-bound append-only feedback, the used-event shape and plan foreign key, database-allocated
+ingestion order, bounded reverse usage order, and workspace-scoped idempotency. API units cover
+explicit local-date validation, strict lowercase SHA-256 feedback and generation provenance,
+required idempotency, bounded history delegation, and `409` mapping for stale evidence. Web API and
+Today component units cover all visible states, retry, stale-response protection, exact-key
+hide/restore, accessible focus and announcements, suggested-versus-applied outcome rendering,
+independent summary loading/failure/retry, neutral rate wording, and prior-workspace response rejection.
+The central authority rule remains: selecting a suggestion only prefills both fields and records
+nothing until explicit generation.
 
 The PostgreSQL verifier creates four real routines and three resolved current heads, derives the
 expected 90-minute/two-task suggestion from 180-minute/four-task plans, exercises dismiss/reset and
 exact replay, rejects semantic idempotency reuse and direct feedback UPDATE/DELETE, proves feedback
 does not mutate plan heads, proves mixed-case UUID spelling queues behind the same real PostgreSQL
-advisory lock, and changes terminal evidence so the old dismissal cannot hide the new key. The live
-Chromium flow repeats the visible lifecycle through built processes, real routes,
-migrations, and a disposable database, and confirms that plan creation occurs only after the user
-submits the prefilled form. These checks establish the implementation contract, not that its
-thresholds improve completion or wellbeing for a particular user.
+advisory lock, proves a queued dismissal forces selected generation to retry and reject without a
+write, and changes terminal evidence so the old dismissal cannot hide the new key. The live
+PostgreSQL path then rejects stale selected evidence before any write, atomically stores one use with
+edited targets, deduplicates exact generation retry, proves tenant isolation and read-only history,
+advances pending to resolved only after every item is terminal, flags a later revision, and rejects
+direct mutation of the used receipt. At the same points it proves empty, pending, resolved, and revised
+aggregate projections, exact-versus-edited counts, weighted integer rates, and exclusion of a later
+revision from all totals. The live Chromium flow repeats that lifecycle through built
+processes, real routes, migrations, and a disposable database: prefill leaves history empty, stale
+generation fails closed, exact retry stays singular, resolved history and the low-sample summary gate
+render, and a later revision is disclosed and excluded from comparison. These checks establish the implementation
+contract, not that its thresholds or suggestions improve completion or wellbeing for a particular
+user.
+
+### Planning-outcomes evidence
+
+The general planning-outcomes read has domain, application, API, client, and Today component oracles.
+They require exactly the 30 local dates before the selected date, one authoritative current head per
+date, weighted task and scheduled-minute totals, current completed-state projection, half-up basis
+points, explicit zero-denominator handling, and an additional-revision count. Invalid dates,
+cross-workspace plans, duplicate dates, inconsistent totals, retry, and the three-plan display gate
+are covered. The implementation reuses an existing bounded repository projection and adds no schema,
+telemetry, or planner input; it is not evidence of causal improvement or a planner-version comparison.
 
 ### Daily-plan alternative evidence
 
@@ -471,10 +508,11 @@ The audit deliberately leaves these visible instead of turning them into false g
   idempotent replay, tenant isolation, pagination/filter behavior, and atomic rollback against
   disposable PostgreSQL; it also proves bounded retention cleanup deletes only
   eligible old receipts/confirmations while preserving fresh, processing, referenced, and audit
-  rows. The separate Hermes adapter verifier covers deterministic plugin tests and a disposable
-  PostgreSQL/real Fastify prepare-and-confirm flow, including no mutation before confirmation and
-  exact idempotent execution. Neither verifier exercises a live WhatsApp account, phone delivery,
-  provider receipt, or natural-language quality benchmark;
+  rows. The separate Hermes adapter verifier covers deterministic plugin tests, runtime-only bundle
+  installation into a temporary Hermes home, and a disposable PostgreSQL/real Fastify
+  prepare-and-confirm flow, including no mutation before confirmation and exact idempotent
+  execution. Neither verifier loads a live Hermes runtime or exercises a WhatsApp account, phone
+  delivery, provider receipt, or natural-language quality benchmark;
 - the outbound webhook verifier covers real PostgreSQL endpoint/secret lifecycles, workspace
   isolation, default-empty and replacement subscription state, privacy-thin automatic Today-change
   fan-out, deterministic event identity, immutable delivery/outbox linkage, dead-letter metadata,
@@ -520,24 +558,32 @@ The audit deliberately leaves these visible instead of turning them into false g
   aggregates, materialization/outbox instrumentation, private-data exclusion, database-failure
   `NaN` semantics, and graceful shutdown. It does not install a scraper, persist time-series data,
   deliver alerts, expose a hosted dashboard, or monitor future browser authentication;
-- hosted identity persistence has domain, application, schema, adapter, populated-upgrade, and
-  disposable-PostgreSQL evidence for exact concurrent issuer/subject provisioning, digest-only
-  sessions, rotation replay resistance, user-disable revocation, binary membership isolation,
-  hosted workspace provisioning beyond the local cap, and user-deletion preservation of workspace
-  product data. A centralized hosted request boundary additionally has unit and disposable-
-  PostgreSQL evidence for request isolation, single authentication, spoof resistance,
-  enumeration-resistant membership denial, redacted failures, immutable workspace contexts, and
-  post-revocation fencing. Both remain dormant: there is no browser route, provider
-  verification, cookie/CSRF policy, transaction-coupled product mutation authorization, public
-  deployment, or synchronization;
-- eight live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
+- hosted OIDC has domain, application, schema, adapter, component, and disposable-PostgreSQL
+  evidence for exact concurrent identity plus default-workspace provisioning, digest-only sessions,
+  hardened cookies, exact-Origin CSRF, single-use login/PKCE, nonce-bound verification, pinned
+  metadata/JWKS/token HTTPS, bounded client tracking, generic tenant denial, and transaction-coupled
+  work creation. Active workspace discovery and the fixed first-20 backlog projection have route,
+  component, browser, and database evidence for bounded membership-scoped reads without identity,
+  role, description, or planning metadata. The enabled composition
+  verifier parses production configuration, builds the real route graph with a strict in-process
+  provider, proves local product routes absent, drives login, the hardened same-origin capture
+  shell, discovery, one bounded backlog read, and one authorized create, then checks logout and
+  cleanup. A separate built Chromium flow covers signed-out/authenticated capture, backlog refresh,
+  exact CSRF forwarding, and 360-pixel
+  layout. Disabled-mode route closure and redacted startup failure remain independently verified.
+  This evidence does not cover a real external provider, TLS ingress, workspace administration, the
+  broader product API/interface, public deployment, or synchronization;
+- ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a
   320px subtask create/complete/reload/detach/reparent/overflow flow with leaf-only planning, plus
+  explicit routine ranking preferences and deterministic alternative comparison and selection, plus
   explicit reminder setup, rule/one-off changes, materialization, safe execution history, and
-  a 320px reminder layout, plus local proposal review/edit/confirm/replay/cancel/reload behavior
-  against a strict loopback model double. They do not cover every browser, every responsive breakpoint, every
-  validation branch, Calendar interaction, or the duration-calibration approval flow;
+  a 320px reminder layout, deterministic Daily Plan Fit prefill/dismissal/reset, stale-key rejection,
+  explicit generation receipts, resolved outcomes, and revision disclosure, plus local proposal
+  review/edit/confirm/replay/cancel/reload behavior against a strict loopback model double. They do
+  not cover every browser, every responsive breakpoint, every validation branch, Calendar
+  interaction, or the duration-calibration approval flow;
 - work-item dependencies have domain, application, repository, API, component, and real PostgreSQL
   evidence, including a two-request reciprocal-add concurrency drill and the 320px live browser flow;
   dependency management is not exposed through the authenticated integration gateway;
@@ -550,10 +596,12 @@ The audit deliberately leaves these visible instead of turning them into false g
   exact-key dismissal/reset now preserves reversible rejection memory. It still has no production
   outcome data, learned cadence/energy/preference model, automatic application, historical insight
   comparison, or local-model participation; and
-- Daily Plan Fit has deterministic cross-layer and live-browser evidence but no production outcome
-  data for its 90-day window, minimum sample, medians, thresholds, or acceptance rate. It does not
-  recommend increases, learn a per-user policy, apply automatically, compare historical suggestion
-  outcomes, or use a model; and
+- Daily Plan Fit has deterministic cross-layer and live-browser evidence plus local descriptive use
+  receipts, pending, resolved, and not-evaluable outcome history with later revision disclosed
+  separately, and bounded descriptive aggregate rates, but no production evidence for its 90-day
+  window, three-use display threshold, medians, acceptance rate, or causal effect. It does not
+  recommend increases, infer improvement or causal effectiveness, learn a per-user policy, apply
+  automatically, feed outcomes into scoring, or use a model; and
 - the local-model advisor has CI unit/component evidence for its configuration, application,
   transport, API, and UI boundaries, while a real Ollama/Gemma call remains an operator-run smoke
   check. The separate Work capture supports one reviewed backlog title with CI and PostgreSQL/browser

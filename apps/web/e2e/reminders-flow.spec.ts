@@ -35,7 +35,7 @@ test("configures, materializes, audits, and responsively renders reminders throu
     }
   });
 
-  await page.clock.install({ time: new Date("2026-07-15T12:00:00.000Z") });
+  await page.clock.install({ time: new Date() });
   const workspaceResponse = await page.request.post("/v1/workspaces", {
     data: { name: "Reminder browser verification" },
   });
@@ -78,7 +78,12 @@ test("configures, materializes, audits, and responsively renders reminders throu
 
   const reminderTitle = "Bring the passport";
   await page.getByRole("textbox", { name: "Reminder title" }).fill(reminderTitle);
-  await page.getByLabel("Date and time on this device").fill("2026-07-15T13:00");
+  const reminderLocalTime = await page.evaluate(() => {
+    const instant = new Date(Date.now() + 2 * 60 * 60_000);
+    const local = new Date(instant.getTime() - instant.getTimezoneOffset() * 60_000);
+    return local.toISOString().slice(0, 16);
+  });
+  await page.getByLabel("Date and time on this device").fill(reminderLocalTime);
   const reminderResponsePromise = page.waitForResponse((response) =>
     isMutationResponse(response, "POST", /^\/v1\/workspaces\/[^/]+\/one-off-reminders$/),
   );
@@ -94,7 +99,17 @@ test("configures, materializes, audits, and responsively renders reminders throu
     ),
   );
   await page.getByRole("button", { name: "Refresh planned reminders" }).click();
-  expect((await materializeResponsePromise).status()).toBe(200);
+  const materializeResponse = await materializeResponsePromise;
+  expect(materializeResponse.status()).toBe(200);
+  const materialization = (await materializeResponse.json()) as {
+    readonly created: readonly { readonly titleSnapshot: string | null }[];
+    readonly existing: readonly { readonly titleSnapshot: string | null }[];
+  };
+  expect(
+    [...materialization.created, ...materialization.existing].some(
+      (intent) => intent.titleSnapshot === reminderTitle,
+    ),
+  ).toBe(true);
   await expect(page.getByRole("heading", { name: "Planned reminders" })).toBeVisible();
   await expect(page.getByRole("heading", { name: reminderTitle })).toBeVisible();
 

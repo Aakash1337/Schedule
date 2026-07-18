@@ -1,0 +1,1 @@
+CREATE INDEX "workspace_memberships_user_status_workspace_idx" ON "workspace_memberships" USING btree ("user_id","status","workspace_id");

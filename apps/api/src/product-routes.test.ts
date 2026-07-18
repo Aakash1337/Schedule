@@ -29,8 +29,11 @@ import {
   workItemId,
   workspaceId,
   type DailyPlan,
+  type DailyPlanFitEffectiveness,
   type DailyPlanFitInsight,
   type DailyPlanFitInsightFeedback,
+  type DailyPlanFitUsageOutcome,
+  type PlanningOutcomes,
   type RoutineDurationInsight,
   type RoutineDurationInsightFeedback,
   type WorkItemDependency,
@@ -138,6 +141,7 @@ const planFitFeedback = {
   forDate: planFitInsight.forDate,
   insightKey: planFitInsightKey,
   kind: "dismissed",
+  planId: null,
   sampleCount: 5,
   typicalPlannedMinutes: 180,
   typicalCompletedMinutes: 90,
@@ -145,9 +149,66 @@ const planFitFeedback = {
   typicalCompletedTaskCount: 2,
   suggestedTargetMinutes: 90,
   suggestedTargetTaskCount: 2,
+  appliedTargetMinutes: null,
+  appliedTargetTaskCount: null,
   idempotencyKey: "dismiss-plan-fit",
   recordedAt: new Date("2026-07-15T12:03:00.000Z"),
 } satisfies DailyPlanFitInsightFeedback;
+const planFitUsageOutcome = {
+  usageId: dailyPlanFitInsightFeedbackId("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeef"),
+  workspaceId: workspace.id,
+  forDate: localDate("2026-07-14"),
+  insightKey: planFitInsightKey,
+  recordedAt: new Date("2026-07-14T12:00:00.000Z"),
+  sourcePlanId: dailyPlanId(planUuid),
+  currentPlanId: dailyPlanId(planUuid),
+  currentPlanRevision: 1,
+  currentHeadVersion: 1,
+  revisedSinceUsage: false,
+  status: "resolved",
+  suggestedTargetMinutes: 90,
+  suggestedTargetTaskCount: 2,
+  appliedTargetMinutes: 105,
+  appliedTargetTaskCount: 3,
+  usedExactSuggestion: false,
+  plannedMinutes: 90,
+  plannedTaskCount: 2,
+  completedMinutes: 60,
+  completedTaskCount: 1,
+} satisfies DailyPlanFitUsageOutcome;
+const planFitEffectiveness = {
+  usesConsidered: 1,
+  resolvedUseCount: 1,
+  pendingUseCount: 0,
+  notEvaluableUseCount: 0,
+  revisedUseCount: 0,
+  eligibleResolvedUseCount: 1,
+  exactSuggestionUseCount: 0,
+  editedSuggestionUseCount: 1,
+  appliedTargetMinutes: 105,
+  scheduledMinutes: 90,
+  completedMinutes: 60,
+  appliedTargetTaskCount: 3,
+  scheduledTaskCount: 2,
+  completedTaskCount: 1,
+  scheduledMinutesRateBasisPoints: 8_571,
+  scheduledTasksRateBasisPoints: 6_667,
+  completionMinutesRateBasisPoints: 6_667,
+  completionTasksRateBasisPoints: 5_000,
+} satisfies DailyPlanFitEffectiveness;
+const planningOutcomes = {
+  forDate: localDate("2026-07-15"),
+  windowStartedOn: localDate("2026-06-15"),
+  windowEndedOn: localDate("2026-07-14"),
+  plansConsidered: 4,
+  plannedTaskCount: 10,
+  completedTaskCount: 7,
+  plannedMinutes: 300,
+  completedMinutes: 210,
+  additionalPlanRevisionCount: 2,
+  completionTasksRateBasisPoints: 7_000,
+  completionMinutesRateBasisPoints: 7_000,
+} satisfies PlanningOutcomes;
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -372,6 +433,9 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
     },
     getRoutineDurationInsight: async () => durationInsight,
     getDailyPlanFitInsight: async () => planFitInsight,
+    listDailyPlanFitUsageOutcomes: async () => [planFitUsageOutcome],
+    getDailyPlanFitEffectiveness: async () => planFitEffectiveness,
+    getPlanningOutcomes: async () => planningOutcomes,
     resetDailyPlanFitInsightDismissal: async () => ({
       ...planFitFeedback,
       kind: "reset",
@@ -1481,13 +1545,25 @@ describe("local product API", () => {
     });
   });
 
-  it("serves and records exact-key Daily Plan Fit guidance for an explicit local date", async () => {
+  it("serves planning outcomes and exact-key Daily Plan Fit guidance for one local date", async () => {
     const commands: unknown[] = [];
     const app = await appWith(
       createHarness({
         getDailyPlanFitInsight: async (query) => {
           commands.push(query);
           return planFitInsight;
+        },
+        listDailyPlanFitUsageOutcomes: async (query) => {
+          commands.push(query);
+          return [planFitUsageOutcome];
+        },
+        getDailyPlanFitEffectiveness: async (query) => {
+          commands.push(query);
+          return planFitEffectiveness;
+        },
+        getPlanningOutcomes: async (query) => {
+          commands.push(query);
+          return planningOutcomes;
         },
         dismissDailyPlanFitInsight: async (command) => {
           commands.push(command);
@@ -1503,6 +1579,18 @@ describe("local product API", () => {
     const read = await app.inject({
       method: "GET",
       url: `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight?forDate=2026-07-15`,
+    });
+    const history = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight/usages?limit=3`,
+    });
+    const effectiveness = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight/effectiveness`,
+    });
+    const outcomes = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/planning-outcomes?forDate=2026-07-15`,
     });
     const dismiss = await app.inject({
       method: "POST",
@@ -1524,9 +1612,27 @@ describe("local product API", () => {
       suggestedTargetMinutes: 90,
       suggestedTargetTaskCount: 2,
     });
+    expect(history.statusCode).toBe(200);
+    expect(history.json()).toMatchObject({
+      items: [
+        {
+          status: "resolved",
+          forDate: "2026-07-14",
+          appliedTargetMinutes: 105,
+          completedMinutes: 60,
+        },
+      ],
+    });
+    expect(effectiveness.statusCode).toBe(200);
+    expect(effectiveness.json()).toEqual(planFitEffectiveness);
+    expect(outcomes.statusCode).toBe(200);
+    expect(outcomes.json()).toEqual(planningOutcomes);
     expect(dismiss.statusCode).toBe(200);
     expect(reset.statusCode).toBe(200);
     expect(commands).toEqual([
+      { workspaceId: workspace.id, forDate: localDate("2026-07-15") },
+      { workspaceId: workspace.id, limit: 3 },
+      { workspaceId: workspace.id, limit: 28 },
       { workspaceId: workspace.id, forDate: localDate("2026-07-15") },
       {
         workspaceId: workspace.id,
@@ -1557,6 +1663,14 @@ describe("local product API", () => {
     const path = `/v1/workspaces/${workspaceUuid}/daily-plan-fit-insight`;
 
     const invalidDate = await app.inject({ method: "GET", url: `${path}?forDate=2026-02-30` });
+    const invalidEffectivenessLimit = await app.inject({
+      method: "GET",
+      url: `${path}/effectiveness?limit=29`,
+    });
+    const invalidPlanningOutcomesDate = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/planning-outcomes?forDate=2026-02-30`,
+    });
     const missingHeader = await app.inject({
       method: "POST",
       url: `${path}/dismissals`,
@@ -1576,6 +1690,8 @@ describe("local product API", () => {
     });
 
     expect(invalidDate.statusCode).toBe(400);
+    expect(invalidEffectivenessLimit.statusCode).toBe(400);
+    expect(invalidPlanningOutcomesDate.statusCode).toBe(400);
     expect(missingHeader.statusCode).toBe(400);
     expect(unknownField.statusCode).toBe(400);
     expect(stale.statusCode).toBe(409);
@@ -2120,6 +2236,7 @@ describe("local product API", () => {
         availableContexts: ["computer"],
         seed: "api-plan",
         requestRevision: 1,
+        planFitInsightKey,
       },
     });
     const retrieved = await app.inject({
@@ -2131,6 +2248,7 @@ describe("local product API", () => {
     expect(generated.json()).toMatchObject({ id: planUuid, requestRevision: 1 });
     expect(generated.json()).not.toHaveProperty("inputSnapshot");
     expect(generated.json().request.availableWindows).toHaveLength(1);
+    expect(generated.json().request.planFitInsightKey).toBe(planFitInsightKey);
     expect(retrieved.statusCode).toBe(200);
     expect(retrieved.json()).toEqual(generated.json());
   });
@@ -3299,7 +3417,7 @@ describe("local product API", () => {
     expect(response.body).not.toContain("password");
   });
 
-  it("redacts and code-only logs corrupt planning work-item graphs", async () => {
+  it("redacts and code-only logs corrupt planning projections", async () => {
     const logLines: string[] = [];
     const app = await buildApp({
       logger: {
@@ -3317,34 +3435,47 @@ describe("local product API", () => {
             "private graph row contents must never leave the server",
           );
         },
+        getPlanningOutcomes: async () => {
+          throw new DomainError(
+            "planning.outcomes_plan_total_mismatch",
+            "private plan row contents must never leave the server",
+          );
+        },
       }).services,
     });
     apps.push(app);
 
-    const response = await app.inject({
-      method: "GET",
-      url: `/v1/workspaces/${workspaceUuid}/work-item-dependencies`,
-    });
+    const responses = await Promise.all([
+      app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${workspaceUuid}/work-item-dependencies`,
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${workspaceUuid}/planning-outcomes?forDate=2026-07-15`,
+      }),
+    ]);
     const logRecords = logLines.map(
       (line) => JSON.parse(line) as Readonly<Record<string, unknown>>,
     );
-    const invariantLogs = logRecords.filter(
-      (record) => record.code === "planning.work_item_graph_corrupt",
-    );
+    const invariantLogs = logRecords.filter((record) => record.msg === "planning invariant failed");
 
-    expect(response.statusCode).toBe(500);
-    expect(response.json().error).toEqual({
-      code: "internal.unexpected_error",
-      message: "An unexpected error occurred.",
-    });
-    expect(response.body).not.toContain("private graph row contents");
-    expect(invariantLogs).toHaveLength(1);
-    expect(invariantLogs[0]).toMatchObject({
-      level: 50,
-      code: "planning.work_item_graph_corrupt",
-      msg: "planning invariant failed",
-    });
-    expect(invariantLogs[0]).not.toHaveProperty("err");
-    expect(logLines.join("\n")).not.toContain("private graph row contents");
+    for (const response of responses) {
+      expect(response.statusCode).toBe(500);
+      expect(response.json().error).toEqual({
+        code: "internal.unexpected_error",
+        message: "An unexpected error occurred.",
+      });
+      expect(response.body).not.toContain("private");
+    }
+    expect(invariantLogs.map((record) => record.code).sort()).toEqual([
+      "planning.outcomes_plan_total_mismatch",
+      "planning.work_item_graph_corrupt",
+    ]);
+    for (const record of invariantLogs) {
+      expect(record).toMatchObject({ level: 50, msg: "planning invariant failed" });
+      expect(record).not.toHaveProperty("err");
+    }
+    expect(logLines.join("\n")).not.toContain("private");
   });
 });

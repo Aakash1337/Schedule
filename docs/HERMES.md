@@ -240,20 +240,19 @@ when its environment can be isolated from the interactive plugin.
 ### Install and enable
 
 The repository-owned source is [`integrations/hermes-schedule`](../integrations/hermes-schedule).
-Install it as a user plugin rather than enabling project-plugin discovery. From the Schedule
-repository on Windows PowerShell:
+Its installer copies only the plugin runtime and deterministic reminder files into the active
+Hermes home. It does not read or write secrets, enable the plugin, restart Hermes, create a cron
+job, or send a message:
 
 ```powershell
-$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { Join-Path $HOME ".hermes" }
-$PluginRoot = Join-Path $HermesHome "plugins"
-New-Item -ItemType Directory -Force $PluginRoot | Out-Null
-Copy-Item .\integrations\hermes-schedule `
-  (Join-Path $PluginRoot "hermes-schedule") -Recurse
+python .\integrations\hermes-schedule\install.py check
+python .\integrations\hermes-schedule\install.py install
 ```
 
-If the destination already exists, stop Hermes and replace that directory as one unit instead of
-mixing files from two plugin versions. Configure the process environment before enabling the copied
-plugin.
+`check` is read-only and exits nonzero when either bundle is missing or differs. For an upgrade,
+stop Hermes and pass `install --replace`; the installer stages each complete bundle before replacing
+the old directory. Bundles are replaced separately, so rerun `check` after an interrupted install
+before enabling anything. Configure the process environment before enabling the copied plugin.
 
 Set these variables in the environment of the Hermes process:
 
@@ -370,21 +369,14 @@ dedupe store, or supervised TypeScript polling runtime described above. Hermes o
 local or WhatsApp delivery, so this path does not create Schedule delivery history or provider
 receipts.
 
-To run the same deterministic script through Hermes cron without an LLM, copy it to Hermes's script
-directory and create a local-delivery job:
+The installer also places the matching reminder and client files under
+`$HERMES_HOME/scripts/schedule-reminder`. Create a local-delivery job first so no phone message can
+be sent during initial validation:
 
 ```powershell
-$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { Join-Path $HOME ".hermes" }
-$ScriptRoot = Join-Path $HermesHome "scripts"
-New-Item -ItemType Directory -Force $ScriptRoot | Out-Null
-Copy-Item .\integrations\hermes-schedule\reminder.py `
-  (Join-Path $ScriptRoot "schedule-reminder.py")
-Copy-Item .\integrations\hermes-schedule\client.py `
-  (Join-Path $ScriptRoot "client.py")
-
 hermes cron create "0 9 * * *" `
   --name "Schedule morning reminder" `
-  --script schedule-reminder.py `
+  --script schedule-reminder/reminder.py `
   --no-agent `
   --deliver local
 
@@ -394,8 +386,7 @@ hermes cron list
 The cron scheduler process must receive the same Schedule URL and token environment. `--no-agent`
 is a security and determinism requirement here: it delivers the script's standard output verbatim
 rather than asking a model to rewrite it. Use `hermes cron run <job-id>` and inspect the local result
-before changing the target. Keep `schedule-reminder.py` and its adjacent `client.py` from the same
-repository revision; recopy both when upgrading the adapter.
+before changing the target. `install.py check` detects a mixed or stale reminder bundle.
 
 Only after local output is correct and Hermes's own WhatsApp transport is healthy should the
 operator configure its home channel and create or edit a delivery with:
@@ -405,7 +396,7 @@ $env:WHATSAPP_HOME_CHANNEL = "<operator-owned-self-chat-channel>"
 
 hermes cron create "0 9 * * *" `
   --name "Schedule WhatsApp morning reminder" `
-  --script schedule-reminder.py `
+  --script schedule-reminder/reminder.py `
   --no-agent `
   --deliver whatsapp
 ```

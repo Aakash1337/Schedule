@@ -23,6 +23,22 @@ pnpm db:migrate
 pnpm dev
 ```
 
+## Hosted capture entry
+
+The same package builds a separate `hosted.html` entry for explicit OIDC mode. It reuses the product
+controls and visual tokens but includes only session bootstrap, active-workspace discovery, sign
+in/out, one fixed first-page backlog snapshot, and one title-only backlog form. The API serves that
+build from the same origin, so the
+browser never needs CORS, provider tokens, or a second frontend service. The local application and
+its unauthenticated routes are not bundled into the hosted entry.
+
+The hosted shell shows a workspace selector only when more than one active membership exists. It
+stores only that selection in browser storage, sends the exact script-readable CSRF proof on
+mutations, and treats session, access, throttling, and availability failures as bounded states. It
+shows only the first 20 backlog titles, refreshes that snapshot after capture, and keeps a failed
+read independent from the form. It cannot page, filter, or edit work and does not imply
+synchronization.
+
 ## Information architecture
 
 The application uses a persistent desktop rail and a compact mobile navigation bar:
@@ -35,7 +51,8 @@ The application uses a persistent desktop rail and a compact mobile navigation b
    instructions appear in a separate **Temporarily hidden** list with an Undo control. When a plan
    exists, **Ask local advisor** can request an optional, read-only review of that exact plan and its
    eligible backlog. Before generation, **Deterministic Plan Fit** explains whether enough resolved
-   history exists, whether recent targets fit, or whether a smaller joint time/task target may help.
+   history exists, whether recent targets fit, or whether a smaller joint time/task target may help;
+   explicit uses later appear in a read-only outcome history.
 2. **Work** groups one-time work items into the six supported status columns. Status changes use
    explicit controls because manual card ranking is not part of the API contract. Titles,
    descriptions, priority, status, optional local **Due date**, and an explicit **Include in Today**
@@ -217,9 +234,35 @@ scheduled duration of completed items. A plan counts only after every item is te
 
 **Use _n_ minutes and _n_ tasks** only copies both suggested values into the editable fields, moves
 focus to the first target, and announces the result. It never submits the form. The user can review
-or change either field and must still choose **Generate today's plan**. The generated request and its
-persisted immutable snapshot therefore contain the values the user explicitly submitted, not a
-background recommendation.
+or change either field and must still choose **Generate today's plan**. Prefilling creates no history
+entry. The later generated request carries the selected evidence key plus the values the user
+explicitly submitted. If that evidence changed, the browser clears the selection, reloads current
+guidance, and leaves the date without a plan; it never silently generates from the stale choice.
+
+**Plan Fit outcome summary** and **After using Plan Fit** remain visible while the generated current
+plan is on screen. The bounded read-only history distinguishes the
+original suggestion from the final edited targets, labels a use as pending until every current-plan
+item is terminal, then shows completed scheduled workload for a resolved day. If the day was later
+regenerated or otherwise revised, `revisedSinceUsage` discloses that separately while the row
+evaluates the current head and preserves the original source plan. Missing or empty current plans are
+labelled not evaluable. Loading, retry,
+empty, and error states are independent of the guidance read, and fetching history cannot submit the
+form or mutate planner state.
+
+**Plan Fit outcome summary** is an independent workspace-scoped read of the newest 28 explicit uses.
+It shows how many settled, unrevised uses support comparison, the separate time/task proportions of
+submitted targets that were scheduled, and the proportions of scheduled plans that were completed.
+Pending, revised, and not-evaluable uses remain visible as counts but never enter those rates. Exact
+suggestion and edited-before-generation counts preserve user authority. Loading, failure, retry, empty,
+and zero-eligible states are independent from both guidance and row history, and stale workspace/date
+responses are aborted and ignored. The copy calls the summary descriptive, never improvement, success,
+causal lift, or learned adaptation.
+
+The separate **Planning outcomes** card summarizes the final current heads from the prior 30 local
+dates whether or not Plan Fit was used. It shows weighted completed-versus-planned scheduled time and
+task totals after three plan days, plus the number of additional revisions. Empty, insufficient,
+loading, failure, and retry states stay inline. The card reuses existing Today presentation styles,
+writes nothing, and never changes guidance, planning, or model input.
 
 **Not now** appends feedback for the exact evidence key and refetches the panel. A paused suggestion
 keeps its evidence visible and offers **Show again**. Ambiguous retry retains the same idempotency
@@ -347,16 +390,20 @@ intents, inserts an execution fixture through the isolated PostgreSQL test bound
 real product-safe history route and UI at desktop and 320px without request interception. Another
 prepares one title through a strict loopback Ollama double, proves no card exists before confirmation,
 edits and confirms through the real API, verifies focus, and reloads the persisted backlog item. A
-Daily Plan Fit scenario creates three fully resolved historical plans, observes a joint 90-minute/two-task suggestion,
-dismisses and restores its exact key, copies both targets without creating a plan, and then generates
-only through the explicit form submission. The alternatives scenario compares deterministic choices,
-selects one exactly once, reloads it, and rejects a stale selection.
+Daily Plan Fit scenario creates three fully resolved historical plans, observes a joint
+90-minute/two-task suggestion, dismisses and restores its exact key, rejects a stale selected key
+without creating a plan or receipt, and proves that copying both targets still writes no history. It
+edits the targets, generates explicitly, replays the request without duplicating usage, resolves the
+plan, renders the outcome on the next no-plan day, revises the original day, and renders the revision
+notice. The alternatives scenario compares deterministic choices, selects one exactly once, reloads
+it, and rejects a stale selection.
 
 Install the local browser binary once, then run the bounded verifier:
 
 ```powershell
 pnpm exec playwright install chromium
 pnpm verify:web-e2e
+pnpm verify:hosted-web-e2e
 ```
 
 The verifier builds the API and web application, allocates unused loopback ports, starts an isolated
@@ -368,9 +415,14 @@ and failure both stop the web process tree and remove the disposable container, 
 database; a leaked port or failed cleanup makes the command fail. GitHub CI runs the same command in
 a dedicated Chromium job and retains traces, screenshots, and video when it fails.
 
+The hosted verifier builds its isolated entry and uses a strict in-browser API double to exercise
+signed-out and authenticated capture, exact request verification, workspace selection, and mobile
+layout. The PostgreSQL/OIDC composition verifier separately covers the real server and database
+boundary. A staging HTTPS smoke with the selected identity provider remains required.
+
 ## Deliberately deferred
 
-- Public hosting and production static serving until authentication and authorization exist
+- The broader hosted product interface, external-provider smoke, and verified public deployment
 - Drag ranking, bulk editing, projects, checklists, attachments, and saved searches
 - Recurrence authoring, calendar conflict detection, and automatic placement
 - Generalized plan undo

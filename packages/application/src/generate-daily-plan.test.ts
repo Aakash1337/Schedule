@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { DomainError } from "@schedule/domain";
 import {
+  activityEventId,
+  calculateDailyPlanFitInsight,
   createCadencePolicy,
   createDailyPlanningRequest,
   createDurationRange,
@@ -12,10 +14,14 @@ import {
   createWorkspace,
   dailyPlanId,
   generateDailyPlan,
+  localDate,
+  planItemId,
   routineId,
   workItemId,
   workspaceId,
   type DailyPlan,
+  type DailyPlanFitEvidencePlan,
+  type DailyPlanFitInsightFeedback,
   type PlanningWorkItemDependency,
   type Routine,
   type WorkItem,
@@ -52,14 +58,43 @@ describe("GenerateDailyPlan", () => {
     seed: "application-plan",
   });
 
+  function fitEvidence(sequence: number): DailyPlanFitEvidencePlan {
+    const date = localDate(`2026-07-${String(9 + sequence).padStart(2, "0")}`);
+    return {
+      workspaceId: workspace,
+      planId: dailyPlanId(`application-plan-fit-evidence-${sequence}`),
+      date,
+      targetMinutes: 180,
+      targetTaskCount: 4,
+      items: [
+        {
+          id: planItemId(`application-plan-fit-item-${sequence}-a`),
+          scheduledMinutes: 60,
+          activityState: "completed",
+          lastActivityEventId: activityEventId(`application-plan-fit-event-${sequence}-a`),
+        },
+        {
+          id: planItemId(`application-plan-fit-item-${sequence}-b`),
+          scheduledMinutes: 60,
+          activityState: "skipped",
+          lastActivityEventId: activityEventId(`application-plan-fit-event-${sequence}-b`),
+        },
+      ],
+    };
+  }
+
   function harness(
     existing?: DailyPlan,
     routineCandidates: readonly Routine[] = [routine],
     workItemCandidates: readonly WorkItem[] = [],
     workspaceExists = true,
     workItemDependencies: readonly PlanningWorkItemDependency[] = [],
+    planFitEvidence: readonly DailyPlanFitEvidencePlan[] = [],
+    initialPlanFitFeedback: readonly DailyPlanFitInsightFeedback[] = [],
   ) {
     let stored = existing;
+    const planFitFeedback = [...initialPlanFitFeedback];
+    let planFitFeedbackSequence = planFitFeedback.length;
     let dependencyLockCount = 0;
     const planningGraphLoads: Array<{ workItemLimit: number; dependencyLimit: number }> = [];
     const context = {
@@ -103,6 +138,7 @@ describe("GenerateDailyPlan", () => {
           stored === undefined || !dates.includes(stored.date)
             ? new Map()
             : new Map([[stored.date, { plan: stored, headVersion: 1 }]]),
+        listFitEvidence: async () => planFitEvidence,
         setItemLock: async (input) => ({
           planId: input.expectedPlanId,
           itemId: input.itemId,
@@ -120,6 +156,26 @@ describe("GenerateDailyPlan", () => {
         listRoutineFeedbackForPlanning: async () => [],
         appendRoutineFeedback: async (feedback) => feedback,
       },
+      dailyPlanFitInsightFeedback: {
+        lockWorkspace: async () => undefined,
+        findLatestForKey: async (_workspaceId, insightKey) =>
+          [...planFitFeedback].reverse().find((feedback) => feedback.insightKey === insightKey) ??
+          null,
+        findByIdempotencyKey: async (_workspaceId, idempotencyKey) =>
+          planFitFeedback.find((feedback) => feedback.idempotencyKey === idempotencyKey) ?? null,
+        listUsed: async (_workspaceId, limit) =>
+          planFitFeedback.filter((feedback) => feedback.kind === "used").slice(0, limit),
+        append: async (feedback) => {
+          const replay = planFitFeedback.find(
+            (candidate) => candidate.idempotencyKey === feedback.idempotencyKey,
+          );
+          if (replay !== undefined) return replay;
+          const storedFeedback = { ...feedback, ingestedSequence: ++planFitFeedbackSequence };
+          planFitFeedback.push(storedFeedback);
+          return storedFeedback;
+        },
+      },
+      routineDurationInsightFeedback: {} as TransactionContext["routineDurationInsightFeedback"],
       workItems: {
         listPlanningCandidates: async () => {
           throw new Error("separate work-item candidate reads are forbidden");
@@ -139,6 +195,7 @@ describe("GenerateDailyPlan", () => {
       } as TransactionContext["workItemDependencies"],
       scheduleBlocks: {} as TransactionContext["scheduleBlocks"],
       auditEvents: {} as TransactionContext["auditEvents"],
+      notifications: {} as TransactionContext["notifications"],
     } satisfies TransactionContext;
     const unitOfWork: UnitOfWork = {
       run: async (operation) => operation(context),
@@ -152,6 +209,7 @@ describe("GenerateDailyPlan", () => {
         now: () => new Date("2026-07-15T07:05:00.000Z"),
       }),
       getStored: () => stored,
+      getPlanFitFeedback: () => [...planFitFeedback],
       dependencyLockCount: () => dependencyLockCount,
       planningGraphLoads,
     };
@@ -164,6 +222,60 @@ describe("GenerateDailyPlan", () => {
     expect(plan.items).toHaveLength(1);
     expect(plan.inputHash).toHaveLength(64);
     expect(getStored()).toBe(plan);
+  });
+
+  it("atomically records an exact Plan Fit use and replays one receipt", async () => {
+    const evidence = [fitEvidence(1), fitEvidence(2), fitEvidence(3)];
+    const insight = calculateDailyPlanFitInsight(
+      workspace,
+      request.date,
+      evidence,
+      new Date("2026-07-15T07:00:00.000Z"),
+    );
+    expect(insight.status).toBe("suggested");
+    const selectedRequest = createDailyPlanningRequest({
+      ...request,
+      planFitInsightKey: insight.insightKey,
+    });
+    const test = harness(undefined, [routine], [], true, [], evidence);
+
+    const first = await test.useCase.execute({ request: selectedRequest });
+    const replay = await test.useCase.execute({ request: selectedRequest });
+
+    expect(replay.id).toBe(first.id);
+    expect(test.getPlanFitFeedback()).toMatchObject([
+      {
+        kind: "used",
+        planId: first.id,
+        insightKey: insight.insightKey,
+        suggestedTargetMinutes: insight.suggestedTargetMinutes,
+        suggestedTargetTaskCount: insight.suggestedTargetTaskCount,
+        appliedTargetMinutes: request.targetMinutes,
+        appliedTargetTaskCount: request.targetTaskCount,
+      },
+    ]);
+    expect(test.getPlanFitFeedback()).toHaveLength(1);
+  });
+
+  it("rejects stale Plan Fit evidence before creating a plan or usage event", async () => {
+    const test = harness(
+      undefined,
+      [routine],
+      [],
+      true,
+      [],
+      [fitEvidence(1), fitEvidence(2), fitEvidence(3)],
+    );
+    const selectedRequest = createDailyPlanningRequest({
+      ...request,
+      planFitInsightKey: "f".repeat(64),
+    });
+
+    await expect(test.useCase.execute({ request: selectedRequest })).rejects.toMatchObject({
+      code: "daily_plan_fit_insight.evidence_conflict",
+    });
+    expect(test.getStored()).toBeUndefined();
+    expect(test.getPlanFitFeedback()).toEqual([]);
   });
 
   it("rejects reuse of a revision for a different input snapshot", async () => {

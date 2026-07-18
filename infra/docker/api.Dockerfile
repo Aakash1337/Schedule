@@ -12,6 +12,7 @@ WORKDIR /app
 RUN groupadd --system --gid 10001 schedule \
   && useradd --system --uid 10001 --gid schedule --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin schedule
 COPY --from=build /runtime /app
+COPY --from=build /app/apps/web/dist/hosted /app/hosted-web
 USER 10001:10001
 EXPOSE 4000
 CMD ["node", "dist/server.js"]

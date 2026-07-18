@@ -8,7 +8,7 @@ import {
   PostgresUnitOfWork,
 } from "@schedule/database";
 
-import { buildApp } from "./app.js";
+import { prepareHostedApiApp } from "./hosted-api-runtime.js";
 import { createIntegrationServices } from "./integration-services.js";
 import { DisabledSchedulingAdvisor, OllamaSchedulingAdvisor } from "./local-model-advisor.js";
 import { createNaturalLanguagePromptHasher } from "./natural-language-runtime.js";
@@ -59,7 +59,7 @@ if (config.INTEGRATION_API_MODE === "enabled") {
     config.INTEGRATION_CONFIRMATION_TTL_SECONDS,
   );
 }
-const app = await buildApp({
+const { app, composition: hostedOidcComposition } = await prepareHostedApiApp(config, database, {
   trustProxy: config.API_TRUSTED_PROXIES.length === 0 ? false : [...config.API_TRUSTED_PROXIES],
   logger:
     config.NODE_ENV === "development"
@@ -87,6 +87,11 @@ const app = await buildApp({
         },
       }),
 });
+if (config.HOSTED_API_MODE === "oidc") {
+  app.log.info("hosted OIDC routes enabled");
+} else if (hostedOidcComposition !== undefined) {
+  app.log.info("dormant hosted OIDC preflight complete");
+}
 
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {

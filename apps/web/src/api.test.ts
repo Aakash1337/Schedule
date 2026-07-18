@@ -460,6 +460,63 @@ describe("web API client", () => {
     );
   });
 
+  it("retrieves bounded Plan Fit usage outcomes", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ items: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await api.listDailyPlanFitUsageOutcomes("workspace-1", 5, controller.signal);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/daily-plan-fit-insight/usages?limit=5",
+      expect.objectContaining({ method: "GET", signal: controller.signal }),
+    );
+  });
+
+  it("retrieves a bounded Plan Fit effectiveness summary", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ usesConsidered: 0 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await api.getDailyPlanFitEffectiveness("workspace-1", 28, controller.signal);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/daily-plan-fit-insight/effectiveness?limit=28",
+      expect.objectContaining({ method: "GET", signal: controller.signal }),
+    );
+  });
+
+  it("retrieves planning outcomes for the dates before one local date", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ plansConsidered: 0 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await api.getPlanningOutcomes("workspace-1", "2026-07-16", controller.signal);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/planning-outcomes?forDate=2026-07-16",
+      expect.objectContaining({ method: "GET", signal: controller.signal }),
+    );
+  });
+
   it("previews daily-plan alternatives with an exact cancellable head fence", async () => {
     const fetchMock = vi.fn(
       async () =>

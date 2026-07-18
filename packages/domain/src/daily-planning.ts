@@ -69,6 +69,8 @@ export interface DailyPlanningRequest {
   readonly availableContexts: readonly string[];
   readonly seed: string;
   readonly requestRevision: number;
+  /** Exact Plan Fit evidence selected by the user before this initial generation. */
+  readonly planFitInsightKey?: string;
 }
 
 export interface CreateDailyPlanningRequestInput {
@@ -87,6 +89,7 @@ export interface CreateDailyPlanningRequestInput {
   readonly availableContexts?: readonly string[];
   readonly seed: string;
   readonly requestRevision?: number;
+  readonly planFitInsightKey?: string | null;
 }
 
 export interface PlannerScoreWeights {
@@ -482,6 +485,12 @@ export function createDailyPlanningRequest(
     "Planning revision must be a positive whole number.",
     1,
   );
+  const planFitInsightKey = input.planFitInsightKey?.trim() ?? null;
+  invariant(
+    planFitInsightKey === null || /^[0-9a-f]{64}$/.test(planFitInsightKey),
+    "planning.plan_fit_insight_key_invalid",
+    "A canonical Daily Plan Fit insight key is required when Plan Fit guidance is selected.",
+  );
 
   return {
     workspaceId: input.workspaceId,
@@ -499,6 +508,7 @@ export function createDailyPlanningRequest(
     availableContexts: normalizeContexts(input.availableContexts),
     seed,
     requestRevision,
+    ...(planFitInsightKey === null ? {} : { planFitInsightKey }),
   };
 }
 

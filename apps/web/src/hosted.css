@@ -1,0 +1,196 @@
+@import "./foundation.css";
+
+.hosted-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.hosted-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 68px;
+  padding: 0 clamp(20px, 4vw, 52px);
+  background: var(--paper-raised);
+  border-bottom: 1px solid var(--line);
+}
+
+.hosted-main,
+.hosted-state-shell {
+  width: min(100%, 760px);
+  margin: 0 auto;
+  padding: clamp(54px, 9vh, 96px) clamp(20px, 5vw, 48px) 72px;
+}
+
+.hosted-main > h1,
+.hosted-state-shell > h1 {
+  max-width: 18ch;
+  font-size: 2.1rem;
+}
+
+.hosted-intro,
+.hosted-state-copy {
+  max-width: 58ch;
+  margin-bottom: 32px;
+  color: var(--ink-soft);
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.hosted-capture {
+  padding: 26px 0 30px;
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line);
+}
+
+.hosted-workspace-field {
+  max-width: 320px;
+  margin-bottom: 22px;
+}
+
+.hosted-workspace-name {
+  margin-bottom: 22px;
+  color: var(--ink-faint);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.hosted-workspace-name span {
+  padding: 0 4px;
+  color: var(--line-strong);
+}
+
+.hosted-capture-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.hosted-capture-form .button {
+  min-height: 38px;
+}
+
+.hosted-confirmation {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 18px 0 0;
+  padding: 10px 12px;
+  color: oklch(0.42 0.11 148);
+  background: var(--success-soft);
+  border: 1px solid oklch(0.82 0.06 148);
+  border-radius: 9px;
+  line-height: 1.45;
+}
+
+.hosted-backlog {
+  padding-top: 24px;
+  margin-top: 28px;
+  border-top: 1px solid var(--line);
+}
+
+.hosted-backlog-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.hosted-backlog-heading h2 {
+  font-size: 1rem;
+}
+
+.hosted-backlog-heading span,
+.hosted-backlog-state {
+  color: var(--ink-faint);
+  font-size: 0.82rem;
+}
+
+.hosted-backlog-list {
+  padding: 0;
+  margin: 12px 0 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+
+.hosted-backlog-list li {
+  padding: 12px 2px;
+  border-bottom: 1px solid var(--line);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.hosted-state-shell {
+  min-height: 100vh;
+}
+
+.hosted-state-shell .page-skeleton {
+  margin-top: 48px;
+}
+
+.hosted-sign-in {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.hosted-mark {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  margin-bottom: 28px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 16px;
+}
+
+.hosted-sign-in-button {
+  text-decoration: none;
+}
+
+.hosted-empty {
+  max-width: 58ch;
+  padding: 28px 0;
+  border-top: 1px solid var(--line-strong);
+}
+
+.hosted-empty p {
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+@media (max-width: 600px) {
+  .hosted-topbar {
+    min-height: 62px;
+    padding: 0 16px;
+  }
+
+  .hosted-main,
+  .hosted-state-shell {
+    padding: 48px 18px 56px;
+  }
+
+  .hosted-main > h1,
+  .hosted-state-shell > h1 {
+    font-size: 1.75rem;
+  }
+
+  .hosted-capture-form {
+    grid-template-columns: 1fr;
+  }
+
+  .hosted-capture-form .button,
+  .hosted-sign-in-button {
+    width: 100%;
+  }
+
+  .hosted-capture-form .button {
+    min-height: 44px;
+  }
+}

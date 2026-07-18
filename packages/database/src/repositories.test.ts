@@ -30,6 +30,7 @@ import {
   PostgresNaturalLanguageProposalRepository,
   PostgresNaturalLanguageProposalUnitOfWork,
   PostgresDailyPlanFitInsightFeedbackRepository,
+  PostgresHostedMutationUnitOfWork,
   PostgresRoutineDurationInsightFeedbackRepository,
   PostgresUnitOfWork,
   PostgresWorkItemDependencyRepository,
@@ -205,6 +206,42 @@ describe("PostgresUnitOfWork", () => {
 
     expect(repositories).toContain("workItemDependencies");
     expect(repositories).toContain("routineDurationInsightFeedback");
+  });
+
+  it("wires hosted reauthorization into one product transaction", async () => {
+    const transaction = vi.fn(async (operation: (transaction: unknown) => Promise<unknown>) =>
+      operation({}),
+    );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+
+    const repositories = await new PostgresHostedMutationUnitOfWork(connection).run(
+      async (context) => Object.keys(context).sort(),
+      { isolationLevel: "read_committed" },
+    );
+
+    expect(repositories).toContain("hostedMutationAuthorization");
+    expect(repositories).toContain("workItems");
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "read committed",
+    });
+  });
+
+  it("retries hosted mutations after a serialization failure", async () => {
+    const serializationFailure = Object.assign(new Error("serialization failure"), {
+      code: "40001",
+    });
+    const transaction = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("query failed", { cause: serializationFailure }))
+      .mockImplementationOnce(async (operation: (transaction: unknown) => Promise<unknown>) =>
+        operation({}),
+      );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+
+    await expect(
+      new PostgresHostedMutationUnitOfWork(connection).run(async () => "committed"),
+    ).resolves.toBe("committed");
+    expect(transaction).toHaveBeenCalledTimes(2);
   });
 
   it("persists a work item due date on insert and save", async () => {
@@ -1772,6 +1809,7 @@ describe("PostgresRoutineDurationInsightFeedbackRepository", () => {
 
 const planFitFeedbackWorkspace = workspaceId("94000000-0000-4000-8000-000000000001");
 const planFitFeedbackId = dailyPlanFitInsightFeedbackId("95000000-0000-4000-8000-000000000002");
+const planFitUsagePlanId = dailyPlanId("95000000-0000-4000-8000-000000000003");
 const planFitFeedbackKey = "c".repeat(64);
 
 function planFitFeedbackRow(
@@ -1784,6 +1822,7 @@ function planFitFeedbackRow(
     forDate: "2026-07-14",
     insightKey: planFitFeedbackKey,
     kind: "dismissed",
+    planId: null,
     sampleCount: 5,
     typicalPlannedMinutes: 180,
     typicalCompletedMinutes: 90,
@@ -1791,6 +1830,8 @@ function planFitFeedbackRow(
     typicalCompletedTaskCount: 2,
     suggestedTargetMinutes: 90,
     suggestedTargetTaskCount: 2,
+    appliedTargetMinutes: null,
+    appliedTargetTaskCount: null,
     idempotencyKey: "plan-fit-feedback-db-test",
     recordedAt: new Date("2026-07-14T15:00:00.000Z"),
     ...overrides,
@@ -1807,6 +1848,7 @@ function planFitFeedback(
     forDate: localDate("2026-07-14"),
     insightKey: planFitFeedbackKey,
     kind: "dismissed",
+    planId: null,
     sampleCount: 5,
     typicalPlannedMinutes: 180,
     typicalCompletedMinutes: 90,
@@ -1814,6 +1856,8 @@ function planFitFeedback(
     typicalCompletedTaskCount: 2,
     suggestedTargetMinutes: 90,
     suggestedTargetTaskCount: 2,
+    appliedTargetMinutes: null,
+    appliedTargetTaskCount: null,
     idempotencyKey: "plan-fit-feedback-db-test",
     recordedAt: new Date("2026-07-14T15:00:00.000Z"),
     ...overrides,
@@ -1821,7 +1865,7 @@ function planFitFeedback(
 }
 
 describe("PostgresDailyPlanFitInsightFeedbackRepository", () => {
-  it("uses one canonical workspace advisory lock across UUID casing", async () => {
+  it("uses one canonical workspace lock and a physical SSI guard across UUID casing", async () => {
     const execute = vi.fn().mockResolvedValue([]);
     const repository = new PostgresDailyPlanFitInsightFeedbackRepository({
       execute,
@@ -1831,6 +1875,7 @@ describe("PostgresDailyPlanFitInsightFeedbackRepository", () => {
 
     const statement = execute.mock.calls[0]?.[0] as { readonly queryChunks: readonly unknown[] };
     expect(statement.queryChunks[1]).toBe(`${planFitFeedbackWorkspace}:daily-plan-fit-feedback`);
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 
   it("loads the latest exact key and bounded idempotency receipt", async () => {
@@ -1856,6 +1901,36 @@ describe("PostgresDailyPlanFitInsightFeedbackRepository", () => {
       receiptRepository.findByIdempotencyKey(planFitFeedbackWorkspace, "plan-fit-feedback-db-test"),
     ).resolves.toMatchObject({ insightKey: planFitFeedbackKey });
     expect(receipt.limit).toHaveBeenCalledWith(1);
+  });
+
+  it("lists only bounded used events in reverse ingestion order", async () => {
+    const limit = vi.fn().mockResolvedValue([
+      planFitFeedbackRow({
+        kind: "used",
+        planId: planFitUsagePlanId,
+        appliedTargetMinutes: 105,
+        appliedTargetTaskCount: 3,
+      }),
+    ]);
+    const orderBy = vi.fn().mockReturnValue({ limit });
+    const where = vi.fn().mockReturnValue({ orderBy });
+    const from = vi.fn().mockReturnValue({ where });
+    const repository = new PostgresDailyPlanFitInsightFeedbackRepository({
+      select: vi.fn().mockReturnValue({ from }),
+    } as unknown as DatabaseConnection["db"]);
+
+    await expect(repository.listUsed(planFitFeedbackWorkspace, 5)).resolves.toMatchObject([
+      {
+        kind: "used",
+        planId: planFitUsagePlanId,
+        appliedTargetMinutes: 105,
+        appliedTargetTaskCount: 3,
+      },
+    ]);
+    expect(limit).toHaveBeenCalledWith(5);
+    await expect(repository.listUsed(planFitFeedbackWorkspace, 29)).rejects.toMatchObject({
+      code: "daily_plan_fit_insight.usage_limit_invalid",
+    });
   });
 
   it("lets PostgreSQL allocate the sequence and targets workspace idempotency", async () => {

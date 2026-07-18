@@ -107,6 +107,7 @@ export const routineDurationInsightFeedbackKind = pgEnum("routine_duration_insig
 export const dailyPlanFitInsightFeedbackKind = pgEnum("daily_plan_fit_insight_feedback_kind", [
   "dismissed",
   "reset",
+  "used",
 ]);
 export const planMutationKind = pgEnum("plan_mutation_kind", [
   "regenerate",
@@ -303,6 +304,63 @@ export const browserSessions = pgTable(
   ],
 );
 
+/**
+ * Short-lived pre-authentication transactions. Authorization state and browser-binding bearer
+ * values are represented only by peppered HMAC digests; PKCE verifiers are authenticated
+ * ciphertext and are removed after the bounded expiry window.
+ */
+export const hostedLoginTransactions = pgTable(
+  "hosted_login_transactions",
+  {
+    id: uuid("id").primaryKey(),
+    stateDigest: varchar("state_digest", { length: 64 }).notNull(),
+    browserBindingDigest: varchar("browser_binding_digest", { length: 64 }).notNull(),
+    issuer: varchar("issuer", { length: 2_048 }).notNull(),
+    clientId: varchar("client_id", { length: 512 }).notNull(),
+    redirectUri: varchar("redirect_uri", { length: 2_048 }).notNull(),
+    returnToPath: varchar("return_to_path", { length: 2_048 }).notNull(),
+    nonce: varchar("nonce", { length: 43 }).notNull(),
+    pkceChallenge: varchar("pkce_challenge", { length: 43 }).notNull(),
+    pkceMethod: varchar("pkce_method", { length: 4 }).notNull().default("S256"),
+    protectedPkceVerifier: varchar("protected_pkce_verifier", { length: 2_048 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+  },
+  (table) => [
+    unique("hosted_login_transactions_state_digest_uq").on(table.stateDigest),
+    unique("hosted_login_transactions_browser_binding_digest_uq").on(table.browserBindingDigest),
+    index("hosted_login_transactions_expiry_idx").on(table.expiresAt, table.id),
+    check(
+      "hosted_login_transactions_digests_valid",
+      sql`${table.stateDigest} ~ '^[0-9a-f]{64}$'
+        and ${table.browserBindingDigest} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "hosted_login_transactions_oidc_values_valid",
+      sql`char_length(${table.issuer}) > 0
+        and char_length(${table.clientId}) > 0
+        and char_length(${table.redirectUri}) > 0
+        and char_length(${table.returnToPath}) > 0
+        and ${table.nonce} ~ '^[A-Za-z0-9_-]{43}$'
+        and ${table.pkceChallenge} ~ '^[A-Za-z0-9_-]{43}$'
+        and ${table.pkceMethod} = 'S256'
+        and char_length(${table.protectedPkceVerifier}) > 0`,
+    ),
+    check(
+      "hosted_login_transactions_lifecycle_valid",
+      sql`${table.expiresAt} >= ${table.createdAt} + interval '60 seconds'
+        and ${table.expiresAt} <= ${table.createdAt} + interval '15 minutes'
+        and (${table.consumedAt} is null or (
+          ${table.consumedAt} >= ${table.createdAt}
+          and ${table.consumedAt} < ${table.expiresAt}
+        ))`,
+    ),
+    check("hosted_login_transactions_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
 /** Binary hosted authorization boundary; roles remain deliberately out of scope. */
 export const workspaceMemberships = pgTable(
   "workspace_memberships",
@@ -325,6 +383,11 @@ export const workspaceMemberships = pgTable(
       table.workspaceId,
       table.status,
       table.userId,
+    ),
+    index("workspace_memberships_user_status_workspace_idx").on(
+      table.userId,
+      table.status,
+      table.workspaceId,
     ),
     check(
       "workspace_memberships_lifecycle_valid",
@@ -1893,6 +1956,7 @@ export const dailyPlanFitInsightFeedbackEvents = pgTable(
     forDate: date("for_date").notNull(),
     insightKey: varchar("insight_key", { length: 64 }).notNull(),
     kind: dailyPlanFitInsightFeedbackKind("kind").notNull(),
+    planId: uuid("plan_id"),
     sampleCount: integer("sample_count").notNull(),
     typicalPlannedMinutes: integer("typical_planned_minutes").notNull(),
     typicalCompletedMinutes: integer("typical_completed_minutes").notNull(),
@@ -1900,6 +1964,8 @@ export const dailyPlanFitInsightFeedbackEvents = pgTable(
     typicalCompletedTaskCount: integer("typical_completed_task_count").notNull(),
     suggestedTargetMinutes: integer("suggested_target_minutes").notNull(),
     suggestedTargetTaskCount: integer("suggested_target_task_count").notNull(),
+    appliedTargetMinutes: integer("applied_target_minutes"),
+    appliedTargetTaskCount: integer("applied_target_task_count"),
     idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
     recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull(),
   },
@@ -1915,6 +1981,20 @@ export const dailyPlanFitInsightFeedbackEvents = pgTable(
       table.ingestedSequence.desc(),
       table.id.desc(),
     ),
+    index("daily_plan_fit_feedback_kind_sequence_idx").on(
+      table.workspaceId,
+      table.kind,
+      table.ingestedSequence.desc(),
+      table.id.desc(),
+    ),
+    uniqueIndex("daily_plan_fit_feedback_used_plan_uq")
+      .on(table.workspaceId, table.planId)
+      .where(sql`${table.planId} is not null`),
+    foreignKey({
+      name: "daily_plan_fit_feedback_plan_tenant_fk",
+      columns: [table.workspaceId, table.planId],
+      foreignColumns: [dailyPlans.workspaceId, dailyPlans.id],
+    }).onDelete("restrict"),
     check(
       "daily_plan_fit_feedback_key_format",
       sql`char_length(${table.insightKey}) = 64 AND ${table.insightKey} ~ '^[0-9a-f]{64}$'`,
@@ -1943,6 +2023,28 @@ export const dailyPlanFitInsightFeedbackEvents = pgTable(
     check(
       "daily_plan_fit_feedback_suggested_tasks_positive",
       sql`${table.suggestedTargetTaskCount} > 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_usage_shape_valid",
+      sql`(
+        ${table.kind}::text = 'used'
+        AND ${table.planId} IS NOT NULL
+        AND ${table.appliedTargetMinutes} IS NOT NULL
+        AND ${table.appliedTargetTaskCount} IS NOT NULL
+      ) OR (
+        ${table.kind}::text IN ('dismissed', 'reset')
+        AND ${table.planId} IS NULL
+        AND ${table.appliedTargetMinutes} IS NULL
+        AND ${table.appliedTargetTaskCount} IS NULL
+      )`,
+    ),
+    check(
+      "daily_plan_fit_feedback_applied_minutes_positive",
+      sql`${table.appliedTargetMinutes} IS NULL OR ${table.appliedTargetMinutes} > 0`,
+    ),
+    check(
+      "daily_plan_fit_feedback_applied_tasks_positive",
+      sql`${table.appliedTargetTaskCount} IS NULL OR ${table.appliedTargetTaskCount} > 0`,
     ),
     check(
       "daily_plan_fit_feedback_idempotency_canonical",

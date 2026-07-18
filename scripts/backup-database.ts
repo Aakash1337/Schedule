@@ -18,6 +18,7 @@ export const expectedScheduleTables = [
   "daily_plan_items",
   "daily_plans",
   "external_identities",
+  "hosted_login_transactions",
   "integration_confirmations",
   "integration_credentials",
   "integration_requests",

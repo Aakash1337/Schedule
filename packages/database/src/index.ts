@@ -1,5 +1,6 @@
 export * from "./database.js";
 export * from "./hosted-identity.js";
+export * from "./hosted-login-transaction.js";
 export * from "./integration-maintenance.js";
 export * from "./outbox.js";
 export * from "./repositories.js";

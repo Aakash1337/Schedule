@@ -44,6 +44,11 @@ import type {
   IntegrationRequestReservationInput,
   IntegrationTransactionContext,
   IntegrationUnitOfWork,
+  HostedMutationAuthorizationDecision,
+  HostedMutationAuthorizationRepository,
+  HostedMutationTransactionContext,
+  HostedMutationUnitOfWork,
+  HostedWorkspaceAuthorization,
   NaturalLanguageProposalRecord,
   NaturalLanguageProposalRepository,
   NaturalLanguageProposalTransactionContext,
@@ -75,6 +80,7 @@ import type {
   WorkItemRepository,
   WorkspaceRepository,
 } from "@schedule/application";
+import { maximumDailyPlanFitUsageOutcomes } from "@schedule/application";
 import {
   DomainError,
   activityEventId,
@@ -150,6 +156,7 @@ import { databaseErrorCode, databaseErrorConstraint } from "./database-errors.js
 import {
   activityEvents,
   auditEvents,
+  browserSessions,
   dailyPlanFitInsightFeedbackEvents,
   dailyPlanHeads,
   dailyPlanItemStates,
@@ -158,6 +165,7 @@ import {
   integrationConfirmations,
   integrationCredentials,
   integrationRequests,
+  hostedUsers,
   notificationDeliveryAttempts,
   notificationDeliveryCommands,
   notificationDeliveryRequests,
@@ -176,6 +184,7 @@ import {
   workItemDependencies,
   workItems,
   workspaces,
+  workspaceMemberships,
 } from "./schema.js";
 
 type TransactionCallback = Parameters<DatabaseConnection["db"]["transaction"]>[0];
@@ -897,6 +906,7 @@ function mapDailyPlanFitInsightFeedback(
     forDate: localDate(row.forDate),
     insightKey: row.insightKey,
     kind: row.kind,
+    planId: row.planId === null ? null : dailyPlanId(row.planId),
     sampleCount: row.sampleCount,
     typicalPlannedMinutes: row.typicalPlannedMinutes,
     typicalCompletedMinutes: row.typicalCompletedMinutes,
@@ -904,6 +914,8 @@ function mapDailyPlanFitInsightFeedback(
     typicalCompletedTaskCount: row.typicalCompletedTaskCount,
     suggestedTargetMinutes: row.suggestedTargetMinutes,
     suggestedTargetTaskCount: row.suggestedTargetTaskCount,
+    appliedTargetMinutes: row.appliedTargetMinutes,
+    appliedTargetTaskCount: row.appliedTargetTaskCount,
     idempotencyKey: row.idempotencyKey,
     recordedAt: new Date(row.recordedAt),
   };
@@ -2999,6 +3011,12 @@ export class PostgresDailyPlanFitInsightFeedbackRepository implements DailyPlanF
     await this.database.execute(
       sql`select pg_advisory_xact_lock(hashtextextended(${`${canonicalWorkspace}:daily-plan-fit-feedback`}, 0))`,
     );
+    // The advisory lock orders feedback operations but is invisible to PostgreSQL SSI. Touching a
+    // real row makes a serializable waiter abort with 40001 when an earlier feedback transaction
+    // committed after its snapshot, so the unit of work retries and observes the winning event.
+    await this.database.execute(
+      sql`update ${workspaces} set "name" = "name" where ${workspaces.id} = ${canonicalWorkspace}`,
+    );
   }
 
   async findLatestForKey(
@@ -3020,6 +3038,33 @@ export class PostgresDailyPlanFitInsightFeedbackRepository implements DailyPlanF
       )
       .limit(1);
     return row === undefined ? null : mapDailyPlanFitInsightFeedback(row);
+  }
+
+  async listUsed(
+    workspace: WorkspaceId,
+    limit: number,
+  ): Promise<readonly DailyPlanFitInsightFeedback[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > maximumDailyPlanFitUsageOutcomes) {
+      throw new DomainError(
+        "daily_plan_fit_insight.usage_limit_invalid",
+        `Daily Plan Fit usage history must request between 1 and ${maximumDailyPlanFitUsageOutcomes} entries.`,
+      );
+    }
+    const rows = await this.database
+      .select()
+      .from(dailyPlanFitInsightFeedbackEvents)
+      .where(
+        and(
+          eq(dailyPlanFitInsightFeedbackEvents.workspaceId, workspace),
+          eq(dailyPlanFitInsightFeedbackEvents.kind, "used"),
+        ),
+      )
+      .orderBy(
+        desc(dailyPlanFitInsightFeedbackEvents.ingestedSequence),
+        desc(dailyPlanFitInsightFeedbackEvents.id),
+      )
+      .limit(limit);
+    return rows.map(mapDailyPlanFitInsightFeedback);
   }
 
   async findByIdempotencyKey(
@@ -3048,6 +3093,7 @@ export class PostgresDailyPlanFitInsightFeedbackRepository implements DailyPlanF
         forDate: feedback.forDate,
         insightKey: feedback.insightKey,
         kind: feedback.kind,
+        planId: feedback.planId,
         sampleCount: feedback.sampleCount,
         typicalPlannedMinutes: feedback.typicalPlannedMinutes,
         typicalCompletedMinutes: feedback.typicalCompletedMinutes,
@@ -3055,6 +3101,8 @@ export class PostgresDailyPlanFitInsightFeedbackRepository implements DailyPlanF
         typicalCompletedTaskCount: feedback.typicalCompletedTaskCount,
         suggestedTargetMinutes: feedback.suggestedTargetMinutes,
         suggestedTargetTaskCount: feedback.suggestedTargetTaskCount,
+        appliedTargetMinutes: feedback.appliedTargetMinutes,
+        appliedTargetTaskCount: feedback.appliedTargetTaskCount,
         idempotencyKey: feedback.idempotencyKey,
         recordedAt: feedback.recordedAt,
       })
@@ -3079,13 +3127,16 @@ export class PostgresDailyPlanFitInsightFeedbackRepository implements DailyPlanF
       existing.forDate === feedback.forDate &&
       existing.insightKey === feedback.insightKey &&
       existing.kind === feedback.kind &&
+      existing.planId === feedback.planId &&
       existing.sampleCount === feedback.sampleCount &&
       existing.typicalPlannedMinutes === feedback.typicalPlannedMinutes &&
       existing.typicalCompletedMinutes === feedback.typicalCompletedMinutes &&
       existing.typicalPlannedTaskCount === feedback.typicalPlannedTaskCount &&
       existing.typicalCompletedTaskCount === feedback.typicalCompletedTaskCount &&
       existing.suggestedTargetMinutes === feedback.suggestedTargetMinutes &&
-      existing.suggestedTargetTaskCount === feedback.suggestedTargetTaskCount;
+      existing.suggestedTargetTaskCount === feedback.suggestedTargetTaskCount &&
+      existing.appliedTargetMinutes === feedback.appliedTargetMinutes &&
+      existing.appliedTargetTaskCount === feedback.appliedTargetTaskCount;
     if (!sameFeedback) {
       throw new DomainError(
         "daily_plan_fit_insight.idempotency_conflict",
@@ -4820,6 +4871,75 @@ export class PostgresNaturalLanguageProposalRepository implements NaturalLanguag
   }
 }
 
+class PostgresHostedMutationAuthorizationRepository implements HostedMutationAuthorizationRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async reauthorizeForUpdate(
+    authorization: HostedWorkspaceAuthorization,
+  ): Promise<HostedMutationAuthorizationDecision> {
+    // This order matches identity administration (user before session), locks the workspace before
+    // its cascading membership child, and leaves all product locks until after authorization.
+    const [user] = await this.database
+      .select({ status: hostedUsers.status })
+      .from(hostedUsers)
+      .where(eq(hostedUsers.id, authorization.userId))
+      .limit(1)
+      .for("update");
+    const [session] = await this.database
+      .select({
+        userId: browserSessions.userId,
+        idleExpiresAt: browserSessions.idleExpiresAt,
+        absoluteExpiresAt: browserSessions.absoluteExpiresAt,
+        revokedAt: browserSessions.revokedAt,
+      })
+      .from(browserSessions)
+      .where(eq(browserSessions.id, authorization.sessionId))
+      .limit(1)
+      .for("update");
+    const [workspace] = await this.database
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(eq(workspaces.id, authorization.workspaceId))
+      .limit(1)
+      .for("key share");
+    const [membership] = await this.database
+      .select({ status: workspaceMemberships.status })
+      .from(workspaceMemberships)
+      .where(
+        and(
+          eq(workspaceMemberships.userId, authorization.userId),
+          eq(workspaceMemberships.workspaceId, authorization.workspaceId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    const clockRows = await this.database.execute(
+      sql<{ value: unknown }>`select clock_timestamp() as value`,
+    );
+    const clockValue = clockRows[0]?.value;
+    const now =
+      clockValue instanceof Date || typeof clockValue === "string" ? new Date(clockValue) : null;
+    if (now === null || !Number.isFinite(now.getTime())) {
+      throw new Error("Hosted mutation authorization received an invalid database timestamp.");
+    }
+
+    if (
+      user?.status !== "active" ||
+      session === undefined ||
+      session.userId !== authorization.userId ||
+      session.revokedAt !== null ||
+      now.getTime() >= session.idleExpiresAt.getTime() ||
+      now.getTime() >= session.absoluteExpiresAt.getTime()
+    ) {
+      return "authentication_failed";
+    }
+    if (workspace === undefined || membership?.status !== "active") {
+      return "workspace_not_found";
+    }
+    return "authorized";
+  }
+}
+
 function createTransactionContext(database: DatabaseExecutor): TransactionContext {
   return {
     workspaces: new PostgresWorkspaceRepository(database),
@@ -4836,6 +4956,15 @@ function createTransactionContext(database: DatabaseExecutor): TransactionContex
     ),
     dailyPlans: new PostgresDailyPlanRepository(database),
     notifications: new PostgresNotificationRepository(database),
+  };
+}
+
+function createHostedMutationTransactionContext(
+  database: DatabaseExecutor,
+): HostedMutationTransactionContext {
+  return {
+    ...createTransactionContext(database),
+    hostedMutationAuthorization: new PostgresHostedMutationAuthorizationRepository(database),
   };
 }
 
@@ -4891,6 +5020,33 @@ export class PostgresUnitOfWork implements UnitOfWork {
       try {
         return await this.connection.db.transaction(
           async (transaction) => operation(createTransactionContext(transaction)),
+          {
+            isolationLevel:
+              options?.isolationLevel === "read_committed" ? "read committed" : "serializable",
+          },
+        );
+      } catch (error) {
+        if (databaseErrorCode(error) !== "40001" || retry >= serializationRetryLimit) throw error;
+        await waitForSerializationRetry(retry);
+        retry += 1;
+      }
+    }
+  }
+}
+
+/** Product repositories plus hosted reauthorization, all backed by one PostgreSQL transaction. */
+export class PostgresHostedMutationUnitOfWork implements HostedMutationUnitOfWork {
+  constructor(private readonly connection: DatabaseConnection) {}
+
+  async run<Result>(
+    operation: (context: HostedMutationTransactionContext) => Promise<Result>,
+    options?: UnitOfWorkOptions,
+  ): Promise<Result> {
+    let retry = 0;
+    while (true) {
+      try {
+        return await this.connection.db.transaction(
+          async (transaction) => operation(createHostedMutationTransactionContext(transaction)),
           {
             isolationLevel:
               options?.isolationLevel === "read_committed" ? "read committed" : "serializable",

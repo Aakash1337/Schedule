@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
+import { maximumDailyPlanFitUsageOutcomes } from "@schedule/application";
 import type {
   AddWorkItemDependencyCommand,
   AddWorkItemDependencyResult,
@@ -22,6 +23,7 @@ import type {
   GetSchedulingAdviceCommand,
   GetCurrentDailyPlanQuery,
   GetDailyPlanQuery,
+  GetPlanningOutcomesQuery,
   GetDailyPlanFitInsightQuery,
   GetRoutineQuery,
   GetRoutineSelectionPreferenceStateQuery,
@@ -30,6 +32,7 @@ import type {
   GetWorkItemQuery,
   GetWorkspaceQuery,
   ListRoutineActivityQuery,
+  ListDailyPlanFitUsageOutcomesQuery,
   ListRoutinesQuery,
   ListNotificationIntentsQuery,
   ListNotificationDeliveriesQuery,
@@ -98,13 +101,16 @@ import {
   workspaceId,
   type ActivityEvent,
   type DailyPlan,
+  type DailyPlanFitEffectiveness,
   type DailyPlanFitInsight,
   type DailyPlanFitInsightFeedback,
+  type DailyPlanFitUsageOutcome,
   type JsonValue,
   type NotificationIntent,
   type NotificationProfile,
   type NotificationRule,
   type OneOffReminder,
+  type PlanningOutcomes,
   type Routine,
   type RoutineDurationInsight,
   type RoutineDurationInsightFeedback,
@@ -160,6 +166,12 @@ export interface ProductServices {
   ): Promise<RoutineSelectionPreferenceStateView>;
   getRoutineDurationInsight(query: GetRoutineDurationInsightQuery): Promise<RoutineDurationInsight>;
   getDailyPlanFitInsight(query: GetDailyPlanFitInsightQuery): Promise<DailyPlanFitInsight>;
+  listDailyPlanFitUsageOutcomes(
+    query: ListDailyPlanFitUsageOutcomesQuery,
+  ): Promise<readonly DailyPlanFitUsageOutcome[]>;
+  getDailyPlanFitEffectiveness(
+    query: ListDailyPlanFitUsageOutcomesQuery,
+  ): Promise<DailyPlanFitEffectiveness>;
   resetDailyPlanFitInsightDismissal(
     command: ResetDailyPlanFitInsightDismissalCommand,
   ): Promise<DailyPlanFitInsightFeedback>;
@@ -173,6 +185,7 @@ export interface ProductServices {
   recordPlanItemActivity(command: RecordPlanItemActivityCommand): Promise<PlanItemActivityResult>;
   generateDailyPlan(command: GenerateDailyPlanCommand): Promise<DailyPlan>;
   getCurrentDailyPlan(query: GetCurrentDailyPlanQuery): Promise<CurrentDailyPlan>;
+  getPlanningOutcomes(query: GetPlanningOutcomesQuery): Promise<PlanningOutcomes>;
   setPlanItemLock(command: SetPlanItemLockCommand): Promise<PlanItemLockResult>;
   regenerateDailyPlan(command: RegenerateDailyPlanCommand): Promise<CurrentDailyPlan>;
   previewDailyPlanAlternatives(
@@ -250,7 +263,11 @@ export const NATURAL_LANGUAGE_PROPOSAL_CANCELLATION_ROUTE =
 export const NATURAL_LANGUAGE_PROPOSAL_CONFIRMATION_ROUTE =
   "/v1/workspaces/:workspaceId/natural-language/proposals/:proposalId/confirmations";
 
-function installRateLimit(app: FastifyInstance, requestsPerMinute: number): void {
+export function installIpRateLimit(
+  app: FastifyInstance,
+  requestsPerMinute: number,
+  maxTrackedClients = 4_096,
+): void {
   const buckets = new Map<string, { startedAt: number; count: number }>();
   let requestCount = 0;
   app.addHook("onRequest", async (request, reply) => {
@@ -260,7 +277,14 @@ function installRateLimit(app: FastifyInstance, requestsPerMinute: number): void
       current === undefined || now - current.startedAt >= 60_000
         ? { startedAt: now, count: 0 }
         : current;
+
+    if (current === undefined && buckets.size >= maxTrackedClients) {
+      const leastRecentlyUsedAddress = buckets.keys().next().value as string | undefined;
+      if (leastRecentlyUsedAddress !== undefined) buckets.delete(leastRecentlyUsedAddress);
+    }
+
     bucket.count += 1;
+    buckets.delete(request.ip);
     buckets.set(request.ip, bucket);
     if (bucket.count > requestsPerMinute) {
       const retryAfterSeconds = Math.max(1, Math.ceil((60_000 - (now - bucket.startedAt)) / 1_000));
@@ -319,7 +343,7 @@ const workItemStatus = z.enum([
   "cancelled",
 ]);
 const workItemPriority = z.enum(["none", "low", "medium", "high", "urgent"]);
-const workItemBody = z.strictObject({
+export const workItemCreateBodySchema = z.strictObject({
   parentWorkItemId: uuid.nullable().default(null),
   title: z.string().trim().min(1).max(240),
   description: z.string().max(4_000).nullable().default(null),
@@ -328,7 +352,7 @@ const workItemBody = z.strictObject({
   dueOn: localDateText.nullable().default(null),
   planningDurationMinutes: z.number().int().positive().max(43_200).nullable().default(null),
 });
-const subtaskBody = workItemBody.omit({ parentWorkItemId: true });
+const subtaskBody = workItemCreateBodySchema.omit({ parentWorkItemId: true });
 const workItemQuery = z.strictObject({
   status: workItemStatus.optional(),
   priority: workItemPriority.optional(),
@@ -613,6 +637,13 @@ const routineDurationInsightFeedbackBody = z.strictObject({
   insightKey: z.string().regex(routineDurationInsightKeyPattern),
 });
 const dailyPlanFitInsightQuery = z.strictObject({ forDate: localDateText });
+const planningOutcomesQuery = z.strictObject({ forDate: localDateText });
+const dailyPlanFitUsageOutcomesQuery = z.strictObject({
+  limit: z.coerce.number().int().min(1).max(maximumDailyPlanFitUsageOutcomes).default(5),
+});
+const dailyPlanFitEffectivenessQuery = z.strictObject({
+  limit: z.coerce.number().int().min(1).max(28).default(28),
+});
 const dailyPlanFitInsightFeedbackBody = z.strictObject({
   forDate: localDateText,
   insightKey: z.string().regex(dailyPlanFitInsightKeyPattern),
@@ -678,6 +709,7 @@ const planBody = z.strictObject({
   availableContexts: z.array(z.string().min(1).max(64)).max(32).default([]),
   seed: z.string().trim().min(1).max(240),
   requestRevision: z.number().int().positive().max(1_000_000).default(1),
+  planFitInsightKey: z.string().regex(dailyPlanFitInsightKeyPattern).nullable().optional(),
 });
 const planQuery = z.strictObject({ revision: z.coerce.number().int().positive().max(1_000_000) });
 const planItemLockBody = z.strictObject({
@@ -700,7 +732,11 @@ const planItemActivityBody = z.strictObject({
     })
     .default({}),
 });
-const planMutationRequestBody = planBody.omit({ date: true, requestRevision: true });
+const planMutationRequestBody = planBody.omit({
+  date: true,
+  requestRevision: true,
+  planFitInsightKey: true,
+});
 const schedulingAdviceBody = z.strictObject({
   version: z.literal("schedule.advisor/v1"),
   requestId: uuid,
@@ -851,7 +887,7 @@ export async function registerProductRoutes(
       reply.header("cache-control", "no-store");
     }
   });
-  installRateLimit(app, limits.requestsPerMinute);
+  installIpRateLimit(app, limits.requestsPerMinute);
   const cursorSigningKey = randomBytes(32);
   let concurrentPlans = 0;
   const runPlanningOperation = async <Result>(
@@ -985,7 +1021,7 @@ export async function registerProductRoutes(
 
   app.post("/v1/workspaces/:workspaceId/work-items", async (request, reply) => {
     const params = parseRequest(workspaceParams, request.params);
-    const body = parseRequest(workItemBody, request.body);
+    const body = parseRequest(workItemCreateBodySchema, request.body);
     const created = await services.createWorkItem({
       workspaceId: workspaceId(params.workspaceId),
       parentWorkItemId: body.parentWorkItemId === null ? null : workItemId(body.parentWorkItemId),
@@ -1548,6 +1584,35 @@ export async function registerProductRoutes(
     });
   });
 
+  app.get("/v1/workspaces/:workspaceId/planning-outcomes", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(planningOutcomesQuery, request.query);
+    return services.getPlanningOutcomes({
+      workspaceId: workspaceId(params.workspaceId),
+      forDate: localDate(query.forDate),
+    });
+  });
+
+  app.get("/v1/workspaces/:workspaceId/daily-plan-fit-insight/usages", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(dailyPlanFitUsageOutcomesQuery, request.query);
+    return {
+      items: await services.listDailyPlanFitUsageOutcomes({
+        workspaceId: workspaceId(params.workspaceId),
+        limit: query.limit,
+      }),
+    };
+  });
+
+  app.get("/v1/workspaces/:workspaceId/daily-plan-fit-insight/effectiveness", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(dailyPlanFitEffectivenessQuery, request.query);
+    return services.getDailyPlanFitEffectiveness({
+      workspaceId: workspaceId(params.workspaceId),
+      limit: query.limit,
+    });
+  });
+
   app.post("/v1/workspaces/:workspaceId/daily-plan-fit-insight/dismissals", async (request) => {
     const params = parseRequest(workspaceParams, request.params);
     const body = parseRequest(dailyPlanFitInsightFeedbackBody, request.body);
@@ -1600,6 +1665,9 @@ export async function registerProductRoutes(
         availableContexts: body.availableContexts,
         seed: body.seed,
         requestRevision: body.requestRevision,
+        ...(body.planFitInsightKey === undefined || body.planFitInsightKey === null
+          ? {}
+          : { planFitInsightKey: body.planFitInsightKey }),
       });
       return publicPlan(await services.generateDailyPlan({ request: planningRequest }));
     });

@@ -40,6 +40,13 @@ const RUNTIME_SECURITY_PROBE = [
   "const noNewPrivileges=/^NoNewPrivs:\\s*1$/mu.test(status);",
   "process.stdout.write(JSON.stringify({uid:process.getuid?.()??-1,gid:process.getgid?.()??-1,rootFilesystemReadOnly,noNewPrivileges,capabilityMasks}));",
 ].join("");
+const HOSTED_WEB_PROBE = [
+  "import('/app/dist/hosted-web-shell.js')",
+  ".then(async({loadHostedWebShell})=>{const shell=await loadHostedWebShell();",
+  "if(shell.html.length===0||shell.assets.size===0)process.exit(1);",
+  "process.stdout.write('hosted-web-ready')})",
+  ".catch(()=>process.exit(1));",
+].join("");
 
 type RuntimeService = "api" | "migrate" | "worker";
 
@@ -454,6 +461,15 @@ export async function verifyOciRuntime(): Promise<void> {
         ),
       );
     }
+    const hostedWebReady = await runCommand(
+      "docker",
+      [...compose, "exec", "--no-TTY", "api", "node", "-e", HOSTED_WEB_PROBE],
+      environment,
+      true,
+    );
+    if (hostedWebReady !== "hosted-web-ready") {
+      throw new Error("API image did not contain the bounded hosted web build.");
+    }
 
     const apiPort = parsePublishedApiPort(
       await runCommand("docker", [...compose, "port", "api", "4000"], environment, true),
@@ -482,6 +498,7 @@ export async function verifyOciRuntime(): Promise<void> {
       architecture: "modular-monolith",
       productEndpointsEnabled: false,
       integrationEndpointsEnabled: false,
+      hostedEndpointsEnabled: false,
     });
 
     await runCommand(
@@ -536,7 +553,7 @@ export async function verifyOciRuntime(): Promise<void> {
       throw new Error(`OCI runtime verification interrupted by ${interruptedBy}.`);
     }
     process.stdout.write(
-      "OCI runtime verification passed hardened non-root containers, image builds, migrations, fail-closed API health, loopback worker health, and graceful shutdown.\n",
+      "OCI runtime verification passed hardened non-root containers, hosted web assets, migrations, fail-closed API health, loopback worker health, and graceful shutdown.\n",
     );
   } catch (error) {
     primaryError = error;

@@ -30,9 +30,16 @@ test("persists temporary routine feedback and activity through the live Today pl
   const pageErrors: string[] = [];
   const requestFailures: string[] = [];
   const unexpectedHttpResponses: string[] = [];
+  let reloadInProgress = false;
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("requestfailed", (request) => {
-    requestFailures.push(`${request.method()} ${new URL(request.url()).pathname}`);
+    const failureText = request.failure()?.errorText ?? "unknown failure";
+    const expectedReloadCancellation =
+      reloadInProgress && request.method() === "GET" && failureText === "net::ERR_ABORTED";
+    // A deliberate document reload cancels unfinished background reads. Keep all other browser
+    // failures actionable, including cancellations that occur outside these explicit reloads.
+    if (expectedReloadCancellation) return;
+    requestFailures.push(`${request.method()} ${new URL(request.url()).pathname} (${failureText})`);
   });
   page.on("response", (response) => {
     if (response.status() < 400) return;
@@ -155,7 +162,12 @@ test("persists temporary routine feedback and activity through the live Today pl
   await expect(temporarilyHidden.getByText(routineTitle, { exact: true })).toBeVisible();
   await expect(temporarilyHidden.getByText("Hidden today", { exact: true })).toBeVisible();
 
-  await page.reload();
+  reloadInProgress = true;
+  try {
+    await page.reload();
+  } finally {
+    reloadInProgress = false;
+  }
   const persistedTemporaryFeedback = page.getByRole("region", { name: "Temporarily hidden" });
   await expect(page.getByRole("main", { name: "Today view" })).toBeVisible();
   await expect(routine).toBeHidden();
@@ -240,7 +252,12 @@ test("persists temporary routine feedback and activity through the live Today pl
   expect((await activityResponsePromise).status()).toBe(200);
   await expect(plannedRoutine.getByLabel("Status: Completed")).toBeVisible();
 
-  await page.reload();
+  reloadInProgress = true;
+  try {
+    await page.reload();
+  } finally {
+    reloadInProgress = false;
+  }
   const persistedRoutine = page
     .getByRole("list", { name: "Today's planned items" })
     .getByRole("article", { name: routineTitle });
@@ -695,7 +712,7 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
     const expectedMissingCurrentPlan =
       response.status() === 404 &&
       request.method() === "GET" &&
-      /^\/v1\/workspaces\/[^/]+\/plans\/2026-07-14\/current$/.test(pathname);
+      /^\/v1\/workspaces\/[^/]+\/plans\/2026-07-1[45]\/current$/.test(pathname);
     if (!expectedMissingCurrentPlan) {
       unexpectedHttpResponses.push(`${response.status()} ${request.method()} ${pathname}`);
     }
@@ -733,6 +750,9 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
     expect(routineResponse.status()).toBe(201);
   }
 
+  let latestEvidencePlanId: string | null = null;
+  let latestEvidenceCompletedItemId: string | null = null;
+  let latestEvidenceHeadVersion = 0;
   for (const [dateIndex, date] of ["2026-07-11", "2026-07-12", "2026-07-13"].entries()) {
     const planResponse = await page.request.post(`/v1/workspaces/${workspace.id}/plans`, {
       data: {
@@ -780,7 +800,102 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
       headVersion = ((await activityResponse.json()) as { readonly headVersion: number })
         .headVersion;
     }
+    if (date === "2026-07-13") {
+      latestEvidencePlanId = plan.id;
+      latestEvidenceCompletedItemId = plan.items[0]!.id;
+      latestEvidenceHeadVersion = headVersion;
+    }
   }
+
+  expect(latestEvidencePlanId).not.toBeNull();
+  expect(latestEvidenceCompletedItemId).not.toBeNull();
+  const initialInsightResponse = await page.request.get(
+    `/v1/workspaces/${workspace.id}/daily-plan-fit-insight?forDate=2026-07-14`,
+  );
+  expect(initialInsightResponse.status()).toBe(200);
+  const initialInsight = (await initialInsightResponse.json()) as { readonly insightKey: string };
+
+  const reversalResponse = await page.request.post(
+    `/v1/workspaces/${workspace.id}/plans/2026-07-13/items/${latestEvidenceCompletedItemId!}/activity-events`,
+    {
+      headers: { "Idempotency-Key": "daily-plan-fit-e2e-reverse-evidence" },
+      data: {
+        expectedPlanId: latestEvidencePlanId,
+        expectedHeadVersion: latestEvidenceHeadVersion,
+        type: "completion_reversed",
+        occurredAt: "2026-07-14T01:00:00.000Z",
+        timeZone: "UTC",
+        durationMinutes: null,
+        reason: null,
+        metadata: {},
+      },
+    },
+  );
+  expect(reversalResponse.status()).toBe(200);
+  const reversedHeadVersion = ((await reversalResponse.json()) as { readonly headVersion: number })
+    .headVersion;
+  const skipResponse = await page.request.post(
+    `/v1/workspaces/${workspace.id}/plans/2026-07-13/items/${latestEvidenceCompletedItemId!}/activity-events`,
+    {
+      headers: { "Idempotency-Key": "daily-plan-fit-e2e-skip-reopened-evidence" },
+      data: {
+        expectedPlanId: latestEvidencePlanId,
+        expectedHeadVersion: reversedHeadVersion,
+        type: "skipped",
+        occurredAt: "2026-07-14T01:01:00.000Z",
+        timeZone: "UTC",
+        durationMinutes: null,
+        reason: null,
+        metadata: {},
+      },
+    },
+  );
+  expect(skipResponse.status()).toBe(200);
+
+  const staleGenerationResponse = await page.request.post(`/v1/workspaces/${workspace.id}/plans`, {
+    data: {
+      date: "2026-07-14",
+      timeZone: "UTC",
+      availableWindows: [
+        {
+          startsAt: "2026-07-14T08:00:00.000Z",
+          endsAt: "2026-07-14T12:30:00.000Z",
+        },
+      ],
+      targetMinutes: 90,
+      targetTaskCount: 2,
+      availableContexts: ["computer"],
+      seed: "daily-plan-fit-e2e-stale-evidence",
+      requestRevision: 1,
+      planFitInsightKey: initialInsight.insightKey,
+    },
+  });
+  expect(staleGenerationResponse.status()).toBe(409);
+  expect(await staleGenerationResponse.json()).toMatchObject({
+    error: { code: "daily_plan_fit_insight.evidence_conflict" },
+  });
+  const currentAfterStaleResponse = await page.request.get(
+    `/v1/workspaces/${workspace.id}/plans/2026-07-14/current`,
+  );
+  expect(currentAfterStaleResponse.status()).toBe(404);
+  const historyAfterStaleResponse = await page.request.get(
+    `/v1/workspaces/${workspace.id}/daily-plan-fit-insight/usages?limit=5`,
+  );
+  expect(historyAfterStaleResponse.status()).toBe(200);
+  expect(await historyAfterStaleResponse.json()).toEqual({ items: [] });
+  const outcomeWorkItemResponse = await page.request.post(
+    `/v1/workspaces/${workspace.id}/work-items`,
+    {
+      data: {
+        title: "Complete the Plan Fit outcome",
+        status: "planned",
+        priority: "urgent",
+        dueOn: "2026-07-14",
+        planningDurationMinutes: 45,
+      },
+    },
+  );
+  expect(outcomeWorkItemResponse.status()).toBe(201);
 
   await page.addInitScript((workspaceId) => {
     localStorage.setItem("schedule.selectedWorkspace", workspaceId);
@@ -792,6 +907,12 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
   await expect(page.getByText("3 resolved plans")).toBeVisible();
   await expect(page.getByText("3h · 4 tasks")).toBeVisible();
   await expect(page.getByText("1h 30m · 2 tasks")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Planning outcomes" })).toBeVisible();
+  await expect(page.getByText(/current final revision for 3 prior plan days/i)).toBeVisible();
+  await expect(page.getByText("41.67% time · 41.67% tasks")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Plan Fit outcome summary" })).toBeVisible();
+  await expect(page.getByText(/No explicit Plan Fit use is available/)).toBeVisible();
+  await expect(page.getByText(/Prefilling alone creates no history/)).toBeVisible();
 
   const dismissalResponsePromise = page.waitForResponse((response) =>
     isMutationResponse(
@@ -820,10 +941,37 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
   expect((await resetResponsePromise).status()).toBe(200);
   await expect(page.getByRole("heading", { name: "Try 90 minutes and 2 tasks" })).toBeFocused();
 
+  const currentInsightResponse = await page.request.get(
+    `/v1/workspaces/${workspace.id}/daily-plan-fit-insight?forDate=2026-07-14`,
+  );
+  expect(currentInsightResponse.status()).toBe(200);
+  const currentInsight = (await currentInsightResponse.json()) as {
+    readonly insightKey: string;
+    readonly suggestedTargetMinutes: number;
+    readonly suggestedTargetTaskCount: number;
+  };
+  expect(currentInsight.insightKey).not.toBe(initialInsight.insightKey);
   await page.getByRole("button", { name: "Use 90 minutes and 2 tasks" }).click();
   await expect(page.getByRole("spinbutton", { name: /^Target minutes/ })).toHaveValue("90");
   await expect(page.getByRole("spinbutton", { name: /^Target tasks/ })).toHaveValue("2");
   await expect(page.getByRole("spinbutton", { name: /^Target minutes/ })).toBeFocused();
+  const historyAfterPrefillResponse = await page.request.get(
+    `/v1/workspaces/${workspace.id}/daily-plan-fit-insight/usages?limit=5`,
+  );
+  expect(historyAfterPrefillResponse.status()).toBe(200);
+  expect(await historyAfterPrefillResponse.json()).toEqual({ items: [] });
+  const effectivenessAfterPrefillResponse = await page.request.get(
+    `/v1/workspaces/${workspace.id}/daily-plan-fit-insight/effectiveness?limit=28`,
+  );
+  expect(effectivenessAfterPrefillResponse.status()).toBe(200);
+  expect(await effectivenessAfterPrefillResponse.json()).toMatchObject({
+    usesConsidered: 0,
+    eligibleResolvedUseCount: 0,
+    scheduledMinutesRateBasisPoints: null,
+    completionMinutesRateBasisPoints: null,
+  });
+  await page.getByRole("spinbutton", { name: /^Target minutes/ }).fill("105");
+  await page.getByRole("spinbutton", { name: /^Target tasks/ }).fill("3");
   const absentPlan = await page.request.get(
     `/v1/workspaces/${workspace.id}/plans/2026-07-14/current`,
   );
@@ -838,7 +986,163 @@ test("derives, prefills, and explicitly restores a Daily Plan Fit suggestion", a
     ),
   );
   await page.getByRole("button", { name: "Generate today's plan" }).click();
-  expect((await generationResponsePromise).status()).toBe(200);
+  const generationResponse = await generationResponsePromise;
+  expect(generationResponse.status()).toBe(200);
+  const generationRequestBody = generationResponse.request().postDataJSON() as Record<
+    string,
+    unknown
+  >;
+  expect(generationRequestBody).toMatchObject({
+    date: "2026-07-14",
+    targetMinutes: 105,
+    targetTaskCount: 3,
+    planFitInsightKey: currentInsight.insightKey,
+  });
+  const generatedPlan = (await generationResponse.json()) as {
+    readonly id: string;
+    readonly items: readonly { readonly id: string; readonly scheduledMinutes: number }[];
+  };
+  expect(generatedPlan.items.length).toBeGreaterThan(0);
+  await expect(page.getByRole("heading", { name: "Plan Fit outcome summary" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "After using Plan Fit" })).toBeVisible();
+  await expect(page.getByText("Waiting for final outcomes")).toBeVisible();
+
+  const replayResponse = await page.request.post(`/v1/workspaces/${workspace.id}/plans`, {
+    data: generationRequestBody,
+  });
+  expect(replayResponse.status()).toBe(200);
+  expect((await replayResponse.json()) as { readonly id: string }).toMatchObject({
+    id: generatedPlan.id,
+  });
+  const pendingHistoryResponse = await page.request.get(
+    `/v1/workspaces/${workspace.id}/daily-plan-fit-insight/usages?limit=5`,
+  );
+  expect(pendingHistoryResponse.status()).toBe(200);
+  const pendingHistory = (await pendingHistoryResponse.json()) as {
+    readonly items: readonly {
+      readonly sourcePlanId: string;
+      readonly insightKey: string;
+      readonly status: string;
+      readonly suggestedTargetMinutes: number;
+      readonly suggestedTargetTaskCount: number;
+      readonly appliedTargetMinutes: number;
+      readonly appliedTargetTaskCount: number;
+    }[];
+  };
+  expect(pendingHistory.items).toEqual([
+    expect.objectContaining({
+      sourcePlanId: generatedPlan.id,
+      insightKey: currentInsight.insightKey,
+      status: "pending",
+      suggestedTargetMinutes: currentInsight.suggestedTargetMinutes,
+      suggestedTargetTaskCount: currentInsight.suggestedTargetTaskCount,
+      appliedTargetMinutes: 105,
+      appliedTargetTaskCount: 3,
+    }),
+  ]);
+  const pendingEffectivenessResponse = await page.request.get(
+    `/v1/workspaces/${workspace.id}/daily-plan-fit-insight/effectiveness?limit=28`,
+  );
+  expect(pendingEffectivenessResponse.status()).toBe(200);
+  expect(await pendingEffectivenessResponse.json()).toMatchObject({
+    usesConsidered: 1,
+    resolvedUseCount: 0,
+    pendingUseCount: 1,
+    revisedUseCount: 0,
+    eligibleResolvedUseCount: 0,
+    exactSuggestionUseCount: 0,
+    editedSuggestionUseCount: 1,
+    scheduledMinutesRateBasisPoints: null,
+    scheduledTasksRateBasisPoints: null,
+    completionMinutesRateBasisPoints: null,
+    completionTasksRateBasisPoints: null,
+  });
+
+  let generatedHeadVersion = 1;
+  for (const [itemIndex, item] of generatedPlan.items.entries()) {
+    const type = itemIndex === 0 ? "completed" : "skipped";
+    const activityResponse = await page.request.post(
+      `/v1/workspaces/${workspace.id}/plans/2026-07-14/items/${item.id}/activity-events`,
+      {
+        headers: { "Idempotency-Key": `daily-plan-fit-e2e-used-${itemIndex}-${type}` },
+        data: {
+          expectedPlanId: generatedPlan.id,
+          expectedHeadVersion: generatedHeadVersion,
+          type,
+          occurredAt: `2026-07-14T${String(13 + itemIndex).padStart(2, "0")}:30:00.000Z`,
+          timeZone: "UTC",
+          durationMinutes: type === "completed" ? item.scheduledMinutes : null,
+          reason: null,
+          metadata: {},
+        },
+      },
+    );
+    expect(activityResponse.status()).toBe(200);
+    generatedHeadVersion = ((await activityResponse.json()) as { readonly headVersion: number })
+      .headVersion;
+  }
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "After using Plan Fit" })).toBeVisible();
+  await expect(page.getByText("Resolved", { exact: true })).toBeVisible();
+
+  await page.clock.setFixedTime(new Date("2026-07-15T12:00:00.000Z"));
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "After using Plan Fit" })).toBeVisible();
+  await expect(page.getByText("Resolved", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(/Suggested 1h 30m and 2 tasks; generated with 1h 45m and 3 tasks/),
+  ).toBeVisible();
+  await expect(page.getByText(/Completed .* and 1 task from/)).toBeVisible();
+  await expect(page.getByText(/1 of 3 settled, unrevised uses is available/)).toBeVisible();
+  await expect(page.getByText(/Rates appear after 2 more comparable uses/)).toBeVisible();
+  await expect(page.getByText("Target scheduled")).not.toBeVisible();
+
+  const mutationRequest = { ...generationRequestBody };
+  delete mutationRequest.date;
+  delete mutationRequest.requestRevision;
+  delete mutationRequest.planFitInsightKey;
+  const regenerationResponse = await page.request.post(
+    `/v1/workspaces/${workspace.id}/plans/2026-07-14/regenerations`,
+    {
+      headers: { "Idempotency-Key": "daily-plan-fit-e2e-revised-after-use" },
+      data: {
+        expectedPlanId: generatedPlan.id,
+        expectedHeadVersion: generatedHeadVersion,
+        request: mutationRequest,
+      },
+    },
+  );
+  expect(regenerationResponse.status()).toBe(200);
+  expect((await regenerationResponse.json()) as { readonly id: string }).not.toMatchObject({
+    id: generatedPlan.id,
+  });
+  await page.reload();
+  await expect(page.getByText("The day was revised after Plan Fit was used.")).toBeVisible();
+  await expect(page.getByText(/No settled, unrevised plan is available/)).toBeVisible();
+  const historyAfterRevisionResponse = await page.request.get(
+    `/v1/workspaces/${workspace.id}/daily-plan-fit-insight/usages?limit=5`,
+  );
+  expect(historyAfterRevisionResponse.status()).toBe(200);
+  expect(
+    (await historyAfterRevisionResponse.json()) as {
+      readonly items: readonly { readonly revisedSinceUsage: boolean }[];
+    },
+  ).toMatchObject({ items: [{ revisedSinceUsage: true }] });
+  const effectivenessAfterRevisionResponse = await page.request.get(
+    `/v1/workspaces/${workspace.id}/daily-plan-fit-insight/effectiveness?limit=28`,
+  );
+  expect(effectivenessAfterRevisionResponse.status()).toBe(200);
+  expect(await effectivenessAfterRevisionResponse.json()).toMatchObject({
+    usesConsidered: 1,
+    revisedUseCount: 1,
+    eligibleResolvedUseCount: 0,
+    appliedTargetMinutes: 0,
+    scheduledMinutes: 0,
+    completedMinutes: 0,
+    scheduledMinutesRateBasisPoints: null,
+    completionMinutesRateBasisPoints: null,
+  });
 
   expect(pageErrors).toEqual([]);
   expect(requestFailures).toEqual([]);

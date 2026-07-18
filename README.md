@@ -9,10 +9,12 @@ authenticated automation boundary is in
 the [integration gateway guide](./docs/INTEGRATIONS.md). Local data protection and recovery
 procedures are in the [operations guide](./docs/OPERATIONS.md). Behavioral confidence and known test
 limitations are tracked in the [evaluation guide](./docs/EVALUATION.md). The two distinct opt-in
-Hermes paths—one local conversational plugin and one provider-neutral reminder-delivery adapter
-foundation—are documented in the [Hermes guide](./docs/HERMES.md).
+Hermes paths—one locally installable conversational plugin and one provider-neutral
+reminder-delivery adapter foundation—are documented in the [Hermes guide](./docs/HERMES.md).
 The optional loopback worker health and metrics contract is in
 [docs/OBSERVABILITY.md](./docs/OBSERVABILITY.md).
+The opt-in hosted OIDC and workspace-authorization boundary is in
+[docs/HOSTED_AUTHORIZATION.md](./docs/HOSTED_AUTHORIZATION.md).
 The local model's explicit, review-before-write capture contract is documented in
 [docs/NATURAL_LANGUAGE.md](./docs/NATURAL_LANGUAGE.md).
 
@@ -58,7 +60,16 @@ Today also exposes deterministic Daily Plan Fit guidance. Once at least three pr
 are fully resolved, Schedule compares the median planned and completed time/task pairs across a
 bounded 90-day window and may suggest materially smaller joint targets. Using the suggestion only
 prefills both editable fields; explicit generation is still required. Exact evidence-backed
-dismissal and reset are append-only, and changed evidence receives a new key.
+dismissal and reset are append-only, and changed evidence receives a new key. When the user does
+generate from a selected suggestion, Schedule revalidates that exact key and atomically records the
+actual edited targets with the plan. A bounded read-only history then shows pending, resolved, and
+not-evaluable outcomes, with later revisions disclosed separately. A separate workspace summary
+reports weighted target-fill and plan-completion rates only for settled, unrevised uses. Both views
+are descriptive and never feed planner scoring, model prompts, or automatic adaptation.
+
+A separate compact Today summary reports weighted completed-versus-planned scheduled time and tasks
+across the prior 30 current plan heads, plus additional revisions. The read-only local view adds no
+telemetry table, schema change, or adaptive feedback loop.
 
 The local API also exposes status-based backlog/Kanban work items and bounded non-recurring calendar blocks, providing the backend surface for the first usable interface. Work items support arbitrary-depth, acyclic same-workspace subtasks plus directed prerequisites. Parent and child statuses remain independent, only leaf work is eligible for Today, and a dependent is newly selectable only when every direct prerequisite is `done`.
 
@@ -71,8 +82,9 @@ An optional integration gateway gives a workspace-scoped machine credential read
 Today and a two-step, idempotent structured-command flow. It is disabled by default. Schedule stays
 authoritative; Hermes or another messaging agent calls this boundary instead of writing the
 database. The repository includes an opt-in local Hermes plugin that adds sender/session/platform-
-bound later-turn confirmation and a deterministic stdout reminder helper. It remains local-only and
-does not silently enable a cron job or WhatsApp delivery.
+bound later-turn confirmation and a deterministic stdout reminder helper. A checked installer copies
+only their runtime files into Hermes; it remains local-only and does not silently enable the plugin,
+create a cron job, or send a WhatsApp message.
 
 A separate outbound webhook substrate can deliver signed, workspace-bound test events and explicitly
 subscribed privacy-thin Today-change invalidations through the existing durable outbox. It is also
@@ -124,7 +136,19 @@ The web app listens on `http://127.0.0.1:5173` and the API listens on
 `http://127.0.0.1:4000` by default. Use `/health/live` for process health and `/health/ready` for
 database readiness.
 
-Local unauthenticated product routes are enabled only for non-production loopback development. Configuration rejects attempts to enable them in production or on a non-loopback bind, and the API rejects non-loopback product-route `Host` headers. Authentication will be required before hosted product routes are introduced. Health and system-information endpoints intentionally remain available independently of the product Host guard for local diagnostics.
+Local unauthenticated product routes are enabled only for non-production loopback development.
+Configuration rejects attempts to enable them in production or on a non-loopback bind, and the API
+rejects non-loopback product-route `Host` headers. `HOSTED_API_MODE` defaults to `disabled`; `oidc`
+is accepted only with the complete immutable registration, secret-backed preflight, and local
+unauthenticated product routes disabled. The enabled surface provides login, callback, session,
+logout, automatic first-login default-workspace membership, and one membership-authorized work-item
+create route with bounded per-source throttling. An authenticated read returns only the caller's
+active workspace page. A same-origin hosted capture shell can sign in, select one active workspace,
+review the first 20 backlog titles, and add one title through that authorized mutation. It does not
+provide workspace administration, work-item editing, the broader product API, or synchronization.
+Partial sets and non-empty mixed-case aliases or unknown companions fail startup without disclosing values.
+Health and system-information endpoints
+intentionally remain available independently of the product Host guard for local diagnostics.
 
 The separately authenticated integration gateway is disabled by default. Provision a per-workspace
 credential and configure `INTEGRATION_API_PEPPER` before enabling `INTEGRATION_API_MODE`; see the
@@ -139,9 +163,10 @@ content. This webhook is not used as a reminder. Reminder policy decisions, dura
 provider-neutral supervised delivery polling are implemented, with polling disabled by default.
 Provider/account binding, reconciliation, external bootstrap, and a concrete Hermes/WhatsApp
 transport are not part of this release. Separately, the opt-in local Hermes plugin calls the
-authenticated read/write gateway when invoked and offers a deterministic stdout Today helper; live
-WhatsApp delivery remains incomplete until the operator configures `WHATSAPP_HOME_CHANNEL` and
-verifies an operator-owned self-chat. Automatic
+authenticated read/write gateway when invoked and offers a deterministic stdout Today helper; its
+installer is dry with respect to secrets, plugin enablement, cron, and messaging. Live WhatsApp
+delivery remains incomplete until the operator configures `WHATSAPP_HOME_CHANNEL` and verifies an
+operator-owned self-chat. Automatic
 local intent materialization is available but disabled by default; set
 `NOTIFICATION_MATERIALIZATION_MODE=enabled` only after reminder policy is configured. This does not
 enable delivery. The least-privilege claim/receipt gateway is implemented for an external adapter.
@@ -163,15 +188,22 @@ gaps.
 
 After installing Chromium once with `pnpm exec playwright install chromium`, run
 `pnpm verify:web-e2e` to exercise the built web application, live API, fresh migrations, and an
-isolated PostgreSQL database through eight live flows: routine/Today activity and feedback,
+isolated PostgreSQL database through ten live flows: routine/Today activity and feedback,
 work-item deadline pressure, duration-insight dismissal/reset, accessible 320px prerequisite
-editing, mobile subtask persistence and leaf-only planning, reminder
+editing, mobile subtask persistence and leaf-only planning, routine ranking preferences,
+deterministic alternative comparison and selection, reminder
 policy/materialization/history with responsive checks, and deterministic Daily Plan Fit
-prefill/dismissal/reset with explicit generation. The local proposal flow uses the production
+prefill/dismissal/reset, stale-key rejection, explicit generation receipts, resolved outcomes, and
+revision disclosure. The local proposal flow uses the production
 local-model adapter against a strict loopback double to review a title plus user-authored
 priority/date/duration, confirm, replay the same
 confirmation key, cancel, focus, and reload natural-language work proposals without browser request
 interception.
+
+Run `pnpm verify:hosted-web-e2e` for the separate built OIDC capture entry. Its strict browser double
+checks signed-out and authenticated states, workspace choice, bounded backlog refresh, exact CSRF
+forwarding, title-only capture, and 360-pixel layout; the PostgreSQL composition verifier covers the real hosted server
+boundary.
 
 With PostgreSQL running, verify backlog/Kanban, hierarchy, work-item prerequisites, and calendar
 management, routine creation and optimistic updates, duration calibration and Daily Plan Fit,
@@ -204,7 +236,7 @@ That command proves the local/stdout provider boundary, not delivery to a WhatsA
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh
 PostgreSQL 17 Compose project. It also verifies a complete archive round trip, the real disposable
-restore/promote/rollback/cleanup state machine, and the eight live Chromium product flows in a
+restore/promote/rollback/cleanup state machine, and the ten live Chromium product flows in a
 separate disposable database.
 
 ## Local data protection
@@ -228,5 +260,14 @@ The API and worker are ordinary OCI-compatible Node processes. PostgreSQL is the
 Core packages do not depend on a hosting provider, queue vendor, or cloud SDK. The production
 runtime images use a fixed non-root identity; the executable OCI smoke gate additionally enforces a
 read-only root filesystem, dropped Linux capabilities, and `no-new-privileges` for migrations, the
-API, and the worker. These controls are a provider-neutral deployment prerequisite, not evidence that
-public hosting or browser authentication is enabled.
+API, and the worker. Complete secret-manager-fed `HOSTED_API_MODE=oidc` configuration now activates
+the hardened authorization-code lifecycle, nonce-bound verification, browser sessions, first-login
+workspace bootstrap, and one transaction-authorized hosted work-item mutation. Provider discovery,
+JWKS, and token exchange use bounded direct HTTPS with pinned address policy; failed preflight closes
+the database and exits before listening. Disabled mode remains route-closed.
+
+These are provider-neutral runtime prerequisites, not a hosted release. TLS ingress, deployment
+manifests for a lean Railway API/worker deployment now live under `infra/deploy/railway`; see the
+[hosted deployment guide](./docs/DEPLOYMENT.md). A live environment, managed secrets/backups,
+continuous monitoring, workspace administration, the broader product surface, synchronization, and
+a broader hosted product interface remain to be implemented and verified.

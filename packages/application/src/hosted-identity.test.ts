@@ -19,6 +19,7 @@ import {
   FindOrProvisionHostedUser,
   HmacBrowserSessionTokenCodec,
   IssueBrowserSession,
+  ListHostedWorkspaces,
   ProvisionHostedWorkspace,
   ReactivateWorkspaceMembership,
   ResolveBrowserSession,
@@ -112,6 +113,13 @@ function createHarness() {
       insert: async (workspace) => {
         workspaces.set(workspace.id, workspace);
       },
+      listActiveForUser: async (id, limit, offset) =>
+        [...memberships.values()]
+          .filter((membership) => membership.userId === id && membership.status === "active")
+          .map((membership) => workspaces.get(membership.workspaceId))
+          .filter((workspace): workspace is Workspace => workspace !== undefined)
+          .sort((left, right) => left.id.localeCompare(right.id))
+          .slice(offset, offset + limit),
     },
     time: { current: async () => new Date(now) },
   };
@@ -152,7 +160,7 @@ describe("hosted identity application foundation", () => {
     expect(() => new HmacBrowserSessionTokenCodec("short")).toThrow(/at least 32 bytes/);
   });
 
-  it("provisions an exact identity once under read-committed lock semantics", async () => {
+  it("provisions an exact identity and default workspace once under read-committed lock semantics", async () => {
     const harness = createHarness();
     const service = new FindOrProvisionHostedUser(harness.unitOfWork);
 
@@ -165,6 +173,10 @@ describe("hosted identity application foundation", () => {
     expect(caseDistinct.user.id).not.toBe(created.user.id);
     expect(harness.users).toHaveLength(2);
     expect(harness.identities).toHaveLength(2);
+    expect(harness.workspaces.size).toBe(2);
+    expect(harness.memberships.size).toBe(2);
+    expect([...harness.workspaces.values()].every(({ name }) => name === "My Schedule")).toBe(true);
+    expect([...harness.memberships.values()].every(({ status }) => status === "active")).toBe(true);
     expect(harness.isolationLevels).toEqual(["read_committed", "read_committed", "read_committed"]);
   });
 
@@ -182,6 +194,45 @@ describe("hosted identity application foundation", () => {
     expect(result.membership).toMatchObject({ status: "active", userId: user.id });
     expect(harness.workspaces.has(result.workspace.id)).toBe(true);
     expect(harness.memberships.has(`${result.workspace.id}:${user.id}`)).toBe(true);
+  });
+
+  it("lists only the principal's active hosted workspaces with bounded paging", async () => {
+    const harness = createHarness();
+    const primary = await new FindOrProvisionHostedUser(harness.unitOfWork).execute({
+      issuer: "Issuer",
+      subject: "Primary",
+    });
+    const secondary = await new FindOrProvisionHostedUser(harness.unitOfWork).execute({
+      issuer: "Issuer",
+      subject: "Secondary",
+    });
+    const extra = await new ProvisionHostedWorkspace(harness.unitOfWork).execute({
+      userId: primary.user.id,
+      name: "Later workspace",
+    });
+    await new RevokeWorkspaceMembership(harness.unitOfWork).execute(
+      primary.user.id,
+      extra.workspace.id,
+    );
+    const service = new ListHostedWorkspaces(harness.unitOfWork);
+
+    await expect(service.execute({ userId: primary.user.id, limit: 1 })).resolves.toMatchObject({
+      items: [{ name: "My Schedule" }],
+      limit: 1,
+      offset: 0,
+    });
+    await expect(service.execute({ userId: secondary.user.id })).resolves.toMatchObject({
+      items: [{ name: "My Schedule" }],
+    });
+    const transactionCount = harness.isolationLevels.length;
+    expect(() => service.execute({ userId: primary.user.id, limit: 21 })).toThrow(
+      "Hosted workspace limit must be from 1 to 20.",
+    );
+    expect(() => service.execute({ userId: primary.user.id, offset: 1_001 })).toThrow(
+      "Hosted workspace offset must be from 0 to 1,000.",
+    );
+    expect(harness.isolationLevels).toHaveLength(transactionCount);
+    expect(harness.isolationLevels.at(-1)).toBe("read_committed");
   });
 
   it("authorizes only active exact memberships and returns an immutable scoped context", async () => {

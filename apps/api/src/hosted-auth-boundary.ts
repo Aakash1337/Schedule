@@ -17,6 +17,28 @@ export interface HostedRequestAuthenticator {
   authenticate(request: FastifyRequest): Promise<BrowserSessionPrincipal | null>;
 }
 
+export interface HostedRequestCsrfGuard {
+  /** Safe methods pass; unsafe browser requests require the configured Origin and CSRF proof. */
+  verify(request: FastifyRequest): Promise<boolean> | boolean;
+}
+
+export interface HostedPrincipalBoundaryDependencies {
+  readonly authenticator: HostedRequestAuthenticator;
+  readonly csrfGuard: HostedRequestCsrfGuard;
+}
+
+export interface HostedPrincipalRequestAccess {
+  /** Available only after this boundary has authenticated the request. */
+  principal(
+    request: FastifyRequest,
+  ): Readonly<Pick<BrowserSessionPrincipal, "userId" | "sessionId">>;
+}
+
+export type HostedPrincipalRouteRegistrar = (
+  app: FastifyInstance,
+  access: HostedPrincipalRequestAccess,
+) => Promise<void> | void;
+
 export interface HostedWorkspaceAuthorizer {
   execute(
     principal: Pick<BrowserSessionPrincipal, "userId" | "sessionId">,
@@ -29,8 +51,7 @@ export interface HostedWorkspaceRequestAccess {
   authorization(request: FastifyRequest): HostedWorkspaceAuthorization;
 }
 
-export interface HostedWorkspaceBoundaryDependencies {
-  readonly authenticator: HostedRequestAuthenticator;
+export interface HostedWorkspaceBoundaryDependencies extends HostedPrincipalBoundaryDependencies {
   readonly authorizer: HostedWorkspaceAuthorizer;
 }
 
@@ -59,7 +80,7 @@ function principalIsWellFormed(
 
 function publicFailure(
   request: FastifyRequest,
-  status: 401 | 404 | 503,
+  status: 401 | 403 | 404 | 503,
 ): {
   readonly error: { readonly code: string; readonly message: string };
   readonly requestId: string;
@@ -67,6 +88,12 @@ function publicFailure(
   if (status === 401) {
     return {
       error: { code: "hosted.authentication_failed", message: "Authentication failed." },
+      requestId: request.id,
+    };
+  }
+  if (status === 403) {
+    return {
+      error: { code: "hosted.csrf_failed", message: "Request verification failed." },
       requestId: request.id,
     };
   }
@@ -85,20 +112,78 @@ function publicFailure(
   };
 }
 
+/** Authenticates hosted routes without exposing transport or session details to handlers. */
+export async function registerHostedPrincipalBoundary(
+  app: FastifyInstance,
+  dependencies: HostedPrincipalBoundaryDependencies,
+  registerRoutes: HostedPrincipalRouteRegistrar,
+): Promise<void> {
+  await app.register(async (hostedApp) => {
+    const principalByRequest = new WeakMap<
+      FastifyRequest,
+      Readonly<Pick<BrowserSessionPrincipal, "userId" | "sessionId">>
+    >();
+    const access: HostedPrincipalRequestAccess = Object.freeze({
+      principal(request: FastifyRequest) {
+        const principal = principalByRequest.get(request);
+        if (principal === undefined) {
+          throw new Error("Hosted principal is unavailable for this request.");
+        }
+        return principal;
+      },
+    });
+
+    hostedApp.addHook("onRoute", (route) => {
+      const existing = route.onSend;
+      route.onSend =
+        existing === undefined
+          ? enforcePrivateCaching
+          : Array.isArray(existing)
+            ? [...existing, enforcePrivateCaching]
+            : [existing, enforcePrivateCaching];
+    });
+
+    hostedApp.addHook("onRequest", async (request, reply) => {
+      reply.header("cache-control", "no-store");
+      try {
+        if ((await dependencies.csrfGuard.verify(request)) !== true) {
+          return reply.code(403).send(publicFailure(request, 403));
+        }
+      } catch {
+        request.log.error("hosted request verification failed internally");
+        return reply.code(503).send(publicFailure(request, 503));
+      }
+
+      let principal: BrowserSessionPrincipal | null;
+      try {
+        principal = await dependencies.authenticator.authenticate(request);
+      } catch {
+        request.log.error("hosted request authentication failed internally");
+        return reply.code(503).send(publicFailure(request, 503));
+      }
+      if (!principalIsWellFormed(principal)) {
+        return reply.code(401).send(publicFailure(request, 401));
+      }
+      principalByRequest.set(
+        request,
+        Object.freeze({ userId: principal.userId, sessionId: principal.sessionId }),
+      );
+    });
+
+    await registerRoutes(hostedApp, access);
+  });
+}
+
 /**
- * Encapsulates future hosted workspace routes behind one deny-by-default boundary. This function
- * is intentionally not wired into buildApp: defining the seam must not expose a production route.
+ * Adds exact workspace membership authorization to the hosted principal boundary. The production
+ * app installs it only when the explicit hosted OIDC runtime gate succeeds.
  */
 export async function registerHostedWorkspaceBoundary(
   app: FastifyInstance,
   dependencies: HostedWorkspaceBoundaryDependencies,
   registerRoutes: HostedWorkspaceRouteRegistrar,
 ): Promise<void> {
-  await app.register(async (hostedApp) => {
-    const authenticationByRequest = new WeakMap<
-      FastifyRequest,
-      Promise<BrowserSessionPrincipal | null>
-    >();
+  await registerHostedPrincipalBoundary(app, dependencies, async (hostedApp, principalAccess) => {
     const authorizationByRequest = new WeakMap<FastifyRequest, HostedWorkspaceAuthorization>();
     const access: HostedWorkspaceRequestAccess = Object.freeze({
       authorization(request: FastifyRequest): HostedWorkspaceAuthorization {
@@ -114,35 +199,10 @@ export async function registerHostedWorkspaceBoundary(
       if (!WORKSPACE_PARAMETER_SEGMENT.test(route.url)) {
         throw new Error("Every hosted workspace route must include a :workspaceId parameter.");
       }
-      const existing = route.onSend;
-      route.onSend =
-        existing === undefined
-          ? enforcePrivateCaching
-          : Array.isArray(existing)
-            ? [...existing, enforcePrivateCaching]
-            : [existing, enforcePrivateCaching];
     });
 
     hostedApp.addHook("onRequest", async (request, reply) => {
-      reply.header("cache-control", "no-store");
-      let authentication = authenticationByRequest.get(request);
-      if (authentication === undefined) {
-        authentication = Promise.resolve().then(() =>
-          dependencies.authenticator.authenticate(request),
-        );
-        authenticationByRequest.set(request, authentication);
-      }
-
-      let principal: BrowserSessionPrincipal | null;
-      try {
-        principal = await authentication;
-      } catch {
-        request.log.error("hosted request authentication failed internally");
-        return reply.code(503).send(publicFailure(request, 503));
-      }
-      if (!principalIsWellFormed(principal)) {
-        return reply.code(401).send(publicFailure(request, 401));
-      }
+      const principal = principalAccess.principal(request);
 
       const requestedWorkspace = workspaceFromRequest(request);
       if (requestedWorkspace === null) {

@@ -26,6 +26,7 @@ import {
 } from "@schedule/domain";
 
 import type { UnitOfWorkOptions } from "./ports.js";
+import type { WorkspacePage } from "./list-workspaces.js";
 
 const BROWSER_SESSION_TOKEN_VERSION = "schedule.browser-session/v1";
 const BROWSER_SESSION_SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
@@ -34,6 +35,7 @@ const DUMMY_SELECTOR = "00000000-0000-4000-8000-000000000000";
 const DUMMY_DIGEST = "0".repeat(64);
 const MINIMUM_ABSOLUTE_TTL_SECONDS = 5 * 60;
 const MAXIMUM_ABSOLUTE_TTL_SECONDS = 90 * 24 * 60 * 60;
+const DEFAULT_HOSTED_WORKSPACE_NAME = "My Schedule";
 
 export interface HostedUserRepository {
   findByIdForUpdate(id: UserId): Promise<HostedUser | null>;
@@ -77,6 +79,7 @@ export interface WorkspaceMembershipRepository {
 /** Hosted provisioning deliberately bypasses the local installation's 20-workspace cap. */
 export interface HostedWorkspaceRepository {
   insert(workspace: Workspace): Promise<void>;
+  listActiveForUser(userId: UserId, limit: number, offset: number): Promise<readonly Workspace[]>;
 }
 
 export interface IdentityTimeRepository {
@@ -191,7 +194,7 @@ export class FindOrProvisionHostedUser {
     readonly subject: string;
   }): Promise<FindOrProvisionHostedUserResult> {
     return this.unitOfWork.run(
-      async ({ users, externalIdentities, time }) => {
+      async ({ users, externalIdentities, memberships, workspaces, time }) => {
         await externalIdentities.lockExact(input.issuer, input.subject);
         const existing = await externalIdentities.findExact(input.issuer, input.subject);
         if (existing !== null) {
@@ -208,8 +211,16 @@ export class FindOrProvisionHostedUser {
         const now = await time.current();
         const user = createHostedUser({ now });
         const identity = createExternalIdentity({ ...input, userId: user.id, now });
+        const workspace = createWorkspace({ name: DEFAULT_HOSTED_WORKSPACE_NAME, now });
+        const membership = createWorkspaceMembership({
+          userId: user.id,
+          workspaceId: workspace.id,
+          now,
+        });
         await users.insert(user);
         await externalIdentities.insert(identity);
+        await workspaces.insert(workspace);
+        await memberships.insert(membership);
         return { user, identity, created: true };
       },
       { isolationLevel: "read_committed" },
@@ -237,6 +248,39 @@ export class ProvisionHostedWorkspace {
       await memberships.insert(membership);
       return { workspace, membership };
     });
+  }
+}
+
+export class ListHostedWorkspaces {
+  constructor(private readonly unitOfWork: IdentityUnitOfWork) {}
+
+  execute(input: {
+    readonly userId: UserId;
+    readonly limit?: number;
+    readonly offset?: number;
+  }): Promise<WorkspacePage> {
+    const limit = input.limit ?? 20;
+    const offset = input.offset ?? 0;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
+      throw new DomainError(
+        "hosted_workspace.limit_invalid",
+        "Hosted workspace limit must be from 1 to 20.",
+      );
+    }
+    if (!Number.isInteger(offset) || offset < 0 || offset > 1_000) {
+      throw new DomainError(
+        "hosted_workspace.offset_invalid",
+        "Hosted workspace offset must be from 0 to 1,000.",
+      );
+    }
+    return this.unitOfWork.run(
+      async ({ workspaces }) => ({
+        items: await workspaces.listActiveForUser(input.userId, limit, offset),
+        limit,
+        offset,
+      }),
+      { isolationLevel: "read_committed" },
+    );
   }
 }
 

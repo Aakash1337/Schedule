@@ -3,7 +3,7 @@
 Status: Working product definition
 Last updated: 2026-07-15
 
-Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement and alternative-selection revisions, deterministic read-only comparison of up to three distinct alternatives, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items with direct prerequisites and arbitrary-depth subtasks, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v6 selects both reusable routines and explicitly opted-in one-time leaf work items, applies temporary routine feedback and explicit bounded routine selection preferences, and hard-excludes parent containers and work with unmet prerequisites from new selection and unlocked regeneration retention. A locked nonterminal item remains anchored under the existing user-authority rules. The planner also adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent routine-duration insight with explicit approval, read-only Daily Plan Fit guidance that may prefill a smaller evidence-backed joint time/task target, and reversible user-authored routine ranking preferences; none applies automatically or changes the current plan. Broader inferred preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. The Work interface may separately prepare one expiring, editable backlog-title proposal from free-form text; no work exists until explicit, audited, exactly-once confirmation. A provider-neutral authenticated gateway provides Today reads, credential-scoped work-item discovery including hierarchy, reviewed create/reparent/detach mutations, and least-privilege reminder delivery claims/receipts for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. A deterministic reminder-policy core stores versioned profiles and rules, explicit one-offs, concurrency-safe immutable intents, an opt-in local periodic materializer, and a provider-neutral fenced delivery lifecycle without performing provider transport. See [API.md](./API.md), [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md), [REMINDERS.md](./REMINDERS.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language routine creation, model-driven task breakdown, multi-command capture, automatic advisor application or calibration, hosted model providers, generalized undo, recurrence authoring, phone delivery, a Hermes/WhatsApp transport, and public hosting remain deferred.
+Implementation note: deterministic Phase 1 is implemented across the domain, application use cases, PostgreSQL adapters, schema, migrations, unit tests, and seeded simulation coverage. Phase 2 now includes stable typed plan-item identities, an authoritative Today-plan head, audited lock and activity state, immutable regeneration/replacement and alternative-selection revisions, deterministic read-only comparison of up to three distinct alternatives, routine-only **Not today** and **Not this week** feedback, status-based backlog/Kanban work items with direct prerequisites and arbitrary-depth subtasks, bounded non-recurring calendar-block management, opt-in calendar-aware first-plan availability, and a responsive local web interface. Planner v6 selects both reusable routines and explicitly opted-in one-time leaf work items, applies temporary routine feedback and explicit bounded routine selection preferences, and hard-excludes parent containers and work with unmet prerequisites from new selection and unlocked regeneration retention. A locked nonterminal item remains anchored under the existing user-authority rules. The planner also adds transparent deadline pressure for eligible work. Phase 3 now includes a transparent routine-duration insight with explicit approval, evidence-backed Daily Plan Fit guidance with explicit use receipts and read-only outcome history, and reversible user-authored routine ranking preferences; none applies automatically, and the descriptive history does not enter planner scoring. Broader inferred preferences and automatic adaptation remain deferred. Phase 4 now has an opt-in, read-only local advisor behind a provider-neutral application port: the Today interface can ask an allowlisted local Gemma model through Ollama for bounded structured suggestions, but neither the provider nor its output can mutate or replace the deterministic plan. The Work interface may separately prepare one expiring, editable backlog-title proposal from free-form text; no work exists until explicit, audited, exactly-once confirmation. A provider-neutral authenticated gateway provides Today reads, credential-scoped work-item discovery including hierarchy, reviewed create/reparent/detach mutations, and least-privilege reminder delivery claims/receipts for future agents. The secure outbound substrate supports operator-queued tests and an explicit opt-in, privacy-thin `schedule.changed.v1` invalidation without schedule content. A deterministic reminder-policy core stores versioned profiles and rules, explicit one-offs, concurrency-safe immutable intents, an opt-in local periodic materializer, and a provider-neutral fenced delivery lifecycle without performing provider transport. See [API.md](./API.md), [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md), [REMINDERS.md](./REMINDERS.md), [WEB.md](./WEB.md), [INTEGRATIONS.md](./INTEGRATIONS.md), and [WEBHOOKS.md](./WEBHOOKS.md). Natural-language routine creation, model-driven task breakdown, multi-command capture, automatic advisor application or calibration, hosted model providers, generalized undo, recurrence authoring, phone delivery, a Hermes/WhatsApp transport, and public hosting remain deferred.
 
 The local reminder interface now configures profiles, rules, and one-offs; manually materializes
 intents; and presents separate planned and product-safe execution histories. An operator may also
@@ -419,9 +419,11 @@ Adaptation safeguards:
 - Never lower the importance of a deadline solely because prior suggestions were skipped
 
 The current slice implements evidence thresholds, material-change gating, range review, visible
-evidence, explicit approval, and exact-key dismissal and reset memory. Learned cadence or energy
-preferences; adaptive probabilistic selection beyond the existing versioned deterministic planner;
-historical insight comparison; and automatic application of learned values remain deferred.
+evidence, explicit approval, exact-key dismissal/reset memory, and Plan Fit use receipts with
+descriptive pending, resolved, and not-evaluable history, separate later-revision disclosure, and
+bounded weighted outcome rates that Today withholds until three comparable uses settle. Learned cadence or energy preferences; adaptive probabilistic
+selection beyond the existing versioned deterministic planner; causal effectiveness analysis and
+outcome-driven learning; and automatic application of learned values remain deferred.
 
 ## 11. Optional local-model advisor
 
@@ -580,6 +582,8 @@ Local evaluation should support replaying historical days against a new algorith
 Current executable evidence, coverage floors, planner contract metrics, and known evaluation gaps are
 maintained in [EVALUATION.md](./EVALUATION.md). Feature evidence is CI-gated; production outcome
 metrics remain non-gating until real local usage provides a defined denominator and sufficient sample.
+The implemented Today summary is narrower: it reports weighted planned/completed scheduled workload
+and additional revisions over the prior 30 current plan heads, without telemetry or adaptation.
 
 Separately, the local worker has an opt-in loopback operational surface for liveness, database
 readiness, outbox/reminder queue age and state, and fixed-cardinality failure counters. It contains
@@ -639,11 +643,17 @@ Success is not simply "more tasks completed." Useful measures include realistic 
   evidence key, with automatic resurfacing when evidence or relevant policy changes
 - Implemented: deterministic Daily Plan Fit guidance from fully resolved current heads, with a
   bounded joint time/task suggestion, explicit prefill, and exact-key dismissal/reset
+- Implemented: atomic exact-key Plan Fit use receipts with final edited targets and bounded read-only
+  pending, resolved, and not-evaluable outcome history, separate later-revision disclosure, and
+  descriptive target-fill and plan-completion rates that exclude later revisions and stay hidden
+  until three comparable uses settle
+- Implemented: a general read-only prior-30-day planning-outcomes summary using final current heads,
+  weighted task/time completion totals, and a transparent additional-revision count
 - Implemented: explicit append-only **More often**, **Less often**, and resettable routine ranking
   preferences for future plans, with bounded visible score contribution and no current-plan mutation
 - Deferred: inferred cadence, day/time, energy, preference, and category-balance signals
-- Deferred: automatic application, adaptive probabilistic selection, historical insight comparison,
-  upward Plan Fit expansion, editable Plan Fit policy, and algorithm comparison tools
+- Deferred: automatic application, adaptive probabilistic selection, causal outcome analysis and
+  learned policies, upward Plan Fit expansion, editable Plan Fit policy, and algorithm comparison tools
 
 ### Phase 4 — Local-model advisor
 
@@ -687,15 +697,23 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   follow-on work
 - Implemented local adapter: disabled-by-default Hermes tools for authenticated Today/work-item
   reads and sender/session/platform-bound confirmed mutations, plus a deterministic stdout reminder
-  helper; it is separate from the delivery-claim runtime, and live WhatsApp still requires the
-  operator's `WHATSAPP_HOME_CHANNEL` and self-chat smoke
-- Implemented foundation: dormant provider-neutral users, exact issuer/subject bindings,
-  digest-only revocable browser sessions, and binary workspace memberships with deletion-safe
-  workspace preservation
-- Implemented foundation: a centralized, enumeration-resistant hosted request and workspace
-  authorization seam with request isolation and explicit revocation/transaction semantics; it is
-  not registered in production, and no browser route, cookie, or provider is exposed
-- Authentication and secure workspace isolation
+  helper and a checked runtime-only installer; it is separate from the delivery-claim runtime, and
+  live WhatsApp still requires the operator's `WHATSAPP_HOME_CHANNEL` and self-chat smoke
+- Implemented narrow hosted runtime: complete `HOSTED_API_MODE=oidc` configuration activates exact
+  issuer/subject provisioning, digest-only revocable browser sessions, first-login default-workspace
+  membership, login/session/logout, and one transaction-authorized work-item create route. Disabled
+  mode remains route-closed, and local unauthenticated product routes cannot coexist with OIDC mode.
+- Implemented security boundary: exact-Origin double-submit CSRF, host-only cookies, generic tenant
+  denial, bounded client-address throttling, direct pinned OIDC HTTPS, startup preflight/cleanup, and
+  same-transaction user/session/workspace/membership reauthorization.
+- Implemented narrow hosted read: a signed-in principal can list only active workspace memberships
+  through a bounded, no-store page without identity or role metadata.
+- Implemented narrow hosted UI: a same-origin capture shell can sign in, select one active
+  workspace, review the first 20 backlog titles, and create one title through the
+  transaction-authorized route; it exposes no provider tokens, identity metadata, workspace
+  administration, or local-only routes.
+- Deferred: hosted workspace administration, the broader product API and interface, account
+  management, provider-specific production verification, collaboration roles, and sync.
 - Cloud deployment selected from measured operational needs
 - Offline-capable synchronization and conflict handling, if required
 - Managed backup retention, point-in-time recovery, monitoring, and deployment automation

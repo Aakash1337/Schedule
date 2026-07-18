@@ -15,6 +15,7 @@ import {
   dailyPlanItems,
   dailyPlans,
   externalIdentities,
+  hostedLoginTransactions,
   hostedUsers,
   hostedUserStatus,
   integrationConfirmations,
@@ -103,7 +104,47 @@ describe("database schema", () => {
     expect(getTableName(hostedUsers)).toBe("users");
     expect(getTableName(externalIdentities)).toBe("external_identities");
     expect(getTableName(browserSessions)).toBe("browser_sessions");
+    expect(getTableName(hostedLoginTransactions)).toBe("hosted_login_transactions");
     expect(getTableName(workspaceMemberships)).toBe("workspace_memberships");
+  });
+
+  it("persists only bounded hosted login coordination material", () => {
+    const transactions = getTableConfig(hostedLoginTransactions);
+    expect(transactions.uniqueConstraints.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "hosted_login_transactions_state_digest_uq",
+        "hosted_login_transactions_browser_binding_digest_uq",
+      ]),
+    );
+    expect(transactions.indexes.map((constraint) => constraint.config.name)).toContain(
+      "hosted_login_transactions_expiry_idx",
+    );
+    expect(transactions.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "hosted_login_transactions_digests_valid",
+        "hosted_login_transactions_oidc_values_valid",
+        "hosted_login_transactions_lifecycle_valid",
+        "hosted_login_transactions_version_positive",
+      ]),
+    );
+    expect(hostedLoginTransactions).not.toHaveProperty("state");
+    expect(hostedLoginTransactions).not.toHaveProperty("browserBinding");
+    expect(hostedLoginTransactions).not.toHaveProperty("pkceVerifier");
+  });
+
+  it("migrates hosted login coordination without plaintext bearer columns", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0036_romantic_justice.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain('CREATE TABLE "hosted_login_transactions"');
+    expect(migration).toContain('"state_digest" varchar(64) NOT NULL');
+    expect(migration).toContain('"browser_binding_digest" varchar(64) NOT NULL');
+    expect(migration).toContain('"protected_pkce_verifier" varchar(2048) NOT NULL');
+    expect(migration).toContain("\"pkce_method\" varchar(4) DEFAULT 'S256' NOT NULL");
+    expect(migration).not.toContain('\n\t"state" ');
+    expect(migration).not.toContain('\n\t"browser_binding" ');
+    expect(migration).not.toContain('\n\t"pkce_verifier" ');
   });
 
   it("persists a provider-neutral hosted identity and binary membership boundary", () => {
@@ -151,6 +192,9 @@ describe("database schema", () => {
     expect(memberships.primaryKeys.map((constraint) => constraint.getName())).toContain(
       "workspace_memberships_pk",
     );
+    expect(memberships.indexes.map((constraint) => constraint.config.name)).toContain(
+      "workspace_memberships_user_status_workspace_idx",
+    );
     expect(memberships.checks.map((constraint) => constraint.name)).toContain(
       "workspace_memberships_lifecycle_valid",
     );
@@ -169,6 +213,15 @@ describe("database schema", () => {
     expect(migration).toContain('CREATE UNIQUE INDEX "external_identities_exact_binding_uq"');
     expect(migration).toContain('"issuer" collate "C"');
     expect(migration).not.toContain('ALTER TABLE "workspaces" ADD COLUMN "user_id"');
+  });
+
+  it("migrates the bounded hosted membership discovery index", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0037_spooky_maelstrom.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain('CREATE INDEX "workspace_memberships_user_status_workspace_idx"');
+    expect(migration).toContain('("user_id","status","workspace_id")');
   });
 
   it("enforces a tenant-scoped, non-cascading work-item hierarchy", () => {
@@ -852,7 +905,7 @@ describe("database schema", () => {
 
   it("stores and migrates append-only Daily Plan Fit feedback", () => {
     const config = getTableConfig(dailyPlanFitInsightFeedbackEvents);
-    expect(dailyPlanFitInsightFeedbackKind.enumValues).toEqual(["dismissed", "reset"]);
+    expect(dailyPlanFitInsightFeedbackKind.enumValues).toEqual(["dismissed", "reset", "used"]);
     expect(
       config.uniqueConstraints
         .find(
@@ -867,6 +920,9 @@ describe("database schema", () => {
         "daily_plan_fit_feedback_sample_positive",
         "daily_plan_fit_feedback_completed_minutes_nonnegative",
         "daily_plan_fit_feedback_completed_tasks_nonnegative",
+        "daily_plan_fit_feedback_usage_shape_valid",
+        "daily_plan_fit_feedback_applied_minutes_positive",
+        "daily_plan_fit_feedback_applied_tasks_positive",
         "daily_plan_fit_feedback_idempotency_canonical",
         "daily_plan_fit_feedback_sequence_positive",
       ]),
@@ -887,6 +943,22 @@ describe("database schema", () => {
     );
     expect(migration).toContain(
       'BEFORE UPDATE OR DELETE ON "daily_plan_fit_insight_feedback_events"',
+    );
+
+    const usageMigration = readFileSync(
+      new URL("../drizzle/0035_zippy_stone_men.sql", import.meta.url),
+      "utf8",
+    );
+    expect(usageMigration).toContain(
+      'ALTER TYPE "public"."daily_plan_fit_insight_feedback_kind" ADD VALUE \'used\'',
+    );
+    expect(usageMigration).toContain(
+      'CONSTRAINT "daily_plan_fit_feedback_plan_tenant_fk" FOREIGN KEY ("workspace_id","plan_id")',
+    );
+    expect(usageMigration).toContain('CREATE UNIQUE INDEX "daily_plan_fit_feedback_used_plan_uq"');
+    expect(usageMigration).toContain('CREATE INDEX "daily_plan_fit_feedback_kind_sequence_idx"');
+    expect(usageMigration).toContain(
+      '"daily_plan_fit_insight_feedback_events"."kind"::text = \'used\'',
     );
   });
 
