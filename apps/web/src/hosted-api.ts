@@ -21,6 +21,7 @@ export interface HostedWorkItemPage {
 
 export type HostedTodayActivityState =
   "pending" | "started" | "completed" | "skipped" | "deferred" | "dismissed";
+export type HostedTodayActivityType = "started" | "completed" | "skipped";
 
 export interface HostedToday {
   readonly date: string;
@@ -126,7 +127,7 @@ export const hostedApi = {
     command: Readonly<{
       expectedPlanId: string;
       expectedHeadVersion: number;
-      type: "started" | "completed";
+      type: HostedTodayActivityType;
       occurredAt: string;
       idempotencyKey: string;
     }>,

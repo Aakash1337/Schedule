@@ -33,10 +33,11 @@ const hostedTodayActivityParams = z.strictObject({
   workspaceId: canonicalUuid,
   itemId: canonicalUuid,
 });
+const hostedTodayActivityType = z.enum(["started", "completed", "skipped"]);
 const hostedTodayActivityBody = z.strictObject({
   expectedPlanId: canonicalUuid,
   expectedHeadVersion: z.number().int().min(1).max(2_147_483_647),
-  type: z.enum(["started", "completed"]),
+  type: hostedTodayActivityType,
   occurredAt: z.string().datetime({ offset: true }),
 });
 const idempotencyKey = z.string().trim().min(1).max(160);
@@ -55,7 +56,7 @@ export interface HostedTodayActivityInput {
   readonly expectedPlanId: DailyPlanId;
   readonly itemId: PlanItemId;
   readonly expectedHeadVersion: number;
-  readonly type: "started" | "completed";
+  readonly type: z.infer<typeof hostedTodayActivityType>;
   readonly occurredAt: Date;
   readonly idempotencyKey: string;
 }

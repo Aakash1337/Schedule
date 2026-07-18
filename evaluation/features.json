@@ -3254,7 +3254,7 @@
         "anchor": "# Hosted request authorization and OIDC runtime"
       },
       "limitations": [
-        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery and name-only creation, bounded backlog and existing-plan Today reads, transaction-coupled title create, status-only update, and Today Start/Done, plus one narrow same-origin capture shell. Workspace rename/delete and membership administration, a broader public end-user product surface, and synchronization remain unimplemented.",
+        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery and name-only creation, bounded backlog and existing-plan Today reads, transaction-coupled title create, status-only update, and Today Start/Done/Skip, plus one narrow same-origin capture shell. Workspace rename/delete and membership administration, a broader public end-user product surface, and synchronization remain unimplemented.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [
@@ -3361,7 +3361,7 @@
         "anchor": "## Hosted capture shell"
       },
       "limitations": [
-        "The shell can authenticate, create or discover active workspaces, show one existing browser-local current-day plan and the first 20 backlog titles, create one title-only backlog item, move one visible backlog item to started or done, and start or complete one actionable Today item with exact ambiguous retry. It cannot generate plans, page, filter, edit fields, reopen, cancel, schedule, rename/delete workspaces, administer membership, or synchronize product data.",
+        "The shell can authenticate, create or discover active workspaces, show one existing browser-local current-day plan and the first 20 backlog titles, create one title-only backlog item, move one visible backlog item to started or done, and start, complete, or skip one actionable Today item with exact ambiguous retry. It cannot generate plans, page, filter, edit fields, reopen, cancel, schedule, rename/delete workspaces, administer membership, or synchronize product data.",
         "The built-browser gate uses an in-browser API double; an external identity provider and public TLS ingress still require a staging smoke."
       ],
       "evidence": [
@@ -3624,7 +3624,7 @@
         "anchor": "## Transaction-coupled hosted Today action"
       },
       "limitations": [
-        "The mutation permits only started or completed for an item in an existing current plan. It does not expose skipping, deferral, dismissal, reversal, duration, reason, metadata, plan generation, or general work-item editing.",
+        "The mutation permits only started, completed, or skipped for an item in an existing current plan. It does not expose deferral, dismissal, reversal, duration, reason, metadata, plan generation, or general work-item editing.",
         "The browser retains one offset timestamp and idempotency key only for an ambiguous retry. The server owns the plan time zone and same-transaction user, session, workspace, and membership reauthorization; a stale head requires a fresh read rather than automatic replay."
       ],
       "evidence": [

@@ -32,7 +32,7 @@ test("captures one hosted backlog item with responsive request verification", as
   };
   const todayPlanId = "00000000-0000-4000-8000-000000000012";
   let todayHeadVersion = 5;
-  let todayActivityState: "started" | "completed" = "started";
+  let todayActivityState: "pending" | "completed" = "pending";
   let backlog = [existing];
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
@@ -103,9 +103,24 @@ test("captures one hosted backlog item with responsive request verification", as
   await expect(page.getByRole("heading", { name: "What needs doing?" })).toBeVisible();
   await expect(page.getByText(existing.title)).toBeVisible();
   await expect(page.getByText(todayItem.title)).toBeVisible();
-  await expect(page.getByText("45m · Started")).toBeVisible();
+  await expect(page.getByText("45m · Pending")).toBeVisible();
   expect(requestedTodayDate).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
   await page.getByRole("combobox", { name: "Workspace" }).selectOption(workspaces[1]!.id);
+  await page.setViewportSize({ width: 360, height: 740 });
+  const skipButton = page.getByRole("button", { name: `Skip ${todayItem.title} in Today` });
+  await expect(skipButton).toBeVisible();
+  const actionLayout = await page.evaluate(() => {
+    const browser = globalThis as unknown as {
+      readonly innerWidth: number;
+      readonly document: { readonly documentElement: { readonly scrollWidth: number } };
+    };
+    return {
+      viewport: browser.innerWidth,
+      width: browser.document.documentElement.scrollWidth,
+    };
+  });
+  expect(actionLayout.width).toBeLessThanOrEqual(actionLayout.viewport);
+  expect((await skipButton.boundingBox())?.height).toBeGreaterThanOrEqual(44);
   await page.getByRole("button", { name: `Complete ${todayItem.title} in Today` }).click();
   await expect(page.getByText(`Completed “${todayItem.title}”.`)).toBeVisible();
   await expect(page.getByText("45m · Completed")).toBeVisible();
@@ -132,7 +147,6 @@ test("captures one hosted backlog item with responsive request verification", as
   expect(capturedTodayCsrf).toBe(csrfToken);
   expect(capturedTodayIdempotency).toMatch(/^[0-9a-f-]{36}$/u);
 
-  await page.setViewportSize({ width: 360, height: 740 });
   await expect(page.getByRole("button", { name: "Add to backlog" })).toBeVisible();
   const layout = await page.evaluate(() => {
     const browser = globalThis as unknown as {

@@ -261,6 +261,10 @@
     gap: 4px;
   }
 
+  .hosted-today-actions .button {
+    min-height: 44px;
+  }
+
   .hosted-backlog-list li {
     align-items: flex-start;
     flex-direction: column;

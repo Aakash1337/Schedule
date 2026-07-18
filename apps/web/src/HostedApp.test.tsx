@@ -264,7 +264,7 @@ describe("hosted capture shell", () => {
         date: todayKey(),
         planId: "plan-1",
         headVersion: 8,
-        items: [{ ...item, activityState: "started" }],
+        items: [{ ...item, activityState: "skipped" }],
         totalMinutes: 45,
       });
     apiMocks.recordTodayActivity
@@ -273,13 +273,14 @@ describe("hosted capture shell", () => {
 
     render(<HostedApp />);
 
-    await user.click(await screen.findByRole("button", { name: `Start ${item.title} in Today` }));
+    await user.click(await screen.findByRole("button", { name: `Skip ${item.title} in Today` }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Schedule could not be reached.");
     const firstCall = apiMocks.recordTodayActivity.mock.calls[0];
     await user.click(screen.getByRole("button", { name: "Retry action" }));
     expect(apiMocks.recordTodayActivity).toHaveBeenCalledTimes(2);
     expect(apiMocks.recordTodayActivity.mock.calls[1]).toEqual(firstCall);
-    expect(await screen.findByText(`Started “${item.title}”.`)).toBeInTheDocument();
+    expect(await screen.findByText(`Skipped “${item.title}”.`)).toBeInTheDocument();
+    expect(await screen.findByText("45m · Skipped")).toBeInTheDocument();
   });
 
   it("refreshes instead of replaying a stale Today action", async () => {

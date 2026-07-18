@@ -8,6 +8,7 @@ import {
   HostedApiError,
   type HostedToday,
   type HostedTodayActivityState,
+  type HostedTodayActivityType,
   type HostedWorkItem,
   type HostedWorkspace,
 } from "./hosted-api";
@@ -21,7 +22,7 @@ interface TodayActionIntent {
   readonly title: string;
   readonly expectedPlanId: string;
   readonly expectedHeadVersion: number;
-  readonly type: "started" | "completed";
+  readonly type: HostedTodayActivityType;
   readonly occurredAt: string;
   readonly idempotencyKey: string;
 }
@@ -98,7 +99,7 @@ export function HostedApp() {
   const [todayRetry, setTodayRetry] = useState<TodayActionIntent | null>(null);
   const [updatingTodayItem, setUpdatingTodayItem] = useState<{
     readonly id: string;
-    readonly type: "started" | "completed";
+    readonly type: HostedTodayActivityType;
   } | null>(null);
   const [updatingItem, setUpdatingItem] = useState<{
     readonly id: string;
@@ -328,9 +329,7 @@ export function HostedApp() {
         idempotencyKey: intent.idempotencyKey,
       });
       setTodayRetry(null);
-      setConfirmation(
-        intent.type === "completed" ? `Completed “${intent.title}”.` : `Started “${intent.title}”.`,
-      );
+      setConfirmation(`${activityLabel(intent.type)} “${intent.title}”.`);
       setTodayRefresh((value) => value + 1);
       setBacklogRefresh((value) => value + 1);
     } catch (activityError) {
@@ -357,7 +356,7 @@ export function HostedApp() {
     }
   }
 
-  function beginTodayAction(item: HostedToday["items"][number], type: "started" | "completed") {
+  function beginTodayAction(item: HostedToday["items"][number], type: HostedTodayActivityType) {
     if (
       selectedWorkspace === null ||
       today === null ||
@@ -622,6 +621,19 @@ export function HostedApp() {
                             onClick={() => beginTodayAction(item, "completed")}
                           >
                             Done
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="quiet"
+                            aria-label={`Skip ${item.title} in Today`}
+                            busy={
+                              updatingTodayItem?.id === item.id &&
+                              updatingTodayItem.type === "skipped"
+                            }
+                            disabled={mutationBusy}
+                            onClick={() => beginTodayAction(item, "skipped")}
+                          >
+                            Skip
                           </Button>
                         </span>
                       )}
