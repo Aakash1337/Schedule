@@ -46,6 +46,7 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:hosted-oidc-composition-db` | Drive login, authorized work/Today, Plan Fit feedback, and explicit use     | Yes, disposable only            |
 | `pnpm verify:hosted-runtime-preflight`   | Verify secret parsing, startup construction, cleanup, and route gating      | No                              |
 | `pnpm verify:hosted-work-item-sync`      | Verify gated capture, staged bootstrap, pinned delta, retention, and 410    | Yes, disposable only            |
+| `pnpm verify:hosted-health`              | Probe public liveness and readiness through strict anonymous HTTPS          | External deployed origin        |
 | `pnpm verify:hosted-staging`             | Operator-assisted real-OIDC staging launch gate; never CI                   | External staging, manually      |
 | `pnpm eval`                              | Validate traceability and run the covered test suite                        | No                              |
 | `pnpm verify:database`                   | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
@@ -67,6 +68,14 @@ The destructive recovery command requires the explicit environment guards docume
 [`OPERATIONS.md`](./OPERATIONS.md). CI supplies those guards only inside its disposable Compose
 project.
 
+### External hosted health probe
+
+`pnpm verify:hosted-health` is a non-mutating, CI-safe command for an operator or provider scheduler,
+but the repository does not call an external deployment during CI. Its parser, request order,
+fixed timeout, redirect/cookie denial, exact response oracles, and error redaction are covered by
+`scripts/verify-hosted-health.test.ts`. A successful local unit test proves the probe contract, not
+the health of any particular deployment or the existence of monitoring history and alert routing.
+
 ### External hosted staging gate
 
 `pnpm verify:hosted-staging` is intentionally an operator-run launch gate, not an evidence command:
@@ -85,7 +94,7 @@ provider-monitoring, backup-restore, or broad-sync claim.
 
 ## Current scorecard
 
-The package and script runners currently execute 134 test files and 2,329 runtime test cases. Three
+The package and script runners currently execute 135 test files and 2,350 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -94,11 +103,11 @@ an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      59 / 59 |
+| Implemented features with CI-registered evidence                       |      60 / 60 |
 | Critical implemented features with CI-registered integration or drills |      42 / 42 |
 | Partial features with an explicit limitation                           |        4 / 4 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          349 |
+| CI-registered evidence items                                           |          352 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics

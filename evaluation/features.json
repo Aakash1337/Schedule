@@ -2677,6 +2677,33 @@
       ]
     },
     {
+      "id": "hosted-public-health-probe",
+      "status": "implemented",
+      "risk": "high",
+      "contract": {
+        "file": "docs/DEPLOYMENT.md",
+        "anchor": "## Public hosted health probe"
+      },
+      "limitations": [
+        "The probe performs one active public liveness/readiness check; no scheduler, time-series retention, dashboard, or alert-routing provider is installed.",
+        "Origin validation enforces canonical HTTPS syntax and a DNS hostname, not public DNS resolution or connection pinning; the operator or provider owns target selection and routing.",
+        "It does not authenticate, exercise product behavior, read worker metrics, or establish that any external deployment has been checked."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "scripts/verify-hosted-health.test.ts",
+          "command": "unit",
+          "anchors": [
+            "checks liveness then readiness with fixed private request options",
+            "rejects a %s target before network I/O",
+            "fails closed for %s",
+            "redacts network and timeout errors"
+          ]
+        }
+      ]
+    },
+    {
       "id": "railway-worker-deployment-readiness",
       "status": "implemented",
       "risk": "critical",
