@@ -45,18 +45,18 @@ function requireLocalVerificationDatabaseUrl(rawUrl: string): string {
   try {
     url = new URL(rawUrl);
   } catch {
-    throw new Error("Hosted OIDC composition verification requires a local Schedule database.");
+    throw new Error("Hosted OIDC composition verification requires a local PostgreSQL database.");
   }
   if (
     !["postgres:", "postgresql:"].includes(url.protocol) ||
     url.hostname !== "127.0.0.1" ||
-    url.pathname !== "/schedule" ||
+    url.pathname.length <= 1 ||
     url.username.length === 0 ||
     url.password.length === 0 ||
     url.search.length > 0 ||
     url.hash.length > 0
   ) {
-    throw new Error("Hosted OIDC composition verification requires a local Schedule database.");
+    throw new Error("Hosted OIDC composition verification requires a local PostgreSQL database.");
   }
   return url.toString();
 }

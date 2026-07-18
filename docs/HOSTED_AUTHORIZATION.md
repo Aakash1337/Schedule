@@ -756,8 +756,8 @@ failure mapping, preflight-before-app ordering, default route closure, enabled r
 capability reporting.
 It injects the factory in-process and performs no external network request.
 `pnpm verify:hosted-oidc-composition-db` accepts only an explicitly credentialed loopback PostgreSQL
-URL for the source `/schedule` database, then creates and migrates a uniquely named disposable
-database on that server. It uses a strict in-process signed OIDC provider, registers the returned
+source URL, then creates and migrates a uniquely named disposable database on that server. It uses a
+strict in-process signed OIDC provider, registers the returned
 graph only in a private Fastify test instance, and completes login, persisted one-shot callback, JWKS
 verification, identity provisioning, session bootstrap, authenticated session lookup, and
 CSRF-protected logout. It closes the app and connection, force-removes the disposable database even
