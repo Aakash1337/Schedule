@@ -5,7 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  CreateRoutine,
+  GenerateDailyPlan,
   ProvisionIntegrationCredential,
+  RecordPlanItemActivity,
   type ConfirmedIntegrationCommandResult,
   type IntegrationCommand,
   type PreparedIntegrationCommand,
@@ -17,7 +20,14 @@ import {
   PostgresUnitOfWork,
   type DatabaseConnection,
 } from "../packages/database/src/index.js";
-import { workspaceId } from "../packages/domain/src/index.js";
+import {
+  createCadencePolicy,
+  createDailyPlanningRequest,
+  createDurationRange,
+  createStructuredTags,
+  localDate,
+  workspaceId,
+} from "../packages/domain/src/index.js";
 
 import { buildApp } from "../apps/api/src/app.js";
 import { createIntegrationServices } from "../apps/api/src/integration-services.js";
@@ -138,6 +148,20 @@ interface IntegrationWorkItemListEnvelope {
   };
 }
 
+interface IntegrationDailyPlanFitEnvelope {
+  readonly version: typeof VERSION;
+  readonly requestId: string;
+  readonly data: {
+    readonly forDate: string;
+    readonly status: "insufficient_history" | "aligned" | "suggested";
+    readonly disposition: "available" | "dismissed";
+    readonly sampleCount: number;
+    readonly minimumSamples: number;
+    readonly suggestedTargetMinutes: number | null;
+    readonly suggestedTargetTaskCount: number | null;
+  };
+}
+
 function authorization(token: string): { readonly authorization: string } {
   return { authorization: `Bearer ${token}` };
 }
@@ -231,6 +255,7 @@ try {
 
   const primaryWorkspaceId = await createWorkspace("Integration gateway verification");
   const isolatedWorkspaceId = await createWorkspace("Integration gateway isolation verification");
+  const planFitWorkspaceId = await createWorkspace("Integration Plan Fit verification");
 
   const notificationProfile = await app.inject({
     method: "PUT",
@@ -309,6 +334,9 @@ try {
   const writeOnlyCredential = await provisionCredential(primaryWorkspaceId, "Write only", [
     "schedule:write",
   ]);
+  const planFitCredential = await provisionCredential(planFitWorkspaceId, "Plan Fit read only", [
+    "schedule:read",
+  ]);
 
   // EVIDENCE: integration-gateway-digest-only-credentials
   // The production provisioning path stores only a one-way digest; plaintext never enters a row.
@@ -353,6 +381,163 @@ try {
     },
   });
   assertError(writeScopeDenied, 403, "integration.scope_denied");
+
+  const fitRoutines = [];
+  for (const title of ["Gateway fit A", "Gateway fit B", "Gateway fit C", "Gateway fit D"]) {
+    fitRoutines.push(
+      await new CreateRoutine(productUnitOfWork, clock).execute({
+        workspaceId: workspaceId(planFitWorkspaceId),
+        title,
+        tags: createStructuredTags({
+          priority: "high",
+          energy: "normal",
+          contexts: ["integration-plan-fit"],
+          categories: ["verification"],
+        }),
+        duration: createDurationRange({ expectedMinutes: 45 }),
+        cadence: createCadencePolicy({
+          period: "day",
+          targetCompletions: 1,
+          maximumCompletions: 1,
+        }),
+      }),
+    );
+  }
+  assert.equal(fitRoutines.length, 4);
+  const fitGenerator = new GenerateDailyPlan(productUnitOfWork, clock);
+  const fitActivity = new RecordPlanItemActivity(productUnitOfWork, clock);
+  for (const [dateIndex, dateText] of ["2026-07-11", "2026-07-12", "2026-07-13"].entries()) {
+    const date = localDate(dateText);
+    const plan = await fitGenerator.execute({
+      request: createDailyPlanningRequest({
+        workspaceId: workspaceId(planFitWorkspaceId),
+        date,
+        timeZone: "UTC",
+        availableWindows: [
+          {
+            startsAt: new Date(`${dateText}T08:00:00.000Z`),
+            endsAt: new Date(`${dateText}T12:30:00.000Z`),
+          },
+        ],
+        targetMinutes: 180,
+        targetTaskCount: 4,
+        availableContexts: ["integration-plan-fit"],
+        seed: `integration-plan-fit-${dateText}`,
+        requestRevision: 1,
+      }),
+    });
+    assert.equal(plan.items.length, 4, "integration Plan Fit needs four items per evidence day");
+    let headVersion = 1;
+    for (const [itemIndex, item] of plan.items.entries()) {
+      const type = itemIndex < 2 ? "completed" : "skipped";
+      const result = await fitActivity.execute({
+        workspaceId: workspaceId(planFitWorkspaceId),
+        date,
+        expectedPlanId: plan.id,
+        itemId: item.id,
+        expectedHeadVersion: headVersion,
+        type,
+        occurredAt: new Date(`${dateText}T${String(13 + itemIndex).padStart(2, "0")}:00:00.000Z`),
+        timeZone: "UTC",
+        ...(type === "completed" ? { durationMinutes: 45 } : {}),
+        idempotencyKey: `integration-plan-fit-${dateIndex}-${itemIndex}-${type}`,
+      });
+      headVersion = result.headVersion;
+    }
+  }
+
+  const snapshotPlanFitReadState = async () => {
+    const [state] = await connection!.sql<
+      {
+        audit_count: number;
+        confirmation_count: number;
+        feedback_count: number;
+        plan_count: number;
+        request_count: number;
+      }[]
+    >`
+      select
+        (select count(*)::int from audit_events where workspace_id = ${planFitWorkspaceId}) as audit_count,
+        (select count(*)::int from integration_confirmations where workspace_id = ${planFitWorkspaceId}) as confirmation_count,
+        (select count(*)::int from daily_plan_fit_insight_feedback_events where workspace_id = ${planFitWorkspaceId}) as feedback_count,
+        (select count(*)::int from daily_plans where workspace_id = ${planFitWorkspaceId}) as plan_count,
+        (select count(*)::int from integration_requests where workspace_id = ${planFitWorkspaceId}) as request_count
+    `;
+    assert.ok(state);
+    return state;
+  };
+  const planFitStateBefore = await snapshotPlanFitReadState();
+  const readPlanFit = async (token: string) => {
+    const response = await app!.inject({
+      method: "GET",
+      url: `/v1/integrations/daily-plan-fit-insight?forDate=${PLAN_DATE}`,
+      headers: authorization(token),
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.headers["cache-control"], "no-store");
+    return { response: response.json<IntegrationDailyPlanFitEnvelope>(), rawBody: response.body };
+  };
+
+  // EVIDENCE: integration-gateway-daily-plan-fit-read
+  // One read-only credential receives only actionable guidance derived from its own tenant.
+  const planFitRead = await readPlanFit(planFitCredential.token);
+  assert.equal(planFitRead.response.version, VERSION);
+  assert.notEqual(planFitRead.response.requestId, "");
+  assert.deepEqual(Object.keys(planFitRead.response.data).sort(), [
+    "disposition",
+    "forDate",
+    "minimumSamples",
+    "sampleCount",
+    "status",
+    "suggestedTargetMinutes",
+    "suggestedTargetTaskCount",
+  ]);
+  assert.deepEqual(planFitRead.response.data, {
+    forDate: PLAN_DATE,
+    status: "suggested",
+    disposition: "available",
+    sampleCount: 3,
+    minimumSamples: 3,
+    suggestedTargetMinutes: 90,
+    suggestedTargetTaskCount: 2,
+  });
+  for (const privateField of [
+    "insightKey",
+    "workspaceId",
+    "evaluatedAt",
+    "typicalCompletedMinutes",
+  ]) {
+    assert.equal(planFitRead.rawBody.includes(privateField), false);
+  }
+
+  const isolatedPlanFit = await readPlanFit(isolatedCredential.token);
+  assert.deepEqual(isolatedPlanFit.response.data, {
+    forDate: PLAN_DATE,
+    status: "insufficient_history",
+    disposition: "available",
+    sampleCount: 0,
+    minimumSamples: 3,
+    suggestedTargetMinutes: null,
+    suggestedTargetTaskCount: null,
+  });
+  const planFitScopeDenied = await app.inject({
+    method: "GET",
+    url: `/v1/integrations/daily-plan-fit-insight?forDate=${PLAN_DATE}`,
+    headers: authorization(writeOnlyCredential.token),
+  });
+  assertError(planFitScopeDenied, 403, "integration.scope_denied");
+  for (const query of [
+    "forDate=2026-02-30",
+    `forDate=${PLAN_DATE}&workspaceId=${isolatedWorkspaceId}`,
+  ]) {
+    const invalid = await app.inject({
+      method: "GET",
+      url: `/v1/integrations/daily-plan-fit-insight?${query}`,
+      headers: authorization(planFitCredential.token),
+    });
+    assertError(invalid, 400, "request.validation_failed");
+  }
+  assert.deepEqual(await snapshotPlanFitReadState(), planFitStateBefore);
 
   const prepare = async (
     token: string,
@@ -1495,6 +1680,7 @@ try {
     isolatedCredential.secret,
     readOnlyCredential.secret,
     writeOnlyCredential.secret,
+    planFitCredential.secret,
   ]) {
     assert.equal(evidence?.serialized_audits.includes(secret), false);
     assert.equal(evidence?.serialized_receipts.includes(secret), false);

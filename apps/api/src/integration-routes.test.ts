@@ -58,6 +58,18 @@ function integrationServices(): IntegrationServices {
       scopes: ["schedule:read", "schedule:write", "schedule:delivery"],
     })),
     getToday: vi.fn(async () => ({ date: "2026-07-13", plan: null }) as never),
+    getDailyPlanFitInsight: vi.fn(
+      async () =>
+        ({
+          forDate: "2026-07-13",
+          status: "suggested",
+          disposition: "available",
+          sampleCount: 4,
+          minimumSamples: 3,
+          suggestedTargetMinutes: 90,
+          suggestedTargetTaskCount: 3,
+        }) as never,
+    ),
     listWorkItems: vi.fn(
       async () =>
         ({
@@ -540,6 +552,59 @@ describe("integration gateway routes", () => {
       principal: expect.objectContaining({ workspaceId: WORKSPACE_ID }),
       date: "2026-07-13",
     });
+  });
+
+  it("returns only bounded Plan Fit guidance and rejects strict query drift after authentication", async () => {
+    const services = integrationServices();
+    vi.mocked(services.getDailyPlanFitInsight).mockResolvedValueOnce({
+      forDate: "2026-07-13",
+      status: "suggested",
+      disposition: "available",
+      sampleCount: 4,
+      minimumSamples: 3,
+      suggestedTargetMinutes: 90,
+      suggestedTargetTaskCount: 3,
+      insightKey: "must-not-escape",
+    } as never);
+    const app = await integrationApp(services);
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/integrations/daily-plan-fit-insight?forDate=2026-07-13",
+      headers: { authorization: AUTHORIZATION },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json().data).toEqual({
+      forDate: "2026-07-13",
+      status: "suggested",
+      disposition: "available",
+      sampleCount: 4,
+      minimumSamples: 3,
+      suggestedTargetMinutes: 90,
+      suggestedTargetTaskCount: 3,
+    });
+    expect(response.body).not.toContain("must-not-escape");
+    expect(services.getDailyPlanFitInsight).toHaveBeenCalledWith({
+      principal: expect.objectContaining({ workspaceId: WORKSPACE_ID }),
+      forDate: "2026-07-13",
+    });
+    expect(services.authenticateCredential).toHaveBeenCalledWith({
+      credentialId: CREDENTIAL_ID,
+      secret: SECRET,
+      requiredScope: "schedule:read",
+    });
+
+    for (const query of ["", "forDate=2026-02-30", "forDate=2026-07-13&workspaceId=x"]) {
+      const invalid = await app.inject({
+        method: "GET",
+        url: `/v1/integrations/daily-plan-fit-insight?${query}`,
+        headers: { authorization: AUTHORIZATION },
+      });
+      expect(invalid.statusCode).toBe(400);
+      expect(invalid.json().error.code).toBe("request.validation_failed");
+    }
+    expect(services.getDailyPlanFitInsight).toHaveBeenCalledTimes(1);
   });
 
   it("lists credential-scoped work items with stable versions and serialized dates", async () => {

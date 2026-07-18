@@ -6,6 +6,7 @@ import type {
   ClaimNotificationDeliveryResult,
   IntegrationCommand,
   IntegrationCredentialScope,
+  IntegrationDailyPlanFitInsightResult,
   IntegrationPrincipal,
   IntegrationOneOffReminderListResult,
   IntegrationTodayResult,
@@ -28,6 +29,7 @@ import {
 } from "./http-errors.js";
 
 export const INTEGRATION_API_VERSION = "schedule.integration/v1" as const;
+export const INTEGRATION_DAILY_PLAN_FIT_INSIGHT_ROUTE = "/v1/integrations/daily-plan-fit-insight";
 
 export interface IntegrationServices {
   authenticateCredential(input: {
@@ -39,6 +41,10 @@ export interface IntegrationServices {
     readonly principal: IntegrationPrincipal;
     readonly date: string;
   }): Promise<IntegrationTodayResult>;
+  getDailyPlanFitInsight(input: {
+    readonly principal: IntegrationPrincipal;
+    readonly forDate: string;
+  }): Promise<IntegrationDailyPlanFitInsightResult>;
   listWorkItems(input: ListIntegrationWorkItemsQuery): Promise<IntegrationWorkItemPageResult>;
   listOneOffReminders(
     input: ListIntegrationOneOffRemindersQuery,
@@ -262,6 +268,7 @@ const deliveryReceiptBody = z.discriminatedUnion("outcome", [
   }),
 ]);
 const todayQuery = z.strictObject({ date: localDateText });
+const dailyPlanFitInsightQuery = z.strictObject({ forDate: localDateText });
 function canonicalPageValue(minimum: number, maximum: number, defaultValue: number) {
   return z
     .string()
@@ -421,6 +428,21 @@ export async function registerIntegrationRoutes(
     const query = parseRequest(todayQuery, request.query);
     const result = await services.getToday({ principal, date: query.date });
     return envelope(randomUUID(), result);
+  });
+
+  app.get(INTEGRATION_DAILY_PLAN_FIT_INSIGHT_ROUTE, async (request, reply) => {
+    const principal = await authenticate(request, reply, "schedule:read");
+    const query = parseRequest(dailyPlanFitInsightQuery, request.query);
+    const result = await services.getDailyPlanFitInsight({ principal, forDate: query.forDate });
+    return envelope(randomUUID(), {
+      forDate: result.forDate,
+      status: result.status,
+      disposition: result.disposition,
+      sampleCount: result.sampleCount,
+      minimumSamples: result.minimumSamples,
+      suggestedTargetMinutes: result.suggestedTargetMinutes,
+      suggestedTargetTaskCount: result.suggestedTargetTaskCount,
+    });
   });
 
   app.get("/v1/integrations/work-items", async (request, reply) => {

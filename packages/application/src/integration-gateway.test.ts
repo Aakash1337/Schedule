@@ -3,12 +3,14 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  activityEventId,
   createOneOffReminder,
   createNotificationProfile,
   createScheduleBlock,
   createWorkItem,
   createWorkspace,
   dailyPlanId,
+  dailyPlanFitInsightFeedbackId,
   localDate,
   oneOffReminderId,
   planItemId,
@@ -17,6 +19,7 @@ import {
   workItemId,
   workspaceId,
   type DailyPlan,
+  type DailyPlanFitEvidencePlan,
   type OneOffReminder,
   type ScheduleBlock,
   type WorkItem,
@@ -25,6 +28,7 @@ import {
 import {
   AuthenticateIntegrationCredential,
   ConfirmIntegrationCommand,
+  GetIntegrationDailyPlanFitInsight,
   GetIntegrationToday,
   ListIntegrationCredentials,
   ListIntegrationOneOffReminders,
@@ -91,6 +95,7 @@ function createHarness() {
   const workItems: WorkItem[] = [];
   const scheduleBlocks: ScheduleBlock[] = [];
   const oneOffReminders: OneOffReminder[] = [];
+  const fitEvidence: DailyPlanFitEvidencePlan[] = [];
   const audits: AuditEventRecord[] = [];
   const activityInputs: RecordPlanItemActivityInput[] = [];
   const invalidatedTargets: string[] = [];
@@ -99,6 +104,7 @@ function createHarness() {
   let notificationLocks = 0;
   let hierarchyLocks = 0;
   let hasNotificationProfile = true;
+  let planFitDismissed = false;
   const notificationProfile = createNotificationProfile({
     workspaceId: WORKSPACE_ID,
     timeZone: "UTC",
@@ -320,6 +326,8 @@ function createHarness() {
         workspaceIdValue === WORKSPACE_ID && dates.includes(currentPlan.date)
           ? new Map([[currentPlan.date, { plan: currentPlan, headVersion: 1 }]])
           : new Map(),
+      listFitEvidence: async (workspaceIdValue, forDate) =>
+        workspaceIdValue === WORKSPACE_ID && forDate === localDate("2026-07-13") ? fitEvidence : [],
       setItemLock: async () => {
         throw new Error("not used");
       },
@@ -356,6 +364,31 @@ function createHarness() {
       insertMutation: async () => undefined,
       listRoutineFeedbackForPlanning: async () => [],
       appendRoutineFeedback: async (feedback) => feedback,
+    },
+    dailyPlanFitInsightFeedback: {
+      findLatestForKey: async (workspaceIdValue, insightKey) =>
+        planFitDismissed && workspaceIdValue === WORKSPACE_ID
+          ? {
+              id: dailyPlanFitInsightFeedbackId("60000000-0000-4000-8000-000000000001"),
+              ingestedSequence: 1,
+              workspaceId: WORKSPACE_ID,
+              forDate: localDate("2026-07-13"),
+              insightKey,
+              kind: "dismissed",
+              planId: null,
+              sampleCount: 3,
+              typicalPlannedMinutes: 120,
+              typicalCompletedMinutes: 60,
+              typicalPlannedTaskCount: 2,
+              typicalCompletedTaskCount: 1,
+              suggestedTargetMinutes: 60,
+              suggestedTargetTaskCount: 1,
+              appliedTargetMinutes: null,
+              appliedTargetTaskCount: null,
+              idempotencyKey: "integration-plan-fit-dismissed",
+              recordedAt: new Date("2026-07-13T11:00:00.000Z"),
+            }
+          : null,
     },
     notifications: {
       lockWorkspace: async () => {
@@ -473,6 +506,7 @@ function createHarness() {
     workItems,
     scheduleBlocks,
     oneOffReminders,
+    fitEvidence,
     audits,
     activityInputs,
     invalidatedTargets,
@@ -503,9 +537,13 @@ function createHarness() {
     setHasNotificationProfile(value: boolean) {
       hasNotificationProfile = value;
     },
+    setPlanFitDismissed(value: boolean) {
+      planFitDismissed = value;
+    },
     services: {
       authenticate: new AuthenticateIntegrationCredential(unitOfWork, clock, secretVerifier),
       getToday: new GetIntegrationToday(unitOfWork, clock),
+      getDailyPlanFitInsight: new GetIntegrationDailyPlanFitInsight(unitOfWork, clock),
       listWorkItems: new ListIntegrationWorkItems(unitOfWork, clock),
       listOneOffReminders: new ListIntegrationOneOffReminders(unitOfWork, clock),
       prepare: new PrepareIntegrationCommand(unitOfWork, clock),
@@ -532,6 +570,25 @@ async function prepareAndConfirm(
     confirmationId: prepared.confirmationId,
     idempotencyKey: `confirm-${requestId}`,
   });
+}
+
+function resolvedPlanFitEvidence(): DailyPlanFitEvidencePlan[] {
+  return ["2026-07-10", "2026-07-11", "2026-07-12"].map((date, planIndex) => ({
+    workspaceId: WORKSPACE_ID,
+    planId: dailyPlanId(`30000000-0000-4000-8000-${String(planIndex + 11).padStart(12, "0")}`),
+    date: localDate(date),
+    targetMinutes: 120,
+    targetTaskCount: 2,
+    items: [0, 1].map((itemIndex) => {
+      const suffix = String((planIndex + 1) * 10 + itemIndex).padStart(12, "0");
+      return {
+        id: planItemId(`40000000-0000-4000-8000-${suffix}`),
+        scheduledMinutes: 60,
+        activityState: itemIndex === 0 ? ("completed" as const) : ("skipped" as const),
+        lastActivityEventId: activityEventId(`70000000-0000-4000-8000-${suffix}`),
+      };
+    }),
+  }));
 }
 
 describe("integration credential boundary", () => {
@@ -631,6 +688,62 @@ describe("integration credential boundary", () => {
         secretHash: "A".repeat(64),
       }),
     ).toThrow(expect.objectContaining({ code: "integration.secret_hash_invalid" }));
+  });
+});
+
+describe("integration Daily Plan Fit reads", () => {
+  it("returns only actionable credential-scoped guidance and withholds dismissed targets", async () => {
+    const test = createHarness();
+    test.fitEvidence.push(...resolvedPlanFitEvidence());
+    const spoofedPrincipal = { ...test.principal, workspaceId: OTHER_WORKSPACE_ID, scopes: [] };
+
+    const available = await test.services.getDailyPlanFitInsight.execute({
+      principal: spoofedPrincipal,
+      forDate: "2026-07-13",
+    });
+    expect(available).toEqual({
+      forDate: "2026-07-13",
+      status: "suggested",
+      disposition: "available",
+      sampleCount: 3,
+      minimumSamples: 3,
+      suggestedTargetMinutes: 60,
+      suggestedTargetTaskCount: 1,
+    });
+    expect(available).not.toHaveProperty("insightKey");
+    expect(test.audits).toHaveLength(0);
+    expect(test.requests).toHaveLength(0);
+
+    test.setPlanFitDismissed(true);
+    await expect(
+      test.services.getDailyPlanFitInsight.execute({
+        principal: spoofedPrincipal,
+        forDate: "2026-07-13",
+      }),
+    ).resolves.toEqual({
+      ...available,
+      disposition: "dismissed",
+      suggestedTargetMinutes: null,
+      suggestedTargetTaskCount: null,
+    });
+  });
+
+  it("validates the date and revalidates schedule:read inside the transaction", async () => {
+    const test = createHarness();
+    expect(() =>
+      test.services.getDailyPlanFitInsight.execute({
+        principal: test.principal,
+        forDate: "2026-02-30",
+      }),
+    ).toThrow(expect.objectContaining({ code: "daily_plan_fit_insight.for_date_invalid" }));
+
+    test.credentials[0] = { ...test.credentials[0]!, scopes: ["schedule:write"] };
+    await expect(
+      test.services.getDailyPlanFitInsight.execute({
+        principal: test.principal,
+        forDate: "2026-07-13",
+      }),
+    ).rejects.toMatchObject({ code: "integration.scope_denied" });
   });
 });
 

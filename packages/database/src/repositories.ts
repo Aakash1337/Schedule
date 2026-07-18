@@ -5069,6 +5069,7 @@ function createIntegrationTransactionContext(
     scheduleBlocks: new PostgresScheduleBlockRepository(database),
     auditEvents: new PostgresAuditEventRepository(database),
     dailyPlans: new PostgresDailyPlanRepository(database),
+    dailyPlanFitInsightFeedback: new PostgresDailyPlanFitInsightFeedbackRepository(database),
     notifications: new PostgresNotificationRepository(database),
   };
 }

@@ -54,6 +54,10 @@ def handle_schedule_today(args: dict[str, Any], **kwargs: Any) -> str:
     return _handled(lambda: _today(args, kwargs))
 
 
+def handle_schedule_daily_plan_fit(args: dict[str, Any], **kwargs: Any) -> str:
+    return _handled(lambda: _daily_plan_fit(args, kwargs))
+
+
 def handle_schedule_list_work_items(args: dict[str, Any], **kwargs: Any) -> str:
     return _handled(lambda: _list_work_items(args, kwargs))
 
@@ -78,6 +82,12 @@ def _today(args: Mapping[str, Any], kwargs: Mapping[str, Any]) -> dict[str, Any]
     _require_exact_args(args, {"date"})
     _session_id(kwargs)
     return {"ok": True, "data": _get_client().get_today(args["date"])}
+
+
+def _daily_plan_fit(args: Mapping[str, Any], kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    _require_exact_args(args, {"forDate"})
+    _session_id(kwargs)
+    return {"ok": True, "data": _get_client().get_daily_plan_fit(args["forDate"])}
 
 
 def _list_work_items(args: Mapping[str, Any], kwargs: Mapping[str, Any]) -> dict[str, Any]:

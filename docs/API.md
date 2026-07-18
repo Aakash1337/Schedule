@@ -4,7 +4,8 @@ The local product API exposes the deterministic planner without committing the p
 
 This document describes the loopback product surface. Trusted machine callers use the separately
 authenticated [inbound integration gateway](./INTEGRATIONS.md); its workspace-scoped credentials do
-not authorize these product routes.
+not authorize these product routes. That gateway separately exposes a data-minimized, read-only
+Daily Plan Fit projection for local agents without exposing its evidence key or mutation authority.
 
 ## Safety boundary
 

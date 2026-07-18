@@ -23,7 +23,11 @@ import {
   workItemPriorities,
   workItemStatuses,
   type ActivityEvent,
+  type DailyPlanFitInsight,
+  type DailyPlanFitInsightDisposition,
+  type DailyPlanFitInsightStatus,
   type JsonValue,
+  type LocalDate,
   type OneOffReminder,
   type ScheduleBlock,
   type WorkItem,
@@ -51,6 +55,7 @@ import type {
   PreparedIntegrationCommand,
   SecretVerifier,
 } from "./ports.js";
+import { readDailyPlanFitInsight } from "./get-daily-plan-fit-insight.js";
 import { invalidatePlanItemActivityIntents } from "./invalidate-plan-item-activity-intents.js";
 import { assertValidWorkItemParent } from "./work-item-hierarchy.js";
 
@@ -106,6 +111,21 @@ export interface IntegrationTodayResult {
 export interface GetIntegrationTodayQuery {
   readonly principal: IntegrationPrincipal;
   readonly date: string;
+}
+
+export interface IntegrationDailyPlanFitInsightResult {
+  readonly forDate: LocalDate;
+  readonly status: DailyPlanFitInsightStatus;
+  readonly disposition: DailyPlanFitInsightDisposition;
+  readonly sampleCount: number;
+  readonly minimumSamples: number;
+  readonly suggestedTargetMinutes: number | null;
+  readonly suggestedTargetTaskCount: number | null;
+}
+
+export interface GetIntegrationDailyPlanFitInsightQuery {
+  readonly principal: IntegrationPrincipal;
+  readonly forDate: unknown;
 }
 
 export interface ListIntegrationWorkItemsQuery {
@@ -484,6 +504,62 @@ export class GetIntegrationToday {
         date,
         headVersion: current.headVersion,
         plan: toJsonValue({ ...plan, request }),
+      };
+    });
+  }
+}
+
+/** Returns only the Plan Fit fields a read-only agent can act on safely. */
+export class GetIntegrationDailyPlanFitInsight {
+  constructor(
+    private readonly unitOfWork: IntegrationUnitOfWork,
+    private readonly clock: Clock,
+  ) {}
+
+  execute(
+    query: GetIntegrationDailyPlanFitInsightQuery,
+  ): Promise<IntegrationDailyPlanFitInsightResult> {
+    const now = validIntegrationNow(this.clock);
+    if (typeof query.forDate !== "string" || !isValidLocalDate(query.forDate)) {
+      throw new DomainError(
+        "daily_plan_fit_insight.for_date_invalid",
+        "A valid Plan Fit local date is required.",
+      );
+    }
+    const forDate = localDate(query.forDate);
+    return this.unitOfWork.run(async ({ credentials, ...context }) => {
+      const credential = await revalidateIntegrationCredential(
+        credentials,
+        query.principal,
+        "schedule:read",
+        now,
+      );
+      let insight: DailyPlanFitInsight;
+      try {
+        insight = await readDailyPlanFitInsight(
+          context,
+          { workspaceId: credential.workspaceId, forDate },
+          now,
+        );
+      } catch (error) {
+        if (error instanceof DomainError && error.code.startsWith("daily_plan_fit_insight.")) {
+          throw new DomainError(
+            "integration.result_invalid",
+            "The Plan Fit guidance could not be projected safely.",
+          );
+        }
+        throw error;
+      }
+      const targetsAvailable =
+        insight.status === "suggested" && insight.disposition === "available";
+      return {
+        forDate: insight.forDate,
+        status: insight.status,
+        disposition: insight.disposition,
+        sampleCount: insight.sampleCount,
+        minimumSamples: insight.minimumSamples,
+        suggestedTargetMinutes: targetsAvailable ? insight.suggestedTargetMinutes : null,
+        suggestedTargetTaskCount: targetsAvailable ? insight.suggestedTargetTaskCount : null,
       };
     });
   }

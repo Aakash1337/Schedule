@@ -29,6 +29,12 @@ _INSTANT = re.compile(
 _MAXIMUM_INTEGER = 2_147_483_647
 _PRIORITIES = frozenset({"none", "low", "medium", "high", "urgent"})
 _STATUSES = frozenset({"backlog", "planned", "in_progress", "blocked", "done", "cancelled"})
+_PLAN_FIT_STATUSES = frozenset({"insufficient_history", "aligned", "suggested"})
+_PLAN_FIT_DISPOSITIONS = frozenset({"available", "dismissed"})
+_PLAN_FIT_MINIMUM_SAMPLES = 3
+_PLAN_FIT_MAXIMUM_SAMPLES = 28
+_PLAN_FIT_MAXIMUM_TARGET_MINUTES = 43_200
+_PLAN_FIT_MAXIMUM_TARGET_TASKS = 512
 _OPERATIONS = frozenset(
     {
         "work_item.create",
@@ -174,6 +180,63 @@ class ScheduleClient:
         if today["plan"] is not None and not isinstance(today["plan"], dict):
             raise ScheduleAdapterError("schedule_today_invalid")
         return today
+
+    def get_daily_plan_fit(self, for_date: str) -> dict[str, Any]:
+        requested_date = _local_date(for_date)
+        data = self._request(
+            "GET",
+            f"/v1/integrations/daily-plan-fit-insight?{urlencode({'forDate': requested_date})}",
+        )
+        guidance = _exact_object(
+            data,
+            {
+                "forDate",
+                "status",
+                "disposition",
+                "sampleCount",
+                "minimumSamples",
+                "suggestedTargetMinutes",
+                "suggestedTargetTaskCount",
+            },
+            "schedule_daily_plan_fit_invalid",
+        )
+        status = guidance["status"]
+        disposition = guidance["disposition"]
+        sample_count = guidance["sampleCount"]
+        minimum_samples = guidance["minimumSamples"]
+        target_minutes = guidance["suggestedTargetMinutes"]
+        target_tasks = guidance["suggestedTargetTaskCount"]
+        actionable = status == "suggested" and disposition == "available"
+        if (
+            guidance["forDate"] != requested_date
+            or not isinstance(status, str)
+            or status not in _PLAN_FIT_STATUSES
+            or not isinstance(disposition, str)
+            or disposition not in _PLAN_FIT_DISPOSITIONS
+            or isinstance(sample_count, bool)
+            or not isinstance(sample_count, int)
+            or not (0 <= sample_count <= _PLAN_FIT_MAXIMUM_SAMPLES)
+            or isinstance(minimum_samples, bool)
+            or not isinstance(minimum_samples, int)
+            or minimum_samples != _PLAN_FIT_MINIMUM_SAMPLES
+            or (status == "insufficient_history") != (sample_count < minimum_samples)
+            or (disposition == "dismissed" and status != "suggested")
+            or (actionable and not self._valid_plan_fit_targets(target_minutes, target_tasks))
+            or (not actionable and (target_minutes is not None or target_tasks is not None))
+        ):
+            raise ScheduleAdapterError("schedule_daily_plan_fit_invalid")
+        return guidance
+
+    @staticmethod
+    def _valid_plan_fit_targets(minutes: Any, tasks: Any) -> bool:
+        return (
+            not isinstance(minutes, bool)
+            and isinstance(minutes, int)
+            and 1 <= minutes <= _PLAN_FIT_MAXIMUM_TARGET_MINUTES
+            and not isinstance(tasks, bool)
+            and isinstance(tasks, int)
+            and 1 <= tasks <= _PLAN_FIT_MAXIMUM_TARGET_TASKS
+        )
 
     def list_work_items(
         self,

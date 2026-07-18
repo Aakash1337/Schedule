@@ -80,11 +80,13 @@ user reviews the exact command and confirms it. Confirmation is tenant-scoped, e
 version-checked, audited, and durable exactly-once under concurrent retries.
 
 An optional integration gateway gives a workspace-scoped machine credential bounded reads of Today,
-work items, and one-off reminders plus a two-step, idempotent structured-command flow. It is disabled
+data-minimized Daily Plan Fit guidance, work items, and one-off reminders plus a two-step, idempotent
+structured-command flow. It is disabled
 by default. Schedule stays authoritative; Hermes or another messaging agent calls this boundary
 instead of writing the database. The repository includes an opt-in local Hermes plugin with
-sender/session/platform-bound later-turn confirmation, including one-off reminder discovery,
-creation, rescheduling, and cancellation, plus a deterministic stdout Today helper. A checked
+sender/session/platform-bound later-turn confirmation, including strict read-only Plan Fit guidance,
+one-off reminder discovery, creation, rescheduling, and cancellation, plus a deterministic stdout
+Today helper. A checked
 installer copies only its runtime files into Hermes; it remains local-only and does not silently
 enable the plugin, create a cron job, or send a WhatsApp message.
 

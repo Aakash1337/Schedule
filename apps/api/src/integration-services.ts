@@ -4,6 +4,7 @@ import {
   AuthenticateIntegrationCredential,
   ClaimNotificationDelivery,
   ConfirmIntegrationCommand,
+  GetIntegrationDailyPlanFitInsight,
   GetIntegrationToday,
   ListIntegrationOneOffReminders,
   ListIntegrationWorkItems,
@@ -56,6 +57,7 @@ export function createIntegrationServices(
     createIntegrationSecretVerifier(pepper),
   );
   const getToday = new GetIntegrationToday(unitOfWork, clock);
+  const getDailyPlanFitInsight = new GetIntegrationDailyPlanFitInsight(unitOfWork, clock);
   const listWorkItems = new ListIntegrationWorkItems(unitOfWork, clock);
   const listOneOffReminders = new ListIntegrationOneOffReminders(unitOfWork, clock);
   const prepareCommand = new PrepareIntegrationCommand(
@@ -77,6 +79,7 @@ export function createIntegrationServices(
   return {
     authenticateCredential: (input) => authenticateCredential.execute(input),
     getToday: (input) => getToday.execute(input),
+    getDailyPlanFitInsight: (input) => getDailyPlanFitInsight.execute(input),
     listWorkItems: (input) => listWorkItems.execute(input),
     listOneOffReminders: (input) => listOneOffReminders.execute(input),
     prepareCommand: (input) => prepareCommand.execute(input),

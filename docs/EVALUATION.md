@@ -44,6 +44,8 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:hosted-runtime-preflight`   | Verify secret parsing, startup construction, cleanup, and route gating      | No                              |
 | `pnpm eval`                              | Validate traceability and run the covered test suite                        | No                              |
 | `pnpm verify:database`                   | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
+| `pnpm verify:integration-gateway`        | Verify authenticated reads/commands, including bounded Plan Fit guidance    | Yes, disposable only            |
+| `pnpm verify:hermes-adapter`             | Verify the strict Python plugin boundary and reminder lifecycle             | Yes, disposable only            |
 | `pnpm verify:natural-language-proposals` | Verify private persistence and concurrent exactly-once confirmation         | Yes                             |
 | `pnpm verify:webhook-delivery`           | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback     | Yes, disposable only            |
 | `pnpm verify:notification-core`          | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
@@ -62,7 +64,7 @@ project.
 
 ## Current scorecard
 
-The package and script runners currently execute 119 test files and 2,017 runtime test cases. Three
+The package and script runners currently execute 128 test files and 2,170 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -71,11 +73,11 @@ an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      47 / 47 |
-| Critical implemented features with CI-registered integration or drills |      31 / 31 |
-| Partial features with an explicit limitation                           |        5 / 5 |
+| Implemented features with CI-registered evidence                       |      58 / 58 |
+| Critical implemented features with CI-registered integration or drills |      41 / 41 |
+| Partial features with an explicit limitation                           |        4 / 4 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          265 |
+| CI-registered evidence items                                           |          338 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -86,21 +88,21 @@ quality levels.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.01% |   70.52% |    66.77% | 59.54% |
+| Whole repository, measured |      59.9% |   71.54% |    67.85% |  60.4% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
-| Domain, measured           |     94.75% |   91.41% |    93.35% | 95.79% |
+| Domain, measured           |     94.97% |    91.6% |    93.47% | 95.98% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     89.81% |   83.27% |    98.61% | 90.78% |
+| Application, measured      |     89.96% |    83.9% |    98.51% | 90.87% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     90.40% |   87.52% |    85.02% | 92.02% |
+| API, measured              |     90.47% |   87.81% |    84.15% | 92.01% |
 | API, required              |        73% |      69% |       57% |    74% |
-| Worker, measured           |     92.01% |   88.02% |    93.25% | 94.63% |
+| Worker, measured           |      92.1% |   87.99% |     93.6% | 94.77% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     82.38% |   73.83% |    77.38% | 85.49% |
+| Web, measured              |     86.03% |   79.27% |    84.23% | 86.88% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 11,536 of 19,546 statements, 8,496 of 12,047 branches,
-2,488 of 3,726 functions, and 10,895 of 18,296 lines.
+The whole-repository totals are 12,716 of 21,228 statements, 9,431 of 13,182 branches,
+2,727 of 4,019 functions, and 12,009 of 19,880 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -513,15 +515,17 @@ The audit deliberately leaves these visible instead of turning them into false g
   effect but before acknowledgement; future external consumers must still enforce event-ID
   idempotency at their own durability boundary;
 - the inbound integration gateway verifier covers real authenticated HTTP routes, credential-scoped
-  Today and backlog/Kanban work-item discovery, the five core work/block/activity command kinds, digest-only credentials,
-  idempotent replay, tenant isolation, pagination/filter behavior, and atomic rollback against
+  Today, data-minimized Daily Plan Fit guidance, and backlog/Kanban work-item discovery, the five core
+  work/block/activity command kinds, digest-only credentials, idempotent replay, tenant isolation,
+  pagination/filter behavior, and atomic rollback against
   disposable PostgreSQL; it also proves bounded retention cleanup deletes only
   eligible old receipts/confirmations while preserving fresh, processing, referenced, and audit
   rows. The separate Hermes adapter verifier covers deterministic plugin tests, runtime-only bundle
-  installation into a temporary Hermes home, and a disposable PostgreSQL/real Fastify one-off-reminder
-  lifecycle: create, bounded discovery, reschedule, and cancellation with no mutation before
-  confirmation, exact receipt replay, version progression, audit counts, and pending-intent
-  invalidation. CI does not load an installed Hermes runtime; the separate operator-run native
+  installation into a temporary Hermes home, a strict non-mutating Plan Fit read, and a disposable
+  PostgreSQL/real Fastify one-off-reminder lifecycle: create, bounded discovery, reschedule, and
+  cancellation with no mutation before confirmation, exact receipt replay, version progression,
+  audit counts, and pending-intent invalidation. CI does not load an installed Hermes runtime; the
+  separate operator-run native
   registration probe can prove that an enabled installation exposes the exact Schedule tools and
   hook. None of these checks exercises a WhatsApp account, phone delivery, provider receipt, or
   natural-language quality benchmark;
@@ -633,8 +637,9 @@ The audit deliberately leaves these visible instead of turning them into false g
   comparison, or local-model participation; and
 - Daily Plan Fit has deterministic cross-layer and live-browser evidence plus local descriptive use
   receipts, pending, resolved, and not-evaluable outcome history with later revision disclosed
-  separately, bounded descriptive aggregate rates, and a hosted thresholded aggregate without
-  per-use history or raw totals, but no production evidence for its 90-day
+  separately, bounded descriptive aggregate rates, a hosted thresholded aggregate without per-use
+  history or raw totals, and a credential-scoped Hermes projection that omits evidence keys, history,
+  rates, identities, and mutation authority, but no production evidence for its 90-day
   window, three-use display threshold, medians, acceptance rate, or causal effect. It does not
   recommend increases, infer improvement or causal effectiveness, learn a per-user policy, apply
   automatically, feed outcomes into scoring, or use a model; and
