@@ -78,16 +78,18 @@ pnpm hermes-reminders:start
 With no additional variables it binds `127.0.0.1:9465`, serves liveness, returns not-ready, and
 performs no Schedule, database, provider, or module I/O. Stop it with `SIGINT` or `SIGTERM`.
 
-Enabled mode requires all of these values:
+Enabled mode requires the four integration values below. The health and initialization timeout
+values show their defaults:
 
 ```dotenv
 HERMES_REMINDER_PROCESS_MODE=enabled
 HERMES_REMINDER_HEALTH_HOST=127.0.0.1
 HERMES_REMINDER_HEALTH_PORT=9465
+HERMES_REMINDER_CLIENT_INITIALIZATION_TIMEOUT_MS=30000
 HERMES_REMINDER_SCHEDULE_URL=https://schedule.example.com
 HERMES_REMINDER_SCHEDULE_TOKEN=<delivery-only-workspace-token>
 HERMES_REMINDER_DEDUPE_DATABASE_URL=postgres://dedicated_runtime_role:<password>@<host>/<database>
-HERMES_REMINDER_CLIENT_MODULE=C:\absolute\operator-owned\schedule-hermes-client.mjs
+HERMES_REMINDER_CLIENT_MODULE=<absolute-local-path-to-schedule-hermes-client.mjs>
 ```
 
 The database URL must authenticate as the dedicated execute-only runtime role created after
@@ -95,21 +97,28 @@ The database URL must authenticate as the dedicated execute-only runtime role cr
 runs privileged migrations. The Schedule URL must be HTTPS except for an exact loopback HTTP origin.
 The token must have only `schedule:delivery` authority.
 
-The absolute local-drive `.mjs` or ESM `.js` module must export one named zero-argument factory.
-Relative paths and UNC, network-share, or device paths are rejected:
+The absolute local `.mjs` or ESM `.js` module must export one named one-argument factory. A POSIX
+path looks like `/absolute/operator-owned/schedule-hermes-client.mjs`; a Windows path looks like
+`C:\absolute\operator-owned\schedule-hermes-client.mjs`. Relative paths and UNC, network-share, or
+device paths are rejected:
 
 ```js
-export async function createHermesDeliveryClient() {
+export async function createHermesDeliveryClient(initializationSignal) {
+  // Stop and clean up partial initialization when this signal aborts.
   return operatorOwnedHermesDeliveryClient;
 }
 ```
 
 The returned object must implement the existing `HermesDeliveryClient` `reconcile` and `send`
-methods. The module is trusted executable code, not a sandbox or provider plug-in marketplace. It
-owns provider credentials, the approved account/destination binding, circuit breaking, and the
-strength of a conclusive `not_found`. Schedule passes it only the bounded message and stable dedupe
-key described below. Changing mode, credentials, database role, or module requires a controlled
-process restart. Startup and fatal logs contain only fixed failure classes.
+methods plus an asynchronous `close` method. The process calls `close` on every normal or failed
+runtime exit and on a client returned after its initialization boundary has already expired. The
+module is trusted executable code, not a sandbox or provider plug-in marketplace. It owns provider
+credentials, the approved account/destination binding, circuit breaking, and the strength of a
+conclusive `not_found`. Schedule passes it only the bounded message and stable dedupe key described
+below. Changing mode, credentials, database role, or module requires a controlled process restart.
+Import plus factory initialization share one 100–120,000 ms bounded window, default 30,000 ms. Its
+signal requires the factory to cancel and clean partial resources on shutdown or timeout. Startup
+and fatal logs contain only fixed failure classes.
 
 ### Dormant Hermes client bridge
 
@@ -258,8 +267,9 @@ single-flight polling, non-overlap, bounded jitter and failure budgets, fatal er
 invalid injected-hook handling, graceful in-flight shutdown, runtime sibling supervision, and the
 real loopback live/ready HTTP surface. The HTTP tests use a real ephemeral loopback server and no
 provider network. Process tests additionally cover disabled no-I/O startup, strict enabled
-configuration, absolute module loading, factory-result validation, failure redaction, dependency
-composition, and database closure. `pnpm verify:hermes-dedupe-store` additionally creates a nonce PostgreSQL database and proves
+configuration, absolute module loading, bounded and abort-aware factory initialization,
+factory-result validation, failure redaction, dependency composition, and database closure.
+`pnpm verify:hermes-dedupe-store` additionally creates a nonce PostgreSQL database and proves
 atomic multi-replica exclusion, payload binding before and after delivery, digest-only token storage,
 idempotent delivery and release, expired-reservation takeover, stale-owner fencing, database-clock
 budget and horizon rejection, bounded row-lock waits, checksum/catalog migration attestation,

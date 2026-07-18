@@ -1,18 +1,21 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
 
 import type { Sql } from "postgres";
 
-import type { HermesDeliveryClient } from "./hermes-whatsapp-transport.js";
 import {
   HermesReminderProcessError,
   loadHermesDeliveryClient,
   loadHermesReminderProcessConfig,
   runHermesReminderProcess,
+  type ManagedHermesDeliveryClient,
   type HermesReminderProcessDependencies,
 } from "./process.js";
 
@@ -29,9 +32,10 @@ const enabledEnvironment = {
   HERMES_REMINDER_CLIENT_MODULE: modulePath,
 } satisfies NodeJS.ProcessEnv;
 
-const client: HermesDeliveryClient = {
+const client: ManagedHermesDeliveryClient = {
   reconcile: async () => ({ outcome: "not_found" }),
   send: async () => ({ outcome: "accepted" }),
+  close: async () => undefined,
 };
 
 async function unusedLoopbackPort(): Promise<number> {
@@ -53,6 +57,7 @@ describe("Hermes reminder process configuration", () => {
     expect(
       loadHermesReminderProcessConfig({
         HERMES_REMINDER_SCHEDULE_TOKEN: "malformed private value",
+        HERMES_REMINDER_CLIENT_INITIALIZATION_TIMEOUT_MS: "not-a-number",
       }),
     ).toEqual({
       HERMES_REMINDER_PROCESS_MODE: "disabled",
@@ -71,6 +76,7 @@ describe("Hermes reminder process configuration", () => {
       HERMES_REMINDER_DEDUPE_DATABASE_URL:
         "postgres://hermes_runtime:private-password@database.example.com/schedule",
       HERMES_REMINDER_CLIENT_MODULE: modulePath,
+      HERMES_REMINDER_CLIENT_INITIALIZATION_TIMEOUT_MS: 30_000,
     });
   });
 
@@ -86,6 +92,7 @@ describe("Hermes reminder process configuration", () => {
           : "//server/share/schedule-hermes-client.mjs",
     },
     { HERMES_REMINDER_CLIENT_MODULE: path.join(path.dirname(modulePath), "client.ts") },
+    { HERMES_REMINDER_CLIENT_INITIALIZATION_TIMEOUT_MS: "0" },
     { HERMES_REMINDER_HEALTH_HOST: "0.0.0.0" },
   ])("rejects unsafe enabled composition without retaining values", (override) => {
     let failure: unknown;
@@ -103,10 +110,16 @@ describe("Hermes reminder process configuration", () => {
 
 describe("Hermes delivery client module", () => {
   it("loads only the named factory from an absolute file URL", async () => {
-    const factory = vi.fn(async () => client);
+    const factory = vi.fn(async (_signal: AbortSignal) => client);
     const importModule = vi.fn(async () => ({ createHermesDeliveryClient: factory }));
 
-    await expect(loadHermesDeliveryClient(modulePath, importModule)).resolves.toBe(client);
+    await expect(
+      loadHermesDeliveryClient(modulePath, {
+        signal: new AbortController().signal,
+        timeoutMs: 1_000,
+        importModule,
+      }),
+    ).resolves.toBe(client);
     expect(importModule).toHaveBeenCalledWith(pathToFileURL(modulePath).href);
     expect(factory).toHaveBeenCalledOnce();
   });
@@ -119,27 +132,84 @@ describe("Hermes delivery client module", () => {
     { code: "client_factory_invalid", importer: async () => ({}) },
     {
       code: "client_factory_invalid",
-      importer: async () => ({ createHermesDeliveryClient: (_required: unknown) => client }),
+      importer: async () => ({ createHermesDeliveryClient: () => client }),
     },
     {
       code: "client_initialization_failed",
       importer: async () => ({
-        createHermesDeliveryClient: () => {
+        createHermesDeliveryClient: (_signal: AbortSignal) => {
           throw new Error("private provider factory error");
         },
       }),
     },
     {
       code: "client_factory_invalid",
-      importer: async () => ({ createHermesDeliveryClient: () => ({ send: async () => ({}) }) }),
+      importer: async () => ({
+        createHermesDeliveryClient: (_signal: AbortSignal) => ({ send: async () => ({}) }),
+      }),
     },
   ] as const)("redacts $code module failures", async ({ code, importer }) => {
-    const failure = await loadHermesDeliveryClient(modulePath, importer).catch(
-      (error: unknown) => error,
-    );
+    const failure = await loadHermesDeliveryClient(modulePath, {
+      signal: new AbortController().signal,
+      timeoutMs: 1_000,
+      importModule: importer,
+    }).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(HermesReminderProcessError);
     expect((failure as HermesReminderProcessError).code).toBe(code);
     expect(String(failure)).not.toContain("private provider");
+  });
+
+  it("bounds a pending client-module import", async () => {
+    const failure = await loadHermesDeliveryClient(modulePath, {
+      signal: new AbortController().signal,
+      timeoutMs: 5,
+      importModule: async () => await new Promise<unknown>(() => undefined),
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(HermesReminderProcessError);
+    expect((failure as HermesReminderProcessError).code).toBe("client_initialization_timed_out");
+  });
+
+  it("keeps the standalone process alive through a sanitized initialization timeout", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "schedule-hermes-process-"));
+    const clientModule = path.join(directory, "pending-client.mjs");
+    writeFileSync(
+      clientModule,
+      'export async function createHermesDeliveryClient(signal) { return await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("private factory abort")), { once: true })); }',
+    );
+
+    try {
+      const result = spawnSync(
+        process.execPath,
+        ["--import", "tsx", fileURLToPath(new URL("./process-main.ts", import.meta.url))],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          timeout: 5_000,
+          env: {
+            ...process.env,
+            NODE_OPTIONS: "",
+            NODE_V8_COVERAGE: "",
+            HERMES_REMINDER_PROCESS_MODE: "enabled",
+            HERMES_REMINDER_CLIENT_INITIALIZATION_TIMEOUT_MS: "100",
+            HERMES_REMINDER_SCHEDULE_URL: "https://schedule.example.com",
+            HERMES_REMINDER_SCHEDULE_TOKEN: privateToken,
+            HERMES_REMINDER_DEDUPE_DATABASE_URL:
+              "postgres://hermes_runtime:private-password@database.example.com/schedule",
+            HERMES_REMINDER_CLIENT_MODULE: clientModule,
+          },
+        },
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain('"event":"hermes_reminder_process_failed"');
+      expect(result.stderr).not.toContain(privateToken);
+      expect(result.stderr).not.toContain(directory);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 
@@ -160,6 +230,43 @@ describe("Hermes reminder process composition", () => {
     expect(importModule).not.toHaveBeenCalled();
     expect(openDedupeConnection).not.toHaveBeenCalled();
     expect(runRuntime).not.toHaveBeenCalled();
+  });
+
+  it("stops startup while client factory initialization is pending", async () => {
+    const controller = new AbortController();
+    const cleanup = vi.fn();
+    const openDedupeConnection = vi.fn();
+    let markFactoryStarted = (): void => undefined;
+    const factoryStarted = new Promise<void>((resolve) => {
+      markFactoryStarted = resolve;
+    });
+    const running = runHermesReminderProcess(enabledEnvironment, controller.signal, {
+      importModule: async () => ({
+        createHermesDeliveryClient: async (signal: AbortSignal) => {
+          markFactoryStarted();
+          return await new Promise<ManagedHermesDeliveryClient>((_resolve, reject) => {
+            const handle = setInterval(() => undefined, 1_000);
+            signal.addEventListener(
+              "abort",
+              () => {
+                clearInterval(handle);
+                cleanup();
+                reject(new Error("private factory abort"));
+              },
+              { once: true },
+            );
+          });
+        },
+      }),
+      openDedupeConnection,
+    });
+
+    await factoryStarted;
+    controller.abort("shutdown requested");
+
+    await expect(running).resolves.toBeUndefined();
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(openDedupeConnection).not.toHaveBeenCalled();
   });
 
   it("serves real disabled liveness without becoming ready", async () => {
@@ -210,10 +317,13 @@ describe("Hermes reminder process composition", () => {
     expect(runRuntime).toHaveBeenCalledOnce();
   });
 
-  it("wires explicit enabled dependencies and always closes the dedupe connection", async () => {
-    const close = vi.fn(async () => undefined);
-    const importModule = vi.fn(async () => ({ createHermesDeliveryClient: () => client }));
-    const openDedupeConnection = vi.fn(() => ({ sql: {} as Sql, close }));
+  it("wires explicit enabled dependencies and always closes the client and database", async () => {
+    const closeClient = vi.fn(async () => undefined);
+    const closeDatabase = vi.fn(async () => undefined);
+    const importModule = vi.fn(async () => ({
+      createHermesDeliveryClient: (_signal: AbortSignal) => ({ ...client, close: closeClient }),
+    }));
+    const openDedupeConnection = vi.fn(() => ({ sql: {} as Sql, close: closeDatabase }));
     const runRuntime: NonNullable<HermesReminderProcessDependencies["runRuntime"]> = vi.fn(
       async (options) => {
         expect(options.healthPort).toBe(9_465);
@@ -232,7 +342,31 @@ describe("Hermes reminder process composition", () => {
       enabledEnvironment.HERMES_REMINDER_DEDUPE_DATABASE_URL,
     );
     expect(runRuntime).toHaveBeenCalledOnce();
-    expect(close).toHaveBeenCalledOnce();
+    expect(closeClient).toHaveBeenCalledOnce();
+    expect(closeDatabase).toHaveBeenCalledOnce();
+  });
+
+  it("closes the client when database initialization fails", async () => {
+    const closeClient = vi.fn(async () => undefined);
+    const failure = await runHermesReminderProcess(
+      enabledEnvironment,
+      new AbortController().signal,
+      {
+        importModule: async () => ({
+          createHermesDeliveryClient: (_signal: AbortSignal) => ({ ...client, close: closeClient }),
+        }),
+        openDedupeConnection: () => {
+          throw new Error("private database initialization failure");
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(HermesReminderProcessError);
+    expect((failure as HermesReminderProcessError).code).toBe(
+      "dedupe_database_initialization_failed",
+    );
+    expect(String(failure)).not.toContain("private database");
+    expect(closeClient).toHaveBeenCalledOnce();
   });
 
   it("preserves a runtime failure while closing its database", async () => {
@@ -241,7 +375,9 @@ describe("Hermes reminder process composition", () => {
 
     await expect(
       runHermesReminderProcess(enabledEnvironment, new AbortController().signal, {
-        importModule: async () => ({ createHermesDeliveryClient: () => client }),
+        importModule: async () => ({
+          createHermesDeliveryClient: (_signal: AbortSignal) => client,
+        }),
         openDedupeConnection: () => ({ sql: {} as Sql, close }),
         runRuntime: async () => Promise.reject(failure),
       }),

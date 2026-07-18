@@ -2511,10 +2511,14 @@
             "rejects unsafe enabled composition without retaining values",
             "loads only the named factory from an absolute file URL",
             "redacts $code module failures",
+            "bounds a pending client-module import",
+            "keeps the standalone process alive through a sanitized initialization timeout",
             "does not initialize enabled dependencies when startup is already aborted",
+            "stops startup while client factory initialization is pending",
             "serves real disabled liveness without becoming ready",
             "runs disabled loopback health without opening provider or database dependencies",
-            "wires explicit enabled dependencies and always closes the dedupe connection",
+            "wires explicit enabled dependencies and always closes the client and database",
+            "closes the client when database initialization fails",
             "preserves a runtime failure while closing its database"
           ]
         },
