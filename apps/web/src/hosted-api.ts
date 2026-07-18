@@ -16,7 +16,17 @@ export interface HostedWorkItem {
   readonly planningDurationMinutes: number | null;
 }
 
+export type HostedWorkItemStatus =
+  "backlog" | "planned" | "in_progress" | "blocked" | "done" | "cancelled";
 export type HostedWorkItemPriority = "none" | "low" | "medium" | "high" | "urgent";
+
+export interface HostedWorkItemSnapshot extends HostedWorkItem {
+  readonly parentWorkItemId: string | null;
+  readonly description: string | null;
+  readonly status: HostedWorkItemStatus;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
 
 export interface HostedCreateWorkItem {
   readonly title: string;
@@ -27,6 +37,12 @@ export interface HostedCreateWorkItem {
 
 export interface HostedWorkItemPage {
   readonly items: readonly HostedWorkItem[];
+  readonly limit: number;
+  readonly offset: number;
+}
+
+export interface HostedWorkItemSnapshotPage {
+  readonly items: readonly HostedWorkItemSnapshot[];
   readonly limit: number;
   readonly offset: number;
 }
@@ -168,6 +184,13 @@ export const hostedApi = {
   listWorkItems: (workspaceId: string) =>
     request<HostedWorkItemPage>(
       `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/work-items`,
+    ),
+  listWorkItemSnapshot: (
+    workspaceId: string,
+    pagination: Readonly<{ limit: number; offset: number }>,
+  ) =>
+    request<HostedWorkItemSnapshotPage>(
+      `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/work-items/snapshot?limit=${pagination.limit}&offset=${pagination.offset}`,
     ),
   getToday: (workspaceId: string, date: string) =>
     request<HostedToday>(

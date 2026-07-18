@@ -4,13 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HostedApp } from "./HostedApp";
 import { browserTimeZone, localDateTimeToIso, todayKey } from "./date";
-import { HostedApiError, type HostedDailyPlanFitEffectiveness } from "./hosted-api";
+import {
+  HostedApiError,
+  type HostedDailyPlanFitEffectiveness,
+  type HostedWorkItemSnapshot,
+} from "./hosted-api";
 
 const apiMocks = vi.hoisted(() => ({
   session: vi.fn(),
   listWorkspaces: vi.fn(),
   createWorkspace: vi.fn(),
-  listWorkItems: vi.fn(),
+  listWorkItemSnapshot: vi.fn(),
   getToday: vi.fn(),
   getDailyPlanFitInsight: vi.fn(),
   getDailyPlanFitEffectiveness: vi.fn(),
@@ -33,6 +37,28 @@ vi.mock("./hosted-api", async (importOriginal) => {
 
 const personal = { id: "workspace-personal", name: "My Schedule" };
 const studio = { id: "workspace-studio", name: "Studio" };
+function snapshotItem(
+  item: Pick<HostedWorkItemSnapshot, "id" | "title"> & Partial<HostedWorkItemSnapshot>,
+): HostedWorkItemSnapshot {
+  return {
+    parentWorkItemId: null,
+    description: null,
+    status: "backlog",
+    version: 1,
+    priority: "none",
+    dueOn: null,
+    planningDurationMinutes: null,
+    createdAt: "2026-07-16T12:00:00.000Z",
+    updatedAt: "2026-07-16T12:00:00.000Z",
+    ...item,
+  };
+}
+
+function titleCaseForTest(value: string): string {
+  const label = value.replaceAll("_", " ");
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
+}
+
 const emptyPlanFitEffectiveness: HostedDailyPlanFitEffectiveness = {
   usesConsidered: 0,
   eligibleResolvedUseCount: 0,
@@ -51,7 +77,7 @@ const emptyPlanFitEffectiveness: HostedDailyPlanFitEffectiveness = {
 beforeEach(() => {
   vi.resetAllMocks();
   localStorage.clear();
-  apiMocks.listWorkItems.mockResolvedValue({ items: [], limit: 20, offset: 0 });
+  apiMocks.listWorkItemSnapshot.mockResolvedValue({ items: [], limit: 21, offset: 0 });
   apiMocks.getToday.mockResolvedValue({
     date: todayKey(),
     planId: null,
@@ -96,16 +122,12 @@ describe("hosted capture shell", () => {
     expect(screen.queryByRole("textbox", { name: "Work item" })).not.toBeInTheDocument();
   });
 
-  it("restores workspace choice, lists its backlog, and refreshes after capture", async () => {
+  it("restores workspace choice, lists its work items, and refreshes after capture", async () => {
     const user = userEvent.setup();
-    const existing = {
+    const existing = snapshotItem({
       id: "item-0",
       title: "Review outline",
-      version: 1,
-      priority: "none" as const,
-      dueOn: null,
-      planningDurationMinutes: null,
-    };
+    });
     const created = {
       id: "item-1",
       title: "Prepare release",
@@ -114,6 +136,7 @@ describe("hosted capture shell", () => {
       dueOn: "2026-07-20",
       planningDurationMinutes: 75,
     };
+    const createdSnapshot = snapshotItem(created);
     let finishCreate: (value: typeof created) => void = () => undefined;
     const pendingCreate = new Promise<typeof created>((resolve) => {
       finishCreate = resolve;
@@ -121,9 +144,9 @@ describe("hosted capture shell", () => {
     localStorage.setItem("schedule.hostedWorkspace", studio.id);
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal, studio] });
-    apiMocks.listWorkItems
-      .mockResolvedValueOnce({ items: [existing], limit: 20, offset: 0 })
-      .mockResolvedValueOnce({ items: [existing, created], limit: 20, offset: 0 });
+    apiMocks.listWorkItemSnapshot
+      .mockResolvedValueOnce({ items: [existing], limit: 21, offset: 0 })
+      .mockResolvedValueOnce({ items: [existing, createdSnapshot], limit: 21, offset: 0 });
     apiMocks.createWorkItem.mockReturnValue(pendingCreate);
 
     render(<HostedApp />);
@@ -157,26 +180,181 @@ describe("hosted capture shell", () => {
     expect(
       await screen.findByText(created.title, { selector: ".hosted-backlog-title" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("High priority · Due 2026-07-20 · 1h 15m planned")).toBeInTheDocument();
-    expect(apiMocks.listWorkItems).toHaveBeenNthCalledWith(1, studio.id);
-    expect(apiMocks.listWorkItems).toHaveBeenNthCalledWith(2, studio.id);
+    expect(
+      screen.getByText("Backlog · High priority · Due 2026-07-20 · 1h 15m planned"),
+    ).toBeInTheDocument();
+    expect(apiMocks.listWorkItemSnapshot).toHaveBeenNthCalledWith(1, studio.id, {
+      limit: 21,
+      offset: 0,
+    });
+    expect(apiMocks.listWorkItemSnapshot).toHaveBeenNthCalledWith(2, studio.id, {
+      limit: 21,
+      offset: 0,
+    });
   });
 
-  it("keeps capture usable while a failed backlog read is explicitly retried", async () => {
+  it("keeps capture usable while a failed work-item read is explicitly retried", async () => {
     const user = userEvent.setup();
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
-    apiMocks.listWorkItems
+    apiMocks.listWorkItemSnapshot
       .mockRejectedValueOnce(new Error("private network detail"))
-      .mockResolvedValueOnce({ items: [], limit: 20, offset: 0 });
+      .mockResolvedValueOnce({ items: [], limit: 21, offset: 0 });
 
     render(<HostedApp />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Schedule could not be reached.");
     expect(screen.getByRole("textbox", { name: "Work item" })).toBeEnabled();
-    await user.click(screen.getByRole("button", { name: "Retry backlog" }));
-    expect(await screen.findByText("No backlog items yet.")).toBeInTheDocument();
-    expect(apiMocks.listWorkItems).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole("button", { name: "Retry work items" }));
+    expect(await screen.findByText("No work items yet.")).toBeInTheDocument();
+    expect(apiMocks.listWorkItemSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns to sign-in when the work-item read discovers an expired session", async () => {
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.listWorkItemSnapshot.mockRejectedValue(
+      new HostedApiError(401, "hosted.authentication_failed", "Authentication failed."),
+    );
+
+    render(<HostedApp />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Capture work without losing your place." }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Your session ended. Sign in again.");
+  });
+
+  it("pages through all work-item statuses with backlog-only actions", async () => {
+    const user = userEvent.setup();
+    const statusItems = (
+      ["backlog", "planned", "in_progress", "blocked", "done", "cancelled"] as const
+    ).map((status, index) =>
+      snapshotItem({
+        id: `item-${String(index)}`,
+        title: `${titleCaseForTest(status)} item`,
+        description: status === "planned" ? "Visible context for the planned item." : null,
+        status,
+      }),
+    );
+    const firstPage = [
+      ...statusItems,
+      ...Array.from({ length: 15 }, (_, index) =>
+        snapshotItem({
+          id: `done-${String(index)}`,
+          title: `Completed item ${String(index + 1)}`,
+          status: "done",
+        }),
+      ),
+    ];
+    const pageTwoItem = snapshotItem({
+      id: "item-page-two",
+      title: "Later completed item",
+      status: "done",
+    });
+    let finishPageTwo: () => void = () => undefined;
+    const pendingPageTwo = new Promise<{
+      items: readonly HostedWorkItemSnapshot[];
+      limit: number;
+      offset: number;
+    }>((resolve) => {
+      finishPageTwo = () => resolve({ items: [pageTwoItem], limit: 21, offset: 20 });
+    });
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.listWorkItemSnapshot
+      .mockResolvedValueOnce({ items: firstPage, limit: 21, offset: 0 })
+      .mockReturnValueOnce(pendingPageTwo);
+
+    render(<HostedApp />);
+
+    expect(await screen.findByText("Planned item")).toBeInTheDocument();
+    expect(screen.getByText("Visible context for the planned item.")).toBeInTheDocument();
+    expect(
+      screen.getByText("In progress", { selector: ".hosted-backlog-meta" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start Backlog item" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Complete Backlog item" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Start Planned item" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Complete Done item" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Completed item 15")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    finishPageTwo();
+
+    expect(await screen.findByText(pageTwoItem.title)).toBeInTheDocument();
+    expect(apiMocks.listWorkItemSnapshot).toHaveBeenNthCalledWith(2, personal.id, {
+      limit: 21,
+      offset: 20,
+    });
+    expect(screen.getByRole("button", { name: "Previous" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: `Complete ${pageTwoItem.title}` }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("resets work-item paging and ignores a stale page when the workspace changes", async () => {
+    const user = userEvent.setup();
+    let resolveLatePage: (page: {
+      items: readonly HostedWorkItemSnapshot[];
+      limit: number;
+      offset: number;
+    }) => void = () => undefined;
+    const latePage = new Promise<{
+      items: readonly HostedWorkItemSnapshot[];
+      limit: number;
+      offset: number;
+    }>((resolve) => {
+      resolveLatePage = resolve;
+    });
+    const firstPage = Array.from({ length: 21 }, (_, index) =>
+      snapshotItem({ id: `personal-${String(index)}`, title: `Personal ${String(index + 1)}` }),
+    );
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal, studio] });
+    apiMocks.listWorkItemSnapshot.mockImplementation(
+      (workspaceId: string, pagination: { limit: number; offset: number }) => {
+        if (workspaceId === personal.id && pagination.offset === 0) {
+          return Promise.resolve({ items: firstPage, limit: 21, offset: 0 });
+        }
+        if (workspaceId === personal.id) return latePage;
+        return Promise.resolve({
+          items: [snapshotItem({ id: "studio-1", title: "Studio item", status: "planned" })],
+          limit: 21,
+          offset: 0,
+        });
+      },
+    );
+
+    render(<HostedApp />);
+
+    await user.click(await screen.findByRole("button", { name: "Next" }));
+    await waitFor(() =>
+      expect(apiMocks.listWorkItemSnapshot).toHaveBeenCalledWith(personal.id, {
+        limit: 21,
+        offset: 20,
+      }),
+    );
+    await user.selectOptions(screen.getByRole("combobox", { name: "Workspace" }), studio.id);
+    expect(await screen.findByText("Studio item")).toBeInTheDocument();
+    expect(apiMocks.listWorkItemSnapshot).toHaveBeenCalledWith(studio.id, {
+      limit: 21,
+      offset: 0,
+    });
+    expect(screen.getAllByText("Page 1").length).toBeGreaterThan(0);
+
+    resolveLatePage({
+      items: [snapshotItem({ id: "personal-late", title: "Late personal item" })],
+      limit: 21,
+      offset: 20,
+    });
+    await act(async () => Promise.resolve());
+    expect(screen.queryByText("Late personal item")).not.toBeInTheDocument();
+    expect(screen.getByText("Studio item")).toBeInTheDocument();
   });
 
   it("shows the current local day and refreshes it when the workspace changes", async () => {
@@ -845,7 +1023,7 @@ describe("hosted capture shell", () => {
     expect(apiMocks.getToday).toHaveBeenCalledTimes(2);
   });
 
-  it("completes one Today item and refreshes Today plus its source backlog", async () => {
+  it("completes one Today item and refreshes Today plus its source work item", async () => {
     const user = userEvent.setup();
     const item = {
       id: "plan-item-1",
@@ -853,24 +1031,29 @@ describe("hosted capture shell", () => {
       scheduledMinutes: 45,
       activityState: "pending" as const,
     };
+    const sourceItem = snapshotItem({ id: "work-item-1", title: item.title });
+    let finishSnapshotRefresh: () => void = () => undefined;
+    const pendingSnapshotRefresh = new Promise<{
+      items: HostedWorkItemSnapshot[];
+      limit: number;
+      offset: number;
+    }>((resolve) => {
+      finishSnapshotRefresh = () =>
+        resolve({
+          items: [{ ...sourceItem, status: "done", version: 2 }],
+          limit: 21,
+          offset: 0,
+        });
+    });
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
-    apiMocks.listWorkItems
+    apiMocks.listWorkItemSnapshot
       .mockResolvedValueOnce({
-        items: [
-          {
-            id: "work-item-1",
-            title: item.title,
-            version: 1,
-            priority: "none",
-            dueOn: null,
-            planningDurationMinutes: null,
-          },
-        ],
-        limit: 20,
+        items: [sourceItem],
+        limit: 21,
         offset: 0,
       })
-      .mockResolvedValueOnce({ items: [], limit: 20, offset: 0 });
+      .mockReturnValueOnce(pendingSnapshotRefresh);
     apiMocks.getToday
       .mockResolvedValueOnce({
         date: todayKey(),
@@ -909,7 +1092,17 @@ describe("hosted capture shell", () => {
     expect(
       screen.queryByRole("button", { name: `Complete ${item.title} in Today` }),
     ).not.toBeInTheDocument();
-    expect(await screen.findByText("No backlog items yet.")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: `Start ${item.title}` })).toBeDisabled();
+      expect(screen.getByRole("button", { name: `Complete ${item.title}` })).toBeDisabled();
+    });
+    await act(async () => finishSnapshotRefresh());
+    expect(
+      await screen.findByText("Done", { selector: ".hosted-backlog-meta" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: `Complete ${item.title}` }),
+    ).not.toBeInTheDocument();
   });
 
   it("retries an ambiguous Today action with the exact same intent", async () => {
@@ -1005,27 +1198,27 @@ describe("hosted capture shell", () => {
     expect(apiMocks.getToday).toHaveBeenCalledTimes(2);
   });
 
-  it("starts one backlog item with its optimistic version and refreshes the snapshot", async () => {
+  it("keeps a transitioned work item visible after a backlog status update", async () => {
     const user = userEvent.setup();
-    const item = {
+    const item = snapshotItem({
       id: "item-1",
       title: "Review outline",
       version: 3,
-      priority: "none" as const,
-      dueOn: null,
-      planningDurationMinutes: null,
-    };
+    });
+    const updatedItem = { ...item, status: "in_progress" as const, version: 4 };
     let finishUpdate: () => void = () => undefined;
     let finishRefresh: () => void = () => undefined;
-    const pendingRefresh = new Promise<{ items: never[]; limit: number; offset: number }>(
-      (resolve) => {
-        finishRefresh = () => resolve({ items: [], limit: 20, offset: 0 });
-      },
-    );
+    const pendingRefresh = new Promise<{
+      items: readonly HostedWorkItemSnapshot[];
+      limit: number;
+      offset: number;
+    }>((resolve) => {
+      finishRefresh = () => resolve({ items: [updatedItem], limit: 21, offset: 0 });
+    });
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
-    apiMocks.listWorkItems
-      .mockResolvedValueOnce({ items: [item], limit: 20, offset: 0 })
+    apiMocks.listWorkItemSnapshot
+      .mockResolvedValueOnce({ items: [item], limit: 21, offset: 0 })
       .mockReturnValueOnce(pendingRefresh);
     apiMocks.updateWorkItemStatus.mockReturnValue(
       new Promise<void>((resolve) => {
@@ -1041,23 +1234,26 @@ describe("hosted capture shell", () => {
     finishUpdate();
     expect(await screen.findByText(`Started “${item.title}”.`)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: `Start ${item.title}` })).not.toBeInTheDocument();
-    finishRefresh();
-    expect(await screen.findByText("No backlog items yet.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("In progress", { selector: ".hosted-backlog-meta" }),
+    ).toBeInTheDocument();
+    await act(async () => {
+      finishRefresh();
+      await pendingRefresh;
+    });
+    expect(screen.getByText(item.title, { selector: ".hosted-backlog-title" })).toBeInTheDocument();
   });
 
   it("keeps a stale status update explicit and retryable", async () => {
     const user = userEvent.setup();
-    const item = {
+    const item = snapshotItem({
       id: "item-1",
       title: "Review outline",
       version: 3,
-      priority: "none" as const,
-      dueOn: null,
-      planningDurationMinutes: null,
-    };
+    });
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
-    apiMocks.listWorkItems.mockResolvedValue({ items: [item], limit: 20, offset: 0 });
+    apiMocks.listWorkItemSnapshot.mockResolvedValue({ items: [item], limit: 21, offset: 0 });
     apiMocks.updateWorkItemStatus.mockRejectedValue(
       new HostedApiError(
         409,
@@ -1070,12 +1266,12 @@ describe("hosted capture shell", () => {
 
     await user.click(await screen.findByRole("button", { name: `Complete ${item.title}` }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "This item changed. Refresh the backlog and try again.",
+      "This item changed. Refresh the work items and try again.",
     );
-    expect(screen.getByRole("button", { name: "Retry backlog" })).toBeEnabled();
-    expect(apiMocks.listWorkItems).toHaveBeenCalledOnce();
-    await user.click(screen.getByRole("button", { name: "Retry backlog" }));
-    await waitFor(() => expect(apiMocks.listWorkItems).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "Retry work items" })).toBeEnabled();
+    expect(apiMocks.listWorkItemSnapshot).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Retry work items" }));
+    await waitFor(() => expect(apiMocks.listWorkItemSnapshot).toHaveBeenCalledTimes(2));
   });
 
   it("refreshes Today after the browser crosses local midnight", async () => {
@@ -1150,7 +1346,12 @@ describe("hosted capture shell", () => {
     expect(await screen.findByRole("textbox", { name: "Work item" })).toBeEnabled();
     expect(screen.getByText("Created workspace “Studio”.")).toBeInTheDocument();
     expect(localStorage.getItem("schedule.hostedWorkspace")).toBe(studio.id);
-    await waitFor(() => expect(apiMocks.listWorkItems).toHaveBeenCalledWith(studio.id));
+    await waitFor(() =>
+      expect(apiMocks.listWorkItemSnapshot).toHaveBeenCalledWith(studio.id, {
+        limit: 21,
+        offset: 0,
+      }),
+    );
     await waitFor(() => expect(apiMocks.getToday).toHaveBeenCalledWith(studio.id, todayKey()));
   });
 

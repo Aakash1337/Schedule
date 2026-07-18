@@ -567,17 +567,17 @@ wildcard fallback, so it cannot shadow `/v1`, `/health`, or future product route
 framing denial, and MIME sniffing denial. Fingerprinted assets are immutable for one year. Static
 requests sit outside the hosted API's per-source request budget.
 
-The browser reads only `{ authenticated }`, the active workspace page, the first 20 backlog item
-IDs/titles/versions plus priority/due-date/planning-duration summaries, the narrow current-day
+The browser reads only `{ authenticated }`, the active workspace page, one bounded current-state
+work-item page of up to 21 rows across all statuses while displaying at most 20, the narrow current-day
 projection and concurrency fences above, the bounded Plan Fit projection while no plan exists, the
 thresholded Plan Fit outcome aggregate, the created workspace, and the created work item. It never receives provider tokens, user or session identifiers, membership state, or
 roles. A signed-in user may create or choose one active workspace, review Today and the bounded
-backlog snapshot, submit one title with optional scheduling fields, move one visible backlog item to started or done, or
+work-item pages, submit one title with optional scheduling fields, move one visible backlog item to started or done, or
 explicitly dismiss, restore, or prefill one exact Plan Fit suggestion and build the missing current-day revision from one editable window and two limits, or
 start/complete/skip one actionable Today item. The script
 copies the exact host-only CSRF cookie into the existing header for all strict mutations; the server
 remains authoritative for identity, membership, defaults, validation, and optimistic versions. The
-page cannot regenerate an existing plan, page, filter, generally edit fields, reopen, cancel, synchronize work,
+page cannot regenerate an existing plan, filter, generally edit fields, reopen, cancel, synchronize work,
 rename/delete a workspace, or administer membership or accounts.
 
 ## Deliberately absent

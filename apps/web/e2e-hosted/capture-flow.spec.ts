@@ -30,19 +30,29 @@ test("captures one hosted backlog item with responsive request verification", as
   let requestedPlanFitEffectivenessPath: string | null = null;
   const existing = {
     id: "00000000-0000-4000-8000-000000000009",
+    parentWorkItemId: null,
     title: `Review-${"outline".repeat(24)}`,
+    description: null,
+    status: "backlog",
     version: 4,
     priority: "none",
     dueOn: null,
     planningDurationMinutes: null,
+    createdAt: "2026-07-15T14:00:00.000Z",
+    updatedAt: "2026-07-15T14:00:00.000Z",
   };
   const created = {
     id: "00000000-0000-4000-8000-000000000010",
+    parentWorkItemId: null,
     title: "Prepare release",
+    description: null,
+    status: "backlog",
     version: 1,
     priority: "high",
     dueOn: "2026-07-20",
     planningDurationMinutes: 75,
+    createdAt: "2026-07-17T14:00:00.000Z",
+    updatedAt: "2026-07-17T14:00:00.000Z",
   };
   const todayItem = {
     id: "00000000-0000-4000-8000-000000000011",
@@ -54,7 +64,21 @@ test("captures one hosted backlog item with responsive request verification", as
   let todayActivityState: "pending" | "completed" = "pending";
   let todayGenerated = false;
   let planFitDisposition: "available" | "dismissed" = "available";
-  let backlog: (typeof existing | typeof created)[] = [existing];
+  const firstWorkspaceItems = Array.from({ length: 21 }, (_, index) => ({
+    id: `00000000-0000-4000-8000-${String(index + 100).padStart(12, "0")}`,
+    parentWorkItemId: null,
+    title: index === 20 ? "Archived work on page two" : `Paged work ${index + 1}`,
+    description: null,
+    status: index === 20 ? "done" : "backlog",
+    version: 1,
+    priority: "none",
+    dueOn: null,
+    planningDurationMinutes: null,
+    createdAt: `2026-07-${String(index + 1).padStart(2, "0")}T12:00:00.000Z`,
+    updatedAt: `2026-07-${String(index + 1).padStart(2, "0")}T12:00:00.000Z`,
+  }));
+  let studioItems: Array<typeof existing | typeof created> = [existing];
+  const snapshotRequests: string[] = [];
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -71,8 +95,12 @@ test("captures one hosted backlog item with responsive request verification", as
       await route.fulfill({ json: { items: workspaces, limit: 20, offset: 0 } });
       return;
     }
-    if (request.method() === "GET" && url.pathname.endsWith("/work-items")) {
-      await route.fulfill({ json: { items: backlog, limit: 20, offset: 0 } });
+    if (request.method() === "GET" && url.pathname.endsWith("/work-items/snapshot")) {
+      snapshotRequests.push(`${url.pathname}${url.search}`);
+      const limit = Number(url.searchParams.get("limit"));
+      const offset = Number(url.searchParams.get("offset"));
+      const items = url.pathname.includes(workspaces[0]!.id) ? firstWorkspaceItems : studioItems;
+      await route.fulfill({ json: { items: items.slice(offset, offset + limit), limit, offset } });
       return;
     }
     if (request.method() === "GET" && url.pathname.endsWith("/daily-plan-fit-insight")) {
@@ -174,7 +202,16 @@ test("captures one hosted backlog item with responsive request verification", as
     if (request.method() === "PATCH" && url.pathname.endsWith(`/work-items/${existing.id}`)) {
       capturedStatusBody = request.postDataJSON();
       capturedStatusCsrf = request.headers()["x-schedule-csrf"];
-      backlog = backlog.filter((item) => item.id !== existing.id);
+      studioItems = studioItems.map((item) =>
+        item.id === existing.id
+          ? {
+              ...item,
+              status: "done",
+              version: item.version + 1,
+              updatedAt: "2026-07-17T15:00:00.000Z",
+            }
+          : item,
+      );
       await route.fulfill({ status: 204, body: "" });
       return;
     }
@@ -184,7 +221,7 @@ test("captures one hosted backlog item with responsive request verification", as
     ) {
       capturedBody = request.postDataJSON();
       capturedCsrf = request.headers()["x-schedule-csrf"];
-      backlog = [...backlog, created];
+      studioItems = [...studioItems, created];
       await route.fulfill({ status: 201, json: created });
       return;
     }
@@ -193,11 +230,38 @@ test("captures one hosted backlog item with responsive request verification", as
 
   await page.goto("/hosted.html");
   await expect(page.getByRole("heading", { name: "What needs doing?" })).toBeVisible();
-  await expect(page.getByText(existing.title)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Work items" })).toBeVisible();
+  await expect(page.getByText("Paged work 1", { exact: true })).toBeVisible();
+  await expect(page.getByText("Archived work on page two", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Previous" })).toBeDisabled();
   await expect(page.getByRole("heading", { name: "Build today’s plan" })).toBeVisible();
   expect(requestedTodayDate).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
-  await page.getByRole("combobox", { name: "Workspace" }).selectOption(workspaces[1]!.id);
   await page.setViewportSize({ width: 360, height: 740 });
+  const nextWorkItems = page.getByRole("button", { name: "Next" });
+  await expect(nextWorkItems).toBeVisible();
+  expect((await nextWorkItems.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  await nextWorkItems.click();
+  const archivedRow = page.locator(".hosted-backlog-list li", {
+    hasText: "Archived work on page two",
+  });
+  await expect(archivedRow).toContainText("Done");
+  await expect(archivedRow.getByRole("button")).toHaveCount(0);
+  const previousWorkItems = page.getByRole("button", { name: "Previous" });
+  expect((await previousWorkItems.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  await previousWorkItems.click();
+  await expect(page.getByText("Paged work 1", { exact: true })).toBeVisible();
+  expect(snapshotRequests).toContain(
+    `/v1/hosted/workspaces/${workspaces[0]!.id}/work-items/snapshot?limit=21&offset=0`,
+  );
+  expect(snapshotRequests).toContain(
+    `/v1/hosted/workspaces/${workspaces[0]!.id}/work-items/snapshot?limit=21&offset=20`,
+  );
+
+  await page.getByRole("combobox", { name: "Workspace" }).selectOption(workspaces[1]!.id);
+  await expect(page.getByText(existing.title)).toBeVisible();
+  expect(snapshotRequests).toContain(
+    `/v1/hosted/workspaces/${workspaces[1]!.id}/work-items/snapshot?limit=21&offset=0`,
+  );
   await expect(page.getByRole("heading", { name: "Plan Fit outcomes" })).toBeVisible();
   await expect(page.getByText(/target scheduled 80% time and 75% tasks/iu)).toBeVisible();
   expect(requestedPlanFitEffectivenessPath).toBe(
@@ -268,7 +332,9 @@ test("captures one hosted backlog item with responsive request verification", as
   await expect(page.getByText("45m · Completed")).toBeVisible();
   await page.getByRole("button", { name: `Complete ${existing.title}` }).click();
   await expect(page.getByText(`Completed “${existing.title}”.`)).toBeVisible();
-  await expect(page.locator(".hosted-backlog-list li", { hasText: existing.title })).toHaveCount(0);
+  const transitionedRow = page.locator(".hosted-backlog-list li", { hasText: existing.title });
+  await expect(transitionedRow).toContainText("Done");
+  await expect(transitionedRow.getByRole("button")).toHaveCount(0);
   await page.getByRole("textbox", { name: "Work item" }).fill("Prepare release");
   await page.getByText("Scheduling details (optional)").click();
   await page.getByRole("combobox", { name: "Priority" }).selectOption("high");
@@ -390,8 +456,8 @@ test("creates the first hosted workspace through exact request verification", as
       await route.fulfill({ status: 201, json: workspace });
       return;
     }
-    if (request.method() === "GET" && url.pathname.endsWith("/work-items")) {
-      await route.fulfill({ json: { items: [], limit: 20, offset: 0 } });
+    if (request.method() === "GET" && url.pathname.endsWith("/work-items/snapshot")) {
+      await route.fulfill({ json: { items: [], limit: 21, offset: 0 } });
       return;
     }
     if (request.method() === "GET" && url.pathname.endsWith("/today")) {

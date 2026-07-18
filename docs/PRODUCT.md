@@ -749,9 +749,10 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   dates, IDs, or raw workload totals. The work-item page is current-state offset pagination, not a
   frozen multi-page sync snapshot, change feed, tombstone stream, or offline protocol.
 - Implemented narrow hosted UI: a same-origin capture shell can sign in, select one active
-  workspace or create another, review Today and the first 20 backlog items, create one title with
-  optional priority, due date, and planning duration, and
-  move a visible backlog item to started or done, generate a missing revision-1 Today plan from one
+  workspace or create another, review Today and page through current work items from every status in
+  fixed groups of 20 using one-row lookahead, create one title with optional priority, due date, and
+  planning duration, and move a visible backlog item to started or done. Non-backlog work items are
+  read-only in this shell. It can generate a missing revision-1 Today plan from one
   browser-local window plus minute/task limits, and start, complete, or skip one actionable Today item
   through transaction-authorized routes with exact retry semantics. Generation fixes balanced fit,
   null energy, and empty contexts and adds no stored settings. Plan Fit remains opt-in: one explicit
@@ -759,7 +760,8 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   atomic use receipt with the final edited targets. **Not now** and **Show again** append reversible,
   idempotent disposition events for only that exact suggestion without changing the manual limits
   or creating a plan. A compact descriptive outcome summary loads independently and never changes
-  planning. The shell exposes
+  planning. Each work-item page is a fresh current-state offset read, not a frozen multi-page
+  snapshot, offline copy, or change feed. The shell exposes
   no provider tokens, identity metadata, general editing, workspace rename/delete or membership
   administration, or local-only routes.
 - Deferred: hosted workspace rename/delete and membership administration, the broader product API and interface, account
