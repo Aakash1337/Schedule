@@ -197,6 +197,19 @@
   line-height: 1.45;
 }
 
+.hosted-plan-fit-suggestion h4 {
+  margin: 0;
+  color: var(--ink);
+  font-size: inherit;
+}
+
+.hosted-plan-fit-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .hosted-plan-fit-state .button,
 .hosted-plan-fit-suggestion .button {
   flex: none;
@@ -356,6 +369,10 @@
   .hosted-plan-fit-suggestion .button {
     align-self: flex-start;
     min-height: 44px;
+  }
+
+  .hosted-plan-fit-actions {
+    width: 100%;
   }
 
   .hosted-plan-fields input {

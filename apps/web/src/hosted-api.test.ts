@@ -105,6 +105,48 @@ describe("hosted web API client", () => {
     );
   });
 
+  it("sends exact-key hosted Plan Fit dismissal and reset commands", async () => {
+    const token = "p".repeat(43);
+    vi.spyOn(document, "cookie", "get").mockReturnValue(`__Host-schedule_csrf=${token}`);
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 204 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const feedback = {
+      forDate: "2026-07-16",
+      insightKey: "a".repeat(64),
+      idempotencyKey: "fit-feedback-1",
+    };
+
+    await hostedApi.dismissDailyPlanFitInsight("workspace/one", feedback);
+    await hostedApi.resetDailyPlanFitInsightDismissal("workspace/one", {
+      ...feedback,
+      idempotencyKey: "fit-feedback-2",
+    });
+
+    for (const [index, suffix, key] of [
+      [1, "dismissals", "fit-feedback-1"],
+      [2, "dismissal-resets", "fit-feedback-2"],
+    ] as const) {
+      const [, options] = fetchMock.mock.calls[index - 1] ?? [];
+      const headers = new Headers(options?.headers);
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        index,
+        `/v1/hosted/workspaces/workspace%2Fone/daily-plan-fit-insight/${suffix}`,
+        expect.objectContaining({
+          method: "POST",
+          credentials: "same-origin",
+          body: JSON.stringify({
+            forDate: feedback.forDate,
+            insightKey: feedback.insightKey,
+          }),
+        }),
+      );
+      expect(headers.get("x-schedule-csrf")).toBe(token);
+      expect(headers.get("Idempotency-Key")).toBe(key);
+    }
+  });
+
   it("copies the exact CSRF cookie into hosted mutations", async () => {
     const token = "a".repeat(43);
     vi.spyOn(document, "cookie", "get").mockReturnValue(

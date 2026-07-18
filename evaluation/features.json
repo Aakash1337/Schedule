@@ -3760,7 +3760,7 @@
       },
       "limitations": [
         "The hosted read projects only bounded deterministic status, counts, nullable joint targets, and the exact nullable key. It does not expose historical plans, activity data, thresholds, feedback timestamps, or outcome history.",
-        "Guidance never applies automatically. The shell offers only an explicit joint-target prefill; hosted dismissal/reset, effectiveness reporting, upward suggestions, learned policy, and automatic adaptation remain absent."
+        "Guidance never applies automatically. The shell offers explicit exact-key dismissal/reset and a joint-target prefill; effectiveness reporting, upward suggestions, learned policy, and automatic adaptation remain absent."
       ],
       "evidence": [
         {
@@ -3779,21 +3779,31 @@
           "anchors": [
             "returns only authorized bounded Plan Fit guidance",
             "rejects invalid Plan Fit dates and redacts revoked access",
-            "generates one bounded first plan with an exact reviewed Plan Fit key"
+            "generates one bounded first plan with an exact reviewed Plan Fit key",
+            "records exact-key Plan Fit dismissal and reset without exposing feedback records",
+            "rejects malformed Plan Fit feedback before mutation and redacts revoked access"
           ]
         },
         {
           "level": "unit",
           "file": "apps/web/src/hosted-api.test.ts",
           "command": "unit",
-          "anchors": ["reads bounded hosted Plan Fit guidance for one explicit date"]
+          "anchors": [
+            "reads bounded hosted Plan Fit guidance for one explicit date",
+            "sends exact-key hosted Plan Fit dismissal and reset commands"
+          ]
         },
         {
           "level": "unit",
           "file": "apps/web/src/HostedApp.test.tsx",
           "command": "unit",
           "anchors": [
-            "prefills hosted Plan Fit targets only after explicit use and preserves its exact key"
+            "prefills hosted Plan Fit targets only after explicit use and preserves its exact key",
+            "dismisses and restores an exact hosted Plan Fit suggestion without changing manual limits",
+            "returns focus to planning when a post-feedback refresh fails",
+            "preserves reviewed Plan Fit provenance until a dismissal succeeds",
+            "retries ambiguous hosted Plan Fit feedback with the same idempotency key",
+            "refreshes stale hosted Plan Fit feedback without changing manual targets"
           ]
         },
         {
@@ -3807,7 +3817,7 @@
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
           "anchors": [
-            "Hosted Plan Fit guidance proved bounded authorized projection, read-only prefill evidence, exact-key replay, one persisted plan, and one atomic use receipt"
+            "Hosted Plan Fit guidance proved bounded authorized projection, exact dismissal and reset replay, stale-key rollback, one persisted plan, and one atomic use receipt"
           ]
         }
       ]

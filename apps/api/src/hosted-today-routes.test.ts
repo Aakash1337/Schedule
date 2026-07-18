@@ -13,6 +13,8 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  HOSTED_DAILY_PLAN_FIT_DISMISSAL_RESET_ROUTE,
+  HOSTED_DAILY_PLAN_FIT_DISMISSAL_ROUTE,
   HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE,
   HOSTED_TODAY_ROUTE,
   HOSTED_TODAY_ACTIVITY_ROUTE,
@@ -50,6 +52,8 @@ async function createHostedApp(
   recordActivity: HostedTodayServices["recordActivity"] = vi.fn(),
   generateToday: HostedTodayServices["generateToday"] = vi.fn(),
   getDailyPlanFitInsight: HostedTodayServices["getDailyPlanFitInsight"] = vi.fn(),
+  dismissDailyPlanFitInsight: HostedTodayServices["dismissDailyPlanFitInsight"] = vi.fn(),
+  resetDailyPlanFitInsightDismissal: HostedTodayServices["resetDailyPlanFitInsightDismissal"] = vi.fn(),
 ): Promise<FastifyInstance> {
   const app = Fastify();
   apps.push(app);
@@ -66,7 +70,14 @@ async function createHostedApp(
             : null,
       },
     },
-    { getToday, getDailyPlanFitInsight, generateToday, recordActivity },
+    {
+      getToday,
+      getDailyPlanFitInsight,
+      dismissDailyPlanFitInsight,
+      resetDailyPlanFitInsightDismissal,
+      generateToday,
+      recordActivity,
+    },
   );
   await app.ready();
   return app;
@@ -82,6 +93,17 @@ function todayActivityPath(workspace: string = WORKSPACE_ID, item: string = ITEM
 
 function planFitInsightPath(workspace: string = WORKSPACE_ID): string {
   return `${HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE.replace(":workspaceId", workspace)}?forDate=2026-07-16`;
+}
+
+function planFitFeedbackPath(
+  action: "dismiss" | "reset",
+  workspace: string = WORKSPACE_ID,
+): string {
+  const route =
+    action === "dismiss"
+      ? HOSTED_DAILY_PLAN_FIT_DISMISSAL_ROUTE
+      : HOSTED_DAILY_PLAN_FIT_DISMISSAL_RESET_ROUTE;
+  return route.replace(":workspaceId", workspace);
 }
 
 describe("hosted Today route", () => {
@@ -245,6 +267,104 @@ describe("hosted Today route", () => {
     expect(revoked.statusCode).toBe(404);
     expect(revoked.body).not.toContain("private membership detail");
     expect(getDailyPlanFitInsight).toHaveBeenCalledOnce();
+  });
+
+  it("records exact-key Plan Fit dismissal and reset without exposing feedback records", async () => {
+    const dismissDailyPlanFitInsight = vi.fn(async () => undefined);
+    const resetDailyPlanFitInsightDismissal = vi.fn(async () => undefined);
+    const app = await createHostedApp(
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      dismissDailyPlanFitInsight,
+      resetDailyPlanFitInsightDismissal,
+    );
+    const payload = { forDate: "2026-07-16", insightKey: PLAN_FIT_INSIGHT_KEY };
+
+    const dismissed = await app.inject({
+      method: "POST",
+      url: planFitFeedbackPath("dismiss", WORKSPACE_ID.toUpperCase()),
+      headers: { "idempotency-key": "  hosted-fit-dismiss-1  " },
+      payload,
+    });
+    const reset = await app.inject({
+      method: "POST",
+      url: planFitFeedbackPath("reset", WORKSPACE_ID.toUpperCase()),
+      headers: { "idempotency-key": "  hosted-fit-reset-1  " },
+      payload,
+    });
+
+    expect(dismissed.statusCode).toBe(204);
+    expect(dismissed.body).toBe("");
+    expect(dismissed.headers["cache-control"]).toBe("no-store");
+    expect(reset.statusCode).toBe(204);
+    expect(reset.body).toBe("");
+    expect(dismissDailyPlanFitInsight).toHaveBeenCalledWith({
+      authorization,
+      forDate: localDate("2026-07-16"),
+      insightKey: PLAN_FIT_INSIGHT_KEY,
+      idempotencyKey: "hosted-fit-dismiss-1",
+    });
+    expect(resetDailyPlanFitInsightDismissal).toHaveBeenCalledWith({
+      authorization,
+      forDate: localDate("2026-07-16"),
+      insightKey: PLAN_FIT_INSIGHT_KEY,
+      idempotencyKey: "hosted-fit-reset-1",
+    });
+  });
+
+  it("rejects malformed Plan Fit feedback before mutation and redacts revoked access", async () => {
+    const dismissDailyPlanFitInsight = vi
+      .fn()
+      .mockRejectedValue(new DomainError("workspace.not_found", "private membership detail"));
+    const app = await createHostedApp(
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      dismissDailyPlanFitInsight,
+    );
+    const valid = { forDate: "2026-07-16", insightKey: PLAN_FIT_INSIGHT_KEY };
+    const invalidRequests = [
+      { headers: {}, payload: valid },
+      { headers: { "idempotency-key": "feedback-1" }, payload: { ...valid, extra: true } },
+      {
+        headers: { "idempotency-key": "feedback-2" },
+        payload: { ...valid, forDate: "2026-02-30" },
+      },
+      {
+        headers: { "idempotency-key": "feedback-3" },
+        payload: { ...valid, insightKey: "A".repeat(64) },
+      },
+    ];
+    for (const request of invalidRequests) {
+      const response = await app.inject({
+        method: "POST",
+        url: planFitFeedbackPath("dismiss"),
+        ...request,
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    expect(dismissDailyPlanFitInsight).not.toHaveBeenCalled();
+
+    const denied = await app.inject({
+      method: "POST",
+      url: planFitFeedbackPath("dismiss", OTHER_WORKSPACE_ID),
+      headers: { "idempotency-key": "feedback-4" },
+      payload: valid,
+    });
+    const revoked = await app.inject({
+      method: "POST",
+      url: planFitFeedbackPath("dismiss"),
+      headers: { "idempotency-key": "feedback-5" },
+      payload: valid,
+    });
+
+    expect(denied.statusCode).toBe(404);
+    expect(revoked.statusCode).toBe(404);
+    expect(revoked.body).not.toContain("private membership detail");
+    expect(dismissDailyPlanFitInsight).toHaveBeenCalledOnce();
   });
 
   it("generates one bounded first plan with an exact reviewed Plan Fit key", async () => {

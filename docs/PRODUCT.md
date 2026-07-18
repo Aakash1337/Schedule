@@ -734,7 +734,9 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   through transaction-authorized routes with exact retry semantics. Generation fixes balanced fit,
   null energy, and empty contexts and adds no stored settings. Plan Fit remains opt-in: one explicit
   action prefills both limits, and generation revalidates the exact evidence key while writing one
-  atomic use receipt with the final edited targets. The shell exposes
+  atomic use receipt with the final edited targets. **Not now** and **Show again** append reversible,
+  idempotent disposition events for only that exact suggestion without changing the manual limits
+  or creating a plan. The shell exposes
   no provider tokens, identity metadata, general editing, workspace rename/delete or membership
   administration, or local-only routes.
 - Deferred: hosted workspace rename/delete and membership administration, the broader product API and interface, account

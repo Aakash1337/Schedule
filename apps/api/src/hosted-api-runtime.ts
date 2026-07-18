@@ -2,12 +2,14 @@ import {
   AuthorizeHostedWorkspace,
   CreateHostedWorkspaceForPrincipal,
   CreateHostedWorkItem,
+  DismissDailyPlanFitInsight,
   GenerateDailyPlan,
   GetDailyPlanFitInsight,
   GetCurrentDailyPlan,
   ListHostedWorkspaces,
   ListWorkItems,
   RecordPlanItemActivity,
+  ResetDailyPlanFitInsightDismissal,
   TransactionallyAuthorizedHostedUnitOfWork,
   UpdateHostedWorkItemStatus,
 } from "@schedule/application";
@@ -91,6 +93,20 @@ async function hostedApiOptions(
           workspaceId: authorization.workspaceId,
           forDate,
         }),
+      dismissDailyPlanFitInsight: async ({ authorization, ...command }) => {
+        const service = new DismissDailyPlanFitInsight(
+          new TransactionallyAuthorizedHostedUnitOfWork(hostedMutationUnitOfWork, authorization),
+          clock,
+        );
+        await service.execute({ ...command, workspaceId: authorization.workspaceId });
+      },
+      resetDailyPlanFitInsightDismissal: async ({ authorization, ...command }) => {
+        const service = new ResetDailyPlanFitInsightDismissal(
+          new TransactionallyAuthorizedHostedUnitOfWork(hostedMutationUnitOfWork, authorization),
+          clock,
+        );
+        await service.execute({ ...command, workspaceId: authorization.workspaceId });
+      },
       generateToday: async ({
         authorization,
         date,

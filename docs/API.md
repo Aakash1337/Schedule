@@ -38,6 +38,10 @@ not authorize these product routes.
   `GET /v1/hosted/workspaces/{workspaceId}/daily-plan-fit-insight?forDate=YYYY-MM-DD` returns only
   bounded deterministic status, sample counts, nullable joint targets, and the exact nullable
   evidence key; reading it writes nothing and exposes no plan or activity history.
+  Strict CSRF-protected `POST` requests to that resource's `/dismissals` and `/dismissal-resets`
+  children accept exactly `{ forDate, insightKey }` plus a required `Idempotency-Key`, reauthorize
+  inside the write transaction, and return `204` without exposing the feedback record. Exact retry
+  also returns `204`; stale evidence or an invalid disposition returns `409` without a write.
   A strict CSRF-protected `POST` to the `/today` URL creates only revision 1 from one same-local-date
   offset window, an IANA time zone, `targetMinutes` from 1 through 1,440, `targetTaskCount` from 1
   through 64, an optional nullable exact Plan Fit evidence key, and a required `Idempotency-Key`.

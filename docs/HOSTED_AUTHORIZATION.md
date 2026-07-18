@@ -466,9 +466,18 @@ Reading or displaying the projection writes no feedback and changes no planning 
 
 The hosted shell requests guidance only while the selected day has no current plan. A suggestion is
 never applied automatically: **Use …** copies both targets and retains its exact key, after which the
-user may still edit either target. Insufficient, aligned, or locally dismissed guidance is explained
-as read-only status and changes nothing. A failed guidance read leaves manual generation usable and
-independently retryable.
+user may still edit either target. **Not now** dismisses only that exact suggestion, while **Show
+again** appends a reset for that same key. Both commands preserve the manually entered targets and
+leave generation separate. Insufficient or aligned guidance is read-only. A failed guidance read or
+feedback command leaves manual generation usable and independently retryable.
+
+The two CSRF-protected feedback routes accept strict `{ forDate, insightKey }` bodies and a required
+1–160 character `Idempotency-Key`. They return `204` without projecting internal feedback rows. Each
+command runs through `TransactionallyAuthorizedHostedUnitOfWork`, so the active user, exact browser
+session, workspace, and membership are rechecked in the same transaction that locks the feedback
+stream, recalculates current evidence, and appends the immutable event. Exact retry is a no-op `204`;
+stale evidence, an invalid disposition transition, or conflicting key reuse returns `409` without a
+write. Authorization failures retain the generic tenant-denial boundary.
 
 ## Transaction-coupled hosted first-plan generation
 
@@ -495,7 +504,7 @@ recalculates the bounded evidence, and requires the same available suggestion be
 plan. The exact key, evidence summary, and final user-edited targets are appended as one `used`
 receipt in that same authorized transaction. A stale/dismissed key creates neither plan nor receipt;
 an exact ambiguous replay requires the matching receipt and creates no duplicate. Hosted mode does
-not expose dismissal/reset or outcome-history management.
+not expose outcome history or effectiveness reporting.
 
 ## Transaction-coupled hosted Today action
 
@@ -533,7 +542,7 @@ projection and concurrency fences above, the bounded Plan Fit projection while n
 created workspace, and the created work item. It never receives provider tokens, user or session identifiers, membership state, or
 roles. A signed-in user may create or choose one active workspace, review Today and the bounded
 backlog snapshot, submit one title with optional scheduling fields, move one visible backlog item to started or done, or
-explicitly prefill Plan Fit targets and build the missing current-day revision from one editable window and two limits, or
+explicitly dismiss, restore, or prefill one exact Plan Fit suggestion and build the missing current-day revision from one editable window and two limits, or
 start/complete/skip one actionable Today item. The script
 copies the exact host-only CSRF cookie into the existing header for all strict mutations; the server
 remains authoritative for identity, membership, defaults, validation, and optimistic versions. The
@@ -547,8 +556,8 @@ broader hosted product interface or route set, account-management API, role mode
 protocol, or verified public deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. Name-only workspace creation, narrow scheduling-field work creation, status-only update,
-first-plan generation, and start/complete/skip Today action are the only transaction-coupled hosted
-mutations. The bounded backlog, current-day, and Plan Fit projections are the only hosted
+exact-key Plan Fit dismissal/reset, first-plan generation, and start/complete/skip Today action are
+the only transaction-coupled hosted mutations. The bounded backlog, current-day, and Plan Fit projections are the only hosted
 product-data reads; all other product routes remain local-only and require their own
 authority before future hosted exposure.
 
