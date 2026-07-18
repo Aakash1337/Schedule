@@ -37,6 +37,11 @@ const proposer: NaturalLanguageProposer = {
         summary: `Prepared one reviewable proposal for ${context.requestId}.`,
         warnings: ["Confirm only after reviewing the exact title."],
         command: { type: "work_item.create", title: "Prepare the launch checklist" },
+        modelSuggestions: {
+          priority: "high",
+          dueOn: context.referenceDate,
+          planningDurationMinutes: 60,
+        },
       },
     };
   },
@@ -72,6 +77,7 @@ async function prepareProposal(targetWorkspaceId: ReturnType<typeof workspaceId>
     workspaceId: targetWorkspaceId,
     requestId,
     prompt,
+    referenceDate: localDate("2026-07-15"),
   });
   assert.equal(result.status, "proposal");
   assert.equal(result.summary?.includes(requestId), true);
@@ -81,6 +87,11 @@ async function prepareProposal(targetWorkspaceId: ReturnType<typeof workspaceId>
     priority: "none",
     dueOn: null,
     planningDurationMinutes: null,
+  });
+  assert.deepEqual(result.proposal!.modelSuggestions, {
+    priority: "high",
+    dueOn: "2026-07-15",
+    planningDurationMinutes: 60,
   });
   return { requestId, proposal: result.proposal! };
 }
@@ -136,17 +147,22 @@ try {
   assert.equal(columnNames.has("review_due_on"), true);
   assert.equal(columnNames.has("review_planning_duration_minutes"), true);
   assert.equal(columnNames.has("review_hash"), true);
+  assert.equal(columnNames.has("model_suggestions"), true);
+  assert.equal(columnNames.has("model_suggestions_hash"), true);
 
   const [persisted] = await observerConnection.sql<
     {
       prompt_hash: string;
       command_display: string;
       command: unknown;
+      model_suggestions: unknown;
+      model_suggestions_hash: string;
       review_hash: string;
       status: string;
     }[]
   >`
-    select prompt_hash, command_display, command, review_hash, status
+    select prompt_hash, command_display, command, model_suggestions, model_suggestions_hash,
+      review_hash, status
     from natural_language_proposals
     where workspace_id = ${privateWorkspaceId} and id = ${prepared.proposal.id}
   `;
@@ -158,6 +174,17 @@ try {
     createHash("sha256").update(privatePrompt, "utf8").digest("hex"),
   );
   assert.equal(persisted!.command_display, prepared.proposal.commandDisplay);
+  assert.deepEqual(persisted!.model_suggestions, {
+    priority: "high",
+    dueOn: "2026-07-15",
+    planningDurationMinutes: 60,
+  });
+  assert.equal(
+    persisted!.model_suggestions_hash,
+    createHash("sha256")
+      .update('{"dueOn":"2026-07-15","planningDurationMinutes":60,"priority":"high"}', "utf8")
+      .digest("hex"),
+  );
   assert.equal(
     persisted!.review_hash,
     createHash("sha256")
@@ -184,16 +211,25 @@ try {
   const [persistedReview] = await observerConnection.sql<
     {
       review_hash: string;
+      model_suggestions: unknown;
+      model_suggestions_hash: string;
       review_priority: string;
       review_due_on: string | null;
       review_planning_duration_minutes: number | null;
     }[]
   >`
-    select review_hash, review_priority, review_due_on, review_planning_duration_minutes
+    select model_suggestions, model_suggestions_hash, review_hash, review_priority, review_due_on,
+      review_planning_duration_minutes
     from natural_language_proposals
     where workspace_id = ${privateWorkspaceId} and id = ${reviewed.id}
   `;
   assert.deepEqual(persistedReview, {
+    model_suggestions: {
+      priority: "high",
+      dueOn: "2026-07-15",
+      planningDurationMinutes: 60,
+    },
+    model_suggestions_hash: persisted!.model_suggestions_hash,
     review_hash: createHash("sha256")
       .update('{"dueOn":"2026-07-20","planningDurationMinutes":75,"priority":"urgent"}', "utf8")
       .digest("hex"),
@@ -304,7 +340,7 @@ try {
   );
 
   console.log(
-    "Natural-language proposal verification passed private review persistence, exact reviewed creation, tenant isolation, and concurrent exactly-once confirmation",
+    "Natural-language proposal verification passed advisory suggestion isolation, private review persistence, exact reviewed creation, tenant isolation, and concurrent exactly-once confirmation",
   );
 } finally {
   await removeVerificationWorkspaces().catch(() => undefined);

@@ -302,7 +302,8 @@ need the original key, but replaying an old generation request after rotation ca
 fingerprint.
 
 Migration `0028` creates `natural_language_proposals`; migration `0032` adds the separately stored
-user review fields and a bounded-duration constraint without changing the title-only model command.
+user review fields and a bounded-duration constraint; migration `0038` adds nullable, review-only
+model suggestions plus an independent integrity digest without changing the title-only executable command.
 The table is part of the exact backup and restore catalog. Back up before migration. After applying
 it, run the real concurrency verifier:
 

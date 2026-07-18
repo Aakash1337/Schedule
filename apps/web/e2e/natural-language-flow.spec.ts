@@ -142,10 +142,16 @@ test("reviews and explicitly confirms a local natural-language proposal through 
     page.getByRole("heading", { name: "Prepare the launch checklist", exact: true }),
   ).toHaveCount(0);
 
+  const suggestions = page.getByRole("region", { name: "Optional model suggestions" });
+  await expect(suggestions).toBeVisible();
+  await suggestions.getByRole("button", { name: "Use priority" }).click();
+  await suggestions.getByRole("button", { name: "Use due date" }).click();
+  await suggestions.getByRole("button", { name: "Use duration" }).click();
+
   const reviewedTitle = "Prepare the reviewed launch checklist";
   await page.getByRole("textbox", { name: /^Work item title/ }).fill(reviewedTitle);
   const userFields = page.getByRole("region", {
-    name: "Your choices — not suggested by the model",
+    name: "Your reviewed choices",
   });
   await userFields.getByRole("combobox", { name: "Priority" }).selectOption("urgent");
   await userFields.locator('input[type="date"]').fill("2026-07-20");

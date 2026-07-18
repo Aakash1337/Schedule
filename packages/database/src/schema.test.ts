@@ -554,6 +554,8 @@ describe("database schema", () => {
         "review_due_on",
         "review_planning_duration_minutes",
         "review_hash",
+        "model_suggestions_hash",
+        "model_suggestions",
       ]),
     );
     expect(columnNames).not.toEqual(expect.arrayContaining(["prompt", "summary", "warnings"]));
@@ -574,7 +576,9 @@ describe("database schema", () => {
         "natural_language_proposals_prompt_hash_valid",
         "natural_language_proposals_command_hash_valid",
         "natural_language_proposals_review_hash_valid",
+        "natural_language_proposals_model_suggestions_hash_valid",
         "natural_language_proposals_review_duration_valid",
+        "natural_language_proposals_model_suggestions_object",
         "natural_language_proposals_expiry_after_creation",
         "natural_language_proposals_lifecycle_valid",
         "natural_language_proposals_terminal_time_valid",
@@ -616,6 +620,19 @@ describe("database schema", () => {
       'DROP CONSTRAINT IF EXISTS "natural_language_proposals_review_hash_valid"',
     );
     expect(migration).toContain('"review_planning_duration_minutes" <= 43200');
+    expect(migration).not.toContain('ALTER COLUMN "command"');
+  });
+
+  it("migrates nullable structured model suggestions independently of the command", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0038_smooth_ender_wiggin.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migration).toContain('ADD COLUMN "model_suggestions" jsonb');
+    expect(migration).toContain('ADD COLUMN "model_suggestions_hash" varchar(64)');
+    expect(migration).toContain("model_suggestions_hash_valid");
+    expect(migration).toContain('"model_suggestions" IS NULL OR jsonb_typeof');
     expect(migration).not.toContain('ALTER COLUMN "command"');
   });
 

@@ -879,7 +879,7 @@ describe("web API client", () => {
         new Response(
           JSON.stringify({
             id: "proposal-1",
-            version: "schedule.natural-language/v1",
+            version: "schedule.natural-language/v2",
             requestId,
           }),
           {
@@ -891,9 +891,10 @@ describe("web API client", () => {
     vi.stubGlobal("fetch", fetchMock);
     const controller = new AbortController();
     const generateInput = {
-      version: "schedule.natural-language/v1" as const,
+      version: "schedule.natural-language/v2" as const,
       requestId,
       prompt: "Prepare the launch checklist",
+      referenceDate: "2026-07-16",
     };
 
     await api.generateNaturalLanguageProposal("workspace/one", generateInput, controller.signal);
@@ -970,8 +971,8 @@ describe("web API client", () => {
   });
 
   it.each([
-    ["protocol version", "schedule.natural-language/v2", "2f0f423e-b13a-4e4c-a34c-34ab0ee8e68c"],
-    ["request identity", "schedule.natural-language/v1", "97d55328-3527-434b-9e9e-2d22c3a73ddb"],
+    ["protocol version", "schedule.natural-language/v1", "2f0f423e-b13a-4e4c-a34c-34ab0ee8e68c"],
+    ["request identity", "schedule.natural-language/v2", "97d55328-3527-434b-9e9e-2d22c3a73ddb"],
   ])("rejects a proposal response with a mismatched %s", async (_label, version, requestId) => {
     vi.stubGlobal(
       "fetch",
@@ -986,9 +987,10 @@ describe("web API client", () => {
 
     await expect(
       api.generateNaturalLanguageProposal("workspace-1", {
-        version: "schedule.natural-language/v1",
+        version: "schedule.natural-language/v2",
         requestId: "2f0f423e-b13a-4e4c-a34c-34ab0ee8e68c",
         prompt: "Prepare the launch checklist",
+        referenceDate: "2026-07-16",
       }),
     ).rejects.toMatchObject({ code: "natural_language.response_mismatch", status: 502 });
   });

@@ -391,12 +391,17 @@ export async function startFakeOllamaServer(port: number): Promise<FakeOllamaSer
         message: {
           role: "assistant",
           content: JSON.stringify({
-            version: "schedule.natural-language-output/v1",
+            version: "schedule.natural-language-output/v2",
             summary: "Prepared one reviewable backlog title.",
             warnings: [],
             command: {
               type: "work_item.create",
               title: "Prepare the launch checklist",
+            },
+            modelSuggestions: {
+              priority: "high",
+              dueOn: "2026-07-18",
+              planningDurationMinutes: 45,
             },
           }),
         },

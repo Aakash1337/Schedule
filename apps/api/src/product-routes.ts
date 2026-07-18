@@ -746,9 +746,10 @@ const schedulingAdviceBody = z.strictObject({
   expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
 });
 const naturalLanguageProposalBody = z.strictObject({
-  version: z.literal("schedule.natural-language/v1"),
+  version: z.literal("schedule.natural-language/v2"),
   requestId: uuid,
   prompt: z.string().min(1).max(2_000),
+  referenceDate: localDateText.nullable().default(null),
 });
 const updateNaturalLanguageProposalBody = z.strictObject({
   expectedVersion: z.number().int().positive().max(2_147_483_647),
@@ -968,6 +969,7 @@ export async function registerProductRoutes(
           requestId: body.requestId,
           workspaceId: workspaceId(params.workspaceId),
           prompt: body.prompt,
+          referenceDate: body.referenceDate === null ? null : localDate(body.referenceDate),
         },
         cancellation.signal,
       );

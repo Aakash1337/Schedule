@@ -448,23 +448,26 @@ schema, no thinking, strict response validation, and one concurrency budget shar
 advisor.
 
 Schema and repository tests cover request uniqueness, prompt/command/key digest shapes, separately
-persisted review fields, their independent digest, and duration bounds, bounded TTL,
+persisted advisory suggestions and user review fields, strict suggestion decoding, their independent
+digests, and duration bounds, bounded TTL,
 terminal timestamps, tenant-bound result identity, expiry indexes, canonical JSON revalidation,
 row locking, optimistic saves, and serializable retry. API tests cover strict caller authority,
 disconnect cancellation, complete no-store behavior, `201` first confirmation versus `200` replay,
 terminal `410` mappings, and redacted corrupt-state failures. Work component and web-client tests
-cover no mutation during review/cancel, encoded routes, abort propagation, complete user-authored
-snapshot edit before confirm,
+cover no mutation during review/cancel, encoded routes, abort propagation, suggestions that never
+prefill the form, explicit per-field use, and a complete user-authored snapshot edit before confirm,
 stable-key ambiguous retry, filter-safe insertion, focus transfer, and workspace-switch invalidation.
 
 `pnpm verify:natural-language-proposals` runs production repositories through independent real
 PostgreSQL connection pools. It asserts the schema has no prompt/summary/warnings columns, has the
-three bounded review columns, a prompt is not discoverable as an unkeyed SHA-256 value, no work
-exists before confirmation, concurrent same-key calls yield one exact root backlog creation with the
-reviewed priority/date/duration and one replay, competing keys yield one creation and one precise
+three bounded review columns plus the nullable suggestion object, a prompt is not discoverable as an
+unkeyed SHA-256 value, no work exists before confirmation, suggestions survive review without
+entering its digest, concurrent same-key calls yield one exact root backlog creation with deliberately
+different reviewed priority/date/duration and one replay, competing keys yield one creation and one precise
 conflict, exactly one confirmation audit exists, and another workspace cannot address the proposal.
 The live Chromium scenario uses the built API and production adapter against a strict in-process
-IPv4-loopback Ollama double. It proves the card is absent during review, persists the edited title,
+IPv4-loopback Ollama double. It proves the card is absent during review, applies suggestions only
+after their explicit controls are activated, persists the edited title,
 confirms through the real HTTP/database path, moves focus to the result, and reloads it without
 browser interception. These checks establish model-command authority, user-field ownership, privacy,
 concurrency, and UI behavior; they do not score real-model title quality.

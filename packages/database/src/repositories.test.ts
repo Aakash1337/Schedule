@@ -78,6 +78,15 @@ const successfulResult = {
 };
 
 const proposalCommandDisplay = '{"title":"Send the report","type":"work_item.create"}';
+const proposalModelSuggestions = {
+  priority: "high" as const,
+  dueOn: "2026-07-21",
+  planningDurationMinutes: 60,
+};
+const proposalModelSuggestionsHash = createHash("sha256")
+  .update('{"dueOn":"2026-07-21","planningDurationMinutes":60,"priority":"high"}')
+  .digest("hex");
+const nullModelSuggestionsHash = createHash("sha256").update("null").digest("hex");
 const proposalRow = {
   id: "60000000-0000-4000-8000-000000000006",
   workspaceId: requestIdentity.workspaceId,
@@ -85,8 +94,10 @@ const proposalRow = {
   promptHash: "c".repeat(64),
   commandHash: createHash("sha256").update(proposalCommandDisplay).digest("hex"),
   reviewHash: "40ceef00dce6da430703dbbde48ccf4937f68efd7253a5415dbabc4e316b5f81",
+  modelSuggestionsHash: proposalModelSuggestionsHash,
   commandDisplay: proposalCommandDisplay,
   command: { type: "work_item.create", title: "Send the report" },
+  modelSuggestions: proposalModelSuggestions,
   userSelection: {
     priority: "medium" as const,
     dueOn: localDate("2026-07-20"),
@@ -870,6 +881,11 @@ describe("PostgresNaturalLanguageProposalRepository", () => {
         id: proposalRow.id,
         workspaceId: proposalRow.workspaceId,
         command: { type: "work_item.create", title: "Send the report" },
+        modelSuggestions: {
+          priority: "high",
+          dueOn: "2026-07-21",
+          planningDurationMinutes: 60,
+        },
         userSelection: {
           priority: "medium",
           dueOn: "2026-07-20",
@@ -877,6 +893,35 @@ describe("PostgresNaturalLanguageProposalRepository", () => {
         },
       },
     });
+  });
+
+  it("persists model suggestions independently on insert and save", async () => {
+    const insertReturning = vi.fn().mockResolvedValue([proposalRow]);
+    const onConflictDoUpdate = vi.fn().mockReturnValue({ returning: insertReturning });
+    const insertValues = vi.fn().mockReturnValue({ onConflictDoUpdate });
+    const saveReturning = vi.fn().mockResolvedValue([{ id: proposalRow.id }]);
+    const saveWhere = vi.fn().mockReturnValue({ returning: saveReturning });
+    const saveSet = vi.fn().mockReturnValue({ where: saveWhere });
+    const repository = new PostgresNaturalLanguageProposalRepository({
+      insert: vi.fn().mockReturnValue({ values: insertValues }),
+      update: vi.fn().mockReturnValue({ set: saveSet }),
+    } as unknown as DatabaseConnection["db"]);
+
+    await repository.insertOrFind(proposalRow);
+    await repository.save(proposalRow, proposalRow.version);
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelSuggestions: proposalRow.modelSuggestions,
+        modelSuggestionsHash: proposalRow.modelSuggestionsHash,
+      }),
+    );
+    expect(saveSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelSuggestions: proposalRow.modelSuggestions,
+        modelSuggestionsHash: proposalRow.modelSuggestionsHash,
+      }),
+    );
   });
 
   it("fails closed when persisted command JSON does not match its canonical digest", async () => {
@@ -897,6 +942,58 @@ describe("PostgresNaturalLanguageProposalRepository", () => {
   ])("fails closed when a persisted review %s is invalid", async (_label, overrides) => {
     const repository = new PostgresNaturalLanguageProposalRepository(
       proposalInsertDatabase({ ...proposalRow, ...overrides }),
+    );
+
+    await expect(repository.insertOrFind(proposalRow)).rejects.toMatchObject({
+      code: "natural_language.confirmation_corrupt",
+    });
+  });
+
+  it("accepts legacy rows with no model suggestions", async () => {
+    const repository = new PostgresNaturalLanguageProposalRepository(
+      proposalInsertDatabase({
+        ...proposalRow,
+        modelSuggestions: null,
+        modelSuggestionsHash: nullModelSuggestionsHash,
+      }),
+    );
+
+    await expect(
+      repository.insertOrFind({
+        ...proposalRow,
+        modelSuggestions: null,
+        modelSuggestionsHash: nullModelSuggestionsHash,
+      }),
+    ).resolves.toMatchObject({
+      proposal: { modelSuggestions: null },
+    });
+  });
+
+  it("fails closed when valid model suggestions do not match their digest", async () => {
+    const repository = new PostgresNaturalLanguageProposalRepository(
+      proposalInsertDatabase({
+        ...proposalRow,
+        modelSuggestions: { ...proposalModelSuggestions, priority: "urgent" },
+      }),
+    );
+
+    await expect(repository.insertOrFind(proposalRow)).rejects.toMatchObject({
+      code: "natural_language.confirmation_corrupt",
+    });
+  });
+
+  it.each([
+    ["non-object", []],
+    ["unknown field", { ...proposalRow.modelSuggestions, unknown: true }],
+    ["missing field", { priority: "high", dueOn: null }],
+    ["none priority", { ...proposalRow.modelSuggestions, priority: "none" }],
+    ["invalid priority", { ...proposalRow.modelSuggestions, priority: "critical" }],
+    ["invalid date", { ...proposalRow.modelSuggestions, dueOn: "2026-02-30" }],
+    ["invalid duration", { ...proposalRow.modelSuggestions, planningDurationMinutes: 43_201 }],
+    ["empty object values", { priority: null, dueOn: null, planningDurationMinutes: null }],
+  ])("fails closed when persisted model suggestions have %s", async (_label, modelSuggestions) => {
+    const repository = new PostgresNaturalLanguageProposalRepository(
+      proposalInsertDatabase({ ...proposalRow, modelSuggestions }),
     );
 
     await expect(repository.insertOrFind(proposalRow)).rejects.toMatchObject({

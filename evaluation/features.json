@@ -1995,7 +1995,7 @@
         "anchor": "# Local natural-language work proposals"
       },
       "limitations": [
-        "Version 1 prepares only one editable backlog-title command; user-authored priority, due date, and duration are supported during review, while model-extracted structured fields, routines, task breakdown, multiple commands, automatic confirmation, hosted providers, and messaging interpretation remain deferred.",
+        "Version 2 prepares only one editable backlog-title command plus conservative review-only suggestions for its existing priority, due-date, and duration fields; routines, tags, task breakdown, multiple commands, automatic confirmation, hosted providers, and messaging interpretation remain deferred.",
         "The browser E2E uses a strict loopback provider double; it establishes authority and lifecycle behavior, not real-model title quality."
       ],
       "evidence": [
@@ -2005,6 +2005,9 @@
           "command": "unit",
           "anchors": [
             "persists a bounded hash-bound proposal without mutating work or storing the prompt",
+            "binds the reference date into the model context and request replay fingerprint",
+            "keeps model suggestions advisory until an explicit user review update",
+            "preserves immutable model suggestions across an explicit user review update",
             "confirms the complete user-reviewed snapshot as one root backlog item",
             "rejects invalid review fields and deterministic work-item mismatches",
             "confirms the persisted command exactly once and replays the same idempotency key",
@@ -2018,6 +2021,7 @@
           "command": "unit",
           "anchors": [
             "sends a fixed tool-free proposal request and returns only strict review data",
+            "rejects proposal output with %s",
             "shares the same concurrency permit across advice and proposal work"
           ]
         },
@@ -2028,7 +2032,8 @@
           "anchors": [
             "constrains private, expiring, tenant-bound natural-language proposals",
             "migrates natural-language proposal lifecycle and retention boundaries",
-            "migrates user-authored natural-language review fields without widening model commands"
+            "migrates user-authored natural-language review fields without widening model commands",
+            "migrates nullable structured model suggestions independently of the command"
           ]
         },
         {
@@ -2037,6 +2042,9 @@
           "command": "unit",
           "anchors": [
             "atomically inserts or returns the request winner and validates its command digest",
+            "persists model suggestions independently on insert and save",
+            "fails closed when valid model suggestions do not match their digest",
+            "fails closed when persisted model suggestions have %s",
             "takes a tenant-scoped row lock before proposal mutation"
           ]
         },
@@ -2056,6 +2064,7 @@
           "anchors": [
             "prepares and cancels a local proposal without creating a work item",
             "persists an edited proposal, confirms explicitly, and focuses the created backlog card",
+            "uses optional model suggestions only in the local review draft",
             "reuses the same confirmation key after an ambiguous failure",
             "aborts and discards proposal work when the workspace changes"
           ]
@@ -2065,7 +2074,7 @@
           "file": "scripts/verify-natural-language-proposals.ts",
           "command": "natural-language-proposals",
           "anchors": [
-            "Natural-language proposal verification passed private review persistence, exact reviewed creation, tenant isolation, and concurrent exactly-once confirmation"
+            "Natural-language proposal verification passed advisory suggestion isolation, private review persistence, exact reviewed creation, tenant isolation, and concurrent exactly-once confirmation"
           ]
         },
         {

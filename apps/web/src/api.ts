@@ -276,9 +276,10 @@ export const api = {
   generateNaturalLanguageProposal: async (
     workspaceId: string,
     input: {
-      readonly version: "schedule.natural-language/v1";
+      readonly version: "schedule.natural-language/v2";
       readonly requestId: string;
       readonly prompt: string;
+      readonly referenceDate: string;
     },
     signal?: AbortSignal,
   ) => {
@@ -290,7 +291,7 @@ export const api = {
         ...(signal === undefined ? {} : { signal }),
       },
     );
-    if (result.version !== "schedule.natural-language/v1" || result.requestId !== input.requestId) {
+    if (result.version !== "schedule.natural-language/v2" || result.requestId !== input.requestId) {
       throw new ApiError(
         502,
         "natural_language.response_mismatch",

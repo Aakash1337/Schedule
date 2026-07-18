@@ -19,6 +19,8 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 
+import type { NaturalLanguageProposalModelSuggestions } from "@schedule/application";
+
 export const workItemStatus = pgEnum("work_item_status", [
   "backlog",
   "planned",
@@ -710,8 +712,14 @@ export const naturalLanguageProposals = pgTable(
     reviewHash: varchar("review_hash", { length: 64 })
       .notNull()
       .default("65f7aef345c4f828788d1f4b3d779476b02a9599c31b1442ac7a4b3dbd670805"),
+    modelSuggestionsHash: varchar("model_suggestions_hash", { length: 64 })
+      .notNull()
+      .default("74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"),
     commandDisplay: text("command_display").notNull(),
     command: jsonb("command").$type<Readonly<Record<string, unknown>>>().notNull(),
+    modelSuggestions: jsonb(
+      "model_suggestions",
+    ).$type<NaturalLanguageProposalModelSuggestions | null>(),
     reviewPriority: workItemPriority("review_priority").notNull().default("none"),
     reviewDueOn: date("review_due_on"),
     reviewPlanningDurationMinutes: integer("review_planning_duration_minutes"),
@@ -762,12 +770,20 @@ export const naturalLanguageProposals = pgTable(
       sql`${table.reviewHash} ~ '^[0-9a-f]{64}$'`,
     ),
     check(
+      "natural_language_proposals_model_suggestions_hash_valid",
+      sql`${table.modelSuggestionsHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
       "natural_language_proposals_confirmation_hash_valid",
       sql`${table.confirmationKeyHash} IS NULL OR ${table.confirmationKeyHash} ~ '^[0-9a-f]{64}$'`,
     ),
     check(
       "natural_language_proposals_command_display_bounded",
       sql`char_length(${table.commandDisplay}) BETWEEN 1 AND 1000`,
+    ),
+    check(
+      "natural_language_proposals_model_suggestions_object",
+      sql`${table.modelSuggestions} IS NULL OR jsonb_typeof(${table.modelSuggestions}) = 'object'`,
     ),
     check(
       "natural_language_proposals_review_duration_valid",

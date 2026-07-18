@@ -464,14 +464,16 @@ default and accepts only one versioned prompt request:
 
 ```json
 {
-  "version": "schedule.natural-language/v1",
+  "version": "schedule.natural-language/v2",
   "requestId": "11111111-1111-4111-8111-111111111111",
-  "prompt": "Turn my launch notes into one checklist task"
+  "prompt": "Turn my launch notes into one urgent checklist task due tomorrow",
+  "referenceDate": "2026-07-15"
 }
 ```
 
-The caller cannot supply a command, provider, model, options, tools, destination ID, priority, date,
-duration, tags, or other mutation fields. A successful `200` response contains transient summary and
+`referenceDate` is an optional real local Gregorian date (or `null`) used only to resolve explicit
+relative due dates. The caller cannot supply a command, provider, model, options, tools, destination
+ID, reviewed priority, reviewed date, reviewed duration, tags, or other mutation fields. A successful `200` response contains transient summary and
 warning text plus either one pending `work_item.create` title, `no_proposal`, or a bounded unavailable
 reason. Preparing a proposal does not create a work item or hold a database transaction open during
 inference. Reusing the same request UUID and normalized prompt returns the still-pending stored
@@ -479,10 +481,17 @@ proposal without another provider call; reusing it for different text returns
 `409 natural_language.request_conflict`.
 
 The response's proposal has an ID, request ID, exact canonical title-only command and command hash,
-provider/model identifiers, `pending` status, expiration instant, positive optimistic version, and
-`userSelection` initialized to `none`/`null`/`null` for priority, due date, and planning duration.
+provider/model identifiers, `pending` status, expiration instant, positive optimistic version,
+immutable `modelSuggestions`, and `userSelection` initialized to `none`/`null`/`null` for priority,
+due date, and planning duration. Suggestions are either `null` or an exact object containing nullable
+`priority` (`low`, `medium`, `high`, or `urgent`), absolute `dueOn`, and bounded
+`planningDurationMinutes`; at least one value is present. They are advisory response data and do not
+prefill or modify `userSelection`.
 The prompt, provider summary, warnings, raw envelope, and provider errors are not persisted. Schedule
-stores only a deployment-keyed prompt fingerprint for request-conflict detection. Every response in
+stores only a deployment-keyed prompt-and-reference-date fingerprint for request-conflict detection.
+The validated suggestion object and its independent canonical digest are persisted separately from
+the command and reviewed snapshot so the same pending proposal can be replayed without another model
+call and structurally valid storage corruption fails closed. Every response in
 this route family, including validation and errors, uses `Cache-Control: no-store`.
 
 Editing sends the complete reviewed snapshot to the proposal item route:
@@ -499,8 +508,9 @@ Editing sends the complete reviewed snapshot to the proposal item route:
 }
 ```
 
-`userSelection` is authored by the user after inference; it is not extracted or suggested by the
-model. Priority is `none`, `low`, `medium`, `high`, or `urgent`; due date is a real local Gregorian
+`userSelection` is authored by the user after inference. A browser may copy one displayed model
+suggestion into its editable draft only after an explicit per-field action; Schedule does not do so
+automatically. Priority is `none`, `low`, `medium`, `high`, or `urgent`; due date is a real local Gregorian
 date or `null`; duration is a whole number from 1 through 43,200 or `null`.
 Cancellation sends only `{ "expectedVersion": 1 }` to its dedicated route. Both lock the exact
 tenant-scoped proposal and reject terminal state. An edit with a mismatched version conflicts unless
@@ -517,13 +527,14 @@ after confirmation returns `409 natural_language.confirmation_conflict`. One ser
 transaction locks and revalidates the proposal, expiration, version, canonical command digest,
 reviewed fields, and deterministic result identity before creating one root backlog work item with
 the reviewed priority, due date, and duration, marking confirmation, and auditing it.
-The review fields have a separate canonical digest; the title-only model command hash is never
-repurposed. Same-key replay also verifies that the stored result identity is the proposal-derived ID.
+The suggestions and review fields have separate canonical digests; neither the title-only model
+command hash nor the review digest includes advisory suggestions. Same-key replay also verifies that
+the stored result identity is the proposal-derived ID.
 Concurrent confirmations therefore create one work item and one confirmation audit. Missing
 proposals return `404`; expired, cancelled, or already-consumed proposal operations return `410`;
 corrupt stored commands fail as a redacted `500`.
 
-There is intentionally no proposal-list or proposal-read route in version 1. Pending proposals are
+There is intentionally no proposal-list or proposal-read route in version 2. Pending proposals are
 short-lived interaction state, not a prompt or model-output history. See
 [NATURAL_LANGUAGE.md](./NATURAL_LANGUAGE.md) for the complete trust and persistence contract.
 

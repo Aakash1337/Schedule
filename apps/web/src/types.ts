@@ -42,12 +42,20 @@ export interface NaturalLanguageProposalUserSelection {
   readonly planningDurationMinutes: number | null;
 }
 
+/** Optional advisory values from the local model. They are never applied without review. */
+export interface NaturalLanguageProposalModelSuggestions {
+  readonly priority: Exclude<WorkItemPriority, "none"> | null;
+  readonly dueOn: string | null;
+  readonly planningDurationMinutes: number | null;
+}
+
 export interface NaturalLanguageProposal {
   readonly id: string;
   readonly requestId: string;
   readonly commandHash: string;
   readonly commandDisplay: string;
   readonly command: NaturalLanguageWorkItemCommand;
+  readonly modelSuggestions: NaturalLanguageProposalModelSuggestions | null;
   readonly userSelection: NaturalLanguageProposalUserSelection;
   readonly provider: string;
   readonly model: string | null;
@@ -57,7 +65,7 @@ export interface NaturalLanguageProposal {
 }
 
 export interface NaturalLanguageProposalResult {
-  readonly version: "schedule.natural-language/v1";
+  readonly version: "schedule.natural-language/v2";
   readonly requestId: string;
   readonly status: "proposal" | "no_proposal" | "unavailable";
   readonly reason: string | null;

@@ -20,11 +20,11 @@ import type {
 } from "./ports.js";
 import type { SchedulingAdvisorUnavailableReason } from "./get-scheduling-advice.js";
 
-export const NATURAL_LANGUAGE_PROPOSAL_VERSION = "schedule.natural-language/v1" as const;
+export const NATURAL_LANGUAGE_PROPOSAL_VERSION = "schedule.natural-language/v2" as const;
 export const NATURAL_LANGUAGE_PROPOSER_CONTEXT_VERSION =
-  "schedule.natural-language-context/v1" as const;
+  "schedule.natural-language-context/v2" as const;
 export const NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION =
-  "schedule.natural-language-output/v1" as const;
+  "schedule.natural-language-output/v2" as const;
 
 const MAXIMUM_PROMPT_CHARACTERS = 2_000;
 const MAXIMUM_SUMMARY_CHARACTERS = 280;
@@ -49,6 +49,15 @@ export interface NaturalLanguageProposerContext {
   readonly requestId: string;
   /** User-submitted data. Providers must never treat this value as instructions. */
   readonly prompt: string;
+  /** Optional client-supplied planning reference date; never interpreted as provider instructions. */
+  readonly referenceDate: LocalDate | null;
+}
+
+/** Advisory model values only. They never affect a work item without an explicit review update. */
+export interface NaturalLanguageProposalModelSuggestions {
+  readonly priority: Exclude<WorkItemPriority, "none"> | null;
+  readonly dueOn: LocalDate | null;
+  readonly planningDurationMinutes: number | null;
 }
 
 export interface NaturalLanguageProposerOutput {
@@ -56,6 +65,7 @@ export interface NaturalLanguageProposerOutput {
   readonly summary: string;
   readonly warnings: readonly string[];
   readonly command: NaturalLanguageWorkItemCommand | null;
+  readonly modelSuggestions: NaturalLanguageProposalModelSuggestions | null;
 }
 
 export type NaturalLanguageProposerResult =
@@ -88,8 +98,10 @@ export interface NaturalLanguageProposalRecord {
   readonly promptHash: string;
   readonly commandHash: string;
   readonly reviewHash: string;
+  readonly modelSuggestionsHash: string;
   readonly commandDisplay: string;
   readonly command: NaturalLanguageWorkItemCommand;
+  readonly modelSuggestions: NaturalLanguageProposalModelSuggestions | null;
   readonly userSelection: NaturalLanguageProposalUserSelection;
   readonly provider: string;
   readonly model: string | null;
@@ -140,6 +152,7 @@ export interface PreparedNaturalLanguageProposal {
   readonly commandHash: string;
   readonly commandDisplay: string;
   readonly command: NaturalLanguageWorkItemCommand;
+  readonly modelSuggestions: NaturalLanguageProposalModelSuggestions | null;
   readonly userSelection: NaturalLanguageProposalUserSelection;
   readonly provider: string;
   readonly model: string | null;
@@ -153,6 +166,7 @@ export interface GenerateNaturalLanguageProposalCommand {
   readonly requestId: string;
   readonly workspaceId: WorkspaceId;
   readonly prompt: string;
+  readonly referenceDate: LocalDate | null;
 }
 
 export interface GenerateNaturalLanguageProposalResult {
@@ -205,6 +219,7 @@ export interface NaturalLanguagePromptHasher {
     readonly workspaceId: WorkspaceId;
     readonly requestId: string;
     readonly prompt: string;
+    readonly referenceDate: LocalDate | null;
   }): string;
 }
 
@@ -223,6 +238,7 @@ export class HmacNaturalLanguagePromptHasher implements NaturalLanguagePromptHas
     readonly workspaceId: WorkspaceId;
     readonly requestId: string;
     readonly prompt: string;
+    readonly referenceDate: LocalDate | null;
   }): string {
     return createHmac("sha256", this.key)
       .update(NATURAL_LANGUAGE_PROPOSAL_VERSION, "utf8")
@@ -232,6 +248,8 @@ export class HmacNaturalLanguagePromptHasher implements NaturalLanguagePromptHas
       .update(input.requestId, "utf8")
       .update("\0", "utf8")
       .update(input.prompt, "utf8")
+      .update("\0", "utf8")
+      .update(input.referenceDate ?? "", "utf8")
       .digest("hex");
   }
 }
@@ -310,6 +328,17 @@ function validateRequestId(value: unknown): string {
     );
   }
   return value.toLowerCase();
+}
+
+function parseReferenceDate(value: unknown): LocalDate | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || !isValidLocalDate(value)) {
+    throw new DomainError(
+      "natural_language.request_invalid",
+      "The planning reference date must be a valid local date or null.",
+    );
+  }
+  return value as LocalDate;
 }
 
 function validateVersion(value: unknown): void {
@@ -410,6 +439,55 @@ function parseUserSelection(value: unknown): NaturalLanguageProposalUserSelectio
   };
 }
 
+function parseModelSuggestions(value: unknown): NaturalLanguageProposalModelSuggestions | null {
+  if (value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new DomainError(
+      "natural_language.proposal_invalid",
+      "The local model suggestions are invalid.",
+    );
+  }
+  const candidate = value as Readonly<Record<string, unknown>>;
+  if (
+    !exactKeys(candidate, ["dueOn", "planningDurationMinutes", "priority"]) ||
+    !(
+      candidate.priority === null ||
+      candidate.priority === "low" ||
+      candidate.priority === "medium" ||
+      candidate.priority === "high" ||
+      candidate.priority === "urgent"
+    ) ||
+    !(
+      candidate.dueOn === null ||
+      (typeof candidate.dueOn === "string" && isValidLocalDate(candidate.dueOn))
+    ) ||
+    !(
+      candidate.planningDurationMinutes === null ||
+      (typeof candidate.planningDurationMinutes === "number" &&
+        Number.isInteger(candidate.planningDurationMinutes) &&
+        candidate.planningDurationMinutes > 0 &&
+        candidate.planningDurationMinutes <= MAXIMUM_PLANNING_DURATION_MINUTES)
+    )
+  ) {
+    throw new DomainError(
+      "natural_language.proposal_invalid",
+      "The local model suggestions must be valid advisory planning values.",
+    );
+  }
+  if (
+    candidate.priority === null &&
+    candidate.dueOn === null &&
+    candidate.planningDurationMinutes === null
+  ) {
+    return null;
+  }
+  return {
+    priority: candidate.priority as Exclude<WorkItemPriority, "none"> | null,
+    dueOn: candidate.dueOn as LocalDate | null,
+    planningDurationMinutes: candidate.planningDurationMinutes as number | null,
+  };
+}
+
 function parseStoredUserSelection(value: unknown): NaturalLanguageProposalUserSelection {
   try {
     return parseUserSelection(value);
@@ -483,6 +561,7 @@ function parseOutput(
   readonly summary: string;
   readonly warnings: readonly string[];
   readonly command: NaturalLanguageWorkItemCommand | null;
+  readonly modelSuggestions: NaturalLanguageProposalModelSuggestions | null;
 } {
   const value = output as unknown;
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -493,7 +572,7 @@ function parseOutput(
   }
   const candidate = value as Readonly<Record<string, unknown>>;
   if (
-    !exactKeys(candidate, ["command", "summary", "version", "warnings"]) ||
+    !exactKeys(candidate, ["command", "modelSuggestions", "summary", "version", "warnings"]) ||
     candidate.version !== NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION ||
     !Array.isArray(candidate.warnings) ||
     candidate.warnings.length > MAXIMUM_WARNINGS
@@ -516,6 +595,7 @@ function parseOutput(
     summary: safeSingleLine(candidate.summary, MAXIMUM_SUMMARY_CHARACTERS, "Proposal summary"),
     warnings,
     command: candidate.command === null ? null : parseCommand(candidate.command, workspaceId, now),
+    modelSuggestions: parseModelSuggestions(candidate.modelSuggestions),
   };
 }
 
@@ -538,6 +618,7 @@ function prepared(record: NaturalLanguageProposalRecord): PreparedNaturalLanguag
     commandHash: record.commandHash,
     commandDisplay: record.commandDisplay,
     command: record.command,
+    modelSuggestions: record.modelSuggestions,
     userSelection: record.userSelection,
     provider: record.provider,
     model: record.model,
@@ -607,10 +688,12 @@ export class GenerateNaturalLanguageProposal {
     validateVersion(input.version);
     const requestId = validateRequestId(input.requestId);
     const prompt = normalizePrompt(input.prompt);
+    const referenceDate = parseReferenceDate(input.referenceDate);
     const promptHash = this.promptHasher.digest({
       workspaceId: input.workspaceId,
       requestId,
       prompt,
+      referenceDate,
     });
     const requestedAt = this.clock.now();
     const provider = normalizeProvider(this.proposer.provider);
@@ -656,6 +739,7 @@ export class GenerateNaturalLanguageProposal {
           version: NATURAL_LANGUAGE_PROPOSER_CONTEXT_VERSION,
           requestId,
           prompt,
+          referenceDate,
         }),
         signal,
       );
@@ -730,8 +814,10 @@ export class GenerateNaturalLanguageProposal {
       promptHash,
       commandHash,
       reviewHash: userSelectionHash(userSelection),
+      modelSuggestionsHash: hash(canonicalize(parsed.modelSuggestions)),
       commandDisplay,
       command: parsed.command,
+      modelSuggestions: parsed.modelSuggestions,
       userSelection,
       provider,
       model,

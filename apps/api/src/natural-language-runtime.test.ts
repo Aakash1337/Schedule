@@ -9,6 +9,7 @@ describe("natural-language runtime", () => {
     workspaceId: workspaceId("11111111-1111-4111-8111-111111111111"),
     requestId: "22222222-2222-4222-8222-222222222222",
     prompt: "private prompt",
+    referenceDate: null,
   };
 
   it("ignores a stale short configured HMAC key while proposals are disabled", () => {
