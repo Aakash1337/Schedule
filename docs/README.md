@@ -30,6 +30,8 @@ Durable product and engineering specifications live here so the repository root 
 - [Hosted authorization seam](./HOSTED_AUTHORIZATION.md): closed-by-default cookie/CSRF transport,
   request authentication, enumeration-resistant workspace authorization, revocation semantics, and
   transaction limits.
+- [Hosted work-item sync](./HOSTED_SYNC.md): staged keyset bootstrap, pinned deltas, signed cursors,
+  transactional capture, bounded retention, and fresh-bootstrap recovery.
 - [Evaluation and test evidence](./EVALUATION.md): feature traceability, behavioral gates, coverage floors, planner metrics, and known evidence gaps.
 
 The root [README](../README.md) remains the installation and repository entry point.

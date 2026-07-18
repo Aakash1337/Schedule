@@ -751,6 +751,16 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   counts and rates, with rates withheld until three settled, unrevised uses and no per-use rows,
   dates, IDs, or raw workload totals. The work-item page is current-state offset pagination, not a
   frozen multi-page sync snapshot, change feed, tombstone stream, or offline protocol.
+- Implemented narrow work-item sync v1: the server endpoints support an authenticated consumer that
+  stages an ID-keyset bootstrap,
+  catch up through a checkpointed and pinned delta window, and later poll full upserts plus
+  identity-minimal deletion tombstones. Workspace/stage-bound opaque cursors survive replicas and
+  restarts that share the hosted secret; bounded retention expiry returns `410` and requires a fresh
+  bootstrap. Global change capture defaults off, so a never-enrolled local database writes no
+  full-upsert journal; hosted startup enrolls its database once and retention remains required
+  thereafter. This is server pull
+  infrastructure only, not a browser/offline client, upload path, conflict resolver, push channel, or
+  cross-entity synchronization.
 - Implemented narrow hosted UI: a same-origin capture shell can sign in, select one active
   workspace or create another, review Today and page through current work items from every status in
   fixed groups of 20 using one-row lookahead, create one title with optional priority, due date, and
@@ -768,7 +778,8 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   no provider tokens, identity metadata, general editing, workspace rename/delete or membership
   administration, or local-only routes.
 - Deferred: hosted workspace rename/delete and membership administration, the broader product API and interface, account
-  management, provider-specific production verification, collaboration roles, and sync.
+  management, provider-specific production verification, collaboration roles, and offline,
+  bidirectional, or cross-entity synchronization clients.
 - Cloud deployment selected from measured operational needs
 - Offline-capable synchronization and conflict handling, if required
 - Managed backup retention, point-in-time recovery, monitoring, and deployment automation

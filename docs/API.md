@@ -41,6 +41,17 @@ Daily Plan Fit projection for local agents without exposing its evidence key or 
   and timestamps. It is an authenticated, no-store current-state page for future reconciliation
   work, not a frozen multi-page snapshot, change feed, tombstone stream, or offline synchronization
   protocol.
+  Work-item sync v1 instead uses
+  `GET /v1/hosted/workspaces/{workspaceId}/work-items/sync/bootstrap?limit=100` followed by
+  `GET /v1/hosted/workspaces/{workspaceId}/work-items/sync/changes?cursor={opaque}&limit=100`.
+  Both default `limit` to 100 and accept only values from 1 through 200. Bootstrap accepts an
+  optional continuation cursor, while changes requires a checkpoint or delta-continuation cursor.
+  Bootstrap returns full work-item pages plus one initial checkpoint; changes returns full upserts or
+  identity-only `{ type: "delete", workItemId }` tombstones inside a pinned delta window. Each
+  response is `{ protocolVersion: 1, items|changes, checkpoint, nextCursor }`. A retained-history
+  miss or a valid signed checkpoint, after-position, or pinned through-position ahead of the restored
+  database head returns `410 hosted_sync.cursor_expired` and requires a new bootstrap. See
+  [HOSTED_SYNC.md](./HOSTED_SYNC.md) for the staged apply, cursor, retention, and recovery contract.
   `GET /v1/hosted/workspaces/{workspaceId}/today?date=YYYY-MM-DD` returns only an existing current
   plan's identity/head fence, item IDs/titles/scheduled minutes/activity states, and total minutes.
   `GET /v1/hosted/workspaces/{workspaceId}/daily-plan-fit-insight?forDate=YYYY-MM-DD` returns only
@@ -64,9 +75,8 @@ Daily Plan Fit projection for local agents without exposing its evidence key or 
   CSRF-protected `POST /v1/hosted/workspaces/{workspaceId}/today/{itemId}/activity-events?date=YYYY-MM-DD`
   accepts only the expected plan/head, `started|completed|skipped`, one offset timestamp, and a required
   `Idempotency-Key`; the server derives the plan time zone and reauthorizes in the write transaction.
-  Workspace detail reads, most
-  product routes, synchronization, ingress/TLS, and deployment automation remain separate
-  requirements.
+  Workspace detail reads, most product routes, a shipped offline/bidirectional sync client,
+  ingress/TLS, and deployment automation remain separate requirements.
 - CORS is disabled, JSON bodies are limited to 256 KiB, request objects reject unknown fields, and error responses do not include stack traces.
 - Product routes reject missing, malformed, or non-loopback `Host` authorities before routing. This protects the unauthenticated loopback service from browser DNS-rebinding attacks; `localhost`, IPv4 `127.0.0.0/8`, and IPv6 loopback (`[::1]`) are accepted with an optional valid port. Health and system-information endpoints remain outside this product-route guard for local process and container diagnostics.
 - Accepted UUID values in product-route paths and bodies are canonicalized to lowercase before service dispatch and identity comparison; responses therefore use the canonical spelling.

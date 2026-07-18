@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   bigserial,
   boolean,
   check,
@@ -191,6 +192,10 @@ export const browserSessionRevocationReason = pgEnum("browser_session_revocation
 export const workspaceMembershipStatus = pgEnum("workspace_membership_status", [
   "active",
   "revoked",
+]);
+export const hostedWorkItemSyncChangeKind = pgEnum("hosted_work_item_sync_change_kind", [
+  "upsert",
+  "delete",
 ]);
 
 export const workspaces = pgTable("workspaces", {
@@ -657,6 +662,9 @@ export const workItems = pgTable(
     planningDurationMinutes: integer("planning_duration_minutes"),
     dueOn: date("due_on"),
     version: integer("version").notNull().default(1),
+    hostedSyncCursor: bigint("hosted_sync_cursor", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -688,9 +696,115 @@ export const workItems = pgTable(
       sql`${table.parentWorkItemId} IS NULL OR ${table.parentWorkItemId} <> ${table.id}`,
     ),
     check("work_items_version_positive", sql`${table.version} > 0`),
+    check("work_items_hosted_sync_cursor_nonnegative", sql`${table.hostedSyncCursor} >= 0`),
     check(
       "work_items_planning_duration_positive",
       sql`${table.planningDurationMinutes} IS NULL OR ${table.planningDurationMinutes} > 0`,
+    ),
+  ],
+);
+
+/** One-way global enrollment for durable hosted work-item change capture. */
+export const hostedWorkItemSyncCapability = pgTable(
+  "hosted_work_item_sync_capability",
+  {
+    singleton: boolean("singleton").primaryKey().default(true),
+    captureEnabled: boolean("capture_enabled").notNull().default(false),
+    enabledAt: timestamp("enabled_at", { withTimezone: true }),
+  },
+  (table) => [
+    check("hosted_work_item_sync_capability_singleton", sql`${table.singleton}`),
+    check(
+      "hosted_work_item_sync_capability_lifecycle",
+      sql`(not ${table.captureEnabled} and ${table.enabledAt} is null) or (${table.captureEnabled} and ${table.enabledAt} is not null)`,
+    ),
+  ],
+);
+
+/** Transactional per-workspace cursor and retained-prefix boundary for hosted work-item sync. */
+export const hostedWorkItemSyncStates = pgTable(
+  "hosted_work_item_sync_states",
+  {
+    workspaceId: uuid("workspace_id")
+      .primaryKey()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    headCursor: bigint("head_cursor", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    minimumCursor: bigint("minimum_cursor", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check("hosted_work_item_sync_states_head_nonnegative", sql`${table.headCursor} >= 0`),
+    check("hosted_work_item_sync_states_minimum_nonnegative", sql`${table.minimumCursor} >= 0`),
+    check(
+      "hosted_work_item_sync_states_range_valid",
+      sql`${table.minimumCursor} <= ${table.headCursor}`,
+    ),
+  ],
+);
+
+/** Immutable full-field upserts and identity-minimal deletion tombstones. */
+export const hostedWorkItemSyncChanges = pgTable(
+  "hosted_work_item_sync_changes",
+  {
+    workspaceId: uuid("workspace_id").notNull(),
+    cursor: bigint("cursor", { mode: "bigint" }).notNull(),
+    kind: hostedWorkItemSyncChangeKind("kind").notNull(),
+    workItemId: uuid("work_item_id").notNull(),
+    parentWorkItemId: uuid("parent_work_item_id"),
+    title: varchar("title", { length: 240 }),
+    description: text("description"),
+    status: workItemStatus("status"),
+    priority: workItemPriority("priority"),
+    planningDurationMinutes: integer("planning_duration_minutes"),
+    dueOn: date("due_on"),
+    version: integer("version"),
+    itemCreatedAt: timestamp("item_created_at", { withTimezone: true }),
+    itemUpdatedAt: timestamp("item_updated_at", { withTimezone: true }),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      name: "hosted_work_item_sync_changes_pk",
+      columns: [table.workspaceId, table.cursor],
+    }),
+    foreignKey({
+      name: "hosted_work_item_sync_changes_state_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [hostedWorkItemSyncStates.workspaceId],
+    }).onDelete("cascade"),
+    check("hosted_work_item_sync_changes_cursor_positive", sql`${table.cursor} > 0`),
+    check(
+      "hosted_work_item_sync_changes_planning_duration_positive",
+      sql`${table.planningDurationMinutes} is null or ${table.planningDurationMinutes} > 0`,
+    ),
+    check(
+      "hosted_work_item_sync_changes_shape_valid",
+      sql`(
+        ${table.kind} = 'upsert'
+        and ${table.title} is not null
+        and ${table.status} is not null
+        and ${table.priority} is not null
+        and ${table.version} is not null
+        and ${table.version} > 0
+        and ${table.itemCreatedAt} is not null
+        and ${table.itemUpdatedAt} is not null
+      ) or (
+        ${table.kind} = 'delete'
+        and ${table.parentWorkItemId} is null
+        and ${table.title} is null
+        and ${table.description} is null
+        and ${table.status} is null
+        and ${table.priority} is null
+        and ${table.planningDurationMinutes} is null
+        and ${table.dueOn} is null
+        and ${table.version} is null
+        and ${table.itemCreatedAt} is null
+        and ${table.itemUpdatedAt} is null
+      )`,
     ),
   ],
 );

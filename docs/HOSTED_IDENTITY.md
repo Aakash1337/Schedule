@@ -8,7 +8,9 @@ product boundary remains separate.
 
 This is a narrow hosted foundation, not a complete hosted product. It can list and create a signed-in
 user's workspaces through a small same-origin shell, but has no workspace rename/delete or membership
-administration, broad product route set, synchronization protocol, or verified public deployment.
+administration, broad product route set, offline/bidirectional or cross-entity sync client, or verified
+public deployment. The separate server-side work-item pull protocol is documented in
+[HOSTED_SYNC.md](./HOSTED_SYNC.md).
 
 ## Persisted model
 
@@ -81,7 +83,9 @@ workspaces.
 The activated slice has no refresh token, password, WebFinger issuer discovery, email-link,
 identity/profile response, workspace rename/delete or membership administration, collaboration
 roles, or account management. The workspace list exposes only active memberships. It does not bind a WhatsApp account,
-replace integration credentials, or enable synchronization. `HOSTED_API_MODE=disabled` keeps every
+replace integration credentials, or provide offline/bidirectional or cross-entity synchronization;
+the separate server-side work-item sync v1 is limited to authenticated work-item pulls.
+`HOSTED_API_MODE=disabled` keeps every
 hosted route closed; `oidc` is accepted only with complete secret-manager-fed configuration and
 leaves the local product routes disabled. See
 [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md) for the exact gate and route contract.

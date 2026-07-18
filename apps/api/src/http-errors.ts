@@ -72,6 +72,7 @@ function domainStatus(error: DomainError): number {
   if (
     error.code === "integration.confirmation_expired" ||
     error.code === "integration.confirmation_consumed" ||
+    error.code === "hosted_sync.cursor_expired" ||
     error.code === "natural_language.proposal_expired" ||
     error.code === "natural_language.proposal_cancelled" ||
     error.code === "natural_language.proposal_confirmed"
@@ -126,6 +127,8 @@ function publicDomainMessage(error: DomainError): string {
     case "integration.confirmation_expired":
     case "integration.confirmation_consumed":
       return "The requested confirmation is no longer available.";
+    case "hosted_sync.cursor_expired":
+      return "The sync cursor is no longer available. Start a fresh bootstrap.";
     case "natural_language.proposal_not_found":
       return "The requested natural-language proposal does not exist.";
     case "natural_language.proposal_expired":

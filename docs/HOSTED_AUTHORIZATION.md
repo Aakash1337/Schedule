@@ -3,8 +3,9 @@
 Schedule contains a centralized browser authentication lifecycle and workspace-authorization
 boundary. It is closed by default. With `HOSTED_API_MODE=oidc`, the server preflights one trusted
 provider, installs login/callback/session/logout, and exposes one transaction-authorized work-item
-create route plus principal-bound workspace list/create. Local unauthenticated product routes remain
-disabled and machine integration credentials remain a separate trust boundary.
+and Today slice plus principal-bound workspace access and the server-side work-item sync v1 pull
+routes. Local unauthenticated product routes remain disabled and machine integration credentials
+remain a separate trust boundary.
 
 ## Runtime configuration gate
 
@@ -23,7 +24,10 @@ reports `hostedEndpointsEnabled: true`. `HOSTED_RATE_LIMIT_PER_MINUTE` bounds th
 route group per resolved client address. The in-process bucket map is capped at 4,096 least-recently
 used addresses so source churn cannot grow memory without bound. Disabled mode keeps capability
 reporting false and every hosted route absent even when operators stage and validate the provider
-graph.
+graph. It does not change the database sync capability, so a never-enrolled database remains off and
+writes no full-upsert journal. OIDC startup assembles the app, irreversibly enables database-wide
+work-item capture, and only then returns the app to its listener. Activation failure closes startup
+through one redacted error.
 
 ## Boundary contract
 
@@ -440,8 +444,26 @@ omits `workspaceId`, browser/session identity, membership detail, and totals.
 The route does not alter the fixed first-20 capture backlog above. It reads current rows independently
 for every request, so changes between offset pages may shift or repeat entries. It provides neither
 a frozen reconciliation boundary nor a change feed, deletion tombstones, cursor/watermark,
-conflict handling, push notification, or offline support. Those are still synchronization protocol
-decisions, not properties inferred from this bounded HTTP page.
+conflict handling, push notification, or offline support. Those are not properties inferred from
+this bounded HTTP page; the separate protocol below defines its own narrower guarantees.
+
+### Hosted work-item sync v1
+
+The separate `/work-items/sync/bootstrap` and `/work-items/sync/changes` GET routes cross this same
+cookie, rate-limit, and workspace-membership boundary and return `Cache-Control: no-store`.
+Authorization occurs before cursor decoding, so an unavailable workspace remains the same generic
+`404` rather than becoming a cursor oracle. Authorized malformed or out-of-scope tokens return
+`400`; retained-history expiry or an ahead-of-head signed checkpoint, after-position, or pinned
+through-position after point-in-time recovery returns `410`. Missing sync state and internal log
+corruption are redacted as `500`.
+
+Cursors are versioned, integrity-protected, and bound to the workspace plus bootstrap/checkpoint/delta
+stage. Their domain-separated signing key is derived from the hosted session pepper, making them
+stable across replicas and restarts that share that secret while causing controlled invalidation on
+pepper rotation. The response has no standalone decimal cursor fields, but the signed base64url JSON
+token payload is not encrypted or confidential. Work-item payloads omit `workspaceId`,
+browser/session identity, membership data, and internal deletion timestamps. The focused protocol,
+change-capture, retention, and fresh-bootstrap contract is in [HOSTED_SYNC.md](./HOSTED_SYNC.md).
 
 ## Transaction-coupled hosted status update
 
@@ -577,21 +599,22 @@ explicitly dismiss, restore, or prefill one exact Plan Fit suggestion and build 
 start/complete/skip one actionable Today item. The script
 copies the exact host-only CSRF cookie into the existing header for all strict mutations; the server
 remains authoritative for identity, membership, defaults, validation, and optimistic versions. The
-page cannot regenerate an existing plan, filter, generally edit fields, reopen, cancel, synchronize work,
-rename/delete a workspace, or administer membership or accounts.
+page cannot regenerate an existing plan, filter, generally edit fields, reopen, cancel, consume the
+sync protocol, rename/delete a workspace, or administer membership or accounts.
 
 ## Deliberately absent
 
 There is still no WebFinger issuer discovery, workspace rename/delete or membership administration,
-broader hosted product interface or route set, account-management API, role model, synchronization
-protocol, or verified public deployment.
+broader hosted product interface or route set, account-management API, role model, shipped offline
+or bidirectional sync client, or verified public deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. Name-only workspace creation, narrow scheduling-field work creation, status-only update,
 exact-key Plan Fit dismissal/reset, first-plan generation, and start/complete/skip Today action are
 the only transaction-coupled hosted mutations. The bounded backlog, current-day, Plan Fit guidance,
-thresholded outcome aggregate, and separate current-state work-item page are the only hosted
-product-data reads; all other product routes remain local-only and require their own authority
-before future hosted exposure. The current-state page does not implement synchronization.
+thresholded outcome aggregate, separate current-state work-item page, and the work-item-only sync v1
+pull protocol are the hosted product-data reads; all other product routes remain local-only and
+require their own authority before future hosted exposure. The offset current-state page remains
+independent and does not implement synchronization.
 
 ## Concrete OIDC composition
 
@@ -635,7 +658,8 @@ error is rethrown. Disabled mode retains the graph without exposure. OIDC mode p
 Rotation is restart-based. New PKCE transactions use the primary key; old keys may overlap for at
 least the five-minute login lifetime before removal. The current HMAC codecs accept one pepper each:
 rotating the login pepper invalidates outstanding logins, while rotating the session pepper
-intentionally signs out existing browser sessions. Provider metadata and secrets are not hot-reloaded;
+intentionally signs out existing browser sessions and invalidates work-item sync cursors derived
+from it. Provider metadata and secrets are not hot-reloaded;
 a change requires construction of a new process graph.
 
 ## Verification
@@ -666,10 +690,16 @@ routes at `404`.
 `pnpm verify:hosted-oidc-composition-db` parses complete enabled configuration, builds the production
 hosted route graph with a strict in-process provider, and drives login, callback, one-time replay
 denial, hardened shell delivery, default-workspace discovery, authenticated transaction-coupled
-work creation, session bootstrap, CSRF denial, logout, and cleanup against PostgreSQL. It also
+work creation, session bootstrap, CSRF denial, and logout against a freshly migrated disposable
+PostgreSQL database that is removed after the run. It also
 proves exact first-plan replay, different-input conflict, one persisted planner revision without
 synthetic rows, an authenticated Today completion, exact replay without duplicate activity, one
 head advance, atomic source completion, and that the local unauthenticated workspace routes are absent.
+`pnpm verify:hosted-work-item-sync` drives the production trigger, sync store, and hosted routes
+against disposable PostgreSQL. It covers populated upgrade with capture off, one-way enrollment,
+staged bootstrap and pinned delta reconstruction, transactional capture and rollback, retention
+expiry with fresh-bootstrap recovery, tenant isolation, and workspace-cascade cleanup without
+claiming a deployed offline client.
 `pnpm verify:hosted-web-e2e` builds the isolated hosted browser entry and exercises signed-out and
 authenticated capture in Chromium. It verifies workspace selection, optional scheduling-field payloads,
 first-plan controls, Today completion, exact CSRF/idempotency forwarding, success feedback,
@@ -725,8 +755,10 @@ confidential-client authentication modes, PKCE rotation overlap, bounds and reda
 failure mapping, preflight-before-app ordering, default route closure, enabled registration, and
 capability reporting.
 It injects the factory in-process and performs no external network request.
-`pnpm verify:hosted-oidc-composition-db` uses the migrated configured PostgreSQL database plus a
-strict in-process signed OIDC provider, registers the returned graph only in a private Fastify test
-instance, and completes login, persisted one-shot callback, JWKS verification, identity provisioning,
-session bootstrap, authenticated session lookup, and CSRF-protected logout. It cleans its nonce-bound
-rows and makes no external network request.
+`pnpm verify:hosted-oidc-composition-db` accepts only an explicitly credentialed loopback PostgreSQL
+URL for the source `/schedule` database, then creates and migrates a uniquely named disposable
+database on that server. It uses a strict in-process signed OIDC provider, registers the returned
+graph only in a private Fastify test instance, and completes login, persisted one-shot callback, JWKS
+verification, identity provisioning, session bootstrap, authenticated session lookup, and
+CSRF-protected logout. It closes the app and connection, force-removes the disposable database even
+after verification failure, and makes no external network request.

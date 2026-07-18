@@ -12,8 +12,8 @@ capability sets, `no-new-privileges`, migrations, live/ready health, fail-closed
 routes, worker loopback diagnostics, graceful shutdown, and a data-preserving database outage. The
 outage must degrade API readiness without losing API liveness, fail the worker nonzero, preserve the
 migration ledger and schema, recover API readiness without an API restart, and return the restarted
-worker to health. It is provider neutral and does not count as evidence that public hosting,
-provider recovery, or synchronization is implemented.
+worker to health. It is provider neutral and, by itself, is not evidence of public hosting, provider
+recovery, or the separately verified work-item sync protocol.
 
 ## Evidence model
 
@@ -43,8 +43,9 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:oidc-direct-https`          | Verify DNS-pinned, proxy-free direct OIDC HTTPS egress                      | No                              |
 | `pnpm verify:hosted-oidc-lifecycle`      | Verify OIDC start/callback composition and hardened browser binding         | No                              |
 | `pnpm verify:hosted-oidc-composition`    | Verify the concrete hosted OIDC dependency graph                            | No                              |
-| `pnpm verify:hosted-oidc-composition-db` | Drive login, authorized work/Today, Plan Fit feedback, and explicit use     | Yes                             |
+| `pnpm verify:hosted-oidc-composition-db` | Drive login, authorized work/Today, Plan Fit feedback, and explicit use     | Yes, disposable only            |
 | `pnpm verify:hosted-runtime-preflight`   | Verify secret parsing, startup construction, cleanup, and route gating      | No                              |
+| `pnpm verify:hosted-work-item-sync`      | Verify gated capture, staged bootstrap, pinned delta, retention, and 410    | Yes, disposable only            |
 | `pnpm verify:hosted-staging`             | Operator-assisted real-OIDC staging launch gate; never CI                   | External staging, manually      |
 | `pnpm eval`                              | Validate traceability and run the covered test suite                        | No                              |
 | `pnpm verify:database`                   | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
@@ -84,7 +85,7 @@ provider-monitoring, backup-restore, or broad-sync claim.
 
 ## Current scorecard
 
-The package and script runners currently execute 130 test files and 2,270 runtime test cases. Three
+The package and script runners currently execute 133 test files and 2,314 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -93,36 +94,37 @@ an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      58 / 58 |
-| Critical implemented features with CI-registered integration or drills |      41 / 41 |
+| Implemented features with CI-registered evidence                       |      59 / 59 |
+| Critical implemented features with CI-registered integration or drills |      42 / 42 |
 | Partial features with an explicit limitation                           |        4 / 4 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          341 |
+| CI-registered evidence items                                           |          349 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
 
 Coverage includes all first-party TypeScript source files, including unimported files. Floors are
 set just below the measured baseline so a regression fails immediately; they are ratchets, not target
-quality levels.
+quality levels. Scope rows aggregate every file matched by the corresponding recursive threshold.
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.89% |   72.16% |    68.55% | 60.37% |
+| Whole repository, measured |     59.61% |   72.32% |    68.15% | 60.12% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     95.12% |   91.89% |    93.49% | 96.13% |
 | Domain, required           |        91% |      82% |       92% |    93% |
-| Application, measured      |     89.82% |   84.01% |     98.9% | 90.67% |
+| Application, measured      |     89.99% |    84.6% |    98.94% | 90.88% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     90.45% |   87.85% |    84.02% | 91.98% |
+| API, measured              |     90.54% |   87.68% |    84.09% | 92.05% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |      92.1% |   87.99% |     93.6% | 94.77% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     86.13% |   80.25% |    83.77% |  87.1% |
+| Web, measured              |     84.31% |   76.86% |    82.76% | 87.15% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The whole-repository totals are 13,047 of 21,783 statements, 9,854 of 13,655 branches,
-2,802 of 4,087 functions, and 12,326 of 20,415 lines.
+The whole-repository totals are 13,403 of 22,482 statements, 10,221 of 14,132 branches,
+2,864 of 4,202 functions, and 12,654 of 21,045 lines. Two consecutive full runs produced the same
+totals.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global
@@ -625,7 +627,19 @@ The audit deliberately leaves these visible instead of turning them into false g
   fixed 20-row display pages with one-row next-page lookahead, generic tenant denial, no-store
   responses, and no read mutation while leaving the fixed capture backlog endpoint unchanged. It
   is explicitly a current-state page, not a frozen multi-page snapshot, change feed, tombstone
-  stream, or offline synchronization protocol. The narrow existing-plan Today projection has route,
+  stream, or offline synchronization protocol. Separate work-item sync v1 application and route
+  units enforce canonical cursor bounds, fail-closed page validation, workspace/stage-bound opaque
+  tokens, full upserts, identity-minimal deletes, strict query shapes, `410` expiry, and redacted
+  corruption. Database/runtime units require zero state for new and migrated workspaces, default
+  capture off, one-way locked enrollment before hosted startup completes, and fail-closed missing or
+  disabled capability/state. Its disposable PostgreSQL/Fastify verifier covers a populated upgrade,
+  cursor-zero pre-enrollment mutation, cursor-one capture after enrollment, trigger capture through
+  ordinary and direct plan-activity writers, concurrent gap-free workspace cursors, rollback, no-op
+  suppression, staged bootstrap plus frozen delta reconstruction, retention expiry/fresh bootstrap,
+  tenant isolation, and workspace-cascade cleanup. Cleanup-command units independently cover bounded
+  parsing, aggregate-only output, connection closure, and malformed purge state. This evidence does
+  not implement an offline cache, client-side atomic apply, uploads, conflicts, push, or cross-entity
+  synchronization. The narrow existing-plan Today projection has route,
   component, browser, and database evidence, including authenticated missing-plan behavior. The
   missing-plan mutation has route/client/component evidence for a same-local-date window, bounded
   minute/task targets, strict input, exact ambiguous retry, and fixed planner defaults. The real
@@ -654,8 +668,9 @@ The audit deliberately leaves these visible instead of turning them into false g
   exact Plan Fit dismissal/reset and prefill without auto-generation, a descriptive outcome summary,
   exact CSRF/idempotency forwarding, and 360-pixel
   layout. Disabled-mode route closure and redacted startup failure remain independently verified.
-  This evidence does not cover a real external provider, TLS ingress, workspace rename/delete or membership administration, the
-  broader product API/interface, public deployment, or synchronization;
+  This capture-shell evidence does not cover a real external provider, TLS ingress, workspace
+  rename/delete or membership administration, the broader product API/interface, public deployment,
+  or consumption of the separate sync protocol;
 - ten live Chromium scenarios cover the central mixed routine/work-item planning loop with temporary
   feedback and activity, due-date deadline pressure, exact-key duration-insight dismissal/reset, and
   a 320px prerequisite add/reload/remove/reload flow with keyboard and target-size assertions, a

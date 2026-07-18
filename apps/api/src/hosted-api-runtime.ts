@@ -1,5 +1,8 @@
+import { createHmac } from "node:crypto";
+
 import {
   AuthorizeHostedWorkspace,
+  BootstrapHostedWorkItems,
   CreateHostedWorkspaceForPrincipal,
   CreateHostedWorkItem,
   DismissDailyPlanFitInsight,
@@ -8,6 +11,7 @@ import {
   GetDailyPlanFitInsight,
   GetCurrentDailyPlan,
   ListHostedWorkspaces,
+  ListHostedWorkItemChanges,
   ListDailyPlanFitUsageOutcomes,
   ListWorkItems,
   maximumDailyPlanFitUsageOutcomes,
@@ -19,7 +23,9 @@ import {
 import type { ApiConfig } from "@schedule/config";
 import { createDailyPlanningRequest } from "@schedule/domain";
 import {
+  enableHostedWorkItemSyncCapture,
   PostgresHostedMutationUnitOfWork,
+  PostgresHostedWorkItemSyncStore,
   PostgresIdentityUnitOfWork,
   PostgresUnitOfWork,
   type DatabaseConnection,
@@ -38,6 +44,12 @@ type HostedRuntimeConfig = Pick<
   "HOSTED_API_MODE" | "HOSTED_OIDC_PREFLIGHT" | "HOSTED_RATE_LIMIT_PER_MINUTE"
 >;
 
+const hostedWorkItemSyncCursorDomain = "schedule:hosted-work-item-sync:v1";
+
+export function deriveHostedWorkItemSyncCursorSigningKey(browserSessionPepper: string): Buffer {
+  return createHmac("sha256", browserSessionPepper).update(hostedWorkItemSyncCursorDomain).digest();
+}
+
 async function hostedApiOptions(
   config: HostedRuntimeConfig,
   database: DatabaseConnection,
@@ -47,12 +59,18 @@ async function hostedApiOptions(
   if (config.HOSTED_API_MODE !== "oidc" || composition === undefined) {
     throw new Error("Hosted OIDC activation failed.");
   }
+  if (config.HOSTED_OIDC_PREFLIGHT === undefined) {
+    throw new Error("Hosted OIDC preflight configuration is unavailable.");
+  }
   const identityUnitOfWork = new PostgresIdentityUnitOfWork(database);
   const listWorkspaces = new ListHostedWorkspaces(identityUnitOfWork);
   const createWorkspace = new CreateHostedWorkspaceForPrincipal(identityUnitOfWork);
   const productUnitOfWork = new PostgresUnitOfWork(database);
   const clock = { now: () => new Date() };
   const listWorkItems = new ListWorkItems(productUnitOfWork);
+  const workItemSyncStore = new PostgresHostedWorkItemSyncStore(database);
+  const bootstrapWorkItems = new BootstrapHostedWorkItems(workItemSyncStore);
+  const listWorkItemChanges = new ListHostedWorkItemChanges(workItemSyncStore);
   const getCurrentDailyPlan = new GetCurrentDailyPlan(productUnitOfWork);
   const getDailyPlanFitInsight = new GetDailyPlanFitInsight(productUnitOfWork, clock);
   const getDailyPlanFitEffectiveness = new GetDailyPlanFitEffectiveness(
@@ -79,6 +97,9 @@ async function hostedApiOptions(
       createWorkspace: (input) => createWorkspace.execute(input).then(({ workspace }) => workspace),
     },
     workItems: {
+      syncCursorSigningKey: deriveHostedWorkItemSyncCursorSigningKey(
+        config.HOSTED_OIDC_PREFLIGHT.browserSessionPepper,
+      ),
       listWorkItems: ({ authorization }) =>
         listWorkItems.execute({
           workspaceId: authorization.workspaceId,
@@ -91,6 +112,20 @@ async function hostedApiOptions(
           workspaceId: authorization.workspaceId,
           limit,
           offset,
+        }),
+      bootstrapWorkItemSync: ({ authorization, limit, checkpoint, afterId }) =>
+        bootstrapWorkItems.execute({
+          workspaceId: authorization.workspaceId,
+          limit,
+          ...(checkpoint === undefined ? {} : { checkpoint }),
+          ...(afterId === undefined ? {} : { afterId }),
+        }),
+      listWorkItemSyncChanges: ({ authorization, limit, afterCursor, throughCursor }) =>
+        listWorkItemChanges.execute({
+          workspaceId: authorization.workspaceId,
+          limit,
+          afterCursor,
+          ...(throughCursor === undefined ? {} : { throughCursor }),
         }),
       createWorkItem: ({ authorization, command }) =>
         createWorkItem.execute(authorization, command),
@@ -190,20 +225,35 @@ export async function prepareHostedApiApp(
   baseOptions: Omit<BuildAppOptions, "hostedApi"> = {},
   factory?: HostedOidcCompositionFactory,
   webShellLoader: HostedWebShellLoader = loadHostedWebShell,
+  enableSyncCapture: typeof enableHostedWorkItemSyncCapture = enableHostedWorkItemSyncCapture,
 ) {
   try {
     return await prepareAppAfterDormantHostedOidcPreflight(
       config,
       database,
-      async (composition) =>
-        buildApp({
+      async (composition) => {
+        const app = await buildApp({
           ...baseOptions,
           ...(config.HOSTED_API_MODE === "oidc"
             ? {
                 hostedApi: await hostedApiOptions(config, database, composition, webShellLoader),
               }
             : {}),
-        }),
+        });
+        if (config.HOSTED_API_MODE === "oidc") {
+          try {
+            await enableSyncCapture(database);
+          } catch {
+            try {
+              await app.close();
+            } catch {
+              // Preserve the stable activation failure; outer cleanup still closes the database.
+            }
+            throw new Error("Hosted work-item sync capture activation failed.");
+          }
+        }
+        return app;
+      },
       factory,
     );
   } catch (error) {
