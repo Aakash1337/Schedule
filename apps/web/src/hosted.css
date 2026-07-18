@@ -138,6 +138,23 @@
   gap: 16px;
 }
 
+.hosted-backlog-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hosted-backlog-title {
+  min-width: 0;
+}
+
+.hosted-backlog-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}
+
 .hosted-today-meta {
   flex: none;
   color: var(--ink-faint);
@@ -219,5 +236,10 @@
     align-items: flex-start;
     flex-direction: column;
     gap: 4px;
+  }
+
+  .hosted-backlog-list li {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

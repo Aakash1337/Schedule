@@ -20,7 +20,10 @@ not authorize these product routes.
   and administration are not public routes. First login creates one default workspace and active
   membership atomically; `GET /v1/hosted/workspaces?limit=20&offset=0` returns only the authenticated
   principal's active workspace page. A fixed
-  `GET /v1/hosted/workspaces/{workspaceId}/work-items` returns only the first 20 backlog IDs/titles.
+  `GET /v1/hosted/workspaces/{workspaceId}/work-items` returns only the first 20 backlog
+  IDs/titles/versions. Its item versions support a strict
+  `PATCH /v1/hosted/workspaces/{workspaceId}/work-items/{workItemId}` body containing only
+  `expectedVersion` and `status=in_progress|done`.
   `GET /v1/hosted/workspaces/{workspaceId}/today?date=YYYY-MM-DD` returns only an existing current
   plan's titles, scheduled minutes, activity states, and total minutes. Workspace detail reads, most
   product routes, synchronization, ingress/TLS, and deployment automation remain separate

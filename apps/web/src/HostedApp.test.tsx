@@ -12,6 +12,7 @@ const apiMocks = vi.hoisted(() => ({
   listWorkItems: vi.fn(),
   getToday: vi.fn(),
   createWorkItem: vi.fn(),
+  updateWorkItemStatus: vi.fn(),
   logout: vi.fn(),
 }));
 
@@ -31,6 +32,7 @@ beforeEach(() => {
   localStorage.clear();
   apiMocks.listWorkItems.mockResolvedValue({ items: [], limit: 20, offset: 0 });
   apiMocks.getToday.mockResolvedValue({ date: todayKey(), items: [], totalMinutes: 0 });
+  apiMocks.updateWorkItemStatus.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -53,8 +55,8 @@ describe("hosted capture shell", () => {
 
   it("restores workspace choice, lists its backlog, and refreshes after capture", async () => {
     const user = userEvent.setup();
-    const existing = { id: "item-0", title: "Review outline" };
-    const created = { id: "item-1", title: "Prepare release" };
+    const existing = { id: "item-0", title: "Review outline", version: 1 };
+    const created = { id: "item-1", title: "Prepare release", version: 1 };
     let finishCreate: (value: typeof created) => void = () => undefined;
     const pendingCreate = new Promise<typeof created>((resolve) => {
       finishCreate = resolve;
@@ -81,7 +83,7 @@ describe("hosted capture shell", () => {
     expect(await screen.findByText("Added “Prepare release” to Studio.")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Work item" })).toHaveValue("");
     expect(
-      await screen.findByText(created.title, { selector: ".hosted-backlog-list li" }),
+      await screen.findByText(created.title, { selector: ".hosted-backlog-title" }),
     ).toBeInTheDocument();
     expect(apiMocks.listWorkItems).toHaveBeenNthCalledWith(1, studio.id);
     expect(apiMocks.listWorkItems).toHaveBeenNthCalledWith(2, studio.id);
@@ -146,6 +148,65 @@ describe("hosted capture shell", () => {
     await user.click(screen.getByRole("button", { name: "Retry today" }));
     expect(await screen.findByText("Recovered plan")).toBeInTheDocument();
     expect(apiMocks.getToday).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts one backlog item with its optimistic version and refreshes the snapshot", async () => {
+    const user = userEvent.setup();
+    const item = { id: "item-1", title: "Review outline", version: 3 };
+    let finishUpdate: () => void = () => undefined;
+    let finishRefresh: () => void = () => undefined;
+    const pendingRefresh = new Promise<{ items: never[]; limit: number; offset: number }>(
+      (resolve) => {
+        finishRefresh = () => resolve({ items: [], limit: 20, offset: 0 });
+      },
+    );
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.listWorkItems
+      .mockResolvedValueOnce({ items: [item], limit: 20, offset: 0 })
+      .mockReturnValueOnce(pendingRefresh);
+    apiMocks.updateWorkItemStatus.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishUpdate = resolve;
+      }),
+    );
+
+    render(<HostedApp />);
+
+    await user.click(await screen.findByRole("button", { name: `Start ${item.title}` }));
+    expect(apiMocks.updateWorkItemStatus).toHaveBeenCalledWith(personal.id, item, "in_progress");
+    expect(screen.getByRole("textbox", { name: "Work item" })).toBeDisabled();
+    finishUpdate();
+    expect(await screen.findByText(`Started “${item.title}”.`)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: `Start ${item.title}` })).not.toBeInTheDocument();
+    finishRefresh();
+    expect(await screen.findByText("No backlog items yet.")).toBeInTheDocument();
+  });
+
+  it("keeps a stale status update explicit and retryable", async () => {
+    const user = userEvent.setup();
+    const item = { id: "item-1", title: "Review outline", version: 3 };
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+    apiMocks.listWorkItems.mockResolvedValue({ items: [item], limit: 20, offset: 0 });
+    apiMocks.updateWorkItemStatus.mockRejectedValue(
+      new HostedApiError(
+        409,
+        "work_item.version_conflict",
+        "The work item changed before this update could be applied.",
+      ),
+    );
+
+    render(<HostedApp />);
+
+    await user.click(await screen.findByRole("button", { name: `Complete ${item.title}` }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This item changed. Refresh the backlog and try again.",
+    );
+    expect(screen.getByRole("button", { name: "Retry backlog" })).toBeEnabled();
+    expect(apiMocks.listWorkItems).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Retry backlog" }));
+    await waitFor(() => expect(apiMocks.listWorkItems).toHaveBeenCalledTimes(2));
   });
 
   it("refreshes Today after the browser crosses local midnight", async () => {

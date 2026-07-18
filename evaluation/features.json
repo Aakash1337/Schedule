@@ -3224,7 +3224,7 @@
         "anchor": "# Hosted request authorization and OIDC runtime"
       },
       "limitations": [
-        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery, bounded backlog and existing-plan Today reads, one transaction-coupled work-item create, and one narrow same-origin capture shell. Workspace administration, a broader public end-user product surface, and synchronization remain unimplemented.",
+        "Explicit OIDC mode registers the seam, browser lifecycle, active workspace discovery, bounded backlog and existing-plan Today reads, transaction-coupled title create and status-only update, and one narrow same-origin capture shell. Workspace administration, a broader public end-user product surface, and synchronization remain unimplemented.",
         "Integration machine credentials remain a separate boundary and do not authenticate browser users."
       ],
       "evidence": [
@@ -3331,7 +3331,7 @@
         "anchor": "## Hosted capture shell"
       },
       "limitations": [
-        "The shell can authenticate, discover active workspaces, show one existing browser-local current-day plan and the first 20 backlog titles, and create one title-only backlog item. It cannot generate plans, page, filter, edit, complete, schedule, administer, or synchronize product data.",
+        "The shell can authenticate, discover active workspaces, show one existing browser-local current-day plan and the first 20 backlog titles, create one title-only backlog item, and move one visible item to started or done. It cannot generate plans, page, filter, edit fields, reopen, cancel, schedule, administer, or synchronize product data.",
         "The built-browser gate uses an in-browser API double; an external identity provider and public TLS ingress still require a staging smoke."
       ],
       "evidence": [
@@ -3351,6 +3351,7 @@
           "anchors": [
             "uses only the same-origin session and bounded hosted read routes",
             "copies the exact CSRF cookie into hosted mutations",
+            "sends only optimistic status fields for hosted workflow updates",
             "fails before sending when request verification is absent"
           ]
         },
@@ -3365,6 +3366,8 @@
             "shows the current local day and refreshes it when the workspace changes",
             "keeps capture usable while a failed Today read is explicitly retried",
             "refreshes Today after the browser crosses local midnight",
+            "starts one backlog item with its optimistic version and refreshes the snapshot",
+            "keeps a stale status update explicit and retryable",
             "returns to sign-in when capture discovers an expired session",
             "keeps revoked users out of capture until an active workspace exists"
           ]
@@ -3449,7 +3452,7 @@
         "anchor": "## Bounded hosted backlog read"
       },
       "limitations": [
-        "The endpoint returns only the stable first 20 backlog IDs and titles. It has no filters, pagination controls, totals, descriptions, mutations, or synchronization semantics and does not mix in the separate Today projection.",
+        "The endpoint returns only the stable first 20 backlog IDs, titles, and optimistic versions. It has no filters, pagination controls, totals, descriptions, or synchronization semantics and does not mix in the separate Today projection.",
         "Read authorization follows the documented preflight linearization: a committed revocation fences the next request but cannot retract an already-authorized in-flight read."
       ],
       "evidence": [
@@ -3629,6 +3632,84 @@
           "anchors": [
             "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout"
           ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-status-only-work-item-update",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/HOSTED_AUTHORIZATION.md",
+        "anchor": "## Transaction-coupled hosted status update"
+      },
+      "limitations": [
+        "The mutation accepts only a snapshot version and status=in_progress|done for one visible backlog item. It does not expose general editing, other statuses, reopening, cancellation, hierarchy, detail reads, filtering, paging, or automatic retries.",
+        "The existing product update behavior invalidates pending reminder intents for the changed work item; the hosted adapter does not bypass or duplicate that side effect."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/application/src/update-hosted-work-item-status.test.ts",
+          "command": "unit",
+          "anchors": [
+            "derives authority from the request context and writes in the same transaction"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/repositories.test.ts",
+          "command": "unit",
+          "anchors": [
+            "wires hosted reauthorization into one product transaction",
+            "retries hosted mutations after a serialization failure"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-work-item-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "updates only status from canonical authority with an optimistic version",
+            "rejects general editing and invalid status updates before calling the service",
+            "reports a stale hosted status update without exposing repository detail",
+            "reports a non-backlog source conflict without exposing repository detail"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": [
+            "registers the hosted lifecycle and protected workspace surface only when supplied"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/hosted-api.test.ts",
+          "command": "unit",
+          "anchors": ["sends only optimistic status fields for hosted workflow updates"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/HostedApp.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "starts one backlog item with its optimistic version and refreshes the snapshot",
+            "keeps a stale status update explicit and retryable"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/e2e-hosted/capture-flow.spec.ts",
+          "command": "hosted-browser-e2e",
+          "anchors": ["captures one hosted backlog item with responsive request verification"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-hosted-oidc-composition.ts",
+          "command": "hosted-oidc-composition-db",
+          "anchors": ["and a transaction-authorized status update"]
         }
       ]
     }

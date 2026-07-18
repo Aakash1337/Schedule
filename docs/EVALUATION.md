@@ -571,9 +571,10 @@ The audit deliberately leaves these visible instead of turning them into false g
   role, description, planner-reason, or version metadata. The enabled composition
   verifier parses production configuration, builds the real route graph with a strict in-process
   provider, proves local product routes absent, drives login, the hardened same-origin capture
-  shell, discovery, bounded backlog and empty-Today reads, and one authorized create, then checks
-  logout and cleanup. A separate built Chromium flow covers signed-out/authenticated capture, Today,
-  backlog refresh, exact CSRF forwarding, and 360-pixel
+  shell, discovery, bounded backlog and empty-Today reads, one authorized create, and one optimistic
+  status update, then checks logout and cleanup. A separate built Chromium flow covers
+  signed-out/authenticated capture, Today, status-only completion, backlog refresh, exact CSRF
+  forwarding, and 360-pixel
   layout. Disabled-mode route closure and redacted startup failure remain independently verified.
   This evidence does not cover a real external provider, TLS ingress, workspace administration, the
   broader product API/interface, public deployment, or synchronization;

@@ -95,6 +95,32 @@ describe("hosted web API client", () => {
     expect(headers.get("x-schedule-csrf")).toBe(token);
   });
 
+  it("sends only optimistic status fields for hosted workflow updates", async () => {
+    const token = "b".repeat(43);
+    vi.spyOn(document, "cookie", "get").mockReturnValue(`__Host-schedule_csrf=${token}`);
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 204 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await hostedApi.updateWorkItemStatus(
+      "workspace/one",
+      { id: "item/one", version: 3 },
+      "in_progress",
+    );
+    const [, options] = fetchMock.mock.calls[0] ?? [];
+    const headers = new Headers(options?.headers);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/hosted/workspaces/workspace%2Fone/work-items/item%2Fone",
+      expect.objectContaining({
+        method: "PATCH",
+        credentials: "same-origin",
+        body: JSON.stringify({ expectedVersion: 3, status: "in_progress" }),
+      }),
+    );
+    expect(headers.get("x-schedule-csrf")).toBe(token);
+  });
+
   it("fails before sending when request verification is absent", async () => {
     vi.spyOn(document, "cookie", "get").mockReturnValue("");
     const fetchMock = vi.fn();

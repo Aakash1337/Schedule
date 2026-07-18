@@ -19,6 +19,7 @@ function publicError(error: unknown): string {
     if (error.status === 401) return "Your session ended. Sign in again.";
     if (error.status === 403) return "Request verification expired. Reload and try again.";
     if (error.status === 404) return "Workspace access changed. Reload before capturing more work.";
+    if (error.status === 409) return "This item changed. Refresh the backlog and try again.";
     if (error.status === 429) return "Too many requests. Wait a moment and try again.";
     if (error.status === 503) return "Schedule is temporarily unavailable.";
   }
@@ -46,6 +47,10 @@ export function HostedApp() {
   const [todayError, setTodayError] = useState<string | null>(null);
   const [todayRefresh, setTodayRefresh] = useState(0);
   const [todayDate, setTodayDate] = useState(() => todayKey());
+  const [updatingItem, setUpdatingItem] = useState<{
+    readonly id: string;
+    readonly status: "in_progress" | "done";
+  } | null>(null);
 
   const load = useCallback(async () => {
     setMode("loading");
@@ -193,6 +198,30 @@ export function HostedApp() {
     }
   }
 
+  async function updateStatus(item: HostedWorkItem, status: "in_progress" | "done") {
+    if (selectedWorkspace === null) return;
+    setUpdatingItem({ id: item.id, status });
+    setBacklogError(null);
+    setConfirmation(null);
+    try {
+      await hostedApi.updateWorkItemStatus(selectedWorkspace.id, item, status);
+      setConfirmation(
+        status === "done" ? `Completed “${item.title}”.` : `Started “${item.title}”.`,
+      );
+      setBacklogItems((items) => items.filter((candidate) => candidate.id !== item.id));
+      setBacklogRefresh((value) => value + 1);
+    } catch (updateError) {
+      if (updateError instanceof HostedApiError && updateError.status === 401) {
+        setMode("signed-out");
+        setError(publicError(updateError));
+      } else {
+        setBacklogError(publicError(updateError));
+      }
+    } finally {
+      setUpdatingItem(null);
+    }
+  }
+
   async function logout() {
     setBusy(true);
     setError(null);
@@ -259,7 +288,13 @@ export function HostedApp() {
           <CircleDotDashed aria-hidden="true" />
           <span>Schedule</span>
         </div>
-        <Button type="button" variant="quiet" busy={busy} onClick={() => void logout()}>
+        <Button
+          type="button"
+          variant="quiet"
+          busy={busy}
+          disabled={updatingItem !== null}
+          onClick={() => void logout()}
+        >
           <LogOut size={16} aria-hidden="true" />
           Sign out
         </Button>
@@ -298,7 +333,7 @@ export function HostedApp() {
               <Field label="Workspace" className="hosted-workspace-field">
                 <select
                   value={selectedWorkspace.id}
-                  disabled={busy}
+                  disabled={busy || updatingItem !== null}
                   onChange={(event) => selectWorkspace(event.target.value)}
                 >
                   {workspaces.map((workspace) => (
@@ -322,10 +357,16 @@ export function HostedApp() {
                   onChange={(event) => setTitle(event.target.value)}
                   maxLength={240}
                   placeholder="Prepare next week’s plan"
+                  disabled={updatingItem !== null}
                   required
                 />
               </Field>
-              <Button type="submit" variant="primary" busy={busy} disabled={title.trim() === ""}>
+              <Button
+                type="submit"
+                variant="primary"
+                busy={busy}
+                disabled={title.trim() === "" || updatingItem !== null}
+              >
                 <Plus size={17} aria-hidden="true" />
                 Add to backlog
               </Button>
@@ -401,7 +442,33 @@ export function HostedApp() {
               ) : (
                 <ul className="hosted-backlog-list">
                   {backlogItems.map((item) => (
-                    <li key={item.id}>{item.title}</li>
+                    <li key={item.id}>
+                      <span className="hosted-backlog-title">{item.title}</span>
+                      <span className="hosted-backlog-actions">
+                        <Button
+                          type="button"
+                          variant="quiet"
+                          aria-label={`Start ${item.title}`}
+                          busy={
+                            updatingItem?.id === item.id && updatingItem.status === "in_progress"
+                          }
+                          disabled={busy || updatingItem !== null}
+                          onClick={() => void updateStatus(item, "in_progress")}
+                        >
+                          Start
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="quiet"
+                          aria-label={`Complete ${item.title}`}
+                          busy={updatingItem?.id === item.id && updatingItem.status === "done"}
+                          disabled={busy || updatingItem !== null}
+                          onClick={() => void updateStatus(item, "done")}
+                        >
+                          Done
+                        </Button>
+                      </span>
+                    </li>
                   ))}
                 </ul>
               )}

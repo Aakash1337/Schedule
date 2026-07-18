@@ -329,7 +329,13 @@ try {
   assert.equal(listedWorkItems.statusCode, 200, listedWorkItems.body);
   assert.equal(listedWorkItems.headers["cache-control"], "no-store");
   assert.deepEqual(listedWorkItems.json(), {
-    items: [{ id: createdWorkItem.json().id, title: "Verified hosted work item" }],
+    items: [
+      {
+        id: createdWorkItem.json().id,
+        title: "Verified hosted work item",
+        version: createdWorkItem.json().version,
+      },
+    ],
     limit: 20,
     offset: 0,
   });
@@ -341,6 +347,23 @@ try {
   assert.equal(listedToday.statusCode, 200, listedToday.body);
   assert.equal(listedToday.headers["cache-control"], "no-store");
   assert.deepEqual(listedToday.json(), { date: "2026-07-16", items: [], totalMinutes: 0 });
+  const completedWorkItem = await app.inject({
+    method: "PATCH",
+    url: `/v1/hosted/workspaces/${hostedAccount.workspaceId}/work-items/${createdWorkItem.json().id}`,
+    headers: {
+      origin,
+      cookie: `${cookiePair(sessionCookie)}; ${cookiePair(csrfCookie)}`,
+      [HOSTED_CSRF_HEADER_NAME]: csrfToken!,
+    },
+    payload: { expectedVersion: createdWorkItem.json().version, status: "done" },
+  });
+  assert.equal(completedWorkItem.statusCode, 204, completedWorkItem.body);
+  const emptyBacklog = await app.inject({
+    method: "GET",
+    url: `/v1/hosted/workspaces/${hostedAccount.workspaceId}/work-items`,
+    headers: { cookie: cookiePair(sessionCookie) },
+  });
+  assert.deepEqual(emptyBacklog.json(), { items: [], limit: 20, offset: 0 });
 
   const [persisted] = await database.sql<
     {
@@ -350,6 +373,7 @@ try {
       workspaces: number;
       memberships: number;
       workItems: number;
+      doneWorkItems: number;
       consumed: number;
     }[]
   >`
@@ -367,6 +391,8 @@ try {
         where user_id = ${hostedAccount.userId} and workspace_id = ${hostedAccount.workspaceId}) as memberships,
       (select count(*)::integer from work_items
         where workspace_id = ${hostedAccount.workspaceId}) as "workItems",
+      (select count(*)::integer from work_items
+        where workspace_id = ${hostedAccount.workspaceId} and status = 'done') as "doneWorkItems",
       (select count(*)::integer from hosted_login_transactions
         where issuer = ${issuer} and client_id = ${clientId} and consumed_at is not null) as consumed
   `;
@@ -377,6 +403,7 @@ try {
     workspaces: 1,
     memberships: 1,
     workItems: 1,
+    doneWorkItems: 1,
     consumed: 1,
   });
   const deniedLogout = await app.inject({
@@ -437,7 +464,7 @@ try {
   assert.deepEqual(requestCounts, { discovery: 1, token: 1, jwks: 1 });
 
   console.log(
-    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read and empty Today read.",
+    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read and empty Today read and a transaction-authorized status update.",
   );
 } catch (error) {
   verificationError = error;

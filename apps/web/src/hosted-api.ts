@@ -10,6 +10,7 @@ interface HostedWorkspacePage {
 export interface HostedWorkItem {
   readonly id: string;
   readonly title: string;
+  readonly version: number;
 }
 
 export interface HostedWorkItemPage {
@@ -58,7 +59,7 @@ function csrfToken(cookie: string): string | null {
 
 async function request<Result>(
   path: string,
-  options: Readonly<{ method?: "GET" | "POST"; json?: unknown; csrf?: boolean }> = {},
+  options: Readonly<{ method?: "GET" | "POST" | "PATCH"; json?: unknown; csrf?: boolean }> = {},
 ): Promise<Result> {
   const headers = new Headers({ Accept: "application/json" });
   if (options.json !== undefined) headers.set("content-type", "application/json");
@@ -109,5 +110,18 @@ export const hostedApi = {
       json: { title },
       csrf: true,
     }),
+  updateWorkItemStatus: (
+    workspaceId: string,
+    item: Pick<HostedWorkItem, "id" | "version">,
+    status: "in_progress" | "done",
+  ) =>
+    request<void>(
+      `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/work-items/${encodeURIComponent(item.id)}`,
+      {
+        method: "PATCH",
+        json: { expectedVersion: item.version, status },
+        csrf: true,
+      },
+    ),
   logout: () => request<void>("/v1/auth/logout", { method: "POST", csrf: true }),
 };

@@ -117,6 +117,10 @@ function publicDomainMessage(error: DomainError): string {
       return "The request conflicts with an existing delivery request.";
     case "notification_delivery.claim_stale":
       return "The delivery claim is stale or no longer owns this command.";
+    case "work_item.version_conflict":
+      return "The work item changed before this update could be applied.";
+    case "work_item.status_conflict":
+      return "The work item status changed before this update could be applied.";
     case "integration.confirmation_not_found":
       return "The requested confirmation does not exist.";
     case "integration.confirmation_expired":
