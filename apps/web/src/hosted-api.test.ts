@@ -105,6 +105,39 @@ describe("hosted web API client", () => {
     );
   });
 
+  it("reads the fixed bounded hosted Plan Fit effectiveness projection", async () => {
+    const effectiveness = {
+      usesConsidered: 4,
+      eligibleResolvedUseCount: 3,
+      minimumComparableUses: 3,
+      pendingUseCount: 1,
+      revisedUseCount: 0,
+      notEvaluableUseCount: 0,
+      exactSuggestionUseCount: 2,
+      editedSuggestionUseCount: 2,
+      scheduledMinutesRateBasisPoints: 8_000,
+      scheduledTasksRateBasisPoints: 7_500,
+      completionMinutesRateBasisPoints: 7_500,
+      completionTasksRateBasisPoints: 8_000,
+    } as const;
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify(effectiveness), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(hostedApi.getDailyPlanFitEffectiveness("workspace/one")).resolves.toEqual(
+      effectiveness,
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/hosted/workspaces/workspace%2Fone/daily-plan-fit-insight/effectiveness",
+      expect.objectContaining({ method: "GET", credentials: "same-origin" }),
+    );
+  });
+
   it("sends exact-key hosted Plan Fit dismissal and reset commands", async () => {
     const token = "p".repeat(43);
     vi.spyOn(document, "cookie", "get").mockReturnValue(`__Host-schedule_csrf=${token}`);

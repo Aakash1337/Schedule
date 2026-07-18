@@ -479,6 +479,21 @@ stream, recalculates current evidence, and appends the immutable event. Exact re
 stale evidence, an invalid disposition transition, or conflicting key reuse returns `409` without a
 write. Authorization failures retain the generic tenant-denial boundary.
 
+## Bounded hosted Plan Fit outcome summary
+
+`GET /v1/hosted/workspaces/:workspaceId/daily-plan-fit-insight/effectiveness` accepts no query
+fields and reuses the existing read-only aggregate over at most the 28 most recent explicit uses.
+The hosted projection contains only the number considered; comparable, pending, revised, and
+not-evaluable counts; exact-versus-edited counts; the fixed minimum of three comparable uses; and
+four nullable target-scheduling and plan-completion rates in basis points. It omits each use, date,
+plan or insight identity, raw target/scheduled/completed totals, and every feedback timestamp.
+
+All rates are forced to null until at least three settled, unrevised uses are available. The read
+uses the same cookie, active-membership authorization, generic tenant denial, and `no-store`
+boundary as the other hosted snapshots. It never appends feedback, changes a plan, or feeds the
+planner. The shell loads it independently, keeps capture and Today usable on failure, ignores a late
+previous-workspace response, and labels the visible result as descriptive rather than causal.
+
 ## Transaction-coupled hosted first-plan generation
 
 `POST /v1/hosted/workspaces/:workspaceId/today?date=YYYY-MM-DD` accepts one strict body containing
@@ -504,7 +519,7 @@ recalculates the bounded evidence, and requires the same available suggestion be
 plan. The exact key, evidence summary, and final user-edited targets are appended as one `used`
 receipt in that same authorized transaction. A stale/dismissed key creates neither plan nor receipt;
 an exact ambiguous replay requires the matching receipt and creates no duplicate. Hosted mode does
-not expose outcome history or effectiveness reporting.
+not expose per-use outcome history.
 
 ## Transaction-coupled hosted Today action
 
@@ -539,7 +554,7 @@ requests sit outside the hosted API's per-source request budget.
 The browser reads only `{ authenticated }`, the active workspace page, the first 20 backlog item
 IDs/titles/versions plus priority/due-date/planning-duration summaries, the narrow current-day
 projection and concurrency fences above, the bounded Plan Fit projection while no plan exists, the
-created workspace, and the created work item. It never receives provider tokens, user or session identifiers, membership state, or
+thresholded Plan Fit outcome aggregate, the created workspace, and the created work item. It never receives provider tokens, user or session identifiers, membership state, or
 roles. A signed-in user may create or choose one active workspace, review Today and the bounded
 backlog snapshot, submit one title with optional scheduling fields, move one visible backlog item to started or done, or
 explicitly dismiss, restore, or prefill one exact Plan Fit suggestion and build the missing current-day revision from one editable window and two limits, or
@@ -557,7 +572,8 @@ protocol, or verified public deployment.
 Integration credentials remain a separate machine boundary and cannot authenticate a browser
 principal. Name-only workspace creation, narrow scheduling-field work creation, status-only update,
 exact-key Plan Fit dismissal/reset, first-plan generation, and start/complete/skip Today action are
-the only transaction-coupled hosted mutations. The bounded backlog, current-day, and Plan Fit projections are the only hosted
+the only transaction-coupled hosted mutations. The bounded backlog, current-day, Plan Fit guidance,
+and thresholded outcome aggregate are the only hosted
 product-data reads; all other product routes remain local-only and require their own
 authority before future hosted exposure.
 

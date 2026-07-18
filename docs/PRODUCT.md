@@ -725,7 +725,9 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   the fixed first 20 backlog items with priority/due-date/planning-duration summaries, and one existing browser-local current-day plan projection with
   only the IDs/head fence needed for mutation and no identity, role, planner-reason, or time-zone
   metadata. A missing-plan day may also read one bounded deterministic Plan Fit projection without
-  historical plan or activity data.
+  historical plan or activity data. A separate fixed last-28-use aggregate exposes only bounded
+  counts and rates, with rates withheld until three settled, unrevised uses and no per-use rows,
+  dates, IDs, or raw workload totals.
 - Implemented narrow hosted UI: a same-origin capture shell can sign in, select one active
   workspace or create another, review Today and the first 20 backlog items, create one title with
   optional priority, due date, and planning duration, and
@@ -736,7 +738,8 @@ point-in-time recovery, hosted restore drills, and the operational controls requ
   action prefills both limits, and generation revalidates the exact evidence key while writing one
   atomic use receipt with the final edited targets. **Not now** and **Show again** append reversible,
   idempotent disposition events for only that exact suggestion without changing the manual limits
-  or creating a plan. The shell exposes
+  or creating a plan. A compact descriptive outcome summary loads independently and never changes
+  planning. The shell exposes
   no provider tokens, identity metadata, general editing, workspace rename/delete or membership
   administration, or local-only routes.
 - Deferred: hosted workspace rename/delete and membership administration, the broader product API and interface, account

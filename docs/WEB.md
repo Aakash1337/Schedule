@@ -30,7 +30,8 @@ controls and visual tokens but includes only session bootstrap, active-workspace
 in/out, name-only workspace creation, one current-day snapshot, one fixed first-page backlog
 snapshot, narrow Today/backlog actions, and one backlog form with optional priority, due date, and
 planning duration. Before a first plan it may also read one bounded Plan Fit projection and expose
-explicit exact-key dismissal/reset and a joint-target prefill. The API serves that build from the same origin, so the
+explicit exact-key dismissal/reset and a joint-target prefill. A separate fixed last-28-use read
+shows only thresholded descriptive outcome counts and rates. The API serves that build from the same origin, so the
 browser never needs CORS, provider tokens, or a second frontend service. The local application and
 its unauthenticated routes are not bundled into the hosted entry.
 
@@ -55,6 +56,10 @@ only the exact current suggestion and **Show again** restores it; neither action
 targets or generates a plan. Ambiguous feedback retry preserves its exact command key, while stale
 feedback refreshes current guidance and discards that intent. Insufficient and aligned states remain
 visible explanations without an action.
+The Plan Fit outcome summary loads for the selected workspace independently of Today and guidance.
+It shows no rate until three settled, unrevised uses exist, has its own retry, and ignores a late
+response after workspace selection changes. It exposes no usage rows, dates, IDs, or raw workload
+totals and explicitly avoids improvement or causal claims.
 The shell cannot regenerate an existing plan, page, filter, edit fields, reopen, cancel, synchronize work,
 rename/delete workspaces, or administer membership.
 

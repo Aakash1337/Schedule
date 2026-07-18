@@ -65,6 +65,21 @@ export interface HostedDailyPlanFitFeedback {
   readonly idempotencyKey: string;
 }
 
+export interface HostedDailyPlanFitEffectiveness {
+  readonly usesConsidered: number;
+  readonly eligibleResolvedUseCount: number;
+  readonly minimumComparableUses: number;
+  readonly pendingUseCount: number;
+  readonly revisedUseCount: number;
+  readonly notEvaluableUseCount: number;
+  readonly exactSuggestionUseCount: number;
+  readonly editedSuggestionUseCount: number;
+  readonly scheduledMinutesRateBasisPoints: number | null;
+  readonly scheduledTasksRateBasisPoints: number | null;
+  readonly completionMinutesRateBasisPoints: number | null;
+  readonly completionTasksRateBasisPoints: number | null;
+}
+
 export interface HostedGenerateToday {
   readonly timeZone: string;
   readonly window: Readonly<{ startsAt: string; endsAt: string }>;
@@ -161,6 +176,10 @@ export const hostedApi = {
   getDailyPlanFitInsight: (workspaceId: string, forDate: string) =>
     request<HostedDailyPlanFitInsight>(
       `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/daily-plan-fit-insight?forDate=${encodeURIComponent(forDate)}`,
+    ),
+  getDailyPlanFitEffectiveness: (workspaceId: string) =>
+    request<HostedDailyPlanFitEffectiveness>(
+      `/v1/hosted/workspaces/${encodeURIComponent(workspaceId)}/daily-plan-fit-insight/effectiveness`,
     ),
   dismissDailyPlanFitInsight: (
     workspaceId: string,
