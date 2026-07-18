@@ -95,6 +95,31 @@ describe("hosted web API client", () => {
     expect(headers.get("x-schedule-csrf")).toBe(token);
   });
 
+  it("sends only a workspace name through the verified hosted collection", async () => {
+    const token = "d".repeat(43);
+    vi.spyOn(document, "cookie", "get").mockReturnValue(`__Host-schedule_csrf=${token}`);
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ id: "workspace-1", name: "Projects" }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await hostedApi.createWorkspace("Projects");
+    const [, options] = fetchMock.mock.calls[0] ?? [];
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/hosted/workspaces",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "same-origin",
+        body: JSON.stringify({ name: "Projects" }),
+      }),
+    );
+    expect(new Headers(options?.headers).get("x-schedule-csrf")).toBe(token);
+  });
+
   it("sends only optimistic status fields for hosted workflow updates", async () => {
     const token = "b".repeat(43);
     vi.spyOn(document, "cookie", "get").mockReturnValue(`__Host-schedule_csrf=${token}`);
@@ -126,7 +151,7 @@ describe("hosted web API client", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(hostedApi.logout()).rejects.toEqual(
+    await expect(hostedApi.createWorkspace("Projects")).rejects.toEqual(
       expect.objectContaining<Partial<HostedApiError>>({
         status: 403,
         code: "hosted.csrf_missing",

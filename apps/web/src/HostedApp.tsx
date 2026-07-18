@@ -30,10 +30,46 @@ function activityLabel(state: HostedTodayActivityState): string {
   return `${state.charAt(0).toUpperCase()}${state.slice(1)}`;
 }
 
+interface WorkspaceCreateFormProps {
+  readonly name: string;
+  readonly busy: boolean;
+  readonly autoFocus?: boolean;
+  readonly onNameChange: (name: string) => void;
+  readonly onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}
+
+function WorkspaceCreateForm({
+  name,
+  busy,
+  autoFocus = false,
+  onNameChange,
+  onSubmit,
+}: WorkspaceCreateFormProps) {
+  return (
+    <form className="hosted-capture-form" onSubmit={onSubmit}>
+      <Field label="Workspace name">
+        <input
+          autoFocus={autoFocus}
+          value={name}
+          maxLength={160}
+          disabled={busy}
+          required
+          onChange={(event) => onNameChange(event.target.value)}
+        />
+      </Field>
+      <Button type="submit" variant="primary" busy={busy} disabled={name.trim() === ""}>
+        <Plus size={17} aria-hidden="true" />
+        Create workspace
+      </Button>
+    </form>
+  );
+}
+
 export function HostedApp() {
   const [mode, setMode] = useState<"loading" | "signed-out" | "ready" | "unavailable">("loading");
   const [workspaces, setWorkspaces] = useState<readonly HostedWorkspace[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
+  const [workspaceName, setWorkspaceName] = useState("");
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -198,6 +234,29 @@ export function HostedApp() {
     }
   }
 
+  async function createWorkspace(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = workspaceName.trim();
+    if (name.length === 0) return;
+    setBusy(true);
+    setError(null);
+    setConfirmation(null);
+    try {
+      const workspace = await hostedApi.createWorkspace(name);
+      setWorkspaces((current) => [...current, workspace]);
+      setWorkspaceName("");
+      selectWorkspace(workspace.id);
+      setConfirmation(`Created workspace “${workspace.name}”.`);
+    } catch (createError) {
+      if (createError instanceof HostedApiError && createError.status === 401) {
+        setMode("signed-out");
+      }
+      setError(publicError(createError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function updateStatus(item: HostedWorkItem, status: "in_progress" | "done") {
     if (selectedWorkspace === null) return;
     setUpdatingItem({ id: item.id, status });
@@ -318,11 +377,15 @@ export function HostedApp() {
 
         {selectedWorkspace === null ? (
           <section className="hosted-empty" aria-labelledby="hosted-empty-title">
-            <h2 id="hosted-empty-title">No active workspace</h2>
-            <p>Ask a workspace owner to restore access, then reload this page.</p>
-            <Button type="button" onClick={() => void load()}>
-              Reload
-            </Button>
+            <h2 id="hosted-empty-title">Create a workspace</h2>
+            <p>Name a workspace to start capturing work.</p>
+            <WorkspaceCreateForm
+              name={workspaceName}
+              busy={busy}
+              autoFocus
+              onNameChange={setWorkspaceName}
+              onSubmit={(event) => void createWorkspace(event)}
+            />
           </section>
         ) : (
           <section className="hosted-capture" aria-labelledby="hosted-capture-title">
@@ -349,6 +412,16 @@ export function HostedApp() {
               </p>
             )}
 
+            <details className="hosted-workspace-create">
+              <summary>Create another workspace</summary>
+              <WorkspaceCreateForm
+                name={workspaceName}
+                busy={busy}
+                onNameChange={setWorkspaceName}
+                onSubmit={(event) => void createWorkspace(event)}
+              />
+            </details>
+
             <form className="hosted-capture-form" onSubmit={(event) => void capture(event)}>
               <Field label="Work item">
                 <input
@@ -357,7 +430,7 @@ export function HostedApp() {
                   onChange={(event) => setTitle(event.target.value)}
                   maxLength={240}
                   placeholder="Prepare next week’s plan"
-                  disabled={updatingItem !== null}
+                  disabled={busy || updatingItem !== null}
                   required
                 />
               </Field>

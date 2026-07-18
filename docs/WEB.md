@@ -27,18 +27,22 @@ pnpm dev
 
 The same package builds a separate `hosted.html` entry for explicit OIDC mode. It reuses the product
 controls and visual tokens but includes only session bootstrap, active-workspace discovery, sign
-in/out, one fixed first-page backlog snapshot, and one title-only backlog form. The API serves that
+in/out, name-only workspace creation, one fixed first-page backlog snapshot, and one title-only
+backlog form. The API serves that
 build from the same origin, so the
 browser never needs CORS, provider tokens, or a second frontend service. The local application and
 its unauthenticated routes are not bundled into the hosted entry.
 
-The hosted shell shows a workspace selector only when more than one active membership exists. It
-stores only that selection in browser storage, sends the exact script-readable CSRF proof on
+The hosted shell offers name-only creation when no active workspace exists and behind one compact
+disclosure when a workspace is selected. It shows a selector only when more than one active
+membership exists, immediately selects a successful creation, stores only that selection in browser
+storage, and sends the exact script-readable CSRF proof on
 mutations, and treats session, access, throttling, and availability failures as bounded states. It
 shows the browser-local day's existing plan through titles, durations, and activity states, plus the
 first 20 backlog titles. The two reads fail and retry independently; capture refreshes only the
 backlog. Each visible backlog item can be moved only to started or done with its snapshot version.
-The shell cannot generate a plan, page, filter, edit fields, reopen, cancel, or synchronize work.
+The shell cannot generate a plan, page, filter, edit fields, reopen, cancel, synchronize work,
+rename/delete workspaces, or administer membership.
 
 ## Information architecture
 

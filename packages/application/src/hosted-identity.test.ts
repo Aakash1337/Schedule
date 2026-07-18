@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   browserSessionId,
+  createBrowserSession,
   createHostedUser,
+  disableHostedUser,
   revokeBrowserSession,
   userId,
   workspaceId,
@@ -16,6 +18,7 @@ import {
 import {
   DisableHostedUser,
   AuthorizeHostedWorkspace,
+  CreateHostedWorkspaceForPrincipal,
   FindOrProvisionHostedUser,
   HmacBrowserSessionTokenCodec,
   IssueBrowserSession,
@@ -44,10 +47,14 @@ function createHarness() {
   const memberships = new Map<string, WorkspaceMembership>();
   const workspaces = new Map<string, Workspace>();
   const isolationLevels: Array<UnitOfWorkOptions["isolationLevel"]> = [];
+  const transactionEvents: string[] = [];
 
   const context: IdentityTransactionContext = {
     users: {
-      findByIdForUpdate: async (id) => users.get(id) ?? null,
+      findByIdForUpdate: async (id) => {
+        transactionEvents.push(`lock:user:${id}`);
+        return users.get(id) ?? null;
+      },
       insert: async (user) => {
         users.set(user.id, user);
       },
@@ -68,7 +75,10 @@ function createHarness() {
     },
     browserSessions: {
       findById: async (id) => sessions.get(id) ?? null,
-      findByIdForUpdate: async (id) => sessions.get(id) ?? null,
+      findByIdForUpdate: async (id) => {
+        transactionEvents.push(`lock:session:${id}`);
+        return sessions.get(id) ?? null;
+      },
       insert: async (session) => {
         if (
           [...sessions.values()].some(
@@ -99,6 +109,7 @@ function createHarness() {
       findByUserAndWorkspaceForUpdate: async (id, workspace) =>
         memberships.get(`${workspace}:${id}`) ?? null,
       insert: async (membership) => {
+        transactionEvents.push(`insert:membership:${membership.workspaceId}:${membership.userId}`);
         const key = `${membership.workspaceId}:${membership.userId}`;
         if (memberships.has(key)) throw new Error("duplicate membership");
         memberships.set(key, membership);
@@ -111,6 +122,7 @@ function createHarness() {
     },
     workspaces: {
       insert: async (workspace) => {
+        transactionEvents.push(`insert:workspace:${workspace.id}`);
         workspaces.set(workspace.id, workspace);
       },
       listActiveForUser: async (id, limit, offset) =>
@@ -138,11 +150,56 @@ function createHarness() {
     memberships,
     workspaces,
     isolationLevels,
+    transactionEvents,
     setNow: (value: Date) => {
       now = new Date(value);
     },
   };
 }
+
+function createPrincipalFixture() {
+  const harness = createHarness();
+  const user = createHostedUser({ id: userId("workspace-creator"), now: initialNow });
+  const session = createBrowserSession({
+    id: browserSessionId("workspace-creator-session"),
+    userId: user.id,
+    secretDigest: "c".repeat(64),
+    idleTimeoutSeconds: 3_600,
+    absoluteExpiresAt: new Date("2026-07-16T00:00:00.000Z"),
+    now: initialNow,
+  });
+  harness.users.set(user.id, user);
+  harness.sessions.set(session.id, session);
+  return { harness, user, session };
+}
+
+type PrincipalFixture = ReturnType<typeof createPrincipalFixture>;
+
+const invalidWorkspaceCreationPrincipals: ReadonlyArray<
+  readonly [string, (fixture: PrincipalFixture) => void]
+> = [
+  ["a missing user", ({ harness }) => harness.users.clear()],
+  [
+    "a disabled user",
+    ({ harness, user }) => {
+      harness.users.set(user.id, disableHostedUser(user, initialNow));
+    },
+  ],
+  ["a missing session", ({ harness }) => harness.sessions.clear()],
+  [
+    "a mismatched session owner",
+    ({ harness, session }) => {
+      harness.sessions.set(session.id, { ...session, userId: userId("different-owner") });
+    },
+  ],
+  [
+    "a revoked session",
+    ({ harness, session }) => {
+      harness.sessions.set(session.id, revokeBrowserSession(session, "signed_out", initialNow));
+    },
+  ],
+  ["an expired session", ({ harness, session }) => harness.setNow(session.idleExpiresAt)],
+];
 
 describe("hosted identity application foundation", () => {
   it("creates 256-bit session secrets and compares only peppered digests", () => {
@@ -195,6 +252,51 @@ describe("hosted identity application foundation", () => {
     expect(harness.workspaces.has(result.workspace.id)).toBe(true);
     expect(harness.memberships.has(`${result.workspace.id}:${user.id}`)).toBe(true);
   });
+
+  it("creates a workspace only after locking the active user and browser session", async () => {
+    const { harness, user, session } = createPrincipalFixture();
+
+    const result = await new CreateHostedWorkspaceForPrincipal(harness.unitOfWork).execute({
+      userId: user.id,
+      sessionId: session.id,
+      name: " Hosted projects ",
+    });
+
+    expect(result.workspace.name).toBe("Hosted projects");
+    expect(result.membership).toMatchObject({ status: "active", userId: user.id });
+    expect(harness.transactionEvents).toEqual([
+      `lock:user:${user.id}`,
+      `lock:session:${session.id}`,
+      `insert:workspace:${result.workspace.id}`,
+      `insert:membership:${result.workspace.id}:${user.id}`,
+    ]);
+    expect(harness.isolationLevels.at(-1)).toBe("read_committed");
+  });
+
+  it.each(invalidWorkspaceCreationPrincipals)(
+    "rejects %s before inserting a hosted workspace",
+    async (_case, arrange) => {
+      const fixture = createPrincipalFixture();
+      arrange(fixture);
+
+      await expect(
+        new CreateHostedWorkspaceForPrincipal(fixture.harness.unitOfWork).execute({
+          userId: fixture.user.id,
+          sessionId: fixture.session.id,
+          name: "Private workspace",
+        }),
+      ).rejects.toMatchObject({
+        code: "hosted.authentication_failed",
+        message: "Authentication failed.",
+      });
+      expect(fixture.harness.workspaces.size).toBe(0);
+      expect(fixture.harness.memberships.size).toBe(0);
+      expect(fixture.harness.transactionEvents).toEqual([
+        `lock:user:${fixture.user.id}`,
+        `lock:session:${fixture.session.id}`,
+      ]);
+    },
+  );
 
   it("lists only the principal's active hosted workspaces with bounded paging", async () => {
     const harness = createHarness();

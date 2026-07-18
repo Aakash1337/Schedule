@@ -558,7 +558,9 @@ pnpm verify:backup-restore
 migration drills. They prove exact concurrent identity/default-workspace provisioning, bounded exact
 identity keys, digest-only session storage, rotation and revocation boundaries, binary membership
 authorization including post-revocation fencing, hosted workspace provisioning beyond the local
-worker cap, and preservation of workspace/product data when a user is deleted. The verifier uses a
+worker cap, principal-bound workspace creation with post-rotation denial, and preservation of
+workspace/product data when a user is deleted. A forced membership-insert failure also proves the
+new workspace insert rolls back. The verifier uses a
 strict in-process provider and does not prove external-provider or public-ingress operation; see
 [HOSTED_IDENTITY.md](./HOSTED_IDENTITY.md) and
 [HOSTED_AUTHORIZATION.md](./HOSTED_AUTHORIZATION.md).

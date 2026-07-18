@@ -155,7 +155,7 @@ describe("API infrastructure", () => {
         csrfGuard,
         authorizer: { execute: vi.fn(async () => null) },
       },
-      workspaces: { listWorkspaces: vi.fn() },
+      workspaces: { listWorkspaces: vi.fn(), createWorkspace: vi.fn() },
       workItems: {
         createWorkItem: vi.fn(),
         listWorkItems: vi.fn(),
@@ -232,6 +232,13 @@ describe("API infrastructure", () => {
     });
     expect(protectedWorkspaceList.statusCode).toBe(401);
     expect(hostedApi.workspaces.listWorkspaces).not.toHaveBeenCalled();
+    const protectedWorkspaceCreate = await protectedApp.inject({
+      method: "POST",
+      url: "/v1/hosted/workspaces",
+      payload: { name: "Protected workspace" },
+    });
+    expect(protectedWorkspaceCreate.statusCode).toBe(401);
+    expect(hostedApi.workspaces.createWorkspace).not.toHaveBeenCalled();
   });
 
   it("bounds rate-limit client tracking under source churn", async () => {

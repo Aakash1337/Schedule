@@ -3,11 +3,12 @@
 Schedule has a provider-neutral identity, browser-session, and workspace-membership model. The
 surface is closed by default. With complete `HOSTED_API_MODE=oidc` configuration, the production API
 uses it for login, session, logout, first-login workspace bootstrap, and one transaction-authorized
-work-item create route. The local unauthenticated product boundary remains separate.
+work-item create route plus authenticated name-only workspace creation. The local unauthenticated
+product boundary remains separate.
 
-This is a narrow hosted API foundation, not a complete hosted product. It can list the signed-in
-user's active workspaces, but has no hosted web shell, workspace administration, broad product route
-set, synchronization protocol, or cloud deployment manifest yet.
+This is a narrow hosted foundation, not a complete hosted product. It can list and create a signed-in
+user's workspaces through a small same-origin shell, but has no workspace rename/delete or membership
+administration, broad product route set, synchronization protocol, or verified public deployment.
 
 ## Persisted model
 
@@ -51,9 +52,13 @@ active membership in the same transaction. Replay returns the existing binding w
 another workspace. The database's exact unique index remains the durable final constraint; a hash
 collision can only serialize unrelated provisioning attempts.
 
-Additional hosted workspace provisioning writes a workspace and membership atomically. Hosted
-provisioning deliberately does not use the local installation's 20-workspace operational cap, which
-belongs to the single-user materialization worker rather than hosted account authorization.
+Additional hosted workspace provisioning writes a workspace and membership atomically. The public
+command first locks the active user and exact browser session in the global order, rechecks session
+ownership and both expiries at PostgreSQL time, and performs both inserts in that transaction. A
+rotation, logout, expiry, or disablement that wins first leaves no workspace residue. Trusted
+internal provisioning and the public command deliberately do not use the local installation's
+20-workspace operational cap, which belongs to the single-user materialization worker rather than
+hosted account authorization.
 
 ## Session contract
 
@@ -74,8 +79,8 @@ workspaces.
 ## Deliberately absent
 
 The activated slice has no refresh token, password, WebFinger issuer discovery, email-link,
-identity/profile response, workspace administration route, collaboration roles, or account
-management. The workspace list exposes only active memberships. It does not bind a WhatsApp account,
+identity/profile response, workspace rename/delete or membership administration, collaboration
+roles, or account management. The workspace list exposes only active memberships. It does not bind a WhatsApp account,
 replace integration credentials, or enable synchronization. `HOSTED_API_MODE=disabled` keeps every
 hosted route closed; `oidc` is accepted only with complete secret-manager-fed configuration and
 leaves the local product routes disabled. See
@@ -101,8 +106,9 @@ pnpm verify:hosted-oidc-composition-db
 The first command migrates a nonce database and drives the production application and PostgreSQL
 adapters through concurrent exact provisioning with one default workspace, digest-only issuance,
 active membership discovery, rotation replay resistance, disable/resolve/rotation lock races,
-membership isolation, 21 additional hosted workspace provisions, user disablement, and deletion
-preservation.
+membership isolation, principal-bound creation with post-rotation denial, 21 further trusted hosted
+workspace provisions, forced membership-insert rollback without workspace residue, user disablement,
+and deletion preservation.
 The second upgrades a populated pre-`0031` database, validates exact binding uniqueness and cascade
 direction, and proves legacy workspace/work-item data survives. The third independently exercises
 the pre-authentication unit of work through concurrent exactly-once consumption, protected PKCE
@@ -119,4 +125,5 @@ PKCE redemption, all supported client-authentication methods, no retry, strict t
 bounds, access/refresh-token discard, and handoff to the nonce-bound verifier. The composition
 command then parses enabled configuration and drives the production route assembly against a strict
 in-process provider plus PostgreSQL, including first-login workspace bootstrap and an authenticated
-work-item create. None performs an external network request.
+workspace create whose new membership immediately authorizes an authenticated work-item create.
+None performs an external network request.

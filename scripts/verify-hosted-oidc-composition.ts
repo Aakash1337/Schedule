@@ -309,9 +309,56 @@ try {
 
   const csrfToken = cookiePair(csrfCookie).split("=", 2)[1];
   assert.match(csrfToken ?? "", /^[A-Za-z0-9_-]{43}$/u);
+  const createdWorkspace = await app.inject({
+    method: "POST",
+    url: HOSTED_WORKSPACE_LIST_ROUTE,
+    headers: {
+      origin,
+      cookie: `${cookiePair(sessionCookie)}; ${cookiePair(csrfCookie)}`,
+      [HOSTED_CSRF_HEADER_NAME]: csrfToken!,
+    },
+    payload: { name: "Projects" },
+  });
+  assert.equal(createdWorkspace.statusCode, 201, createdWorkspace.body);
+  const createdWorkspaceBody = createdWorkspace.json<{
+    id: string;
+    name: string;
+    createdAt: string;
+    updatedAt: string;
+  }>();
+  assert.deepEqual(Object.keys(createdWorkspaceBody).sort(), [
+    "createdAt",
+    "id",
+    "name",
+    "updatedAt",
+  ]);
+  assert.equal(createdWorkspaceBody.name, "Projects");
+  assert.match(
+    createdWorkspaceBody.id,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+  );
+  assert.equal(createdWorkspaceBody.createdAt, createdWorkspaceBody.updatedAt);
+
+  const refreshedWorkspaceList = await app.inject({
+    method: "GET",
+    url: HOSTED_WORKSPACE_LIST_ROUTE,
+    headers: { cookie: cookiePair(sessionCookie) },
+  });
+  assert.equal(refreshedWorkspaceList.statusCode, 200, refreshedWorkspaceList.body);
+  assert.deepEqual(
+    refreshedWorkspaceList
+      .json<{ items: { id: string; name: string }[] }>()
+      .items.map(({ id, name }) => ({ id, name }))
+      .sort((left, right) => left.name.localeCompare(right.name)),
+    [
+      { id: discoveredWorkspaceId, name: "My Schedule" },
+      { id: createdWorkspaceBody.id, name: "Projects" },
+    ],
+  );
+
   const createdWorkItem = await app.inject({
     method: "POST",
-    url: `/v1/hosted/workspaces/${hostedAccount.workspaceId}/work-items`,
+    url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items`,
     headers: {
       origin,
       cookie: `${cookiePair(sessionCookie)}; ${cookiePair(csrfCookie)}`,
@@ -320,10 +367,10 @@ try {
     payload: { title: "Verified hosted work item" },
   });
   assert.equal(createdWorkItem.statusCode, 201, createdWorkItem.body);
-  assert.equal(createdWorkItem.json().workspaceId, hostedAccount.workspaceId);
+  assert.equal(createdWorkItem.json().workspaceId, createdWorkspaceBody.id);
   const listedWorkItems = await app.inject({
     method: "GET",
-    url: `/v1/hosted/workspaces/${hostedAccount.workspaceId}/work-items`,
+    url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items`,
     headers: { cookie: cookiePair(sessionCookie) },
   });
   assert.equal(listedWorkItems.statusCode, 200, listedWorkItems.body);
@@ -341,7 +388,7 @@ try {
   });
   const listedToday = await app.inject({
     method: "GET",
-    url: `/v1/hosted/workspaces/${hostedAccount.workspaceId}/today?date=2026-07-16`,
+    url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/today?date=2026-07-16`,
     headers: { cookie: cookiePair(sessionCookie) },
   });
   assert.equal(listedToday.statusCode, 200, listedToday.body);
@@ -349,7 +396,7 @@ try {
   assert.deepEqual(listedToday.json(), { date: "2026-07-16", items: [], totalMinutes: 0 });
   const completedWorkItem = await app.inject({
     method: "PATCH",
-    url: `/v1/hosted/workspaces/${hostedAccount.workspaceId}/work-items/${createdWorkItem.json().id}`,
+    url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items/${createdWorkItem.json().id}`,
     headers: {
       origin,
       cookie: `${cookiePair(sessionCookie)}; ${cookiePair(csrfCookie)}`,
@@ -360,7 +407,7 @@ try {
   assert.equal(completedWorkItem.statusCode, 204, completedWorkItem.body);
   const emptyBacklog = await app.inject({
     method: "GET",
-    url: `/v1/hosted/workspaces/${hostedAccount.workspaceId}/work-items`,
+    url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items`,
     headers: { cookie: cookiePair(sessionCookie) },
   });
   assert.deepEqual(emptyBacklog.json(), { items: [], limit: 20, offset: 0 });
@@ -386,13 +433,16 @@ try {
       (select count(*)::integer from browser_sessions as s
         join external_identities as i on i.user_id = s.user_id
         where i.issuer = ${issuer} and i.subject = ${subject} and s.revoked_at is null) as sessions,
-      (select count(*)::integer from workspaces where id = ${hostedAccount.workspaceId}) as workspaces,
+      (select count(*)::integer from workspaces
+        where id in (${hostedAccount.workspaceId}, ${createdWorkspaceBody.id})) as workspaces,
       (select count(*)::integer from workspace_memberships
-        where user_id = ${hostedAccount.userId} and workspace_id = ${hostedAccount.workspaceId}) as memberships,
+        where user_id = ${hostedAccount.userId}
+          and workspace_id in (${hostedAccount.workspaceId}, ${createdWorkspaceBody.id})
+          and status = 'active') as memberships,
       (select count(*)::integer from work_items
-        where workspace_id = ${hostedAccount.workspaceId}) as "workItems",
+        where workspace_id = ${createdWorkspaceBody.id}) as "workItems",
       (select count(*)::integer from work_items
-        where workspace_id = ${hostedAccount.workspaceId} and status = 'done') as "doneWorkItems",
+        where workspace_id = ${createdWorkspaceBody.id} and status = 'done') as "doneWorkItems",
       (select count(*)::integer from hosted_login_transactions
         where issuer = ${issuer} and client_id = ${clientId} and consumed_at is not null) as consumed
   `;
@@ -400,8 +450,8 @@ try {
     users: 1,
     identities: 1,
     sessions: 1,
-    workspaces: 1,
-    memberships: 1,
+    workspaces: 2,
+    memberships: 2,
     workItems: 1,
     doneWorkItems: 1,
     consumed: 1,
@@ -464,7 +514,7 @@ try {
   assert.deepEqual(requestCounts, { discovery: 1, token: 1, jwks: 1 });
 
   console.log(
-    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read and empty Today read and a transaction-authorized status update.",
+    "Hosted OIDC activation verification passed enabled config, hardened same-origin shell, first-login workspace discovery, transaction-authorized work creation, and CSRF-protected logout, plus bounded backlog read and empty Today read and a transaction-authorized status update, plus principal-bound workspace creation.",
   );
 } catch (error) {
   verificationError = error;

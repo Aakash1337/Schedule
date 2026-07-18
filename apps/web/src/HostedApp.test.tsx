@@ -9,6 +9,7 @@ import { HostedApiError } from "./hosted-api";
 const apiMocks = vi.hoisted(() => ({
   session: vi.fn(),
   listWorkspaces: vi.fn(),
+  createWorkspace: vi.fn(),
   listWorkItems: vi.fn(),
   getToday: vi.fn(),
   createWorkItem: vi.fn(),
@@ -32,6 +33,7 @@ beforeEach(() => {
   localStorage.clear();
   apiMocks.listWorkItems.mockResolvedValue({ items: [], limit: 20, offset: 0 });
   apiMocks.getToday.mockResolvedValue({ date: todayKey(), items: [], totalMinutes: 0 });
+  apiMocks.createWorkspace.mockResolvedValue(studio);
   apiMocks.updateWorkItemStatus.mockResolvedValue(undefined);
 });
 
@@ -245,15 +247,48 @@ describe("hosted capture shell", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Your session ended. Sign in again.");
   });
 
-  it("keeps revoked users out of capture until an active workspace exists", async () => {
+  it("creates the first workspace before enabling capture", async () => {
+    const user = userEvent.setup();
+    let finishCreate: (workspace: typeof studio) => void = () => undefined;
+    apiMocks.createWorkspace.mockReturnValue(
+      new Promise((resolve) => {
+        finishCreate = resolve;
+      }),
+    );
     apiMocks.session.mockResolvedValue({ authenticated: true });
     apiMocks.listWorkspaces.mockResolvedValue({ items: [] });
 
     render(<HostedApp />);
 
-    expect(await screen.findByRole("heading", { name: "No active workspace" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Create a workspace" })).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Work item" })).not.toBeInTheDocument();
-    await waitFor(() => expect(apiMocks.createWorkItem).not.toHaveBeenCalled());
-    expect(apiMocks.listWorkItems).not.toHaveBeenCalled();
+    await user.type(screen.getByRole("textbox", { name: "Workspace name" }), "  Studio  ");
+    await user.click(screen.getByRole("button", { name: "Create workspace" }));
+    expect(apiMocks.createWorkspace).toHaveBeenCalledWith("Studio");
+    expect(screen.getByRole("textbox", { name: "Workspace name" })).toBeDisabled();
+
+    finishCreate(studio);
+    expect(await screen.findByRole("textbox", { name: "Work item" })).toBeEnabled();
+    expect(screen.getByText("Created workspace “Studio”.")).toBeInTheDocument();
+    expect(localStorage.getItem("schedule.hostedWorkspace")).toBe(studio.id);
+    await waitFor(() => expect(apiMocks.listWorkItems).toHaveBeenCalledWith(studio.id));
+    await waitFor(() => expect(apiMocks.getToday).toHaveBeenCalledWith(studio.id, todayKey()));
+  });
+
+  it("creates and selects another workspace without exposing broader administration", async () => {
+    const user = userEvent.setup();
+    apiMocks.session.mockResolvedValue({ authenticated: true });
+    apiMocks.listWorkspaces.mockResolvedValue({ items: [personal] });
+
+    render(<HostedApp />);
+
+    await user.click(await screen.findByText("Create another workspace"));
+    await user.type(screen.getByRole("textbox", { name: "Workspace name" }), "Studio");
+    await user.click(screen.getByRole("button", { name: "Create workspace" }));
+
+    expect(apiMocks.createWorkspace).toHaveBeenCalledWith("Studio");
+    expect(await screen.findByRole("combobox", { name: "Workspace" })).toHaveValue(studio.id);
+    expect(screen.getByRole("combobox", { name: "Workspace" })).toHaveTextContent("My Schedule");
+    expect(screen.getByRole("combobox", { name: "Workspace" })).toHaveTextContent("Studio");
   });
 });

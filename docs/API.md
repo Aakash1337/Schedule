@@ -13,13 +13,17 @@ not authorize these product routes.
 - `HOSTED_API_MODE` is a separate fail-closed gate. It defaults to `disabled`; `oidc` requires one
   complete validated registration, `HOSTED_OIDC_PREFLIGHT_MODE=enabled`, the complete bounded secret
   set, and `PRODUCT_API_MODE=disabled`. Enabled startup completes provider discovery before listening,
-  installs the four browser lifecycle routes and the membership-authorized hosted work-item read/create,
+  installs the four browser lifecycle routes, principal-bound workspace list/create, and the
+  membership-authorized hosted work-item read/create,
   applies `HOSTED_RATE_LIMIT_PER_MINUTE`, and reports `hostedEndpointsEnabled: true`. Partial,
   malformed, mixed-case, and unknown non-empty `HOSTED_*` values fail startup without disclosure.
-- Hosted mode is still a narrow API slice, not a complete public product: workspace provisioning,
-  and administration are not public routes. First login creates one default workspace and active
-  membership atomically; `GET /v1/hosted/workspaces?limit=20&offset=0` returns only the authenticated
-  principal's active workspace page. A fixed
+- Hosted mode is still a narrow API slice, not a complete public product. First login creates one
+  default workspace and active membership atomically;
+  `GET /v1/hosted/workspaces?limit=20&offset=0` returns only the authenticated principal's active
+  workspace page. CSRF-protected `POST /v1/hosted/workspaces` accepts only `{ "name": "..." }`,
+  rechecks the active user and exact browser session under row locks, and inserts the workspace plus
+  active membership in that same transaction. Rename, deletion, invitations, membership changes,
+  roles, and workspace detail are absent. A fixed
   `GET /v1/hosted/workspaces/{workspaceId}/work-items` returns only the first 20 backlog
   IDs/titles/versions. Its item versions support a strict
   `PATCH /v1/hosted/workspaces/{workspaceId}/work-items/{workItemId}` body containing only

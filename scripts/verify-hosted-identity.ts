@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   AuthorizeHostedWorkspace,
+  CreateHostedWorkspaceForPrincipal,
   DisableHostedUser,
   FindOrProvisionHostedUser,
   HmacBrowserSessionTokenCodec,
@@ -185,8 +186,90 @@ try {
   assert.equal((await resolveSession.execute(replacement.token))?.userId, primaryUser.id);
   assert.equal(replacement.absoluteExpiresAt.getTime(), issued.absoluteExpiresAt.getTime());
 
+  const workspaceCreationSession = await issueSession.execute({
+    userId: primaryUser.id,
+    idleTimeoutSeconds: 3_600,
+    absoluteTtlSeconds: 86_400,
+  });
+  const workspaceCreationPrincipal = await resolveSession.execute(workspaceCreationSession.token);
+  assert.ok(workspaceCreationPrincipal);
+  const createWorkspaceForPrincipal = new CreateHostedWorkspaceForPrincipal(unitOfWork);
+  const principalWorkspace = await createWorkspaceForPrincipal.execute({
+    userId: workspaceCreationPrincipal.userId,
+    sessionId: workspaceCreationPrincipal.sessionId,
+    name: "Principal-created workspace",
+  });
+  assert.equal(principalWorkspace.membership.status, "active");
+  const rotatedWorkspaceSession = await rotateSession.execute(workspaceCreationSession.token);
+  assert.ok(rotatedWorkspaceSession);
+  const rotatedWorkspacePrincipal = await resolveSession.execute(rotatedWorkspaceSession.token);
+  assert.ok(rotatedWorkspacePrincipal);
+  await assert.rejects(
+    createWorkspaceForPrincipal.execute({
+      userId: workspaceCreationPrincipal.userId,
+      sessionId: workspaceCreationPrincipal.sessionId,
+      name: "Denied after session rotation",
+    }),
+    (error: unknown) =>
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "hosted.authentication_failed",
+  );
+
+  await connection.sql.unsafe(`
+    create function schedule_verify_reject_membership_insert()
+    returns trigger
+    language plpgsql
+    as $function$
+    begin
+      raise exception 'forced verifier membership insert failure';
+      return new;
+    end;
+    $function$
+  `);
+  await connection.sql.unsafe(`
+    create trigger schedule_verify_reject_membership_insert
+    before insert on workspace_memberships
+    for each row execute function schedule_verify_reject_membership_insert()
+  `);
+  await assert.rejects(
+    createWorkspaceForPrincipal.execute({
+      userId: rotatedWorkspacePrincipal.userId,
+      sessionId: rotatedWorkspacePrincipal.sessionId,
+      name: "Forced membership rollback",
+    }),
+    (error: unknown) => {
+      if (typeof error !== "object" || error === null || !("cause" in error)) return false;
+      const cause = error.cause;
+      return (
+        cause instanceof Error && cause.message === "forced verifier membership insert failure"
+      );
+    },
+  );
+  await connection.sql.unsafe(
+    "drop trigger schedule_verify_reject_membership_insert on workspace_memberships",
+  );
+  await connection.sql.unsafe("drop function schedule_verify_reject_membership_insert()");
+
+  const [workspaceCreationResidue] = await connection.sql<
+    { denied: number; memberships: number; rolledBack: number }[]
+  >`
+    select
+      count(*) filter (where name = 'Denied after session rotation')::integer as denied,
+      count(*) filter (where name = 'Forced membership rollback')::integer as "rolledBack",
+      (
+        select count(*)::integer
+        from workspace_memberships as membership
+        join workspaces as workspace on workspace.id = membership.workspace_id
+        where workspace.name in ('Denied after session rotation', 'Forced membership rollback')
+      ) as memberships
+    from workspaces
+  `;
+  assert.deepEqual(workspaceCreationResidue, { denied: 0, memberships: 0, rolledBack: 0 });
+
   const provisionWorkspace = new ProvisionHostedWorkspace(unitOfWork);
-  const hostedWorkspaces = [];
+  const hostedWorkspaces = [principalWorkspace];
   for (let index = 1; index <= 21; index += 1) {
     hostedWorkspaces.push(
       await provisionWorkspace.execute({
@@ -195,7 +278,7 @@ try {
       }),
     );
   }
-  assert.equal(hostedWorkspaces.length, 21);
+  assert.equal(hostedWorkspaces.length, 22);
   const listHostedWorkspaces = new ListHostedWorkspaces(unitOfWork);
   const firstWorkspacePage = await listHostedWorkspaces.execute({
     userId: primaryUser.id,
@@ -207,10 +290,10 @@ try {
     offset: 20,
   });
   assert.equal(firstWorkspacePage.items.length, 20);
-  assert.equal(secondWorkspacePage.items.length, 2);
+  assert.equal(secondWorkspacePage.items.length, 3);
   assert.equal(
     new Set([...firstWorkspacePage.items, ...secondWorkspacePage.items].map(({ id }) => id)).size,
-    22,
+    23,
   );
   const firstWorkspace = hostedWorkspaces[0];
   assert.ok(firstWorkspace);
@@ -314,12 +397,12 @@ try {
     identities: 0,
     sessions: 0,
     memberships: 0,
-    workspaces: 21,
+    workspaces: 22,
     workItems: 1,
   });
 
   console.log(
-    `Hosted identity verification passed exact concurrent provisioning with one default workspace, active membership discovery, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation in ${verificationDatabase}`,
+    `Hosted identity verification passed exact concurrent provisioning with one default workspace, active membership discovery, bounded identity keys, digest-only sessions, rotation replay resistance, user-before-session lock ordering, binary membership authorization and post-revocation fencing, hosted workspace provisioning beyond the local cap, disable revocation, and user-deletion preservation, plus principal-bound workspace creation, post-rotation fencing, and forced membership-failure rollback in ${verificationDatabase}`,
   );
 } finally {
   await connection?.close().catch(() => undefined);

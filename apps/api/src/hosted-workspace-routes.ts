@@ -1,5 +1,5 @@
 import type { WorkspacePage } from "@schedule/application";
-import type { UserId } from "@schedule/domain";
+import type { BrowserSessionId, UserId, Workspace } from "@schedule/domain";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
@@ -16,12 +16,21 @@ const workspaceListQuery = z.strictObject({
   offset: z.coerce.number().int().min(0).max(1_000).default(0),
 });
 
+const workspaceCreateBody = z.strictObject({
+  name: z.string().trim().min(1).max(160),
+});
+
 export interface HostedWorkspaceServices {
   listWorkspaces(input: {
     readonly userId: UserId;
     readonly limit: number;
     readonly offset: number;
   }): Promise<WorkspacePage>;
+  createWorkspace(input: {
+    readonly userId: UserId;
+    readonly sessionId: BrowserSessionId;
+    readonly name: string;
+  }): Promise<Workspace>;
 }
 
 export async function registerHostedWorkspaceRoutes(
@@ -37,6 +46,12 @@ export async function registerHostedWorkspaceRoutes(
         limit: query.limit,
         offset: query.offset,
       });
+    });
+    hosted.post(HOSTED_WORKSPACE_LIST_ROUTE, async (request, reply) => {
+      const body = parseRequest(workspaceCreateBody, request.body);
+      const principal = access.principal(request);
+      const workspace = await services.createWorkspace({ ...principal, name: body.name });
+      return reply.code(201).send(workspace);
     });
   });
 }
