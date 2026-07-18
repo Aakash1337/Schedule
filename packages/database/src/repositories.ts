@@ -54,7 +54,6 @@ import type {
   NaturalLanguageProposalRepository,
   NaturalLanguageProposalTransactionContext,
   NaturalLanguageProposalUnitOfWork,
-  NaturalLanguageWorkItemCommand,
   NotificationRepository,
   NotificationDeliveryRepository,
   NotificationDeliveryHistoryItem,
@@ -81,7 +80,11 @@ import type {
   WorkItemRepository,
   WorkspaceRepository,
 } from "@schedule/application";
-import { maximumDailyPlanFitUsageOutcomes } from "@schedule/application";
+import {
+  maximumDailyPlanFitUsageOutcomes,
+  naturalLanguageProposalCommandDisplay,
+  normalizeNaturalLanguageProposalCommand,
+} from "@schedule/application";
 import {
   DomainError,
   activityEventId,
@@ -424,25 +427,20 @@ function mapIntegrationRequest(row: IntegrationRequestRow): IntegrationRequestRe
 function mapNaturalLanguageProposal(
   row: NaturalLanguageProposalRow,
 ): NaturalLanguageProposalRecord {
-  const command = row.command as Readonly<Record<string, unknown>>;
-  if (
-    command === null ||
-    typeof command !== "object" ||
-    Array.isArray(command) ||
-    Object.keys(command).sort().join("\0") !== "title\0type" ||
-    command.type !== "work_item.create" ||
-    typeof command.title !== "string"
-  ) {
+  let typedCommand;
+  try {
+    typedCommand = normalizeNaturalLanguageProposalCommand(
+      row.command,
+      workspaceId(row.workspaceId),
+      new Date(row.createdAt),
+    );
+  } catch {
     throw new DomainError(
       "natural_language.confirmation_corrupt",
       "The stored natural-language proposal command is invalid.",
     );
   }
-  const typedCommand: NaturalLanguageWorkItemCommand = {
-    type: "work_item.create",
-    title: command.title,
-  };
-  const canonicalCommand = `{"title":${JSON.stringify(typedCommand.title)},"type":"work_item.create"}`;
+  const canonicalCommand = naturalLanguageProposalCommandDisplay(typedCommand);
   const commandHash = createHash("sha256").update(canonicalCommand, "utf8").digest("hex");
   if (canonicalCommand !== row.commandDisplay || commandHash !== row.commandHash) {
     throw new DomainError(
@@ -515,6 +513,7 @@ function mapNaturalLanguageProposal(
     expiresAt: new Date(row.expiresAt),
     confirmationKeyHash: row.confirmationKeyHash,
     resultWorkItemId: row.resultWorkItemId,
+    resultScheduleBlockId: row.resultScheduleBlockId,
     confirmedAt: row.confirmedAt === null ? null : new Date(row.confirmedAt),
     cancelledAt: row.cancelledAt === null ? null : new Date(row.cancelledAt),
     version: row.version,
@@ -4888,6 +4887,7 @@ export class PostgresNaturalLanguageProposalRepository implements NaturalLanguag
         expiresAt: record.expiresAt,
         confirmationKeyHash: record.confirmationKeyHash,
         resultWorkItemId: record.resultWorkItemId,
+        resultScheduleBlockId: record.resultScheduleBlockId,
         confirmedAt: record.confirmedAt,
         cancelledAt: record.cancelledAt,
         version: record.version,
@@ -4934,6 +4934,7 @@ export class PostgresNaturalLanguageProposalRepository implements NaturalLanguag
         expiresAt: record.expiresAt,
         confirmationKeyHash: record.confirmationKeyHash,
         resultWorkItemId: record.resultWorkItemId,
+        resultScheduleBlockId: record.resultScheduleBlockId,
         confirmedAt: record.confirmedAt,
         cancelledAt: record.cancelledAt,
         version: record.version,
@@ -5078,6 +5079,7 @@ function createNaturalLanguageProposalTransactionContext(
   return {
     workspaces: new PostgresWorkspaceRepository(database),
     workItems: new PostgresWorkItemRepository(database),
+    scheduleBlocks: new PostgresScheduleBlockRepository(database),
     auditEvents: new PostgresAuditEventRepository(database),
     proposals: new PostgresNaturalLanguageProposalRepository(database),
   };

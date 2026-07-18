@@ -3035,9 +3035,10 @@ describe("local product API", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          version: "schedule.natural-language/v2",
+          version: "schedule.natural-language/v3",
           requestId: adviceRequestUuid,
           prompt: "Add prepare quarterly report to my list",
+          timeZone: "UTC",
         }),
         signal: controller.signal,
       },
@@ -3223,7 +3224,7 @@ describe("local product API", () => {
           generatedCommand = command;
           generatedSignal = signal;
           return {
-            version: "schedule.natural-language/v2",
+            version: "schedule.natural-language/v3",
             requestId: command.requestId,
             status: "proposal",
             reason: null,
@@ -3243,8 +3244,8 @@ describe("local product API", () => {
           editedCommand = command;
           return {
             ...preparedProposal,
-            command: { ...preparedProposal.command, title: command.title },
-            userSelection: command.userSelection,
+            command: command.command,
+            userSelection: command.userSelection ?? preparedProposal.userSelection,
             version: 2,
           };
         },
@@ -3258,7 +3259,9 @@ describe("local product API", () => {
             proposalId: proposalUuid,
             commandHash: preparedProposal.commandHash,
             replayed: false,
+            resultType: "work_item",
             workItem: createdWorkItem,
+            scheduleBlock: null,
           };
         },
       }).services,
@@ -3269,10 +3272,11 @@ describe("local product API", () => {
       method: "POST",
       url: baseUrl,
       payload: {
-        version: "schedule.natural-language/v2",
+        version: "schedule.natural-language/v3",
         requestId: adviceRequestUuid,
         prompt: "Add prepare quarterly report to my list",
         referenceDate: "2026-07-15",
+        timeZone: "UTC",
       },
     });
     expect(generated.statusCode).toBe(200);
@@ -3283,6 +3287,7 @@ describe("local product API", () => {
       requestId: adviceRequestUuid,
       prompt: "Add prepare quarterly report to my list",
       referenceDate: "2026-07-15",
+      timeZone: "UTC",
     });
     expect(generatedSignal).toBeInstanceOf(AbortSignal);
 
@@ -3291,10 +3296,11 @@ describe("local product API", () => {
         method: "POST",
         url: baseUrl,
         payload: {
-          version: "schedule.natural-language/v2",
+          version: "schedule.natural-language/v3",
           requestId: adviceRequestUuid,
           prompt: "Add prepare quarterly report to my list",
           referenceDate: invalidReferenceDate,
+          timeZone: "UTC",
         },
       });
       expect(invalidReference.statusCode).toBe(400);
@@ -3304,9 +3310,10 @@ describe("local product API", () => {
       method: "POST",
       url: baseUrl,
       payload: {
-        version: "schedule.natural-language/v2",
+        version: "schedule.natural-language/v3",
         requestId: adviceRequestUuid,
         prompt: "Add prepare quarterly report to my list",
+        timeZone: "UTC",
       },
     });
     expect(generatedWithoutReferenceDate.statusCode).toBe(200);
@@ -3317,7 +3324,7 @@ describe("local product API", () => {
       url: `${baseUrl}/${proposalUuid}`,
       payload: {
         expectedVersion: 1,
-        title: "Prepare final quarterly report",
+        command: { type: "work_item.create", title: "Prepare final quarterly report" },
         userSelection: {
           priority: "high",
           dueOn: "2026-07-20",
@@ -3330,12 +3337,70 @@ describe("local product API", () => {
     expect(editedCommand).toMatchObject({
       proposalId: proposalUuid,
       expectedVersion: 1,
+      command: { type: "work_item.create", title: "Prepare final quarterly report" },
       userSelection: {
         priority: "high",
         dueOn: "2026-07-20",
         planningDurationMinutes: 60,
       },
     });
+
+    const editedBlock = await app.inject({
+      method: "PATCH",
+      url: `${baseUrl}/${proposalUuid}`,
+      payload: {
+        expectedVersion: 1,
+        command: {
+          type: "schedule_block.create",
+          title: "Quarterly report",
+          startsAt: "2026-07-16T14:00:00.000Z",
+          endsAt: "2026-07-16T15:00:00.000Z",
+          timeZone: "UTC",
+        },
+      },
+    });
+    expect(editedBlock.statusCode).toBe(200);
+    expect(editedCommand).toMatchObject({
+      command: {
+        type: "schedule_block.create",
+        startsAt: "2026-07-16T14:00:00.000Z",
+        endsAt: "2026-07-16T15:00:00.000Z",
+        timeZone: "UTC",
+      },
+    });
+
+    const noncanonicalBlockEdit = await app.inject({
+      method: "PATCH",
+      url: `${baseUrl}/${proposalUuid}`,
+      payload: {
+        expectedVersion: 1,
+        command: {
+          type: "schedule_block.create",
+          title: "Quarterly report",
+          startsAt: "2026-07-16T10:00:00-04:00",
+          endsAt: "2026-07-16T15:00:00.000Z",
+          timeZone: "UTC",
+        },
+      },
+    });
+    expect(noncanonicalBlockEdit.statusCode).toBe(400);
+
+    const linkedBlockEdit = await app.inject({
+      method: "PATCH",
+      url: `${baseUrl}/${proposalUuid}`,
+      payload: {
+        expectedVersion: 1,
+        command: {
+          type: "schedule_block.create",
+          title: "Quarterly report",
+          startsAt: "2026-07-16T14:00:00.000Z",
+          endsAt: "2026-07-16T15:00:00.000Z",
+          timeZone: "UTC",
+          workItemId: workItemUuid,
+        },
+      },
+    });
+    expect(linkedBlockEdit.statusCode).toBe(400);
 
     for (const invalidUserSelection of [
       undefined,
@@ -3349,7 +3414,7 @@ describe("local product API", () => {
         url: `${baseUrl}/${proposalUuid}`,
         payload: {
           expectedVersion: 1,
-          title: "Prepare final quarterly report",
+          command: { type: "work_item.create", title: "Prepare final quarterly report" },
           ...(invalidUserSelection === undefined ? {} : { userSelection: invalidUserSelection }),
         },
       });
@@ -3397,9 +3462,10 @@ describe("local product API", () => {
       method: "POST",
       url: baseUrl,
       payload: {
-        version: "schedule.natural-language/v2",
+        version: "schedule.natural-language/v3",
         requestId: adviceRequestUuid,
         prompt: "Add a task",
+        timeZone: "UTC",
         model: "remote-model",
       },
     });
@@ -3419,7 +3485,7 @@ describe("local product API", () => {
       url: `/v1/workspaces/${workspaceUuid}/natural-language/proposals/${proposalUuid}`,
       payload: {
         expectedVersion: 1,
-        title: "Still valid",
+        command: { type: "work_item.create", title: "Still valid" },
         userSelection: {
           priority: "none",
           dueOn: null,

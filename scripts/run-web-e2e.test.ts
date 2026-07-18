@@ -73,27 +73,51 @@ describe("browser E2E runner", () => {
     const [port] = await reservePorts(1);
     expect(port).toBeDefined();
     const server = await startFakeOllamaServer(port!);
+    const validContext = {
+      version: "schedule.natural-language-context/v3",
+      requestId: "22222222-2222-4222-8222-222222222222",
+      prompt: "Create work",
+      referenceDate: "2026-07-15",
+      timeZone: "UTC",
+    };
+    const proposalBody = (context: Record<string, unknown>) => ({
+      model: "gemma4:e4b",
+      messages: [
+        { role: "system", content: "proposal" },
+        {
+          role: "user",
+          content: `BEGIN_UNTRUSTED_WORK_CONTEXT_JSON\n${JSON.stringify(context)}\nEND_UNTRUSTED_WORK_CONTEXT_JSON`,
+        },
+      ],
+      stream: false,
+      think: false,
+      format: { properties: { command: { oneOf: [] } } },
+      options: { temperature: 0 },
+    });
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "gemma4:e4b",
-          messages: [
-            { role: "system", content: "proposal" },
-            { role: "user", content: "untrusted" },
-          ],
-          stream: false,
-          think: false,
-          format: { properties: { command: { oneOf: [] } } },
-          options: { temperature: 0 },
-        }),
+        body: JSON.stringify(proposalBody(validContext)),
       });
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
         done: true,
         message: { role: "assistant" },
       });
+      expect(server.requestCount()).toBe(1);
+
+      const missingFieldContext = Object.fromEntries(
+        Object.entries(validContext).filter(([key]) => key !== "timeZone"),
+      );
+      for (const invalidContext of [missingFieldContext, { ...validContext, unknown: true }]) {
+        const invalidContextResponse = await fetch(`http://127.0.0.1:${port}/api/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(proposalBody(invalidContext)),
+        });
+        expect(invalidContextResponse.status).toBe(400);
+      }
       expect(server.requestCount()).toBe(1);
 
       const rejected = await fetch(`http://127.0.0.1:${port}/api/chat`, {

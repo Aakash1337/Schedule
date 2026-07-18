@@ -276,10 +276,11 @@ export const api = {
   generateNaturalLanguageProposal: async (
     workspaceId: string,
     input: {
-      readonly version: "schedule.natural-language/v2";
+      readonly version: "schedule.natural-language/v3";
       readonly requestId: string;
       readonly prompt: string;
       readonly referenceDate: string;
+      readonly timeZone: string;
     },
     signal?: AbortSignal,
   ) => {
@@ -291,7 +292,7 @@ export const api = {
         ...(signal === undefined ? {} : { signal }),
       },
     );
-    if (result.version !== "schedule.natural-language/v2" || result.requestId !== input.requestId) {
+    if (result.version !== "schedule.natural-language/v3" || result.requestId !== input.requestId) {
       throw new ApiError(
         502,
         "natural_language.response_mismatch",
@@ -305,15 +306,29 @@ export const api = {
   updateNaturalLanguageProposal: (
     workspaceId: string,
     proposalId: string,
-    input: {
-      readonly expectedVersion: number;
-      readonly title: string;
-      readonly userSelection: {
-        readonly priority: WorkItemPriority;
-        readonly dueOn: string | null;
-        readonly planningDurationMinutes: number | null;
-      };
-    },
+    input:
+      | {
+          readonly expectedVersion: number;
+          readonly command: {
+            readonly type: "work_item.create";
+            readonly title: string;
+          };
+          readonly userSelection: {
+            readonly priority: WorkItemPriority;
+            readonly dueOn: string | null;
+            readonly planningDurationMinutes: number | null;
+          };
+        }
+      | {
+          readonly expectedVersion: number;
+          readonly command: {
+            readonly type: "schedule_block.create";
+            readonly title: string;
+            readonly startsAt: string;
+            readonly endsAt: string;
+            readonly timeZone: string;
+          };
+        },
     signal?: AbortSignal,
   ) =>
     request<NaturalLanguageProposal>(

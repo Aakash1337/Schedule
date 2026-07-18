@@ -78,6 +78,7 @@ async function prepareProposal(targetWorkspaceId: ReturnType<typeof workspaceId>
     requestId,
     prompt,
     referenceDate: localDate("2026-07-15"),
+    timeZone: "UTC",
   });
   assert.equal(result.status, "proposal");
   assert.equal(result.summary?.includes(requestId), true);
@@ -149,6 +150,7 @@ try {
   assert.equal(columnNames.has("review_hash"), true);
   assert.equal(columnNames.has("model_suggestions"), true);
   assert.equal(columnNames.has("model_suggestions_hash"), true);
+  assert.equal(columnNames.has("result_schedule_block_id"), true);
 
   const [persisted] = await observerConnection.sql<
     {
@@ -196,7 +198,7 @@ try {
     workspaceId: privateWorkspaceId,
     proposalId: prepared.proposal.id,
     expectedVersion: prepared.proposal.version,
-    title: "Prepare the reviewed launch checklist",
+    command: { type: "work_item.create", title: "Prepare the reviewed launch checklist" },
     userSelection: {
       priority: "urgent",
       dueOn: localDate("2026-07-20"),
@@ -253,6 +255,14 @@ try {
     firstConfirm.execute(sameKeyCommand),
     secondConfirm.execute(sameKeyCommand),
   ]);
+  assert.equal(sameKeyResults[0]?.resultType, "work_item");
+  assert.equal(sameKeyResults[1]?.resultType, "work_item");
+  if (
+    sameKeyResults[0]?.resultType !== "work_item" ||
+    sameKeyResults[1]?.resultType !== "work_item"
+  ) {
+    throw new Error("Expected work-item confirmation results.");
+  }
   assert.deepEqual(sameKeyResults.map((result) => result.replayed).sort(), [false, true]);
   assert.equal(sameKeyResults[0]?.workItem.id, prepared.proposal.id);
   assert.equal(sameKeyResults[1]?.workItem.id, prepared.proposal.id);
@@ -326,6 +336,99 @@ try {
   `;
   assert.deepEqual(conflictingCounts, { work_items: "1", confirmation_events: "1" });
 
+  const scheduleWorkspaceId = await createVerificationWorkspace(
+    "Natural-language calendar-block verifier",
+  );
+  const scheduleGenerate = new GenerateNaturalLanguageProposal(
+    firstUnitOfWork,
+    {
+      provider: "ollama",
+      model: "gemma4:e4b",
+      async propose() {
+        return {
+          status: "available" as const,
+          output: {
+            version: NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION,
+            summary: "Prepared one reviewable calendar block.",
+            warnings: [],
+            command: {
+              type: "schedule_block.create" as const,
+              title: "Quarterly report",
+              startsAt: "2026-07-16T14:00:00.000Z",
+              endsAt: "2026-07-16T15:00:00.000Z",
+              timeZone: "UTC",
+            },
+            modelSuggestions: null,
+          },
+        };
+      },
+    },
+    clock,
+    promptHasher,
+    10 * 60_000,
+  );
+  const schedulePrepared = await scheduleGenerate.execute({
+    version: NATURAL_LANGUAGE_PROPOSAL_VERSION,
+    workspaceId: scheduleWorkspaceId,
+    requestId: randomUUID(),
+    prompt: "Block tomorrow from 2 to 3 PM for the quarterly report.",
+    referenceDate: localDate("2026-07-15"),
+    timeZone: "UTC",
+  });
+  assert.equal(schedulePrepared.status, "proposal");
+  assert.notEqual(schedulePrepared.proposal, null);
+  const scheduleCommand = {
+    workspaceId: scheduleWorkspaceId,
+    proposalId: schedulePrepared.proposal!.id,
+    expectedVersion: schedulePrepared.proposal!.version,
+    idempotencyKey: "natural-language-calendar-same-key-live-verification",
+  };
+  const scheduleResults = await Promise.all([
+    firstConfirm.execute(scheduleCommand),
+    secondConfirm.execute(scheduleCommand),
+  ]);
+  assert.deepEqual(scheduleResults.map((result) => result.replayed).sort(), [false, true]);
+  for (const result of scheduleResults) {
+    assert.equal(result.resultType, "schedule_block");
+    if (result.resultType !== "schedule_block") throw new Error("Expected a calendar block.");
+    assert.equal(result.scheduleBlock.id, schedulePrepared.proposal!.id);
+    assert.equal(result.scheduleBlock.workItemId, null);
+    assert.equal(result.scheduleBlock.startsAt.toISOString(), "2026-07-16T14:00:00.000Z");
+  }
+  const [scheduleCounts] = await observerConnection.sql<
+    {
+      schedule_blocks: string;
+      work_items: string;
+      result_schedule_block_id: string | null;
+      result_work_item_id: string | null;
+    }[]
+  >`
+    select
+      (select count(*)::text from schedule_blocks
+       where workspace_id = ${scheduleWorkspaceId}
+         and id = ${schedulePrepared.proposal!.id}) as schedule_blocks,
+      (select count(*)::text from work_items
+       where workspace_id = ${scheduleWorkspaceId}) as work_items,
+      result_schedule_block_id,
+      result_work_item_id
+    from natural_language_proposals
+    where workspace_id = ${scheduleWorkspaceId} and id = ${schedulePrepared.proposal!.id}
+  `;
+  assert.deepEqual(scheduleCounts, {
+    schedule_blocks: "1",
+    work_items: "0",
+    result_schedule_block_id: schedulePrepared.proposal!.id,
+    result_work_item_id: null,
+  });
+  await assert.rejects(
+    observerConnection.sql`
+      update natural_language_proposals
+      set command = ${JSON.stringify({ title: "Missing command type" })}::jsonb
+      where workspace_id = ${scheduleWorkspaceId} and id = ${schedulePrepared.proposal!.id}
+    `,
+    /natural_language_proposals_lifecycle_valid/,
+  );
+
   const isolatedWorkspaceId = await createVerificationWorkspace(
     "Natural-language tenant isolation verifier",
   );
@@ -340,7 +443,7 @@ try {
   );
 
   console.log(
-    "Natural-language proposal verification passed advisory suggestion isolation, private review persistence, exact reviewed creation, tenant isolation, and concurrent exactly-once confirmation",
+    "Natural-language proposal verification passed advisory suggestion isolation, private review persistence, exact work-item and calendar-block creation, tenant isolation, and concurrent exactly-once confirmation",
   );
 } finally {
   await removeVerificationWorkspaces().catch(() => undefined);

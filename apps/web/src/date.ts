@@ -35,6 +35,22 @@ export function localDateTimeToIso(date: string, time: string): string {
   ) {
     throw new RangeError("This local date and time does not exist in the browser time zone.");
   }
+  const sameLocalMinute = (candidate: Date): boolean =>
+    candidate.getFullYear() === year &&
+    candidate.getMonth() === (month ?? 1) - 1 &&
+    candidate.getDate() === day &&
+    candidate.getHours() === hour &&
+    candidate.getMinutes() === minute;
+  const offset = local.getTimezoneOffset();
+  for (const nearby of [
+    new Date(local.getTime() - 2 * 86_400_000),
+    new Date(local.getTime() + 2 * 86_400_000),
+  ]) {
+    const alternative = new Date(local.getTime() + (nearby.getTimezoneOffset() - offset) * 60_000);
+    if (alternative.getTime() !== local.getTime() && sameLocalMinute(alternative)) {
+      throw new RangeError("This local date and time is ambiguous in the browser time zone.");
+    }
+  }
   return local.toISOString();
 }
 

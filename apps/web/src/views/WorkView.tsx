@@ -3,11 +3,18 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 
 import { api, ApiError } from "../api";
 import { Button, EmptyState, ErrorNotice, Field, PageHeader, PageSkeleton } from "../components/ui";
-import { todayKey } from "../date";
+import {
+  browserTimeZone,
+  isoToLocalDate,
+  isoToLocalTime,
+  localDateTimeToIso,
+  todayKey,
+} from "../date";
 import type {
   WorkItem,
   WorkItemDependency,
   NaturalLanguageProposal,
+  NaturalLanguageProposalCommand,
   WorkItemPriority,
   WorkItemStatus,
   WorkspaceViewProps,
@@ -109,9 +116,9 @@ function proposalUnavailableMessage(reason: string | null): string {
   if (reason === "timeout")
     return "The local model took too long. Your text is still here to retry.";
   if (reason === "no_proposal") {
-    return "Describe one concrete work item. No work item was created.";
+    return "Describe one concrete work item or calendar block. Nothing was created.";
   }
-  return "The local model could not prepare a safe proposal. No work item was created.";
+  return "The local model could not prepare a safe proposal. Nothing was created.";
 }
 
 function priorityLabel(priority: WorkItemPriority): string {
@@ -182,6 +189,10 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
   const [proposalDueOn, setProposalDueOn] = useState("");
   const [proposalIncludeInDailyPlan, setProposalIncludeInDailyPlan] = useState(false);
   const [proposalPlanningDurationMinutes, setProposalPlanningDurationMinutes] = useState("30");
+  const [proposalBlockDate, setProposalBlockDate] = useState("");
+  const [proposalBlockStartsAt, setProposalBlockStartsAt] = useState("");
+  const [proposalBlockEndsOn, setProposalBlockEndsOn] = useState("");
+  const [proposalBlockEndsAt, setProposalBlockEndsAt] = useState("");
   const [proposalSummary, setProposalSummary] = useState<string | null>(null);
   const [proposalWarnings, setProposalWarnings] = useState<readonly string[]>([]);
   const [proposalBusy, setProposalBusy] = useState<
@@ -304,6 +315,10 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     setProposalDueOn("");
     setProposalIncludeInDailyPlan(false);
     setProposalPlanningDurationMinutes("30");
+    setProposalBlockDate("");
+    setProposalBlockStartsAt("");
+    setProposalBlockEndsOn("");
+    setProposalBlockEndsAt("");
     setProposalSummary(null);
     setProposalWarnings([]);
     setProposalBusy(null);
@@ -878,6 +893,10 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     setProposalDueOn("");
     setProposalIncludeInDailyPlan(false);
     setProposalPlanningDurationMinutes("30");
+    setProposalBlockDate("");
+    setProposalBlockStartsAt("");
+    setProposalBlockEndsOn("");
+    setProposalBlockEndsAt("");
     setProposalSummary(null);
     setProposalWarnings([]);
     setProposalError(null);
@@ -887,10 +906,11 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       const result = await api.generateNaturalLanguageProposal(
         request.workspaceId,
         {
-          version: "schedule.natural-language/v2",
+          version: "schedule.natural-language/v3",
           requestId,
           prompt,
           referenceDate: todayKey(),
+          timeZone: browserTimeZone(),
         },
         request.controller.signal,
       );
@@ -899,17 +919,26 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         setProposalSummary(result.summary);
         setProposalWarnings(result.warnings);
         setProposalError(result.summary ?? proposalUnavailableMessage(result.reason));
-        setProposalAnnouncement("No work item was created.");
+        setProposalAnnouncement("Nothing was created.");
         return;
       }
       setProposal(result.proposal);
       setProposalTitle(result.proposal.command.title);
-      setProposalPriority(result.proposal.userSelection.priority);
-      setProposalDueOn(result.proposal.userSelection.dueOn ?? "");
-      setProposalIncludeInDailyPlan(result.proposal.userSelection.planningDurationMinutes !== null);
-      setProposalPlanningDurationMinutes(
-        String(result.proposal.userSelection.planningDurationMinutes ?? 30),
-      );
+      if (result.proposal.command.type === "work_item.create") {
+        setProposalPriority(result.proposal.userSelection.priority);
+        setProposalDueOn(result.proposal.userSelection.dueOn ?? "");
+        setProposalIncludeInDailyPlan(
+          result.proposal.userSelection.planningDurationMinutes !== null,
+        );
+        setProposalPlanningDurationMinutes(
+          String(result.proposal.userSelection.planningDurationMinutes ?? 30),
+        );
+      } else {
+        setProposalBlockDate(isoToLocalDate(result.proposal.command.startsAt));
+        setProposalBlockStartsAt(isoToLocalTime(result.proposal.command.startsAt));
+        setProposalBlockEndsOn(isoToLocalDate(result.proposal.command.endsAt));
+        setProposalBlockEndsAt(isoToLocalTime(result.proposal.command.endsAt));
+      }
       setProposalSummary(result.summary);
       setProposalWarnings(result.warnings);
       setProposalAnnouncement("Proposal ready for review. Nothing has been created yet.");
@@ -920,7 +949,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         proposalOperationIsCurrent(request.operation, request.workspaceId)
       ) {
         setProposalError(messageFor(error));
-        setProposalAnnouncement("No work item was created.");
+        setProposalAnnouncement("Nothing was created.");
       }
     } finally {
       if (proposalOperationIsCurrent(request.operation, request.workspaceId)) {
@@ -949,10 +978,14 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       setProposalDueOn("");
       setProposalIncludeInDailyPlan(false);
       setProposalPlanningDurationMinutes("30");
+      setProposalBlockDate("");
+      setProposalBlockStartsAt("");
+      setProposalBlockEndsOn("");
+      setProposalBlockEndsAt("");
       setProposalSummary(null);
       setProposalWarnings([]);
       confirmationKeyRef.current = null;
-      setProposalAnnouncement("Proposal cancelled. No work item was created.");
+      setProposalAnnouncement("Proposal cancelled. Nothing was created.");
       window.setTimeout(() => proposalPromptRef.current?.focus());
     } catch (error) {
       if (
@@ -979,11 +1012,42 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     event.preventDefault();
     if (proposal === null || proposalBusy !== null) return;
     const normalizedTitle = proposalTitle.trim();
-    const durationIsValid = isPlanningDurationValid(
-      proposalPlanningDurationMinutes,
-      proposalIncludeInDailyPlan,
-    );
-    if (normalizedTitle.length === 0 || !durationIsValid) return;
+    if (normalizedTitle.length === 0) return;
+    let reviewedCommand: NaturalLanguageProposalCommand;
+    if (proposal.command.type === "schedule_block.create") {
+      if (browserTimeZone() !== proposal.command.timeZone) {
+        setProposalError(
+          "Your device time zone changed. Prepare the proposal again before confirming.",
+        );
+        return;
+      }
+      try {
+        const startsAt = localDateTimeToIso(proposalBlockDate, proposalBlockStartsAt);
+        const endsAt = localDateTimeToIso(proposalBlockEndsOn, proposalBlockEndsAt);
+        const duration = new Date(endsAt).getTime() - new Date(startsAt).getTime();
+        if (duration <= 0 || duration > 24 * 60 * 60_000) {
+          setProposalError(
+            "The calendar block must end after it starts and cannot exceed 24 hours.",
+          );
+          return;
+        }
+        reviewedCommand = {
+          type: "schedule_block.create",
+          title: normalizedTitle,
+          startsAt,
+          endsAt,
+          timeZone: proposal.command.timeZone,
+        };
+      } catch (error) {
+        setProposalError(messageFor(error));
+        return;
+      }
+    } else {
+      if (!isPlanningDurationValid(proposalPlanningDurationMinutes, proposalIncludeInDailyPlan)) {
+        return;
+      }
+      reviewedCommand = { type: "work_item.create", title: normalizedTitle };
+    }
     const userSelection = {
       priority: proposalPriority,
       dueOn: proposalDueOn === "" ? null : proposalDueOn,
@@ -999,34 +1063,43 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
     setProposalError(null);
     let currentProposal = proposal;
     try {
-      if (
-        normalizedTitle !== currentProposal.command.title ||
-        userSelection.priority !== currentProposal.userSelection.priority ||
-        userSelection.dueOn !== currentProposal.userSelection.dueOn ||
-        userSelection.planningDurationMinutes !==
-          currentProposal.userSelection.planningDurationMinutes
-      ) {
+      const commandChanged =
+        reviewedCommand.type === "work_item.create"
+          ? reviewedCommand.title !== currentProposal.command.title ||
+            userSelection.priority !== currentProposal.userSelection.priority ||
+            userSelection.dueOn !== currentProposal.userSelection.dueOn ||
+            userSelection.planningDurationMinutes !==
+              currentProposal.userSelection.planningDurationMinutes
+          : currentProposal.command.type !== "schedule_block.create" ||
+            reviewedCommand.title !== currentProposal.command.title ||
+            reviewedCommand.startsAt !== currentProposal.command.startsAt ||
+            reviewedCommand.endsAt !== currentProposal.command.endsAt;
+      if (commandChanged) {
         currentProposal = await api.updateNaturalLanguageProposal(
           request.workspaceId,
           currentProposal.id,
-          {
-            expectedVersion: currentProposal.version,
-            title: normalizedTitle,
-            userSelection,
-          },
+          reviewedCommand.type === "work_item.create"
+            ? {
+                expectedVersion: currentProposal.version,
+                command: reviewedCommand,
+                userSelection,
+              }
+            : { expectedVersion: currentProposal.version, command: reviewedCommand },
           request.controller.signal,
         );
         if (!proposalOperationIsCurrent(request.operation, request.workspaceId)) return;
         setProposal(currentProposal);
         setProposalTitle(currentProposal.command.title);
-        setProposalPriority(currentProposal.userSelection.priority);
-        setProposalDueOn(currentProposal.userSelection.dueOn ?? "");
-        setProposalIncludeInDailyPlan(
-          currentProposal.userSelection.planningDurationMinutes !== null,
-        );
-        setProposalPlanningDurationMinutes(
-          String(currentProposal.userSelection.planningDurationMinutes ?? 30),
-        );
+        if (currentProposal.command.type === "work_item.create") {
+          setProposalPriority(currentProposal.userSelection.priority);
+          setProposalDueOn(currentProposal.userSelection.dueOn ?? "");
+          setProposalIncludeInDailyPlan(
+            currentProposal.userSelection.planningDurationMinutes !== null,
+          );
+          setProposalPlanningDurationMinutes(
+            String(currentProposal.userSelection.planningDurationMinutes ?? 30),
+          );
+        }
       }
       const result = await api.confirmNaturalLanguageProposal(
         request.workspaceId,
@@ -1036,34 +1109,48 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
         request.controller.signal,
       );
       if (!proposalOperationIsCurrent(request.operation, request.workspaceId)) return;
-      const created = result.workItem;
-      updateWorkspaceDependencyData(request.workspaceId, (current) => ({
-        ...current,
-        allItems: current.allItems.some((item) => item.id === created.id)
-          ? current.allItems.map((item) => (item.id === created.id ? created : item))
-          : [...current.allItems, created],
-      }));
-      setBoard((current) => {
-        if (
-          activeQueryKeyRef.current !== requestQueryKey ||
-          current?.queryKey !== requestQueryKey
-        ) {
-          return current;
+      if (result.resultType === "work_item") {
+        const created = result.workItem;
+        updateWorkspaceDependencyData(request.workspaceId, (current) => ({
+          ...current,
+          allItems: current.allItems.some((item) => item.id === created.id)
+            ? current.allItems.map((item) => (item.id === created.id ? created : item))
+            : [...current.allItems, created],
+        }));
+        setBoard((current) => {
+          if (
+            activeQueryKeyRef.current !== requestQueryKey ||
+            current?.queryKey !== requestQueryKey
+          ) {
+            return current;
+          }
+          const allItems = current.allItems.some((item) => item.id === created.id)
+            ? current.allItems.map((item) => (item.id === created.id ? created : item))
+            : [...current.allItems, created];
+          const visible = priorityFilter === "" || created.priority === priorityFilter;
+          const items = current.items.some((item) => item.id === created.id)
+            ? current.items.map((item) => (item.id === created.id ? created : item))
+            : visible
+              ? [...current.items, created]
+              : current.items;
+          return { ...current, allItems, items };
+        });
+        if (activeQueryKeyRef.current === requestQueryKey) {
+          if (priorityFilter !== "" && created.priority !== priorityFilter) setPriorityFilter("");
+          setRecentlyCreatedItemId(created.id);
         }
-        const allItems = current.allItems.some((item) => item.id === created.id)
-          ? current.allItems.map((item) => (item.id === created.id ? created : item))
-          : [...current.allItems, created];
-        const visible = priorityFilter === "" || created.priority === priorityFilter;
-        const items = current.items.some((item) => item.id === created.id)
-          ? current.items.map((item) => (item.id === created.id ? created : item))
-          : visible
-            ? [...current.items, created]
-            : current.items;
-        return { ...current, allItems, items };
-      });
-      if (activeQueryKeyRef.current === requestQueryKey) {
-        if (priorityFilter !== "" && created.priority !== priorityFilter) setPriorityFilter("");
-        setRecentlyCreatedItemId(created.id);
+        setProposalAnnouncement(
+          result.replayed
+            ? `${created.title} was already created; the existing work item is shown.`
+            : `${created.title} was created in Backlog.`,
+        );
+      } else {
+        const title = result.scheduleBlock.title ?? "Calendar block";
+        setProposalAnnouncement(
+          result.replayed
+            ? `${title} was already created in Calendar.`
+            : `${title} was created in Calendar.`,
+        );
       }
       setProposal(null);
       setProposalPrompt("");
@@ -1072,15 +1159,14 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
       setProposalDueOn("");
       setProposalIncludeInDailyPlan(false);
       setProposalPlanningDurationMinutes("30");
+      setProposalBlockDate("");
+      setProposalBlockStartsAt("");
+      setProposalBlockEndsOn("");
+      setProposalBlockEndsAt("");
       setProposalSummary(null);
       setProposalWarnings([]);
       setProposalOpen(false);
       confirmationKeyRef.current = null;
-      setProposalAnnouncement(
-        result.replayed
-          ? `${created.title} was already created; the existing work item is shown.`
-          : `${created.title} was created in Backlog.`,
-      );
     } catch (error) {
       if (
         !request.controller.signal.aborted &&
@@ -1092,7 +1178,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
           setProposalError("This proposal expired or was closed. Review your text and try again.");
         } else if (error instanceof ApiError && error.status === 409) {
           setProposalError(
-            "This proposal changed or was confirmed elsewhere. No second work item was created.",
+            "This proposal changed or was confirmed elsewhere. Nothing was created twice.",
           );
         } else {
           setProposalError(
@@ -1198,7 +1284,8 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
             </header>
             <p className="work-natural-language-trust">
               <ShieldCheck size={17} aria-hidden="true" />
-              The local model can only suggest one backlog title. It cannot create or change work.
+              The local model can suggest one backlog item or calendar block. It cannot create or
+              change anything.
             </p>
             {proposalError === null ? null : (
               <ErrorNotice message={proposalError} onDismiss={() => setProposalError(null)} />
@@ -1210,8 +1297,8 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                 onSubmit={(event) => void prepareProposal(event)}
               >
                 <Field
-                  label="Describe one work item"
-                  hint="Keep this to one concrete outcome. You will review the exact title next."
+                  label="Describe one item or calendar block"
+                  hint="Keep this to one concrete request. You will review every value next."
                 >
                   <textarea
                     ref={proposalPromptRef}
@@ -1219,7 +1306,7 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                     maxLength={2_000}
                     required
                     disabled={proposalBusy !== null}
-                    placeholder="For example: remind me to prepare the quarterly report"
+                    placeholder="For example: block tomorrow from 2 to 3 PM for the quarterly report"
                     onChange={(event) => {
                       setProposalPrompt(event.currentTarget.value);
                       setProposalError(null);
@@ -1246,7 +1333,11 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
               >
                 <div className="work-natural-language-summary">
                   <p className="eyebrow">Proposed command</p>
-                  <h4>Create one backlog work item</h4>
+                  <h4>
+                    {proposal.command.type === "work_item.create"
+                      ? "Create one backlog work item"
+                      : "Create one unlinked calendar block"}
+                  </h4>
                   {proposalSummary === null ? null : <p>{proposalSummary}</p>}
                   {proposalWarnings.length === 0 ? null : (
                     <ul>
@@ -1318,8 +1409,12 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                   </section>
                 )}
                 <Field
-                  label="Work item title"
-                  hint="Review or edit every value. Model suggestions are optional and create nothing."
+                  label={
+                    proposal.command.type === "work_item.create"
+                      ? "Work item title"
+                      : "Calendar block title"
+                  }
+                  hint="Review or edit every value. Nothing is created until you confirm."
                 >
                   <input
                     value={proposalTitle}
@@ -1332,90 +1427,162 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                     }}
                   />
                 </Field>
-                <section
-                  className="work-natural-language-user-fields"
-                  aria-labelledby="work-natural-language-user-fields-title"
-                >
-                  <div className="work-natural-language-user-fields-heading">
-                    <p className="eyebrow" id="work-natural-language-user-fields-title">
-                      Your reviewed choices
-                    </p>
-                    <p>These fields are stored only when you review them.</p>
-                  </div>
-                  <Field label="Priority">
-                    <select
-                      value={proposalPriority}
-                      disabled={proposalBusy !== null}
-                      onChange={(event) => {
-                        setProposalPriority(event.currentTarget.value as WorkItemPriority);
-                        setProposalError(null);
-                      }}
-                    >
-                      {priorities.map((priority) => (
-                        <option value={priority.value} key={priority.value}>
-                          {priority.label}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="Due date (optional)" hint="Leave blank when there is no deadline.">
-                    <input
-                      type="date"
-                      value={proposalDueOn}
-                      disabled={proposalBusy !== null}
-                      onChange={(event) => {
-                        setProposalDueOn(event.currentTarget.value);
-                        setProposalError(null);
-                      }}
-                    />
-                  </Field>
-                  <fieldset className="work-natural-language-planning-fieldset">
-                    <legend>Daily plan</legend>
-                    <label className="work-planning-toggle">
-                      <input
-                        type="checkbox"
-                        checked={proposalIncludeInDailyPlan}
+                {proposal.command.type === "work_item.create" ? (
+                  <section
+                    className="work-natural-language-user-fields"
+                    aria-labelledby="work-natural-language-user-fields-title"
+                  >
+                    <div className="work-natural-language-user-fields-heading">
+                      <p className="eyebrow" id="work-natural-language-user-fields-title">
+                        Your reviewed choices
+                      </p>
+                      <p>These fields are stored only when you review them.</p>
+                    </div>
+                    <Field label="Priority">
+                      <select
+                        value={proposalPriority}
                         disabled={proposalBusy !== null}
-                        aria-describedby="work-natural-language-planning-hint"
                         onChange={(event) => {
-                          setProposalIncludeInDailyPlan(event.currentTarget.checked);
+                          setProposalPriority(event.currentTarget.value as WorkItemPriority);
+                          setProposalError(null);
+                        }}
+                      >
+                        {priorities.map((priority) => (
+                          <option value={priority.value} key={priority.value}>
+                            {priority.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field
+                      label="Due date (optional)"
+                      hint="Leave blank when there is no deadline."
+                    >
+                      <input
+                        type="date"
+                        value={proposalDueOn}
+                        disabled={proposalBusy !== null}
+                        onChange={(event) => {
+                          setProposalDueOn(event.currentTarget.value);
                           setProposalError(null);
                         }}
                       />
-                      <span>Include in Today</span>
-                    </label>
-                    {proposalIncludeInDailyPlan ? (
-                      <Field label="Plan duration (minutes)">
+                    </Field>
+                    <fieldset className="work-natural-language-planning-fieldset">
+                      <legend>Daily plan</legend>
+                      <label className="work-planning-toggle">
                         <input
-                          type="number"
-                          min={1}
-                          max={43_200}
-                          step={1}
-                          inputMode="numeric"
-                          value={proposalPlanningDurationMinutes}
+                          type="checkbox"
+                          checked={proposalIncludeInDailyPlan}
                           disabled={proposalBusy !== null}
-                          aria-invalid={
-                            !isPlanningDurationValid(proposalPlanningDurationMinutes, true)
-                          }
                           aria-describedby="work-natural-language-planning-hint"
                           onChange={(event) => {
-                            setProposalPlanningDurationMinutes(event.currentTarget.value);
+                            setProposalIncludeInDailyPlan(event.currentTarget.checked);
                             setProposalError(null);
                           }}
                         />
-                      </Field>
-                    ) : null}
-                    <p id="work-natural-language-planning-hint" className="work-planning-hint">
-                      {proposalIncludeInDailyPlan
-                        ? "The planner will reserve this many minutes."
-                        : "Keep this off when the item should stay out of automatic plans."}
-                    </p>
-                  </fieldset>
-                </section>
+                        <span>Include in Today</span>
+                      </label>
+                      {proposalIncludeInDailyPlan ? (
+                        <Field label="Plan duration (minutes)">
+                          <input
+                            type="number"
+                            min={1}
+                            max={43_200}
+                            step={1}
+                            inputMode="numeric"
+                            value={proposalPlanningDurationMinutes}
+                            disabled={proposalBusy !== null}
+                            aria-invalid={
+                              !isPlanningDurationValid(proposalPlanningDurationMinutes, true)
+                            }
+                            aria-describedby="work-natural-language-planning-hint"
+                            onChange={(event) => {
+                              setProposalPlanningDurationMinutes(event.currentTarget.value);
+                              setProposalError(null);
+                            }}
+                          />
+                        </Field>
+                      ) : null}
+                      <p id="work-natural-language-planning-hint" className="work-planning-hint">
+                        {proposalIncludeInDailyPlan
+                          ? "The planner will reserve this many minutes."
+                          : "Keep this off when the item should stay out of automatic plans."}
+                      </p>
+                    </fieldset>
+                  </section>
+                ) : (
+                  <section
+                    className="work-natural-language-user-fields"
+                    aria-labelledby="work-natural-language-block-fields-title"
+                  >
+                    <div className="work-natural-language-user-fields-heading">
+                      <p className="eyebrow" id="work-natural-language-block-fields-title">
+                        Your reviewed time
+                      </p>
+                      <p>This block will not be linked to a work item.</p>
+                    </div>
+                    <Field label="Start date">
+                      <input
+                        type="date"
+                        value={proposalBlockDate}
+                        required
+                        disabled={proposalBusy !== null}
+                        onChange={(event) => {
+                          setProposalBlockDate(event.currentTarget.value);
+                          setProposalError(null);
+                        }}
+                      />
+                    </Field>
+                    <Field label="Start time">
+                      <input
+                        type="time"
+                        value={proposalBlockStartsAt}
+                        required
+                        disabled={proposalBusy !== null}
+                        onChange={(event) => {
+                          setProposalBlockStartsAt(event.currentTarget.value);
+                          setProposalError(null);
+                        }}
+                      />
+                    </Field>
+                    <Field label="End date">
+                      <input
+                        type="date"
+                        value={proposalBlockEndsOn}
+                        required
+                        disabled={proposalBusy !== null}
+                        onChange={(event) => {
+                          setProposalBlockEndsOn(event.currentTarget.value);
+                          setProposalError(null);
+                        }}
+                      />
+                    </Field>
+                    <Field label="End time">
+                      <input
+                        type="time"
+                        value={proposalBlockEndsAt}
+                        required
+                        disabled={proposalBusy !== null}
+                        onChange={(event) => {
+                          setProposalBlockEndsAt(event.currentTarget.value);
+                          setProposalError(null);
+                        }}
+                      />
+                    </Field>
+                    <Field
+                      label="Time zone"
+                      hint="Taken from this device when the proposal was prepared."
+                    >
+                      <input value={proposal.command.timeZone} readOnly aria-readonly="true" />
+                    </Field>
+                  </section>
+                )}
                 <p className="work-natural-language-no-mutation">
                   <ShieldCheck size={17} aria-hidden="true" />
-                  Nothing has been created yet. Confirming will atomically create this reviewed root
-                  item in Backlog.
+                  {proposal.command.type === "work_item.create"
+                    ? "Nothing has been created yet. Confirming will atomically create this reviewed root item in Backlog."
+                    : "Nothing has been created yet. Confirming will atomically create this reviewed unlinked block in Calendar."}
                 </p>
                 <p className="work-natural-language-provenance">
                   Prepared by {proposal.model ?? proposal.provider}; expires at{" "}
@@ -1442,13 +1609,20 @@ export function WorkView({ workspace }: WorkspaceViewProps) {
                     disabled={
                       proposalBusy !== null ||
                       proposalTitle.trim().length === 0 ||
-                      !isPlanningDurationValid(
-                        proposalPlanningDurationMinutes,
-                        proposalIncludeInDailyPlan,
-                      )
+                      (proposal.command.type === "work_item.create"
+                        ? !isPlanningDurationValid(
+                            proposalPlanningDurationMinutes,
+                            proposalIncludeInDailyPlan,
+                          )
+                        : proposalBlockDate === "" ||
+                          proposalBlockStartsAt === "" ||
+                          proposalBlockEndsOn === "" ||
+                          proposalBlockEndsAt === "")
                     }
                   >
-                    Create this work item
+                    {proposal.command.type === "work_item.create"
+                      ? "Create this work item"
+                      : "Create this calendar block"}
                   </Button>
                 </div>
               </form>

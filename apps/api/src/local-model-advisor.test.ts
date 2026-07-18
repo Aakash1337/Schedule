@@ -95,6 +95,7 @@ const proposalContext: NaturalLanguageProposerContext = {
   requestId: "88888888-8888-4888-8888-888888888888",
   prompt: "Add prepare the quarterly report to my work list",
   referenceDate: localDate("2026-07-13"),
+  timeZone: "UTC",
 };
 
 const validProposalOutput: NaturalLanguageProposerOutput = {
@@ -107,6 +108,20 @@ const validProposalOutput: NaturalLanguageProposerOutput = {
     dueOn: "2026-07-20",
     planningDurationMinutes: 90,
   },
+};
+
+const validScheduleBlockProposalOutput: NaturalLanguageProposerOutput = {
+  version: NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION,
+  summary: "Review one calendar block.",
+  warnings: [],
+  command: {
+    type: "schedule_block.create",
+    title: "Quarterly report",
+    startsAt: "2026-07-15T14:00:00.000Z",
+    endsAt: "2026-07-15T15:00:00.000Z",
+    timeZone: "UTC",
+  },
+  modelSuggestions: null,
 };
 
 function ollamaEnvelope(output: unknown = validOutput): string {
@@ -676,7 +691,7 @@ describe("OllamaSchedulingAdvisor proposal boundary", () => {
         `BEGIN_UNTRUSTED_WORK_CONTEXT_JSON\n${JSON.stringify(proposalContext)}\nEND_UNTRUSTED_WORK_CONTEXT_JSON`,
       );
       expect(outbound.format.additionalProperties).toBe(false);
-      expect(outbound.format.properties.command.oneOf).toHaveLength(2);
+      expect(outbound.format.properties.command.oneOf).toHaveLength(3);
       expect(outbound.format.properties.modelSuggestions.oneOf).toHaveLength(2);
       expect(outbound.format.properties.modelSuggestions.oneOf[1]?.required).toEqual([
         "priority",
@@ -698,6 +713,15 @@ describe("OllamaSchedulingAdvisor proposal boundary", () => {
     } finally {
       await server.close();
     }
+  });
+
+  it("accepts one strict unlinked calendar-block proposal", async () => {
+    await withResponse(ollamaEnvelope(validScheduleBlockProposalOutput), async (advisor) => {
+      await expect(advisor.propose(proposalContext)).resolves.toEqual({
+        status: "available",
+        output: validScheduleBlockProposalOutput,
+      });
+    });
   });
 
   it.each([
@@ -754,6 +778,40 @@ describe("OllamaSchedulingAdvisor proposal boundary", () => {
           ...validProposalOutput.modelSuggestions,
           planningDurationMinutes: 43_201,
         },
+      },
+    ],
+    [
+      "calendar block work-item link",
+      {
+        ...validScheduleBlockProposalOutput,
+        command: { ...validScheduleBlockProposalOutput.command, workItemId: "invented" },
+      },
+    ],
+    [
+      "non-canonical calendar instant",
+      {
+        ...validScheduleBlockProposalOutput,
+        command: {
+          ...validScheduleBlockProposalOutput.command,
+          startsAt: "2026-07-15T10:00:00-04:00",
+        },
+      },
+    ],
+    [
+      "reversed calendar range",
+      {
+        ...validScheduleBlockProposalOutput,
+        command: {
+          ...validScheduleBlockProposalOutput.command,
+          endsAt: "2026-07-15T13:00:00.000Z",
+        },
+      },
+    ],
+    [
+      "calendar block work suggestions",
+      {
+        ...validScheduleBlockProposalOutput,
+        modelSuggestions: { ...validProposalOutput.modelSuggestions },
       },
     ],
   ])("rejects proposal output with %s", async (_label, output) => {

@@ -32,6 +32,19 @@ describe("local date helpers", () => {
     );
   });
 
+  it("rejects a repeated local minute during a daylight-saving fallback", () => {
+    const priorTimeZone = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      expect(() => localDateTimeToIso("2026-11-01", "01:30")).toThrow(
+        "ambiguous in the browser time zone",
+      );
+    } finally {
+      if (priorTimeZone === undefined) delete process.env.TZ;
+      else process.env.TZ = priorTimeZone;
+    }
+  });
+
   it("formats duration and normalizes comma-separated tags", () => {
     expect(formatMinutes(145)).toBe("2h 25m");
     expect(splitTags("home, computer, home,  errands ")).toEqual(["home", "computer", "errands"]);

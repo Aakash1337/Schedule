@@ -112,6 +112,7 @@ const proposalRow = {
   expiresAt: new Date("2026-07-13T02:10:00.000Z"),
   confirmationKeyHash: null,
   resultWorkItemId: null,
+  resultScheduleBlockId: null,
   confirmedAt: null,
   cancelledAt: null,
   version: 1,
@@ -844,7 +845,13 @@ describe("PostgresNaturalLanguageProposalUnitOfWork", () => {
       async (context) => Object.keys(context).sort(),
     );
 
-    expect(repositories).toEqual(["auditEvents", "proposals", "workItems", "workspaces"]);
+    expect(repositories).toEqual([
+      "auditEvents",
+      "proposals",
+      "scheduleBlocks",
+      "workItems",
+      "workspaces",
+    ]);
     expect(transaction).toHaveBeenCalledTimes(2);
     expect(transaction).toHaveBeenLastCalledWith(expect.any(Function), {
       isolationLevel: "serializable",
@@ -895,6 +902,35 @@ describe("PostgresNaturalLanguageProposalRepository", () => {
     });
   });
 
+  it("maps a canonical calendar-block command and its typed result identity", async () => {
+    const command = {
+      type: "schedule_block.create" as const,
+      title: "Quarterly report",
+      startsAt: "2026-07-15T14:00:00.000Z",
+      endsAt: "2026-07-15T15:00:00.000Z",
+      timeZone: "UTC",
+    };
+    const commandDisplay =
+      '{"endsAt":"2026-07-15T15:00:00.000Z","startsAt":"2026-07-15T14:00:00.000Z","timeZone":"UTC","title":"Quarterly report","type":"schedule_block.create"}';
+    const row = {
+      ...proposalRow,
+      command,
+      commandDisplay,
+      commandHash: createHash("sha256").update(commandDisplay).digest("hex"),
+      modelSuggestions: null,
+      modelSuggestionsHash: nullModelSuggestionsHash,
+      status: "confirmed" as const,
+      confirmationKeyHash: "a".repeat(64),
+      resultScheduleBlockId: proposalRow.id,
+      confirmedAt: new Date("2026-07-13T02:05:00.000Z"),
+    };
+    const repository = new PostgresNaturalLanguageProposalRepository(proposalInsertDatabase(row));
+
+    await expect(repository.insertOrFind(row)).resolves.toMatchObject({
+      proposal: { command, resultWorkItemId: null, resultScheduleBlockId: proposalRow.id },
+    });
+  });
+
   it("persists model suggestions independently on insert and save", async () => {
     const insertReturning = vi.fn().mockResolvedValue([proposalRow]);
     const onConflictDoUpdate = vi.fn().mockReturnValue({ returning: insertReturning });
@@ -914,12 +950,14 @@ describe("PostgresNaturalLanguageProposalRepository", () => {
       expect.objectContaining({
         modelSuggestions: proposalRow.modelSuggestions,
         modelSuggestionsHash: proposalRow.modelSuggestionsHash,
+        resultScheduleBlockId: null,
       }),
     );
     expect(saveSet).toHaveBeenCalledWith(
       expect.objectContaining({
         modelSuggestions: proposalRow.modelSuggestions,
         modelSuggestionsHash: proposalRow.modelSuggestionsHash,
+        resultScheduleBlockId: null,
       }),
     );
   });

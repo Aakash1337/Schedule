@@ -274,6 +274,13 @@
       "when": 1784249989488,
       "tag": "0038_smooth_ender_wiggin",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1784277437833,
+      "tag": "0039_lively_smiling_tiger",
+      "breakpoints": true
     }
   ]
 }

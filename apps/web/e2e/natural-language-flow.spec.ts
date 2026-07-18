@@ -59,7 +59,7 @@ function isDailyPlanFitInsightResponse(response: Response, expectedOrigin: strin
   );
 }
 
-test("reviews and explicitly confirms a local natural-language proposal through the live stack", async ({
+test("reviews and explicitly confirms local work and calendar proposals through the live stack", async ({
   page,
 }) => {
   const pageErrors: string[] = [];
@@ -122,7 +122,7 @@ test("reviews and explicitly confirms a local natural-language proposal through 
     page.getByRole("heading", { name: "Describe work in your own words" }),
   ).toBeVisible();
   await page
-    .getByRole("textbox", { name: /^Describe one work item/ })
+    .getByRole("textbox", { name: /^Describe one/ })
     .fill("Turn the launch notes into one checklist task");
 
   const proposalResponsePromise = page.waitForResponse((response) =>
@@ -183,7 +183,7 @@ test("reviews and explicitly confirms a local natural-language proposal through 
   expect(confirmationResponse.status()).toBe(201);
   expect(updateResponse.request().postDataJSON()).toEqual({
     expectedVersion: 1,
-    title: reviewedTitle,
+    command: { type: "work_item.create", title: reviewedTitle },
     userSelection: {
       priority: "urgent",
       dueOn: "2026-07-20",
@@ -255,7 +255,7 @@ test("reviews and explicitly confirms a local natural-language proposal through 
 
   await page.getByRole("button", { name: "Describe work" }).click();
   await page
-    .getByRole("textbox", { name: /^Describe one work item/ })
+    .getByRole("textbox", { name: /^Describe one/ })
     .fill("Draft a task that I will cancel after reviewing it");
   const cancellableProposalResponsePromise = page.waitForResponse((response) =>
     isMutationResponse(
@@ -281,13 +281,65 @@ test("reviews and explicitly confirms a local natural-language proposal through 
   );
   await page.getByRole("button", { name: "Cancel proposal" }).click();
   expect((await cancellationResponsePromise).status()).toBe(200);
-  await expect(page.getByText("Proposal cancelled. No work item was created.")).toBeVisible();
+  await expect(page.getByText("Proposal cancelled. Nothing was created.")).toBeVisible();
 
   await page.reload();
   await expect(
     page.getByRole("heading", { name: "Prepare the launch checklist", exact: true }),
   ).toHaveCount(0);
   await expect(createdCard).toHaveCount(1);
+
+  await page.getByRole("button", { name: "Describe work" }).click();
+  await page
+    .getByRole("textbox", { name: /^Describe one/ })
+    .fill("Create one calendar block E2E for the quarterly report");
+  const blockProposalResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) => /^\/v1\/workspaces\/[^/]+\/natural-language\/proposals$/.test(pathname),
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Review proposal" }).click();
+  expect((await blockProposalResponsePromise).status()).toBe(200);
+  await expect(
+    page.getByRole("heading", { name: "Create one unlinked calendar block" }),
+  ).toBeVisible();
+  await expect(page.getByRole("region", { name: "Your reviewed time" })).toBeVisible();
+
+  const blockConfirmationResponsePromise = page.waitForResponse((response) =>
+    isMutationResponse(
+      response,
+      "POST",
+      (pathname) =>
+        /^\/v1\/workspaces\/[^/]+\/natural-language\/proposals\/[^/]+\/confirmations$/.test(
+          pathname,
+        ),
+      expectedOrigin,
+    ),
+  );
+  await page.getByRole("button", { name: "Create this calendar block" }).click();
+  const blockConfirmationResponse = await blockConfirmationResponsePromise;
+  expect(blockConfirmationResponse.status()).toBe(201);
+  expect(await blockConfirmationResponse.json()).toMatchObject({
+    resultType: "schedule_block",
+    workItem: null,
+    scheduleBlock: {
+      title: "Review the quarterly report",
+      workItemId: null,
+      startsAt: "2026-07-17T14:00:00.000Z",
+      endsAt: "2026-07-17T15:00:00.000Z",
+      timeZone: "UTC",
+    },
+  });
+  await expect(
+    page.getByText("Review the quarterly report was created in Calendar."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Calendar", exact: true }).click();
+  await expect(page.getByRole("main", { name: "Calendar view" })).toBeVisible();
+  await expect(page.getByText("Review the quarterly report", { exact: true })).toBeVisible();
+  await workNavigation.click();
 
   const workspaceSelect = page.getByRole("combobox", { name: "Workspace" }).first();
   const originalWorkspaceId = await workspaceSelect.inputValue();
@@ -326,7 +378,7 @@ test("reviews and explicitly confirms a local natural-language proposal through 
   await workNavigation.click();
   await page.getByRole("button", { name: "Describe work" }).click();
   await page
-    .getByRole("textbox", { name: /^Describe one work item/ })
+    .getByRole("textbox", { name: /^Describe one/ })
     .fill("delay this proposal while I switch workspaces");
   const delayedProposalRequestPromise = page.waitForRequest((request) => {
     const url = new URL(request.url());

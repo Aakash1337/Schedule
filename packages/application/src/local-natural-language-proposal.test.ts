@@ -3,11 +3,14 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  createScheduleBlock,
   createWorkItem,
   createWorkspace,
   localDate,
+  scheduleBlockId,
   workItemId,
   workspaceId,
+  type ScheduleBlock,
   type WorkItem,
   type Workspace,
   type WorkspaceId,
@@ -17,6 +20,7 @@ import type {
   AuditEventRecord,
   AuditEventRepository,
   Clock,
+  ScheduleBlockRepository,
   WorkItemRepository,
   WorkspaceRepository,
 } from "./ports.js";
@@ -58,10 +62,37 @@ function available(title = "Prepare release notes"): NaturalLanguageProposerResu
   };
 }
 
+function availableScheduleBlock(
+  overrides: Partial<{
+    title: string;
+    startsAt: string;
+    endsAt: string;
+    timeZone: string;
+  }> = {},
+): NaturalLanguageProposerResult {
+  return {
+    status: "available",
+    output: {
+      version: NATURAL_LANGUAGE_PROPOSER_OUTPUT_VERSION,
+      summary: "Review one calendar block.",
+      warnings: [],
+      command: {
+        type: "schedule_block.create",
+        title: overrides.title ?? "Quarterly report",
+        startsAt: overrides.startsAt ?? "2026-07-15T14:00:00.000Z",
+        endsAt: overrides.endsAt ?? "2026-07-15T15:00:00.000Z",
+        timeZone: overrides.timeZone ?? "UTC",
+      },
+      modelSuggestions: null,
+    },
+  };
+}
+
 interface Harness {
   readonly workspaces: Workspace[];
   readonly proposals: NaturalLanguageProposalRecord[];
   readonly workItems: WorkItem[];
+  readonly scheduleBlocks: ScheduleBlock[];
   readonly audits: AuditEventRecord[];
   readonly unitOfWork: NaturalLanguageProposalUnitOfWork;
   readonly proposer: NaturalLanguageProposer & {
@@ -76,6 +107,7 @@ function createHarness(result: NaturalLanguageProposerResult = available()): Har
   const workspaces = [createWorkspace({ id: WORKSPACE_ID, name: "Personal", now: NOW })];
   const proposals: NaturalLanguageProposalRecord[] = [];
   const workItems: WorkItem[] = [];
+  const scheduleBlocks: ScheduleBlock[] = [];
   const audits: AuditEventRecord[] = [];
   let now = new Date(NOW);
   let auditFailure = false;
@@ -97,6 +129,17 @@ function createHarness(result: NaturalLanguageProposerResult = available()): Har
     },
     save: async () => undefined,
   } satisfies WorkItemRepository;
+  const scheduleBlockRepository = {
+    findById: async (targetWorkspaceId, id) =>
+      scheduleBlocks.find((block) => block.workspaceId === targetWorkspaceId && block.id === id) ??
+      null,
+    listOverlapping: async () => scheduleBlocks,
+    insert: async (block) => {
+      scheduleBlocks.push(block);
+    },
+    save: async () => undefined,
+    delete: async () => undefined,
+  } satisfies ScheduleBlockRepository;
   const proposalRepository: NaturalLanguageProposalRepository = {
     findByRequestId: async (targetWorkspaceId, requestId) =>
       proposals.find(
@@ -136,6 +179,7 @@ function createHarness(result: NaturalLanguageProposerResult = available()): Har
   const context: NaturalLanguageProposalTransactionContext = {
     workspaces: workspaceRepository,
     workItems: workItemRepository,
+    scheduleBlocks: scheduleBlockRepository,
     auditEvents: auditRepository,
     proposals: proposalRepository,
   };
@@ -143,12 +187,14 @@ function createHarness(result: NaturalLanguageProposerResult = available()): Har
     run: async (operation) => {
       const proposalSnapshot = [...proposals];
       const workItemSnapshot = [...workItems];
+      const scheduleBlockSnapshot = [...scheduleBlocks];
       const auditSnapshot = [...audits];
       try {
         return await operation(context);
       } catch (error) {
         proposals.splice(0, proposals.length, ...proposalSnapshot);
         workItems.splice(0, workItems.length, ...workItemSnapshot);
+        scheduleBlocks.splice(0, scheduleBlocks.length, ...scheduleBlockSnapshot);
         audits.splice(0, audits.length, ...auditSnapshot);
         throw error;
       }
@@ -164,6 +210,7 @@ function createHarness(result: NaturalLanguageProposerResult = available()): Har
     workspaces,
     proposals,
     workItems,
+    scheduleBlocks,
     audits,
     unitOfWork,
     proposer,
@@ -209,10 +256,11 @@ async function prepare(test: Harness, prompt = "Add prepare release notes to my 
     workspaceId: WORKSPACE_ID,
     prompt,
     referenceDate: null,
+    timeZone: "UTC",
   });
 }
 
-describe("local natural-language work-item proposals", () => {
+describe("local natural-language proposals", () => {
   it("persists a bounded hash-bound proposal without mutating work or storing the prompt", async () => {
     const test = createHarness();
 
@@ -246,10 +294,11 @@ describe("local natural-language work-item proposals", () => {
     expect(test.proposer.propose).toHaveBeenCalledTimes(1);
     const context = test.proposer.propose.mock.calls[0]?.[0] as NaturalLanguageProposerContext;
     expect(context).toEqual({
-      version: "schedule.natural-language-context/v2",
+      version: "schedule.natural-language-context/v3",
       requestId: REQUEST_ID,
       prompt: "Add prepare release notes to my work list",
       referenceDate: null,
+      timeZone: "UTC",
     });
     expect(Object.isFrozen(context)).toBe(true);
   });
@@ -260,6 +309,7 @@ describe("local natural-language work-item proposals", () => {
       workspaceId: WORKSPACE_ID,
       prompt: "Buy milk",
       referenceDate: null,
+      timeZone: "UTC",
     };
     const digest = promptHasher.digest(common);
 
@@ -296,12 +346,14 @@ describe("local natural-language work-item proposals", () => {
       workspaceId: WORKSPACE_ID,
       prompt: "Add prepare release notes to my work list",
       referenceDate: localDate("2026-07-14"),
+      timeZone: "UTC",
     } as const;
 
     await generate.execute(input);
     expect(test.proposer.propose.mock.calls[0]?.[0]).toMatchObject({
-      version: "schedule.natural-language-context/v2",
+      version: "schedule.natural-language-context/v3",
       referenceDate: "2026-07-14",
+      timeZone: "UTC",
     });
     await expect(
       generate.execute({ ...input, referenceDate: localDate("2026-07-15") }),
@@ -394,7 +446,7 @@ describe("local natural-language work-item proposals", () => {
       workspaceId: WORKSPACE_ID,
       proposalId: proposal.id,
       expectedVersion: proposal.version,
-      title: proposal.command.title,
+      command: { type: "work_item.create", title: proposal.command.title },
       userSelection: { priority: "high", dueOn: null, planningDurationMinutes: 45 },
     });
 
@@ -451,6 +503,7 @@ describe("local natural-language work-item proposals", () => {
           workspaceId: WORKSPACE_ID,
           prompt: "Add prepare release notes to my work list",
           referenceDate: null,
+          timeZone: "UTC",
         },
         controller.signal,
       ),
@@ -485,6 +538,7 @@ describe("local natural-language work-item proposals", () => {
           workspaceId: WORKSPACE_ID,
           prompt: "Add prepare release notes to my work list",
           referenceDate: null,
+          timeZone: "UTC",
         },
         controller.signal,
       ),
@@ -527,6 +581,7 @@ describe("local natural-language work-item proposals", () => {
           workspaceId: WORKSPACE_ID,
           prompt: "Add prepare release notes to my work list",
           referenceDate: null,
+          timeZone: "UTC",
         },
         controller.signal,
       ),
@@ -619,7 +674,7 @@ describe("local natural-language work-item proposals", () => {
       workspaceId: WORKSPACE_ID,
       proposalId: proposal.id,
       expectedVersion: proposal.version,
-      title: "Prepare final release notes",
+      command: { type: "work_item.create", title: "Prepare final release notes" },
       userSelection: {
         priority: "high",
         dueOn: localDate("2026-07-20"),
@@ -642,7 +697,7 @@ describe("local natural-language work-item proposals", () => {
         workspaceId: WORKSPACE_ID,
         proposalId: proposal.id,
         expectedVersion: proposal.version,
-        title: "Prepare final release notes",
+        command: { type: "work_item.create", title: "Prepare final release notes" },
         userSelection: updated.userSelection,
       }),
     ).resolves.toMatchObject({
@@ -654,7 +709,7 @@ describe("local natural-language work-item proposals", () => {
         workspaceId: WORKSPACE_ID,
         proposalId: proposal.id,
         expectedVersion: 99,
-        title: "Prepare final release notes",
+        command: { type: "work_item.create", title: "Prepare final release notes" },
         userSelection: updated.userSelection,
       }),
     ).rejects.toMatchObject({ code: "natural_language.version_conflict" });
@@ -693,7 +748,7 @@ describe("local natural-language work-item proposals", () => {
       workspaceId: WORKSPACE_ID,
       proposalId: proposal.id,
       expectedVersion: proposal.version,
-      title: "Prepare final release notes",
+      command: { type: "work_item.create", title: "Prepare final release notes" },
       userSelection: {
         priority: "urgent",
         dueOn: localDate("2026-07-21"),
@@ -731,7 +786,7 @@ describe("local natural-language work-item proposals", () => {
         workspaceId: WORKSPACE_ID,
         proposalId: invalidProposal.id,
         expectedVersion: invalidProposal.version,
-        title: invalidProposal.command.title,
+        command: { type: "work_item.create", title: invalidProposal.command.title },
         userSelection: {
           priority: "urgent",
           dueOn: null,
@@ -867,6 +922,156 @@ describe("local natural-language work-item proposals", () => {
     expect(test.proposals[0]?.status).toBe("confirmed");
   });
 
+  it("confirms one reviewed calendar block exactly once without creating work", async () => {
+    const test = createHarness(availableScheduleBlock());
+    const proposal = (await prepare(test, "Block tomorrow from 2 to 3 for the report")).proposal!;
+    expect(proposal.command.type).toBe("schedule_block.create");
+    const confirm = new ConfirmNaturalLanguageProposal(test.unitOfWork, test.clock);
+    const command = {
+      workspaceId: WORKSPACE_ID,
+      proposalId: proposal.id,
+      expectedVersion: proposal.version,
+      idempotencyKey: "confirm-calendar-block",
+    } as const;
+
+    const first = await confirm.execute(command);
+    const replay = await confirm.execute(command);
+
+    expect(first).toMatchObject({
+      replayed: false,
+      resultType: "schedule_block",
+      workItem: null,
+      scheduleBlock: {
+        id: proposal.id,
+        workspaceId: WORKSPACE_ID,
+        workItemId: null,
+        title: "Quarterly report",
+        startsAt: new Date("2026-07-15T14:00:00.000Z"),
+        endsAt: new Date("2026-07-15T15:00:00.000Z"),
+        timeZone: "UTC",
+      },
+    });
+    expect(replay).toMatchObject({
+      replayed: true,
+      resultType: "schedule_block",
+      scheduleBlock: { id: proposal.id },
+    });
+    expect(test.workItems).toHaveLength(0);
+    expect(test.scheduleBlocks).toHaveLength(1);
+    expect(test.proposals[0]).toMatchObject({
+      status: "confirmed",
+      resultWorkItemId: null,
+      resultScheduleBlockId: proposal.id,
+      version: 2,
+    });
+    await expect(
+      confirm.execute({ ...command, idempotencyKey: "different-calendar-key" }),
+    ).rejects.toMatchObject({ code: "natural_language.confirmation_conflict" });
+  });
+
+  it("persists reviewed calendar-block edits before confirmation", async () => {
+    const test = createHarness(availableScheduleBlock());
+    const proposal = (await prepare(test)).proposal!;
+    const updater = new UpdateNaturalLanguageProposal(test.unitOfWork, test.clock);
+    await expect(
+      updater.execute({
+        workspaceId: WORKSPACE_ID,
+        proposalId: proposal.id,
+        expectedVersion: proposal.version,
+        command: {
+          type: "schedule_block.create",
+          title: "Deep work",
+          startsAt: "2026-07-15T15:30:00.000Z",
+          endsAt: "2026-07-15T17:00:00.000Z",
+          timeZone: "America/New_York",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "natural_language.proposal_invalid" });
+
+    const updated = await updater.execute({
+      workspaceId: WORKSPACE_ID,
+      proposalId: proposal.id,
+      expectedVersion: proposal.version,
+      command: {
+        type: "schedule_block.create",
+        title: "Deep work",
+        startsAt: "2026-07-15T15:30:00.000Z",
+        endsAt: "2026-07-15T17:00:00.000Z",
+        timeZone: "UTC",
+      },
+    });
+
+    expect(updated).toMatchObject({
+      version: 2,
+      command: {
+        type: "schedule_block.create",
+        title: "Deep work",
+        startsAt: "2026-07-15T15:30:00.000Z",
+        endsAt: "2026-07-15T17:00:00.000Z",
+      },
+      userSelection: { priority: "none", dueOn: null, planningDurationMinutes: null },
+    });
+    const result = await new ConfirmNaturalLanguageProposal(test.unitOfWork, test.clock).execute({
+      workspaceId: WORKSPACE_ID,
+      proposalId: proposal.id,
+      expectedVersion: updated.version,
+      idempotencyKey: "confirm-edited-calendar-block",
+    });
+    expect(result).toMatchObject({
+      resultType: "schedule_block",
+      scheduleBlock: { title: "Deep work", startsAt: new Date("2026-07-15T15:30:00.000Z") },
+    });
+  });
+
+  it("fails closed for unsafe calendar-block model output and deterministic collisions", async () => {
+    const scheduleBlockWithSuggestions = availableScheduleBlock();
+    if (scheduleBlockWithSuggestions.status !== "available") throw new Error("Expected output.");
+    const invalidOutputs = [
+      availableScheduleBlock({ timeZone: "America/New_York" }),
+      availableScheduleBlock({ startsAt: "2026-07-15T10:00:00-04:00" }),
+      availableScheduleBlock({ endsAt: "2026-07-16T15:00:00.001Z" }),
+      {
+        ...scheduleBlockWithSuggestions,
+        output: {
+          ...scheduleBlockWithSuggestions.output,
+          modelSuggestions: { priority: "high", dueOn: null, planningDurationMinutes: null },
+        },
+      },
+    ];
+    for (const output of invalidOutputs) {
+      const test = createHarness(output);
+      await expect(prepare(test)).resolves.toMatchObject({
+        status: "unavailable",
+        reason: "malformed_response",
+      });
+      expect(test.proposals).toHaveLength(0);
+      expect(test.scheduleBlocks).toHaveLength(0);
+    }
+
+    const collision = createHarness(availableScheduleBlock());
+    const proposal = (await prepare(collision)).proposal!;
+    collision.scheduleBlocks.push(
+      createScheduleBlock({
+        id: scheduleBlockId(proposal.id),
+        workspaceId: WORKSPACE_ID,
+        title: "Different block",
+        startsAt: new Date("2026-07-15T14:00:00.000Z"),
+        endsAt: new Date("2026-07-15T15:00:00.000Z"),
+        timeZone: "UTC",
+        now: NOW,
+      }),
+    );
+    await expect(
+      new ConfirmNaturalLanguageProposal(collision.unitOfWork, collision.clock).execute({
+        workspaceId: WORKSPACE_ID,
+        proposalId: proposal.id,
+        expectedVersion: proposal.version,
+        idempotencyKey: "calendar-collision",
+      }),
+    ).rejects.toMatchObject({ code: "natural_language.confirmation_corrupt" });
+    expect(collision.proposals[0]?.status).toBe("pending");
+  });
+
   it("rejects expiry, stale versions, foreign workspaces, and malformed requests", async () => {
     const test = createHarness();
     const proposal = (await prepare(test)).proposal!;
@@ -933,7 +1138,7 @@ describe("local natural-language work-item proposals", () => {
               workspaceId: WORKSPACE_ID,
               proposalId: proposal.id,
               expectedVersion: proposal.version,
-              title: "Prepare final release notes",
+              command: { type: "work_item.create", title: "Prepare final release notes" },
               userSelection: proposal.userSelection,
             })
           : mutation === "cancel"

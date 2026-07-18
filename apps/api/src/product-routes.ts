@@ -89,6 +89,7 @@ import {
   createStructuredTags,
   dailyPlanId,
   dailyPlanFitInsightKeyPattern,
+  isIanaTimeZone,
   isValidLocalDate,
   localDate,
   notificationRuleId,
@@ -309,6 +310,15 @@ const localDateText = z
   .string()
   .refine(isValidLocalDate, "Expected a valid Gregorian date in YYYY-MM-DD format.");
 const instant = z.string().datetime({ offset: true });
+const canonicalInstant = instant.refine((value) => {
+  const instant = new Date(value);
+  return Number.isFinite(instant.getTime()) && instant.toISOString() === value;
+}, "Expected a canonical UTC instant.");
+const ianaTimeZone = z
+  .string()
+  .min(1)
+  .max(80)
+  .refine(isIanaTimeZone, "Expected an IANA time zone.");
 const workspaceParams = z.strictObject({ workspaceId: uuid });
 const naturalLanguageProposalParams = z.strictObject({ workspaceId: uuid, proposalId: uuid });
 const routineParams = z.strictObject({ workspaceId: uuid, routineId: uuid });
@@ -746,22 +756,39 @@ const schedulingAdviceBody = z.strictObject({
   expectedHeadVersion: z.number().int().positive().max(2_147_483_647),
 });
 const naturalLanguageProposalBody = z.strictObject({
-  version: z.literal("schedule.natural-language/v2"),
+  version: z.literal("schedule.natural-language/v3"),
   requestId: uuid,
   prompt: z.string().min(1).max(2_000),
   referenceDate: localDateText.nullable().default(null),
+  timeZone: ianaTimeZone,
 });
-const updateNaturalLanguageProposalBody = z.strictObject({
-  expectedVersion: z.number().int().positive().max(2_147_483_647),
-  title: z.string().min(1).max(240),
-  userSelection: z.strictObject({
-    priority: workItemPriority,
-    dueOn: localDateText.nullable(),
-    planningDurationMinutes: z.number().int().positive().max(43_200).nullable(),
+const naturalLanguageExpectedVersion = z.number().int().positive().max(2_147_483_647);
+const updateNaturalLanguageProposalBody = z.union([
+  z.strictObject({
+    expectedVersion: naturalLanguageExpectedVersion,
+    command: z.strictObject({
+      type: z.literal("work_item.create"),
+      title: z.string().min(1).max(240),
+    }),
+    userSelection: z.strictObject({
+      priority: workItemPriority,
+      dueOn: localDateText.nullable(),
+      planningDurationMinutes: z.number().int().positive().max(43_200).nullable(),
+    }),
   }),
-});
+  z.strictObject({
+    expectedVersion: naturalLanguageExpectedVersion,
+    command: z.strictObject({
+      type: z.literal("schedule_block.create"),
+      title: z.string().min(1).max(240),
+      startsAt: canonicalInstant,
+      endsAt: canonicalInstant,
+      timeZone: ianaTimeZone,
+    }),
+  }),
+]);
 const naturalLanguageProposalVersionBody = z.strictObject({
-  expectedVersion: z.number().int().positive().max(2_147_483_647),
+  expectedVersion: naturalLanguageExpectedVersion,
 });
 const planMutationBody = z.strictObject({
   expectedPlanId: uuid,
@@ -970,6 +997,7 @@ export async function registerProductRoutes(
           workspaceId: workspaceId(params.workspaceId),
           prompt: body.prompt,
           referenceDate: body.referenceDate === null ? null : localDate(body.referenceDate),
+          timeZone: body.timeZone,
         },
         cancellation.signal,
       );
@@ -985,17 +1013,23 @@ export async function registerProductRoutes(
   app.patch(NATURAL_LANGUAGE_PROPOSAL_ITEM_ROUTE, async (request) => {
     const params = parseRequest(naturalLanguageProposalParams, request.params);
     const body = parseRequest(updateNaturalLanguageProposalBody, request.body);
-    return services.updateNaturalLanguageProposal({
+    const base = {
       workspaceId: workspaceId(params.workspaceId),
       proposalId: params.proposalId,
       expectedVersion: body.expectedVersion,
-      title: body.title,
-      userSelection: {
-        priority: body.userSelection.priority,
-        dueOn: body.userSelection.dueOn === null ? null : localDate(body.userSelection.dueOn),
-        planningDurationMinutes: body.userSelection.planningDurationMinutes,
-      },
-    });
+    };
+    if ("userSelection" in body) {
+      return services.updateNaturalLanguageProposal({
+        ...base,
+        command: body.command,
+        userSelection: {
+          priority: body.userSelection.priority,
+          dueOn: body.userSelection.dueOn === null ? null : localDate(body.userSelection.dueOn),
+          planningDurationMinutes: body.userSelection.planningDurationMinutes,
+        },
+      });
+    }
+    return services.updateNaturalLanguageProposal({ ...base, command: body.command });
   });
 
   app.post(NATURAL_LANGUAGE_PROPOSAL_CANCELLATION_ROUTE, async (request) => {
