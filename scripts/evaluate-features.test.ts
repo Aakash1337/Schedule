@@ -7,6 +7,7 @@ const files = new Map([
     ".github/workflows/ci.yml",
     "- run: pnpm check\n- run: pnpm verify:database\n- run: pnpm verify:recovery-state-machine",
   ],
+  [".github/workflows/desktop.yml", "- run: pnpm desktop:check"],
   ["docs/contract.md", "# Contract\nImplemented behavior"],
   ["src/feature.test.ts", 'it("proves the behavior", () => true);'],
   ["scripts/verify.ts", 'console.log("integration passed")'],
@@ -120,6 +121,23 @@ describe("feature evidence registry", () => {
     await expect(evaluateFeatureRegistry(registry, readEvidence)).rejects.toThrow(
       /not an exact run step/,
     );
+  });
+
+  it("accepts exact evidence commands from a declared secondary workflow", async () => {
+    const registry = validRegistry() as {
+      commands: Record<string, { command: string; ci: boolean; workflow?: string }>;
+      features: JsonFeature[];
+    };
+    registry.commands.desktop = {
+      command: "pnpm desktop:check",
+      ci: true,
+      workflow: ".github/workflows/desktop.yml",
+    };
+    registry.features[0]!.evidence[0]!.command = "desktop";
+
+    await expect(evaluateFeatureRegistry(registry, readEvidence)).resolves.toMatchObject({
+      missingOrStaleEvidence: 0,
+    });
   });
 });
 

@@ -91,8 +91,25 @@ export async function evaluateFeatureRegistry(
       continue;
     }
     if (value.ci) {
-      if (ciWorkflowContent !== "" && !ciRunCommands.has(value.command)) {
-        errors.push(`CI command ${id} is not an exact run step in ${ciWorkflow}: ${value.command}`);
+      const declaredWorkflow = value.workflow;
+      if (declaredWorkflow !== undefined && !nonEmptyString(declaredWorkflow)) {
+        errors.push(`CI command ${id} workflow must be a non-empty path when supplied.`);
+        continue;
+      }
+      const workflow = nonEmptyString(declaredWorkflow) ? declaredWorkflow : ciWorkflow;
+      let runCommands = ciRunCommands;
+      if (workflow !== ciWorkflow) {
+        try {
+          runCommands = workflowRunCommands(await readEvidence(workflow));
+        } catch (error) {
+          errors.push(
+            `CI command ${id} workflow cannot be read: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          continue;
+        }
+      }
+      if (workflow !== "" && !runCommands.has(value.command)) {
+        errors.push(`CI command ${id} is not an exact run step in ${workflow}: ${value.command}`);
       }
     }
   }
