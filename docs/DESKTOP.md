@@ -24,11 +24,12 @@ runtime milestone lands; it must not present a scaffold as a working desktop rel
 
 ## Shared product interface
 
-The desktop shell installs its native API transport before React renders, checks the redacted native
-runtime state once even under React Strict Mode, and mounts the existing product interface only
-after the supervisor reports `ready`. Startup, recoverable failure, retry, and incompatible-data
-states remain in a small accessible native gate, so the web interface cannot issue requests against
-an unavailable local service.
+The desktop shell installs its native API transport before React renders, starts one redacted native
+runtime inspection even under React Strict Mode, follows active startup at a bounded interval, and
+mounts the existing product interface only after the supervisor reports `ready`. Terminal states
+stop polling. Startup, recoverable failure, retry, and incompatible-data states remain in a small
+accessible native gate, so the web interface cannot issue requests against an unavailable local
+service.
 
 The desktop build deliberately compiles the product UI directly from `apps/web/src` inside this
 monorepo. The web application owns shared feature views and client behavior; `apps/desktop` owns only

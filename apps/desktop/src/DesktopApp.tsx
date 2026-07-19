@@ -16,6 +16,8 @@ export interface RuntimeStatus {
   readonly message: string;
 }
 
+const runtimeStatusPollMs = 250;
+
 export function runtimeStatusAction(status: RuntimeStatus): StartupAction {
   switch (status.phase) {
     case "ready":
@@ -95,19 +97,34 @@ function StartupGate({
 export function DesktopApp() {
   const [state, setState] = useState<StartupState>(initialStartupState);
   const inspectedOnMount = useRef(false);
+  const mounted = useRef(false);
+  const pollTimer = useRef<number | null>(null);
 
-  const inspectRuntime = useCallback(async () => {
+  const inspectRuntime = useCallback(async function inspectRuntime() {
     const action = await loadRuntimeStatus();
+    if (!mounted.current) return;
     setState((current) => reduceStartupState(current, action));
+
+    if (action.type === "phase_changed" && isBusyStartupPhase(action.phase)) {
+      pollTimer.current = window.setTimeout(() => void inspectRuntime(), runtimeStatusPollMs);
+    }
   }, []);
 
   useEffect(() => {
-    if (inspectedOnMount.current) return;
-    inspectedOnMount.current = true;
-    void inspectRuntime();
+    mounted.current = true;
+    if (!inspectedOnMount.current) {
+      inspectedOnMount.current = true;
+      void inspectRuntime();
+    }
+
+    return () => {
+      mounted.current = false;
+      if (pollTimer.current !== null) window.clearTimeout(pollTimer.current);
+    };
   }, [inspectRuntime]);
 
   const retry = useCallback(() => {
+    if (pollTimer.current !== null) window.clearTimeout(pollTimer.current);
     setState((current) => reduceStartupState(current, { type: "retry" }));
     void inspectRuntime();
   }, [inspectRuntime]);
