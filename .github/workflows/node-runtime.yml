@@ -1,0 +1,73 @@
+name: node-runtime
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/node-runtime.yml"
+      - "runtime-sources.lock.json"
+      - "scripts/acquire-desktop-runtime-sources.ts"
+      - "scripts/build-node-runtime.ts"
+      - "scripts/build-node-runtime.test.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+  pull_request:
+    paths:
+      - ".github/workflows/node-runtime.yml"
+      - "runtime-sources.lock.json"
+      - "scripts/acquire-desktop-runtime-sources.ts"
+      - "scripts/build-node-runtime.ts"
+      - "scripts/build-node-runtime.test.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    name: Node runtime (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            target: windows
+          - runner: ubuntu-22.04
+            target: linux
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Test archive validation and cleanup
+        run: pnpm exec vitest run scripts/build-node-runtime.test.ts
+      - name: Download the locked Node archive only
+        shell: pwsh
+        run: |
+          $lock = Get-Content runtime-sources.lock.json -Raw | ConvertFrom-Json
+          $artifact = $lock.artifacts | Where-Object { $_.id -eq "node-${{ matrix.target }}-x64" }
+          if ($null -eq $artifact) { throw "Missing locked Node artifact." }
+          $directory = Join-Path $env:RUNNER_TEMP "desktop-runtime-sources/${{ matrix.target }}-x64"
+          New-Item -ItemType Directory -Force -Path $directory | Out-Null
+          $archive = Join-Path $directory ([IO.Path]::GetFileName(([uri]$artifact.url).AbsolutePath))
+          Invoke-WebRequest -Uri $artifact.url -OutFile $archive -MaximumRedirection 0
+      - name: Build and relocate the verified runtime
+        shell: pwsh
+        run: |
+          pnpm desktop:runtime:build-node -- --lock runtime-sources.lock.json --sources "$env:RUNNER_TEMP/desktop-runtime-sources" --output "$env:RUNNER_TEMP/desktop node runtime" --target "${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: node-runtime-${{ matrix.target }}-x64
+          path: ${{ runner.temp }}/desktop node runtime
+          if-no-files-found: error
+          include-hidden-files: true

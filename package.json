@@ -14,6 +14,7 @@
     "desktop:runtime:assemble": "tsx scripts/build-desktop-runtime.ts",
     "desktop:runtime:acquire-sources": "tsx scripts/acquire-desktop-runtime-sources.ts --lock runtime-sources.lock.json --output .desktop-runtime-sources",
     "desktop:runtime:stage-services": "tsx scripts/stage-desktop-service-deployments.ts",
+    "desktop:runtime:build-node": "tsx scripts/build-node-runtime.ts",
     "desktop:build": "pnpm --filter @schedule/desktop bundle",
     "clean": "node scripts/clean.mjs",
     "build:packages": "pnpm clean && pnpm -r --filter \"./packages/**\" run build",
