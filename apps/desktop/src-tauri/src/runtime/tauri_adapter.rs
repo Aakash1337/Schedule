@@ -171,11 +171,16 @@ impl DesktopRuntimeAdapter {
         {
             return;
         }
+        let deadline = Instant::now() + limit;
         if let Some(completion) = self.request_shutdown() {
-            wait_bounded(&completion, limit);
+            wait_bounded(
+                &completion,
+                deadline.saturating_duration_since(Instant::now()),
+            );
         }
         if let Some(containment) = &self.containment {
-            let _ = containment.seal_and_force_stop_all();
+            let _ = containment
+                .seal_and_force_stop_all(deadline.saturating_duration_since(Instant::now()));
         }
     }
 }
@@ -271,7 +276,10 @@ mod tests {
     }
 
     impl ProcessGroupControl for SealingControl {
-        fn seal_and_force_stop_all(&self) -> Result<(), crate::runtime::process::ProcessError> {
+        fn seal_and_force_stop_all(
+            &self,
+            _: Duration,
+        ) -> Result<(), crate::runtime::process::ProcessError> {
             self.sealed.store(true, Ordering::Release);
             Ok(())
         }
@@ -497,6 +505,26 @@ mod tests {
         assert!(containment.sealed.load(Ordering::Acquire));
         release_tx.send(()).unwrap();
         completion.wait();
+    }
+
+    #[test]
+    fn held_spawn_reservation_cannot_extend_final_exit_deadline() {
+        let containment = crate::runtime::process::platform_process_control();
+        let reservation =
+            crate::runtime::process::ProcessSpawnReservation::new(Arc::clone(&containment))
+                .unwrap();
+        let adapter = DesktopRuntimeAdapter {
+            owner: Mutex::new(RuntimeOwner::SetupFailure),
+            containment: Some(Arc::clone(&containment)),
+            close_exit_scheduled: AtomicBool::new(false),
+            final_exit_wait_started: AtomicBool::new(false),
+        };
+
+        let started = Instant::now();
+        adapter.bounded_shutdown(Duration::from_millis(10));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        drop(reservation);
+        assert!(crate::runtime::process::ProcessSpawnReservation::new(containment).is_err());
     }
 
     #[test]

@@ -137,16 +137,24 @@ impl ProcessGroupControl for UnixProcessControl {
         exited_without_reaping(identity.pid)
     }
 
-    fn seal_and_force_stop_all(&self) -> Result<(), ProcessError> {
+    fn seal_and_force_stop_all(
+        &self,
+        pending_spawn_wait: std::time::Duration,
+    ) -> Result<(), ProcessError> {
         let mut ownership = self
             .ownership
             .lock()
             .map_err(|_| ProcessError::new("desktop.process_stop_failed"))?;
         ownership.sealed = true;
-        let ownership = self
-            .spawn_finished
-            .wait_while(ownership, |ownership| ownership.pending_spawns != 0)
-            .map_err(|_| ProcessError::new("desktop.process_stop_failed"))?;
+        if ownership.pending_spawns != 0 && !pending_spawn_wait.is_zero() {
+            ownership = self
+                .spawn_finished
+                .wait_timeout_while(ownership, pending_spawn_wait, |ownership| {
+                    ownership.pending_spawns != 0
+                })
+                .map_err(|_| ProcessError::new("desktop.process_stop_failed"))?
+                .0;
+        }
         let mut failed = false;
         for pid in ownership.groups.keys().copied() {
             failed |= signal_group(pid, libc::SIGKILL).is_err();
