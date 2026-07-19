@@ -14,6 +14,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
+use super::bundle::{RuntimeBundle, resolve_verified_runtime_bundle};
 use super::manifest::{
     RuntimeComponent, RuntimeComponentName, RuntimeManifest, RuntimeManifestExpectations,
     is_portable_relative_path,
@@ -42,9 +43,9 @@ pub fn load_and_verify_runtime_bundle(
     root: &Path,
     expectations: &RuntimeManifestExpectations,
     expected_manifest_sha256: &str,
-) -> Result<RuntimeManifest, RuntimeIntegrityError> {
-    assert_directory(root, "runtime root")?;
-    let manifest_path = resolve(root, MANIFEST_FILE)?;
+) -> Result<RuntimeBundle, RuntimeIntegrityError> {
+    let root = canonical_runtime_root(root)?;
+    let manifest_path = resolve(&root, MANIFEST_FILE)?;
     assert_regular_file(&manifest_path, "runtime manifest")?;
     let metadata =
         fs::metadata(&manifest_path).map_err(|_| error("runtime manifest cannot be inspected"))?;
@@ -59,8 +60,16 @@ pub fn load_and_verify_runtime_bundle(
     }
     let manifest = serde_json::from_slice::<RuntimeManifest>(&bytes)
         .map_err(|_| error("runtime manifest JSON is invalid"))?;
-    verify_runtime_bundle(root, &manifest, expectations)?;
-    Ok(manifest)
+    verify_runtime_bundle(&root, &manifest, expectations)?;
+    resolve_verified_runtime_bundle(&root, &manifest)
+        .map_err(|_| error("verified runtime paths cannot be resolved"))
+}
+
+/// Establish one stable, non-link identity for the immutable root before any bundle access.
+fn canonical_runtime_root(root: &Path) -> Result<PathBuf, RuntimeIntegrityError> {
+    assert_directory(root, "runtime root")?;
+    root.canonicalize()
+        .map_err(|_| error("runtime root cannot be canonicalized"))
 }
 
 /// Verify target metadata, every required component tree, and the launch/SBOM/license files.
@@ -151,11 +160,11 @@ fn collect_files(
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         let path = entry.path();
-        let file_type = entry
-            .file_type()
+        let metadata = fs::symlink_metadata(&path)
             .map_err(|_| error("runtime component entry cannot be inspected"))?;
-        if file_type.is_symlink() {
-            return Err(error("runtime bundle contains a symbolic link"));
+        let file_type = metadata.file_type();
+        if is_link_or_reparse(&metadata) {
+            return Err(error("runtime bundle contains a link or reparse point"));
         }
         if file_type.is_dir() {
             collect_files(root, &path, files)?;
@@ -208,8 +217,8 @@ fn resolve(root: &Path, relative: &str) -> Result<PathBuf, RuntimeIntegrityError
         // symlink outside the immutable runtime root.
         let metadata =
             fs::symlink_metadata(&current).map_err(|_| error("runtime bundle file is missing"))?;
-        if metadata.file_type().is_symlink() {
-            return Err(error("runtime bundle contains a symbolic link"));
+        if is_link_or_reparse(&metadata) {
+            return Err(error("runtime bundle contains a link or reparse point"));
         }
     }
     Ok(current)
@@ -254,10 +263,26 @@ fn assert_regular_file(path: &Path, label: &'static str) -> Result<(), RuntimeIn
 fn safe_file_type(path: &Path) -> Result<FileType, RuntimeIntegrityError> {
     let metadata =
         fs::symlink_metadata(path).map_err(|_| error("runtime bundle file is missing"))?;
-    if metadata.file_type().is_symlink() {
-        return Err(error("runtime bundle contains a symbolic link"));
+    if is_link_or_reparse(&metadata) {
+        return Err(error("runtime bundle contains a link or reparse point"));
     }
     Ok(metadata.file_type())
+}
+
+pub(super) fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        metadata.file_attributes() & 0x0400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 fn error(message: &'static str) -> RuntimeIntegrityError {
@@ -331,6 +356,16 @@ mod tests {
             ("api/dist/server.js", "api"),
             ("worker/dist/index.js", "worker"),
             ("postgresql/bin/postgres.exe", "postgres"),
+            ("postgresql/bin/initdb.exe", "initdb"),
+            ("postgresql/bin/psql.exe", "psql"),
+            ("postgresql/bin/pg_isready.exe", "pg_isready"),
+            ("postgresql/bin/pg_dump.exe", "pg_dump"),
+            ("postgresql/bin/pg_restore.exe", "pg_restore"),
+            ("postgresql/bin/pg_ctl.exe", "pg_ctl"),
+            (
+                "api/node_modules/@schedule/database/dist/migrate.js",
+                "migrate",
+            ),
             (MANIFEST_FILE, "manifest"),
             ("runtime-licenses.json", "licenses"),
             ("runtime-sbom.json", "sbom"),
@@ -411,9 +446,11 @@ mod tests {
             verify_runtime_bundle(&fixture.0, &manifest, &expectations()),
             Ok(())
         );
+        let bundle =
+            load_and_verify_runtime_bundle(&fixture.0, &expectations(), &trust_anchor).unwrap();
         assert_eq!(
-            load_and_verify_runtime_bundle(&fixture.0, &expectations(), &trust_anchor).unwrap(),
-            manifest
+            bundle.node,
+            fixture.0.join("node/node.exe").canonicalize().unwrap()
         );
     }
 
@@ -443,6 +480,14 @@ mod tests {
         assert!(
             load_and_verify_runtime_bundle(&fixture.0, &expectations(), &trust_anchor).is_err()
         );
+    }
+
+    #[test]
+    fn runtime_errors_do_not_echo_caller_paths() {
+        let root = PathBuf::from("runtime-root-with-sensitive-name");
+        let error =
+            load_and_verify_runtime_bundle(&root, &expectations(), &"0".repeat(64)).unwrap_err();
+        assert!(!error.to_string().contains("sensitive-name"));
     }
 
     #[test]
@@ -477,5 +522,27 @@ mod tests {
         symlink("node.exe", fixture.0.join("node/link")).unwrap();
         assert!(hash_tree(&fixture.0.join("node")).is_err());
         assert!(verify_runtime_bundle(&fixture.0, &manifest, &expectations()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_runtime_root_link_before_reading_the_manifest() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::new();
+        let manifest = fixture_manifest(&fixture.0);
+        fs::write(
+            fixture.0.join(MANIFEST_FILE),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let anchor = format!(
+            "{:x}",
+            Sha256::digest(fs::read(fixture.0.join(MANIFEST_FILE)).unwrap())
+        );
+        let link = fixture.0.with_extension("link");
+        symlink(&fixture.0, &link).unwrap();
+        assert!(load_and_verify_runtime_bundle(&link, &expectations(), &anchor).is_err());
+        fs::remove_file(link).unwrap();
     }
 }

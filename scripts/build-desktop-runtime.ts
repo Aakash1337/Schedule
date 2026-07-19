@@ -364,6 +364,11 @@ export async function buildDesktopRuntime(
   await requireFile(workerDeploymentDirectory, "dist/index.js", "Worker entrypoint");
   await requireFile(
     apiDeploymentDirectory,
+    "node_modules/@schedule/database/dist/migrate.js",
+    "Database migration entrypoint",
+  );
+  await requireFile(
+    apiDeploymentDirectory,
     "node_modules/@schedule/database/drizzle/meta/_journal.json",
     "Migration journal",
   );

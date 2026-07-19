@@ -34,6 +34,9 @@ async function fixture(): Promise<{
     mkdir(path.join(api, "node_modules", "@schedule", "database", "drizzle", "meta"), {
       recursive: true,
     }),
+    mkdir(path.join(api, "node_modules", "@schedule", "database", "dist"), {
+      recursive: true,
+    }),
     mkdir(path.join(worker, "dist"), { recursive: true }),
     mkdir(node, { recursive: true }),
     mkdir(path.join(postgres, "bin"), { recursive: true }),
@@ -42,6 +45,10 @@ async function fixture(): Promise<{
   ]);
   await Promise.all([
     writeFile(path.join(api, "dist", "server.js"), "api"),
+    writeFile(
+      path.join(api, "node_modules", "@schedule", "database", "dist", "migrate.js"),
+      "migration",
+    ),
     writeFile(
       path.join(api, "node_modules", "@schedule", "database", "drizzle", "meta", "_journal.json"),
       "[]",
@@ -158,6 +165,23 @@ describe("buildDesktopRuntime", () => {
     await rm(path.join(options.postgresqlRuntimeDirectory, "bin", `postgres${executable}`));
     await expect(buildDesktopRuntime({ ...options, sources: await pins(options) })).rejects.toThrow(
       "PostgreSQL postgres executable is required",
+    );
+  });
+
+  it("requires the deployed database migration entrypoint", async () => {
+    const { options } = await fixture();
+    await rm(
+      path.join(
+        options.apiDeploymentDirectory,
+        "node_modules",
+        "@schedule",
+        "database",
+        "dist",
+        "migrate.js",
+      ),
+    );
+    await expect(buildDesktopRuntime({ ...options, sources: await pins(options) })).rejects.toThrow(
+      "Database migration entrypoint is required",
     );
   });
 
