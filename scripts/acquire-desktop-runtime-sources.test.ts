@@ -56,6 +56,13 @@ function streamResponse(status: number, location?: string, onCancel?: () => void
     headers: location === undefined ? undefined : { location },
   });
 }
+async function settle(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    return await promise;
+  } catch (error) {
+    return error;
+  }
+}
 
 describe("desktop runtime source acquisition", () => {
   it("rejects malformed schema, IDs, archive fields, and fixed upstream specifications", async () => {
@@ -269,24 +276,32 @@ describe("desktop runtime source acquisition", () => {
       outputDirectory: directory,
       fetchImplementation: async () => response(payload),
       afterVerification: async (temporary) => {
-        try {
+        if (process.platform === "win32") {
+          try {
+            await rm(temporary, { maxRetries: 0, retryDelay: 0 });
+            await writeFile(temporary, "malicious");
+          } catch {
+            blockedByOpenHandle = true;
+          }
+        } else {
           await rm(temporary);
           await writeFile(temporary, "malicious");
-        } catch {
-          blockedByOpenHandle = true;
         }
       },
     });
+    const outcome = await settle(result);
     if (process.platform === "win32") {
       if (blockedByOpenHandle) {
-        await result;
+        expect(outcome).not.toBeInstanceOf(Error);
         await expect(readFile(finalPath, "utf8")).resolves.toBe(Buffer.from(payload).toString());
       } else {
-        await expect(result).rejects.toThrow("temporary file changed");
+        expect(outcome).toBeInstanceOf(Error);
+        expect((outcome as Error).message).toContain("temporary file changed");
         await expect(readFile(finalPath)).rejects.toThrow();
       }
     } else {
-      await expect(result).rejects.toThrow("temporary file changed");
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toContain("temporary file changed");
       await expect(readFile(finalPath)).rejects.toThrow();
     }
   });
@@ -326,13 +341,32 @@ describe("desktop runtime source acquisition", () => {
         }
       },
     });
+    const outcome = await settle(result);
     if (replacementBlocked) {
-      await result;
+      expect(outcome).not.toBeInstanceOf(Error);
       await expect(readFile(finalPath, "utf8")).resolves.toBe(Buffer.from(payload).toString());
     } else {
-      await result;
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toContain("hierarchy");
       await expect(readFile(finalPath)).rejects.toThrow();
     }
     await expect(readFile(escapedFinal)).rejects.toThrow();
+  });
+
+  it("rejects an ancestor link while creating the output hierarchy componentwise", async () => {
+    const payload = new TextEncoder().encode("creation hierarchy fixture");
+    const lock = await fixtureLock(payload);
+    const root = await output();
+    const escaped = await output();
+    const linked = path.join(root, "linked");
+    await symlink(escaped, linked, "dir");
+    await expect(
+      acquireRuntimeSources({
+        lock,
+        outputDirectory: path.join(linked, "runtime"),
+        fetchImplementation: async () => response(payload),
+      }),
+    ).rejects.toThrow("hierarchy");
+    await expect(readFile(path.join(escaped, "runtime"))).rejects.toThrow();
   });
 });
