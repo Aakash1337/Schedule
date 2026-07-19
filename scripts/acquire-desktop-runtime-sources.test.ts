@@ -315,11 +315,14 @@ describe("desktop runtime source acquisition", () => {
     const finalPath = path.join(directory, "windows-x64", finalName);
     const escapedFinal = path.join(escaped, finalName);
     let replacementBlocked = false;
+    let attempted = false;
     const result = acquireRuntimeSources({
       lock,
       outputDirectory: directory,
       fetchImplementation: async () => response(payload),
       afterVerification: async () => {
+        if (attempted) return;
+        attempted = true;
         const target = path.join(directory, "windows-x64");
         try {
           await rename(target, path.join(directory, "displaced"));
