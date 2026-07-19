@@ -40,7 +40,7 @@ function lock(): PostgreSqlRuntimeLock {
       },
       zlib: {
         version: "1.3.2",
-        url: "https://zlib.net/zlib-1.3.2.tar.gz",
+        url: "https://zlib.net/fossils/zlib-1.3.2.tar.gz",
         sha256: "c".repeat(64),
       },
     },
