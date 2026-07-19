@@ -415,7 +415,18 @@ pub(crate) fn start_process(
     spec: ProcessSpec,
     control: Arc<dyn ProcessGroupControl>,
 ) -> Result<StartedProcess, ProcessError> {
+    start_process_cancellable(spec, control, &|| false)
+}
+
+pub(crate) fn start_process_cancellable(
+    spec: ProcessSpec,
+    control: Arc<dyn ProcessGroupControl>,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<StartedProcess, ProcessError> {
     spec.validate()?;
+    if is_cancelled() {
+        return Err(ProcessError::new("desktop.process_cancelled"));
+    }
     let mut command = spec.command();
     control.configure_command(spec.role, &mut command)?;
 
@@ -429,6 +440,10 @@ pub(crate) fn start_process(
     if control.attach(identity, &mut child).is_err() {
         terminate_unowned_child(&mut child);
         return Err(ProcessError::new("desktop.process_group_failed"));
+    }
+    if is_cancelled() {
+        terminate_attached_child(&control, identity, &mut child);
+        return Err(ProcessError::new("desktop.process_cancelled"));
     }
 
     let shutdown_stdin = if spec.desktop_shutdown_stdin {
@@ -485,7 +500,12 @@ pub(crate) fn start_process(
         ownership_released: false,
     };
     let readiness = if spec.readiness.is_some() {
-        match await_readiness(&mut process, ready_receiver, spec.startup_timeout) {
+        match await_readiness(
+            &mut process,
+            ready_receiver,
+            spec.startup_timeout,
+            is_cancelled,
+        ) {
             Ok(payload) => Some(payload),
             Err(error) => {
                 let _ = process.stop(Duration::ZERO);
@@ -538,9 +558,13 @@ fn await_readiness(
     process: &mut OwnedProcess,
     receiver: Receiver<ReadinessEvent>,
     timeout: Duration,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<ReadyPayload, ProcessError> {
     let deadline = Instant::now() + timeout;
     loop {
+        if is_cancelled() {
+            return Err(ProcessError::new("desktop.process_cancelled"));
+        }
         if process.has_exited()? {
             return Err(ProcessError::new("desktop.process_exited_early"));
         }
@@ -898,6 +922,27 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(error.code(), "desktop.process_start_timeout");
+    }
+
+    #[test]
+    fn startup_cancellation_terminates_and_reaps_the_child() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let setter = Arc::clone(&cancelled);
+        let thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            setter.store(true, Ordering::Release);
+        });
+        let control: Arc<dyn ProcessGroupControl> = Arc::new(DirectChildControl);
+        let error = start_process_cancellable(
+            helper_spec(ProcessRole::Api, "sleep", Duration::from_secs(2))
+                .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256)),
+            control,
+            &|| cancelled.load(Ordering::Acquire),
+        )
+        .err()
+        .unwrap();
+        thread.join().unwrap();
+        assert_eq!(error.code(), "desktop.process_cancelled");
     }
 
     #[derive(Default)]

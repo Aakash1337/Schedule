@@ -175,6 +175,7 @@ pub(crate) fn bootstrap_plan(
 }
 
 pub(crate) fn start_plan(bin: &Path, data: &Path, connection: &PgConnection) -> PgCommand {
+    let hba_file = data.join("pg_hba.conf");
     command(
         // Run the server directly so the desktop retains the real database
         // process handle. `pg_ctl start` daemonizes and would orphan ownership.
@@ -186,6 +187,10 @@ pub(crate) fn start_plan(bin: &Path, data: &Path, connection: &PgConnection) -> 
             "127.0.0.1".into(),
             "-p".into(),
             connection.port.to_string(),
+            "-c".into(),
+            format!("hba_file={}", display(&hba_file)),
+            "-c".into(),
+            "unix_socket_directories=".into(),
         ],
         BTreeMap::new(),
     )
@@ -393,6 +398,18 @@ mod tests {
         );
         assert!(plans[1].program.ends_with(executable("postgres")));
         assert!(plans[1].environment.is_empty());
+        assert!(plans[1].arguments.windows(2).any(|args| {
+            args[0] == "-c"
+                && args[1].starts_with("hba_file=")
+                && Path::new(args[1].trim_start_matches("hba_file="))
+                    == Path::new("data/pg_hba.conf")
+        }));
+        assert!(
+            plans[1]
+                .arguments
+                .windows(2)
+                .any(|args| args == ["-c", "unix_socket_directories="])
+        );
 
         let admin = PgConnection::new(
             54_321,

@@ -192,7 +192,18 @@ pub(crate) fn run_command(
     spec: CommandSpec,
     control: Arc<dyn ProcessGroupControl>,
 ) -> Result<CommandOutput, CommandError> {
+    run_command_cancellable(spec, control, &|| false)
+}
+
+pub(crate) fn run_command_cancellable(
+    spec: CommandSpec,
+    control: Arc<dyn ProcessGroupControl>,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<CommandOutput, CommandError> {
     spec.validate()?;
+    if is_cancelled() {
+        return Err(CommandError::new("desktop.command_cancelled"));
+    }
     let mut command = spec.command();
     control
         .configure_command(ProcessRole::Database, &mut command)
@@ -212,6 +223,10 @@ pub(crate) fn run_command(
         control: control.as_ref(),
         identity,
     };
+    if is_cancelled() {
+        stop_and_reap(&control, identity, &mut child);
+        return Err(CommandError::new("desktop.command_cancelled"));
+    }
 
     let Some(stdout) = child.stdout.take() else {
         stop_and_reap(&control, identity, &mut child);
@@ -235,6 +250,7 @@ pub(crate) fn run_command(
         spec.timeout,
         spec.max_stdout_bytes,
         spec.max_stderr_bytes,
+        is_cancelled,
     );
     // Never block on a reader: a descendant can keep a pipe handle open after the child exits.
     for reader in readers {
@@ -254,6 +270,7 @@ fn collect_output(
     timeout: Duration,
     stdout_limit: usize,
     stderr_limit: usize,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<CommandOutput, CommandError> {
     let deadline = Instant::now() + timeout;
     let mut stdout = Vec::with_capacity(stdout_limit.min(READ_CHUNK_BYTES));
@@ -263,6 +280,10 @@ fn collect_output(
     let mut exited_at = None;
 
     loop {
+        if is_cancelled() {
+            stop_and_reap(control, identity, child);
+            return Err(CommandError::new("desktop.command_cancelled"));
+        }
         match receiver.recv_timeout(POLL_INTERVAL) {
             Ok(OutputEvent::Bytes(Stream::Stdout, bytes)) => {
                 if let Err(error) = append_bounded(&mut stdout, bytes, stdout_limit) {
@@ -396,7 +417,13 @@ fn map_process_error(_error: ProcessError) -> CommandError {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs, sync::Mutex};
+    use std::{
+        env, fs,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
 
     use super::*;
 
@@ -537,6 +564,28 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(error.code(), "desktop.command_timeout");
+        assert_eq!(*control.stops.lock().unwrap(), 1);
+        assert_eq!(*control.releases.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn cancellation_stops_and_reaps_a_running_command() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let setter = Arc::clone(&cancelled);
+        let thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            setter.store(true, Ordering::Release);
+        });
+        let control = Arc::new(RecordingControl::default());
+        let error = run_command_cancellable(
+            helper("sleep", Duration::from_secs(2)),
+            control.clone(),
+            &|| cancelled.load(Ordering::Acquire),
+        )
+        .err()
+        .unwrap();
+        thread.join().unwrap();
+        assert_eq!(error.code(), "desktop.command_cancelled");
         assert_eq!(*control.stops.lock().unwrap(), 1);
         assert_eq!(*control.releases.lock().unwrap(), 1);
     }

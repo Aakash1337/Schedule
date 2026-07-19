@@ -440,6 +440,10 @@ fn completion_event(effect: Effect, outcome: EffectOutcome) -> Result<Event, Com
             ),
         ) => Err(CompletionError::Incompatible(incompatibility)),
         (
+            Effect::VerifyDatabase { .. },
+            EffectOutcome::Incompatible(incompatibility @ Incompatibility::Migration),
+        ) => Err(CompletionError::Incompatible(incompatibility)),
+        (
             Effect::MigrateDatabase { .. },
             EffectOutcome::Incompatible(incompatibility @ Incompatibility::Migration),
         ) => Err(CompletionError::Incompatible(incompatibility)),
@@ -1127,6 +1131,10 @@ mod tests {
             (
                 Effect::VerifyDatabase { generation: 1 },
                 Incompatibility::DatabaseFormat,
+            ),
+            (
+                Effect::VerifyDatabase { generation: 1 },
+                Incompatibility::Migration,
             ),
             (
                 Effect::MigrateDatabase { generation: 1 },
