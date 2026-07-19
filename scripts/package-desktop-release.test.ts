@@ -219,6 +219,19 @@ describe("packageDesktopRelease", () => {
     expect(invoked).toBe(false);
   });
 
+  it("accepts the bootstrap marker after a Windows checkout", async () => {
+    const { repository, runtime } = await fixture();
+    const reserved = path.join(repository, "apps/desktop/src-tauri/resources/runtime");
+    await mkdir(reserved, { recursive: true });
+    await writeFile(path.join(reserved, ".gitkeep"), "staged at build\r\n");
+    await packageDesktopRelease({
+      repositoryDirectory: repository,
+      runtimeDirectory: runtime,
+      runTauri: async () => undefined,
+    });
+    expect(await readFile(path.join(reserved, ".gitkeep"), "utf8")).toBe("staged at build\n");
+  });
+
   it("keeps an existing concurrent reservation and restores bootstrap staging after failures", async () => {
     const { repository, runtime } = await fixture();
     const reserved = path.join(repository, "apps/desktop/src-tauri/resources/runtime");

@@ -14,6 +14,7 @@ const targetTriples = {
 } as const;
 const BOOTSTRAP_FILE = ".gitkeep";
 const BOOTSTRAP_CONTENT = "staged at build\n";
+const WINDOWS_BOOTSTRAP_CONTENT = "staged at build\r\n";
 const STAGING_LOCK = ".schedule-runtime-stage.lock";
 
 type Target = keyof typeof targetTriples;
@@ -84,10 +85,13 @@ async function reserveRuntime(stagedRuntime: string): Promise<void> {
     if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
   }
   const entries = await readdir(stagedRuntime);
+  const bootstrap = await readFile(path.join(stagedRuntime, BOOTSTRAP_FILE), "utf8").catch(
+    () => "",
+  );
   if (
     entries.length !== 1 ||
     entries[0] !== BOOTSTRAP_FILE ||
-    (await readFile(path.join(stagedRuntime, BOOTSTRAP_FILE), "utf8")) !== BOOTSTRAP_CONTENT
+    (bootstrap !== BOOTSTRAP_CONTENT && bootstrap !== WINDOWS_BOOTSTRAP_CONTENT)
   ) {
     throw new Error("Desktop runtime staging already exists; refusing to overwrite it.");
   }
