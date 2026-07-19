@@ -222,6 +222,12 @@ the minimal Node runtime and PostgreSQL 17 runtime, assembles the authenticated 
 native Tauri installers. It retains the installers plus the runtime manifest, SBOM, license inventory,
 and component provenance as one release artifact set.
 
+After both platform artifacts are uploaded, a tag-only downstream job downloads those exact artifact
+sets and gives every installer and retained metadata file a GitHub build-provenance attestation rooted
+in the repository's Actions identity. Consumers can verify a downloaded file with
+`gh attestation verify <file> --repo Aakash1337/Schedule`. Pull-request and manual-dispatch artifacts
+remain test builds and are intentionally not presented as attested releases.
+
 Windows produces NSIS and MSI where the runner supports them. Linux produces AppImage and Debian
 packages where the runner supports them. CI install-smokes NSIS and extracts/smokes the Debian package;
 MSI and AppImage are built and uploaded but not separately install-smoked. The smoke validates the

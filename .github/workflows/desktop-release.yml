@@ -239,3 +239,21 @@ jobs:
             ${{ runner.temp }}/release-metadata
           if-no-files-found: error
           retention-days: 90
+
+  attest:
+    name: Attest tagged release artifacts
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: bundle
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: schedule-desktop-*-x64
+          path: ${{ runner.temp }}/release-artifacts
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ runner.temp }}/release-artifacts/**/*
