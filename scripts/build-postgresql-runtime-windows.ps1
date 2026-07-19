@@ -29,6 +29,14 @@ function Assert-Hash([string]$Path, [string]$Expected) {
     throw "SHA-256 mismatch: $Path"
   }
 }
+function Test-X64Pe([string]$Path) {
+  $Bytes = [IO.File]::ReadAllBytes($Path)
+  if ($Bytes.Length -lt 64 -or [BitConverter]::ToUInt16($Bytes, 0) -ne 0x5A4D) { return $false }
+  $PeOffset = [BitConverter]::ToInt32($Bytes, 0x3C)
+  return $PeOffset -ge 0 -and $PeOffset + 6 -le $Bytes.Length -and
+    [BitConverter]::ToUInt32($Bytes, $PeOffset) -eq 0x00004550 -and
+    [BitConverter]::ToUInt16($Bytes, $PeOffset + 4) -eq 0x8664
+}
 function Import-VsEnvironment {
   $VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
   if (-not (Test-Path -LiteralPath $VsWhere -PathType Leaf)) { throw "vswhere.exe was not found." }
@@ -131,22 +139,35 @@ try {
   & (Join-Path $VcpkgRoot "bootstrap-vcpkg.bat") -disableMetrics
   if ($LASTEXITCODE -ne 0) { throw "Vcpkg bootstrap failed." }
   $InstallRoot = Join-Path $Work "vcpkg-installed"
+  $HostTriplet = "x64-windows"
   $env:VCPKG_DISABLE_METRICS = "1"
   $env:VCPKG_FEATURE_FLAGS = "manifests,versions"
   & (Join-Path $VcpkgRoot "vcpkg.exe") install `
     "--x-manifest-root=$(Join-Path $PSScriptRoot 'postgresql-runtime')" `
     "--x-install-root=$InstallRoot" `
     "--triplet=$($Lock.windowsDependencies.triplet)" `
-    --host-triplet=x64-windows `
+    "--host-triplet=$HostTriplet" `
     --clean-after-build
   if ($LASTEXITCODE -ne 0) { throw "Pinned vcpkg dependency installation failed." }
 
   $TripletRoot = Join-Path $InstallRoot $Lock.windowsDependencies.triplet
+  $PkgconfExecutable = Join-Path $InstallRoot "$HostTriplet\tools\pkgconf\pkgconf.exe"
+  $PkgconfItem = Get-Item -LiteralPath $PkgconfExecutable -Force
+  if ($PkgconfItem.PSIsContainer -or $PkgconfItem.LinkType) { throw "Pinned pkgconf is not a regular file." }
+  $env:PKG_CONFIG = $PkgconfItem.FullName
+  $env:PKG_CONFIG_PATH = Join-Path $TripletRoot "lib\pkgconfig"
+  $env:PKG_CONFIG_LIBDIR = $env:PKG_CONFIG_PATH
+  & $PkgconfItem.FullName --exists openssl zlib
+  if ($LASTEXITCODE -ne 0) { throw "Pinned vcpkg dependency metadata is incomplete." }
   $MesonBuild = Join-Path $Work "meson-build"
+  # These are vcpkg's static OpenSSL Libs.private dependencies. Meson's CMake
+  # discovery does not propagate them into its compiler feature checks.
+  $StaticSystemLinkArgs = "-Dc_link_args=['crypt32.lib','ws2_32.lib','advapi32.lib','user32.lib']"
   & $MesonExecutable setup $MesonBuild $Source `
     "--prefix=$OutputDirectory" `
     --buildtype=release `
     --wrap-mode=nodownload `
+    $StaticSystemLinkArgs `
     "--cmake-prefix-path=$TripletRoot" `
     "-Dextra_include_dirs=$(Join-Path $TripletRoot 'include')" `
     "-Dextra_lib_dirs=$(Join-Path $TripletRoot 'lib')" `
@@ -177,22 +198,24 @@ try {
   @("include", "lib\pkgconfig", "lib\pgxs", "share\doc", "share\man") | ForEach-Object {
     Remove-Item -LiteralPath (Join-Path $OutputDirectory $_) -Recurse -Force -ErrorAction SilentlyContinue
   }
-  Get-ChildItem -LiteralPath (Join-Path $OutputDirectory "lib") -Recurse -File -Include *.lib,*.pdb | Remove-Item -Force
+  Get-ChildItem -LiteralPath (Join-Path $OutputDirectory "lib") -Recurse -File |
+    Where-Object { $_.Extension -in @(".lib", ".pdb") } |
+    Remove-Item -Force
   $Licenses = New-Item -ItemType Directory -Path (Join-Path $OutputDirectory "LICENSES")
   Copy-Item -LiteralPath (Join-Path $Source "COPYRIGHT") -Destination (Join-Path $Licenses "PostgreSQL.txt")
   Copy-Item -LiteralPath (Join-Path $TripletRoot "share\openssl\copyright") -Destination (Join-Path $Licenses "OpenSSL.txt")
   Copy-Item -LiteralPath (Join-Path $TripletRoot "share\zlib\copyright") -Destination (Join-Path $Licenses "zlib.txt")
   Copy-Item -LiteralPath (Join-Path $InstallRoot "vcpkg\status") -Destination (Join-Path $OutputDirectory "BUILD-VCPKG-STATUS.txt")
 
-  $SystemDll = '^(api-ms-win-|ext-ms-win-|kernel32|advapi32|ws2_32|secur32|crypt32|bcrypt|ntdll|user32|shell32|shlwapi|ole32|oleaut32|rpcrt4|netapi32|userenv|dnsapi|iphlpapi|normaliz|version|msvcrt|ucrtbase)\.dll$'
+  $SystemDll = '^(api-ms-win-.*|ext-ms-win-.*|kernel32|advapi32|ws2_32|secur32|crypt32|bcrypt|ntdll|user32|shell32|shlwapi|ole32|oleaut32|rpcrt4|netapi32|userenv|dnsapi|iphlpapi|normaliz|version|msvcrt|ucrtbase)\.dll$'
   $RedistributableRoot = Join-Path $env:VCToolsRedistDir "x64"
   if (-not (Test-Path -LiteralPath $RedistributableRoot -PathType Container)) { throw "x64 Visual C++ redistributables were not found." }
   do {
     $Copied = $false
-    $PeFiles = Get-ChildItem -LiteralPath $OutputDirectory -Recurse -File -Include *.exe,*.dll
+    $PeFiles = Get-ChildItem -LiteralPath $OutputDirectory -Recurse -File |
+      Where-Object { $_.Extension -in @(".exe", ".dll") }
     foreach ($Pe in $PeFiles) {
-      $Headers = & dumpbin.exe /nologo /headers $Pe.FullName
-      if ($LASTEXITCODE -ne 0 -or $Headers -notmatch "8664 machine \(x64\)") { throw "Non-x64 PE file in runtime: $($Pe.FullName)" }
+      if (-not (Test-X64Pe $Pe.FullName)) { throw "Non-x64 PE file in runtime: $($Pe.FullName)" }
       $Report = & dumpbin.exe /nologo /dependents $Pe.FullName
       if ($LASTEXITCODE -ne 0) { throw "dumpbin failed for $($Pe.FullName)" }
       foreach ($Line in $Report) {

@@ -1,47 +1,133 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 type Result = Readonly<{ stdout: string; stderr: string }>;
+
+async function terminateProcessTree(child: ChildProcess): Promise<void> {
+  const processId = child.pid;
+  if (processId === undefined) return;
+  if (process.platform === "win32") {
+    await new Promise<void>((resolve, reject) => {
+      const killer = spawn("taskkill.exe", ["/PID", String(processId), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      const timer = setTimeout(() => {
+        killer.kill();
+        reject(new Error("Windows process-tree termination exceeded 5000 ms."));
+      }, 5000);
+      killer.once("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      killer.once("exit", (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(new Error(`Windows process-tree termination failed (${code ?? "unknown"}).`));
+      });
+    });
+    return;
+  }
+  try {
+    process.kill(-processId, "SIGKILL");
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH") {
+      return;
+    }
+    throw error;
+  }
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(-processId, 0);
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ESRCH"
+      ) {
+        return;
+      }
+      throw error;
+    }
+    await delay(25);
+  }
+  throw new Error("Unix process-tree termination exceeded 5000 ms.");
+}
 
 function executable(root: string, name: string): string {
   return path.join(root, "bin", `${name}${process.platform === "win32" ? ".exe" : ""}`);
 }
 
-function run(
+export function runPostgresCommand(
   command: string,
   arguments_: readonly string[],
   environment: NodeJS.ProcessEnv,
+  timeoutMs = 120_000,
+  captureOutput = true,
 ): Promise<Result> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, arguments_, {
       env: environment,
       shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: captureOutput ? ["ignore", "pipe", "pipe"] : "ignore",
       windowsHide: true,
+      detached: process.platform !== "win32",
     });
     let stdout = "";
     let stderr = "";
-    let timedOut = false;
+    let settled = false;
+    let directExited = false;
+    const finish = (action: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      action();
+    };
     const timeout = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, 120_000);
-    child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
-    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
+      if (settled) return;
+      settled = true;
+      if (directExited || child.exitCode !== null || child.signalCode !== null) {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        reject(new Error(`${path.basename(command)} exceeded its ${timeoutMs} ms limit.`));
+        return;
+      }
+      void terminateProcessTree(child).then(
+        () => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          reject(new Error(`${path.basename(command)} exceeded its ${timeoutMs} ms limit.`));
+        },
+        () => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          reject(new Error(`${path.basename(command)} timed out and tree termination failed.`));
+        },
+      );
+    }, timeoutMs);
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
+    child.on("error", (error) => finish(() => reject(error)));
+    child.on("exit", () => (directExited = true));
     child.on("close", (code) => {
-      clearTimeout(timeout);
-      if (timedOut) reject(new Error(`${path.basename(command)} exceeded its 120 second limit.`));
-      else if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`${path.basename(command)} failed (${code}): ${stderr || stdout}`));
+      finish(() => {
+        if (code === 0) resolve({ stdout, stderr });
+        else {
+          const detail = (stderr || stdout)
+            .trim()
+            .slice(-4096)
+            .replaceAll(os.tmpdir(), "<temporary>");
+          reject(new Error(`${path.basename(command)} failed (${code}): ${detail}`));
+        }
+      });
     });
   });
 }
@@ -69,6 +155,7 @@ export async function smokePostgreSqlRuntime(runtimeDirectory: string): Promise<
   const relocated = path.join(temporary, "relocated runtime with spaces");
   const data = path.join(temporary, "cluster with spaces");
   const dump = path.join(temporary, "smoke.dump");
+  const serverLog = path.join(temporary, "postgres.log");
   const environment = {
     ...process.env,
     PATH: `${path.join(relocated, "bin")}${path.delimiter}${process.env.PATH ?? ""}`,
@@ -78,9 +165,9 @@ export async function smokePostgreSqlRuntime(runtimeDirectory: string): Promise<
   try {
     const { cp } = await import("node:fs/promises");
     await cp(runtime, relocated, { recursive: true, dereference: false, errorOnExist: true });
-    await run(
+    await runPostgresCommand(
       executable(relocated, "initdb"),
-      ["-D", data, "--auth=trust", "--no-locale"],
+      ["-D", data, "--auth=trust", "--no-locale", "--username=postgres"],
       environment,
     );
     const port = await availablePort();
@@ -88,15 +175,22 @@ export async function smokePostgreSqlRuntime(runtimeDirectory: string): Promise<
       path.join(data, "postgresql.auto.conf"),
       `listen_addresses = '127.0.0.1'\nport = ${port}\nssl = off\n`,
     );
+    await writeFile(serverLog, "", { mode: 0o600 });
     startAttempted = true;
-    await run(executable(relocated, "pg_ctl"), ["-D", data, "-w", "start"], environment);
-    const connection = ["-h", "127.0.0.1", "-p", String(port), "-d", "postgres"];
-    await run(
+    await runPostgresCommand(
+      executable(relocated, "pg_ctl"),
+      ["-D", data, "-l", serverLog, "-w", "start"],
+      environment,
+      120_000,
+      false,
+    );
+    const connection = ["-h", "127.0.0.1", "-p", String(port), "-U", "postgres", "-d", "postgres"];
+    await runPostgresCommand(
       executable(relocated, "psql"),
       [...connection, "-v", "ON_ERROR_STOP=1", "-c", "CREATE EXTENSION pgcrypto"],
       environment,
     );
-    const crypto = await run(
+    const crypto = await runPostgresCommand(
       executable(relocated, "psql"),
       [
         ...connection,
@@ -111,8 +205,16 @@ export async function smokePostgreSqlRuntime(runtimeDirectory: string): Promise<
     if (!/^[a-f0-9]{64}\|schedule\s*$/u.test(crypto.stdout.trim())) {
       throw new Error("pgcrypto smoke result was invalid.");
     }
-    await run(executable(relocated, "pg_dump"), [...connection, "-Fc", "-f", dump], environment);
-    const listing = await run(executable(relocated, "pg_restore"), ["--list", dump], environment);
+    await runPostgresCommand(
+      executable(relocated, "pg_dump"),
+      [...connection, "-Fc", "-f", dump],
+      environment,
+    );
+    const listing = await runPostgresCommand(
+      executable(relocated, "pg_restore"),
+      ["--list", dump],
+      environment,
+    );
     if (!listing.stdout.includes("EXTENSION - pgcrypto")) {
       throw new Error("pg_dump/pg_restore smoke did not retain pgcrypto.");
     }
@@ -123,17 +225,21 @@ export async function smokePostgreSqlRuntime(runtimeDirectory: string): Promise<
   const postmasterPid = await lstat(path.join(data, "postmaster.pid")).catch(() => null);
   if (startAttempted && postmasterPid?.isFile()) {
     try {
-      await run(
+      await runPostgresCommand(
         executable(relocated, "pg_ctl"),
         ["-D", data, "-w", "-m", "fast", "stop"],
         environment,
+        120_000,
+        false,
       );
     } catch {
       try {
-        await run(
+        await runPostgresCommand(
           executable(relocated, "pg_ctl"),
           ["-D", data, "-w", "-m", "immediate", "stop"],
           environment,
+          120_000,
+          false,
         );
       } catch (error) {
         cleanupFailure = error;

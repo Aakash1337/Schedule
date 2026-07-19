@@ -245,10 +245,12 @@ relative RUNPATHs and an Ubuntu 22.04 GLIBC symbol floor; Windows walks PE depen
 non-system Visual C++ runtime DLLs. This evidence does not claim compatibility with other Linux
 distributions, Windows versions, or CPU architectures.
 
-The remaining release pipeline must construct Node/API/worker runtime trees, feed all four trees to
-`desktop:runtime:assemble`, embed its manifest hash in the signed Tauri binary, and run installer
-plus first-launch smoke tests. A committed hash protects archived bytes but does not replace an
-independently verified upstream release-signature process.
+The Node and PostgreSQL workflows produce verified native component artifacts, while service
+staging produces the API and worker deployment trees. `desktop:runtime:assemble` validates those
+four supplied trees, and `desktop:build` embeds the resulting manifest hash before packaging. A
+production release must still consume the matching platform artifacts and independently verify
+upstream release signatures; a committed hash protects the selected bytes but does not replace that
+provenance check.
 
 The acquisition directory must remain private to the same user; this developer tool does not try to
 defend against a same-user process modifying a published archive after it returns. The release
