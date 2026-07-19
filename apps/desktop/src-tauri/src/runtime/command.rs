@@ -292,6 +292,9 @@ fn collect_output(
                 };
             }
             if exited_at.is_some_and(|at| at.elapsed() >= OUTPUT_SETTLE_TIMEOUT) {
+                // A descendant may still own the inherited pipes after the direct child exits.
+                // Stop the prepared group before reporting the malformed command lifecycle.
+                stop_and_reap(control, identity, child);
                 return Err(CommandError::new("desktop.command_output_failed"));
             }
         }
@@ -345,13 +348,28 @@ fn stop_and_reap(
     identity: ChildIdentity,
     child: &mut Child,
 ) {
-    let _ = control.force_stop(identity, child);
+    if control.force_stop(identity, child).is_err() {
+        kill_direct_child(child);
+        return;
+    }
     let until = Instant::now() + Duration::from_secs(2);
     while Instant::now() < until {
         if matches!(child.try_wait(), Ok(Some(_))) {
             return;
         }
         thread::sleep(POLL_INTERVAL);
+    }
+    kill_direct_child(child);
+}
+
+fn kill_direct_child(child: &mut Child) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
+    if child.kill().is_ok() {
+        let _ = child.wait();
+    } else {
+        let _ = child.try_wait();
     }
 }
 
@@ -361,7 +379,7 @@ fn map_process_error(_error: ProcessError) -> CommandError {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, sync::Mutex};
+    use std::{env, fs, sync::Mutex};
 
     use super::*;
 
@@ -392,6 +410,20 @@ mod tests {
             }
             Ok("failure") => std::process::exit(7),
             Ok("sleep") => thread::sleep(Duration::from_secs(2)),
+            Ok("delayed_marker") => {
+                thread::sleep(Duration::from_millis(350));
+                fs::write(env::var_os(VALUE).unwrap(), b"alive").unwrap();
+            }
+            Ok("pipe_descendant") => {
+                Command::new(env::current_exe().unwrap())
+                    .arg("command_subprocess_helper")
+                    .arg("--nocapture")
+                    .env_clear()
+                    .env(MODE, "pipe_descendant_child")
+                    .spawn()
+                    .unwrap();
+            }
+            Ok("pipe_descendant_child") => thread::sleep(Duration::from_millis(600)),
             Ok("large") => print!("{}", "x".repeat(2048)),
             _ => {}
         }
@@ -451,6 +483,70 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(error.code(), "desktop.command_timeout");
+        assert_eq!(*control.0.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn falls_back_to_the_owned_child_when_group_termination_fails() {
+        #[derive(Default)]
+        struct FailingControl(Mutex<usize>);
+        impl ProcessGroupControl for FailingControl {
+            fn force_stop(
+                &self,
+                _identity: ChildIdentity,
+                _child: &mut Child,
+            ) -> Result<(), ProcessError> {
+                *self.0.lock().unwrap() += 1;
+                Err(ProcessError::new("test.group_stop_failed"))
+            }
+        }
+
+        let marker = env::temp_dir().join(format!(
+            "schedule-command-fallback-{}-{}.marker",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        let _ = fs::remove_file(&marker);
+        let control = Arc::new(FailingControl::default());
+        let error = match run_command(
+            helper("delayed_marker", Duration::from_millis(25)).env(VALUE, marker.as_os_str()),
+            control.clone(),
+        ) {
+            Ok(_) => panic!("delayed helper unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        thread::sleep(Duration::from_millis(500));
+
+        assert_eq!(error.code(), "desktop.command_timeout");
+        assert_eq!(*control.0.lock().unwrap(), 1);
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn stops_the_group_when_descendants_keep_output_pipes_open() {
+        #[derive(Default)]
+        struct RecordingControl(Mutex<usize>);
+        impl ProcessGroupControl for RecordingControl {
+            fn force_stop(
+                &self,
+                _identity: ChildIdentity,
+                _child: &mut Child,
+            ) -> Result<(), ProcessError> {
+                *self.0.lock().unwrap() += 1;
+                Ok(())
+            }
+        }
+
+        let control = Arc::new(RecordingControl::default());
+        let error = match run_command(
+            helper("pipe_descendant", Duration::from_secs(2)),
+            control.clone(),
+        ) {
+            Ok(_) => panic!("pipe-holding descendant unexpectedly settled"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code(), "desktop.command_output_failed");
         assert_eq!(*control.0.lock().unwrap(), 1);
     }
 
