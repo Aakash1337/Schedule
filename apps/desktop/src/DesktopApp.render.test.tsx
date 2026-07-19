@@ -24,7 +24,11 @@ describe("DesktopApp runtime gate", () => {
   });
 
   it("inspects once in StrictMode and keeps the shared App behind a recoverable error", async () => {
-    invokeMock.mockResolvedValue({ phase: "foundation", message: "Install the local runtime" });
+    invokeMock.mockResolvedValue({
+      phase: "foundation",
+      message: "Install the local runtime",
+      generation: 0,
+    });
 
     const { container } = render(
       <StrictMode>
@@ -42,7 +46,11 @@ describe("DesktopApp runtime gate", () => {
   });
 
   it("presents incompatible data as a blocking accessible error without mounting the App", async () => {
-    invokeMock.mockResolvedValue({ phase: "incompatible_data", message: "Update Schedule first" });
+    invokeMock.mockResolvedValue({
+      phase: "incompatible_data",
+      message: "Update Schedule first",
+      generation: 1,
+    });
 
     render(<DesktopApp />);
 
@@ -53,9 +61,13 @@ describe("DesktopApp runtime gate", () => {
 
   it("re-inspects after retry and mounts the shared App only when the runtime is ready", async () => {
     invokeMock
-      .mockResolvedValueOnce({ phase: "foundation", message: "Install the local runtime" })
-      .mockResolvedValueOnce("accepted")
-      .mockResolvedValueOnce({ phase: "ready", message: "Ready" });
+      .mockResolvedValueOnce({
+        phase: "foundation",
+        message: "Install the local runtime",
+        generation: 1,
+      })
+      .mockResolvedValueOnce({ result: "accepted", generation: 1 })
+      .mockResolvedValueOnce({ phase: "ready", message: "Ready", generation: 2 });
 
     render(<DesktopApp />);
 
@@ -72,8 +84,12 @@ describe("DesktopApp runtime gate", () => {
   it("polls an active startup until the shared application is ready", async () => {
     vi.useFakeTimers();
     invokeMock
-      .mockResolvedValueOnce({ phase: "starting_services", message: "Starting services" })
-      .mockResolvedValueOnce({ phase: "ready", message: "Ready" });
+      .mockResolvedValueOnce({
+        phase: "starting_services",
+        message: "Starting services",
+        generation: 1,
+      })
+      .mockResolvedValueOnce({ phase: "ready", message: "Ready", generation: 1 });
 
     render(<DesktopApp />);
 
@@ -91,13 +107,19 @@ describe("DesktopApp runtime gate", () => {
   });
 
   it("coalesces rapid retries while the current inspection is pending", async () => {
-    let resolveRetry!: (status: { phase: "ready"; message: string }) => void;
-    const retryStatus = new Promise<{ phase: "ready"; message: string }>((resolve) => {
-      resolveRetry = resolve;
-    });
+    let resolveRetry!: (status: { phase: "ready"; message: string; generation: number }) => void;
+    const retryStatus = new Promise<{ phase: "ready"; message: string; generation: number }>(
+      (resolve) => {
+        resolveRetry = resolve;
+      },
+    );
     invokeMock
-      .mockResolvedValueOnce({ phase: "foundation", message: "Install the local runtime" })
-      .mockResolvedValueOnce("accepted")
+      .mockResolvedValueOnce({
+        phase: "foundation",
+        message: "Install the local runtime",
+        generation: 1,
+      })
+      .mockResolvedValueOnce({ result: "accepted", generation: 1 })
       .mockReturnValueOnce(retryStatus);
 
     render(<DesktopApp />);
@@ -114,24 +136,95 @@ describe("DesktopApp runtime gate", () => {
       1,
     );
 
-    await act(async () => resolveRetry({ phase: "ready", message: "Ready" }));
+    await act(async () => resolveRetry({ phase: "ready", message: "Ready", generation: 2 }));
     expect(screen.getByRole("main", { name: "Shared Schedule application" })).not.toBeNull();
+  });
+
+  it("keeps polling when an accepted retry first observes the stale failure generation", async () => {
+    vi.useFakeTimers();
+    invokeMock
+      .mockResolvedValueOnce({
+        phase: "recoverable_failure",
+        message: "Startup failed",
+        generation: 4,
+      })
+      .mockResolvedValueOnce({ result: "accepted", generation: 4 })
+      .mockResolvedValueOnce({
+        phase: "recoverable_failure",
+        message: "Startup failed",
+        generation: 4,
+      })
+      .mockResolvedValueOnce({
+        phase: "starting_services",
+        message: "Retrying startup",
+        generation: 5,
+      })
+      .mockResolvedValueOnce({ phase: "ready", message: "Ready", generation: 5 });
+
+    render(<DesktopApp />);
+    await act(async () => Promise.resolve());
+    await act(async () => {
+      screen.getByRole("button", { name: "Retry startup" }).click();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("status").textContent).toContain("Checking the local runtime again");
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    expect(screen.getByRole("status").textContent).toContain("Retrying startup");
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    expect(screen.getByRole("main", { name: "Shared Schedule application" })).not.toBeNull();
+    expect(invokeMock.mock.calls.filter(([command]) => command === "runtime_retry")).toHaveLength(
+      1,
+    );
+  });
+
+  it("surfaces a status-command failure after an accepted retry instead of polling forever", async () => {
+    vi.useFakeTimers();
+    invokeMock
+      .mockResolvedValueOnce({
+        phase: "recoverable_failure",
+        message: "Startup failed",
+        generation: 4,
+      })
+      .mockResolvedValueOnce({ result: "accepted", generation: 4 })
+      .mockRejectedValueOnce(new Error("status unavailable"));
+
+    render(<DesktopApp />);
+    await act(async () => Promise.resolve());
+    await act(async () => {
+      screen.getByRole("button", { name: "Retry startup" }).click();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Schedule could not inspect its local runtime")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Retry startup" })).not.toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("ignores an inspection that completes after unmount without starting a poll", async () => {
     vi.useFakeTimers();
-    let resolveInspection!: (status: { phase: "starting_services"; message: string }) => void;
+    let resolveInspection!: (status: {
+      phase: "starting_services";
+      message: string;
+      generation: number;
+    }) => void;
     invokeMock.mockReturnValueOnce(
-      new Promise<{ phase: "starting_services"; message: string }>((resolve) => {
-        resolveInspection = resolve;
-      }),
+      new Promise<{ phase: "starting_services"; message: string; generation: number }>(
+        (resolve) => {
+          resolveInspection = resolve;
+        },
+      ),
     );
 
     const view = render(<DesktopApp />);
     expect(invokeMock).toHaveBeenCalledTimes(1);
     view.unmount();
     await act(async () =>
-      resolveInspection({ phase: "starting_services", message: "Starting services" }),
+      resolveInspection({
+        phase: "starting_services",
+        message: "Starting services",
+        generation: 1,
+      }),
     );
     expect(vi.getTimerCount()).toBe(0);
   });

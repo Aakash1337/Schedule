@@ -73,10 +73,10 @@ impl DesktopRuntimeStatus {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "result", rename_all = "snake_case")]
 pub(crate) enum RuntimeRetryResult {
-    Accepted,
-    Busy,
+    Accepted { generation: u64 },
+    Busy { generation: u64 },
     Unavailable,
 }
 
@@ -133,13 +133,16 @@ impl DesktopRuntimeAdapter {
     pub(crate) fn retry(&self) -> RuntimeRetryResult {
         let mut owner = self.owner.lock().expect("runtime adapter poisoned");
         match &mut *owner {
-            RuntimeOwner::Running(host) => match host.retry() {
-                Ok(()) => RuntimeRetryResult::Accepted,
-                Err(HostError::Busy) => RuntimeRetryResult::Busy,
-                Err(HostError::Unavailable | HostError::ShuttingDown) => {
-                    RuntimeRetryResult::Unavailable
+            RuntimeOwner::Running(host) => {
+                let generation = host.status().generation;
+                match host.retry() {
+                    Ok(()) => RuntimeRetryResult::Accepted { generation },
+                    Err(HostError::Busy) => RuntimeRetryResult::Busy { generation },
+                    Err(HostError::Unavailable | HostError::ShuttingDown) => {
+                        RuntimeRetryResult::Unavailable
+                    }
                 }
-            },
+            }
             RuntimeOwner::SetupFailure => RuntimeRetryResult::Unavailable,
         }
     }
@@ -415,9 +418,24 @@ mod tests {
     #[test]
     fn retry_admission_coalesces_duplicate_requests() {
         let adapter = adapter_with(RuntimeHost::spawn(FakeExecutor));
-        assert_eq!(adapter.retry(), RuntimeRetryResult::Accepted);
-        assert_eq!(adapter.retry(), RuntimeRetryResult::Busy);
+        assert_eq!(
+            adapter.retry(),
+            RuntimeRetryResult::Accepted { generation: 0 }
+        );
+        assert_eq!(adapter.retry(), RuntimeRetryResult::Busy { generation: 0 });
         adapter.request_shutdown().unwrap().wait();
+    }
+
+    #[test]
+    fn retry_result_carries_the_generation_observed_before_admission() {
+        assert_eq!(
+            serde_json::to_value(RuntimeRetryResult::Accepted { generation: 7 }).unwrap(),
+            serde_json::json!({ "result": "accepted", "generation": 7 })
+        );
+        assert_eq!(
+            serde_json::to_value(RuntimeRetryResult::Unavailable).unwrap(),
+            serde_json::json!({ "result": "unavailable" })
+        );
     }
 
     #[test]

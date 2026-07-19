@@ -14,9 +14,17 @@ import {
 export interface RuntimeStatus {
   readonly phase: "foundation" | StartupPhase;
   readonly message: string;
+  readonly generation: number;
 }
 
-export type RuntimeRetryResult = "accepted" | "busy" | "unavailable";
+export type RuntimeRetryResult =
+  | { readonly result: "accepted" | "busy"; readonly generation: number }
+  | { readonly result: "unavailable" };
+
+interface RuntimeInspection {
+  readonly action: StartupAction;
+  readonly generation: number | null;
+}
 
 const runtimeStatusPollMs = 250;
 const runtimeStatusTimeoutMs = 5_000;
@@ -75,15 +83,18 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise
 export async function loadRuntimeStatus(
   inspect: () => Promise<RuntimeStatus> = () => invoke<RuntimeStatus>("runtime_status"),
   timeoutMs = runtimeStatusTimeoutMs,
-): Promise<StartupAction> {
+): Promise<RuntimeInspection> {
   try {
     const status = await withTimeout(inspect(), timeoutMs);
-    return runtimeStatusAction(status);
+    return { action: runtimeStatusAction(status), generation: status.generation };
   } catch {
     return {
-      type: "failed",
-      message: "Schedule could not inspect its local runtime",
-      detail: "desktop.runtime_unavailable",
+      action: {
+        type: "failed",
+        message: "Schedule could not inspect its local runtime",
+        detail: "desktop.runtime_unavailable",
+      },
+      generation: null,
     };
   }
 }
@@ -144,17 +155,29 @@ export function DesktopApp() {
   const inspectionEpoch = useRef(0);
   const inspectionInFlight = useRef(false);
   const retryInFlight = useRef(false);
+  const retryGeneration = useRef<number | undefined>(undefined);
 
   const inspectRuntime = useCallback(async function inspectRuntime() {
     if (inspectionInFlight.current) return;
     inspectionInFlight.current = true;
     const epoch = ++inspectionEpoch.current;
     try {
-      const action = await loadRuntimeStatus();
+      const inspection = await loadRuntimeStatus();
       if (epoch !== inspectionEpoch.current || !mounted.current) return;
-      setState((current) => reduceStartupState(current, action));
+      const retryBaseline = retryGeneration.current;
+      const staleRetryFailure =
+        retryBaseline !== undefined &&
+        inspection.action.type === "failed" &&
+        inspection.generation === retryBaseline;
+      if (!staleRetryFailure) {
+        retryGeneration.current = undefined;
+        setState((current) => reduceStartupState(current, inspection.action));
+      }
 
-      if (action.type === "phase_changed" && isBusyStartupPhase(action.phase)) {
+      if (
+        staleRetryFailure ||
+        (inspection.action.type === "phase_changed" && isBusyStartupPhase(inspection.action.phase))
+      ) {
         pollTimer.current = window.setTimeout(() => void inspectRuntime(), runtimeStatusPollMs);
       }
     } finally {
@@ -182,7 +205,8 @@ export function DesktopApp() {
     void requestRuntimeRetry()
       .then((result) => {
         if (!mounted.current) return;
-        if (result === "accepted" || result === "busy") {
+        if (result?.result === "accepted" || result?.result === "busy") {
+          retryGeneration.current = result.generation;
           setState((current) => reduceStartupState(current, { type: "retry" }));
         }
         void inspectRuntime();
