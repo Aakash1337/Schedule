@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_failure_remains_a_recoverable_redacted_status() {
+    fn setup_failure_is_fatal_redacted_and_not_retryable() {
         let adapter = DesktopRuntimeAdapter {
             owner: Mutex::new(RuntimeOwner::SetupFailure),
             close_exit_scheduled: AtomicBool::new(false),
