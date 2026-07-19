@@ -91,7 +91,8 @@ async function launchNativeLifecycle(
   removeDataRoot: (root: string) => Promise<void>,
 ): Promise<void> {
   const dataRoot = await mkdtemp(path.join(os.tmpdir(), "schedule-installed-smoke-"));
-  let childFailed = false;
+  let failed = false;
+  let failure: unknown;
   try {
     const arguments_ = [
       "--schedule-runtime-smoke",
@@ -106,18 +107,22 @@ async function launchNativeLifecycle(
         windowsHide: true,
       });
       if (code !== 0) {
-        childFailed = true;
         throw new Error(`Installed Schedule lifecycle smoke failed (exit code ${code}).`);
       }
     }
-  } finally {
-    try {
-      await removeDataRoot(dataRoot);
-    } catch {
-      if (!childFailed)
-        throw new Error("Installed Schedule lifecycle smoke failed (exit code 125).");
+  } catch (error: unknown) {
+    failed = true;
+    failure = error;
+  }
+  try {
+    await removeDataRoot(dataRoot);
+  } catch {
+    if (!failed) {
+      failed = true;
+      failure = new Error("Installed Schedule lifecycle smoke failed (exit code 125).");
     }
   }
+  if (failed) throw failure;
 }
 
 /**
