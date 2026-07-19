@@ -73,6 +73,9 @@ mod tests {
 }
 
 fn main() {
+    if runtime::guardian::run_if_requested() {
+        return;
+    }
     let api_forwarder = std::sync::Arc::new(
         bridge::DesktopApiForwarder::new()
             .expect("Schedule desktop API bridge failed to initialize"),

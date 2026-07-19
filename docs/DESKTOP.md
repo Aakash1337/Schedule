@@ -59,11 +59,19 @@ will use:
   replace and write-through flags, so an old migration record is never deleted before its successor
   is installed.
 - Long-lived child and one-shot command runners clear inherited environments, reject relative
-  executables, avoid shells, bound readiness/output/time, retain direct child handles, and expose
-  only stable errors. Windows creates a private kill-on-close Job Object and assigns each suspended
-  child before it can execute. Linux starts a new session/process group and gives the direct child a
-  parent-death signal. Ownership is released exactly once after reaping, which also prevents
-  surviving descendants from escaping ordinary shutdown.
+  executables, avoid shells, bound readiness/output/time, and expose only stable errors. Their only
+  pre-admission child is an inert copy of the signed Schedule binary in an exact hidden guardian
+  mode. A bounded binary launch packet crosses a private inherited pipe; paths, arguments, working
+  directory, and environment never enter guardian arguments, logs, or temporary files. The final
+  barrier can atomically abort COMMIT without waiting for a stalled packet writer, and desktop
+  process exit closes every pipe handle as the independent liveness fail-safe.
+- On Windows, each guardian creates a private kill-on-close Job, creates the payload suspended,
+  assigns it to that Job, and resumes it only after COMMIT. Pipe EOF or FORCE terminates the Job;
+  guardian exit closes its sole Job handle and therefore kills remaining descendants. On Linux, the
+  guardian creates an isolated session, becomes a child subreaper, gives the direct payload a
+  parent-death signal, and keeps the control descriptor close-on-exec. EOF or FORCE kills the
+  payload group, walks adopted descendants (including new groups/sessions), and reaps until the
+  kernel reports no children. Ownership is released exactly once after the guardian exits.
 - Desktop API and worker processes emit bounded, token-free dynamic-port readiness records and
   accept only the inherited `shutdown` line. EOF or a control-stream failure requests graceful
   shutdown; non-desktop deployments retain their existing signal behavior and do not consume stdin.
@@ -96,14 +104,18 @@ will use:
   temporary hard link is removed, leaving only the verified final archive. It never extracts or
   executes fetched bytes.
 
-These pieces are compiled and tested on Windows and Linux, but the host still has no native effect
-executor and is not invoked by `main`. The application therefore continues to report
-`foundation` rather than claiming it is ready. Launch integration must call the durable credential
-store and stale-secret scavenger only while holding the singleton lock, refuse to regenerate
-credentials for an existing cluster, and run `pg_ctl stop -m fast` successfully before treating
-platform containment as the database shutdown fallback. Release acceptance must also exercise real
-descendant trees on Linux and supported Windows launch environments; a Linux parent-death signal
-covers the direct child, not arbitrary grandchildren.
+These pieces are connected to the native effect executor and Tauri lifecycle. Launch integration
+calls the durable credential store and stale-secret scavenger only while holding the singleton lock,
+refuses to regenerate credentials for an existing cluster, and runs `pg_ctl stop -m fast`
+successfully before treating platform containment as the database shutdown fallback. Release
+acceptance must also exercise real descendant trees on Linux and supported Windows launch
+environments. The Linux guarantee covers
+ordinary descendants and processes reparented to the guardian while it is alive; an unprivileged
+process cannot impose a kernel kill-on-owner-loss contract on a deliberately detached grandchild
+that escapes ancestry immediately before an external `SIGKILL` of the guardian. Normal desktop
+loss is stronger than that boundary because control EOF is handled by the live subreaper before it
+exits. Deployments needing containment against hostile payloads require an external cgroup/systemd
+scope; Schedule's bundled and integrity-checked runtime is not an adversarial-code sandbox.
 
 ## Runtime architecture
 

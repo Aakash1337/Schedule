@@ -3,6 +3,7 @@ mod command;
 mod coordinator;
 mod credentials;
 mod executor;
+pub(crate) mod guardian;
 mod host;
 mod integrity;
 mod journal;
