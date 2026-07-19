@@ -13,6 +13,10 @@ on:
       - "scripts/build-desktop-runtime.test.ts"
       - "scripts/stage-desktop-service-deployments.ts"
       - "scripts/stage-desktop-service-deployments.test.ts"
+      - "scripts/package-desktop-release.ts"
+      - "scripts/package-desktop-release.test.ts"
+      - "scripts/create-desktop-runtime-fixture.ts"
+      - "scripts/verify-desktop-package-artifact.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
@@ -32,6 +36,10 @@ on:
       - "scripts/build-desktop-runtime.test.ts"
       - "scripts/stage-desktop-service-deployments.ts"
       - "scripts/stage-desktop-service-deployments.test.ts"
+      - "scripts/package-desktop-release.ts"
+      - "scripts/package-desktop-release.test.ts"
+      - "scripts/create-desktop-runtime-fixture.ts"
+      - "scripts/verify-desktop-package-artifact.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
@@ -96,6 +104,8 @@ jobs:
           pnpm build:packages
           pnpm --filter @schedule/api build
           pnpm --filter @schedule/worker build
+      - name: Verify desktop release packaging fixture
+        run: pnpm exec vitest run scripts/package-desktop-release.test.ts
       - name: Verify desktop API protocol
         run: pnpm --filter @schedule/api exec vitest run src/desktop-api-runtime.test.ts
       - name: Verify desktop worker protocol
@@ -112,3 +122,8 @@ jobs:
           output="$RUNNER_TEMP/schedule desktop staging & smoke"
           pnpm desktop:runtime:stage-services "$output"
           node -e "const fs = require('node:fs'); const path = require('node:path'); for (const file of ['api/dist/server.js', 'worker/dist/index.js']) if (!fs.statSync(path.join(process.argv[1], file)).isFile()) process.exit(1)" "$output"
+      - name: Package structurally valid runtime fixture
+        run: |
+          pnpm exec tsx scripts/create-desktop-runtime-fixture.ts --output .desktop-runtime-fixture
+          pnpm desktop:build -- --runtime .desktop-runtime-fixture
+          pnpm exec tsx scripts/verify-desktop-package-artifact.ts

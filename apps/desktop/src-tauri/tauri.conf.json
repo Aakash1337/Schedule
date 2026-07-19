@@ -19,6 +19,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "resources/runtime": "runtime"
+    },
     "shortDescription": "Local-first adaptive scheduling",
     "longDescription": "A local-first task and scheduling application with deterministic daily planning."
   }

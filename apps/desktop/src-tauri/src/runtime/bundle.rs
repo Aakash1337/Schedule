@@ -10,7 +10,9 @@ use std::{
 };
 
 use super::integrity::is_link_or_reparse;
-use super::manifest::{RuntimeComponentName, RuntimeLaunchPath, RuntimeManifest, RuntimeOs};
+use super::manifest::{
+    RuntimeArtifacts, RuntimeComponentName, RuntimeLaunchPath, RuntimeManifest, RuntimeOs,
+};
 
 const MIGRATION_ENTRYPOINT: &str = "api/node_modules/@schedule/database/dist/migrate.js";
 
@@ -247,6 +249,10 @@ mod tests {
                     },
                 ),
             ],
+            artifacts: RuntimeArtifacts {
+                licenses_sha256: "a".repeat(64),
+                sbom_sha256: "b".repeat(64),
+            },
         }
     }
 

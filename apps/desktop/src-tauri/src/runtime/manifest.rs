@@ -106,6 +106,14 @@ pub struct RuntimeManifest {
     pub target: RuntimeTarget,
     pub postgresql_major: u16,
     pub components: Vec<RuntimeComponent>,
+    pub artifacts: RuntimeArtifacts,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeArtifacts {
+    pub licenses_sha256: String,
+    pub sbom_sha256: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -152,6 +160,8 @@ impl RuntimeManifest {
                 "runtime manifest PostgreSQL major does not match this application",
             ));
         }
+        validate_sha256(&self.artifacts.licenses_sha256)?;
+        validate_sha256(&self.artifacts.sbom_sha256)?;
 
         let mut names = HashSet::new();
         let mut launch_paths = HashSet::new();
@@ -348,6 +358,10 @@ mod tests {
                     },
                 ),
             ],
+            artifacts: RuntimeArtifacts {
+                licenses_sha256: "a".repeat(64),
+                sbom_sha256: "b".repeat(64),
+            },
         }
     }
 

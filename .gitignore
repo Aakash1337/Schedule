@@ -18,3 +18,7 @@ backups/
 packages/database/drizzle/meta/_journal.json.bak
 playwright-report/
 test-results/
+apps/desktop/src-tauri/resources/
+!apps/desktop/src-tauri/resources/
+!apps/desktop/src-tauri/resources/runtime/
+!apps/desktop/src-tauri/resources/runtime/.gitkeep
