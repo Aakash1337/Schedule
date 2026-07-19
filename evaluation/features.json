@@ -4382,11 +4382,21 @@
         "anchor": "## Implemented supervisor foundation"
       },
       "limitations": [
-        "The launch coordinator does not invoke these primitives yet, so the desktop correctly remains in foundation state.",
+        "The pure coordinator is tested, but its native effect executor and asynchronous Tauri host adapter are not implemented or invoked by main, so the desktop correctly remains in foundation state.",
         "A protected durable PostgreSQL credential store/reload path, startup scavenging for stale temporary secrets, and coordinator-enforced pg_ctl shutdown are required before cluster initialization ships.",
         "Real pinned runtime artifacts, installers, first-launch PostgreSQL acceptance, Linux hard-crash descendant validation, and supported Windows outer-Job validation remain required."
       ],
       "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/desktop/src-tauri/src/runtime/coordinator.rs",
+          "command": "desktop-foundation",
+          "anchors": [
+            "cancellation_during_every_startup_phase_releases_everything_acquired",
+            "cleanup_stops_api_even_when_clearing_the_bridge_fails",
+            "mismatched_executor_outcome_is_not_reported_as_success"
+          ]
+        },
         {
           "level": "unit",
           "file": "apps/desktop/src-tauri/src/runtime/state.rs",
