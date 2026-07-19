@@ -1,4 +1,4 @@
-//! Validation for the signed-at-build-time description of bundled desktop runtime files.
+//! Validation for the build-anchored description of bundled desktop runtime files.
 //!
 //! The supervisor owns locating and hashing the files. This module deliberately only accepts
 //! paths relative to the immutable resource directory, so a manifest can never redirect it into

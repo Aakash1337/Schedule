@@ -59,7 +59,7 @@ The native build uses these bounded primitives and its pure coordinator for laun
   is installed.
 - Long-lived child and one-shot command runners clear inherited environments, reject relative
   executables, avoid shells, bound readiness/output/time, and expose only stable errors. Their only
-  pre-admission child is an inert copy of the signed Schedule binary in an exact hidden guardian
+  pre-admission child is an inert copy of the native Schedule binary in an exact hidden guardian
   mode. A bounded binary launch packet crosses a private inherited pipe; paths, arguments, working
   directory, and environment never enter guardian arguments, logs, or temporary files. The parent
   consumes an exact guardian-ready acknowledgement from stderr, installs bounded stdout and stderr
@@ -93,7 +93,7 @@ The native build uses these bounded primitives and its pure coordinator for laun
 - The runtime assembler accepts only pinned, symlink-free, portable Windows/Linux input trees. It
   requires the complete PostgreSQL command set, compiled database migration entrypoint, and pgcrypto
   files; creates a deterministic manifest, SBOM, and license inventory; and emits the manifest
-  SHA-256 for embedding into the signed native binary. Rust compares that embedded trust anchor
+  SHA-256 for embedding into the native binary. Rust compares that embedded trust anchor
   before accepting component hashes; a rewritten colocated manifest is not trusted. After verifying
   one canonical, non-link runtime root, it resolves fixed absolute Node, API, worker, migration, and
   PostgreSQL tool paths from that same tree. Unix links and all Windows reparse points fail closed.
@@ -213,18 +213,25 @@ SHA-256 in `SCHEDULE_DESKTOP_RUNTIME_MANIFEST_SHA256`, and removes its staging d
 
 ## Release automation
 
-The `desktop-release` workflow runs on release tags and manual dispatch, with a path-filtered pull
-request trigger that verifies changes to its release inputs. For each Windows x64 and Linux x64 release
+The `desktop-release` workflow runs on manual dispatch, with a path-filtered pull request trigger that
+verifies changes to its release inputs. For each Windows x64 and Linux x64 build
 it creates production API and worker deploy trees, downloads locked source archives, builds and verifies
 the minimal Node runtime and PostgreSQL 17 runtime, assembles the authenticated runtime, then builds the
 native Tauri installers. It retains the installers plus the runtime manifest, SBOM, license inventory,
-and component provenance as one release artifact set.
+component provenance, installer hashes, and workflow provenance as one Actions artifact set for 90
+days. These are verified CI/test installers, not published releases. In particular, the Windows
+installers are not Authenticode-signed and may show a SmartScreen warning. Tag publication and public
+release claims remain disabled until a real code-signing identity and release policy are configured.
 
-After both platform artifacts are uploaded, a tag-only downstream job downloads those exact artifact
-sets and gives every installer and retained metadata file a GitHub build-provenance attestation rooted
-in the repository's Actions identity. Consumers can verify a downloaded file with
-`gh attestation verify <file> --repo Aakash1337/Schedule`. Pull-request and manual-dispatch artifacts
-remain test builds and are intentionally not presented as attested releases.
+Build and download the current `main` installers with GitHub CLI:
+
+```powershell
+gh workflow run desktop-release.yml --repo Aakash1337/Schedule --ref main
+gh run list --repo Aakash1337/Schedule --workflow desktop-release.yml --limit 1
+gh run watch <run-id> --repo Aakash1337/Schedule --exit-status
+gh run download <run-id> --repo Aakash1337/Schedule -n schedule-desktop-windows-x64 -D artifacts/windows
+gh run download <run-id> --repo Aakash1337/Schedule -n schedule-desktop-linux-x64 -D artifacts/linux
+```
 
 Windows produces NSIS and MSI where the runner supports them. Linux produces AppImage and Debian
 packages where the runner supports them. CI install-smokes NSIS and extracts/smokes the Debian package;
@@ -240,7 +247,7 @@ to 450 seconds, and reports only a numeric exit code on failure.
 Runtime assembly performs no downloads. Release automation must supply production API/worker
 deployment trees, pinned Node and PostgreSQL 17 directories, their exact versions and tree hashes,
 and a target OS/architecture. The emitted `SCHEDULE_DESKTOP_RUNTIME_MANIFEST_SHA256` value must be
-present while compiling the signed native binary; a release build without that anchor cannot start
+present while compiling the native binary; a release build without that anchor cannot start
 the bundled runtime.
 
 ### Pinned source acquisition
