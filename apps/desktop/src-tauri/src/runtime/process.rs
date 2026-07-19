@@ -227,7 +227,7 @@ fn is_safe_environment_key(key: &str) -> bool {
 
 /// Controllers register inert same-binary guardians and retain their private liveness channels.
 /// The fallback never invokes a shell and always operates on the owned guardian handle.
-pub(crate) trait ProcessGroupControl: Send + Sync {
+pub(super) trait ProcessGroupControl: Send + Sync {
     /// Reserves the configure/spawn/attach handoff against the final containment barrier.
     fn reserve_spawn(&self) -> Result<(), ProcessError> {
         Ok(())
@@ -284,13 +284,13 @@ pub(crate) trait ProcessGroupControl: Send + Sync {
     fn release(&self, _identity: ChildIdentity) {}
 }
 
-pub(crate) struct ProcessSpawnReservation {
+pub(super) struct ProcessSpawnReservation {
     control: Arc<dyn ProcessGroupControl>,
     active: bool,
 }
 
 impl ProcessSpawnReservation {
-    pub(crate) fn new(control: Arc<dyn ProcessGroupControl>) -> Result<Self, ProcessError> {
+    pub(super) fn new(control: Arc<dyn ProcessGroupControl>) -> Result<Self, ProcessError> {
         control.reserve_spawn()?;
         Ok(Self {
             control,
@@ -298,7 +298,7 @@ impl ProcessSpawnReservation {
         })
     }
 
-    pub(crate) fn attach(
+    pub(super) fn attach(
         mut self,
         identity: ChildIdentity,
         child: &mut Child,
@@ -324,12 +324,12 @@ impl Drop for ProcessSpawnReservation {
 }
 
 /// Creates the production tree-aware process controller for the current operating system.
-pub(crate) fn platform_process_control() -> Arc<dyn ProcessGroupControl> {
+pub(super) fn platform_process_control() -> Arc<dyn ProcessGroupControl> {
     platform::new_control()
 }
 
 #[cfg(test)]
-pub(crate) struct DirectChildControl;
+pub(super) struct DirectChildControl;
 
 #[cfg(test)]
 impl ProcessGroupControl for DirectChildControl {}
@@ -449,14 +449,14 @@ impl Drop for OwnedProcess {
     }
 }
 
-pub(crate) fn start_process(
+pub(super) fn start_process(
     spec: ProcessSpec,
     control: Arc<dyn ProcessGroupControl>,
 ) -> Result<StartedProcess, ProcessError> {
     start_process_cancellable(spec, control, &|| false)
 }
 
-pub(crate) fn start_process_cancellable(
+pub(super) fn start_process_cancellable(
     spec: ProcessSpec,
     control: Arc<dyn ProcessGroupControl>,
     is_cancelled: &dyn Fn() -> bool,
@@ -465,6 +465,7 @@ pub(crate) fn start_process_cancellable(
     if is_cancelled() {
         return Err(ProcessError::new("desktop.process_cancelled"));
     }
+    let startup_deadline = Instant::now() + spec.startup_timeout;
     let reservation = ProcessSpawnReservation::new(Arc::clone(&control))?;
     let mut spawned = guardian::spawn(spec.launch_spec())?;
     let mut child = spawned.child;
@@ -500,7 +501,7 @@ pub(crate) fn start_process_cancellable(
         terminate_attached_child(&control, identity, &mut spawned.child);
         return Err(error);
     }
-    let stderr = match guardian::await_ack(stderr, spec.startup_timeout, is_cancelled) {
+    let stderr = match guardian::await_ack(stderr, startup_deadline, is_cancelled) {
         Ok(stderr) => stderr,
         Err(error) => {
             terminate_attached_child(&control, identity, &mut spawned.child);
@@ -548,12 +549,7 @@ pub(crate) fn start_process_cancellable(
         ownership_released: false,
     };
     let readiness = if spec.readiness.is_some() {
-        match await_readiness(
-            &mut process,
-            ready_receiver,
-            spec.startup_timeout,
-            is_cancelled,
-        ) {
+        match await_readiness(&mut process, ready_receiver, startup_deadline, is_cancelled) {
             Ok(payload) => Some(payload),
             Err(error) => {
                 let _ = process.stop(Duration::ZERO);
@@ -610,10 +606,9 @@ enum ReadinessEvent {
 fn await_readiness(
     process: &mut OwnedProcess,
     receiver: Receiver<ReadinessEvent>,
-    timeout: Duration,
+    deadline: Instant,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<ReadyPayload, ProcessError> {
-    let deadline = Instant::now() + timeout;
     loop {
         if is_cancelled() {
             return Err(ProcessError::new("desktop.process_cancelled"));
@@ -825,6 +820,7 @@ mod tests {
     const CHILD_MODE: &str = "SCHEDULE_PROCESS_TEST_MODE";
     const EXPLICIT_VALUE: &str = "SCHEDULE_EXPLICIT_VALUE";
     const READY_PREFIX: &[u8] = b"SCHEDULE_TEST_READY_V1 ";
+    const ACK_DELAY_MS: &str = "SCHEDULE_GUARDIAN_TEST_ACK_DELAY_MS";
 
     fn helper_spec(role: ProcessRole, mode: &str, timeout: Duration) -> ProcessSpec {
         let executable = env::current_exe().unwrap();
@@ -854,6 +850,11 @@ mod tests {
             Ok("burst_ready") => {
                 println!("{}", "x".repeat(256 * 1024));
                 println!("{}burst", String::from_utf8_lossy(READY_PREFIX));
+                thread::sleep(Duration::from_secs(2));
+            }
+            Ok("delayed_ready") => {
+                thread::sleep(Duration::from_millis(100));
+                println!("{}delayed", String::from_utf8_lossy(READY_PREFIX));
                 thread::sleep(Duration::from_secs(2));
             }
             Ok("sleep") => thread::sleep(Duration::from_secs(2)),
@@ -993,6 +994,22 @@ mod tests {
             Ok(_) => panic!("sleeping child unexpectedly became ready"),
             Err(error) => error,
         };
+        assert_eq!(error.code(), "desktop.process_start_timeout");
+    }
+
+    #[test]
+    fn startup_timeout_is_shared_by_guardian_ack_and_readiness() {
+        let spec = helper_spec(
+            ProcessRole::Api,
+            "delayed_ready",
+            Duration::from_millis(150),
+        )
+        .env(ACK_DELAY_MS, "100")
+        .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
+        let error = start_process(spec, Arc::new(DirectChildControl))
+            .err()
+            .expect("combined admission and readiness exceeded the startup timeout");
+
         assert_eq!(error.code(), "desktop.process_start_timeout");
     }
 
