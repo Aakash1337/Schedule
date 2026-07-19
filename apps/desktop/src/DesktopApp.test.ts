@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { loadRuntimeStatus, runtimeStatusAction } from "./DesktopApp.js";
+import { loadRuntimeStatus, requestRuntimeRetry, runtimeStatusAction } from "./DesktopApp.js";
 
 describe("desktop runtime gate", () => {
   afterEach(() => vi.useRealTimers());
@@ -49,5 +49,11 @@ describe("desktop runtime gate", () => {
       message: "Schedule could not inspect its local runtime",
       detail: "desktop.runtime_unavailable",
     });
+  });
+
+  it("bounds a failed native retry without exposing its error", async () => {
+    await expect(requestRuntimeRetry(async () => Promise.reject(new Error("offline")))).resolves.toBe(
+      undefined,
+    );
   });
 });
