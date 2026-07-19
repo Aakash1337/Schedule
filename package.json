@@ -12,6 +12,7 @@
     "desktop:dev": "pnpm --filter @schedule/desktop tauri dev",
     "desktop:check": "pnpm --filter @schedule/desktop check && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
     "desktop:runtime:assemble": "tsx scripts/build-desktop-runtime.ts",
+    "desktop:runtime:acquire-sources": "tsx scripts/acquire-desktop-runtime-sources.ts --lock runtime-sources.lock.json --output .desktop-runtime-sources",
     "desktop:build": "pnpm --filter @schedule/desktop bundle",
     "clean": "node scripts/clean.mjs",
     "build:packages": "pnpm clean && pnpm -r --filter \"./packages/**\" run build",

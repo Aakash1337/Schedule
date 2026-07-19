@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "artifacts": [
+    {
+      "id": "node-windows-x64",
+      "component": "node",
+      "version": "24.17.0",
+      "target": { "os": "windows", "arch": "x64" },
+      "kind": "runtime-binary",
+      "url": "https://nodejs.org/dist/v24.17.0/node-v24.17.0-win-x64.zip",
+      "sha256": "f2aa33b35b75aca5f3f7b85675a6f6423201053e9381911e64961f3bda2528ab",
+      "format": "zip",
+      "extractedRoot": "node-v24.17.0-win-x64",
+      "maxBytes": 67108864
+    },
+    {
+      "id": "postgresql-windows-x64-source",
+      "component": "postgresql",
+      "version": "17.10",
+      "target": { "os": "windows", "arch": "x64" },
+      "kind": "source",
+      "url": "https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.gz",
+      "sha256": "e4b43025f32ea3d271be64365d284c8462cffd41d80db0c3df6fc62417a2d9dc",
+      "format": "tar.gz",
+      "extractedRoot": "postgresql-17.10",
+      "maxBytes": 67108864
+    },
+    {
+      "id": "node-linux-x64",
+      "component": "node",
+      "version": "24.17.0",
+      "target": { "os": "linux", "arch": "x64" },
+      "kind": "runtime-binary",
+      "url": "https://nodejs.org/dist/v24.17.0/node-v24.17.0-linux-x64.tar.xz",
+      "sha256": "ab343a1b747c7cbf3630dfd7dbf818c5423fab2eb4f5ad1afc896f6bd121a917",
+      "format": "tar.xz",
+      "extractedRoot": "node-v24.17.0-linux-x64",
+      "maxBytes": 67108864
+    },
+    {
+      "id": "postgresql-linux-x64-source",
+      "component": "postgresql",
+      "version": "17.10",
+      "target": { "os": "linux", "arch": "x64" },
+      "kind": "source",
+      "url": "https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.gz",
+      "sha256": "e4b43025f32ea3d271be64365d284c8462cffd41d80db0c3df6fc62417a2d9dc",
+      "format": "tar.gz",
+      "extractedRoot": "postgresql-17.10",
+      "maxBytes": 67108864
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 node_modules/
+.desktop-runtime-sources/
 __pycache__/
 *.py[cod]
 coverage/

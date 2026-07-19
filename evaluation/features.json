@@ -4538,6 +4538,16 @@
             "keeps the component tree hash compatible with the Rust verifier",
             "rejects runtime manifests that the Rust supervisor cannot launch"
           ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/acquire-desktop-runtime-sources.test.ts",
+          "command": "unit",
+          "anchors": [
+            "accepts exactly the committed source-lock shape",
+            "streams only matching local responses into no-replace target directories",
+            "rejects redirects off approved origins, oversized data, and hash mismatches"
+          ]
         }
       ]
     }
