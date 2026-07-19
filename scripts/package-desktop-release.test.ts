@@ -229,15 +229,37 @@ describe("packageDesktopRelease", () => {
     ).rejects.toThrow();
     expect(await readFile(path.join(reserved, "keep"), "utf8")).toBe("keep");
     await rm(reserved, { recursive: true, force: true });
-    await expect(
-      packageDesktopRelease({
-        repositoryDirectory: repository,
-        runtimeDirectory: runtime,
-        copyEntry: async () => {
-          throw new Error("copy failed");
-        },
-      }),
-    ).rejects.toThrow();
+    let releaseCopies: () => void = () => undefined;
+    let signalSlowCopy: () => void = () => undefined;
+    const copyGate = new Promise<void>((resolve) => {
+      releaseCopies = resolve;
+    });
+    const slowCopyStarted = new Promise<void>((resolve) => {
+      signalSlowCopy = resolve;
+    });
+    const packaging = packageDesktopRelease({
+      repositoryDirectory: repository,
+      runtimeDirectory: runtime,
+      copyEntry: async (source, destination) => {
+        if (path.basename(source) === "runtime-manifest.json") throw new Error("copy failed");
+        signalSlowCopy();
+        await copyGate;
+        await mkdir(path.dirname(destination), { recursive: true });
+        await writeFile(destination, "late copy");
+      },
+    });
+    await slowCopyStarted;
+    expect(
+      await Promise.race([
+        packaging.then(
+          () => "settled",
+          () => "settled",
+        ),
+        new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 100)),
+      ]),
+    ).toBe("pending");
+    releaseCopies();
+    await expect(packaging).rejects.toThrow("copy failed");
     expect(await readFile(path.join(reserved, ".gitkeep"), "utf8")).toBe("staged at build\n");
   });
 

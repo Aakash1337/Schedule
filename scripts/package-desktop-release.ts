@@ -166,11 +166,17 @@ export async function packageDesktopRelease(options: DesktopReleaseOptions): Pro
           errorOnExist: true,
           force: false,
         }));
-    await Promise.all(
+    const copyResults = await Promise.allSettled(
       (await readdir(runtimeDirectory)).map((entry) =>
-        copyEntry(path.join(runtimeDirectory, entry), path.join(stagedRuntime, entry)),
+        Promise.resolve().then(() =>
+          copyEntry(path.join(runtimeDirectory, entry), path.join(stagedRuntime, entry)),
+        ),
       ),
     );
+    const copyFailure = copyResults.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (copyFailure !== undefined) throw copyFailure.reason;
     if (
       sha256(await readFile(path.join(stagedRuntime, "runtime-manifest.json"))) !== manifestHash ||
       (await validateDesktopRuntime(stagedRuntime)).artifacts.licensesSha256 !==
