@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, readFile, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -64,15 +64,26 @@ function relativeWithin(root: string, candidate: string): string {
   return portable;
 }
 
-async function assertNewOutput(directory: string, label: string): Promise<void> {
-  const entry = await lstat(directory).catch(() => null);
-  if (entry !== null)
-    throw new Error(`${label} already exists and will not be replaced: ${directory}`);
+function pathIdentity(candidate: string): string {
+  const normalized = path.normalize(candidate);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+async function reserveOutput(directory: string, label: string): Promise<void> {
   await mkdir(path.dirname(directory), { recursive: true });
+  try {
+    await mkdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(`${label} already exists and will not be replaced: ${directory}`);
+    }
+    throw error;
+  }
 }
 
 async function copyMaterializedTree(rawRoot: string, destination: string): Promise<void> {
   const canonicalRoot = await realpath(rawRoot);
+  const canonicalRootIdentity = pathIdentity(canonicalRoot);
   const rootEntry = await lstat(rawRoot).catch(() => null);
   if (rootEntry === null || !rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
     throw new Error(`Raw deployment must be a non-symlink directory: ${rawRoot}`);
@@ -83,10 +94,13 @@ async function copyMaterializedTree(rawRoot: string, destination: string): Promi
     ancestors: ReadonlySet<string>,
   ): Promise<void> => {
     const canonical = await realpath(source);
-    if (canonical !== canonicalRoot) relativeWithin(canonicalRoot, canonical);
-    if (ancestors.has(canonical)) throw new Error(`Deployment link cycle detected at ${source}`);
+    const canonicalIdentity = pathIdentity(canonical);
+    if (canonicalIdentity !== canonicalRootIdentity) relativeWithin(canonicalRoot, canonical);
+    if (ancestors.has(canonicalIdentity)) {
+      throw new Error(`Deployment link cycle detected at ${source}`);
+    }
     await mkdir(target, { recursive: false });
-    const nextAncestors = new Set(ancestors).add(canonical);
+    const nextAncestors = new Set(ancestors).add(canonicalIdentity);
     const portableNames = new Set<string>();
     for (const entry of await readdir(source, { withFileTypes: true })) {
       assertPortableRelative(entry.name);
@@ -103,7 +117,9 @@ async function copyMaterializedTree(rawRoot: string, destination: string): Promi
       else if (entry.isFile()) await copyFile(childSource, childTarget, 0);
       else if (entry.isSymbolicLink()) {
         const canonicalTarget = await realpath(childSource);
-        relativeWithin(canonicalRoot, canonicalTarget);
+        if (pathIdentity(canonicalTarget) !== canonicalRootIdentity) {
+          relativeWithin(canonicalRoot, canonicalTarget);
+        }
         const targetEntry = await lstat(canonicalTarget);
         if (targetEntry.isDirectory()) await copyDirectory(childSource, childTarget, nextAncestors);
         else if (targetEntry.isFile()) await copyFile(childSource, childTarget, 0);
@@ -196,7 +212,7 @@ async function currentPnpmCli(): Promise<string> {
   }
   const cli = await realpath(npmExecPath);
   const entry = await lstat(cli).catch(() => null);
-  if (entry === null || !entry.isFile() || !/pnpm(?:\.c?js)?$/iu.test(path.basename(cli))) {
+  if (entry === null || !entry.isFile() || !/^pnpm(?:\.[cm]?js)?$/iu.test(path.basename(cli))) {
     throw new Error("npm_execpath must resolve to the current pnpm CLI file.");
   }
   return cli;
@@ -222,9 +238,8 @@ export async function stageDesktopServiceDeployments(
 ): Promise<DesktopServiceDeployments> {
   const sourceDirectory = path.resolve(options.sourceDirectory);
   const outputDirectory = path.resolve(options.outputDirectory);
-  await assertNewOutput(outputDirectory, "Desktop service deployment output");
+  await reserveOutput(outputDirectory, "Desktop service deployment output");
   const rawDirectory = `${outputDirectory}.raw-${randomUUID()}`;
-  const stagingDirectory = `${outputDirectory}.staging-${randomUUID()}`;
   try {
     await mkdir(rawDirectory);
     const rawApi = path.join(rawDirectory, "api");
@@ -238,23 +253,21 @@ export async function stageDesktopServiceDeployments(
       ["--filter", "@schedule/worker", "deploy", "--prod", "--legacy", rawWorker],
       { cwd: sourceDirectory },
     );
-    await mkdir(stagingDirectory);
-    const api = path.join(stagingDirectory, "api");
-    const worker = path.join(stagingDirectory, "worker");
+    const api = path.join(outputDirectory, "api");
+    const worker = path.join(outputDirectory, "worker");
     await copyMaterializedTree(rawApi, api);
     await copyMaterializedTree(rawWorker, worker);
     await Promise.all([validateApiDeployment(api), validateWorkerDeployment(worker)]);
     const apiSha256 = await hashTree(api);
     const workerSha256 = await hashTree(worker);
-    await rename(stagingDirectory, outputDirectory);
     return {
-      apiDeploymentDirectory: path.join(outputDirectory, "api"),
-      workerDeploymentDirectory: path.join(outputDirectory, "worker"),
+      apiDeploymentDirectory: api,
+      workerDeploymentDirectory: worker,
       apiSha256,
       workerSha256,
     };
   } catch (error) {
-    await rm(stagingDirectory, { recursive: true, force: true });
+    await rm(outputDirectory, { recursive: true, force: true });
     throw error;
   } finally {
     await rm(rawDirectory, { recursive: true, force: true });

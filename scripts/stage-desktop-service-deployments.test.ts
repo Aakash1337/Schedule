@@ -221,4 +221,40 @@ describe("stageDesktopServiceDeployments", () => {
       }),
     ).rejects.toThrow("already exists");
   });
+
+  it("reserves the output before deployment so concurrent callers cannot replace it", async () => {
+    const setup = await fixture();
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => (enter = resolve));
+    const released = new Promise<void>((resolve) => (release = resolve));
+    let held = false;
+    const deploy: DeployCommand = async (...arguments_) => {
+      if (!held) {
+        held = true;
+        enter();
+        await released;
+      }
+      await setup.deploy(...arguments_);
+    };
+    const first = stageDesktopServiceDeployments({
+      sourceDirectory: setup.root,
+      outputDirectory: setup.output,
+      deploy,
+    });
+    await entered;
+    try {
+      expect((await lstat(setup.output)).isDirectory()).toBe(true);
+      await expect(
+        stageDesktopServiceDeployments({
+          sourceDirectory: setup.root,
+          outputDirectory: setup.output,
+          deploy: setup.deploy,
+        }),
+      ).rejects.toThrow("already exists");
+    } finally {
+      release();
+    }
+    await expect(first).resolves.toMatchObject({ apiDeploymentDirectory: expect.any(String) });
+  });
 });
