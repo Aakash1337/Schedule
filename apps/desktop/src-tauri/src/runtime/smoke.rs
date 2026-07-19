@@ -144,7 +144,11 @@ fn startup_result(state: RuntimeState, completion: Option<ShutdownOutcome>) -> O
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     use super::*;
 
@@ -165,10 +169,16 @@ mod tests {
     }
 
     fn roots() -> TempRoots {
-        let base = std::env::temp_dir().join(format!("schedule-smoke-{}", std::process::id()));
+        static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+        let base = std::env::temp_dir().join(format!(
+            "schedule-smoke-{}-{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, Ordering::Relaxed),
+        ));
         let runtime = base.join("runtime");
         let data = base.join("data");
-        let _ = fs::remove_dir_all(&base);
+        fs::create_dir(&base).unwrap();
         fs::create_dir_all(&runtime).unwrap();
         fs::create_dir_all(&data).unwrap();
         TempRoots {
@@ -176,6 +186,16 @@ mod tests {
             runtime,
             data,
         }
+    }
+
+    #[test]
+    fn test_roots_are_unique_per_call() {
+        let first = roots();
+        let second = roots();
+
+        assert_ne!(first.base, second.base);
+        assert!(first.runtime.is_dir());
+        assert!(second.data.is_dir());
     }
 
     #[test]
