@@ -4,6 +4,29 @@ on:
   workflow_dispatch:
   push:
     tags: ["desktop-v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/desktop-release.yml"
+      - "apps/api/**"
+      - "apps/desktop/**"
+      - "apps/worker/**"
+      - "scripts/acquire-desktop-runtime-sources.ts"
+      - "scripts/assemble-desktop-release-runtime.ts"
+      - "scripts/build-desktop-runtime.ts"
+      - "scripts/build-node-runtime.ts"
+      - "scripts/build-postgresql-runtime-*"
+      - "scripts/package-desktop-release.ts"
+      - "scripts/postgresql-runtime/**"
+      - "scripts/postgresql-runtime.ts"
+      - "scripts/smoke-desktop-installer*"
+      - "scripts/smoke-postgresql-runtime.ts"
+      - "scripts/stage-desktop-service-deployments.ts"
+      - "postgresql-runtime.lock.json"
+      - "runtime-sources.lock.json"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "tsconfig*.json"
 
 concurrency:
   group: desktop-release-${{ github.ref }}
@@ -166,7 +189,7 @@ jobs:
           test -n "$package"
           mkdir "$RUNNER_TEMP/installed"
           dpkg-deb -x "$package" "$RUNNER_TEMP/installed"
-          pnpm exec tsx scripts/smoke-desktop-installer.ts "$RUNNER_TEMP/installed"
+          pnpm exec tsx scripts/smoke-desktop-installer.ts --probe-executables "$RUNNER_TEMP/installed"
       - name: Smoke installed Windows package contents
         if: runner.os == 'Windows'
         shell: pwsh
@@ -176,7 +199,7 @@ jobs:
           $install = Join-Path $env:RUNNER_TEMP 'schedule-installed'
           Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$install" -Wait -NoNewWindow
           if (-not (Test-Path -LiteralPath (Join-Path $install 'Schedule.exe') -PathType Leaf)) { throw 'NSIS install did not produce Schedule.exe.' }
-          pnpm exec tsx scripts/smoke-desktop-installer.ts $install
+          pnpm exec tsx scripts/smoke-desktop-installer.ts --probe-executables $install
       - name: Collect release metadata
         shell: bash
         run: |
