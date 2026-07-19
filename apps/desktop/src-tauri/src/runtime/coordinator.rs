@@ -4,7 +4,7 @@
 //! processes there while tests use a small fake.  This module performs no I/O.
 
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -20,6 +20,24 @@ impl Cancellation {
 
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
+    }
+}
+
+/// Stable, externally clonable control for the currently active generation.
+/// It is safe to retain across retries: it affects only a currently published
+/// cancellation token and becomes a no-op after cleanup completes.
+#[derive(Clone, Debug, Default)]
+pub struct CancellationHandle(Arc<Mutex<Option<Cancellation>>>);
+
+impl CancellationHandle {
+    pub fn cancel(&self) -> bool {
+        let token = self.0.lock().expect("cancellation handle poisoned").clone();
+        if let Some(token) = token {
+            token.cancel();
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -61,6 +79,9 @@ pub enum CoordinatorError<E> {
         cleanup: CleanupIssue<E>,
     },
     Unexpected,
+    UnexpectedAndCleanup {
+        cleanup: CleanupIssue<E>,
+    },
     Rejected(Rejection),
 }
 
@@ -76,6 +97,7 @@ pub struct Coordinator<E> {
     lifecycle: Lifecycle,
     executor: E,
     cancellation: Option<Cancellation>,
+    cancellation_handle: CancellationHandle,
     pending_cleanup: Option<Vec<Effect>>,
 }
 
@@ -85,6 +107,7 @@ impl<E: EffectExecutor> Coordinator<E> {
             lifecycle: Lifecycle::default(),
             executor,
             cancellation: None,
+            cancellation_handle: CancellationHandle::default(),
             pending_cleanup: None,
         }
     }
@@ -101,8 +124,8 @@ impl<E: EffectExecutor> Coordinator<E> {
         &mut self.executor
     }
 
-    pub fn cancellation(&self) -> Option<Cancellation> {
-        self.cancellation.clone()
+    pub fn cancellation_handle(&self) -> CancellationHandle {
+        self.cancellation_handle.clone()
     }
 
     pub fn start(&mut self) -> Result<(), CoordinatorError<E::Error>> {
@@ -137,7 +160,13 @@ impl<E: EffectExecutor> Coordinator<E> {
             .transition(event)
             .map_err(CoordinatorError::Rejected)?;
         self.lifecycle = transition.lifecycle;
-        self.cancellation = Some(Cancellation::default());
+        let cancellation = Cancellation::default();
+        *self
+            .cancellation_handle
+            .0
+            .lock()
+            .expect("cancellation handle poisoned") = Some(cancellation.clone());
+        self.cancellation = Some(cancellation);
         self.run(transition.effects)
     }
 
@@ -245,6 +274,9 @@ impl<E: EffectExecutor> Coordinator<E> {
         self.lifecycle = transition.lifecycle;
         match self.run(transition.effects) {
             Ok(()) => Err(CoordinatorError::Unexpected),
+            Err(CoordinatorError::Cleanup { issue }) => {
+                Err(CoordinatorError::UnexpectedAndCleanup { cleanup: issue })
+            }
             Err(error) => Err(error),
         }
     }
@@ -296,6 +328,11 @@ impl<E: EffectExecutor> Coordinator<E> {
         self.lifecycle = transition.lifecycle;
         self.pending_cleanup = None;
         self.cancellation = None;
+        *self
+            .cancellation_handle
+            .0
+            .lock()
+            .expect("cancellation handle poisoned") = None;
         Ok(())
     }
 
@@ -378,7 +415,11 @@ fn completion_event(effect: Effect, outcome: EffectOutcome) -> Result<Event, Com
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex, mpsc},
+        thread,
+    };
 
     use super::*;
 
@@ -739,6 +780,97 @@ mod tests {
             coordinator.lifecycle().phase(),
             &Phase::RecoverableFailure(Failure::Unexpected)
         );
+    }
+
+    #[test]
+    fn unexpected_failure_retains_a_cleanup_issue() {
+        let mut coordinator = Coordinator::new(Fake {
+            outcomes: VecDeque::from([
+                Ok(EffectOutcome::DatabaseVerified {
+                    needs_migration: false,
+                }),
+                Err("release failed"),
+            ]),
+            ..Default::default()
+        });
+        assert!(matches!(
+            coordinator.start(),
+            Err(CoordinatorError::UnexpectedAndCleanup {
+                cleanup: CleanupIssue::Executor("release failed")
+            })
+        ));
+        assert!(matches!(
+            coordinator.lifecycle().phase(),
+            Phase::CleaningUp(_)
+        ));
+    }
+
+    struct GatedExecutor {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl EffectExecutor for GatedExecutor {
+        type Error = &'static str;
+
+        fn execute(
+            &mut self,
+            effect: Effect,
+            _: &Cancellation,
+        ) -> Result<EffectOutcome, Self::Error> {
+            let name = match effect {
+                Effect::AcquireLock { .. } => "lock",
+                Effect::ReleaseLock { .. } => "release-lock",
+                _ => return Err("unexpected effect"),
+            };
+            self.calls.lock().unwrap().push(name);
+            if name == "lock" {
+                self.entered.send(()).unwrap();
+                self.release.recv().unwrap();
+            }
+            Ok(EffectOutcome::Completed)
+        }
+
+        fn configure_bridge(&mut self, _: u64) -> Result<(), Self::Error> {
+            Err("unexpected bridge configuration")
+        }
+
+        fn clear_bridge(&mut self, _: u64) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn cancel(&mut self, _: u64) {}
+    }
+
+    #[test]
+    fn external_handle_cancels_a_generation_while_start_is_borrowed() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut coordinator = Coordinator::new(GatedExecutor {
+            entered: entered_tx,
+            release: release_rx,
+            calls: calls.clone(),
+        });
+        let handle = coordinator.cancellation_handle();
+        assert!(!handle.cancel());
+
+        thread::spawn(move || {
+            let result = coordinator.start();
+            done_tx
+                .send((result, coordinator.lifecycle().phase().clone()))
+                .unwrap();
+        });
+        entered_rx.recv().unwrap();
+        assert!(handle.cancel());
+        release_tx.send(()).unwrap();
+        let (result, phase) = done_rx.recv().unwrap();
+        assert!(result.is_ok());
+        assert_eq!(phase, Phase::Idle);
+        assert_eq!(*calls.lock().unwrap(), ["lock", "release-lock"]);
+        assert!(!handle.cancel());
     }
 
     #[test]
