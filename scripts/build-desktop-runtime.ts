@@ -344,7 +344,11 @@ export async function buildDesktopRuntime(
   if (options.postgresqlMajor !== 17) {
     throw new Error("The desktop runtime currently requires PostgreSQL major 17.");
   }
-  if (Number(options.sources.postgresql.version.split(".", 1)[0]) !== options.postgresqlMajor) {
+  const postgresqlVersionMajor = options.sources.postgresql.version.split(".", 1)[0] ?? "";
+  if (
+    !/^[0-9]+$/u.test(postgresqlVersionMajor) ||
+    Number(postgresqlVersionMajor) !== options.postgresqlMajor
+  ) {
     throw new Error("The PostgreSQL source version must match PostgreSQL major 17.");
   }
   const executable = executableSuffix(options.target);

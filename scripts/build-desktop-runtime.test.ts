@@ -185,5 +185,13 @@ describe("buildDesktopRuntime", () => {
         sources: { ...sourcePins, postgresql: { ...sourcePins.postgresql, version: "18.1" } },
       }),
     ).rejects.toThrow("source version must match");
+    for (const version of ["17e0", "0x11"]) {
+      await expect(
+        buildDesktopRuntime({
+          ...options,
+          sources: { ...sourcePins, postgresql: { ...sourcePins.postgresql, version } },
+        }),
+      ).rejects.toThrow("source version must match");
+    }
   });
 });
