@@ -104,12 +104,6 @@ jobs:
           pnpm build:packages
           pnpm --filter @schedule/api build
           pnpm --filter @schedule/worker build
-      - name: Smoke real pnpm 11.7 service deployment staging
-        shell: bash
-        run: |
-          output="$RUNNER_TEMP/schedule desktop staging & smoke"
-          pnpm desktop:runtime:stage-services "$output"
-          node -e "const fs = require('node:fs'); const path = require('node:path'); for (const file of ['api/dist/server.js', 'worker/dist/index.js']) if (!fs.statSync(path.join(process.argv[1], file)).isFile()) process.exit(1)" "$output"
       - name: Verify desktop API protocol
         run: pnpm --filter @schedule/api exec vitest run src/desktop-api-runtime.test.ts
       - name: Verify desktop worker protocol
@@ -120,3 +114,9 @@ jobs:
         run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
       - name: Compile native application
         run: pnpm --filter @schedule/desktop exec tauri build --no-bundle
+      - name: Smoke real pnpm 11.7 service deployment staging
+        shell: bash
+        run: |
+          output="$RUNNER_TEMP/schedule desktop staging & smoke"
+          pnpm desktop:runtime:stage-services "$output"
+          node -e "const fs = require('node:fs'); const path = require('node:path'); for (const file of ['api/dist/server.js', 'worker/dist/index.js']) if (!fs.statSync(path.join(process.argv[1], file)).isFile()) process.exit(1)" "$output"
