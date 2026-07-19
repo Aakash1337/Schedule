@@ -638,6 +638,9 @@ mod tests {
         release_tx.send(()).unwrap();
         wait_for(&host, RuntimeState::Idle);
         assert!(host.start().is_ok());
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        release_tx.send(()).unwrap();
+        wait_for(&host, RuntimeState::Ready);
         host.join();
     }
 
