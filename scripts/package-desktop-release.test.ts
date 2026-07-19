@@ -87,7 +87,6 @@ describe("packageDesktopRelease", () => {
       repositoryDirectory: repository,
       runtimeDirectory: runtime,
       platform: "linux",
-      platform: "linux",
       runTauri: async (receivedCommand, receivedArguments, environment) => {
         command = receivedCommand;
         arguments_ = receivedArguments;
@@ -157,6 +156,44 @@ describe("packageDesktopRelease", () => {
     expect(invoked).toBe(false);
   });
 
+  it("rejects a non-canonical PostgreSQL major before invoking Tauri", async () => {
+    const { repository, runtime } = await fixture();
+    const manifestPath = path.join(runtime, "runtime-manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      components: Array<{ name: string; version: string }>;
+    };
+    manifest.components.find((component) => component.name === "postgresql")!.version = "17e0";
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    let invoked = false;
+    await expect(
+      packageDesktopRelease({
+        repositoryDirectory: repository,
+        runtimeDirectory: runtime,
+        runTauri: async () => {
+          invoked = true;
+        },
+      }),
+    ).rejects.toThrow("invalid");
+    expect(invoked).toBe(false);
+  });
+
+  it("rejects manifest fields Rust would deny before invoking Tauri", async () => {
+    const { repository, runtime } = await fixture();
+    const manifestPath = path.join(runtime, "runtime-manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
+    manifest.unexpected = true;
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    await expect(
+      packageDesktopRelease({
+        repositoryDirectory: repository,
+        runtimeDirectory: runtime,
+        runTauri: async () => {
+          throw new Error("must not run");
+        },
+      }),
+    ).rejects.toThrow("invalid");
+  });
+
   it("uses Node plus an absolute pnpm entry point on Windows", async () => {
     const { repository, runtime } = await fixture();
     const pnpmEntry = path.join(repository, "tools", "pnpm.cjs");
@@ -182,6 +219,7 @@ describe("packageDesktopRelease", () => {
     const { repository, runtime } = await fixture();
     const reserved = path.join(repository, "apps/desktop/src-tauri/resources/runtime");
     await mkdir(reserved, { recursive: true });
+    await writeFile(path.join(reserved, "keep"), "keep");
     await expect(
       packageDesktopRelease({
         repositoryDirectory: repository,
@@ -189,7 +227,6 @@ describe("packageDesktopRelease", () => {
         runTauri: async () => undefined,
       }),
     ).rejects.toThrow();
-    await writeFile(path.join(reserved, "keep"), "keep");
     expect(await readFile(path.join(reserved, "keep"), "utf8")).toBe("keep");
     await rm(reserved, { recursive: true, force: true });
     await expect(

@@ -173,13 +173,15 @@ function strictRuntimeManifest(value: unknown): DesktopRuntimeManifest {
     const name = component.name as RuntimeComponent["name"];
     const required = expected.get(name);
     const version = exactVersion(component.version, "Runtime component version");
+    const postgresqlMajor = version.split(".", 1)[0] ?? "";
     if (
       required === undefined ||
       launch.kind !== required.kind ||
       launch.path !== required.path ||
       component.licensePath !== LICENSES_NAME ||
       component.sbomPath !== SBOM_NAME ||
-      (name === "postgresql" && Number(version.split(".", 1)[0]) !== 17)
+      (name === "postgresql" &&
+        (!/^[1-9][0-9]*$/u.test(postgresqlMajor) || postgresqlMajor !== "17"))
     )
       throw new Error("Runtime manifest component contract is invalid.");
     strictDigest(component.sha256, "Runtime component");

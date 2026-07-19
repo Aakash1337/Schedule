@@ -152,9 +152,11 @@ export async function packageDesktopRelease(options: DesktopReleaseOptions): Pro
   await mkdir(resourceParent, { recursive: true });
   const id = randomUUID();
   let lock: string | undefined;
+  let stageOwned = false;
   try {
     lock = await acquireStageLock(resourceParent, id);
     await reserveRuntime(stagedRuntime);
+    stageOwned = true;
     const copyEntry =
       options.copyEntry ??
       ((source, destination) =>
@@ -205,8 +207,10 @@ export async function packageDesktopRelease(options: DesktopReleaseOptions): Pro
     );
   } finally {
     if (lock !== undefined && (await readFile(lock, "utf8").catch(() => "")) === `${id}\n`) {
-      await rm(stagedRuntime, { recursive: true, force: true });
-      await restoreBootstrap(stagedRuntime);
+      if (stageOwned) {
+        await rm(stagedRuntime, { recursive: true, force: true });
+        await restoreBootstrap(stagedRuntime);
+      }
       await rm(lock, { force: true });
     }
   }
