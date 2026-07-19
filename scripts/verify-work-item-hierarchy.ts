@@ -16,6 +16,7 @@ const app = await buildApp({
   productServices: createProductServices(unitOfWork, {
     now: () => new Date("2026-07-16T12:00:00.000Z"),
   }),
+  productApiAccess: { mode: "local_unauthenticated" },
 });
 
 interface WorkItemResponse {

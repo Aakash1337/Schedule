@@ -596,7 +596,10 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
 }
 
 async function appWith(services: ProductServices) {
-  const app = await buildApp({ productServices: services });
+  const app = await buildApp({
+    productServices: services,
+    productApiAccess: { mode: "local_unauthenticated" },
+  });
   apps.push(app);
   return app;
 }
@@ -2854,6 +2857,7 @@ describe("local product API", () => {
     };
     const rateLimitedApp = await buildApp({
       productServices: createHarness().services,
+      productApiAccess: { mode: "local_unauthenticated" },
       productApiLimits: { requestsPerMinute: 1, maxConcurrentPlans: 1 },
     });
     apps.push(rateLimitedApp);
@@ -3055,6 +3059,7 @@ describe("local product API", () => {
   it("bounds local request volume and body size without affecting health routes", async () => {
     const app = await buildApp({
       productServices: createHarness().services,
+      productApiAccess: { mode: "local_unauthenticated" },
       productApiLimits: { requestsPerMinute: 1, maxConcurrentPlans: 1 },
     });
     apps.push(app);
@@ -3109,6 +3114,7 @@ describe("local product API", () => {
           });
         },
       }).services,
+      productApiAccess: { mode: "local_unauthenticated" },
       productApiLimits: { requestsPerMinute: 100, maxConcurrentPlans: 1 },
     });
     apps.push(app);
@@ -3701,6 +3707,7 @@ describe("local product API", () => {
           );
         },
       }).services,
+      productApiAccess: { mode: "local_unauthenticated" },
     });
     apps.push(app);
 

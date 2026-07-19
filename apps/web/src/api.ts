@@ -38,6 +38,7 @@ import type {
   WorkItemStatus,
   Workspace,
 } from "./types";
+import { dispatchApiRequest } from "./api-transport.js";
 
 interface RequestOptions {
   readonly method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -64,7 +65,7 @@ async function request<Result>(path: string, options: RequestOptions = {}): Prom
   if (options.idempotencyKey !== undefined) {
     headers.set("Idempotency-Key", options.idempotencyKey);
   }
-  const response = await fetch(path, {
+  const response = await dispatchApiRequest(path, {
     method: options.method ?? "GET",
     headers,
     ...(options.json === undefined ? {} : { body: JSON.stringify(options.json) }),

@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bridge;
+
 use serde::Serialize;
 use tauri::{
     Url, WebviewUrl,
@@ -83,7 +85,10 @@ mod tests {
 }
 
 fn main() {
+    let api_forwarder = bridge::DesktopApiForwarder::new()
+        .expect("Schedule desktop API bridge failed to initialize");
     tauri::Builder::default()
+        .manage(api_forwarder)
         .setup(|app| {
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Schedule")
@@ -96,7 +101,10 @@ fn main() {
                 .build()?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![runtime_status])
+        .invoke_handler(tauri::generate_handler![
+            runtime_status,
+            bridge::api_request
+        ])
         .run(tauri::generate_context!())
         .expect("Schedule desktop failed to start");
 }

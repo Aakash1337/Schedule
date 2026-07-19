@@ -13,6 +13,7 @@ const app = await buildApp({
   productServices: createProductServices(new PostgresUnitOfWork(connection), {
     now: () => new Date(fixedNow),
   }),
+  productApiAccess: { mode: "local_unauthenticated" },
 });
 const workspaceIds: string[] = [];
 

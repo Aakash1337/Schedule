@@ -1,6 +1,8 @@
 # Local Product API
 
-The local product API exposes the deterministic planner without committing the project to a frontend or cloud authentication design. It is available under `/v1` when `PRODUCT_API_MODE=local_unauthenticated`.
+The local product API exposes the deterministic planner without committing the project to a
+frontend or cloud authentication design. It is available under `/v1` in the non-production
+`local_unauthenticated` profile and the installed application's `desktop_authenticated` profile.
 
 This document describes the loopback product surface. Trusted machine callers use the separately
 authenticated [inbound integration gateway](./INTEGRATIONS.md); its workspace-scoped credentials do
@@ -10,7 +12,10 @@ Daily Plan Fit projection for local agents without exposing its evidence key or 
 ## Safety boundary
 
 - Development defaults to `local_unauthenticated` and binds to `127.0.0.1`.
-- Production is always `disabled`; configuration rejects attempts to enable unauthenticated routes in production or on a non-loopback application bind.
+- Production defaults to `disabled`. Configuration rejects unauthenticated product routes in
+  production or on a non-loopback bind. The only enabled production-local profile is
+  `desktop_authenticated`, which requires an exact `127.0.0.1` bind, no trusted proxies, hosted mode
+  disabled, and a canonical random 32-byte launch credential.
 - `HOSTED_API_MODE` is a separate fail-closed gate. It defaults to `disabled`; `oidc` requires one
   complete validated registration, `HOSTED_OIDC_PREFLIGHT_MODE=enabled`, the complete bounded secret
   set, and `PRODUCT_API_MODE=disabled`. Enabled startup completes provider discovery before listening,
@@ -92,6 +97,34 @@ Daily Plan Fit projection for local agents without exposing its evidence key or 
   idempotent confirmation request.
 - Local mode caps an installation at 20 workspaces; each workspace is capped at 500 routines, 5,000 activity events, 2,000 plan revisions, and 50 revisions for one date. Planning reads at most 2,001 dependency rows whose dependents are active opted-in candidates and fails closed with `planning.work_item_dependency_pool_too_large` when more than 2,000 relevant rows exist.
 - Plan responses expose the original planning request, input hash, and algorithm versions, but not routine snapshots or activity history from the complete persisted input snapshot.
+
+## Desktop-authenticated runtime profile
+
+`PRODUCT_API_MODE=desktop_authenticated` is the native application's private production profile. The
+Rust supervisor supplies one random base64url credential through `DESKTOP_API_TOKEN`, normally asks
+the operating system for a dynamic port with `API_PORT=0`, and reads the single versioned readiness
+record `SCHEDULE_DESKTOP_API_READY_V1 {"port":<port>}` from API stdout. Configuration retains only a
+SHA-256 digest, and the API removes the raw environment value immediately after loading it. Neither
+the readiness record nor configuration errors contain credential material.
+
+Product requests in this profile must have an allowed loopback `Host`, no `Origin` header, and the
+exact canonical `Authorization: Bearer <credential>` value. Authentication comparisons are
+constant-time and responses are marked `Cache-Control: no-store`. Health endpoints remain outside
+the product-route authentication hook so the native supervisor can perform lifecycle probes.
+
+The webview never receives the credential or the API authority. It sends a narrow method, relative
+`/v1/workspaces` path, optional serialized JSON body, and optional idempotency key to a Tauri command.
+Rust owns the fixed loopback authority and authorization header, disables environment proxies and
+redirects, rejects paths outside the local product surface or containing traversal/separator
+encodings, and bounds concurrent requests, request paths, bodies, response bodies, timeouts, and
+idempotency keys. It returns only status, JSON body, and request ID. The supervisor must clear the
+target immediately when the API exits and use a fresh credential for every restart. Browser fetch
+remains the default web transport; the native transport can be installed without changing API call
+sites.
+
+This boundary is implemented but remains dormant until the runtime supervisor configures its target
+and the shared React interface is mounted in the desktop shell. It is not a cross-device sync or
+hosted-account protocol.
 
 ## Routes
 

@@ -146,6 +146,7 @@ try {
   const clock = { now: () => new Date(now) };
   app = await buildApp({
     productServices: createProductServices(productUnitOfWork, clock),
+    productApiAccess: { mode: "local_unauthenticated" },
     integrationServices: createIntegrationServices(integrationUnitOfWork, clock, pepper, 600, {
       leaseDurationMilliseconds: 2_000,
       maxAttempts: 5,

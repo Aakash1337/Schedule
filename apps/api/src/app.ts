@@ -35,6 +35,7 @@ import {
   type HostedWorkspaceServices,
 } from "./hosted-workspace-routes.js";
 import { registerHostedWebShell, type HostedWebShell } from "./hosted-web-shell.js";
+import type { DesktopProductAuthenticator } from "./desktop-product-auth.js";
 
 export interface HostedApiOptions {
   readonly auth: HostedAuthLifecycleDependencies;
@@ -52,6 +53,12 @@ export interface BuildAppOptions {
   readonly trustProxy?: FastifyServerOptions["trustProxy"];
   readonly readinessCheck?: () => Promise<void>;
   readonly productServices?: ProductServices;
+  readonly productApiAccess?:
+    | Readonly<{ mode: "local_unauthenticated" }>
+    | Readonly<{
+        mode: "desktop_authenticated";
+        authenticator: DesktopProductAuthenticator;
+      }>;
   readonly productApiLimits?: ProductApiLimits;
   readonly integrationServices?: IntegrationServices;
   readonly integrationApiLimits?: IntegrationApiLimits;
@@ -105,6 +112,11 @@ export function isAllowedLocalProductHost(host: string | undefined): boolean {
 }
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
+  const productServices = options.productServices;
+  const productApiAccess = options.productApiAccess;
+  if ((productServices === undefined) !== (productApiAccess === undefined)) {
+    throw new TypeError("Product services and their access policy must be configured together.");
+  }
   const app = Fastify({
     logger: options.logger ?? false,
     trustProxy: options.trustProxy ?? false,
@@ -134,7 +146,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     service: "schedule-api",
     version: "0.1.0",
     architecture: "modular-monolith",
-    productEndpointsEnabled: options.productServices !== undefined,
+    productEndpointsEnabled: productServices !== undefined,
     integrationEndpointsEnabled: options.integrationServices !== undefined,
     hostedEndpointsEnabled: options.hostedApi !== undefined,
   }));
@@ -150,7 +162,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     });
   }
 
-  if (options.productServices !== undefined) {
+  if (productServices !== undefined && productApiAccess !== undefined) {
     await app.register(async (productApp) => {
       productApp.addHook("onRequest", async (request, reply) => {
         if (
@@ -162,20 +174,37 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         ) {
           reply.header("cache-control", "no-store");
         }
-        if (isAllowedLocalProductHost(request.headers.host)) return;
-        return reply.code(403).send({
+        if (!isAllowedLocalProductHost(request.headers.host)) {
+          return reply.code(403).send({
+            error: {
+              code: "request.host_not_allowed",
+              message: "The request host is not allowed for the local product API.",
+            },
+            requestId: request.id,
+          });
+        }
+        if (productApiAccess.mode === "local_unauthenticated") return;
+
+        reply.header("cache-control", "no-store");
+        if (request.headers.origin !== undefined) {
+          return reply.code(403).send({
+            error: {
+              code: "request.origin_not_allowed",
+              message: "Browser-origin requests are not allowed for the desktop product API.",
+            },
+            requestId: request.id,
+          });
+        }
+        if (productApiAccess.authenticator.verify(request.headers.authorization)) return;
+        return reply.code(401).send({
           error: {
-            code: "request.host_not_allowed",
-            message: "The request host is not allowed for the local product API.",
+            code: "request.authentication_required",
+            message: "Desktop product authentication is required.",
           },
           requestId: request.id,
         });
       });
-      await registerProductRoutes(
-        productApp,
-        options.productServices as ProductServices,
-        options.productApiLimits,
-      );
+      await registerProductRoutes(productApp, productServices, options.productApiLimits);
     });
   }
 

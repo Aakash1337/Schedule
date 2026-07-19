@@ -146,7 +146,10 @@ function harness() {
 describe("notification product routes", () => {
   it("wires profile, rules, one-offs, materialization, intent reads, and safe delivery history", async () => {
     const test = harness();
-    const app = await buildApp({ productServices: test.services });
+    const app = await buildApp({
+      productServices: test.services,
+      productApiAccess: { mode: "local_unauthenticated" },
+    });
     apps.push(app);
 
     const profileResponse = await app.inject({
@@ -263,7 +266,10 @@ describe("notification product routes", () => {
 
   it("rejects unpaired quiet hours, mismatched rule configuration, and empty patches", async () => {
     const test = harness();
-    const app = await buildApp({ productServices: test.services });
+    const app = await buildApp({
+      productServices: test.services,
+      productApiAccess: { mode: "local_unauthenticated" },
+    });
     apps.push(app);
 
     const badProfile = await app.inject({
