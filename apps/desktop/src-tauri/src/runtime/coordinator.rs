@@ -27,17 +27,51 @@ impl Cancellation {
 /// It is safe to retain across retries: it affects only a currently published
 /// cancellation token and becomes a no-op after cleanup completes.
 #[derive(Clone, Debug, Default)]
-pub struct CancellationHandle(Arc<Mutex<Option<Cancellation>>>);
+pub struct CancellationHandle(Arc<Mutex<CancellationSlots>>);
+
+#[derive(Debug, Default)]
+struct CancellationSlots {
+    active: Option<Cancellation>,
+    pre_armed: Option<Cancellation>,
+}
 
 impl CancellationHandle {
     pub fn cancel(&self) -> bool {
         let guard = self.0.lock().expect("cancellation handle poisoned");
-        if let Some(token) = guard.as_ref() {
+        if let Some(token) = guard.active.as_ref().or(guard.pre_armed.as_ref()) {
             token.cancel();
             true
         } else {
             false
         }
+    }
+
+    /// Publish a cancellation token before a threaded host queues Start/Retry.
+    /// Direct coordinator callers do not need this; `begin` creates a token
+    /// when no pre-armed token exists.
+    pub fn pre_arm(&self) {
+        let mut guard = self.0.lock().expect("cancellation handle poisoned");
+        if guard.active.is_none() && guard.pre_armed.is_none() {
+            guard.pre_armed = Some(Cancellation::default());
+        }
+    }
+
+    pub fn clear_pre_arm(&self) {
+        self.0
+            .lock()
+            .expect("cancellation handle poisoned")
+            .pre_armed = None;
+    }
+
+    fn activate(&self) -> Cancellation {
+        let mut guard = self.0.lock().expect("cancellation handle poisoned");
+        let cancellation = guard.pre_armed.take().unwrap_or_default();
+        guard.active = Some(cancellation.clone());
+        cancellation
+    }
+
+    fn clear_active(&self) {
+        self.0.lock().expect("cancellation handle poisoned").active = None;
     }
 }
 
@@ -155,17 +189,17 @@ impl<E: EffectExecutor> Coordinator<E> {
     }
 
     fn begin(&mut self, event: Event) -> Result<(), CoordinatorError<E::Error>> {
-        let transition = self
-            .lifecycle
-            .transition(event)
-            .map_err(CoordinatorError::Rejected)?;
+        let transition = match self.lifecycle.transition(event) {
+            Ok(transition) => transition,
+            Err(rejection) => {
+                if self.cancellation.is_none() {
+                    self.cancellation_handle.clear_pre_arm();
+                }
+                return Err(CoordinatorError::Rejected(rejection));
+            }
+        };
         self.lifecycle = transition.lifecycle;
-        let cancellation = Cancellation::default();
-        *self
-            .cancellation_handle
-            .0
-            .lock()
-            .expect("cancellation handle poisoned") = Some(cancellation.clone());
+        let cancellation = self.cancellation_handle.activate();
         self.cancellation = Some(cancellation);
         self.run(transition.effects)
     }
@@ -243,7 +277,7 @@ impl<E: EffectExecutor> Coordinator<E> {
                     .map_err(CoordinatorError::Rejected)?;
                 self.lifecycle = transition.lifecycle;
                 self.cancellation = None;
-                *active = None;
+                active.active = None;
                 effects = transition.effects;
                 effects.reverse();
                 continue;
@@ -349,11 +383,7 @@ impl<E: EffectExecutor> Coordinator<E> {
         self.lifecycle = transition.lifecycle;
         self.pending_cleanup = None;
         self.cancellation = None;
-        *self
-            .cancellation_handle
-            .0
-            .lock()
-            .expect("cancellation handle poisoned") = None;
+        self.cancellation_handle.clear_active();
         Ok(())
     }
 
@@ -937,6 +967,21 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(phase, Phase::Idle);
         assert_eq!(*calls.lock().unwrap(), ["lock", "release-lock"]);
+        assert!(!handle.cancel());
+    }
+
+    #[test]
+    fn queued_before_start_cancellation_stops_before_the_first_startup_effect() {
+        let mut coordinator = Coordinator::new(Fake {
+            reject_cancelled_work: true,
+            ..Default::default()
+        });
+        let handle = coordinator.cancellation_handle();
+        handle.pre_arm();
+        assert!(handle.cancel());
+        coordinator.start().unwrap();
+        assert_eq!(coordinator.lifecycle().phase(), &Phase::Idle);
+        assert_eq!(coordinator.executor().names(), ["cancel", "release-lock"]);
         assert!(!handle.cancel());
     }
 
