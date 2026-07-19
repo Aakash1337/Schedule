@@ -1,5 +1,15 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,7 +22,6 @@ import {
 
 const temporaryDirectories: string[] = [];
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
-
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories
@@ -21,87 +30,207 @@ afterEach(async () => {
   );
 });
 
-async function fixtureLock(payload: Uint8Array): Promise<RuntimeSourceLock> {
-  const raw = JSON.parse(
+async function rawLock(): Promise<{ artifacts: Array<Record<string, unknown>> }> {
+  return JSON.parse(
     await readFile(path.join(repositoryRoot, "runtime-sources.lock.json"), "utf8"),
-  ) as {
-    artifacts: Array<Record<string, unknown>>;
-  };
-  const sha256 = createHash("sha256").update(payload).digest("hex");
-  for (const artifact of raw.artifacts) artifact.sha256 = sha256;
+  ) as { artifacts: Array<Record<string, unknown>> };
+}
+async function fixtureLock(payload: Uint8Array): Promise<RuntimeSourceLock> {
+  const raw = await rawLock();
+  const hash = createHash("sha256").update(payload).digest("hex");
+  for (const artifact of raw.artifacts) artifact.sha256 = hash;
   return parseRuntimeSourceLock(raw);
 }
-
-function responseFor(
-  payload: Uint8Array,
-  options: { status?: number; headers?: Record<string, string> } = {},
-): Response {
-  return new Response(payload, { status: options.status ?? 200, headers: options.headers });
+async function output(): Promise<string> {
+  const value = await mkdtemp(path.join(os.tmpdir(), "schedule-runtime-sources-"));
+  temporaryDirectories.push(value);
+  return value;
+}
+function response(payload: Uint8Array, status = 200, headers?: Record<string, string>): Response {
+  return new Response(payload, { status, headers });
+}
+function streamResponse(status: number, location?: string, onCancel?: () => void): Response {
+  return new Response(new ReadableStream({ cancel: onCancel }), {
+    status,
+    headers: location === undefined ? undefined : { location },
+  });
 }
 
 describe("desktop runtime source acquisition", () => {
-  it("accepts exactly the committed source-lock shape", async () => {
-    const raw = JSON.parse(
-      await readFile(path.join(repositoryRoot, "runtime-sources.lock.json"), "utf8"),
-    ) as unknown;
-    expect(parseRuntimeSourceLock(raw).artifacts).toHaveLength(4);
-    expect(() => parseRuntimeSourceLock({ ...(raw as object), untrusted: true })).toThrow(
-      "canonical",
-    );
-    const bad = structuredClone(raw) as { artifacts: Array<Record<string, unknown>> };
-    bad.artifacts[0]!.url = "http://example.invalid/node.zip";
-    expect(() => parseRuntimeSourceLock(bad)).toThrow("approved official HTTPS origin");
+  it("rejects malformed target/schema fields and IDs that do not match their fixed specifications", async () => {
+    const cases: Array<(lock: { artifacts: Array<Record<string, unknown>> }) => void> = [
+      (lock) => {
+        lock.artifacts[0]!.target = { os: "darwin", arch: "x64" };
+      },
+      (lock) => {
+        lock.artifacts[0]!.target = { os: "windows", arch: "arm64" };
+      },
+      (lock) => {
+        lock.artifacts[0]!.version = 24;
+      },
+      (lock) => {
+        [lock.artifacts[0]!.id, lock.artifacts[1]!.id] = [
+          lock.artifacts[1]!.id,
+          lock.artifacts[0]!.id,
+        ];
+      },
+      (lock) => {
+        lock.artifacts[0]!.extra = true;
+      },
+    ];
+    for (const mutate of cases) {
+      const lock = await rawLock();
+      mutate(lock);
+      expect(() => parseRuntimeSourceLock(lock)).toThrow();
+    }
   });
 
-  it("streams only matching local responses into no-replace target directories", async () => {
+  it("streams matching local responses into both target layouts and returns their final paths", async () => {
     const payload = new TextEncoder().encode("verified fixture archive");
     const lock = await fixtureLock(payload);
-    const outputDirectory = await mkdtemp(path.join(os.tmpdir(), "schedule-runtime-sources-"));
-    temporaryDirectories.push(outputDirectory);
-    const calls: string[] = [];
-    const fetchImplementation: FetchImplementation = async (url) => {
-      calls.push(url);
-      return responseFor(payload, { headers: { "content-length": String(payload.byteLength) } });
-    };
-    const archives = await acquireRuntimeSources({ lock, outputDirectory, fetchImplementation });
+    const directory = await output();
+    const archives = await acquireRuntimeSources({
+      lock,
+      outputDirectory: directory,
+      fetchImplementation: async () =>
+        response(payload, 200, { "content-length": String(payload.byteLength) }),
+    });
     expect(archives).toHaveLength(4);
-    expect(calls).toHaveLength(4);
+    expect(archives.filter((value) => value.includes("windows-x64")).length).toBe(2);
+    expect(archives.filter((value) => value.includes("linux-x64")).length).toBe(2);
     await expect(readFile(archives[0]!)).resolves.toEqual(Buffer.from(payload));
-    await expect(
-      acquireRuntimeSources({ lock, outputDirectory, fetchImplementation }),
-    ).rejects.toThrow("already exists");
   });
 
-  it("rejects redirects off approved origins, oversized data, and hash mismatches", async () => {
+  it("allows only same-origin approved relative redirects and cancels redirect bodies", async () => {
+    const payload = new TextEncoder().encode("redirect fixture");
+    const lock = await fixtureLock(payload);
+    const directory = await output();
+    let calls = 0;
+    let cancelled = 0;
+    const fetchImplementation: FetchImplementation = async () => {
+      calls += 1;
+      return calls === 1
+        ? streamResponse(302, "node-v24.17.0-win-x64.zip", () => {
+            cancelled += 1;
+          })
+        : response(payload);
+    };
+    await acquireRuntimeSources({ lock, outputDirectory: directory, fetchImplementation });
+    expect(calls).toBe(5);
+    expect(cancelled).toBe(1);
+  });
+
+  it("rejects missing, cross-origin, and over-bound redirects", async () => {
+    const payload = new TextEncoder().encode("redirect failure");
+    const lock = await fixtureLock(payload);
+    const scenarios: Array<FetchImplementation> = [
+      async () => streamResponse(302),
+      async () => streamResponse(302, "https://example.invalid/archive"),
+      async () => streamResponse(302, "node-v24.17.0-win-x64.zip"),
+    ];
+    for (const fetchImplementation of scenarios)
+      await expect(
+        acquireRuntimeSources({ lock, outputDirectory: await output(), fetchImplementation }),
+      ).rejects.toThrow("redirect");
+  });
+
+  it("rejects malformed, oversized, and truncated content lengths before publishing", async () => {
     const payload = new TextEncoder().encode("small archive");
     const lock = await fixtureLock(payload);
-    const outputDirectory = await mkdtemp(
-      path.join(os.tmpdir(), "schedule-runtime-sources-reject-"),
-    );
-    temporaryDirectories.push(outputDirectory);
-    const redirect: FetchImplementation = async () =>
-      responseFor(new Uint8Array(), {
-        status: 302,
-        headers: { location: "https://example.invalid/archive" },
-      });
-    await expect(
-      acquireRuntimeSources({ lock, outputDirectory, fetchImplementation: redirect }),
-    ).rejects.toThrow("approved official HTTPS origin");
-    const oversized = structuredClone(lock) as { artifacts: Array<{ maxBytes: number }> };
-    oversized.artifacts[0]!.maxBytes = 1;
-    await expect(
-      acquireRuntimeSources({
-        lock: parseRuntimeSourceLock(oversized),
-        outputDirectory,
-        fetchImplementation: async () => responseFor(payload),
-      }),
-    ).rejects.toThrow("byte limit");
+    const cases = [
+      { headers: { "content-length": "not-a-number" }, error: "invalid" },
+      { headers: { "content-length": "999999999" }, error: "oversized" },
+      { headers: { "content-length": String(payload.byteLength + 1) }, error: "truncated" },
+    ];
+    for (const current of cases)
+      await expect(
+        acquireRuntimeSources({
+          lock,
+          outputDirectory: await output(),
+          fetchImplementation: async () => response(payload, 200, current.headers),
+        }),
+      ).rejects.toThrow(current.error);
+  });
+
+  it("cleans failed partials, scavenges crash orphans, and permits a clean retry", async () => {
+    const payload = new TextEncoder().encode("retry fixture");
+    const lock = await fixtureLock(payload);
+    const directory = await output();
     await expect(
       acquireRuntimeSources({
         lock,
-        outputDirectory,
-        fetchImplementation: async () => responseFor(new TextEncoder().encode("wrong")),
+        outputDirectory: directory,
+        fetchImplementation: async () => response(new TextEncoder().encode("wrong")),
       }),
-    ).rejects.toThrow("committed SHA-256");
+    ).rejects.toThrow("SHA-256");
+    expect(
+      (await readdir(path.join(directory, "windows-x64"))).filter((name) =>
+        name.endsWith(".partial"),
+      ),
+    ).toEqual([]);
+    const orphan = path.join(
+      directory,
+      "windows-x64",
+      ".node-windows-x64.00000000-0000-0000-0000-000000000000.partial",
+    );
+    await writeFile(orphan, "orphan");
+    await acquireRuntimeSources({
+      lock,
+      outputDirectory: directory,
+      fetchImplementation: async () => response(payload),
+    });
+    await expect(readFile(orphan)).rejects.toThrow();
+  });
+
+  it("rejects a publish collision and a swapped verified temporary pathname", async () => {
+    const payload = new TextEncoder().encode("swap fixture");
+    const lock = await fixtureLock(payload);
+    const directory = await output();
+    await mkdir(path.join(directory, "windows-x64"));
+    await writeFile(path.join(directory, "windows-x64", "node-v24.17.0-win-x64.zip"), "existing");
+    await expect(
+      acquireRuntimeSources({
+        lock,
+        outputDirectory: directory,
+        fetchImplementation: async () => response(payload),
+      }),
+    ).rejects.toThrow("already exists");
+    await unlink(path.join(directory, "windows-x64", "node-v24.17.0-win-x64.zip"));
+    await expect(
+      acquireRuntimeSources({
+        lock,
+        outputDirectory: directory,
+        fetchImplementation: async () => response(payload),
+        afterVerification: async (temporary) => {
+          await rm(temporary);
+          await writeFile(temporary, payload);
+        },
+      }),
+    ).rejects.toThrow("temporary file changed");
+  });
+
+  it("rejects a target replacement through a link before a verified archive can publish", async () => {
+    const payload = new TextEncoder().encode("hierarchy fixture");
+    const lock = await fixtureLock(payload);
+    const directory = await output();
+    const escaped = await output();
+    await expect(
+      acquireRuntimeSources({
+        lock,
+        outputDirectory: directory,
+        fetchImplementation: async () => response(payload),
+        afterVerification: async () => {
+          const target = path.join(directory, "windows-x64");
+          const displaced = path.join(directory, "displaced");
+          try {
+            await rename(target, displaced);
+          } catch {
+            // Windows refuses this replacement while the verified temporary handle is open.
+            throw new Error("target replacement blocked");
+          }
+          await symlink(escaped, target, process.platform === "win32" ? "junction" : "dir");
+        },
+      }),
+    ).rejects.toThrow(/hierarchy|target replacement blocked/u);
   });
 });

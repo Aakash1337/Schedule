@@ -90,7 +90,11 @@ will use:
   Node 24.17.0 archives and PostgreSQL 17.10 source. Its fetcher rejects unknown fields and
   non-official HTTPS origins, follows at most three official-origin redirects, streams into a
   create-new private temporary file while hashing and bounding bytes, and publishes a final archive
-  only after the committed SHA-256 matches. It never extracts or executes fetched bytes.
+  only after the committed SHA-256 matches. It keeps the verified handle open through publication
+  and rejects a changed temporary or output hierarchy. A normal failure removes its partial; a
+  crash orphan has a recognized, bounded name and is scavenged before retry. After publication the
+  temporary hard link is removed, leaving only the verified final archive. It never extracts or
+  executes fetched bytes.
 
 These pieces are compiled and tested on Windows and Linux, but the host still has no native effect
 executor and is not invoked by `main`. The application therefore continues to report

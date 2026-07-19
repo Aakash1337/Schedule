@@ -4544,9 +4544,10 @@
           "file": "scripts/acquire-desktop-runtime-sources.test.ts",
           "command": "unit",
           "anchors": [
-            "accepts exactly the committed source-lock shape",
-            "streams only matching local responses into no-replace target directories",
-            "rejects redirects off approved origins, oversized data, and hash mismatches"
+            "rejects malformed target/schema fields and IDs that do not match their fixed specifications",
+            "allows only same-origin approved relative redirects and cancels redirect bodies",
+            "rejects a publish collision and a swapped verified temporary pathname",
+            "rejects a target replacement through a link before a verified archive can publish"
           ]
         }
       ]
