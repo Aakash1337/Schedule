@@ -1,0 +1,196 @@
+name: desktop-release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["desktop-v*"]
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    name: Runtime (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: linux
+          - runner: windows-2022
+            target: windows
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        if: runner.os == 'Windows'
+        with:
+          repository: microsoft/vcpkg
+          ref: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
+          path: .postgresql-build/vcpkg
+          persist-credentials: false
+      - uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        if: runner.os == 'Windows'
+        with:
+          python-version: "3.13"
+      - name: Install Linux native build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential ca-certificates curl patchelf perl
+      - run: pnpm install --frozen-lockfile
+      - name: Build production service deployments
+        shell: bash
+        run: pnpm exec tsx scripts/stage-desktop-service-deployments.ts "$RUNNER_TEMP/services"
+      - name: Acquire pinned archives
+        shell: bash
+        run: pnpm exec tsx scripts/acquire-desktop-runtime-sources.ts --lock runtime-sources.lock.json --output "$RUNNER_TEMP/sources"
+      - name: Build verified Node runtime
+        shell: bash
+        run: >-
+          pnpm exec tsx scripts/build-node-runtime.ts --lock runtime-sources.lock.json
+          --sources "$RUNNER_TEMP/sources" --output "$RUNNER_TEMP/node-runtime"
+          --target "${{ matrix.target }}"
+      - name: Install pinned Windows PostgreSQL build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          python -m pip install --only-binary=:all: --require-hashes
+          -r scripts/postgresql-runtime/windows-requirements.txt
+      - name: Build verified PostgreSQL runtime (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          chmod +x scripts/build-postgresql-runtime-linux.sh
+          scripts/build-postgresql-runtime-linux.sh \
+            "$RUNNER_TEMP/sources/linux-x64/postgresql-17.10.tar.gz" \
+            "$RUNNER_TEMP/postgresql-runtime" "$RUNNER_TEMP/postgresql-build"
+      - name: Build verified PostgreSQL runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          ./scripts/build-postgresql-runtime-windows.ps1
+          -SourceArchive "$env:RUNNER_TEMP/sources/windows-x64/postgresql-17.10.tar.gz"
+          -OutputDirectory "$env:RUNNER_TEMP/postgresql-runtime"
+          -BuildRoot "$env:RUNNER_TEMP/postgresql-build"
+          -VcpkgRoot "$env:GITHUB_WORKSPACE/.postgresql-build/vcpkg"
+      - name: Assemble authenticated runtime
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          node_version="$(node -e 'const lock = require("./runtime-sources.lock.json"); process.stdout.write(lock.artifacts.find(({ id }) => id === `node-${process.env.RELEASE_TARGET}-x64`).version)')"
+          postgres_version="$(node -e 'process.stdout.write(require("./postgresql-runtime.lock.json").postgresql.version)')"
+          pnpm exec tsx scripts/assemble-desktop-release-runtime.ts \
+            --output "$RUNNER_TEMP/runtime" --target "${{ matrix.target }}" \
+            --api "$RUNNER_TEMP/services/api" --worker "$RUNNER_TEMP/services/worker" \
+            --node "$RUNNER_TEMP/node-runtime" --node-version "$node_version" \
+            --postgres "$RUNNER_TEMP/postgresql-runtime" --postgres-version "$postgres_version"
+      - name: Archive verified runtime
+        shell: bash
+        run: tar -czf "$RUNNER_TEMP/runtime-${{ matrix.target }}-x64.tar.gz" -C "$RUNNER_TEMP/runtime" .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-runtime-${{ matrix.target }}-x64
+          path: ${{ runner.temp }}/runtime-${{ matrix.target }}-x64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  bundle:
+    name: Installer (${{ matrix.target }})
+    needs: runtime
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: linux
+          - runner: windows-2022
+            target: windows
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-runtime-${{ matrix.target }}-x64
+          path: ${{ runner.temp }}/runtime-artifact
+      - name: Install Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential libayatana-appindicator3-dev librsvg2-dev libssl-dev \
+            libwebkit2gtk-4.1-dev libxdo-dev patchelf
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+      - run: pnpm install --frozen-lockfile
+      - name: Unpack runtime and build native installers
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/runtime"
+          tar -xzf "$RUNNER_TEMP/runtime-artifact/runtime-${{ matrix.target }}-x64.tar.gz" -C "$RUNNER_TEMP/runtime"
+          pnpm desktop:build -- --runtime "$RUNNER_TEMP/runtime"
+          pnpm exec tsx scripts/verify-desktop-package-artifact.ts
+      - name: Smoke installed Linux package contents
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          package="$(find apps/desktop/src-tauri/target -name '*.deb' -print -quit)"
+          test -n "$package"
+          mkdir "$RUNNER_TEMP/installed"
+          dpkg-deb -x "$package" "$RUNNER_TEMP/installed"
+          pnpm exec tsx scripts/smoke-desktop-installer.ts "$RUNNER_TEMP/installed"
+      - name: Smoke installed Windows package contents
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem apps/desktop/src-tauri/target -Recurse -Filter '*-setup.exe' | Select-Object -First 1
+          if ($null -eq $installer) { throw 'NSIS installer was not produced.' }
+          $install = Join-Path $env:RUNNER_TEMP 'schedule-installed'
+          Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$install" -Wait -NoNewWindow
+          if (-not (Test-Path -LiteralPath (Join-Path $install 'Schedule.exe') -PathType Leaf)) { throw 'NSIS install did not produce Schedule.exe.' }
+          pnpm exec tsx scripts/smoke-desktop-installer.ts $install
+      - name: Collect release metadata
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/release-metadata"
+          cp "$RUNNER_TEMP/runtime/runtime-manifest.json" "$RUNNER_TEMP/runtime/runtime-sbom.json" "$RUNNER_TEMP/runtime/runtime-licenses.json" "$RUNNER_TEMP/release-metadata/"
+          find "$RUNNER_TEMP/runtime" -iname '*provenance*.json' -exec cp {} "$RUNNER_TEMP/release-metadata/" \;
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: schedule-desktop-${{ matrix.target }}-x64
+          path: |
+            apps/desktop/src-tauri/target/**/bundle/**/*.msi
+            apps/desktop/src-tauri/target/**/bundle/**/*-setup.exe
+            apps/desktop/src-tauri/target/**/bundle/**/*.AppImage
+            apps/desktop/src-tauri/target/**/bundle/**/*.deb
+            ${{ runner.temp }}/release-metadata
+          if-no-files-found: error
+          retention-days: 90
