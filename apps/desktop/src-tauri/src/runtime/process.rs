@@ -284,7 +284,7 @@ pub(crate) trait ProcessGroupControl: Send + Sync {
 
     /// Permanently rejects new ownership and force-stops every currently owned process tree.
     /// This is the final bounded-exit containment barrier, not an ordinary lifecycle operation.
-    fn seal_and_force_stop_all(&self) -> Result<(), ProcessError> {
+    fn seal_and_force_stop_all(&self, _pending_spawn_wait: Duration) -> Result<(), ProcessError> {
         Ok(())
     }
 
@@ -1208,7 +1208,9 @@ mod tests {
             .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
         let started = start_process(spec, Arc::clone(&control)).unwrap();
 
-        control.seal_and_force_stop_all().unwrap();
+        control
+            .seal_and_force_stop_all(Duration::from_secs(1))
+            .unwrap();
         thread::sleep(Duration::from_millis(750));
         assert!(!marker.exists());
         let late = start_process(
@@ -1220,6 +1222,46 @@ mod tests {
         assert_eq!(late.code(), "desktop.process_group_failed");
 
         drop(started);
+        let _ = fs::remove_file(marker);
+    }
+
+    #[test]
+    fn final_containment_deadline_rejects_a_late_reserved_spawn() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let marker = env::temp_dir().join(format!(
+            "schedule-late-spawn-{}-{nonce}.marker",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&marker);
+        let control = platform_process_control();
+        let reservation = ProcessSpawnReservation::new(Arc::clone(&control)).unwrap();
+        let spec = helper_spec(ProcessRole::Api, "tree_parent", Duration::from_secs(2))
+            .env(EXPLICIT_VALUE, marker.as_os_str())
+            .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
+        let mut command = spec.command();
+        control
+            .configure_command(ProcessRole::Api, &mut command)
+            .unwrap();
+
+        let started = Instant::now();
+        control
+            .seal_and_force_stop_all(Duration::from_millis(10))
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        let mut child = command.spawn().unwrap();
+        let identity = ChildIdentity {
+            role: ProcessRole::Api,
+            pid: child.id(),
+        };
+        assert!(reservation.attach(identity, &mut child).is_err());
+        terminate_unowned_child(&mut child);
+        thread::sleep(Duration::from_millis(750));
+        assert!(!marker.exists());
+        assert!(ProcessSpawnReservation::new(control).is_err());
         let _ = fs::remove_file(marker);
     }
 
