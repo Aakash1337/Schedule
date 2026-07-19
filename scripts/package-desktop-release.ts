@@ -21,18 +21,16 @@ type Runner = (
   command: string,
   arguments_: readonly string[],
   environment: NodeJS.ProcessEnv,
+  cwd: string,
 ) => Promise<void>;
 type Copier = (source: string, destination: string) => Promise<void>;
-
-export type Platform = "win32" | "linux";
 
 export interface DesktopReleaseOptions {
   readonly runtimeDirectory: string;
   readonly repositoryDirectory?: string;
   readonly target?: Target;
   readonly runTauri?: Runner;
-  readonly platform?: Platform;
-  readonly npmExecPath?: string;
+  readonly tauriEntryPath?: string;
   readonly copyEntry?: Copier;
 }
 
@@ -46,17 +44,6 @@ function targetFromManifest(manifest: { target: { os: string; arch: string } }):
   return key as Target;
 }
 
-async function npmEntryPoint(value: string | undefined): Promise<string> {
-  if (value === undefined || !path.isAbsolute(value) || path.basename(value) !== "pnpm.cjs") {
-    throw new Error("npm_execpath must be an absolute pnpm.cjs entry point.");
-  }
-  const metadata = await lstat(value).catch(() => null);
-  if (metadata === null || !metadata.isFile() || metadata.isSymbolicLink()) {
-    throw new Error("npm_execpath must identify a regular pnpm.cjs file.");
-  }
-  return value;
-}
-
 async function defaultRunner(
   command: string,
   arguments_: readonly string[],
@@ -68,6 +55,7 @@ async function defaultRunner(
       cwd,
       env: environment,
       shell: false,
+      stdio: "inherit",
     });
     child.once("error", reject);
     child.once("exit", (code) =>
@@ -133,6 +121,7 @@ export async function packageDesktopRelease(options: DesktopReleaseOptions): Pro
   const repositoryDirectory = path.resolve(
     options.repositoryDirectory ?? path.resolve(import.meta.dirname, ".."),
   );
+  const desktopDirectory = path.join(repositoryDirectory, "apps", "desktop");
   const runtimeDirectory = path.resolve(options.runtimeDirectory);
   const manifest = await validateDesktopRuntime(runtimeDirectory);
   const target = targetFromManifest(manifest);
@@ -184,32 +173,28 @@ export async function packageDesktopRelease(options: DesktopReleaseOptions): Pro
     ) {
       throw new Error("Staged runtime manifest does not match the assembled runtime.");
     }
-    const runner =
-      options.runTauri ??
-      ((command, arguments_, environment) =>
-        defaultRunner(command, arguments_, environment, repositoryDirectory));
-    const platform = options.platform ?? process.platform;
-    const command = platform === "win32" ? process.execPath : "pnpm";
-    const pnpmEntry =
-      platform === "win32"
-        ? await npmEntryPoint(options.npmExecPath ?? process.env.npm_execpath)
-        : undefined;
+    const runner = options.runTauri ?? defaultRunner;
+    const tauriEntry = path.resolve(
+      options.tauriEntryPath ??
+        path.join(desktopDirectory, "node_modules", "@tauri-apps", "cli", "tauri.js"),
+    );
+    assertUnder(desktopDirectory, tauriEntry);
+    const tauriEntryMetadata = await lstat(tauriEntry).catch(() => null);
+    if (
+      tauriEntryMetadata === null ||
+      !tauriEntryMetadata.isFile() ||
+      tauriEntryMetadata.isSymbolicLink()
+    ) {
+      throw new Error("The installed Tauri CLI entry point is unavailable.");
+    }
     await runner(
-      command,
-      [
-        ...(pnpmEntry === undefined ? [] : [pnpmEntry]),
-        "--filter",
-        "@schedule/desktop",
-        "exec",
-        "tauri",
-        "build",
-        "--target",
-        targetTriples[target],
-      ],
+      process.execPath,
+      [tauriEntry, "build", "--target", targetTriples[target]],
       {
         ...process.env,
         SCHEDULE_DESKTOP_RUNTIME_MANIFEST_SHA256: manifestHash,
       },
+      desktopDirectory,
     );
   } finally {
     if (lock !== undefined && (await readFile(lock, "utf8").catch(() => "")) === `${id}\n`) {
@@ -223,10 +208,11 @@ export async function packageDesktopRelease(options: DesktopReleaseOptions): Pro
 }
 
 export function parseDesktopReleaseArguments(arguments_: readonly string[]): DesktopReleaseOptions {
-  if (arguments_.length !== 2 || arguments_[0] !== "--runtime" || !arguments_[1]) {
+  const normalized = arguments_[0] === "--" ? arguments_.slice(1) : arguments_;
+  if (normalized.length !== 2 || normalized[0] !== "--runtime" || !normalized[1]) {
     throw new Error("Usage: desktop:package --runtime <assembled-runtime-root>");
   }
-  return { runtimeDirectory: arguments_[1] };
+  return { runtimeDirectory: normalized[1] };
 }
 
 if (

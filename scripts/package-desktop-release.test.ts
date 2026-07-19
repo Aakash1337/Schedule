@@ -59,7 +59,11 @@ async function fixture(): Promise<{ repository: string; runtime: string }> {
       postgresql: { version: "17.0", sha256: await hashTree(postgresql) },
     },
   });
-  return { repository: path.join(root, "repository"), runtime };
+  const repository = path.join(root, "repository");
+  const tauriEntry = path.join(repository, "apps/desktop/node_modules/@tauri-apps/cli/tauri.js");
+  await mkdir(path.dirname(tauriEntry), { recursive: true });
+  await writeFile(tauriEntry, "fixture Tauri CLI");
+  return { repository, runtime };
 }
 
 afterEach(async () => {
@@ -75,7 +79,13 @@ describe("packageDesktopRelease", () => {
     expect(parseDesktopReleaseArguments(["--runtime", "E:/runtime"])).toEqual({
       runtimeDirectory: "E:/runtime",
     });
+    expect(parseDesktopReleaseArguments(["--", "--runtime", "E:/runtime"])).toEqual({
+      runtimeDirectory: "E:/runtime",
+    });
     expect(() => parseDesktopReleaseArguments([])).toThrow("Usage");
+    expect(() => parseDesktopReleaseArguments(["--", "--", "--runtime", "E:/runtime"])).toThrow(
+      "Usage",
+    );
   });
 
   it("stages a verified runtime, binds its manifest hash, and cleans owned staging", async () => {
@@ -83,14 +93,15 @@ describe("packageDesktopRelease", () => {
     let command = "";
     let arguments_: readonly string[] = [];
     let hash = "";
+    let cwd = "";
     await packageDesktopRelease({
       repositoryDirectory: repository,
       runtimeDirectory: runtime,
-      platform: "linux",
-      runTauri: async (receivedCommand, receivedArguments, environment) => {
+      runTauri: async (receivedCommand, receivedArguments, environment, receivedCwd) => {
         command = receivedCommand;
         arguments_ = receivedArguments;
         hash = environment.SCHEDULE_DESKTOP_RUNTIME_MANIFEST_SHA256 ?? "";
+        cwd = receivedCwd;
         expect(
           await readFile(
             path.join(repository, "apps/desktop/src-tauri/resources/runtime/runtime-manifest.json"),
@@ -99,16 +110,14 @@ describe("packageDesktopRelease", () => {
         ).toContain('"linux"');
       },
     });
-    expect(command).toBe("pnpm");
+    expect(command).toBe(process.execPath);
     expect(arguments_).toEqual([
-      "--filter",
-      "@schedule/desktop",
-      "exec",
-      "tauri",
+      path.join(repository, "apps/desktop/node_modules/@tauri-apps/cli/tauri.js"),
       "build",
       "--target",
       "x86_64-unknown-linux-gnu",
     ]);
+    expect(cwd).toBe(path.join(repository, "apps", "desktop"));
     expect(hash).toMatch(/^[a-f0-9]{64}$/);
     expect(
       await readFile(
@@ -194,25 +203,20 @@ describe("packageDesktopRelease", () => {
     ).rejects.toThrow("invalid");
   });
 
-  it("uses Node plus an absolute pnpm entry point on Windows", async () => {
+  it("rejects an unavailable Tauri CLI before invoking the runner", async () => {
     const { repository, runtime } = await fixture();
-    const pnpmEntry = path.join(repository, "tools", "pnpm.cjs");
-    await mkdir(path.dirname(pnpmEntry), { recursive: true });
-    await writeFile(pnpmEntry, "");
-    let command = "";
-    let arguments_: readonly string[] = [];
-    await packageDesktopRelease({
-      repositoryDirectory: repository,
-      runtimeDirectory: runtime,
-      platform: "win32",
-      npmExecPath: pnpmEntry,
-      runTauri: async (receivedCommand, receivedArguments) => {
-        command = receivedCommand;
-        arguments_ = receivedArguments;
-      },
-    });
-    expect(command).toBe(process.execPath);
-    expect(arguments_[0]).toBe(pnpmEntry);
+    await rm(path.join(repository, "apps/desktop/node_modules/@tauri-apps/cli/tauri.js"));
+    let invoked = false;
+    await expect(
+      packageDesktopRelease({
+        repositoryDirectory: repository,
+        runtimeDirectory: runtime,
+        runTauri: async () => {
+          invoked = true;
+        },
+      }),
+    ).rejects.toThrow("Tauri CLI entry point is unavailable");
+    expect(invoked).toBe(false);
   });
 
   it("keeps an existing concurrent reservation and restores bootstrap staging after failures", async () => {
@@ -276,7 +280,6 @@ describe("packageDesktopRelease", () => {
     const first = packageDesktopRelease({
       repositoryDirectory: repository,
       runtimeDirectory: runtime,
-      platform: "linux",
       runTauri: async () => {
         signalEntered();
         await gate;
@@ -287,7 +290,6 @@ describe("packageDesktopRelease", () => {
       packageDesktopRelease({
         repositoryDirectory: repository,
         runtimeDirectory: runtime,
-        platform: "linux",
         runTauri: async () => undefined,
       }),
     ).rejects.toThrow("already in progress");
