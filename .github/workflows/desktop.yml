@@ -12,8 +12,11 @@ on:
       - "apps/worker/package.json"
       - "apps/worker/src/desktop-worker-runtime*"
       - "apps/worker/src/index.ts"
+      - "packages/**"
       - "scripts/build-desktop-runtime.ts"
       - "scripts/build-desktop-runtime.test.ts"
+      - "scripts/stage-desktop-service-deployments.ts"
+      - "scripts/stage-desktop-service-deployments.test.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
@@ -32,8 +35,11 @@ on:
       - "apps/worker/package.json"
       - "apps/worker/src/desktop-worker-runtime*"
       - "apps/worker/src/index.ts"
+      - "packages/**"
       - "scripts/build-desktop-runtime.ts"
       - "scripts/build-desktop-runtime.test.ts"
+      - "scripts/stage-desktop-service-deployments.ts"
+      - "scripts/stage-desktop-service-deployments.test.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
@@ -91,6 +97,20 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Verify deterministic runtime assembly
         run: pnpm exec vitest run scripts/build-desktop-runtime.test.ts
+      - name: Verify portable service deployment staging
+        run: pnpm exec vitest run scripts/stage-desktop-service-deployments.test.ts
+      - name: Build deployable desktop services
+        run: |
+          pnpm build:packages
+          pnpm --filter @schedule/api build
+          pnpm --filter @schedule/worker build
+      - name: Smoke real pnpm 11.7 service deployment staging
+        shell: bash
+        run: |
+          output="$RUNNER_TEMP/schedule desktop staging & smoke"
+          pnpm desktop:runtime:stage-services "$output"
+          test -f "$output/api/dist/server.js"
+          test -f "$output/worker/dist/index.js"
       - name: Verify desktop API protocol
         run: pnpm --filter @schedule/api exec vitest run src/desktop-api-runtime.test.ts
       - name: Verify desktop worker protocol
