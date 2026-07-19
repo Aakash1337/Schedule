@@ -1,8 +1,13 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  buildDesktopRuntime,
+  hashTree,
+  type DesktopRuntimeBuildOptions,
+} from "./build-desktop-runtime.js";
 import { buildNodeRuntime } from "./build-node-runtime.js";
 
 const directories: string[] = [];
@@ -98,6 +103,16 @@ async function lockFor(payload: Buffer): Promise<Record<string, unknown>> {
     .digest("hex");
   return lock;
 }
+async function linuxLockFor(payload: Buffer): Promise<Record<string, unknown>> {
+  const lock = JSON.parse(
+    await readFile(path.join(repository, "runtime-sources.lock.json"), "utf8"),
+  ) as Record<string, unknown>;
+  const artifacts = lock.artifacts as Array<Record<string, unknown>>;
+  artifacts.find((artifact) => artifact.id === "node-linux-x64")!.sha256 = createHash("sha256")
+    .update(payload)
+    .digest("hex");
+  return lock;
+}
 async function writeFixture(
   payload: Buffer,
 ): Promise<{ sources: string; lock: Record<string, unknown> }> {
@@ -113,6 +128,66 @@ const fixture = () =>
     { name: "node-v24.18.0-win-x64/LICENSE", bytes: "MIT" },
   ]);
 const command = async (_file: string, _arguments: readonly string[]) => "v24.18.0\n";
+async function desktopAssemblerFixture(
+  root: string,
+  node: string,
+): Promise<DesktopRuntimeBuildOptions> {
+  const api = path.join(root, "api");
+  const worker = path.join(root, "worker");
+  const postgres = path.join(root, "postgres");
+  await Promise.all([
+    mkdir(path.join(api, "dist"), { recursive: true }),
+    mkdir(path.join(api, "node_modules", "@schedule", "database", "dist"), { recursive: true }),
+    mkdir(path.join(api, "node_modules", "@schedule", "database", "drizzle", "meta"), {
+      recursive: true,
+    }),
+    mkdir(path.join(worker, "dist"), { recursive: true }),
+    mkdir(path.join(postgres, "bin"), { recursive: true }),
+    mkdir(path.join(postgres, "lib"), { recursive: true }),
+    mkdir(path.join(postgres, "share", "extension"), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(path.join(api, "dist", "server.js"), "api"),
+    writeFile(
+      path.join(api, "node_modules", "@schedule", "database", "dist", "migrate.js"),
+      "migrate",
+    ),
+    writeFile(
+      path.join(api, "node_modules", "@schedule", "database", "drizzle", "meta", "_journal.json"),
+      "[]",
+    ),
+    writeFile(path.join(worker, "dist", "index.js"), "worker"),
+    ...["initdb", "pg_ctl", "pg_dump", "pg_isready", "pg_restore", "postgres", "psql"].map((tool) =>
+      writeFile(path.join(postgres, "bin", tool), tool),
+    ),
+    writeFile(path.join(postgres, "share", "postgresql.conf.sample"), "config"),
+    writeFile(
+      path.join(postgres, "share", "extension", "pgcrypto.control"),
+      "default_version = '1.3'\n",
+    ),
+    writeFile(path.join(postgres, "share", "extension", "pgcrypto--1.3.sql"), "extension"),
+    writeFile(path.join(postgres, "lib", "pgcrypto.so"), "library"),
+  ]);
+  const pin = async (directory: string, version: string) => ({
+    version,
+    sha256: await hashTree(directory),
+  });
+  return {
+    outputDirectory: path.join(root, "assembled"),
+    target: { os: "linux", arch: "x86_64" },
+    postgresqlMajor: 17,
+    apiDeploymentDirectory: api,
+    workerDeploymentDirectory: worker,
+    nodeRuntimeDirectory: node,
+    postgresqlRuntimeDirectory: postgres,
+    sources: {
+      api: await pin(api, "1.0.0"),
+      worker: await pin(worker, "1.0.0"),
+      node: await pin(node, "24.18.0"),
+      postgresql: await pin(postgres, "17.10"),
+    },
+  };
+}
 
 describe("Node desktop runtime bundles", () => {
   it("builds a minimal deterministic Windows runtime and proves relocation", async () => {
@@ -138,6 +213,68 @@ describe("Node desktop runtime bundles", () => {
     await expect(readFile(path.join(first, "node-runtime.provenance.json"), "utf8")).resolves.toBe(
       await readFile(path.join(second, "node-runtime.provenance.json"), "utf8"),
     );
+  });
+
+  it("flattens the Linux tar runtime to the assembler node contract", async () => {
+    const payload = Buffer.from("linux fixture archive");
+    const sources = await temporary();
+    const sourceDirectory = path.join(sources, "linux-x64");
+    await mkdir(sourceDirectory, { recursive: true });
+    await writeFile(path.join(sourceDirectory, "node-v24.18.0-linux-x64.tar.xz"), payload);
+    const output = path.join(await temporary(), "node runtime");
+    const tar = async (file: string, arguments_: readonly string[]) => {
+      if (file !== "tar") return "v24.18.0\n";
+      if (arguments_[0] === "-tvJf")
+        return "drwxr-xr-x root/root 0 2026-01-01 node-v24.18.0-linux-x64/\n-rwxr-xr-x root/root 4 2026-01-01 node-v24.18.0-linux-x64/bin/node\n-rw-r--r-- root/root 3 2026-01-01 node-v24.18.0-linux-x64/LICENSE\n";
+      const staging = arguments_[arguments_.indexOf("-C") + 1]!;
+      await mkdir(path.join(staging, "node-v24.18.0-linux-x64", "bin"), { recursive: true });
+      await Promise.all([
+        writeFile(path.join(staging, "node-v24.18.0-linux-x64", "bin", "node"), "node"),
+        writeFile(path.join(staging, "node-v24.18.0-linux-x64", "LICENSE"), "MIT"),
+      ]);
+      return "";
+    };
+    await buildNodeRuntime({
+      lock: (await linuxLockFor(payload)) as never,
+      sourceDirectory: sources,
+      outputDirectory: output,
+      target: "linux",
+      command: tar,
+    });
+    await expect(readFile(path.join(output, "node"), "utf8")).resolves.toBe("node");
+    await expect(readFile(path.join(output, "bin", "node"))).rejects.toThrow();
+    const manifest = await buildDesktopRuntime(
+      await desktopAssemblerFixture(await temporary(), output),
+    );
+    expect(manifest.components.find((component) => component.name === "node")?.launch.path).toBe(
+      "node/node",
+    );
+    const provenance = JSON.parse(
+      await readFile(path.join(output, "node-runtime.provenance.json"), "utf8"),
+    ) as { licenses: Array<{ path: string; sha256: string }> };
+    expect(provenance.licenses).toEqual([
+      { path: "LICENSE", sha256: createHash("sha256").update("MIT").digest("hex") },
+    ]);
+  });
+
+  it("rejects Linux tar link entries before extraction or publication", async () => {
+    const payload = Buffer.from("malicious linux fixture archive");
+    const sources = await temporary();
+    const sourceDirectory = path.join(sources, "linux-x64");
+    await mkdir(sourceDirectory, { recursive: true });
+    await writeFile(path.join(sourceDirectory, "node-v24.18.0-linux-x64.tar.xz"), payload);
+    const output = path.join(await temporary(), "runtime");
+    await expect(
+      buildNodeRuntime({
+        lock: (await linuxLockFor(payload)) as never,
+        sourceDirectory: sources,
+        outputDirectory: output,
+        target: "linux",
+        command: async () =>
+          "lrwxrwxrwx root/root 0 2026-01-01 node-v24.18.0-linux-x64/bin/node -> /tmp/node\n",
+      }),
+    ).rejects.toThrow("link");
+    await expect(readFile(path.join(output, "node"))).rejects.toThrow();
   });
 
   it("rejects hash, traversal, symlink, missing-layout, and version failures without publishing", async () => {

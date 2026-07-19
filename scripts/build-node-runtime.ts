@@ -79,7 +79,7 @@ function expectedFiles(artifact: RuntimeSourceArtifact): readonly string[] {
 }
 function outputFile(relative: string, target: Target): string {
   const root = relative.split("/").slice(1);
-  return target === "windows" ? root.join("/") : root.join("/");
+  return target === "linux" && root.join("/") === "bin/node" ? "node" : root.join("/");
 }
 function assertArchiveSize(bytes: Uint8Array, artifact: RuntimeSourceArtifact): void {
   if (bytes.byteLength > Math.min(MAX_ARCHIVE_BYTES, artifact.maxBytes))
@@ -286,18 +286,25 @@ export async function buildNodeRuntime(
     await mkdir(staging, { mode: 0o700 });
     if (options.target === "windows") await extractZip(archiveBytes, artifact, staging);
     else await extractTar(archive, artifact, staging, command);
-    const binary = path.join(
-      staging,
-      ...(options.target === "windows" ? ["node.exe"] : ["bin", "node"]),
-    );
+    const binary = path.join(staging, options.target === "windows" ? "node.exe" : "node");
     const entry = await lstat(binary).catch(() => null);
     if (entry === null || !entry.isFile() || entry.isSymbolicLink())
       throw new Error("Node runtime executable is missing or unsafe.");
     await chmod(binary, 0o755);
     const checksum = await checksumTree(staging);
+    const license = await readFile(path.join(staging, "LICENSE"));
     await writeFile(
       path.join(staging, PROVENANCE),
-      `${JSON.stringify({ schemaVersion: 1, source: { url: artifact.url, version: artifact.version, sha256: artifact.sha256 }, checksum }, null, 2)}\n`,
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          source: { url: artifact.url, version: artifact.version, sha256: artifact.sha256 },
+          checksum,
+          licenses: [{ path: "LICENSE", sha256: sha256(license) }],
+        },
+        null,
+        2,
+      )}\n`,
     );
     const relocation = await mkdtemp(path.join(parent, "Schedule Node Runtime relocation "));
     try {
