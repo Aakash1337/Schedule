@@ -110,7 +110,9 @@ describe("DesktopApp runtime gate", () => {
       retry.click();
     });
     expect(invokeMock).toHaveBeenCalledTimes(3);
-    expect(invokeMock.mock.calls.filter(([command]) => command === "runtime_retry")).toHaveLength(1);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "runtime_retry")).toHaveLength(
+      1,
+    );
 
     await act(async () => resolveRetry({ phase: "ready", message: "Ready" }));
     expect(screen.getByRole("main", { name: "Shared Schedule application" })).not.toBeNull();

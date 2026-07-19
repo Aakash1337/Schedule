@@ -17,7 +17,10 @@ export interface StartupState {
 export type StartupAction =
   | {
       readonly type: "phase_changed";
-      readonly phase: Exclude<StartupPhase, "recoverable_failure" | "incompatible_data" | "fatal_failure">;
+      readonly phase: Exclude<
+        StartupPhase,
+        "recoverable_failure" | "incompatible_data" | "fatal_failure"
+      >;
       readonly message: string;
     }
   | { readonly type: "failed"; readonly message: string; readonly detail?: string }

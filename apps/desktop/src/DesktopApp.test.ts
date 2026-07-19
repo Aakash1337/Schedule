@@ -52,8 +52,8 @@ describe("desktop runtime gate", () => {
   });
 
   it("bounds a failed native retry without exposing its error", async () => {
-    await expect(requestRuntimeRetry(async () => Promise.reject(new Error("offline")))).resolves.toBe(
-      undefined,
-    );
+    await expect(
+      requestRuntimeRetry(async () => Promise.reject(new Error("offline"))),
+    ).resolves.toBe(undefined);
   });
 });

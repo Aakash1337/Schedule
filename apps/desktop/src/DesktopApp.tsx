@@ -61,7 +61,10 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise
     return await Promise.race([
       operation,
       new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error("desktop runtime command timed out")), timeoutMs);
+        timeout = setTimeout(
+          () => reject(new Error("desktop runtime command timed out")),
+          timeoutMs,
+        );
       }),
     ]);
   } finally {
