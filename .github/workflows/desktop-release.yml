@@ -10,17 +10,21 @@ on:
       - "apps/api/**"
       - "apps/desktop/**"
       - "apps/worker/**"
+      - "packages/**"
       - "scripts/acquire-desktop-runtime-sources.ts"
       - "scripts/assemble-desktop-release-runtime.ts"
       - "scripts/build-desktop-runtime.ts"
       - "scripts/build-node-runtime.ts"
       - "scripts/build-postgresql-runtime-*"
+      - "scripts/create-desktop-release-provenance*"
       - "scripts/package-desktop-release.ts"
       - "scripts/postgresql-runtime/**"
       - "scripts/postgresql-runtime.ts"
       - "scripts/smoke-desktop-installer*"
       - "scripts/smoke-postgresql-runtime.ts"
       - "scripts/stage-desktop-service-deployments.ts"
+      - "scripts/verify-desktop-package-artifact.ts"
+      - ".nvmrc"
       - "postgresql-runtime.lock.json"
       - "runtime-sources.lock.json"
       - "package.json"
@@ -64,7 +68,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version-file: .nvmrc
+          node-version: 24.18.0
           cache: pnpm
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         if: runner.os == 'Windows'
@@ -155,7 +159,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version-file: .nvmrc
+          node-version: 24.18.0
           cache: pnpm
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -171,9 +175,18 @@ jobs:
       - name: Install Rust
         shell: bash
         run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+          rustup toolchain install 1.97.1 --profile minimal --no-self-update
+          rustup default 1.97.1
       - run: pnpm install --frozen-lockfile
+      - name: Read desktop version and verify release tag
+        shell: bash
+        run: |
+          version="$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "desktop-v$version" ]]; then
+            echo "desktop tag must exactly match desktop-v$version" >&2
+            exit 1
+          fi
+          echo "DESKTOP_VERSION=$version" >> "$GITHUB_ENV"
       - name: Unpack runtime and build native installers
         shell: bash
         run: |
@@ -197,23 +210,32 @@ jobs:
           $installer = Get-ChildItem apps/desktop/src-tauri/target -Recurse -Filter '*-setup.exe' | Select-Object -First 1
           if ($null -eq $installer) { throw 'NSIS installer was not produced.' }
           $install = Join-Path $env:RUNNER_TEMP 'schedule-installed'
-          Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$install" -Wait -NoNewWindow
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$install" -Wait -NoNewWindow -PassThru
+          if ($process.ExitCode -ne 0) { throw "NSIS installer exited with $($process.ExitCode)." }
           if (-not (Test-Path -LiteralPath (Join-Path $install 'Schedule.exe') -PathType Leaf)) { throw 'NSIS install did not produce Schedule.exe.' }
           pnpm exec tsx scripts/smoke-desktop-installer.ts --probe-executables $install
       - name: Collect release metadata
         shell: bash
         run: |
+          mkdir "$RUNNER_TEMP/installers"
+          find apps/desktop/src-tauri/target -type f \( -name '*.msi' -o -name '*-setup.exe' -o -name '*.AppImage' -o -name '*.deb' \) -print0 | while IFS= read -r -d '' file; do
+            relative="${file#apps/desktop/src-tauri/target/}"
+            destination="$RUNNER_TEMP/installers/$relative"
+            mkdir -p "$(dirname "$destination")"
+            cp "$file" "$destination"
+          done
           mkdir "$RUNNER_TEMP/release-metadata"
           cp "$RUNNER_TEMP/runtime/runtime-manifest.json" "$RUNNER_TEMP/runtime/runtime-sbom.json" "$RUNNER_TEMP/runtime/runtime-licenses.json" "$RUNNER_TEMP/release-metadata/"
           find "$RUNNER_TEMP/runtime" -iname '*provenance*.json' -exec cp {} "$RUNNER_TEMP/release-metadata/" \;
+          pnpm exec tsx scripts/create-desktop-release-provenance.ts \
+            --installers "$RUNNER_TEMP/installers" --metadata "$RUNNER_TEMP/release-metadata" \
+            --target "${{ matrix.target }}" --version "$DESKTOP_VERSION" \
+            --node 24.18.0 --rust 1.97.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: schedule-desktop-${{ matrix.target }}-x64
           path: |
-            apps/desktop/src-tauri/target/**/bundle/**/*.msi
-            apps/desktop/src-tauri/target/**/bundle/**/*-setup.exe
-            apps/desktop/src-tauri/target/**/bundle/**/*.AppImage
-            apps/desktop/src-tauri/target/**/bundle/**/*.deb
+            ${{ runner.temp }}/installers
             ${{ runner.temp }}/release-metadata
           if-no-files-found: error
           retention-days: 90
