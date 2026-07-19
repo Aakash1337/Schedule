@@ -202,7 +202,7 @@ jobs:
           test -n "$package"
           mkdir "$RUNNER_TEMP/installed"
           dpkg-deb -x "$package" "$RUNNER_TEMP/installed"
-          pnpm exec tsx scripts/smoke-desktop-installer.ts --probe-executables "$RUNNER_TEMP/installed"
+          pnpm exec tsx scripts/smoke-desktop-installer.ts --require-launch --probe-executables "$RUNNER_TEMP/installed"
       - name: Smoke installed Windows package contents
         if: runner.os == 'Windows'
         shell: pwsh
@@ -213,7 +213,7 @@ jobs:
           $process = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$install" -Wait -NoNewWindow -PassThru
           if ($process.ExitCode -ne 0) { throw "NSIS installer exited with $($process.ExitCode)." }
           if (-not (Test-Path -LiteralPath (Join-Path $install 'Schedule.exe') -PathType Leaf)) { throw 'NSIS install did not produce Schedule.exe.' }
-          pnpm exec tsx scripts/smoke-desktop-installer.ts --probe-executables $install
+          pnpm exec tsx scripts/smoke-desktop-installer.ts --require-launch --probe-executables $install
       - name: Collect release metadata
         shell: bash
         run: |
