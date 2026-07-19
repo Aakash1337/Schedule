@@ -1,26 +1,8 @@
-:root {
-  color: oklch(0.25 0.018 285);
-  background: oklch(0.965 0.012 88);
-  font-family:
-    Inter,
-    ui-sans-serif,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
-  font-synthesis: none;
-}
-
-* {
-  box-sizing: border-box;
-}
-
 html,
 body,
 #app {
   min-width: 320px;
   min-height: 100%;
-  margin: 0;
 }
 
 body {
@@ -39,15 +21,20 @@ body {
   height: 3rem;
   place-items: center;
   border-radius: 0.85rem;
-  background: oklch(0.5 0.16 292);
+  color: var(--ink-soft);
+  background: var(--paper-muted);
 }
 
 .startup-mark span {
-  width: 1.15rem;
-  height: 0.65rem;
-  border-bottom: 0.2rem solid oklch(0.965 0.012 88);
-  border-left: 0.2rem solid oklch(0.965 0.012 88);
-  transform: translateY(-0.1rem) rotate(-45deg);
+  font-size: 1.55rem;
+  font-weight: 750;
+  line-height: 1;
+  transform: translateY(-0.08rem);
+}
+
+.startup-mark--error {
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 .startup-kicker {
@@ -59,7 +46,7 @@ body {
   text-transform: uppercase;
 }
 
-h1 {
+.startup-shell h1 {
   margin: 0;
   font-size: 2.35rem;
   line-height: 1.08;
@@ -79,7 +66,7 @@ h1 {
   line-height: 1.55;
 }
 
-code {
+.startup-status code {
   display: block;
   margin-top: 0.65rem;
   color: oklch(0.48 0.04 25);

@@ -867,6 +867,48 @@
       ]
     },
     {
+      "id": "desktop-shared-product-interface",
+      "status": "implemented",
+      "risk": "normal",
+      "contract": {
+        "file": "docs/DESKTOP.md",
+        "anchor": "## Shared product interface"
+      },
+      "limitations": [
+        "The shared interface remains intentionally gated until the native supervisor reaches ready; this milestone does not make the foundation shell an end-user desktop release."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/desktop/src/DesktopApp.render.test.tsx",
+          "command": "desktop-foundation",
+          "anchors": [
+            "inspects once in StrictMode and keeps the shared App behind a recoverable error",
+            "presents incompatible data as a blocking accessible error without mounting the App",
+            "re-inspects after retry and mounts the shared App only when the runtime is ready",
+            "polls an active startup until the shared application is ready",
+            "coalesces rapid retries while the current inspection is pending",
+            "ignores an inspection that completes after unmount without starting a poll"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/desktop/src/DesktopApp.test.ts",
+          "command": "desktop-foundation",
+          "anchors": [
+            "allows the shared application to mount only after a ready runtime",
+            "keeps reported startup work and incompatible data in the native gate"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/desktop/src/mount.test.tsx",
+          "command": "desktop-foundation",
+          "anchors": ["installs the native transport before rendering the React application"]
+        }
+      ]
+    },
+    {
       "id": "web-today-loop",
       "status": "implemented",
       "risk": "high",

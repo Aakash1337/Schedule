@@ -106,11 +106,11 @@ an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      61 / 61 |
+| Implemented features with CI-registered evidence                       |      62 / 62 |
 | Critical implemented features with CI-registered integration or drills |      42 / 42 |
 | Partial features with an explicit limitation                           |        5 / 5 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          372 |
+| CI-registered evidence items                                           |          375 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
