@@ -122,7 +122,7 @@ async function acquireStageLock(resourceParent: string, token: string): Promise<
     return lock;
   } catch (error: unknown) {
     if (error instanceof Error && "code" in error && error.code === "EEXIST") {
-      throw new Error("Desktop runtime packaging is already in progress.");
+      throw new Error("Desktop runtime packaging is already in progress.", { cause: error });
     }
     throw error;
   }
