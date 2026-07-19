@@ -5,13 +5,9 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/desktop.yml"
-      - "apps/api/package.json"
-      - "apps/api/src/desktop-api-runtime*"
-      - "apps/api/src/server.ts"
+      - "apps/api/**"
       - "apps/desktop/**"
-      - "apps/worker/package.json"
-      - "apps/worker/src/desktop-worker-runtime*"
-      - "apps/worker/src/index.ts"
+      - "apps/worker/**"
       - "packages/**"
       - "scripts/build-desktop-runtime.ts"
       - "scripts/build-desktop-runtime.test.ts"
@@ -28,13 +24,9 @@ on:
   pull_request:
     paths:
       - ".github/workflows/desktop.yml"
-      - "apps/api/package.json"
-      - "apps/api/src/desktop-api-runtime*"
-      - "apps/api/src/server.ts"
+      - "apps/api/**"
       - "apps/desktop/**"
-      - "apps/worker/package.json"
-      - "apps/worker/src/desktop-worker-runtime*"
-      - "apps/worker/src/index.ts"
+      - "apps/worker/**"
       - "packages/**"
       - "scripts/build-desktop-runtime.ts"
       - "scripts/build-desktop-runtime.test.ts"
