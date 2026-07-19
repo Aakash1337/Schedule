@@ -48,7 +48,8 @@ export const desktopApiTransport: ApiTransport = async (path, init) => {
   const response = await invoke<DesktopApiResponse>("api_request", { request });
   throwIfAborted(init.signal);
 
-  return new Response(response.status === 204 ? null : (response.jsonBody ?? null), {
+  const hasNullBody = response.status === 204 || response.status === 205 || response.status === 304;
+  return new Response(hasNullBody ? null : (response.jsonBody ?? null), {
     status: response.status,
     headers: {
       "content-type": "application/json",

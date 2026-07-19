@@ -121,7 +121,7 @@ quality levels. Scope rows aggregate every file matched by the corresponding rec
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.72% |   72.54% |    68.17% | 60.24% |
+| Whole repository, measured |     59.72% |   72.55% |    68.17% | 60.24% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     95.12% |   91.89% |    93.49% | 96.13% |
 | Domain, required           |        91% |      82% |       92% |    93% |

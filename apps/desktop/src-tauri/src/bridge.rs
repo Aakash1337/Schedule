@@ -9,7 +9,7 @@ use std::{
 use reqwest::{Client, Method, header, redirect};
 use serde::{Deserialize, Serialize};
 use tauri::{State, Url};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 const MAX_REQUEST_BODY_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -82,8 +82,8 @@ impl DesktopLaunchCredential {
         Ok(Self(value))
     }
 
-    fn authorization(&self) -> String {
-        format!("Bearer {}", self.0)
+    fn authorization(&self) -> Zeroizing<String> {
+        Zeroizing::new(format!("Bearer {}", self.0))
     }
 }
 
@@ -179,11 +179,12 @@ impl DesktopApiForwarder {
             .clone()
             .ok_or_else(|| DesktopApiBridgeError::new("desktop.api_not_ready"))?;
         let url = format!("http://127.0.0.1:{}{}", target.port, request.path);
+        let authorization = target.credential.authorization();
         let mut outbound = self
             .client
             .request(request.method.as_reqwest(), url)
             .header(header::ACCEPT, "application/json")
-            .header(header::AUTHORIZATION, target.credential.authorization());
+            .header(header::AUTHORIZATION, authorization.as_str());
         if let Some(key) = request.idempotency_key {
             outbound = outbound.header("idempotency-key", key);
         }

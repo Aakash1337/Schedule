@@ -43,16 +43,20 @@ describe("desktop API transport", () => {
     await expect(response.json()).resolves.toEqual({ error: { code: "version.conflict" } });
   });
 
-  it("preserves 204 and rejects an aborted request before invoking Rust", async () => {
-    invokeMock.mockResolvedValue({ status: 204 });
-    expect((await desktopApiTransport("/v1/workspaces/workspace-1/block", {})).status).toBe(204);
+  it("preserves null-body statuses and rejects an aborted request before invoking Rust", async () => {
+    for (const status of [204, 205, 304]) {
+      invokeMock.mockResolvedValueOnce({ status, jsonBody: '{"ignored":true}' });
+      const response = await desktopApiTransport("/v1/workspaces/workspace-1/block", {});
+      expect(response.status).toBe(status);
+      await expect(response.text()).resolves.toBe("");
+    }
 
     const cancellation = new AbortController();
     cancellation.abort();
     await expect(
       desktopApiTransport("/v1/workspaces", { signal: cancellation.signal }),
     ).rejects.toMatchObject({ name: "AbortError" });
-    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledTimes(3);
   });
 
   it("rejects unsupported methods and non-string bodies locally", async () => {
