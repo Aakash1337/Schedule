@@ -133,7 +133,13 @@ try {
       mode: config.PRODUCT_API_MODE,
       input: process.stdin,
       onShutdown: () => {
-        void shutdown("desktop supervisor").then(() => process.exit(0));
+        void shutdown("desktop supervisor").then(
+          () => process.exit(0),
+          (error: unknown) => {
+            app.log.error(error, "desktop supervisor shutdown failed");
+            process.exit(1);
+          },
+        );
       },
     });
   }
