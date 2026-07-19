@@ -120,7 +120,7 @@ jobs:
         env:
           RELEASE_TARGET: ${{ matrix.target }}
         run: |
-          node_version="$(node -e 'const lock = require("./runtime-sources.lock.json"); process.stdout.write(lock.artifacts.find(({ id }) => id === `node-${process.env.RELEASE_TARGET}-x64`).version)')"
+          node_version="$(node -e 'const lock = require("./runtime-sources.lock.json"); process.stdout.write(lock.artifacts.find(({ id }) => id === "node-" + process.env.RELEASE_TARGET + "-x64").version)')"
           postgres_version="$(node -e 'process.stdout.write(require("./postgresql-runtime.lock.json").postgresql.version)')"
           pnpm exec tsx scripts/assemble-desktop-release-runtime.ts \
             --output "$RUNNER_TEMP/runtime" --target "${{ matrix.target }}" \
