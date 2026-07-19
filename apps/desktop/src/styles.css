@@ -1,0 +1,136 @@
+:root {
+  color: oklch(0.25 0.018 285);
+  background: oklch(0.965 0.012 88);
+  font-family:
+    Inter,
+    ui-sans-serif,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-height: 100vh;
+}
+
+.startup-shell {
+  width: min(34rem, calc(100% - 3rem));
+  margin: 0 auto;
+  padding-top: clamp(5rem, 18vh, 10rem);
+}
+
+.startup-mark {
+  display: grid;
+  width: 3rem;
+  height: 3rem;
+  place-items: center;
+  border-radius: 0.85rem;
+  background: oklch(0.5 0.16 292);
+}
+
+.startup-mark span {
+  width: 1.15rem;
+  height: 0.65rem;
+  border-bottom: 0.2rem solid oklch(0.965 0.012 88);
+  border-left: 0.2rem solid oklch(0.965 0.012 88);
+  transform: translateY(-0.1rem) rotate(-45deg);
+}
+
+.startup-kicker {
+  margin: 1.75rem 0 0.35rem;
+  color: oklch(0.48 0.03 285);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-size: 2.35rem;
+  line-height: 1.08;
+}
+
+.startup-status {
+  min-height: 4.25rem;
+  margin-top: 1.65rem;
+  border-top: 1px solid oklch(0.84 0.018 285);
+  padding-top: 1.1rem;
+}
+
+.startup-message {
+  margin: 0;
+  color: oklch(0.39 0.025 285);
+  font-size: 1rem;
+  line-height: 1.55;
+}
+
+code {
+  display: block;
+  margin-top: 0.65rem;
+  color: oklch(0.48 0.04 25);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.startup-action {
+  min-height: 2.75rem;
+  margin-top: 1rem;
+  border: 0;
+  border-radius: 0.65rem;
+  padding: 0.65rem 1rem;
+  color: oklch(0.965 0.012 88);
+  background: oklch(0.46 0.16 292);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.startup-action:hover {
+  background: oklch(0.41 0.16 292);
+}
+
+.startup-action:focus-visible {
+  outline: 3px solid oklch(0.72 0.13 292);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .startup-status[aria-busy="true"]::after {
+    display: block;
+    width: 2.4rem;
+    height: 0.18rem;
+    margin-top: 1rem;
+    border-radius: 999px;
+    background: oklch(0.56 0.14 292);
+    content: "";
+    animation: startup-pulse 1.2s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes startup-pulse {
+  from {
+    opacity: 0.35;
+    transform: scaleX(0.45);
+    transform-origin: left;
+  }
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+    transform-origin: left;
+  }
+}

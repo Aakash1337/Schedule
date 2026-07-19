@@ -20,6 +20,8 @@ Durable product and engineering specifications live here so the repository root 
   dead-letter operations.
 - [Web applications](./WEB.md): local interface architecture plus the isolated hosted capture
   entry, reminder management, browser verification, and interaction contracts.
+- [Desktop application](./DESKTOP.md): native Windows/Linux runtime architecture, lifecycle,
+  security, recovery, packaging status, and the future hosted-continuity boundary.
 - [Local operations](./OPERATIONS.md): verified backup, staged restore, automated recovery state-machine checks, and database maintenance.
 - [Hosted deployment](./DEPLOYMENT.md): provider-neutral topology, the lean Railway adapter,
   release ordering, secrets, health checks, backups, rollback, and staging acceptance.
