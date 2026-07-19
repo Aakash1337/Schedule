@@ -113,7 +113,7 @@ impl ReadinessSpec {
             && !self.prefix.contains(&b'\r');
         let valid_bounds = self.max_line_bytes <= MAX_READINESS_LINE_BYTES
             && self.max_payload_bytes > 0
-            && self.max_payload_bytes <= self.max_line_bytes - self.prefix.len();
+            && self.max_payload_bytes <= self.max_line_bytes.saturating_sub(self.prefix.len());
         (valid_prefix && valid_bounds)
             .then_some(())
             .ok_or_else(|| ProcessError::new("desktop.process_spec_invalid"))
@@ -727,6 +727,10 @@ mod tests {
         let invalid_probe = helper_spec(ProcessRole::Api, "ready", Duration::from_secs(1))
             .readiness(ReadinessSpec::stdout_prefix(b"bad\nprefix", 128, 32));
         assert!(invalid_probe.validate().is_err());
+
+        let oversized_prefix = helper_spec(ProcessRole::Api, "ready", Duration::from_secs(1))
+            .readiness(ReadinessSpec::stdout_prefix(vec![b'x'; 129], 128, 32));
+        assert!(oversized_prefix.validate().is_err());
     }
 
     #[test]
