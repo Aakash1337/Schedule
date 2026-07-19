@@ -321,6 +321,7 @@ impl PrivateRuntimeFiles {
              GRANT CONNECT ON DATABASE {} TO {};\n\
              \\connect {}\n\
              REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n\
+             GRANT USAGE, CREATE ON SCHEMA public TO {};\n\
              GRANT USAGE ON SCHEMA public TO {};\n\
              GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {};\n\
              GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO {};\n\
@@ -336,6 +337,7 @@ impl PrivateRuntimeFiles {
             names.database,
             names.runtime,
             names.database,
+            names.owner,
             names.runtime,
             names.runtime,
             names.runtime,
@@ -1053,6 +1055,7 @@ mod tests {
             .unwrap();
         assert!(reconnect < schema_revoke);
         for statement in [
+            "GRANT USAGE, CREATE ON SCHEMA public TO schedule_owner;",
             "GRANT USAGE ON SCHEMA public TO schedule_runtime;",
             "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO schedule_runtime;",
             "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO schedule_runtime;",
