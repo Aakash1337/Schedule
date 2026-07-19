@@ -234,11 +234,6 @@ pub(crate) fn run_command_cancellable(
         return Err(CommandError::new("desktop.command_group_failed"));
     }
     spawned.child = child;
-    if spawned.commit().is_err() {
-        stop_unattached(&control, identity, &mut spawned.child);
-        return Err(CommandError::new("desktop.command_group_failed"));
-    }
-    let (mut child, guardian_channel) = spawned.into_parts();
     let ownership = AttachedCommandOwnership {
         control: control.as_ref(),
         identity,
@@ -246,23 +241,42 @@ pub(crate) fn run_command_cancellable(
         released: Cell::new(false),
     };
     if is_cancelled() {
-        stop_and_reap(&control, &ownership, identity, &mut child);
+        stop_and_reap(&control, &ownership, identity, &mut spawned.child);
         return Err(CommandError::new("desktop.command_cancelled"));
     }
 
-    let Some(stdout) = child.stdout.take() else {
-        stop_and_reap(&control, &ownership, identity, &mut child);
+    // Command output is bounded by `collect_output`; begin draining before COMMIT so even a payload
+    // that writes immediately cannot fill the inherited guardian pipes during admission.
+    let Some(stdout) = spawned.child.stdout.take() else {
+        stop_and_reap(&control, &ownership, identity, &mut spawned.child);
         return Err(CommandError::new("desktop.command_output_failed"));
     };
-    let Some(stderr) = child.stderr.take() else {
-        stop_and_reap(&control, &ownership, identity, &mut child);
+    let Some(stderr) = spawned.child.stderr.take() else {
+        stop_and_reap(&control, &ownership, identity, &mut spawned.child);
         return Err(CommandError::new("desktop.command_output_failed"));
+    };
+    if spawned.prepare().is_err() {
+        stop_and_reap(&control, &ownership, identity, &mut spawned.child);
+        return Err(CommandError::new("desktop.command_group_failed"));
+    }
+    let stderr = match guardian::await_ack(stderr, spec.timeout, is_cancelled) {
+        Ok(stderr) => stderr,
+        Err(error) => {
+            stop_and_reap(&control, &ownership, identity, &mut spawned.child);
+            return Err(map_guardian_start_error(error));
+        }
     };
     let (sender, receiver) = mpsc::sync_channel(16);
     let readers = [
         drain_stream(stdout, Stream::Stdout, sender.clone()),
         drain_stream(stderr, Stream::Stderr, sender),
     ];
+
+    if spawned.commit().is_err() {
+        stop_and_reap(&control, &ownership, identity, &mut spawned.child);
+        return Err(CommandError::new("desktop.command_group_failed"));
+    }
+    let (mut child, _guardian_channel) = spawned.into_parts();
 
     let result = collect_output(
         &mut child,
@@ -454,6 +468,14 @@ fn map_process_error(_error: ProcessError) -> CommandError {
     CommandError::new("desktop.command_group_failed")
 }
 
+fn map_guardian_start_error(error: ProcessError) -> CommandError {
+    match error.code() {
+        "desktop.process_cancelled" => CommandError::new("desktop.command_cancelled"),
+        "desktop.process_start_timeout" => CommandError::new("desktop.command_timeout"),
+        _ => CommandError::new("desktop.command_group_failed"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -512,7 +534,8 @@ mod tests {
             env::current_dir().unwrap(),
             timeout,
         )
-        .arg("command_subprocess_helper")
+        .arg("runtime::command::tests::command_subprocess_helper")
+        .arg("--exact")
         .arg("--nocapture")
         .env(MODE, mode)
     }
@@ -536,7 +559,8 @@ mod tests {
             }
             Ok("pipe_descendant") => {
                 Command::new(env::current_exe().unwrap())
-                    .arg("command_subprocess_helper")
+                    .arg("runtime::command::tests::command_subprocess_helper")
+                    .arg("--exact")
                     .arg("--nocapture")
                     .env_clear()
                     .env(MODE, "pipe_descendant_child")
@@ -545,6 +569,7 @@ mod tests {
             }
             Ok("pipe_descendant_child") => thread::sleep(Duration::from_millis(600)),
             Ok("large") => print!("{}", "x".repeat(2048)),
+            Ok("pipe_burst") => print!("{}", "z".repeat(256 * 1024)),
             _ => {}
         }
     }
@@ -688,6 +713,20 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(*control.stops.lock().unwrap(), 0);
+        assert_eq!(*control.releases.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn drains_payload_output_beyond_pipe_capacity_from_commit() {
+        let control = Arc::new(RecordingControl::default());
+        let output = run_command(
+            helper("pipe_burst", Duration::from_secs(2)).output_bounds(512 * 1024, 64 * 1024),
+            control.clone(),
+        )
+        .unwrap();
+
+        assert!(output.stdout().len() >= 256 * 1024);
         assert_eq!(*control.stops.lock().unwrap(), 0);
         assert_eq!(*control.releases.lock().unwrap(), 1);
     }
