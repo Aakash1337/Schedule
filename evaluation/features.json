@@ -4538,6 +4538,18 @@
             "keeps the component tree hash compatible with the Rust verifier",
             "rejects runtime manifests that the Rust supervisor cannot launch"
           ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/acquire-desktop-runtime-sources.test.ts",
+          "command": "unit",
+          "anchors": [
+            "rejects malformed schema, IDs, archive fields, and fixed upstream specifications",
+            "allows only same-origin approved relative redirects and cancels redirect bodies",
+            "rejects a publish-time collision after verification reaches the link boundary",
+            "handles a verified temporary pathname swap without publishing malicious bytes",
+            "handles target replacement through a link without an escaped or malicious final write"
+          ]
         }
       ]
     }
