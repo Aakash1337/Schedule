@@ -267,10 +267,7 @@ fn validate_request(request: &DesktopApiRequest) -> Result<(), DesktopApiBridgeE
         .json_body
         .as_ref()
         .is_some_and(|body| body.len() > MAX_REQUEST_BODY_BYTES)
-        || matches!(
-            request.method,
-            DesktopApiMethod::Get | DesktopApiMethod::Delete
-        ) && request.json_body.is_some()
+        || matches!(request.method, DesktopApiMethod::Get) && request.json_body.is_some()
     {
         return Err(DesktopApiBridgeError::new("desktop.request_not_allowed"));
     }
@@ -354,8 +351,8 @@ mod tests {
         assert!(validate_request(&get_body).is_err());
 
         let mut delete_body = request(DesktopApiMethod::Delete, "/v1/workspaces/workspace-1");
-        delete_body.json_body = Some("{}".to_owned());
-        assert!(validate_request(&delete_body).is_err());
+        delete_body.json_body = Some(r#"{"expectedVersion":1}"#.to_owned());
+        assert!(validate_request(&delete_body).is_ok());
 
         let overlong_path = format!("/v1/workspaces/{}", "x".repeat(MAX_PATH_BYTES));
         assert!(validate_request(&request(DesktopApiMethod::Get, &overlong_path)).is_err());
