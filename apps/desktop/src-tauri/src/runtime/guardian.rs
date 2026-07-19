@@ -15,7 +15,7 @@ use std::{
         mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use zeroize::Zeroize;
@@ -38,6 +38,8 @@ const COMMITTED: u8 = 2;
 const ABORTED: u8 = 3;
 #[cfg(all(test, windows))]
 const TEST_PRE_ACK_STALL: &str = "SCHEDULE_GUARDIAN_TEST_PRE_ACK_STALL";
+#[cfg(test)]
+const TEST_ACK_DELAY_MS: &str = "SCHEDULE_GUARDIAN_TEST_ACK_DELAY_MS";
 
 /// Launch data deliberately has no `Debug`; fields can contain credentials.
 pub(super) struct LaunchSpec {
@@ -97,6 +99,13 @@ impl GuardianChannel {
     }
 
     fn commit(&self) -> Result<(), ProcessError> {
+        self.commit_with_post_admission(|| {})
+    }
+
+    fn commit_with_post_admission(
+        &self,
+        after_admission: impl FnOnce(),
+    ) -> Result<(), ProcessError> {
         let mut writer = self
             .writer
             .lock()
@@ -118,15 +127,19 @@ impl GuardianChannel {
             self.admission.store(ABORTED, Ordering::Release);
             return Err(ProcessError::new("desktop.process_control_failed"));
         }
+        // Release the writer before publishing COMMITTED. A concurrent final seal can now always
+        // acquire the pipe and send FORCE after it stores ABORTED. If it won just before this CAS,
+        // the failed CAS path reacquires the writer and sends FORCE itself.
+        drop(writer);
         if self
             .admission
             .compare_exchange(COMMITTING, COMMITTED, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            let _ = writer.write_all(&[FORCE]);
-            let _ = writer.flush();
+            let _ = self.send(FORCE);
             return Err(ProcessError::new("desktop.process_group_failed"));
         }
+        after_admission();
         Ok(())
     }
 
@@ -174,7 +187,7 @@ impl SpawnedGuardian {
 
 pub(super) fn await_ack<R: Read + Send + 'static>(
     mut reader: R,
-    timeout: Duration,
+    deadline: Instant,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<R, ProcessError> {
     let (sender, receiver) = mpsc::sync_channel(1);
@@ -183,12 +196,11 @@ pub(super) fn await_ack<R: Read + Send + 'static>(
         let valid = reader.read_exact(&mut ack).is_ok() && &ack == ACK;
         let _ = sender.send((valid, reader));
     });
-    let deadline = std::time::Instant::now() + timeout;
     loop {
         if is_cancelled() {
             return Err(ProcessError::new("desktop.process_cancelled"));
         }
-        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             return Err(ProcessError::new("desktop.process_start_timeout"));
         };
         match receiver.recv_timeout(remaining.min(Duration::from_millis(20))) {
@@ -558,6 +570,18 @@ fn acknowledge_ready() -> Result<(), ()> {
         .map_err(|_| ())
 }
 
+#[cfg(test)]
+fn delay_test_ack(spec: &DecodedSpec) {
+    let delay = spec.environment.iter().find_map(|(key, value)| {
+        (key == TEST_ACK_DELAY_MS)
+            .then(|| value.to_str()?.parse::<u64>().ok())
+            .flatten()
+    });
+    if let Some(delay) = delay {
+        thread::sleep(Duration::from_millis(delay));
+    }
+}
+
 #[cfg(unix)]
 mod platform {
     use std::{fs, mem::MaybeUninit, os::unix::process::CommandExt};
@@ -591,6 +615,8 @@ mod platform {
         mut spec: DecodedSpec,
         mut input: impl Read + Send + 'static,
     ) -> Result<i32, ()> {
+        #[cfg(test)]
+        delay_test_ack(&spec);
         acknowledge_ready()?;
         await_commit(&mut input)?;
         let mut command = spec.command();
@@ -803,6 +829,8 @@ mod platform {
         let thread = primary_thread(child.id())?;
         let mut payload_stdin = child.stdin.take();
         #[cfg(test)]
+        delay_test_ack(&spec);
+        #[cfg(test)]
         let stall_before_ack = spec
             .environment
             .iter()
@@ -1007,7 +1035,7 @@ mod tests {
     fn admit(mut spawned: SpawnedGuardian) -> SpawnedGuardian {
         let stderr = spawned.child.stderr.take().unwrap();
         spawned.prepare().unwrap();
-        let stderr = await_ack(stderr, Duration::from_secs(2), &|| false).unwrap();
+        let stderr = await_ack(stderr, Instant::now() + Duration::from_secs(2), &|| false).unwrap();
         spawned.child.stderr = Some(stderr);
         spawned.commit().unwrap();
         spawned
@@ -1053,7 +1081,7 @@ mod tests {
             .unwrap();
         let stderr = spawned.child.stderr.take().unwrap();
         spawned.prepare().unwrap();
-        let stderr = await_ack(stderr, Duration::from_secs(2), &|| false).unwrap();
+        let stderr = await_ack(stderr, Instant::now() + Duration::from_secs(2), &|| false).unwrap();
         spawned.child.stderr = Some(stderr);
         spawned
             .channel
@@ -1076,6 +1104,50 @@ mod tests {
         drop(writer);
         assert!(spawned.commit().is_err());
         let _ = spawned.child.wait();
+        assert!(!marker.exists());
+        control.release(identity);
+    }
+
+    #[test]
+    fn final_seal_forces_a_commit_paused_after_admission_publication() {
+        use crate::runtime::process::{
+            ChildIdentity, ProcessRole, ProcessSpawnReservation, platform_process_control,
+        };
+
+        let marker = marker_path();
+        let control = platform_process_control();
+        let reservation = ProcessSpawnReservation::new(Arc::clone(&control)).unwrap();
+        let mut spawned = spawn(payload("delayed_marker", Some(&marker))).unwrap();
+        let identity = ChildIdentity {
+            role: ProcessRole::Api,
+            pid: spawned.child.id(),
+        };
+        reservation
+            .attach(identity, &mut spawned.child, Arc::clone(&spawned.channel))
+            .unwrap();
+        let stderr = spawned.child.stderr.take().unwrap();
+        spawned.prepare().unwrap();
+        let stderr = await_ack(stderr, Instant::now() + Duration::from_secs(2), &|| false).unwrap();
+        spawned.child.stderr = Some(stderr);
+
+        let (admitted_sender, admitted_receiver) = mpsc::sync_channel(0);
+        let (release_sender, release_receiver) = mpsc::sync_channel(0);
+        let channel = Arc::clone(&spawned.channel);
+        let commit = thread::spawn(move || {
+            channel.commit_with_post_admission(|| {
+                admitted_sender.send(()).unwrap();
+                release_receiver.recv().unwrap();
+            })
+        });
+        admitted_receiver.recv().unwrap();
+
+        control
+            .seal_and_force_stop_all(Duration::from_millis(10))
+            .unwrap();
+        release_sender.send(()).unwrap();
+        commit.join().unwrap().unwrap();
+        assert!(spawned.child.wait().unwrap().code() != Some(0));
+        thread::sleep(Duration::from_millis(500));
         assert!(!marker.exists());
         control.release(identity);
     }

@@ -201,14 +201,14 @@ impl Drop for AttachedCommandOwnership<'_> {
 /// overflow. The direct child is always reaped; reader threads are only joined if already done,
 /// because a descendant may retain an inherited output pipe after its parent exits. Every
 /// successfully attached platform owner is released exactly once before return.
-pub(crate) fn run_command(
+pub(super) fn run_command(
     spec: CommandSpec,
     control: Arc<dyn ProcessGroupControl>,
 ) -> Result<CommandOutput, CommandError> {
     run_command_cancellable(spec, control, &|| false)
 }
 
-pub(crate) fn run_command_cancellable(
+pub(super) fn run_command_cancellable(
     spec: CommandSpec,
     control: Arc<dyn ProcessGroupControl>,
     is_cancelled: &dyn Fn() -> bool,
@@ -217,6 +217,7 @@ pub(crate) fn run_command_cancellable(
     if is_cancelled() {
         return Err(CommandError::new("desktop.command_cancelled"));
     }
+    let deadline = Instant::now() + spec.timeout;
     let reservation =
         ProcessSpawnReservation::new(Arc::clone(&control)).map_err(map_process_error)?;
     let mut spawned = guardian::spawn(spec.launch_spec()).map_err(map_process_error)?;
@@ -259,7 +260,7 @@ pub(crate) fn run_command_cancellable(
         stop_and_reap(&control, &ownership, identity, &mut spawned.child);
         return Err(CommandError::new("desktop.command_group_failed"));
     }
-    let stderr = match guardian::await_ack(stderr, spec.timeout, is_cancelled) {
+    let stderr = match guardian::await_ack(stderr, deadline, is_cancelled) {
         Ok(stderr) => stderr,
         Err(error) => {
             stop_and_reap(&control, &ownership, identity, &mut spawned.child);
@@ -284,7 +285,7 @@ pub(crate) fn run_command_cancellable(
         &control,
         &ownership,
         receiver,
-        spec.timeout,
+        deadline,
         spec.max_stdout_bytes,
         spec.max_stderr_bytes,
         is_cancelled,
@@ -305,12 +306,11 @@ fn collect_output(
     control: &Arc<dyn ProcessGroupControl>,
     ownership: &AttachedCommandOwnership<'_>,
     receiver: Receiver<OutputEvent>,
-    timeout: Duration,
+    deadline: Instant,
     stdout_limit: usize,
     stderr_limit: usize,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<CommandOutput, CommandError> {
-    let deadline = Instant::now() + timeout;
     let mut stdout = Vec::with_capacity(stdout_limit.min(READ_CHUNK_BYTES));
     let mut stderr = Vec::with_capacity(stderr_limit.min(READ_CHUNK_BYTES));
     let mut ended = 0;
@@ -321,7 +321,11 @@ fn collect_output(
             stop_and_reap(control, ownership, identity, child);
             return Err(CommandError::new("desktop.command_cancelled"));
         }
-        match receiver.recv_timeout(POLL_INTERVAL) {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            stop_and_reap(control, ownership, identity, child);
+            return Err(CommandError::new("desktop.command_timeout"));
+        };
+        match receiver.recv_timeout(remaining.min(POLL_INTERVAL)) {
             Ok(OutputEvent::Bytes(Stream::Stdout, bytes)) => {
                 if let Err(error) = append_bounded(&mut stdout, bytes, stdout_limit) {
                     stop_and_reap(control, ownership, identity, child);
@@ -491,6 +495,7 @@ mod tests {
 
     const MODE: &str = "SCHEDULE_COMMAND_TEST_MODE";
     const VALUE: &str = "SCHEDULE_COMMAND_VALUE";
+    const ACK_DELAY_MS: &str = "SCHEDULE_GUARDIAN_TEST_ACK_DELAY_MS";
 
     #[derive(Default)]
     struct RecordingControl {
@@ -553,6 +558,10 @@ mod tests {
             }
             Ok("failure") => std::process::exit(7),
             Ok("sleep") => thread::sleep(Duration::from_secs(2)),
+            Ok("delayed_success") => {
+                thread::sleep(Duration::from_millis(100));
+                print!("done");
+            }
             Ok("delayed_marker") => {
                 thread::sleep(Duration::from_millis(350));
                 fs::write(env::var_os(VALUE).unwrap(), b"alive").unwrap();
@@ -633,6 +642,21 @@ mod tests {
             Ok(_) => panic!("sleeping helper unexpectedly succeeded"),
             Err(error) => error,
         };
+        assert_eq!(error.code(), "desktop.command_timeout");
+        assert_eq!(*control.stops.lock().unwrap(), 1);
+        assert_eq!(*control.releases.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn command_timeout_is_shared_by_guardian_ack_and_payload() {
+        let control = Arc::new(RecordingControl::default());
+        let error = run_command(
+            helper("delayed_success", Duration::from_millis(150)).env(ACK_DELAY_MS, "100"),
+            control.clone(),
+        )
+        .err()
+        .expect("combined admission and payload execution exceeded the command timeout");
+
         assert_eq!(error.code(), "desktop.command_timeout");
         assert_eq!(*control.stops.lock().unwrap(), 1);
         assert_eq!(*control.releases.lock().unwrap(), 1);
