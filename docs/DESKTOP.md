@@ -1,8 +1,8 @@
 # Desktop application
 
-Status: native shell, authenticated request boundary, and tested coordinator/host/runtime foundation.
-The native effect executor, bundled release artifacts, and product interface are not in this
-milestone yet.
+Status: native shell, shared product interface, authenticated request boundary, and tested
+coordinator/host/runtime foundation. The native effect executor and bundled release artifacts are not
+in this milestone yet.
 
 Schedule is gaining a native Tauri 2 shell for Windows and Linux while retaining the existing web
 application. The desktop and hosted applications will share domain behavior and API contracts, but
@@ -21,6 +21,21 @@ accessible startup-state model, the authenticated API/bridge contract, platform 
 containment, private temporary launch material, Windows and Linux compile checks, and installer
 metadata. It intentionally reports that the local runtime is unavailable until the supervised
 runtime milestone lands; it must not present a scaffold as a working desktop release.
+
+## Shared product interface
+
+The desktop shell installs its native API transport before React renders, checks the redacted native
+runtime state once even under React Strict Mode, and mounts the existing product interface only
+after the supervisor reports `ready`. Startup, recoverable failure, retry, and incompatible-data
+states remain in a small accessible native gate, so the web interface cannot issue requests against
+an unavailable local service.
+
+The desktop build deliberately compiles the product UI directly from `apps/web/src` inside this
+monorepo. The web application owns shared feature views and client behavior; `apps/desktop` owns only
+the native bootstrap, runtime gate, transport installation, and desktop-specific presentation. This
+keeps desktop and hosted behavior aligned without a copied UI. If either surface is later released
+from a separate repository, these shared sources must first move behind an explicit workspace
+package boundary.
 
 ## Implemented supervisor foundation
 
