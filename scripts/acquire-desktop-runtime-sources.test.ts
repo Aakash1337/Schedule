@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  lstat,
   mkdtemp,
   readFile,
   readdir,
@@ -261,6 +262,33 @@ describe("desktop runtime source acquisition", () => {
       fetchImplementation: async () => response(payload),
     });
     await expect(readFile(orphan)).rejects.toThrow();
+  });
+
+  it("rolls back earlier archives when a later artifact fails so the batch can retry", async () => {
+    const payload = new TextEncoder().encode("batch retry fixture");
+    const lock = await fixtureLock(payload);
+    const directory = await output();
+    let calls = 0;
+    await expect(
+      acquireRuntimeSources({
+        lock,
+        outputDirectory: directory,
+        fetchImplementation: async () => {
+          calls += 1;
+          return response(calls === 2 ? new TextEncoder().encode("wrong") : payload);
+        },
+      }),
+    ).rejects.toThrow("SHA-256");
+    await expect(
+      lstat(path.join(directory, "windows-x64", "node-v24.18.0-win-x64.zip")),
+    ).rejects.toThrow();
+
+    const archives = await acquireRuntimeSources({
+      lock,
+      outputDirectory: directory,
+      fetchImplementation: async () => response(payload),
+    });
+    expect(archives).toHaveLength(4);
   });
 
   it("handles a verified temporary pathname swap without publishing malicious bytes", async () => {

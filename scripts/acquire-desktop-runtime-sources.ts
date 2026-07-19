@@ -373,58 +373,66 @@ export async function acquireRuntimeSources(
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > DEFAULT_TIMEOUT_MS)
     throw new Error("Runtime source timeout is invalid.");
   const results: string[] = [];
-  for (const artifact of lock.artifacts) {
-    await validateLease(outputLease);
-    const targetPath = path.join(outputLease.path, `${artifact.target.os}-${artifact.target.arch}`);
-    await createDirectoryComponentwise(targetPath, outputLease);
-    const targetLease = await trustedDirectory(targetPath, outputLease);
-    await scavengeOrphans(targetLease.path, artifact.id);
-    const finalPath = path.join(targetLease.path, archiveFileName(artifact));
-    if (await lstat(finalPath).catch(() => null))
-      throw new Error(`Runtime source archive already exists: ${artifact.id}`);
-    const temporaryPath = path.join(targetLease.path, `.${artifact.id}.${randomUUID()}.partial`);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    let published = false;
-    try {
-      const response = await fetchWithBoundedRedirects(
-        new URL(artifact.url),
-        fetchImplementation,
-        controller.signal,
+  try {
+    for (const artifact of lock.artifacts) {
+      await validateLease(outputLease);
+      const targetPath = path.join(
+        outputLease.path,
+        `${artifact.target.os}-${artifact.target.arch}`,
       );
-      const verified = await writeVerifiedResponse(response, artifact, temporaryPath);
+      await createDirectoryComponentwise(targetPath, outputLease);
+      const targetLease = await trustedDirectory(targetPath, outputLease);
+      await scavengeOrphans(targetLease.path, artifact.id);
+      const finalPath = path.join(targetLease.path, archiveFileName(artifact));
+      if (await lstat(finalPath).catch(() => null))
+        throw new Error(`Runtime source archive already exists: ${artifact.id}`);
+      const temporaryPath = path.join(targetLease.path, `.${artifact.id}.${randomUUID()}.partial`);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      let published = false;
       try {
-        await options.afterVerification?.(temporaryPath);
-        await validateLease(targetLease);
-        const temporary = await lstat(temporaryPath);
-        if (
-          !temporary.isFile() ||
-          temporary.isSymbolicLink() ||
-          !sameIdentity(identity(temporary), verified.identity)
-        )
-          throw new Error("Runtime source temporary file changed after verification.");
-        await link(temporaryPath, finalPath);
-        published = true;
-        const final = await lstat(finalPath);
-        if (
-          !final.isFile() ||
-          final.isSymbolicLink() ||
-          !sameIdentity(identity(final), verified.identity)
-        )
-          throw new Error("Runtime source published file differs from verified temporary file.");
-        await validateLease(targetLease);
-        await unlink(temporaryPath);
-        results.push(finalPath);
+        const response = await fetchWithBoundedRedirects(
+          new URL(artifact.url),
+          fetchImplementation,
+          controller.signal,
+        );
+        const verified = await writeVerifiedResponse(response, artifact, temporaryPath);
+        try {
+          await options.afterVerification?.(temporaryPath);
+          await validateLease(targetLease);
+          const temporary = await lstat(temporaryPath);
+          if (
+            !temporary.isFile() ||
+            temporary.isSymbolicLink() ||
+            !sameIdentity(identity(temporary), verified.identity)
+          )
+            throw new Error("Runtime source temporary file changed after verification.");
+          await link(temporaryPath, finalPath);
+          published = true;
+          const final = await lstat(finalPath);
+          if (
+            !final.isFile() ||
+            final.isSymbolicLink() ||
+            !sameIdentity(identity(final), verified.identity)
+          )
+            throw new Error("Runtime source published file differs from verified temporary file.");
+          await validateLease(targetLease);
+          await unlink(temporaryPath);
+          results.push(finalPath);
+        } finally {
+          await verified.handle.close();
+        }
+      } catch (error) {
+        if (published) await unlink(finalPath).catch(() => undefined);
+        await rm(temporaryPath, { force: true });
+        throw error;
       } finally {
-        await verified.handle.close();
+        clearTimeout(timer);
       }
-    } catch (error) {
-      if (published) await unlink(finalPath).catch(() => undefined);
-      await rm(temporaryPath, { force: true });
-      throw error;
-    } finally {
-      clearTimeout(timer);
     }
+  } catch (error) {
+    await Promise.all(results.map((finalPath) => unlink(finalPath).catch(() => undefined)));
+    throw error;
   }
   return Object.freeze(results);
 }
