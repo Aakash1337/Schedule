@@ -75,7 +75,7 @@ describe("desktop API runtime handshake", () => {
     expect(shutdowns).toBe(1);
   });
 
-  it("silently ignores malformed and oversized control lines", () => {
+  it("ignores malformed and oversized lines before accepting CRLF shutdown", () => {
     const input = new PassThrough();
     let shutdowns = 0;
     installDesktopShutdownControl({
@@ -89,6 +89,8 @@ describe("desktop API runtime handshake", () => {
     input.write("Shutdown\nshutdown now\n");
     input.write(`${"x".repeat(65)}\n`);
     expect(shutdowns).toBe(0);
+    input.write("shutdown\r\n");
+    expect(shutdowns).toBe(1);
   });
 
   it("leaves inherited stdin untouched outside desktop authenticated mode", () => {

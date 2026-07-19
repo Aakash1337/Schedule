@@ -1,5 +1,5 @@
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fmt,
     io::{self, Read, Write},
     path::PathBuf,
@@ -732,7 +732,14 @@ impl Drop for ProcessSet {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, sync::Mutex, thread};
+    use std::{
+        env,
+        ffi::OsStr,
+        fs,
+        sync::Mutex,
+        thread,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::*;
 
@@ -761,7 +768,8 @@ mod tests {
                     explicit,
                     path_is_absent
                 );
-                thread::sleep(Duration::from_millis(250));
+                // Model a real service: readiness is valid only while the child remains alive.
+                thread::sleep(Duration::from_secs(2));
             }
             Ok("sleep") => thread::sleep(Duration::from_secs(2)),
             Ok("await_shutdown") => {
@@ -773,6 +781,23 @@ mod tests {
             Ok("closed_stdin") => {
                 close_standard_input();
                 println!("{}closed", String::from_utf8_lossy(READY_PREFIX));
+                thread::sleep(Duration::from_secs(2));
+            }
+            Ok("tree_parent") => {
+                Command::new(env::current_exe().unwrap())
+                    .arg("subprocess_helper")
+                    .arg("--nocapture")
+                    .env_clear()
+                    .env(CHILD_MODE, "tree_descendant")
+                    .env(EXPLICIT_VALUE, env::var_os(EXPLICIT_VALUE).unwrap())
+                    .spawn()
+                    .unwrap();
+                println!("{}tree", String::from_utf8_lossy(READY_PREFIX));
+                thread::sleep(Duration::from_secs(2));
+            }
+            Ok("tree_descendant") => {
+                thread::sleep(Duration::from_millis(600));
+                fs::write(env::var_os(EXPLICIT_VALUE).unwrap(), b"escaped").unwrap();
                 thread::sleep(Duration::from_secs(2));
             }
             _ => {}
@@ -1025,6 +1050,29 @@ mod tests {
         assert!(started.readiness.is_some());
         started.process.stop(Duration::ZERO).unwrap();
         assert!(started.process.has_exited().unwrap());
+    }
+
+    #[test]
+    fn platform_control_stops_the_owned_descendant_tree() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let marker = env::temp_dir().join(format!(
+            "schedule-process-tree-{}-{nonce}.marker",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&marker);
+        let spec = helper_spec(ProcessRole::Api, "tree_parent", Duration::from_secs(2))
+            .env(EXPLICIT_VALUE, marker.as_os_str())
+            .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
+        let mut started = start_process(spec, platform_process_control()).unwrap();
+
+        started.process.stop(Duration::from_millis(200)).unwrap();
+        thread::sleep(Duration::from_millis(750));
+        let descendant_escaped = marker.exists();
+        let _ = fs::remove_file(marker);
+        assert!(!descendant_escaped);
     }
 
     #[test]

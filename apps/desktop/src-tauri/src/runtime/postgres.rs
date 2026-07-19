@@ -10,6 +10,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::safe_pg_identifier;
+
 pub(crate) const POSTGRESQL_MAJOR: u16 = 17;
 const IDENTITY_COLUMNS: usize = 5;
 
@@ -58,7 +60,7 @@ impl PgConnection {
     ) -> Result<Self, PgError> {
         let database = database.into();
         let user = user.into();
-        if port == 0 || !safe_identifier(&database) || !safe_identifier(&user) {
+        if port == 0 || !safe_pg_identifier(&database) || !safe_pg_identifier(&user) {
             return Err(PgError("invalid PostgreSQL connection settings"));
         }
         let pgpass_file = pgpass_file.into();
@@ -112,10 +114,10 @@ pub(crate) fn pg_hba_conf(
     runtime: &str,
     database: &str,
 ) -> Result<String, PgError> {
-    if !safe_identifier(cluster_admin)
-        || !safe_identifier(owner)
-        || !safe_identifier(runtime)
-        || !safe_identifier(database)
+    if !safe_pg_identifier(cluster_admin)
+        || !safe_pg_identifier(owner)
+        || !safe_pg_identifier(runtime)
+        || !safe_pg_identifier(database)
     {
         return Err(PgError("invalid PostgreSQL access rule"));
     }
@@ -319,15 +321,6 @@ fn contains_line_break(path: &Path) -> bool {
 fn quote_conf_path(path: &Path) -> String {
     display(path).replace('\\', "\\\\").replace('\'', "''")
 }
-fn safe_identifier(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 63
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        && !value.as_bytes()[0].is_ascii_digit()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +359,8 @@ mod tests {
         }
         assert!(hba.contains("local all all reject"));
         assert!(!hba.contains(" trust"));
+        assert!(PgConnection::new(54_321, "Schedule", "schedule_app", "private/pgpass").is_err());
+        assert!(pg_hba_conf("Admin", "owner", "runtime", "schedule").is_err());
     }
 
     #[test]

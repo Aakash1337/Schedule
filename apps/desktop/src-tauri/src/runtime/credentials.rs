@@ -14,6 +14,8 @@ use std::{
 
 use zeroize::Zeroizing;
 
+use super::safe_pg_identifier;
+
 #[cfg(not(windows))]
 use std::fs::OpenOptions;
 
@@ -133,22 +135,6 @@ impl PgNames {
         } else {
             Err(CredentialError::InvalidInput)
         }
-    }
-
-    pub(crate) fn database(&self) -> &str {
-        &self.database
-    }
-
-    pub(crate) fn cluster_admin(&self) -> &str {
-        &self.cluster_admin
-    }
-
-    pub(crate) fn owner(&self) -> &str {
-        &self.owner
-    }
-
-    pub(crate) fn runtime(&self) -> &str {
-        &self.runtime
     }
 }
 
@@ -481,15 +467,6 @@ fn random_file_name(prefix: &str) -> Result<String, CredentialError> {
         write!(name, "{byte:02x}").expect("formatting into String cannot fail");
     }
     Ok(name)
-}
-
-fn safe_pg_identifier(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 63
-        && !value.as_bytes()[0].is_ascii_digit()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 fn reject_existing_destination(path: &Path) -> Result<(), CredentialError> {
