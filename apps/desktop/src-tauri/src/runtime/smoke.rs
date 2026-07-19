@@ -16,7 +16,7 @@ use super::{
 };
 
 pub(crate) const INVALID_ARGUMENTS: i32 = 2;
-pub(crate) const SETUP_OR_TRUST_FAILURE: i32 = 10;
+pub(crate) const SETUP_OR_TRUST_ANCHOR_FAILURE: i32 = 10;
 pub(crate) const STARTUP_OR_WORKER_FAILURE: i32 = 11;
 pub(crate) const INCOMPATIBLE_DATA: i32 = 12;
 pub(crate) const STARTUP_TIMEOUT: i32 = 13;
@@ -35,7 +35,7 @@ struct SmokeRoots {
 /// is deliberately not allowed to fall through into the GUI.
 pub(crate) fn run_if_requested() -> bool {
     let args: Vec<OsString> = std::env::args_os().collect();
-    if !args.iter().skip(1).any(|arg| arg == SENTINEL) {
+    if args.get(1).is_none_or(|arg| arg != SENTINEL) {
         return false;
     }
     let code = parse_roots(&args).map_or(INVALID_ARGUMENTS, run);
@@ -92,11 +92,11 @@ fn overlaps(left: &Path, right: &Path) -> bool {
 fn run(roots: SmokeRoots) -> i32 {
     let bridge = match crate::bridge::DesktopApiForwarder::new() {
         Ok(bridge) => Arc::new(bridge),
-        Err(_) => return SETUP_OR_TRUST_FAILURE,
+        Err(_) => return SETUP_OR_TRUST_ANCHOR_FAILURE,
     };
     let (host, containment) = match build_host(roots.runtime_root, roots.data_root, bridge) {
         Ok(value) => value,
-        Err(_) => return SETUP_OR_TRUST_FAILURE,
+        Err(_) => return SETUP_OR_TRUST_ANCHOR_FAILURE,
     };
     let startup = if host.auto_start().is_err() {
         STARTUP_OR_WORKER_FAILURE
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(
             (
                 INVALID_ARGUMENTS,
-                SETUP_OR_TRUST_FAILURE,
+                SETUP_OR_TRUST_ANCHOR_FAILURE,
                 STARTUP_OR_WORKER_FAILURE,
                 INCOMPATIBLE_DATA,
                 STARTUP_TIMEOUT,
