@@ -1,10 +1,13 @@
+import { createHash } from "node:crypto";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Fastify from "fastify";
 
 import { buildApp, isAllowedLocalProductHost, type HostedApiOptions } from "./app.js";
+import { createDesktopProductAuthenticator } from "./desktop-product-auth.js";
 import { deriveHostedWorkItemSyncCursorSigningKey } from "./hosted-api-runtime.js";
 import { installErrorHandler } from "./http-errors.js";
-import { installIpRateLimit } from "./product-routes.js";
+import { installIpRateLimit, type ProductServices } from "./product-routes.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 
@@ -341,6 +344,55 @@ describe("API infrastructure", () => {
     expect((await probeFrom("192.0.2.2")).statusCode).toBe(200);
     expect((await probeFrom("192.0.2.3")).statusCode).toBe(200);
     expect((await probeFrom("192.0.2.1")).statusCode).toBe(200);
+  });
+
+  it("requires the Rust-held credential and an originless request in desktop mode", async () => {
+    const token = Buffer.alloc(32, 5).toString("base64url");
+    const authenticator = createDesktopProductAuthenticator(
+      createHash("sha256").update(token, "utf8").digest("base64url"),
+    );
+    const listWorkspaces = vi.fn(async () => ({ items: [], limit: 20, offset: 0 }));
+    const app = await buildApp({
+      productServices: { listWorkspaces } as unknown as ProductServices,
+      productApiAccess: { mode: "desktop_authenticated", authenticator },
+    });
+    apps.push(app);
+
+    for (const headers of [
+      {},
+      { authorization: "Bearer invalid" },
+      { authorization: `Bearer ${Buffer.alloc(32, 6).toString("base64url")}` },
+    ]) {
+      const response = await app.inject({ method: "GET", url: "/v1/workspaces", headers });
+      expect(response.statusCode).toBe(401);
+      expect(response.json()).toMatchObject({
+        error: { code: "request.authentication_required" },
+      });
+    }
+
+    const browserOrigin = await app.inject({
+      method: "GET",
+      url: "/v1/workspaces",
+      headers: { authorization: `Bearer ${token}`, origin: "tauri://localhost" },
+    });
+    expect(browserOrigin.statusCode).toBe(403);
+    expect(browserOrigin.json()).toMatchObject({ error: { code: "request.origin_not_allowed" } });
+
+    const authorized = await app.inject({
+      method: "GET",
+      url: "/v1/workspaces",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(authorized.statusCode).toBe(200);
+    expect(authorized.headers["cache-control"]).toBe("no-store");
+    expect(authorized.json()).toEqual({ items: [], page: { limit: 20, offset: 0 } });
+    expect(listWorkspaces).toHaveBeenCalledOnce();
+  });
+
+  it("requires an explicit access policy whenever product services are installed", async () => {
+    await expect(buildApp({ productServices: {} as ProductServices })).rejects.toThrow(
+      "access policy must be configured together",
+    );
   });
 
   it("keeps health endpoints independent from the product Host guard", async () => {

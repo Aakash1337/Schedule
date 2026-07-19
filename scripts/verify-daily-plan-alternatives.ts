@@ -35,6 +35,7 @@ try {
     productServices: createProductServices(new PostgresUnitOfWork(connection), {
       now: () => new Date("2026-07-15T07:30:00.000Z"),
     }),
+    productApiAccess: { mode: "local_unauthenticated" },
   });
   const workspaceResponse = await app.inject({
     method: "POST",

@@ -94,6 +94,7 @@ try {
     productServices: createProductServices(new PostgresUnitOfWork(apiConnection), {
       now: () => new Date(fixedNow),
     }),
+    productApiAccess: { mode: "local_unauthenticated" },
   });
 
   const createWorkspace = async (name: string): Promise<string> => {

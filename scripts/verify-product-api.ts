@@ -18,6 +18,7 @@ const app = await buildApp({
   productServices: createProductServices(new PostgresUnitOfWork(connection), {
     now: () => new Date(productClockNow.getTime()),
   }),
+  productApiAccess: { mode: "local_unauthenticated" },
 });
 let createdWorkspaceId: string | null = null;
 let isolatedWorkspaceId: string | null = null;

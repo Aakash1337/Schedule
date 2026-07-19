@@ -1,7 +1,7 @@
 # Desktop application
 
-Status: runtime foundation; the self-contained service bundle and product interface are not in this
-milestone yet.
+Status: native foundation and authenticated request boundary; the self-contained service supervisor
+and product interface are not in this milestone yet.
 
 Schedule is gaining a native Tauri 2 shell for Windows and Linux while retaining the existing web
 application. The desktop and hosted applications will share domain behavior and API contracts, but
@@ -14,11 +14,11 @@ start its private database, API, and worker automatically, show explicit startup
 and shut them down with the application. End users will not install Node.js, pnpm, Docker, or
 PostgreSQL and will not need to open a browser or enter a local URL.
 
-This foundation currently provides the native window, an empty built-in capability set, an
-origin-locked navigation policy, a strict content security policy, an accessible startup-state
-model, Windows and Linux compile checks, and installer metadata. It intentionally reports that the
-local runtime is unavailable until the supervised runtime milestone lands; it must not present a
-scaffold as a working desktop release.
+The implemented foundation provides the native window, an empty built-in capability set, an
+origin-locked navigation policy, strict production and development content security policies, an
+accessible startup-state model, the authenticated API/bridge contract, Windows and Linux compile
+checks, and installer metadata. It intentionally reports that the local runtime is unavailable until
+the supervised runtime milestone lands; it must not present a scaffold as a working desktop release.
 
 ## Runtime architecture
 
@@ -40,11 +40,20 @@ will be versioned by the supervisor implementation.
 
 ## Security boundary
 
-The installed application will use a distinct authenticated desktop profile, not the development
-`local_unauthenticated` mode. A random per-launch credential will remain inside the Rust process. The
-webview will call a narrow Tauri bridge; Rust will add the credential when forwarding allowlisted
-requests to the private loopback API. The credential must never enter JavaScript, URLs, process
-arguments, persisted configuration, or logs.
+The installed application uses a distinct `desktop_authenticated` production profile, not the
+development `local_unauthenticated` mode. A random per-launch credential remains inside Rust. The API
+loads it from its inherited environment, keeps only a SHA-256 digest, clears the raw environment
+value, binds directly to dynamic-port `127.0.0.1`, and emits a readiness record containing only that
+port. Product requests require the exact bearer credential and no browser `Origin`.
+
+The webview calls a narrow Tauri bridge; Rust owns the loopback authority and adds the credential
+when forwarding allowlisted `/v1/workspaces` requests. Renderer-supplied authorization and arbitrary
+headers never cross the bridge. The native client disables proxies and redirects, bounds paths and
+bodies, limits concurrent requests, and preserves only the response status, JSON body, and request
+ID. The credential never enters JavaScript, URLs, process arguments, persisted configuration, or
+logs. The bridge is registered but intentionally has no target until the next supervisor milestone
+completes startup; that supervisor must clear the target on API exit and issue a fresh credential on
+every restart.
 
 The shell currently grants no shell or filesystem capability. Remote navigation and new remote
 windows will remain disabled. Runtime processes will use non-administrative database roles, private

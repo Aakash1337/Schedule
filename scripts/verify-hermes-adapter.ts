@@ -636,6 +636,7 @@ try {
       await activeConnection.sql`select 1`;
     },
     productServices: createProductServices(productUnitOfWork, clock),
+    productApiAccess: { mode: "local_unauthenticated" },
     integrationServices: createIntegrationServices(integrationUnitOfWork, clock, pepper, 60),
     integrationApiLimits: { requestsPerMinute: 1_000 },
   });

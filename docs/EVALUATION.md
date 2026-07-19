@@ -97,7 +97,7 @@ provider-monitoring, backup-restore, or broad-sync claim.
 
 ## Current scorecard
 
-The package and script runners currently execute 137 test files and 2,388 runtime test cases. Three
+The package and script runners currently execute 142 test files and 2,414 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -106,11 +106,11 @@ an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      60 / 60 |
+| Implemented features with CI-registered evidence                       |      61 / 61 |
 | Critical implemented features with CI-registered integration or drills |      42 / 42 |
 | Partial features with an explicit limitation                           |        4 / 4 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          355 |
+| CI-registered evidence items                                           |          361 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -121,21 +121,21 @@ quality levels. Scope rows aggregate every file matched by the corresponding rec
 
 | Scope                      | Statements | Branches | Functions |  Lines |
 | -------------------------- | ---------: | -------: | --------: | -----: |
-| Whole repository, measured |     59.71% |   72.52% |    68.13% | 60.23% |
+| Whole repository, measured |     59.72% |   72.54% |    68.17% | 60.24% |
 | Whole repository, required |        56% |      59% |       60% |    57% |
 | Domain, measured           |     95.12% |   91.89% |    93.49% | 96.13% |
 | Domain, required           |        91% |      82% |       92% |    93% |
 | Application, measured      |     89.99% |    84.6% |    98.94% | 90.88% |
 | Application, required      |        83% |      76% |       98% |    83% |
-| API, measured              |     90.54% |   87.68% |    84.09% | 92.05% |
+| API, measured              |     90.53% |   87.68% |     84.2% | 92.02% |
 | API, required              |        73% |      69% |       57% |    74% |
 | Worker, measured           |     91.59% |   88.37% |     90.9% | 94.31% |
 | Worker, required           |        85% |      87% |       89% |    87% |
-| Web, measured              |     84.53% |   77.24% |    83.02% | 87.29% |
+| Web, measured              |     86.89% |   80.88% |     84.8% | 87.73% |
 | Web, required              |        80% |      68% |       72% |    82% |
 
-The latest whole-repository run covered 13,697 of 22,938 statements, 10,440 of 14,396 branches,
-2,925 of 4,293 functions, and 12,928 of 21,461 lines.
+The latest whole-repository run covered 13,768 of 23,054 statements, 10,527 of 14,510 branches,
+2,939 of 4,311 functions, and 12,993 of 21,568 lines.
 
 Database repositories and operational scripts intentionally depress unit coverage because their
 meaningful evidence runs against PostgreSQL in a separate CI job. They remain included in the global

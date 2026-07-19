@@ -9,12 +9,15 @@ import {
 } from "@schedule/database";
 
 import { prepareHostedApiApp } from "./hosted-api-runtime.js";
+import { clearDesktopApiTokenEnvironment, desktopApiReadyLine } from "./desktop-api-runtime.js";
+import { createDesktopProductAuthenticator } from "./desktop-product-auth.js";
 import { createIntegrationServices } from "./integration-services.js";
 import { DisabledSchedulingAdvisor, OllamaSchedulingAdvisor } from "./local-model-advisor.js";
 import { createNaturalLanguagePromptHasher } from "./natural-language-runtime.js";
 import { createProductServices } from "./product-services.js";
 
 const config = loadApiConfig();
+clearDesktopApiTokenEnvironment(process.env);
 const database = createDatabase(config.DATABASE_URL);
 const unitOfWork = new PostgresUnitOfWork(database);
 const integrationUnitOfWork = new PostgresIntegrationUnitOfWork(database);
@@ -69,9 +72,16 @@ const { app, composition: hostedOidcComposition } = await prepareHostedApiApp(co
         }
       : { level: config.LOG_LEVEL },
   readinessCheck: () => healthCheckDatabase(database),
-  ...(config.PRODUCT_API_MODE === "local_unauthenticated"
+  ...(config.PRODUCT_API_MODE !== "disabled"
     ? {
         productServices,
+        productApiAccess:
+          config.PRODUCT_API_MODE === "desktop_authenticated"
+            ? {
+                mode: "desktop_authenticated" as const,
+                authenticator: createDesktopProductAuthenticator(config.DESKTOP_API_TOKEN_DIGEST!),
+              }
+            : { mode: "local_unauthenticated" as const },
         productApiLimits: {
           requestsPerMinute: config.PRODUCT_RATE_LIMIT_PER_MINUTE,
           maxConcurrentPlans: 2,
@@ -110,6 +120,9 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 
 try {
   await app.listen({ host: config.API_HOST, port: config.API_PORT });
+  if (config.PRODUCT_API_MODE === "desktop_authenticated") {
+    process.stdout.write(desktopApiReadyLine(app.server.address()));
+  }
 } catch (error) {
   app.log.error(error, "failed to start API");
   await database.close();

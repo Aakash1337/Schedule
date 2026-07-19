@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 
 import { z } from "zod";
@@ -10,9 +11,12 @@ const baseSchema = z.object({
 
 const apiSchema = baseSchema.extend({
   API_HOST: z.string().min(1).default("127.0.0.1"),
-  API_PORT: z.coerce.number().int().min(1).max(65_535).default(4_000),
+  API_PORT: z.coerce.number().int().min(0).max(65_535).default(4_000),
   API_TRUSTED_PROXIES: z.string().max(16_384).default(""),
-  PRODUCT_API_MODE: z.enum(["disabled", "local_unauthenticated"]).optional(),
+  PRODUCT_API_MODE: z
+    .enum(["disabled", "local_unauthenticated", "desktop_authenticated"])
+    .optional(),
+  DESKTOP_API_TOKEN: z.string().max(128).optional(),
   HOSTED_API_MODE: z.enum(["disabled", "oidc"]).default("disabled"),
   HOSTED_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(120),
   HOSTED_PUBLIC_ORIGIN: z.string().optional(),
@@ -115,6 +119,7 @@ const workerSchema = baseSchema.extend({
 export type ApiConfig = Omit<
   z.infer<typeof apiSchema>,
   | "PRODUCT_API_MODE"
+  | "DESKTOP_API_TOKEN"
   | "API_TRUSTED_PROXIES"
   | "HOSTED_PUBLIC_ORIGIN"
   | "HOSTED_OIDC_ISSUER"
@@ -126,7 +131,9 @@ export type ApiConfig = Omit<
   | "HOSTED_LOGIN_PKCE_KEYS"
   | "HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID"
 > & {
-  readonly PRODUCT_API_MODE: "disabled" | "local_unauthenticated";
+  readonly PRODUCT_API_MODE: "disabled" | "local_unauthenticated" | "desktop_authenticated";
+  /** SHA-256 of the launch credential. The raw value is never retained in loaded configuration. */
+  readonly DESKTOP_API_TOKEN_DIGEST: string | undefined;
   readonly API_TRUSTED_PROXIES: string[];
   readonly HOSTED_OIDC_REGISTRATION: HostedOidcRegistration | undefined;
   readonly HOSTED_OIDC_PREFLIGHT: HostedOidcPreflight | undefined;
@@ -174,6 +181,19 @@ export type WorkerConfig = ParsedWorkerConfig & {
 };
 
 const webhookKeyIdPattern = /^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+
+const invalidDesktopApiToken = (): never => {
+  throw new Error("Desktop API launch credential configuration is invalid.");
+};
+
+function parseDesktopApiTokenDigest(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const decoded = Buffer.from(value, "base64url");
+  if (value.length !== 43 || decoded.length !== 32 || decoded.toString("base64url") !== value) {
+    invalidDesktopApiToken();
+  }
+  return createHash("sha256").update(value, "utf8").digest("base64url");
+}
 
 const invalidWebhookKeyring = (): never => {
   // Never include the source value: it contains master-key material.
@@ -561,6 +581,7 @@ export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): Api
     HOSTED_SESSION_PEPPER,
     HOSTED_LOGIN_PKCE_KEYS,
     HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID,
+    DESKTOP_API_TOKEN,
     ...publicConfig
   } = parsed;
   const hostedOidcRegistration = parseHostedOidcRegistration({
@@ -582,6 +603,7 @@ export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): Api
     API_TRUSTED_PROXIES: parseTrustedProxies(parsed.API_TRUSTED_PROXIES),
     HOSTED_OIDC_REGISTRATION: hostedOidcRegistration,
     HOSTED_OIDC_PREFLIGHT: hostedOidcPreflight,
+    DESKTOP_API_TOKEN_DIGEST: parseDesktopApiTokenDigest(DESKTOP_API_TOKEN),
     LOCAL_MODEL_ADVISOR_URL: parseLocalModelAdvisorUrl(parsed.LOCAL_MODEL_ADVISOR_URL),
     PRODUCT_API_MODE:
       parsed.PRODUCT_API_MODE ??
@@ -593,7 +615,7 @@ export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): Api
     throw new Error("HOSTED_API_MODE=oidc requires complete enabled OIDC configuration.");
   }
   if (config.HOSTED_API_MODE === "oidc" && config.PRODUCT_API_MODE !== "disabled") {
-    throw new Error("Hosted OIDC mode cannot expose the local unauthenticated product API.");
+    throw new Error("Hosted OIDC mode cannot expose the local product API.");
   }
   if (
     config.PRODUCT_API_MODE === "local_unauthenticated" &&
@@ -603,6 +625,29 @@ export const loadApiConfig = (environment: NodeJS.ProcessEnv = process.env): Api
     throw new Error(
       "local_unauthenticated product API mode requires a non-production loopback binding.",
     );
+  }
+  if (
+    config.PRODUCT_API_MODE === "desktop_authenticated" &&
+    (config.NODE_ENV !== "production" ||
+      config.API_HOST !== "127.0.0.1" ||
+      config.API_TRUSTED_PROXIES.length !== 0 ||
+      config.HOSTED_API_MODE !== "disabled" ||
+      config.DESKTOP_API_TOKEN_DIGEST === undefined)
+  ) {
+    throw new Error(
+      "desktop_authenticated product API mode requires production, direct 127.0.0.1 binding, and a valid launch credential.",
+    );
+  }
+  if (
+    config.PRODUCT_API_MODE !== "desktop_authenticated" &&
+    config.DESKTOP_API_TOKEN_DIGEST !== undefined
+  ) {
+    throw new Error(
+      "The desktop API launch credential is accepted only in desktop_authenticated mode.",
+    );
+  }
+  if (config.API_PORT === 0 && config.PRODUCT_API_MODE !== "desktop_authenticated") {
+    throw new Error("Dynamic API port allocation is accepted only in desktop_authenticated mode.");
   }
   if (
     config.INTEGRATION_API_MODE === "enabled" &&

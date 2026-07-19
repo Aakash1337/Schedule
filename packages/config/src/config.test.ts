@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import { loadApiConfig, loadWorkerConfig } from "./index.js";
@@ -24,6 +26,7 @@ describe("runtime configuration", () => {
     expect(config.API_PORT).toBe(4_000);
     expect(config.API_TRUSTED_PROXIES).toEqual([]);
     expect(config.PRODUCT_API_MODE).toBe("local_unauthenticated");
+    expect(config.DESKTOP_API_TOKEN_DIGEST).toBeUndefined();
     expect(config.HOSTED_API_MODE).toBe("disabled");
     expect(config.HOSTED_RATE_LIMIT_PER_MINUTE).toBe(120);
     expect(config.HOSTED_OIDC_REGISTRATION).toBeUndefined();
@@ -75,7 +78,7 @@ describe("runtime configuration", () => {
           PRODUCT_API_MODE: "local_unauthenticated",
         }),
       ),
-    ).toThrow(/local unauthenticated product API/);
+    ).toThrow(/local product API/);
   });
 
   it("stages one immutable complete non-secret hosted OIDC registration", () => {
@@ -291,6 +294,53 @@ describe("runtime configuration", () => {
         PRODUCT_API_MODE: "local_unauthenticated",
       }),
     ).toThrow(/non-production loopback/);
+  });
+
+  it("loads only a production loopback desktop API with an ephemeral canonical credential", () => {
+    const token = Buffer.alloc(32, 7).toString("base64url");
+    const config = loadApiConfig({
+      NODE_ENV: "production",
+      API_HOST: "127.0.0.1",
+      API_PORT: "0",
+      PRODUCT_API_MODE: "desktop_authenticated",
+      DESKTOP_API_TOKEN: token,
+    });
+
+    expect(config.PRODUCT_API_MODE).toBe("desktop_authenticated");
+    expect(config.API_PORT).toBe(0);
+    expect(config.DESKTOP_API_TOKEN_DIGEST).toBe(
+      createHash("sha256").update(token, "utf8").digest("base64url"),
+    );
+    expect(config).not.toHaveProperty("DESKTOP_API_TOKEN");
+  });
+
+  it("rejects weakened or misplaced desktop API configuration without disclosing credentials", () => {
+    const token = Buffer.alloc(32, 9).toString("base64url");
+    const valid = {
+      NODE_ENV: "production",
+      API_HOST: "127.0.0.1",
+      PRODUCT_API_MODE: "desktop_authenticated",
+      DESKTOP_API_TOKEN: token,
+    } as const;
+
+    for (const environment of [
+      { ...valid, NODE_ENV: "development" },
+      { ...valid, API_HOST: "localhost" },
+      { ...valid, API_TRUSTED_PROXIES: "127.0.0.1" },
+      { ...valid, DESKTOP_API_TOKEN: undefined },
+      { ...valid, DESKTOP_API_TOKEN: "not-canonical" },
+      { PRODUCT_API_MODE: "disabled", DESKTOP_API_TOKEN: token },
+      { PRODUCT_API_MODE: "disabled", API_PORT: "0" },
+    ]) {
+      let error: unknown;
+      try {
+        loadApiConfig(environment);
+      } catch (reason) {
+        error = reason;
+      }
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).not.toContain(token);
+    }
   });
 
   it("loads an explicitly enabled local Ollama advisor with bounded controls", () => {

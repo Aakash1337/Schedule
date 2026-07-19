@@ -795,6 +795,72 @@
       ]
     },
     {
+      "id": "desktop-authenticated-product-api",
+      "status": "implemented",
+      "risk": "high",
+      "contract": {
+        "file": "docs/API.md",
+        "anchor": "## Desktop-authenticated runtime profile"
+      },
+      "limitations": [
+        "The authenticated boundary is dormant until the native runtime supervisor configures the Rust-owned target and installs the desktop transport into the shared product interface. It is not a hosted-account or cross-device synchronization protocol."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/config/src/config.test.ts",
+          "command": "unit",
+          "anchors": [
+            "loads only a production loopback desktop API with an ephemeral canonical credential",
+            "rejects weakened or misplaced desktop API configuration without disclosing credentials"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/desktop-product-auth.test.ts",
+          "command": "unit",
+          "anchors": [
+            "accepts only the exact canonical bearer credential",
+            "rejects malformed configured digests without disclosing them"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/app.test.ts",
+          "command": "unit",
+          "anchors": ["requires the Rust-held credential and an originless request in desktop mode"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/desktop-api-runtime.test.ts",
+          "command": "unit",
+          "anchors": [
+            "emits only the versioned dynamic-port readiness record",
+            "removes the raw launch credential without changing other runtime values"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/api-transport.test.ts",
+          "command": "unit",
+          "anchors": [
+            "uses browser fetch by default",
+            "installs and restores one scoped transport without changing callers"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/desktop/src/api-transport.test.ts",
+          "command": "unit",
+          "anchors": [
+            "sends only the narrow request DTO and reconstructs the response",
+            "preserves 204 and rejects an aborted request before invoking Rust",
+            "rejects unsupported methods and non-string bodies locally"
+          ]
+        }
+      ]
+    },
+    {
       "id": "web-today-loop",
       "status": "implemented",
       "risk": "high",
