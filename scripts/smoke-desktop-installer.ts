@@ -19,6 +19,8 @@ export interface DesktopSmokeOptions {
   readonly probeExecutables?: boolean;
   /** Test seam for asserting the installed native lifecycle contract. */
   readonly launch?: Launch;
+  /** Test seam for asserting cleanup failures remain redacted. */
+  readonly removeDataRoot?: (root: string) => Promise<void>;
 }
 
 async function regularFile(file: string): Promise<boolean> {
@@ -86,8 +88,10 @@ async function launchNativeLifecycle(
   executable: string,
   runtime: string,
   launch: Launch,
+  removeDataRoot: (root: string) => Promise<void>,
 ): Promise<void> {
   const dataRoot = await mkdtemp(path.join(os.tmpdir(), "schedule-installed-smoke-"));
+  let childFailed = false;
   try {
     const arguments_ = [
       "--schedule-runtime-smoke",
@@ -101,11 +105,18 @@ async function launchNativeLifecycle(
         timeout: NATIVE_SMOKE_TIMEOUT_MS,
         windowsHide: true,
       });
-      if (code !== 0)
+      if (code !== 0) {
+        childFailed = true;
         throw new Error(`Installed Schedule lifecycle smoke failed (exit code ${code}).`);
+      }
     }
   } finally {
-    await rm(dataRoot, { recursive: true, force: true });
+    try {
+      await removeDataRoot(dataRoot);
+    } catch {
+      if (!childFailed)
+        throw new Error("Installed Schedule lifecycle smoke failed (exit code 125).");
+    }
   }
 }
 
@@ -173,7 +184,12 @@ export async function smokeDesktopBundle(
   }
   if (options.requireLaunch) {
     const executable = await installedExecutable(root, runtime, target);
-    await launchNativeLifecycle(executable, runtime, options.launch ?? defaultLaunch);
+    await launchNativeLifecycle(
+      executable,
+      runtime,
+      options.launch ?? defaultLaunch,
+      options.removeDataRoot ?? ((root) => rm(root, { recursive: true, force: true })),
+    );
   }
 }
 
