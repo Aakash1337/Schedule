@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { loadRuntimeStatus, runtimeStatusAction } from "./DesktopApp.js";
 
 describe("desktop runtime gate", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("allows the shared application to mount only after a ready runtime", () => {
     expect(runtimeStatusAction({ phase: "ready", message: "Local API is ready" })).toEqual({
       type: "phase_changed",
@@ -30,6 +32,19 @@ describe("desktop runtime gate", () => {
     await expect(
       loadRuntimeStatus(async () => Promise.reject(new Error("offline"))),
     ).resolves.toEqual({
+      type: "failed",
+      message: "Schedule could not inspect its local runtime",
+      detail: "desktop.runtime_unavailable",
+    });
+  });
+
+  it("turns a hung native inspection into a recoverable failure", async () => {
+    vi.useFakeTimers();
+    const action = loadRuntimeStatus(() => new Promise(() => undefined), 50);
+
+    await vi.advanceTimersByTimeAsync(50);
+
+    await expect(action).resolves.toEqual({
       type: "failed",
       message: "Schedule could not inspect its local runtime",
       detail: "desktop.runtime_unavailable",

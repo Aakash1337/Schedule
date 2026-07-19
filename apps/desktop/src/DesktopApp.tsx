@@ -17,6 +17,7 @@ export interface RuntimeStatus {
 }
 
 const runtimeStatusPollMs = 250;
+const runtimeStatusTimeoutMs = 5_000;
 
 export function runtimeStatusAction(status: RuntimeStatus): StartupAction {
   switch (status.phase) {
@@ -48,15 +49,25 @@ export function runtimeStatusAction(status: RuntimeStatus): StartupAction {
 
 export async function loadRuntimeStatus(
   inspect: () => Promise<RuntimeStatus> = () => invoke<RuntimeStatus>("runtime_status"),
+  timeoutMs = runtimeStatusTimeoutMs,
 ): Promise<StartupAction> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    return runtimeStatusAction(await inspect());
+    const status = await Promise.race([
+      inspect(),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("runtime_status timed out")), timeoutMs);
+      }),
+    ]);
+    return runtimeStatusAction(status);
   } catch {
     return {
       type: "failed",
       message: "Schedule could not inspect its local runtime",
       detail: "desktop.runtime_unavailable",
     };
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 
@@ -106,14 +117,16 @@ export function DesktopApp() {
     if (inspectionInFlight.current) return;
     inspectionInFlight.current = true;
     const epoch = ++inspectionEpoch.current;
-    const action = await loadRuntimeStatus();
-    if (epoch !== inspectionEpoch.current) return;
-    inspectionInFlight.current = false;
-    if (!mounted.current) return;
-    setState((current) => reduceStartupState(current, action));
+    try {
+      const action = await loadRuntimeStatus();
+      if (epoch !== inspectionEpoch.current || !mounted.current) return;
+      setState((current) => reduceStartupState(current, action));
 
-    if (action.type === "phase_changed" && isBusyStartupPhase(action.phase)) {
-      pollTimer.current = window.setTimeout(() => void inspectRuntime(), runtimeStatusPollMs);
+      if (action.type === "phase_changed" && isBusyStartupPhase(action.phase)) {
+        pollTimer.current = window.setTimeout(() => void inspectRuntime(), runtimeStatusPollMs);
+      }
+    } finally {
+      inspectionInFlight.current = false;
     }
   }, []);
 
