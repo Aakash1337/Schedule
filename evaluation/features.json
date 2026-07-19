@@ -854,7 +854,7 @@
           "command": "unit",
           "anchors": [
             "sends only the narrow request DTO and reconstructs the response",
-            "preserves 204 and rejects an aborted request before invoking Rust",
+            "preserves null-body statuses and rejects an aborted request before invoking Rust",
             "rejects unsupported methods and non-string bodies locally"
           ]
         }
