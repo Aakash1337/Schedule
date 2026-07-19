@@ -16,6 +16,15 @@ async function fixture(relative = "runtime"): Promise<string> {
   return root;
 }
 
+async function installedLinuxFixture(): Promise<string> {
+  const root = await fixture("usr/lib/schedule-desktop/runtime");
+  const executable = path.join(root, "usr", "bin", "Schedule");
+  await mkdir(path.dirname(executable), { recursive: true });
+  await writeFile(executable, "fixture executable");
+  await chmod(executable, 0o755);
+  return root;
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -91,14 +100,33 @@ test("runs the installed native lifecycle twice against one isolated data root",
 });
 
 test("redacts native launch failures to an exit code", async () => {
-  const root = await fixture("usr/lib/schedule-desktop/runtime");
-  const executable = path.join(root, "usr", "bin", "Schedule");
-  await mkdir(path.dirname(executable), { recursive: true });
-  await writeFile(executable, "fixture executable");
-  await chmod(executable, 0o755);
+  const root = await installedLinuxFixture();
   await expect(
-    smokeDesktopBundle(root, { requireLaunch: true, launch: async () => 37 }),
+    smokeDesktopBundle(root, {
+      requireLaunch: true,
+      launch: async () => 37,
+      removeDataRoot: async () => {
+        throw new Error("private cleanup path");
+      },
+    }),
   ).rejects.toThrow("Installed Schedule lifecycle smoke failed (exit code 37).");
+});
+
+test("redacts a cleanup failure without exposing its temporary root", async () => {
+  const root = await installedLinuxFixture();
+  let removedRoot = "";
+  const result = smokeDesktopBundle(root, {
+    requireLaunch: true,
+    launch: async () => 0,
+    removeDataRoot: async (dataRoot) => {
+      removedRoot = dataRoot;
+      throw new Error(dataRoot);
+    },
+  });
+  await expect(result).rejects.toThrow(
+    "Installed Schedule lifecycle smoke failed (exit code 125).",
+  );
+  await expect(result).rejects.not.toThrow(removedRoot);
 });
 
 test("redacts a timed-out native launch to the synthetic timeout exit code", async () => {
