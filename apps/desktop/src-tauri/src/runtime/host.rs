@@ -12,6 +12,7 @@ use std::{
         mpsc,
     },
     thread::{self, JoinHandle},
+    time::Instant,
 };
 
 use super::{
@@ -103,6 +104,21 @@ impl RuntimeCompletion {
                 .expect("runtime completion poisoned");
         }
         outcome.expect("completion outcome was checked")
+    }
+
+    /// Waits no later than `deadline`, without polling the worker thread.
+    pub fn wait_until(&self, deadline: Instant) -> Option<ShutdownOutcome> {
+        let outcome = self.0.outcome.lock().expect("runtime completion poisoned");
+        let (outcome, _) = self
+            .0
+            .wake
+            .wait_timeout_while(
+                outcome,
+                deadline.saturating_duration_since(Instant::now()),
+                |value| value.is_none(),
+            )
+            .expect("runtime completion poisoned");
+        *outcome
     }
 
     fn complete(&self, outcome: ShutdownOutcome) {
@@ -358,7 +374,7 @@ mod tests {
     use std::{
         sync::{Arc, Mutex, mpsc},
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use super::*;
@@ -562,6 +578,12 @@ mod tests {
         assert_eq!(completion.wait(), ShutdownOutcome::Clean);
         assert!(completion.is_complete());
         assert_eq!(host.join(), ShutdownOutcome::Clean);
+    }
+
+    #[test]
+    fn completion_deadline_returns_without_polling() {
+        let completion = RuntimeCompletion::default();
+        assert_eq!(completion.wait_until(Instant::now()), None);
     }
 
     #[test]

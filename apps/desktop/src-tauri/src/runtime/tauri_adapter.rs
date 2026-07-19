@@ -14,20 +14,13 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use super::{
-    credentials::PgNames,
-    executor::{NativeExecutorConfig, SystemOperations},
+    bootstrap::build_host,
     host::{
         HostError, RuntimeCompletion, RuntimeHost, RuntimeState, RuntimeStatus, ShutdownOutcome,
     },
-    integrity::embedded_manifest_sha256,
-    manifest::RuntimeManifestExpectations,
-    paths::RuntimePaths,
     process::ProcessGroupControl,
 };
 
-const RUNTIME_VERSION: &str = "runtime-1";
-const DATABASE_SCHEMA_VERSION: &str = "schema-1";
-const STAGING_NONCE: &str = "desktop-launch";
 const FINAL_SHUTDOWN_WAIT: Duration = Duration::from_secs(20);
 const NORMAL_CLOSE_WAIT: Duration = Duration::from_secs(120);
 
@@ -174,26 +167,37 @@ impl DesktopRuntimeAdapter {
         {
             return;
         }
-        let deadline = Instant::now() + limit;
-        if let Some(completion) = self.request_shutdown() {
-            wait_bounded(
-                &completion,
-                deadline.saturating_duration_since(Instant::now()),
-            );
-        }
-        if let Some(containment) = &self.containment {
-            let _ = containment
-                .seal_and_force_stop_all(deadline.saturating_duration_since(Instant::now()));
+        let host = match &*self.owner.lock().expect("runtime adapter poisoned") {
+            RuntimeOwner::Running(host) => Some(host.clone()),
+            RuntimeOwner::SetupFailure => None,
+        };
+        if let Some(host) = host {
+            let _ =
+                shutdown_and_contain(&host, self.containment.as_deref(), Instant::now() + limit);
+        } else if let Some(containment) = &self.containment {
+            let _ = containment.seal_and_force_stop_all(limit);
         }
     }
 }
 
-fn wait_bounded(completion: &RuntimeCompletion, limit: Duration) -> bool {
-    let deadline = Instant::now() + limit;
-    while !completion.is_complete() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
-    }
-    completion.is_complete()
+pub(crate) fn shutdown_and_contain(
+    host: &RuntimeHost,
+    containment: Option<&dyn ProcessGroupControl>,
+    deadline: Instant,
+) -> bool {
+    let clean = host
+        .shutdown()
+        .ok()
+        .and_then(|completion| completion.wait_until(deadline))
+        == Some(ShutdownOutcome::Clean);
+    let contained = containment
+        .map(|control| {
+            control
+                .seal_and_force_stop_all(deadline.saturating_duration_since(Instant::now()))
+                .is_ok()
+        })
+        .unwrap_or(true);
+    clean && contained
 }
 
 fn setup_input(
@@ -209,43 +213,13 @@ fn runtime_resource_root(resource_dir: PathBuf) -> PathBuf {
     resource_dir.join("runtime")
 }
 
-fn build_host(
-    resource_root: PathBuf,
-    data_root: PathBuf,
-    bridge: Arc<crate::bridge::DesktopApiForwarder>,
-) -> Result<(RuntimeHost, Arc<dyn ProcessGroupControl>), ()> {
-    let manifest_sha256 = embedded_manifest_sha256().ok_or(())?;
-    let paths = RuntimePaths::new(data_root, RUNTIME_VERSION, STAGING_NONCE).map_err(|_| ())?;
-    let postgres_names = PgNames::new(
-        "schedule",
-        "schedule_admin",
-        "schedule_owner",
-        "schedule_runtime",
-    )
-    .map_err(|_| ())?;
-    let (executor, containment) = SystemOperations::production(
-        NativeExecutorConfig {
-            paths,
-            resource_root,
-            runtime_version: RUNTIME_VERSION.into(),
-            database_schema_version: DATABASE_SCHEMA_VERSION.into(),
-            manifest_sha256: manifest_sha256.into(),
-            manifest_expectations: RuntimeManifestExpectations::default(),
-            postgres_names,
-        },
-        bridge,
-    )
-    .map_err(|_| ())?;
-    Ok((RuntimeHost::spawn(executor), containment))
-}
-
 pub(crate) fn schedule_close(app: AppHandle, adapter: Arc<DesktopRuntimeAdapter>) {
     let Some(completion) = adapter.begin_close() else {
         return;
     };
     thread::spawn(move || {
         if let Some(completion) = completion {
-            wait_bounded(&completion, NORMAL_CLOSE_WAIT);
+            let _ = completion.wait_until(Instant::now() + NORMAL_CLOSE_WAIT);
         }
         app.exit(0);
     });
@@ -494,7 +468,10 @@ mod tests {
         entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         let completion = host.shutdown().unwrap();
         let started = Instant::now();
-        assert!(!wait_bounded(&completion, Duration::from_millis(1)));
+        assert_eq!(
+            completion.wait_until(Instant::now() + Duration::from_millis(1)),
+            None
+        );
         assert!(started.elapsed() < Duration::from_secs(1));
         release_tx.send(()).unwrap();
         completion.wait();
@@ -566,7 +543,7 @@ mod tests {
     #[test]
     fn production_constructor_rejects_missing_trust_anchor_without_paths() {
         let bridge = Arc::new(crate::bridge::DesktopApiForwarder::new().unwrap());
-        if embedded_manifest_sha256().is_none() {
+        if crate::runtime::integrity::embedded_manifest_sha256().is_none() {
             assert!(
                 build_host(PathBuf::from("relative"), PathBuf::from("relative"), bridge).is_err()
             );
