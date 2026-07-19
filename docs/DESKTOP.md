@@ -230,9 +230,22 @@ anchor; the command does not fetch checksum text at runtime. The recorded values
 the [Node 24.18.0 signed checksum listing](https://nodejs.org/en/blog/release/v24.18.0) and the
 [PostgreSQL 17.10 SHA-256 file](https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.gz.sha256).
 
-This is deliberately an acquisition slice, not a package builder. The remaining release pipeline
-must extract archives safely, build PostgreSQL for each supported target, validate extracted trees
-and license notices, construct reproducible Node/API/worker/PostgreSQL runtime trees, feed them to
+The dedicated `PostgreSQL desktop runtime` workflow turns the pinned PostgreSQL source into the
+small runtime tree consumed by `desktop:runtime:assemble`. It currently produces and tests only the
+two declared x64 targets: Ubuntu 22.04 Linux and Windows Server 2022. Linux builds pinned OpenSSL and
+zlib sources; Windows builds a pinned vcpkg commit with fixed, hash-checked Meson, Ninja, and
+WinFlexBison tools. Workflow actions are commit-pinned. Both artifacts include native notices, build
+provenance, a per-file SHA-256 inventory, and an archive SHA-256 file.
+
+The build fails on archive path escapes, source links, final runtime links, missing pgcrypto files,
+unresolved native dependencies, or a changed inventory. Its smoke test copies the finished runtime
+to a path containing spaces, initializes and starts a temporary cluster, exercises pgcrypto,
+performs a custom-format dump/list operation, and stops the cluster. Linux additionally enforces
+relative RUNPATHs and an Ubuntu 22.04 GLIBC symbol floor; Windows walks PE dependencies and bundles
+non-system Visual C++ runtime DLLs. This evidence does not claim compatibility with other Linux
+distributions, Windows versions, or CPU architectures.
+
+The remaining release pipeline must construct Node/API/worker runtime trees, feed all four trees to
 `desktop:runtime:assemble`, embed its manifest hash in the signed Tauri binary, and run installer
 plus first-launch smoke tests. A committed hash protects archived bytes but does not replace an
 independently verified upstream release-signature process.
