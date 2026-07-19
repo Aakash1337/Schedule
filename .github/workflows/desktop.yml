@@ -5,7 +5,13 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/desktop.yml"
+      - "apps/api/package.json"
+      - "apps/api/src/desktop-api-runtime*"
+      - "apps/api/src/server.ts"
       - "apps/desktop/**"
+      - "apps/worker/package.json"
+      - "apps/worker/src/desktop-worker-runtime*"
+      - "apps/worker/src/index.ts"
       - "scripts/build-desktop-runtime.ts"
       - "scripts/build-desktop-runtime.test.ts"
       - "package.json"
@@ -19,7 +25,13 @@ on:
   pull_request:
     paths:
       - ".github/workflows/desktop.yml"
+      - "apps/api/package.json"
+      - "apps/api/src/desktop-api-runtime*"
+      - "apps/api/src/server.ts"
       - "apps/desktop/**"
+      - "apps/worker/package.json"
+      - "apps/worker/src/desktop-worker-runtime*"
+      - "apps/worker/src/index.ts"
       - "scripts/build-desktop-runtime.ts"
       - "scripts/build-desktop-runtime.test.ts"
       - "package.json"
@@ -79,6 +91,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Verify deterministic runtime assembly
         run: pnpm exec vitest run scripts/build-desktop-runtime.test.ts
+      - name: Verify desktop API protocol
+        run: pnpm --filter @schedule/api exec vitest run src/desktop-api-runtime.test.ts
+      - name: Verify desktop worker protocol
+        run: pnpm --filter @schedule/worker exec vitest run src/desktop-worker-runtime.test.ts
       - name: Verify desktop frontend and supervisor
         run: pnpm desktop:check
       - name: Check Rust formatting

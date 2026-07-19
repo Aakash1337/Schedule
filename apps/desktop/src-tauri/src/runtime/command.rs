@@ -172,10 +172,22 @@ enum OutputEvent {
     Failed,
 }
 
+struct AttachedCommandOwnership<'a> {
+    control: &'a dyn ProcessGroupControl,
+    identity: ChildIdentity,
+}
+
+impl Drop for AttachedCommandOwnership<'_> {
+    fn drop(&mut self) {
+        self.control.release(self.identity);
+    }
+}
+
 /// Run a bounded initdb/psql/pg_dump/pg_restore/migration helper. A controller is injected so a
 /// platform process group or Job Object can stop descendants on timeout, nonzero exit, or output
 /// overflow. The direct child is always reaped; reader threads are only joined if already done,
-/// because a descendant may retain an inherited output pipe after its parent exits.
+/// because a descendant may retain an inherited output pipe after its parent exits. Every
+/// successfully attached platform owner is released exactly once before return.
 pub(crate) fn run_command(
     spec: CommandSpec,
     control: Arc<dyn ProcessGroupControl>,
@@ -196,6 +208,10 @@ pub(crate) fn run_command(
         stop_and_reap(&control, identity, &mut child);
         return Err(CommandError::new("desktop.command_group_failed"));
     }
+    let ownership = AttachedCommandOwnership {
+        control: control.as_ref(),
+        identity,
+    };
 
     let Some(stdout) = child.stdout.take() else {
         stop_and_reap(&control, identity, &mut child);
@@ -226,6 +242,7 @@ pub(crate) fn run_command(
             let _ = reader.join();
         }
     }
+    drop(ownership);
     result
 }
 
@@ -386,6 +403,37 @@ mod tests {
     const MODE: &str = "SCHEDULE_COMMAND_TEST_MODE";
     const VALUE: &str = "SCHEDULE_COMMAND_VALUE";
 
+    #[derive(Default)]
+    struct RecordingControl {
+        fail_attach: bool,
+        stops: Mutex<usize>,
+        releases: Mutex<usize>,
+    }
+
+    impl ProcessGroupControl for RecordingControl {
+        fn attach(&self, _identity: ChildIdentity, _child: &mut Child) -> Result<(), ProcessError> {
+            if self.fail_attach {
+                Err(ProcessError::new("test.group_attach_failed"))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn force_stop(
+            &self,
+            _identity: ChildIdentity,
+            child: &mut Child,
+        ) -> Result<(), ProcessError> {
+            *self.stops.lock().unwrap() += 1;
+            let _ = child.kill();
+            Ok(())
+        }
+
+        fn release(&self, _identity: ChildIdentity) {
+            *self.releases.lock().unwrap() += 1;
+        }
+    }
+
     fn helper(mode: &str, timeout: Duration) -> CommandSpec {
         CommandSpec::new(
             env::current_exe().unwrap(),
@@ -431,9 +479,10 @@ mod tests {
 
     #[test]
     fn captures_success_and_clears_inherited_environment() {
+        let control = Arc::new(RecordingControl::default());
         let output = run_command(
             helper("success", Duration::from_secs(2)).env(VALUE, "approved"),
-            Arc::new(super::super::process::DirectChildControl),
+            control.clone(),
         )
         .unwrap();
         assert!(
@@ -448,56 +497,69 @@ mod tests {
                 .windows(b"stderr".len())
                 .any(|window| window == b"stderr")
         );
+        assert_eq!(*control.stops.lock().unwrap(), 0);
+        assert_eq!(*control.releases.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn does_not_release_platform_ownership_when_attach_fails() {
+        let control = Arc::new(RecordingControl {
+            fail_attach: true,
+            ..Default::default()
+        });
+        let error = match run_command(helper("sleep", Duration::from_secs(2)), control.clone()) {
+            Ok(_) => panic!("unattached helper unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code(), "desktop.command_group_failed");
+        assert_eq!(*control.stops.lock().unwrap(), 1);
+        assert_eq!(*control.releases.lock().unwrap(), 0);
     }
 
     #[test]
     fn returns_stable_error_for_nonzero_exit() {
-        let error = match run_command(
-            helper("failure", Duration::from_secs(2)),
-            Arc::new(super::super::process::DirectChildControl),
-        ) {
+        let control = Arc::new(RecordingControl::default());
+        let error = match run_command(helper("failure", Duration::from_secs(2)), control.clone()) {
             Ok(_) => panic!("nonzero helper unexpectedly succeeded"),
             Err(error) => error,
         };
         assert_eq!(error.code(), "desktop.command_exit_failed");
+        assert_eq!(*control.stops.lock().unwrap(), 1);
+        assert_eq!(*control.releases.lock().unwrap(), 1);
     }
 
     #[test]
     fn times_out_and_uses_the_injected_group_controller() {
-        #[derive(Default)]
-        struct RecordingControl(Mutex<usize>);
-        impl ProcessGroupControl for RecordingControl {
-            fn force_stop(
-                &self,
-                _identity: ChildIdentity,
-                child: &mut Child,
-            ) -> Result<(), ProcessError> {
-                *self.0.lock().unwrap() += 1;
-                let _ = child.kill();
-                Ok(())
-            }
-        }
         let control = Arc::new(RecordingControl::default());
         let error = match run_command(helper("sleep", Duration::from_millis(25)), control.clone()) {
             Ok(_) => panic!("sleeping helper unexpectedly succeeded"),
             Err(error) => error,
         };
         assert_eq!(error.code(), "desktop.command_timeout");
-        assert_eq!(*control.0.lock().unwrap(), 1);
+        assert_eq!(*control.stops.lock().unwrap(), 1);
+        assert_eq!(*control.releases.lock().unwrap(), 1);
     }
 
     #[test]
     fn falls_back_to_the_owned_child_when_group_termination_fails() {
         #[derive(Default)]
-        struct FailingControl(Mutex<usize>);
+        struct FailingControl {
+            stops: Mutex<usize>,
+            releases: Mutex<usize>,
+        }
         impl ProcessGroupControl for FailingControl {
             fn force_stop(
                 &self,
                 _identity: ChildIdentity,
                 _child: &mut Child,
             ) -> Result<(), ProcessError> {
-                *self.0.lock().unwrap() += 1;
+                *self.stops.lock().unwrap() += 1;
                 Err(ProcessError::new("test.group_stop_failed"))
+            }
+
+            fn release(&self, _identity: ChildIdentity) {
+                *self.releases.lock().unwrap() += 1;
             }
         }
 
@@ -518,25 +580,13 @@ mod tests {
         thread::sleep(Duration::from_millis(500));
 
         assert_eq!(error.code(), "desktop.command_timeout");
-        assert_eq!(*control.0.lock().unwrap(), 1);
+        assert_eq!(*control.stops.lock().unwrap(), 1);
+        assert_eq!(*control.releases.lock().unwrap(), 1);
         assert!(!marker.exists());
     }
 
     #[test]
     fn stops_the_group_when_descendants_keep_output_pipes_open() {
-        #[derive(Default)]
-        struct RecordingControl(Mutex<usize>);
-        impl ProcessGroupControl for RecordingControl {
-            fn force_stop(
-                &self,
-                _identity: ChildIdentity,
-                _child: &mut Child,
-            ) -> Result<(), ProcessError> {
-                *self.0.lock().unwrap() += 1;
-                Ok(())
-            }
-        }
-
         let control = Arc::new(RecordingControl::default());
         let error = match run_command(
             helper("pipe_descendant", Duration::from_secs(2)),
@@ -547,7 +597,8 @@ mod tests {
         };
 
         assert_eq!(error.code(), "desktop.command_output_failed");
-        assert_eq!(*control.0.lock().unwrap(), 1);
+        assert_eq!(*control.stops.lock().unwrap(), 1);
+        assert_eq!(*control.releases.lock().unwrap(), 1);
     }
 
     #[test]

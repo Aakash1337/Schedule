@@ -841,7 +841,8 @@
           "command": "unit",
           "anchors": [
             "emits only the versioned dynamic-port readiness record",
-            "removes the raw launch credential without changing other runtime values"
+            "removes the raw launch credential without changing other runtime values",
+            "shuts down when the inherited desktop control stream fails"
           ]
         },
         {
@@ -4382,7 +4383,8 @@
       },
       "limitations": [
         "The launch coordinator does not invoke these primitives yet, so the desktop correctly remains in foundation state.",
-        "Production Windows Job Object and Linux process-group controllers, private credential permissions, real pinned release artifacts, and first-launch PostgreSQL acceptance tests remain required."
+        "A protected durable PostgreSQL credential store/reload path, startup scavenging for stale temporary secrets, and coordinator-enforced pg_ctl shutdown are required before cluster initialization ships.",
+        "Real pinned runtime artifacts, installers, first-launch PostgreSQL acceptance, Linux hard-crash descendant validation, and supported Windows outer-Job validation remain required."
       ],
       "evidence": [
         {
@@ -4408,8 +4410,39 @@
           "file": "apps/desktop/src-tauri/src/runtime/command.rs",
           "command": "desktop-foundation",
           "anchors": [
+            "captures_success_and_clears_inherited_environment",
+            "does_not_release_platform_ownership_when_attach_fails",
             "times_out_and_uses_the_injected_group_controller",
             "rejects_oversized_output_without_retaining_it"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/desktop/src-tauri/src/runtime/process.rs",
+          "command": "desktop-foundation",
+          "anchors": [
+            "desktop_shutdown_pipe_delivers_one_line_without_platform_fallback",
+            "platform_control_stops_the_owned_descendant_tree",
+            "post_attach_setup_failure_force_stops_and_releases_platform_ownership",
+            "windows_job_assigns_before_readiness_and_stops_the_child"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/desktop/src-tauri/src/runtime/credentials.rs",
+          "command": "desktop-foundation",
+          "anchors": [
+            "rejects_unsafe_postgres_identifiers",
+            "writes_private_files_without_overwriting_and_cleans_up"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/desktop-worker-runtime.test.ts",
+          "command": "unit",
+          "anchors": [
+            "accepts exactly one bounded shutdown command and treats EOF as shutdown",
+            "ignores malformed or oversized lines without disabling later shutdown"
           ]
         },
         {

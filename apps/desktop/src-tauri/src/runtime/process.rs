@@ -1,9 +1,9 @@
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fmt,
-    io::{self, Read},
+    io::{self, Read, Write},
     path::PathBuf,
-    process::{Child, Command, Stdio},
+    process::{Child, ChildStdin, Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -12,6 +12,9 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+
+#[path = "platform/mod.rs"]
+mod platform;
 
 const OUTPUT_CHUNK_BYTES: usize = 4 * 1024;
 const MAX_READINESS_LINE_BYTES: usize = 16 * 1024;
@@ -130,6 +133,7 @@ pub(crate) struct ProcessSpec {
     environment: Vec<(OsString, OsString)>,
     readiness: Option<ReadinessSpec>,
     startup_timeout: Duration,
+    desktop_shutdown_stdin: bool,
 }
 
 impl ProcessSpec {
@@ -147,6 +151,7 @@ impl ProcessSpec {
             environment: Vec::new(),
             readiness: None,
             startup_timeout,
+            desktop_shutdown_stdin: false,
         }
     }
 
@@ -165,10 +170,17 @@ impl ProcessSpec {
         self
     }
 
+    /// Opts an API or worker into the private desktop shutdown-line protocol.
+    pub(crate) fn desktop_shutdown_stdin(mut self) -> Self {
+        self.desktop_shutdown_stdin = true;
+        self
+    }
+
     fn validate(&self) -> Result<(), ProcessError> {
         if !self.program.is_absolute()
             || !self.working_directory.is_absolute()
             || self.startup_timeout.is_zero()
+            || (self.desktop_shutdown_stdin && self.role == ProcessRole::Database)
         {
             return Err(ProcessError::new("desktop.process_spec_invalid"));
         }
@@ -199,7 +211,11 @@ impl ProcessSpec {
             .current_dir(&self.working_directory)
             .env_clear()
             .envs(self.environment.iter().map(|(key, value)| (key, value)))
-            .stdin(Stdio::null())
+            .stdin(if self.desktop_shutdown_stdin {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         command
@@ -245,6 +261,15 @@ pub(crate) trait ProcessGroupControl: Send + Sync {
             .kill()
             .map_err(|_| ProcessError::new("desktop.process_stop_failed"))
     }
+
+    /// Release platform ownership after the direct child has been reaped. Implementations also
+    /// use this boundary to ensure descendants cannot outlive their owned process tree.
+    fn release(&self, _identity: ChildIdentity) {}
+}
+
+/// Creates the production tree-aware process controller for the current operating system.
+pub(crate) fn platform_process_control() -> Arc<dyn ProcessGroupControl> {
+    platform::new_control()
 }
 
 #[cfg(test)]
@@ -272,7 +297,9 @@ pub(crate) struct OwnedProcess {
     child: Child,
     control: Arc<dyn ProcessGroupControl>,
     readers: Vec<JoinHandle<()>>,
+    shutdown_stdin: Option<ChildStdin>,
     exited: bool,
+    ownership_released: bool,
 }
 
 impl OwnedProcess {
@@ -290,6 +317,8 @@ impl OwnedProcess {
             .map_err(|_| ProcessError::new("desktop.process_status_failed"))?
             .is_some();
         if self.exited {
+            self.shutdown_stdin.take();
+            self.release_ownership();
             self.release_readers();
         }
         Ok(self.exited)
@@ -300,10 +329,15 @@ impl OwnedProcess {
             return Ok(());
         }
 
+        let graceful_deadline = Instant::now() + graceful_timeout;
+        if self.request_desktop_shutdown() && self.wait_until(graceful_deadline)? {
+            return Ok(());
+        }
+
         let graceful_result = self
             .control
             .request_graceful_stop(self.identity, &mut self.child);
-        if graceful_result.is_ok() && self.wait_until(Instant::now() + graceful_timeout)? {
+        if graceful_result.is_ok() && self.wait_until(graceful_deadline)? {
             return Ok(());
         }
 
@@ -344,14 +378,35 @@ impl OwnedProcess {
             }
         }
     }
+
+    fn release_ownership(&mut self) {
+        if !self.ownership_released {
+            self.control.release(self.identity);
+            self.ownership_released = true;
+        }
+    }
+
+    fn request_desktop_shutdown(&mut self) -> bool {
+        let Some(mut stdin) = self.shutdown_stdin.take() else {
+            return false;
+        };
+        let delivered = stdin
+            .write_all(b"shutdown\n")
+            .and_then(|()| stdin.flush())
+            .is_ok();
+        drop(stdin);
+        delivered
+    }
 }
 
 impl Drop for OwnedProcess {
     fn drop(&mut self) {
+        self.shutdown_stdin.take();
         if !self.exited {
             let _ = self.control.force_stop(self.identity, &mut self.child);
             let _ = self.wait_until(Instant::now() + FORCE_STOP_TIMEOUT);
         }
+        self.release_ownership();
         self.release_readers();
     }
 }
@@ -376,14 +431,24 @@ pub(crate) fn start_process(
         return Err(ProcessError::new("desktop.process_group_failed"));
     }
 
-    let stdout = child.stdout.take().ok_or_else(|| {
-        terminate_unowned_child(&mut child);
-        ProcessError::new("desktop.process_output_failed")
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        terminate_unowned_child(&mut child);
-        ProcessError::new("desktop.process_output_failed")
-    })?;
+    let shutdown_stdin = if spec.desktop_shutdown_stdin {
+        let Some(stdin) = child.stdin.take() else {
+            terminate_attached_child(&control, identity, &mut child);
+            return Err(ProcessError::new("desktop.process_control_failed"));
+        };
+        Some(stdin)
+    } else {
+        None
+    };
+
+    let Some(stdout) = child.stdout.take() else {
+        terminate_attached_child(&control, identity, &mut child);
+        return Err(ProcessError::new("desktop.process_output_failed"));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        terminate_attached_child(&control, identity, &mut child);
+        return Err(ProcessError::new("desktop.process_output_failed"));
+    };
 
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
     let readiness_complete = Arc::new(AtomicBool::new(false));
@@ -415,7 +480,9 @@ pub(crate) fn start_process(
         child,
         control,
         readers,
+        shutdown_stdin,
         exited: false,
+        ownership_released: false,
     };
     let readiness = if spec.readiness.is_some() {
         match await_readiness(&mut process, ready_receiver, spec.startup_timeout) {
@@ -437,6 +504,24 @@ fn terminate_unowned_child(child: &mut Child) {
     let deadline = Instant::now() + FORCE_STOP_TIMEOUT;
     loop {
         if matches!(child.try_wait(), Ok(Some(_))) || Instant::now() >= deadline {
+            return;
+        }
+        thread::sleep(PROCESS_POLL_INTERVAL);
+    }
+}
+
+fn terminate_attached_child(
+    control: &Arc<dyn ProcessGroupControl>,
+    identity: ChildIdentity,
+    child: &mut Child,
+) {
+    if control.force_stop(identity, child).is_err() {
+        let _ = child.kill();
+    }
+    let deadline = Instant::now() + FORCE_STOP_TIMEOUT;
+    loop {
+        if matches!(child.try_wait(), Ok(Some(_))) || Instant::now() >= deadline {
+            control.release(identity);
             return;
         }
         thread::sleep(PROCESS_POLL_INTERVAL);
@@ -647,7 +732,14 @@ impl Drop for ProcessSet {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, sync::Mutex, thread};
+    use std::{
+        env,
+        ffi::OsStr,
+        fs,
+        sync::Mutex,
+        thread,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::*;
 
@@ -676,11 +768,57 @@ mod tests {
                     explicit,
                     path_is_absent
                 );
-                thread::sleep(Duration::from_millis(250));
+                // Model a real service: readiness is valid only while the child remains alive.
+                thread::sleep(Duration::from_secs(2));
             }
             Ok("sleep") => thread::sleep(Duration::from_secs(2)),
+            Ok("await_shutdown") => {
+                let mut line = String::new();
+                if std::io::stdin().read_line(&mut line).is_err() || line != "shutdown\n" {
+                    thread::sleep(Duration::from_secs(2));
+                }
+            }
+            Ok("closed_stdin") => {
+                close_standard_input();
+                println!("{}closed", String::from_utf8_lossy(READY_PREFIX));
+                thread::sleep(Duration::from_secs(2));
+            }
+            Ok("tree_parent") => {
+                Command::new(env::current_exe().unwrap())
+                    .arg("subprocess_helper")
+                    .arg("--nocapture")
+                    .env_clear()
+                    .env(CHILD_MODE, "tree_descendant")
+                    .env(EXPLICIT_VALUE, env::var_os(EXPLICIT_VALUE).unwrap())
+                    .spawn()
+                    .unwrap();
+                println!("{}tree", String::from_utf8_lossy(READY_PREFIX));
+                thread::sleep(Duration::from_secs(2));
+            }
+            Ok("tree_descendant") => {
+                thread::sleep(Duration::from_millis(600));
+                fs::write(env::var_os(EXPLICIT_VALUE).unwrap(), b"escaped").unwrap();
+                thread::sleep(Duration::from_secs(2));
+            }
             _ => {}
         }
+    }
+
+    #[cfg(windows)]
+    fn close_standard_input() {
+        use windows_sys::Win32::{
+            Foundation::CloseHandle,
+            System::Console::{GetStdHandle, STD_INPUT_HANDLE},
+        };
+
+        // SAFETY: the helper process exclusively owns its inherited standard-input handle.
+        let _ = unsafe { CloseHandle(GetStdHandle(STD_INPUT_HANDLE)) };
+    }
+
+    #[cfg(unix)]
+    fn close_standard_input() {
+        // SAFETY: the helper process exclusively owns descriptor zero.
+        let _ = unsafe { libc::close(libc::STDIN_FILENO) };
     }
 
     #[test]
@@ -731,6 +869,11 @@ mod tests {
         let oversized_prefix = helper_spec(ProcessRole::Api, "ready", Duration::from_secs(1))
             .readiness(ReadinessSpec::stdout_prefix(vec![b'x'; 129], 128, 32));
         assert!(oversized_prefix.validate().is_err());
+
+        let database_control_pipe =
+            helper_spec(ProcessRole::Database, "sleep", Duration::from_secs(1))
+                .desktop_shutdown_stdin();
+        assert!(database_control_pipe.validate().is_err());
     }
 
     #[test]
@@ -762,6 +905,7 @@ mod tests {
         configured: Mutex<Vec<ProcessRole>>,
         attached: Mutex<Vec<ProcessRole>>,
         stopped: Mutex<Vec<ProcessRole>>,
+        released: Mutex<Vec<ProcessRole>>,
     }
 
     impl ProcessGroupControl for RecordingControl {
@@ -789,6 +933,10 @@ mod tests {
                 .kill()
                 .map_err(|_| ProcessError::new("desktop.process_stop_failed"))
         }
+
+        fn release(&self, identity: ChildIdentity) {
+            self.released.lock().unwrap().push(identity.role);
+        }
     }
 
     #[test]
@@ -813,6 +961,118 @@ mod tests {
         );
         assert_eq!(control.configured.lock().unwrap().len(), 3);
         assert_eq!(control.attached.lock().unwrap().len(), 3);
+        assert_eq!(control.released.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn desktop_shutdown_pipe_delivers_one_line_without_platform_fallback() {
+        let control = Arc::new(RecordingControl::default());
+        let mut started = start_process(
+            helper_spec(ProcessRole::Api, "await_shutdown", Duration::from_secs(1))
+                .desktop_shutdown_stdin(),
+            control.clone(),
+        )
+        .unwrap();
+
+        started.process.stop(Duration::from_secs(1)).unwrap();
+        assert!(started.process.has_exited().unwrap());
+        assert!(control.stopped.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn broken_desktop_shutdown_pipe_falls_back_to_platform_control() {
+        let control = Arc::new(RecordingControl::default());
+        let mut started = start_process(
+            helper_spec(ProcessRole::Worker, "closed_stdin", Duration::from_secs(2))
+                .desktop_shutdown_stdin()
+                .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256)),
+            control.clone(),
+        )
+        .unwrap();
+
+        started.process.stop(Duration::from_millis(100)).unwrap();
+        assert_eq!(*control.stopped.lock().unwrap(), vec![ProcessRole::Worker]);
+    }
+
+    #[test]
+    fn post_attach_setup_failure_force_stops_and_releases_platform_ownership() {
+        #[derive(Default)]
+        struct SetupFailureControl {
+            forced: Mutex<usize>,
+            released: Mutex<usize>,
+        }
+
+        impl ProcessGroupControl for SetupFailureControl {
+            fn attach(
+                &self,
+                _identity: ChildIdentity,
+                child: &mut Child,
+            ) -> Result<(), ProcessError> {
+                child.stdout.take();
+                Ok(())
+            }
+
+            fn force_stop(
+                &self,
+                _identity: ChildIdentity,
+                child: &mut Child,
+            ) -> Result<(), ProcessError> {
+                *self.forced.lock().unwrap() += 1;
+                child
+                    .kill()
+                    .map_err(|_| ProcessError::new("desktop.process_stop_failed"))
+            }
+
+            fn release(&self, _identity: ChildIdentity) {
+                *self.released.lock().unwrap() += 1;
+            }
+        }
+
+        let control = Arc::new(SetupFailureControl::default());
+        let error = match start_process(
+            helper_spec(ProcessRole::Api, "sleep", Duration::from_secs(1)),
+            control.clone(),
+        ) {
+            Ok(_) => panic!("missing stdout unexpectedly passed process setup"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "desktop.process_output_failed");
+        assert_eq!(*control.forced.lock().unwrap(), 1);
+        assert_eq!(*control.released.lock().unwrap(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_job_assigns_before_readiness_and_stops_the_child() {
+        let spec = helper_spec(ProcessRole::Api, "ready", Duration::from_secs(2))
+            .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
+        let mut started = start_process(spec, platform_process_control()).unwrap();
+        assert!(started.readiness.is_some());
+        started.process.stop(Duration::ZERO).unwrap();
+        assert!(started.process.has_exited().unwrap());
+    }
+
+    #[test]
+    fn platform_control_stops_the_owned_descendant_tree() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let marker = env::temp_dir().join(format!(
+            "schedule-process-tree-{}-{nonce}.marker",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&marker);
+        let spec = helper_spec(ProcessRole::Api, "tree_parent", Duration::from_secs(2))
+            .env(EXPLICIT_VALUE, marker.as_os_str())
+            .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
+        let mut started = start_process(spec, platform_process_control()).unwrap();
+
+        started.process.stop(Duration::from_millis(200)).unwrap();
+        thread::sleep(Duration::from_millis(750));
+        let descendant_escaped = marker.exists();
+        let _ = fs::remove_file(marker);
+        assert!(!descendant_escaped);
     }
 
     #[test]
