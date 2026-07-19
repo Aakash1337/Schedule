@@ -1,3 +1,4 @@
+mod bootstrap;
 mod bundle;
 mod command;
 mod coordinator;
@@ -12,6 +13,7 @@ mod manifest;
 mod paths;
 mod postgres;
 mod process;
+pub(crate) mod smoke;
 mod state;
 pub(crate) mod tauri_adapter;
 
