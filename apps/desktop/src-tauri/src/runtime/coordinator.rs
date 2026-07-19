@@ -401,10 +401,19 @@ enum CompletionError {
 
 fn completion_event(effect: Effect, outcome: EffectOutcome) -> Result<Event, CompletionError> {
     let generation = effect_generation(&effect);
-    if let EffectOutcome::Incompatible(incompatibility) = outcome {
-        return Err(CompletionError::Incompatible(incompatibility));
-    }
     match (effect, outcome) {
+        (
+            Effect::StartDatabase { .. } | Effect::VerifyDatabase { .. },
+            EffectOutcome::Incompatible(
+                incompatibility @ (Incompatibility::DatabaseMajorVersion
+                | Incompatibility::DatabaseFormat),
+            ),
+        ) => Err(CompletionError::Incompatible(incompatibility)),
+        (
+            Effect::MigrateDatabase { .. },
+            EffectOutcome::Incompatible(incompatibility @ Incompatibility::Migration),
+        ) => Err(CompletionError::Incompatible(incompatibility)),
+        (_, EffectOutcome::Incompatible(_)) => Err(CompletionError::Unexpected),
         (Effect::AcquireLock { .. }, EffectOutcome::Completed) => {
             Ok(Event::LockAcquired { generation })
         }
@@ -451,8 +460,10 @@ mod tests {
         api_outcome: Option<EffectOutcome>,
         cancel_after: Option<&'static str>,
         configure_bridge_error: Option<&'static str>,
+        cancel_in_configure_bridge: bool,
         clear_bridge_error: Option<&'static str>,
         reject_cancelled_work: bool,
+        active_cancellation: Option<Cancellation>,
     }
 
     impl Fake {
@@ -468,6 +479,7 @@ mod tests {
             effect: Effect,
             cancellation: &Cancellation,
         ) -> Result<EffectOutcome, Self::Error> {
+            self.active_cancellation = Some(cancellation.clone());
             if self.reject_cancelled_work && cancellation.is_cancelled() {
                 return Err("cancelled work");
             }
@@ -506,6 +518,12 @@ mod tests {
         }
         fn configure_bridge(&mut self, _: u64) -> Result<(), Self::Error> {
             self.calls.push("configure-bridge".into());
+            if self.cancel_in_configure_bridge {
+                self.active_cancellation
+                    .as_ref()
+                    .expect("API execution supplies cancellation")
+                    .cancel();
+            }
             self.configure_bridge_error.map_or(Ok(()), Err)
         }
         fn clear_bridge(&mut self, _: u64) -> Result<(), Self::Error> {
@@ -658,6 +676,34 @@ mod tests {
                 "verify",
                 "api",
                 "configure-bridge",
+                "clear-bridge",
+                "stop-api",
+                "stop-database",
+                "release-lock"
+            ]
+        );
+        assert!(!coordinator.executor().names().contains(&"worker"));
+    }
+
+    #[test]
+    fn cancellation_during_successful_bridge_configuration_cleans_before_worker_start() {
+        let mut coordinator = Coordinator::new(Fake {
+            cancel_in_configure_bridge: true,
+            reject_cancelled_work: true,
+            ..Default::default()
+        });
+        coordinator.start().unwrap();
+        assert_eq!(coordinator.lifecycle().phase(), &Phase::Idle);
+        assert_eq!(
+            coordinator.executor().names(),
+            [
+                "lock",
+                "runtime",
+                "database",
+                "verify",
+                "api",
+                "configure-bridge",
+                "cancel",
                 "clear-bridge",
                 "stop-api",
                 "stop-database",
@@ -999,6 +1045,69 @@ mod tests {
                 coordinator.executor().names()
             );
         }
+    }
+
+    #[test]
+    fn incompatibility_outcomes_are_accepted_only_for_matching_effects() {
+        let invalid = [
+            (
+                Effect::AcquireLock { generation: 1 },
+                Incompatibility::DatabaseFormat,
+            ),
+            (
+                Effect::StartApi { generation: 1 },
+                Incompatibility::DatabaseFormat,
+            ),
+            (
+                Effect::StartWorker { generation: 1 },
+                Incompatibility::Migration,
+            ),
+            (
+                Effect::MigrateDatabase { generation: 1 },
+                Incompatibility::DatabaseFormat,
+            ),
+        ];
+        for (effect, incompatibility) in invalid {
+            assert!(matches!(
+                completion_event(effect, EffectOutcome::Incompatible(incompatibility)),
+                Err(CompletionError::Unexpected)
+            ));
+        }
+
+        for (effect, incompatibility) in [
+            (
+                Effect::StartDatabase { generation: 1 },
+                Incompatibility::DatabaseMajorVersion,
+            ),
+            (
+                Effect::VerifyDatabase { generation: 1 },
+                Incompatibility::DatabaseFormat,
+            ),
+            (
+                Effect::MigrateDatabase { generation: 1 },
+                Incompatibility::Migration,
+            ),
+        ] {
+            assert!(matches!(
+                completion_event(effect, EffectOutcome::Incompatible(incompatibility)),
+                Err(CompletionError::Incompatible(_))
+            ));
+        }
+
+        let mut coordinator = Coordinator::new(Fake {
+            outcomes: VecDeque::from([Ok(EffectOutcome::Incompatible(
+                Incompatibility::DatabaseFormat,
+            ))]),
+            ..Default::default()
+        });
+        assert!(matches!(
+            coordinator.start(),
+            Err(CoordinatorError::Unexpected)
+        ));
+        assert_eq!(
+            coordinator.lifecycle().phase(),
+            &Phase::RecoverableFailure(Failure::Unexpected)
+        );
     }
 
     #[test]
