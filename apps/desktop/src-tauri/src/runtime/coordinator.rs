@@ -31,8 +31,8 @@ pub struct CancellationHandle(Arc<Mutex<Option<Cancellation>>>);
 
 impl CancellationHandle {
     pub fn cancel(&self) -> bool {
-        let token = self.0.lock().expect("cancellation handle poisoned").clone();
-        if let Some(token) = token {
+        let guard = self.0.lock().expect("cancellation handle poisoned");
+        if let Some(token) = guard.as_ref() {
             token.cancel();
             true
         } else {
@@ -227,6 +227,27 @@ impl<E: EffectExecutor> Coordinator<E> {
             if self.is_cancelled() {
                 return self.stop();
             }
+            if matches!(event, Event::WorkerStarted { .. }) {
+                let mut active = self
+                    .cancellation_handle
+                    .0
+                    .lock()
+                    .expect("cancellation handle poisoned");
+                if self.is_cancelled() {
+                    drop(active);
+                    return self.stop();
+                }
+                let transition = self
+                    .lifecycle
+                    .transition(event)
+                    .map_err(CoordinatorError::Rejected)?;
+                self.lifecycle = transition.lifecycle;
+                self.cancellation = None;
+                *active = None;
+                effects = transition.effects;
+                effects.reverse();
+                continue;
+            }
             let transition = self
                 .lifecycle
                 .transition(event)
@@ -417,7 +438,7 @@ fn completion_event(effect: Effect, outcome: EffectOutcome) -> Result<Event, Com
 mod tests {
     use std::{
         collections::VecDeque,
-        sync::{Arc, Mutex, mpsc},
+        sync::{Arc, Barrier, Mutex, mpsc},
         thread,
     };
 
@@ -871,6 +892,84 @@ mod tests {
         assert_eq!(phase, Phase::Idle);
         assert_eq!(*calls.lock().unwrap(), ["lock", "release-lock"]);
         assert!(!handle.cancel());
+    }
+
+    struct ReadyGatedExecutor {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+
+    impl EffectExecutor for ReadyGatedExecutor {
+        type Error = &'static str;
+
+        fn execute(
+            &mut self,
+            effect: Effect,
+            _: &Cancellation,
+        ) -> Result<EffectOutcome, Self::Error> {
+            match effect {
+                Effect::VerifyDatabase { .. } => Ok(EffectOutcome::DatabaseVerified {
+                    needs_migration: false,
+                }),
+                Effect::StartWorker { .. } => {
+                    self.entered.send(()).unwrap();
+                    self.release.recv().unwrap();
+                    Ok(EffectOutcome::Completed)
+                }
+                _ => Ok(EffectOutcome::Completed),
+            }
+        }
+
+        fn configure_bridge(&mut self, _: u64) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn clear_bridge(&mut self, _: u64) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn cancel(&mut self, _: u64) {}
+    }
+
+    #[test]
+    fn cancellation_is_linearized_with_the_ready_handoff() {
+        for _ in 0..32 {
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let mut coordinator = Coordinator::new(ReadyGatedExecutor {
+                entered: entered_tx,
+                release: release_rx,
+            });
+            let handle = coordinator.cancellation_handle();
+            thread::spawn(move || {
+                let result = coordinator.start();
+                done_tx
+                    .send((result, coordinator.lifecycle().phase().clone()))
+                    .unwrap();
+            });
+            entered_rx.recv().unwrap();
+
+            let barrier = Arc::new(Barrier::new(2));
+            let cancel_barrier = barrier.clone();
+            let cancel_handle = handle.clone();
+            let cancel = thread::spawn(move || {
+                cancel_barrier.wait();
+                cancel_handle.cancel()
+            });
+            barrier.wait();
+            release_tx.send(()).unwrap();
+
+            let cancelled = cancel.join().unwrap();
+            let (result, phase) = done_rx.recv().unwrap();
+            assert!(result.is_ok());
+            if cancelled {
+                assert_eq!(phase, Phase::Idle);
+            } else {
+                assert_eq!(phase, Phase::Ready);
+            }
+            assert!(!handle.cancel());
+        }
     }
 
     #[test]
