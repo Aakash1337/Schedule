@@ -212,8 +212,21 @@ pnpm desktop:build -- --runtime E:\release-inputs\runtime-windows-x86_64
 
 The packager stages that root as Tauri's immutable `resources/runtime`, compiles with the manifest
 SHA-256 in `SCHEDULE_DESKTOP_RUNTIME_MANIFEST_SHA256`, and removes its staging directory afterwards.
-It is not an end-user installer release until CI supplies real, verified Node and PostgreSQL runtime
-artifacts for the selected target.
+
+## Release automation
+
+The `desktop-release` workflow is deliberately tag/dispatch-only. For each Windows x64 and Linux x64
+release it creates production API and worker deploy trees, downloads locked source archives, builds
+and verifies the minimal Node runtime and PostgreSQL 17 runtime, assembles the authenticated runtime,
+then builds the native Tauri installers. It retains the installers plus the runtime manifest, SBOM,
+license inventory, and component provenance as one release artifact set.
+
+Windows produces NSIS and MSI where the runner supports them. Linux produces AppImage and Debian
+packages where the runner supports them. CI installs/extracts a native package and verifies that the
+immutable runtime manifest is actually present in the installed package; it does not falsely claim a
+GUI launch smoke. A process-level GUI smoke becomes mandatory only when the native adapter supplies a
+bounded headless smoke hook. Until then, asking `smoke-desktop-installer --require-launch` fails
+explicitly instead of treating an arbitrary webview process as success.
 
 Runtime assembly performs no downloads. Release automation must supply production API/worker
 deployment trees, pinned Node and PostgreSQL 17 directories, their exact versions and tree hashes,
