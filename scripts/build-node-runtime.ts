@@ -226,6 +226,15 @@ async function extractTar(
   }
   await rm(path.join(staging, artifact.extractedRoot), { recursive: true, force: true });
 }
+async function writePrivateArchive(
+  parent: string,
+  bytes: Uint8Array,
+): Promise<{ directory: string; path: string }> {
+  const directory = await mkdtemp(path.join(parent, ".node-runtime-archive-"));
+  const archive = path.join(directory, "verified.tar.xz");
+  await writeFile(archive, bytes, { flag: "wx", mode: 0o600 });
+  return Object.freeze({ directory, path: archive });
+}
 async function checksumTree(root: string): Promise<string> {
   const paths: string[] = [];
   const visit = async (directory: string): Promise<void> => {
@@ -280,18 +289,25 @@ export async function buildNodeRuntime(
   const parent = path.dirname(output);
   const staging = path.join(parent, `.${path.basename(output)}.${randomUUID()}.staging`);
   const command = options.command ?? defaultCommand;
+  let privateArchive: string | undefined;
   await mkdir(parent, { recursive: true });
   await rm(staging, { recursive: true, force: true });
   try {
     await mkdir(staging, { mode: 0o700 });
     if (options.target === "windows") await extractZip(archiveBytes, artifact, staging);
-    else await extractTar(archive, artifact, staging, command);
+    else {
+      const verified = await writePrivateArchive(parent, archiveBytes);
+      privateArchive = verified.directory;
+      await extractTar(verified.path, artifact, staging, command);
+      await rm(privateArchive, { recursive: true, force: true });
+      privateArchive = undefined;
+    }
     const binary = path.join(staging, options.target === "windows" ? "node.exe" : "node");
     const entry = await lstat(binary).catch(() => null);
     if (entry === null || !entry.isFile() || entry.isSymbolicLink())
       throw new Error("Node runtime executable is missing or unsafe.");
     await chmod(binary, 0o755);
-    const checksum = await checksumTree(staging);
+    const payloadSha256 = await checksumTree(staging);
     const license = await readFile(path.join(staging, "LICENSE"));
     await writeFile(
       path.join(staging, PROVENANCE),
@@ -299,13 +315,15 @@ export async function buildNodeRuntime(
         {
           schemaVersion: 1,
           source: { url: artifact.url, version: artifact.version, sha256: artifact.sha256 },
-          checksum,
+          payloadSha256,
           licenses: [{ path: "LICENSE", sha256: sha256(license) }],
         },
         null,
         2,
       )}\n`,
     );
+    // The runtime pin includes provenance; the payload digest intentionally does not self-reference it.
+    const checksum = await checksumTree(staging);
     const relocation = await mkdtemp(path.join(parent, "Schedule Node Runtime relocation "));
     try {
       await cp(staging, relocation, { recursive: true, dereference: false });
@@ -323,6 +341,8 @@ export async function buildNodeRuntime(
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
     throw error;
+  } finally {
+    if (privateArchive !== undefined) await rm(privateArchive, { recursive: true, force: true });
   }
 }
 

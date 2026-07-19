@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -209,6 +209,7 @@ describe("Node desktop runtime bundles", () => {
       command,
     });
     expect(one).toEqual(two);
+    expect(await hashTree(first)).toBe(one.checksum);
     await expect(readFile(path.join(first, "node.exe"), "utf8")).resolves.toBe("node");
     await expect(readFile(path.join(first, "node-runtime.provenance.json"), "utf8")).resolves.toBe(
       await readFile(path.join(second, "node-runtime.provenance.json"), "utf8"),
@@ -220,12 +221,20 @@ describe("Node desktop runtime bundles", () => {
     const sources = await temporary();
     const sourceDirectory = path.join(sources, "linux-x64");
     await mkdir(sourceDirectory, { recursive: true });
-    await writeFile(path.join(sourceDirectory, "node-v24.18.0-linux-x64.tar.xz"), payload);
+    const sourceArchive = path.join(sourceDirectory, "node-v24.18.0-linux-x64.tar.xz");
+    await writeFile(sourceArchive, payload);
     const output = path.join(await temporary(), "node runtime");
+    let verifiedArchive: string | undefined;
     const tar = async (file: string, arguments_: readonly string[]) => {
       if (file !== "tar") return "v24.18.0\n";
-      if (arguments_[0] === "-tvJf")
+      if (arguments_[0] === "-tvJf") {
+        verifiedArchive = arguments_[1];
+        expect(verifiedArchive).not.toBe(sourceArchive);
+        await writeFile(sourceArchive, "swapped after verification");
         return "drwxr-xr-x root/root 0 2026-01-01 node-v24.18.0-linux-x64/\n-rwxr-xr-x root/root 4 2026-01-01 node-v24.18.0-linux-x64/bin/node\n-rw-r--r-- root/root 3 2026-01-01 node-v24.18.0-linux-x64/LICENSE\n";
+      }
+      expect(arguments_[1]).toBe(verifiedArchive);
+      await expect(readFile(arguments_[1]!)).resolves.toEqual(payload);
       const staging = arguments_[arguments_.indexOf("-C") + 1]!;
       await mkdir(path.join(staging, "node-v24.18.0-linux-x64", "bin"), { recursive: true });
       await Promise.all([
@@ -243,6 +252,11 @@ describe("Node desktop runtime bundles", () => {
     });
     await expect(readFile(path.join(output, "node"), "utf8")).resolves.toBe("node");
     await expect(readFile(path.join(output, "bin", "node"))).rejects.toThrow();
+    expect(
+      (await readdir(path.dirname(output))).filter((name) =>
+        name.startsWith(".node-runtime-archive-"),
+      ),
+    ).toEqual([]);
     const manifest = await buildDesktopRuntime(
       await desktopAssemblerFixture(await temporary(), output),
     );
@@ -275,6 +289,11 @@ describe("Node desktop runtime bundles", () => {
       }),
     ).rejects.toThrow("link");
     await expect(readFile(path.join(output, "node"))).rejects.toThrow();
+    expect(
+      (await readdir(path.dirname(output))).filter((name) =>
+        name.startsWith(".node-runtime-archive-"),
+      ),
+    ).toEqual([]);
   });
 
   it("rejects hash, traversal, symlink, missing-layout, and version failures without publishing", async () => {
