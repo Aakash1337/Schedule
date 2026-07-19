@@ -1,14 +1,12 @@
 import { createHash } from "node:crypto";
 import {
   mkdtemp,
-  mkdir,
   readFile,
   readdir,
   realpath,
   rename,
   rm,
   symlink,
-  unlink,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
