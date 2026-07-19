@@ -53,6 +53,10 @@ will use:
   are exclusively created beneath a private directory with Unix `0700`/`0600` modes or a protected
   current-user-only Windows DACL. Generated bootstrap SQL creates distinct constrained roles and
   grants the runtime role only the required database/schema access.
+- PostgreSQL role credentials have a strict immutable v1 store beneath that private root. Creation
+  is durable and non-replacing, restart loads are bound to the expected database and role names,
+  interrupted publication is recovered only from an exact canonical pending record, and startup can
+  scavenge only bounded, recognized temporary-secret directories without following links.
 - PostgreSQL 17 plans separate initdb's raw password file from libpq's pgpass format, start the real
   `postgres` process directly, generate loopback-only SCRAM rules, define a private bootstrap step,
   authenticate the expected server/data directory, and use bounded fast shutdown and backup
@@ -65,12 +69,12 @@ will use:
 
 These pieces are compiled and tested on Windows and Linux, but the coordinator still has no native
 effect executor and is not invoked by `main`. The application therefore continues to report
-`foundation` rather than claiming it is ready. Launch integration must add a protected durable
-PostgreSQL credential store/load path before initializing a cluster, scavenge stale temporary-secret
-directories at startup, and run `pg_ctl stop -m fast` successfully before treating platform
-containment as the database shutdown fallback. Release acceptance must also exercise real descendant
-trees on Linux and supported Windows launch environments; a Linux parent-death signal covers the
-direct child, not arbitrary grandchildren.
+`foundation` rather than claiming it is ready. Launch integration must call the durable credential
+store and stale-secret scavenger only while holding the singleton lock, refuse to regenerate
+credentials for an existing cluster, and run `pg_ctl stop -m fast` successfully before treating
+platform containment as the database shutdown fallback. Release acceptance must also exercise real
+descendant trees on Linux and supported Windows launch environments; a Linux parent-death signal
+covers the direct child, not arbitrary grandchildren.
 
 ## Runtime architecture
 
@@ -113,6 +117,8 @@ data-directory permissions, bounded readiness handshakes, ownership-checked shut
 diagnostics. Temporary deletion and Rust buffer zeroization are logical cleanup, not secure erase of
 filesystem remnants, page cache, or copies held by child libraries. The current path checks assume a
 trusted per-user data-root hierarchy rather than an attacker who can replace its parent directories.
+The durable PostgreSQL store relies on those operating-system access controls; it is not encrypted
+and does not protect against administrators, root, or malware already running as the same user.
 
 ## Data lifecycle and recovery
 

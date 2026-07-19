@@ -4383,7 +4383,7 @@
       },
       "limitations": [
         "The pure coordinator is tested, but its native effect executor and asynchronous Tauri host adapter are not implemented or invoked by main, so the desktop correctly remains in foundation state.",
-        "A protected durable PostgreSQL credential store/reload path, startup scavenging for stale temporary secrets, and coordinator-enforced pg_ctl shutdown are required before cluster initialization ships.",
+        "The durable PostgreSQL credential store and bounded stale-secret scavenger are implemented, but launch integration must invoke them under the singleton lock, preserve existing-cluster credentials, and enforce pg_ctl shutdown before cluster initialization ships.",
         "Real pinned runtime artifacts, installers, first-launch PostgreSQL acceptance, Linux hard-crash descendant validation, and supported Windows outer-Job validation remain required."
       ],
       "evidence": [
@@ -4444,6 +4444,16 @@
           "anchors": [
             "rejects_unsafe_postgres_identifiers",
             "writes_private_files_without_overwriting_and_cleans_up"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/desktop/src-tauri/src/runtime/credentials.rs",
+          "command": "desktop-foundation",
+          "anchors": [
+            "durable_store_round_trips_canonical_credentials_without_replacement",
+            "recovers_only_an_exact_canonical_pending_store",
+            "scavenger_bounds_fail_without_partial_deletion"
           ]
         },
         {

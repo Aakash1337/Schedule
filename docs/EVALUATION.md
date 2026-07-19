@@ -110,7 +110,7 @@ an independent product feature.
 | Critical implemented features with CI-registered integration or drills |      42 / 42 |
 | Partial features with an explicit limitation                           |        5 / 5 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          369 |
+| CI-registered evidence items                                           |          370 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
