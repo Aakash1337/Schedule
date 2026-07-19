@@ -886,7 +886,9 @@
             "inspects once in StrictMode and keeps the shared App behind a recoverable error",
             "presents incompatible data as a blocking accessible error without mounting the App",
             "re-inspects after retry and mounts the shared App only when the runtime is ready",
-            "polls an active startup until the shared application is ready"
+            "polls an active startup until the shared application is ready",
+            "coalesces rapid retries while the current inspection is pending",
+            "ignores an inspection that completes after unmount without starting a poll"
           ]
         },
         {

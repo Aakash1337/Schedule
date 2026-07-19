@@ -99,9 +99,16 @@ export function DesktopApp() {
   const inspectedOnMount = useRef(false);
   const mounted = useRef(false);
   const pollTimer = useRef<number | null>(null);
+  const inspectionEpoch = useRef(0);
+  const inspectionInFlight = useRef(false);
 
   const inspectRuntime = useCallback(async function inspectRuntime() {
+    if (inspectionInFlight.current) return;
+    inspectionInFlight.current = true;
+    const epoch = ++inspectionEpoch.current;
     const action = await loadRuntimeStatus();
+    if (epoch !== inspectionEpoch.current) return;
+    inspectionInFlight.current = false;
     if (!mounted.current) return;
     setState((current) => reduceStartupState(current, action));
 
@@ -124,6 +131,7 @@ export function DesktopApp() {
   }, [inspectRuntime]);
 
   const retry = useCallback(() => {
+    if (inspectionInFlight.current) return;
     if (pollTimer.current !== null) window.clearTimeout(pollTimer.current);
     setState((current) => reduceStartupState(current, { type: "retry" }));
     void inspectRuntime();

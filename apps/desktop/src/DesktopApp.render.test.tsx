@@ -87,4 +87,46 @@ describe("DesktopApp runtime gate", () => {
     expect(screen.getByRole("main", { name: "Shared Schedule application" })).not.toBeNull();
     expect(invokeMock).toHaveBeenCalledTimes(2);
   });
+
+  it("coalesces rapid retries while the current inspection is pending", async () => {
+    let resolveRetry!: (status: { phase: "ready"; message: string }) => void;
+    const retryStatus = new Promise<{ phase: "ready"; message: string }>((resolve) => {
+      resolveRetry = resolve;
+    });
+    invokeMock
+      .mockResolvedValueOnce({ phase: "foundation", message: "Install the local runtime" })
+      .mockReturnValueOnce(retryStatus);
+
+    render(<DesktopApp />);
+
+    const retry = await screen.findByRole<HTMLButtonElement>("button", {
+      name: "Retry startup",
+    });
+    await act(async () => {
+      retry.click();
+      retry.click();
+    });
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => resolveRetry({ phase: "ready", message: "Ready" }));
+    expect(screen.getByRole("main", { name: "Shared Schedule application" })).not.toBeNull();
+  });
+
+  it("ignores an inspection that completes after unmount without starting a poll", async () => {
+    vi.useFakeTimers();
+    let resolveInspection!: (status: { phase: "starting_services"; message: string }) => void;
+    invokeMock.mockReturnValueOnce(
+      new Promise<{ phase: "starting_services"; message: string }>((resolve) => {
+        resolveInspection = resolve;
+      }),
+    );
+
+    const view = render(<DesktopApp />);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    view.unmount();
+    await act(async () =>
+      resolveInspection({ phase: "starting_services", message: "Starting services" }),
+    );
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
