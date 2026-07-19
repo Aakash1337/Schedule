@@ -215,19 +215,22 @@ SHA-256 in `SCHEDULE_DESKTOP_RUNTIME_MANIFEST_SHA256`, and removes its staging d
 
 ## Release automation
 
-The `desktop-release` workflow is deliberately tag/dispatch-only. For each Windows x64 and Linux x64
-release it creates production API and worker deploy trees, downloads locked source archives, builds
-and verifies the minimal Node runtime and PostgreSQL 17 runtime, assembles the authenticated runtime,
-then builds the native Tauri installers. It retains the installers plus the runtime manifest, SBOM,
-license inventory, and component provenance as one release artifact set.
+The `desktop-release` workflow runs on release tags and manual dispatch, with a path-filtered pull
+request trigger that verifies changes to its release inputs. For each Windows x64 and Linux x64 release
+it creates production API and worker deploy trees, downloads locked source archives, builds and verifies
+the minimal Node runtime and PostgreSQL 17 runtime, assembles the authenticated runtime, then builds the
+native Tauri installers. It retains the installers plus the runtime manifest, SBOM, license inventory,
+and component provenance as one release artifact set.
 
 Windows produces NSIS and MSI where the runner supports them. Linux produces AppImage and Debian
-packages where the runner supports them. CI installs/extracts a native package, validates the complete
-immutable runtime contract at Tauri's `$RESOURCE/runtime` mapping (including hashes, inventories, and
-launch files), and runs the bundled Node and PostgreSQL binaries with `--version`. It does not falsely
-claim a GUI launch smoke. A process-level GUI smoke becomes mandatory only when the native adapter
-supplies a bounded headless smoke hook. Until then, asking `smoke-desktop-installer --require-launch`
-fails explicitly instead of treating an arbitrary webview process as success.
+packages where the runner supports them. CI install-smokes NSIS and extracts/smokes the Debian package;
+MSI and AppImage are built and uploaded but not separately install-smoked. The smoke validates the
+complete immutable runtime contract at Tauri's `$RESOURCE/runtime` mapping (including hashes,
+inventories, and launch files), then runs the bundled Node and PostgreSQL binaries with `--version`.
+It does not falsely claim a GUI launch smoke. A process-level GUI smoke becomes mandatory only when the
+native adapter supplies a bounded headless smoke hook. Until then, asking
+`smoke-desktop-installer --require-launch` fails explicitly instead of treating an arbitrary webview
+process as success.
 
 Runtime assembly performs no downloads. Release automation must supply production API/worker
 deployment trees, pinned Node and PostgreSQL 17 directories, their exact versions and tree hashes,

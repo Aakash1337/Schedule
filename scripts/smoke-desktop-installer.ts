@@ -26,22 +26,36 @@ export async function smokeDesktopBundle(
   const stat = await lstat(root).catch(() => null);
   if (stat?.isDirectory() !== true || stat.isSymbolicLink())
     throw new Error("Desktop bundle root must be a regular directory.");
-  const candidates = [
-    path.join(root, "runtime"),
-    path.join(root, "usr", "lib", "Schedule", "runtime"),
-  ];
-  let runtime: string | undefined;
-  for (const candidate of candidates) {
-    if ((await lstat(candidate).catch(() => null))?.isDirectory()) {
-      runtime = candidate;
-      break;
+  const directRuntime = path.join(root, "runtime");
+  let runtime = directRuntime;
+  let manifest: Awaited<ReturnType<typeof validateDesktopRuntime>>;
+  if ((await lstat(directRuntime).catch(() => null))?.isDirectory()) {
+    manifest = await validateDesktopRuntime(directRuntime);
+  } else {
+    const libRoot = path.join(root, "usr", "lib");
+    const candidates: string[] = [];
+    for (const entry of await readdir(libRoot, { withFileTypes: true }).catch(() => [])) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const candidate = path.join(libRoot, entry.name, "runtime");
+      if ((await lstat(candidate).catch(() => null))?.isDirectory() !== true) continue;
+      try {
+        await validateDesktopRuntime(candidate);
+        candidates.push(candidate);
+      } catch {
+        // Only a complete, authenticated runtime may identify the package directory.
+      }
     }
+    if (candidates.length !== 1) {
+      const entries = (await readdir(root)).join(", ");
+      throw new Error(
+        candidates.length === 0
+          ? `Bundle does not contain one validated Schedule runtime (${entries}).`
+          : "Bundle contains multiple validated Schedule runtimes.",
+      );
+    }
+    runtime = candidates[0]!;
+    manifest = await validateDesktopRuntime(runtime);
   }
-  if (runtime === undefined) {
-    const entries = (await readdir(root)).join(", ");
-    throw new Error(`Bundle does not contain an unpacked Schedule runtime (${entries}).`);
-  }
-  const manifest = await validateDesktopRuntime(runtime);
   if (options.probeExecutables) {
     const components = new Map(manifest.components.map((component) => [component.name, component]));
     for (const name of ["node", "postgresql"] as const) {
