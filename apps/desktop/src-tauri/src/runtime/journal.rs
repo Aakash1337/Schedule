@@ -3,7 +3,7 @@
 //! This file deliberately records only lifecycle facts.  It must never contain
 //! database passwords, desktop bearer tokens, request data, or child-process
 //! environments.  A journal is written to a per-user mutable directory, never
-//! beside the signed application runtime.
+//! beside the immutable application runtime.
 
 use serde::{Deserialize, Serialize};
 use std::{

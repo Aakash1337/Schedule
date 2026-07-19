@@ -2,8 +2,6 @@ name: desktop-release
 
 on:
   workflow_dispatch:
-  push:
-    tags: ["desktop-v*"]
   pull_request:
     paths:
       - ".github/workflows/desktop-release.yml"
@@ -178,14 +176,10 @@ jobs:
           rustup toolchain install 1.97.1 --profile minimal --no-self-update
           rustup default 1.97.1
       - run: pnpm install --frozen-lockfile
-      - name: Read desktop version and verify release tag
+      - name: Read desktop version
         shell: bash
         run: |
           version="$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")"
-          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "desktop-v$version" ]]; then
-            echo "desktop tag must exactly match desktop-v$version" >&2
-            exit 1
-          fi
           echo "DESKTOP_VERSION=$version" >> "$GITHUB_ENV"
       - name: Unpack runtime and build native installers
         shell: bash
@@ -239,21 +233,3 @@ jobs:
             ${{ runner.temp }}/release-metadata
           if-no-files-found: error
           retention-days: 90
-
-  attest:
-    name: Attest tagged release artifacts
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: bundle
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: schedule-desktop-*-x64
-          path: ${{ runner.temp }}/release-artifacts
-      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
-        with:
-          subject-path: ${{ runner.temp }}/release-artifacts/**/*
