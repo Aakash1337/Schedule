@@ -3,6 +3,13 @@ import { createDatabase, PostgresUnitOfWork } from "@schedule/database";
 
 import { OutboxDispatcher } from "./dispatcher.js";
 import {
+  clearDesktopWorkerEnvironment,
+  desktopWorkerConfigEnvironment,
+  desktopWorkerReadyLine,
+  resolveDesktopWorkerRuntimeProfile,
+  watchDesktopWorkerShutdown,
+} from "./desktop-worker-runtime.js";
+import {
   createHostedSyncCleanupDependencies,
   runHostedSyncCleanupWorker,
 } from "./hosted-sync-cleanup.js";
@@ -27,7 +34,14 @@ import {
 } from "./webhook-delivery.js";
 import { runOutboxWorker } from "./worker.js";
 
-const config = loadWorkerConfig();
+const desktopProfile = resolveDesktopWorkerRuntimeProfile(process.env);
+const config = (() => {
+  try {
+    return loadWorkerConfig(desktopWorkerConfigEnvironment(process.env, desktopProfile));
+  } finally {
+    clearDesktopWorkerEnvironment(process.env);
+  }
+})();
 const deploymentHealthPort =
   config.WORKER_DEPLOYMENT_HEALTH_MODE === "railway" ? config.PORT : null;
 if (deploymentHealthPort === undefined) {
@@ -82,6 +96,7 @@ const excludedOutboxTopics =
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => controller.abort(signal));
 }
+if (desktopProfile.enabled) watchDesktopWorkerShutdown(process.stdin, controller);
 
 const services: WorkerService[] = [
   (signal) =>
@@ -98,6 +113,22 @@ if (deploymentHealthPort !== null && deploymentHealthDatabase !== null) {
         port: deploymentHealthPort,
         database: deploymentHealthDatabase,
         databaseOperationTimeoutMs: 5_000,
+      },
+      signal,
+    ),
+  );
+}
+
+if (desktopProfile.enabled && observabilityDatabase !== null) {
+  services.push((signal) =>
+    runWorkerObservabilityServer(
+      {
+        port: 0,
+        database: observabilityDatabase,
+        telemetry,
+        databaseOperationTimeoutMs: 5_000,
+        excludedOutboxTopics,
+        onListening: (address) => process.stdout.write(desktopWorkerReadyLine(address)),
       },
       signal,
     ),
@@ -123,7 +154,7 @@ if (hostedSyncCleanupDatabase !== null) {
 await runWorkerRuntime({
   run: async () => {
     const observability =
-      observabilityDatabase === null
+      observabilityDatabase === null || desktopProfile.enabled
         ? Promise.resolve()
         : runNonCriticalWorkerService(
             (signal) =>

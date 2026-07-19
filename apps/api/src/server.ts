@@ -9,7 +9,12 @@ import {
 } from "@schedule/database";
 
 import { prepareHostedApiApp } from "./hosted-api-runtime.js";
-import { clearDesktopApiTokenEnvironment, desktopApiReadyLine } from "./desktop-api-runtime.js";
+import {
+  clearDesktopApiTokenEnvironment,
+  desktopApiReadyLine,
+  installDesktopShutdownControl,
+  type DesktopShutdownControl,
+} from "./desktop-api-runtime.js";
 import { createDesktopProductAuthenticator } from "./desktop-product-auth.js";
 import { createIntegrationServices } from "./integration-services.js";
 import { DisabledSchedulingAdvisor, OllamaSchedulingAdvisor } from "./local-model-advisor.js";
@@ -104,9 +109,11 @@ if (config.HOSTED_API_MODE === "oidc") {
 }
 
 let shuttingDown = false;
+let desktopShutdownControl: DesktopShutdownControl | undefined;
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  desktopShutdownControl?.dispose();
   app.log.info({ signal }, "shutting down");
   await app.close();
   await database.close();
@@ -122,6 +129,13 @@ try {
   await app.listen({ host: config.API_HOST, port: config.API_PORT });
   if (config.PRODUCT_API_MODE === "desktop_authenticated") {
     process.stdout.write(desktopApiReadyLine(app.server.address()));
+    desktopShutdownControl = installDesktopShutdownControl({
+      mode: config.PRODUCT_API_MODE,
+      input: process.stdin,
+      onShutdown: () => {
+        void shutdown("desktop supervisor").then(() => process.exit(0));
+      },
+    });
   }
 } catch (error) {
   app.log.error(error, "failed to start API");
