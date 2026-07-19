@@ -3,7 +3,13 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["**/dist/**", "**/node_modules/**", "packages/database/drizzle/**"],
+    ignores: [
+      "**/dist/**",
+      "**/node_modules/**",
+      "**/src-tauri/gen/**",
+      "**/src-tauri/target/**",
+      "packages/database/drizzle/**",
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

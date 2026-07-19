@@ -1,0 +1,14 @@
+[package]
+name = "schedule-desktop"
+version = "0.1.0"
+description = "Native desktop shell for Schedule"
+authors = ["Schedule contributors"]
+edition = "2024"
+rust-version = "1.85"
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+tauri = { version = "2.11.5", features = [] }

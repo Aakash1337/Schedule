@@ -18,6 +18,8 @@ The opt-in hosted OIDC and workspace-authorization boundary is in
 work-item pull protocol is in [docs/HOSTED_SYNC.md](./docs/HOSTED_SYNC.md).
 The local model's explicit, review-before-write capture contract is documented in
 [docs/NATURAL_LANGUAGE.md](./docs/NATURAL_LANGUAGE.md).
+The native Windows/Linux shell and self-contained runtime plan are documented in
+[docs/DESKTOP.md](./docs/DESKTOP.md).
 
 Provider-neutral infrastructure for a customizable work-management and scheduling system.
 
@@ -31,6 +33,8 @@ This repository starts as a TypeScript modular monolith:
 - `packages/database`: PostgreSQL schema, migrations, and adapters.
 - `apps/api`: HTTP transport and health endpoints.
 - `apps/web`: local React interface for Today, routines, work, calendar blocks, and reminders.
+- `apps/desktop`: Tauri shell and startup lifecycle for the forthcoming self-contained Windows and
+  Linux distribution.
 - `apps/worker`: database-backed outbox processing.
 
 Outbox delivery is at least once. Every handler that produces an external or otherwise durable side
@@ -129,6 +133,11 @@ Prerequisites: Node.js 24+, pnpm 11.7+, and Docker Compose. The repository's `.n
 local and CI Node.js major; run `nvm use` before installing dependencies when using nvm.
 
 The development PostgreSQL and API ports are published on host loopback only.
+
+The desktop foundation additionally requires a stable Rust toolchain. It is not an end-user release
+yet: `pnpm desktop:dev` opens the native shell, while `pnpm desktop:check` verifies the shell and
+startup state. See the [desktop guide](./docs/DESKTOP.md) for the runtime, packaging, and continuity
+roadmap.
 
 ```powershell
 Copy-Item .env.example .env
