@@ -227,10 +227,10 @@ packages where the runner supports them. CI install-smokes NSIS and extracts/smo
 MSI and AppImage are built and uploaded but not separately install-smoked. The smoke validates the
 complete immutable runtime contract at Tauri's `$RESOURCE/runtime` mapping (including hashes,
 inventories, and launch files), then runs the bundled Node and PostgreSQL binaries with `--version`.
-It does not falsely claim a GUI launch smoke. A process-level GUI smoke becomes mandatory only when the
-native adapter supplies a bounded headless smoke hook. Until then, asking
-`smoke-desktop-installer --require-launch` fails explicitly instead of treating an arbitrary webview
-process as success.
+This validates packaged resource integrity and executable availability, not the native binary's embedded
+manifest anchor or lifecycle. Native lifecycle smoke remains pending until the adapter supplies a bounded
+headless smoke hook. Until then, asking `smoke-desktop-installer --require-launch` fails explicitly
+instead of treating an arbitrary webview process as success.
 
 Runtime assembly performs no downloads. Release automation must supply production API/worker
 deployment trees, pinned Node and PostgreSQL 17 directories, their exact versions and tree hashes,
