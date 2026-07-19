@@ -181,11 +181,12 @@ function tarNames(listing: string, artifact: RuntimeSourceArtifact): readonly st
   const names: string[] = [];
   for (const line of listing.split(/\r?\n/u).filter(Boolean)) {
     const type = line[0];
-    if (type === "l" || type === "h" || type === "b" || type === "c" || type === "p")
-      throw new Error("Node tar archive contains a link or special entry.");
+    if (type !== "-") throw new Error("Selected Node tar entries must be regular files.");
     const name = (line.trim().split(/\s+/u).at(-1) ?? "").replace(/\/$/u, "");
-    if (!safePath(name)) throw new Error("Node tar archive contains an unsafe path.");
-    if (type !== "d") names.push(name);
+    if (!safePath(name) || !expected.has(name))
+      throw new Error("Node tar selected an unsafe or unexpected path.");
+    if (names.includes(name)) throw new Error("Node tar selected a duplicate runtime path.");
+    names.push(name);
   }
   for (const file of expected)
     if (!names.includes(file)) throw new Error(`Node tar is missing ${file}.`);
@@ -209,7 +210,9 @@ async function extractTar(
   staging: string,
   command: Command,
 ): Promise<void> {
-  const listing = await command("tar", ["-tvJf", archive]);
+  const expected = expectedFiles(artifact);
+  // List only the extracted operands: official archives carry unrelated npm/npx symlinks.
+  const listing = await command("tar", ["-tvJf", archive, ...expected]);
   tarNames(listing, artifact);
   await command("tar", [
     "-xJf",
@@ -218,7 +221,7 @@ async function extractTar(
     staging,
     "--no-same-owner",
     "--no-same-permissions",
-    ...expectedFiles(artifact),
+    ...expected,
   ]);
   for (const expected of expectedFiles(artifact)) {
     const extracted = path.join(staging, ...expected.split("/"));
@@ -359,17 +362,26 @@ export async function buildNodeRuntime(
   }
 }
 
-function cli(arguments_: readonly string[]): {
+export function parseNodeRuntimeArguments(arguments_: readonly string[]): {
   lockPath: string;
   sources: string;
   output: string;
   target: Target;
 } {
+  const input = arguments_[0] === "--" ? arguments_.slice(1) : arguments_;
+  const allowed = new Set(["lock", "sources", "output", "target"]);
+  if (input.length !== 8) throw new Error("Arguments must be exactly four --name value pairs.");
   const values = new Map<string, string>();
-  for (let index = 0; index < arguments_.length; index += 2) {
-    const key = arguments_[index];
-    const value = arguments_[index + 1];
-    if (key === undefined || value === undefined || !key.startsWith("--"))
+  for (let index = 0; index < input.length; index += 2) {
+    const key = input[index];
+    const value = input[index + 1];
+    if (
+      key === undefined ||
+      value === undefined ||
+      !key.startsWith("--") ||
+      !allowed.has(key.slice(2)) ||
+      values.has(key.slice(2))
+    )
       throw new Error("Arguments must be --name value pairs.");
     values.set(key.slice(2), value);
   }
@@ -392,7 +404,7 @@ if (
   process.argv[1] !== undefined &&
   path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
 ) {
-  const options = cli(process.argv.slice(2));
+  const options = parseNodeRuntimeArguments(process.argv.slice(2));
   const result = await buildNodeRuntime({
     ...options,
     lock: JSON.parse(await readFile(options.lockPath, "utf8")) as RuntimeSourceLock,

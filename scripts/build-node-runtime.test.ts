@@ -8,7 +8,7 @@ import {
   hashTree,
   type DesktopRuntimeBuildOptions,
 } from "./build-desktop-runtime.js";
-import { buildNodeRuntime } from "./build-node-runtime.js";
+import { buildNodeRuntime, parseNodeRuntimeArguments } from "./build-node-runtime.js";
 
 const directories: string[] = [];
 const repository = path.resolve(import.meta.dirname, "..");
@@ -190,6 +190,33 @@ async function desktopAssemblerFixture(
 }
 
 describe("Node desktop runtime bundles", () => {
+  it("accepts one pnpm sentinel but rejects unknown, duplicate, and odd CLI arguments", () => {
+    const valid = [
+      "--lock",
+      "lock.json",
+      "--sources",
+      "sources",
+      "--output",
+      "output",
+      "--target",
+      "linux",
+    ];
+    expect(parseNodeRuntimeArguments(valid)).toEqual({
+      lockPath: "lock.json",
+      sources: "sources",
+      output: "output",
+      target: "linux",
+    });
+    expect(parseNodeRuntimeArguments(["--", ...valid])).toEqual(parseNodeRuntimeArguments(valid));
+    for (const invalid of [
+      ["--", "--", ...valid],
+      ["--lock", "first", "--lock", "second", "--output", "output", "--target", "linux"],
+      ["--lock", "lock", "--unknown", "value", "--output", "output", "--target", "linux"],
+      valid.slice(0, -1),
+    ])
+      expect(() => parseNodeRuntimeArguments(invalid)).toThrow();
+  });
+
   it("builds a minimal deterministic Windows runtime and proves relocation", async () => {
     const input = await writeFixture(fixture());
     const first = path.join(await temporary(), "runtime");
@@ -216,7 +243,7 @@ describe("Node desktop runtime bundles", () => {
     );
   });
 
-  it("flattens the Linux tar runtime to the assembler node contract", async () => {
+  it("flattens selected Linux tar files while allowing unrelated archive symlinks", async () => {
     const payload = Buffer.from("linux fixture archive");
     const sources = await temporary();
     const sourceDirectory = path.join(sources, "linux-x64");
@@ -225,15 +252,25 @@ describe("Node desktop runtime bundles", () => {
     await writeFile(sourceArchive, payload);
     const output = path.join(await temporary(), "node runtime");
     let verifiedArchive: string | undefined;
+    const selected = ["node-v24.18.0-linux-x64/bin/node", "node-v24.18.0-linux-x64/LICENSE"];
+    const archiveListing =
+      "lrwxrwxrwx root/root 0 2026-01-01 node-v24.18.0-linux-x64/bin/npm -> ../lib/node_modules/npm/bin/npm-cli.js\n" +
+      "-rwxr-xr-x root/root 4 2026-01-01 node-v24.18.0-linux-x64/bin/node\n" +
+      "-rw-r--r-- root/root 3 2026-01-01 node-v24.18.0-linux-x64/LICENSE\n";
     const tar = async (file: string, arguments_: readonly string[]) => {
       if (file !== "tar") return "v24.18.0\n";
       if (arguments_[0] === "-tvJf") {
         verifiedArchive = arguments_[1];
         expect(verifiedArchive).not.toBe(sourceArchive);
+        expect(arguments_.slice(2)).toEqual(selected);
         await writeFile(sourceArchive, "swapped after verification");
-        return "drwxr-xr-x root/root 0 2026-01-01 node-v24.18.0-linux-x64/\n-rwxr-xr-x root/root 4 2026-01-01 node-v24.18.0-linux-x64/bin/node\n-rw-r--r-- root/root 3 2026-01-01 node-v24.18.0-linux-x64/LICENSE\n";
+        return archiveListing
+          .split("\n")
+          .filter((line) => selected.some((name) => line.endsWith(name)))
+          .join("\n");
       }
       expect(arguments_[1]).toBe(verifiedArchive);
+      expect(arguments_.slice(-2)).toEqual(selected);
       await expect(readFile(arguments_[1]!)).resolves.toEqual(payload);
       const staging = arguments_[arguments_.indexOf("-C") + 1]!;
       await mkdir(path.join(staging, "node-v24.18.0-linux-x64", "bin"), { recursive: true });
@@ -287,7 +324,7 @@ describe("Node desktop runtime bundles", () => {
         command: async () =>
           "lrwxrwxrwx root/root 0 2026-01-01 node-v24.18.0-linux-x64/bin/node -> /tmp/node\n",
       }),
-    ).rejects.toThrow("link");
+    ).rejects.toThrow("regular files");
     await expect(readFile(path.join(output, "node"))).rejects.toThrow();
     expect(
       (await readdir(path.dirname(output))).filter((name) =>
