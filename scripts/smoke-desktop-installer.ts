@@ -1,10 +1,113 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, mkdtemp, readdir, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { validateDesktopRuntime } from "./build-desktop-runtime.js";
 
 const execFile = promisify(execFileCallback);
+const NATIVE_SMOKE_TIMEOUT_MS = 450_000;
+
+type Launch = (
+  executable: string,
+  arguments_: readonly string[],
+  options: Readonly<{ timeout: number; windowsHide: boolean }>,
+) => Promise<number>;
+
+export interface DesktopSmokeOptions {
+  readonly requireLaunch?: boolean;
+  readonly probeExecutables?: boolean;
+  /** Test seam for asserting the installed native lifecycle contract. */
+  readonly launch?: Launch;
+}
+
+async function regularFile(file: string): Promise<boolean> {
+  const entry = await lstat(file).catch(() => null);
+  return entry?.isFile() === true && !entry.isSymbolicLink();
+}
+
+async function installedExecutable(
+  root: string,
+  runtime: string,
+  target: "windows" | "linux",
+): Promise<string> {
+  if (target === "windows") {
+    const executable = path.join(root, "Schedule.exe");
+    if (!(await regularFile(executable)))
+      throw new Error("Installed Schedule executable is missing.");
+    return executable;
+  }
+  const bin = path.join(root, "usr", "bin");
+  const candidates = await Promise.all(
+    (await readdir(bin, { withFileTypes: true }).catch(() => []))
+      .filter((entry) => entry.isFile() && !entry.isSymbolicLink())
+      .map(async (entry) => ({
+        name: entry.name,
+        executable:
+          process.platform === "win32" ||
+          ((await lstat(path.join(bin, entry.name))).mode & 0o111) !== 0,
+      })),
+  );
+  const executableCandidates = candidates.filter((candidate) => candidate.executable);
+  if (executableCandidates.length !== 1)
+    throw new Error("Installed Schedule executable is missing.");
+  const executable = path.join(bin, executableCandidates[0]!.name);
+  if (!(await regularFile(executable)))
+    throw new Error("Installed Schedule executable is missing.");
+  // The runtime was discovered from this package's usr/lib tree before its binary is admitted.
+  if (!runtime.startsWith(`${path.join(root, "usr", "lib")}${path.sep}`))
+    throw new Error("Installed Schedule executable is not paired with its runtime.");
+  return executable;
+}
+
+async function defaultLaunch(
+  executable: string,
+  arguments_: readonly string[],
+  options: Readonly<{ timeout: number; windowsHide: boolean }>,
+): Promise<number> {
+  try {
+    await execFile(executable, arguments_, {
+      shell: false,
+      timeout: options.timeout,
+      windowsHide: options.windowsHide,
+      maxBuffer: 1_024,
+    });
+    return 0;
+  } catch (error) {
+    const code =
+      typeof (error as { code?: unknown }).code === "number"
+        ? (error as { code: number }).code
+        : 124;
+    return Number.isSafeInteger(code) && code >= 0 ? code : 124;
+  }
+}
+
+async function launchNativeLifecycle(
+  executable: string,
+  runtime: string,
+  launch: Launch,
+): Promise<void> {
+  const dataRoot = await mkdtemp(path.join(os.tmpdir(), "schedule-installed-smoke-"));
+  try {
+    const arguments_ = [
+      "--schedule-runtime-smoke",
+      "--runtime-root",
+      runtime,
+      "--data-root",
+      dataRoot,
+    ];
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const code = await launch(executable, arguments_, {
+        timeout: NATIVE_SMOKE_TIMEOUT_MS,
+        windowsHide: true,
+      });
+      if (code !== 0)
+        throw new Error(`Installed Schedule lifecycle smoke failed (exit code ${code}).`);
+    }
+  } finally {
+    await rm(dataRoot, { recursive: true, force: true });
+  }
+}
 
 /**
  * Validate the immutable runtime carried by an unpacked desktop bundle.
@@ -15,22 +118,19 @@ const execFile = promisify(execFileCallback);
  */
 export async function smokeDesktopBundle(
   bundleDirectory: string,
-  options: Readonly<{ requireLaunch?: boolean; probeExecutables?: boolean }> = {},
+  options: DesktopSmokeOptions = {},
 ): Promise<void> {
-  if (options.requireLaunch) {
-    throw new Error(
-      "Installed GUI smoke is unavailable: the native adapter has no bounded headless smoke hook.",
-    );
-  }
   const root = path.resolve(bundleDirectory);
   const stat = await lstat(root).catch(() => null);
   if (stat?.isDirectory() !== true || stat.isSymbolicLink())
     throw new Error("Desktop bundle root must be a regular directory.");
   const directRuntime = path.join(root, "runtime");
   let runtime = directRuntime;
+  let target: "windows" | "linux";
   let manifest: Awaited<ReturnType<typeof validateDesktopRuntime>>;
   if ((await lstat(directRuntime).catch(() => null))?.isDirectory()) {
     manifest = await validateDesktopRuntime(directRuntime);
+    target = "windows";
   } else {
     const libRoot = path.join(root, "usr", "lib");
     const candidates: string[] = [];
@@ -55,6 +155,7 @@ export async function smokeDesktopBundle(
     }
     runtime = candidates[0]!;
     manifest = await validateDesktopRuntime(runtime);
+    target = "linux";
   }
   if (options.probeExecutables) {
     const components = new Map(manifest.components.map((component) => [component.name, component]));
@@ -69,6 +170,10 @@ export async function smokeDesktopBundle(
         maxBuffer: 16 * 1024,
       });
     }
+  }
+  if (options.requireLaunch) {
+    const executable = await installedExecutable(root, runtime, target);
+    await launchNativeLifecycle(executable, runtime, options.launch ?? defaultLaunch);
   }
 }
 

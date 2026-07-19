@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -64,8 +64,57 @@ test("rejects a bundled runtime missing an authenticated inventory", async () =>
   await expect(smokeDesktopBundle(root)).rejects.toThrow();
 });
 
-test("refuses to fake a GUI smoke before the native hook exists", async () => {
-  await expect(smokeDesktopBundle(await fixture(), { requireLaunch: true })).rejects.toThrow(
-    "headless smoke hook",
-  );
+test("runs the installed native lifecycle twice against one isolated data root", async () => {
+  const root = await fixture("usr/lib/schedule-desktop/runtime");
+  const executable = path.join(root, "usr", "bin", "Schedule");
+  await mkdir(path.dirname(executable), { recursive: true });
+  await writeFile(executable, "fixture executable");
+  await chmod(executable, 0o755);
+  const launches: Array<{ executable: string; arguments_: readonly string[]; timeout: number }> =
+    [];
+  await smokeDesktopBundle(root, {
+    requireLaunch: true,
+    launch: async (command, arguments_, options) => {
+      launches.push({ executable: command, arguments_, timeout: options.timeout });
+      return 0;
+    },
+  });
+  expect(launches).toHaveLength(2);
+  expect(launches.map((launch) => launch.executable)).toEqual([executable, executable]);
+  expect(launches.map((launch) => launch.timeout)).toEqual([450_000, 450_000]);
+  expect(launches[0]!.arguments_.slice(0, 3)).toEqual([
+    "--schedule-runtime-smoke",
+    "--runtime-root",
+    path.join(root, "usr", "lib", "schedule-desktop", "runtime"),
+  ]);
+  expect(launches[0]!.arguments_[4]).toBe(launches[1]!.arguments_[4]);
+});
+
+test("redacts native launch failures to an exit code", async () => {
+  const root = await fixture("usr/lib/schedule-desktop/runtime");
+  const executable = path.join(root, "usr", "bin", "Schedule");
+  await mkdir(path.dirname(executable), { recursive: true });
+  await writeFile(executable, "fixture executable");
+  await chmod(executable, 0o755);
+  await expect(
+    smokeDesktopBundle(root, { requireLaunch: true, launch: async () => 37 }),
+  ).rejects.toThrow("Installed Schedule lifecycle smoke failed (exit code 37).");
+});
+
+test("redacts a timed-out native launch to the synthetic timeout exit code", async () => {
+  const root = await fixture("usr/lib/schedule-desktop/runtime");
+  const executable = path.join(root, "usr", "bin", "Schedule");
+  await mkdir(path.dirname(executable), { recursive: true });
+  await writeFile(executable, "fixture executable");
+  await chmod(executable, 0o755);
+  await expect(
+    smokeDesktopBundle(root, { requireLaunch: true, launch: async () => 124 }),
+  ).rejects.toThrow("Installed Schedule lifecycle smoke failed (exit code 124).");
+});
+
+test("requires exactly one Debian Schedule executable", async () => {
+  const root = await fixture("usr/lib/schedule-desktop/runtime");
+  await expect(
+    smokeDesktopBundle(root, { requireLaunch: true, launch: async () => 0 }),
+  ).rejects.toThrow("Installed Schedule executable is missing.");
 });
