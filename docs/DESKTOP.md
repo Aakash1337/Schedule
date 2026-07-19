@@ -87,7 +87,7 @@ will use:
   one canonical, non-link runtime root, it resolves fixed absolute Node, API, worker, migration, and
   PostgreSQL tool paths from that same tree. Unix links and all Windows reparse points fail closed.
 - `runtime-sources.lock.json` strictly pins the initial Windows x64 and Linux x64 release inputs:
-  Node 24.17.0 archives and PostgreSQL 17.10 source. Its fetcher rejects unknown fields and
+  Node 24.18.0 archives and PostgreSQL 17.10 source. Its fetcher rejects unknown fields and
   non-official HTTPS origins, follows at most three official-origin redirects, streams into a
   create-new private temporary file while hashing and bounding bytes, and publishes a final archive
   only after the committed SHA-256 matches. It keeps the verified handle open through publication
@@ -201,7 +201,7 @@ the bundled runtime.
 [`runtime-sources.lock.json`](../runtime-sources.lock.json) into `.desktop-runtime-sources/`, split
 by target to keep the shared PostgreSQL source archive unambiguous. The lock is the runtime trust
 anchor; the command does not fetch checksum text at runtime. The recorded values were checked from
-the [Node 24.17.0 signed checksum listing](https://nodejs.org/en/blog/release/v24.17.0) and the
+the [Node 24.18.0 signed checksum listing](https://nodejs.org/en/blog/release/v24.18.0) and the
 [PostgreSQL 17.10 SHA-256 file](https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.gz.sha256).
 
 This is deliberately an acquisition slice, not a package builder. The remaining release pipeline
@@ -210,3 +210,7 @@ and license notices, construct reproducible Node/API/worker/PostgreSQL runtime t
 `desktop:runtime:assemble`, embed its manifest hash in the signed Tauri binary, and run installer
 plus first-launch smoke tests. A committed hash protects archived bytes but does not replace an
 independently verified upstream release-signature process.
+
+The acquisition directory must remain private to the same user; this developer tool does not try to
+defend against a same-user process modifying a published archive after it returns. The release
+consumer re-hashes every final runtime-bundle file against its manifest before launch.

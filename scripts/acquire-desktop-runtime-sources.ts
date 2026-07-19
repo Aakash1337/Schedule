@@ -212,6 +212,32 @@ async function trustedDirectory(
     throw new Error("Runtime source target escaped its trusted output root.");
   return Object.freeze({ path: resolved, real, chain: Object.freeze(chain) });
 }
+async function createDirectoryComponentwise(
+  directory: string,
+  parent?: DirectoryLease,
+): Promise<void> {
+  const resolved = path.resolve(directory);
+  if (parent !== undefined && !contains(parent.path, resolved))
+    throw new Error("Runtime source target escapes its trusted output root.");
+  const segments = resolved.slice(path.parse(resolved).root.length).split(path.sep).filter(Boolean);
+  let current = path.parse(resolved).root;
+  let previousReal: string | undefined;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    try {
+      await mkdir(current, { mode: 0o700 });
+    } catch (error) {
+      if (!isRecord(error) || error.code !== "EEXIST") throw error;
+    }
+    const entry = await lstat(current);
+    if (!entry.isDirectory() || entry.isSymbolicLink())
+      throw new Error("Runtime source output hierarchy contains a link or non-directory.");
+    const actual = await realpath(current);
+    if (previousReal !== undefined && !contains(previousReal, actual))
+      throw new Error("Runtime source output hierarchy escaped through a link or junction.");
+    previousReal = actual;
+  }
+}
 async function validateLease(lease: DirectoryLease): Promise<void> {
   for (const expected of lease.chain) {
     const entry = await lstat(expected.path).catch(() => null);
@@ -340,7 +366,7 @@ export async function acquireRuntimeSources(
 ): Promise<readonly string[]> {
   const lock = parseRuntimeSourceLock(options.lock);
   const outputDirectory = path.resolve(options.outputDirectory);
-  await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
+  await createDirectoryComponentwise(outputDirectory);
   const outputLease = await trustedDirectory(outputDirectory);
   const fetchImplementation = options.fetchImplementation ?? fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -350,7 +376,7 @@ export async function acquireRuntimeSources(
   for (const artifact of lock.artifacts) {
     await validateLease(outputLease);
     const targetPath = path.join(outputLease.path, `${artifact.target.os}-${artifact.target.arch}`);
-    await mkdir(targetPath, { recursive: true, mode: 0o700 });
+    await createDirectoryComponentwise(targetPath, outputLease);
     const targetLease = await trustedDirectory(targetPath, outputLease);
     await scavengeOrphans(targetLease.path, artifact.id);
     const finalPath = path.join(targetLease.path, archiveFileName(artifact));

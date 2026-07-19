@@ -4,13 +4,13 @@
     {
       "id": "node-windows-x64",
       "component": "node",
-      "version": "24.17.0",
+      "version": "24.18.0",
       "target": { "os": "windows", "arch": "x64" },
       "kind": "runtime-binary",
-      "url": "https://nodejs.org/dist/v24.17.0/node-v24.17.0-win-x64.zip",
-      "sha256": "f2aa33b35b75aca5f3f7b85675a6f6423201053e9381911e64961f3bda2528ab",
+      "url": "https://nodejs.org/dist/v24.18.0/node-v24.18.0-win-x64.zip",
+      "sha256": "0ae68406b42d7725661da979b1403ec9926da205c6770827f33aac9d8f26e821",
       "format": "zip",
-      "extractedRoot": "node-v24.17.0-win-x64",
+      "extractedRoot": "node-v24.18.0-win-x64",
       "maxBytes": 67108864
     },
     {
@@ -28,13 +28,13 @@
     {
       "id": "node-linux-x64",
       "component": "node",
-      "version": "24.17.0",
+      "version": "24.18.0",
       "target": { "os": "linux", "arch": "x64" },
       "kind": "runtime-binary",
-      "url": "https://nodejs.org/dist/v24.17.0/node-v24.17.0-linux-x64.tar.xz",
-      "sha256": "ab343a1b747c7cbf3630dfd7dbf818c5423fab2eb4f5ad1afc896f6bd121a917",
+      "url": "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.xz",
+      "sha256": "55aa7153f9d88f28d765fcdad5ae6945b5c0f98a36881703817e4c450fa76742",
       "format": "tar.xz",
-      "extractedRoot": "node-v24.17.0-linux-x64",
+      "extractedRoot": "node-v24.18.0-linux-x64",
       "maxBytes": 67108864
     },
     {

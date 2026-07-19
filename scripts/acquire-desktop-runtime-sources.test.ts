@@ -4,6 +4,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   symlink,
@@ -57,8 +58,22 @@ function streamResponse(status: number, location?: string, onCancel?: () => void
 }
 
 describe("desktop runtime source acquisition", () => {
-  it("rejects malformed target/schema fields and IDs that do not match their fixed specifications", async () => {
-    const cases: Array<(lock: { artifacts: Array<Record<string, unknown>> }) => void> = [
+  it("rejects malformed schema, IDs, archive fields, and fixed upstream specifications", async () => {
+    const cases: Array<
+      (lock: Record<string, unknown> & { artifacts: Array<Record<string, unknown>> }) => void
+    > = [
+      (lock) => {
+        delete lock.schemaVersion;
+      },
+      (lock) => {
+        lock.untrusted = true;
+      },
+      (lock) => {
+        delete (lock.artifacts[0]!.target as Record<string, unknown>).arch;
+      },
+      (lock) => {
+        (lock.artifacts[0]!.target as Record<string, unknown>).extra = true;
+      },
       (lock) => {
         lock.artifacts[0]!.target = { os: "darwin", arch: "x64" };
       },
@@ -75,14 +90,75 @@ describe("desktop runtime source acquisition", () => {
         ];
       },
       (lock) => {
-        lock.artifacts[0]!.extra = true;
+        lock.artifacts[1]!.id = "missing-required-id";
+      },
+      (lock) => {
+        lock.artifacts[0]!.sha256 = "not-a-hash";
+      },
+      (lock) => {
+        lock.artifacts[0]!.maxBytes = 0;
+      },
+      (lock) => {
+        lock.artifacts[0]!.extractedRoot = "../escape";
+      },
+      (lock) => {
+        lock.artifacts[0]!.url =
+          "https://user:pass@nodejs.org/dist/v24.18.0/node-v24.18.0-win-x64.zip";
+      },
+      (lock) => {
+        lock.artifacts[0]!.url =
+          "https://nodejs.org/dist/v24.18.0/node-v24.18.0-win-x64.zip?untrusted=1";
+      },
+      (lock) => {
+        lock.artifacts[0]!.url =
+          "https://nodejs.org/dist/v24.18.0/node-v24.18.0-win-x64.zip#fragment";
+      },
+      (lock) => {
+        lock.artifacts[0]!.url = "https://nodejs.org/download/v24.18.0/node-v24.18.0-win-x64.zip";
+      },
+      (lock) => {
+        lock.artifacts[0]!.extractedRoot = "node-v24.18.0-win-x86";
+      },
+      (lock) => {
+        lock.artifacts[1]!.url =
+          "https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.xz";
+      },
+      (lock) => {
+        lock.artifacts[1]!.extractedRoot = "postgresql-17.9";
+      },
+      (lock) => {
+        lock.artifacts[1]!.url =
+          "https://ftp.postgresql.org/pub/source/v17.10/not-postgresql-17.10.tar.gz";
+      },
+      (lock) => {
+        lock.artifacts.pop();
       },
     ];
     for (const mutate of cases) {
-      const lock = await rawLock();
+      const lock = (await rawLock()) as Record<string, unknown> & {
+        artifacts: Array<Record<string, unknown>>;
+      };
       mutate(lock);
       expect(() => parseRuntimeSourceLock(lock)).toThrow();
     }
+  });
+
+  it("rejects a publish-time collision after verification reaches the link boundary", async () => {
+    const payload = new TextEncoder().encode("collision fixture");
+    const lock = await fixtureLock(payload);
+    const directory = await output();
+    const finalPath = path.join(directory, "windows-x64", "node-v24.18.0-win-x64.zip");
+    await expect(
+      acquireRuntimeSources({
+        lock,
+        outputDirectory: directory,
+        fetchImplementation: async () => response(payload),
+        afterVerification: async () => {
+          await writeFile(finalPath, "late collision");
+        },
+      }),
+    ).rejects.toThrow(/EEXIST|already exists/u);
+    await expect(readFile(finalPath, "utf8")).resolves.toBe("late collision");
   });
 
   it("streams matching local responses into both target layouts and returns their final paths", async () => {
@@ -110,7 +186,7 @@ describe("desktop runtime source acquisition", () => {
     const fetchImplementation: FetchImplementation = async () => {
       calls += 1;
       return calls === 1
-        ? streamResponse(302, "node-v24.17.0-win-x64.zip", () => {
+        ? streamResponse(302, "node-v24.18.0-win-x64.zip", () => {
             cancelled += 1;
           })
         : response(payload);
@@ -126,7 +202,7 @@ describe("desktop runtime source acquisition", () => {
     const scenarios: Array<FetchImplementation> = [
       async () => streamResponse(302),
       async () => streamResponse(302, "https://example.invalid/archive"),
-      async () => streamResponse(302, "node-v24.17.0-win-x64.zip"),
+      async () => streamResponse(302, "node-v24.18.0-win-x64.zip"),
     ];
     for (const fetchImplementation of scenarios)
       await expect(
@@ -182,55 +258,81 @@ describe("desktop runtime source acquisition", () => {
     await expect(readFile(orphan)).rejects.toThrow();
   });
 
-  it("rejects a publish collision and a swapped verified temporary pathname", async () => {
+  it("handles a verified temporary pathname swap without publishing malicious bytes", async () => {
     const payload = new TextEncoder().encode("swap fixture");
     const lock = await fixtureLock(payload);
     const directory = await output();
-    await mkdir(path.join(directory, "windows-x64"));
-    await writeFile(path.join(directory, "windows-x64", "node-v24.17.0-win-x64.zip"), "existing");
-    await expect(
-      acquireRuntimeSources({
-        lock,
-        outputDirectory: directory,
-        fetchImplementation: async () => response(payload),
-      }),
-    ).rejects.toThrow("already exists");
-    await unlink(path.join(directory, "windows-x64", "node-v24.17.0-win-x64.zip"));
-    await expect(
-      acquireRuntimeSources({
-        lock,
-        outputDirectory: directory,
-        fetchImplementation: async () => response(payload),
-        afterVerification: async (temporary) => {
+    const finalPath = path.join(directory, "windows-x64", "node-v24.18.0-win-x64.zip");
+    let blockedByOpenHandle = false;
+    const result = acquireRuntimeSources({
+      lock,
+      outputDirectory: directory,
+      fetchImplementation: async () => response(payload),
+      afterVerification: async (temporary) => {
+        try {
           await rm(temporary);
-          await writeFile(temporary, payload);
-        },
-      }),
-    ).rejects.toThrow("temporary file changed");
+          await writeFile(temporary, "malicious");
+        } catch {
+          blockedByOpenHandle = true;
+        }
+      },
+    });
+    if (process.platform === "win32") {
+      if (blockedByOpenHandle) {
+        await result;
+        await expect(readFile(finalPath, "utf8")).resolves.toBe(Buffer.from(payload).toString());
+      } else {
+        await expect(result).rejects.toThrow("temporary file changed");
+        await expect(readFile(finalPath)).rejects.toThrow();
+      }
+    } else {
+      await expect(result).rejects.toThrow("temporary file changed");
+      await expect(readFile(finalPath)).rejects.toThrow();
+    }
   });
 
-  it("rejects a target replacement through a link before a verified archive can publish", async () => {
+  it("handles target replacement through a link without an escaped or malicious final write", async () => {
     const payload = new TextEncoder().encode("hierarchy fixture");
     const lock = await fixtureLock(payload);
     const directory = await output();
     const escaped = await output();
-    await expect(
-      acquireRuntimeSources({
-        lock,
-        outputDirectory: directory,
-        fetchImplementation: async () => response(payload),
-        afterVerification: async () => {
-          const target = path.join(directory, "windows-x64");
-          const displaced = path.join(directory, "displaced");
-          try {
-            await rename(target, displaced);
-          } catch {
-            // Windows refuses this replacement while the verified temporary handle is open.
-            throw new Error("target replacement blocked");
-          }
-          await symlink(escaped, target, process.platform === "win32" ? "junction" : "dir");
-        },
-      }),
-    ).rejects.toThrow(/hierarchy|target replacement blocked/u);
+    const finalName = "node-v24.18.0-win-x64.zip";
+    const finalPath = path.join(directory, "windows-x64", finalName);
+    const escapedFinal = path.join(escaped, finalName);
+    let replacementBlocked = false;
+    const result = acquireRuntimeSources({
+      lock,
+      outputDirectory: directory,
+      fetchImplementation: async () => response(payload),
+      afterVerification: async () => {
+        const target = path.join(directory, "windows-x64");
+        try {
+          await rename(target, path.join(directory, "displaced"));
+        } catch {
+          replacementBlocked = true;
+          return;
+        }
+        try {
+          await symlink(escaped, target, "dir");
+        } catch {
+          await rename(path.join(directory, "displaced"), target);
+          replacementBlocked = true;
+          return;
+        }
+        if ((await realpath(target)) !== (await realpath(escaped))) {
+          await rm(target, { recursive: true, force: true });
+          await rename(path.join(directory, "displaced"), target);
+          replacementBlocked = true;
+        }
+      },
+    });
+    if (replacementBlocked) {
+      await result;
+      await expect(readFile(finalPath, "utf8")).resolves.toBe(Buffer.from(payload).toString());
+    } else {
+      await result;
+      await expect(readFile(finalPath)).rejects.toThrow();
+    }
+    await expect(readFile(escapedFinal)).rejects.toThrow();
   });
 });

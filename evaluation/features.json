@@ -4544,10 +4544,11 @@
           "file": "scripts/acquire-desktop-runtime-sources.test.ts",
           "command": "unit",
           "anchors": [
-            "rejects malformed target/schema fields and IDs that do not match their fixed specifications",
+            "rejects malformed schema, IDs, archive fields, and fixed upstream specifications",
             "allows only same-origin approved relative redirects and cancels redirect bodies",
-            "rejects a publish collision and a swapped verified temporary pathname",
-            "rejects a target replacement through a link before a verified archive can publish"
+            "rejects a publish-time collision after verification reaches the link boundary",
+            "handles a verified temporary pathname swap without publishing malicious bytes",
+            "handles target replacement through a link without an escaped or malicious final write"
           ]
         }
       ]
