@@ -1,0 +1,162 @@
+name: PostgreSQL desktop runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/postgresql-runtime.yml"
+      - "scripts/build-postgresql-runtime-*"
+      - "scripts/acquire-desktop-runtime-sources.ts"
+      - "scripts/postgresql-runtime*"
+      - "scripts/postgresql-runtime/**"
+      - "scripts/smoke-postgresql-runtime.ts"
+      - "postgresql-runtime.lock.json"
+      - "runtime-sources.lock.json"
+      - "package.json"
+      - "pnpm-lock.yaml"
+  pull_request:
+    paths:
+      - ".github/workflows/postgresql-runtime.yml"
+      - "scripts/build-postgresql-runtime-*"
+      - "scripts/acquire-desktop-runtime-sources.ts"
+      - "scripts/postgresql-runtime*"
+      - "scripts/postgresql-runtime/**"
+      - "scripts/smoke-postgresql-runtime.ts"
+      - "postgresql-runtime.lock.json"
+      - "runtime-sources.lock.json"
+      - "package.json"
+      - "pnpm-lock.yaml"
+
+concurrency:
+  group: postgresql-runtime-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec vitest run scripts/postgresql-runtime.test.ts
+      - name: Type-check runtime tooling
+        run: >-
+          pnpm exec tsc --noEmit --strict --exactOptionalPropertyTypes
+          --noUnusedLocals --noUnusedParameters --target ES2022 --module NodeNext
+          --moduleResolution NodeNext --types node,vitest/globals --skipLibCheck
+          scripts/postgresql-runtime.ts scripts/postgresql-runtime.test.ts
+          scripts/smoke-postgresql-runtime.ts
+
+  linux-x64:
+    needs: validate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential ca-certificates curl patchelf perl
+      - name: Acquire pinned source archives
+        run: pnpm exec tsx scripts/acquire-desktop-runtime-sources.ts --lock runtime-sources.lock.json --output "${{ runner.temp }}/sources"
+      - name: Build and smoke PostgreSQL runtime
+        run: |
+          chmod +x scripts/build-postgresql-runtime-linux.sh
+          scripts/build-postgresql-runtime-linux.sh \
+            "${{ runner.temp }}/sources/linux-x64/postgresql-17.10.tar.gz" \
+            "${{ runner.temp }}/postgresql-17.10-linux-x64" \
+            "${{ runner.temp }}/postgresql-build"
+      - name: Package verified runtime
+        working-directory: ${{ runner.temp }}
+        run: |
+          tar -czf postgresql-17.10-linux-x64.tar.gz -C postgresql-17.10-linux-x64 .
+          sha256sum postgresql-17.10-linux-x64.tar.gz > postgresql-17.10-linux-x64.tar.gz.sha256
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: postgresql-17.10-linux-x64
+          path: |
+            ${{ runner.temp }}/postgresql-17.10-linux-x64.tar.gz
+            ${{ runner.temp }}/postgresql-17.10-linux-x64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-x64:
+    needs: validate
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: microsoft/vcpkg
+          ref: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
+          path: .postgresql-build/vcpkg
+          persist-credentials: false
+      - uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - run: pnpm install --frozen-lockfile
+      - name: Validate Windows process-tree timeout
+        run: pnpm exec vitest run scripts/postgresql-runtime.test.ts -t "process-tree timeout"
+      - name: Install pinned Meson tools
+        run: >-
+          python -m pip install --only-binary=:all: --require-hashes
+          -r scripts/postgresql-runtime/windows-requirements.txt
+      - name: Acquire pinned source archives
+        run: pnpm exec tsx scripts/acquire-desktop-runtime-sources.ts --lock runtime-sources.lock.json --output "${{ runner.temp }}\sources"
+      - name: Build and smoke PostgreSQL runtime
+        shell: powershell
+        run: |
+          .\scripts\build-postgresql-runtime-windows.ps1 `
+            -SourceArchive "${{ runner.temp }}\sources\windows-x64\postgresql-17.10.tar.gz" `
+            -OutputDirectory "${{ runner.temp }}\postgresql-17.10-windows-x64" `
+            -BuildRoot "${{ runner.temp }}\postgresql-build" `
+            -VcpkgRoot "${{ github.workspace }}\.postgresql-build\vcpkg"
+      - name: Package verified runtime
+        shell: powershell
+        working-directory: ${{ runner.temp }}
+        run: |
+          tar.exe -czf postgresql-17.10-windows-x64.tar.gz -C postgresql-17.10-windows-x64 .
+          if ($LASTEXITCODE -ne 0) { throw "Runtime packaging failed." }
+          $Hash = (Get-FileHash postgresql-17.10-windows-x64.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$Hash  postgresql-17.10-windows-x64.tar.gz" | Set-Content -NoNewline postgresql-17.10-windows-x64.tar.gz.sha256
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: postgresql-17.10-windows-x64
+          path: |
+            ${{ runner.temp }}/postgresql-17.10-windows-x64.tar.gz
+            ${{ runner.temp }}/postgresql-17.10-windows-x64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
