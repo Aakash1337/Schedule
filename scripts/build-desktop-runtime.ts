@@ -67,7 +67,18 @@ export interface DesktopRuntimeManifest {
   readonly target: DesktopRuntimeBuildOptions["target"];
   readonly postgresqlMajor: number;
   readonly components: readonly RuntimeComponent[];
+  readonly artifacts: Readonly<{ licensesSha256: string; sbomSha256: string }>;
 }
+
+const RUNTIME_ROOT_ENTRIES = new Set([
+  "api",
+  "node",
+  "postgresql",
+  LICENSES_NAME,
+  MANIFEST_NAME,
+  SBOM_NAME,
+  "worker",
+]);
 
 export interface RuntimeComponent {
   readonly name: "node" | "api" | "worker" | "postgresql";
@@ -83,6 +94,107 @@ interface LicenseRecord {
   readonly name: string;
   readonly version: string;
   readonly license: string;
+}
+
+interface NoticeRecord {
+  readonly path: string;
+  readonly sha256: string;
+}
+
+/** Stable binary/code-unit ordering: never depend on the builder host's locale. */
+export function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function strictRecord(
+  value: unknown,
+  keys: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== keys.length ||
+    keys.some((key) => !(key in value))
+  )
+    throw new Error(`${label} is invalid.`);
+  return value as Record<string, unknown>;
+}
+
+function exactVersion(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^\d[A-Za-z0-9.+_-]*$/u.test(value))
+    throw new Error(`${label} is not an exact release identifier.`);
+  return value;
+}
+
+function strictDigest(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/u.test(value))
+    throw new Error(`${label} has a malformed SHA-256.`);
+  return value;
+}
+
+function strictRuntimeManifest(value: unknown): DesktopRuntimeManifest {
+  const manifest = strictRecord(
+    value,
+    ["schemaVersion", "target", "postgresqlMajor", "components", "artifacts"],
+    "Runtime manifest",
+  );
+  const target = strictRecord(manifest.target, ["os", "arch"], "Runtime manifest target");
+  const artifacts = strictRecord(
+    manifest.artifacts,
+    ["licensesSha256", "sbomSha256"],
+    "Runtime manifest artifacts",
+  );
+  if (
+    manifest.schemaVersion !== 1 ||
+    manifest.postgresqlMajor !== 17 ||
+    (target.os !== "linux" && target.os !== "windows") ||
+    (target.arch !== "x86_64" && target.arch !== "aarch64") ||
+    !Array.isArray(manifest.components)
+  )
+    throw new Error("Runtime manifest does not meet the assembled runtime contract.");
+  strictDigest(artifacts.licensesSha256, "Runtime license inventory");
+  strictDigest(artifacts.sbomSha256, "Runtime SBOM");
+  const expected = new Map<RuntimeComponent["name"], Readonly<{ kind: string; path: string }>>([
+    ["node", { kind: "executable", path: `node/node${target.os === "windows" ? ".exe" : ""}` }],
+    ["api", { kind: "entrypoint", path: "api/dist/server.js" }],
+    ["worker", { kind: "entrypoint", path: "worker/dist/index.js" }],
+    [
+      "postgresql",
+      {
+        kind: "executable",
+        path: `postgresql/bin/postgres${target.os === "windows" ? ".exe" : ""}`,
+      },
+    ],
+  ]);
+  for (const raw of manifest.components) {
+    const component = strictRecord(
+      raw,
+      ["name", "version", "sha256", "launch", "licensePath", "sbomPath"],
+      "Runtime component",
+    );
+    const launch = strictRecord(component.launch, ["kind", "path"], "Runtime component launch");
+    const name = component.name as RuntimeComponent["name"];
+    const required = expected.get(name);
+    const version = exactVersion(component.version, "Runtime component version");
+    const postgresqlMajor = version.split(".", 1)[0] ?? "";
+    if (
+      required === undefined ||
+      launch.kind !== required.kind ||
+      launch.path !== required.path ||
+      component.licensePath !== LICENSES_NAME ||
+      component.sbomPath !== SBOM_NAME ||
+      (name === "postgresql" &&
+        (!/^[1-9][0-9]*$/u.test(postgresqlMajor) || postgresqlMajor !== "17"))
+    )
+      throw new Error("Runtime manifest component contract is invalid.");
+    strictDigest(component.sha256, "Runtime component");
+    expected.delete(name);
+  }
+  if (expected.size !== 0)
+    throw new Error("Runtime manifest has duplicate, unknown, or missing components.");
+  return value as DesktopRuntimeManifest;
 }
 
 function sha256(value: Buffer | string): string {
@@ -239,6 +351,99 @@ async function requirePgcrypto(
   throw new Error("The PostgreSQL pgcrypto shared library is required.");
 }
 
+/** Revalidate the assembled runtime contract before copying it into an installer. */
+export async function validateDesktopRuntime(root: string): Promise<DesktopRuntimeManifest> {
+  const runtimeRoot = path.resolve(root);
+  await assertTreeIsSafe(runtimeRoot);
+  const entries = await readdir(runtimeRoot);
+  if (
+    entries.length !== RUNTIME_ROOT_ENTRIES.size ||
+    entries.some((entry) => !RUNTIME_ROOT_ENTRIES.has(entry))
+  ) {
+    throw new Error("Runtime root must contain the exact assembled, non-nested runtime layout.");
+  }
+  const manifestBytes = await readFile(path.join(runtimeRoot, MANIFEST_NAME));
+  if (manifestBytes.byteLength > 256 * 1024) throw new Error("Runtime manifest is too large.");
+  let manifest: DesktopRuntimeManifest;
+  try {
+    manifest = strictRuntimeManifest(JSON.parse(manifestBytes.toString("utf8")));
+  } catch {
+    throw new Error("Runtime manifest is invalid JSON.");
+  }
+  const target = manifest.target as DesktopRuntimeBuildOptions["target"];
+  const executable = executableSuffix(target);
+  const expected = new Map<RuntimeComponent["name"], Readonly<{ kind: string; path: string }>>([
+    ["node", { kind: "executable", path: `node/node${executable}` }],
+    ["api", { kind: "entrypoint", path: "api/dist/server.js" }],
+    ["worker", { kind: "entrypoint", path: "worker/dist/index.js" }],
+    ["postgresql", { kind: "executable", path: `postgresql/bin/postgres${executable}` }],
+  ]);
+  for (const component of manifest.components) {
+    const launch = expected.get(component.name);
+    if (
+      launch === undefined ||
+      !/^[a-f0-9]{64}$/u.test(component.sha256) ||
+      component.launch?.kind !== launch.kind ||
+      component.launch.path !== launch.path ||
+      component.licensePath !== LICENSES_NAME ||
+      component.sbomPath !== SBOM_NAME ||
+      (await hashTree(path.join(runtimeRoot, component.name))) !== component.sha256
+    ) {
+      throw new Error("Runtime manifest component integrity does not match its assembled tree.");
+    }
+    expected.delete(component.name);
+  }
+  if (
+    expected.size !== 0 ||
+    !/^[a-f0-9]{64}$/u.test(manifest.artifacts.licensesSha256) ||
+    !/^[a-f0-9]{64}$/u.test(manifest.artifacts.sbomSha256)
+  ) {
+    throw new Error("Runtime manifest has incomplete or malformed integrity metadata.");
+  }
+  if (
+    sha256(await readFile(path.join(runtimeRoot, LICENSES_NAME))) !==
+      manifest.artifacts.licensesSha256 ||
+    sha256(await readFile(path.join(runtimeRoot, SBOM_NAME))) !== manifest.artifacts.sbomSha256
+  ) {
+    throw new Error("Runtime inventory integrity does not match its manifest.");
+  }
+  await requireFile(runtimeRoot, "api/dist/server.js", "API server entrypoint");
+  await requireFile(runtimeRoot, "worker/dist/index.js", "Worker entrypoint");
+  await requireFile(
+    runtimeRoot,
+    "api/node_modules/@schedule/database/dist/migrate.js",
+    "Database migration entrypoint",
+  );
+  await requireFile(
+    runtimeRoot,
+    "api/node_modules/@schedule/database/drizzle/meta/_journal.json",
+    "Migration journal",
+  );
+  await requireFile(runtimeRoot, `node/node${executable}`, "Node executable");
+  await Promise.all(
+    POSTGRESQL_TOOLS.map((tool) =>
+      requireFile(
+        runtimeRoot,
+        `postgresql/bin/${tool}${executable}`,
+        `PostgreSQL ${tool} executable`,
+      ),
+    ),
+  );
+  await requireFile(
+    runtimeRoot,
+    "postgresql/share/postgresql.conf.sample",
+    "PostgreSQL shared configuration",
+  );
+  await requireFile(
+    runtimeRoot,
+    "postgresql/share/extension/pgcrypto.control",
+    "PostgreSQL pgcrypto extension metadata",
+  );
+  await requireDirectory(runtimeRoot, "postgresql/lib", "PostgreSQL runtime libraries");
+  await requirePgcrypto(path.join(runtimeRoot, "postgresql"), target);
+  return manifest;
+}
+
 async function copyTree(source: string, destination: string): Promise<void> {
   await assertTreeIsSafe(source);
   await cp(source, destination, {
@@ -296,6 +501,28 @@ async function inventoryLicenses(root: string): Promise<LicenseRecord[]> {
   return records.sort((left, right) =>
     left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
   );
+}
+
+/** Preserve native distribution notices (Node/PostgreSQL included) when their trees provide them. */
+async function inventoryNotices(root: string): Promise<NoticeRecord[]> {
+  const records: NoticeRecord[] = [];
+  const visit = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) await visit(fullPath);
+      else if (
+        entry.isFile() &&
+        /^(?:license|copying|copyright|notice)(?:\..*)?$/iu.test(entry.name)
+      ) {
+        records.push({
+          path: safeRelative(root, fullPath),
+          sha256: sha256(await readFile(fullPath)),
+        });
+      }
+    }
+  };
+  await visit(root);
+  return records.sort((left, right) => compareCodeUnits(left.path, right.path));
 }
 
 async function promote(stagingDirectory: string, outputDirectory: string): Promise<void> {
@@ -409,6 +636,16 @@ export async function buildDesktopRuntime(
     const files = await inventoryFiles(stagingDirectory);
     const licensePath = LICENSES_NAME;
     const sbomPath = SBOM_NAME;
+    const sbom = { schemaVersion: 1, format: "schedule-runtime", sources: options.sources, files };
+    const licenses = {
+      schemaVersion: 1,
+      packages: await inventoryLicenses(stagingDirectory),
+      notices: await inventoryNotices(stagingDirectory),
+    };
+    const sbomBytes = Buffer.from(`${JSON.stringify(sbom, null, 2)}\n`);
+    const licenseBytes = Buffer.from(`${JSON.stringify(licenses, null, 2)}\n`);
+    await writeFile(path.join(stagingDirectory, SBOM_NAME), sbomBytes);
+    await writeFile(path.join(stagingDirectory, LICENSES_NAME), licenseBytes);
     const manifest: DesktopRuntimeManifest = {
       schemaVersion: 1,
       target: options.target,
@@ -443,17 +680,11 @@ export async function buildDesktopRuntime(
           sbomPath,
         },
       ],
+      artifacts: { licensesSha256: sha256(licenseBytes), sbomSha256: sha256(sbomBytes) },
     };
-    const sbom = { schemaVersion: 1, format: "schedule-runtime", sources: options.sources, files };
-    const licenses = { schemaVersion: 1, packages: await inventoryLicenses(stagingDirectory) };
     await writeFile(
       path.join(stagingDirectory, MANIFEST_NAME),
       `${JSON.stringify(manifest, null, 2)}\n`,
-    );
-    await writeFile(path.join(stagingDirectory, SBOM_NAME), `${JSON.stringify(sbom, null, 2)}\n`);
-    await writeFile(
-      path.join(stagingDirectory, LICENSES_NAME),
-      `${JSON.stringify(licenses, null, 2)}\n`,
     );
     await chmod(path.join(stagingDirectory, "node", `node${executable}`), 0o755);
     await Promise.all(

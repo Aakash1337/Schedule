@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildDesktopRuntime,
+  compareCodeUnits,
   hashTree,
   type DesktopRuntimeBuildOptions,
 } from "./build-desktop-runtime.js";
@@ -55,10 +56,13 @@ async function fixture(): Promise<{
     ),
     writeFile(path.join(worker, "dist", "index.js"), "worker"),
     writeFile(path.join(node, `node${executable}`), "node"),
+    writeFile(path.join(node, "LICENSE"), "node notice"),
     ...["initdb", "pg_ctl", "pg_dump", "pg_isready", "pg_restore", "postgres", "psql"].map((tool) =>
       writeFile(path.join(postgres, "bin", `${tool}${executable}`), tool),
     ),
     writeFile(path.join(postgres, "share", "postgresql.conf.sample"), "config"),
+    writeFile(path.join(postgres, "COPYING"), "postgres notice"),
+    writeFile(path.join(postgres, "COPYRIGHT"), "postgres copyright notice"),
     writeFile(
       path.join(postgres, "share", "extension", "pgcrypto.control"),
       "default_version = '1.3'\n",
@@ -125,8 +129,23 @@ describe("buildDesktopRuntime", () => {
     expect(output).toEqual(manifest);
     const licenses = JSON.parse(
       await readFile(path.join(options.outputDirectory, "runtime-licenses.json"), "utf8"),
-    ) as { packages: unknown[] };
+    ) as { packages: unknown[]; notices: Array<{ path: string }> };
     expect(licenses.packages).toEqual([]);
+    expect(licenses.notices.map((notice) => notice.path)).toEqual([
+      "node/LICENSE",
+      "postgresql/COPYING",
+      "postgresql/COPYRIGHT",
+    ]);
+    expect(manifest.artifacts.licensesSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(manifest.artifacts.sbomSha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("orders notice paths by code units rather than the builder locale", () => {
+    expect(["i/NOTICE", "I/NOTICE", "z/NOTICE"].sort(compareCodeUnits)).toEqual([
+      "I/NOTICE",
+      "i/NOTICE",
+      "z/NOTICE",
+    ]);
   });
 
   it("rejects a pin mismatch without promoting an output", async () => {

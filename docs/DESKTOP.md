@@ -199,11 +199,21 @@ pnpm desktop:dev
 pnpm desktop:check
 pnpm desktop:runtime:assemble -- <pinned runtime arguments>
 pnpm desktop:runtime:acquire-sources
-pnpm desktop:build
+pnpm desktop:build -- --runtime <assembled-runtime-root>
 ```
 
-`desktop:build` builds the installer formats supported by the current operating system. The current
-installer contains only the foundation shell and is not an end-user release.
+`desktop:build` is an alias for `desktop:package` and requires the direct root emitted by
+`desktop:runtime:assemble`; it refuses a parent directory, a partial runtime, or a runtime whose
+component/inventory hashes no longer match its manifest. For example:
+
+```powershell
+pnpm desktop:build -- --runtime E:\release-inputs\runtime-windows-x86_64
+```
+
+The packager stages that root as Tauri's immutable `resources/runtime`, compiles with the manifest
+SHA-256 in `SCHEDULE_DESKTOP_RUNTIME_MANIFEST_SHA256`, and removes its staging directory afterwards.
+It is not an end-user installer release until CI supplies real, verified Node and PostgreSQL runtime
+artifacts for the selected target.
 
 Runtime assembly performs no downloads. Release automation must supply production API/worker
 deployment trees, pinned Node and PostgreSQL 17 directories, their exact versions and tree hashes,

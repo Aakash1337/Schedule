@@ -114,6 +114,23 @@ fn verify_runtime_bundle(
         )?;
         assert_regular_file(&resolve(root, &component.sbom_path)?, "runtime SBOM")?;
     }
+    if format!(
+        "{:x}",
+        Sha256::digest(
+            fs::read(resolve(root, "runtime-licenses.json")?)
+                .map_err(|_| error("runtime license inventory cannot be read"))?
+        )
+    ) != manifest.artifacts.licenses_sha256
+        || format!(
+            "{:x}",
+            Sha256::digest(
+                fs::read(resolve(root, "runtime-sbom.json")?)
+                    .map_err(|_| error("runtime SBOM cannot be read"))?
+            )
+        ) != manifest.artifacts.sbom_sha256
+    {
+        return Err(error("runtime inventory hash does not match its manifest"));
+    }
     Ok(())
 }
 
@@ -305,7 +322,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::runtime::manifest::{RuntimeArch, RuntimeLaunchPath, RuntimeOs, RuntimeTarget};
+    use crate::runtime::manifest::{
+        RuntimeArch, RuntimeArtifacts, RuntimeLaunchPath, RuntimeOs, RuntimeTarget,
+    };
 
     struct Fixture(PathBuf);
 
@@ -414,6 +433,10 @@ mod tests {
                     hash_tree(&root.join("postgresql")).unwrap(),
                 ),
             ],
+            artifacts: RuntimeArtifacts {
+                licenses_sha256: format!("{:x}", Sha256::digest(b"licenses")),
+                sbom_sha256: format!("{:x}", Sha256::digest(b"sbom")),
+            },
         }
     }
 
