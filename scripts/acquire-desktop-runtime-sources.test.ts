@@ -47,16 +47,17 @@ async function output(): Promise<string> {
   return value;
 }
 function response(payload: Uint8Array, status = 200, headers?: Record<string, string>): Response {
-  const init: ResponseInit = { status };
-  if (headers !== undefined) init.headers = headers;
-  return new Response(Buffer.from(payload), init);
+  return new Response(
+    Buffer.from(payload),
+    headers === undefined ? { status } : { status, headers },
+  );
 }
 function streamResponse(status: number, location?: string, onCancel?: () => void): Response {
-  const source: UnderlyingSource<Uint8Array> = {};
-  if (onCancel !== undefined) source.cancel = onCancel;
-  const init: ResponseInit = { status };
-  if (location !== undefined) init.headers = { location };
-  return new Response(new ReadableStream(source), init);
+  const body = new ReadableStream<Uint8Array>({ cancel: () => onCancel?.() });
+  return new Response(
+    body,
+    location === undefined ? { status } : { status, headers: { location } },
+  );
 }
 async function settle(promise: Promise<unknown>): Promise<unknown> {
   try {
