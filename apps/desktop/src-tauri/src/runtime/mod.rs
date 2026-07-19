@@ -1,4 +1,4 @@
-pub(crate) mod bootstrap;
+mod bootstrap;
 mod bundle;
 mod command;
 mod coordinator;

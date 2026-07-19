@@ -180,7 +180,7 @@ impl DesktopRuntimeAdapter {
     }
 }
 
-pub(crate) fn shutdown_and_contain(
+pub(super) fn shutdown_and_contain(
     host: &RuntimeHost,
     containment: Option<&dyn ProcessGroupControl>,
     deadline: Instant,

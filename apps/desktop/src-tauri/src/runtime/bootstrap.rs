@@ -16,7 +16,7 @@ pub(crate) const RUNTIME_VERSION: &str = "runtime-1";
 const DATABASE_SCHEMA_VERSION: &str = "schema-1";
 const STAGING_NONCE: &str = "desktop-launch";
 
-pub(crate) fn build_host(
+pub(super) fn build_host(
     resource_root: PathBuf,
     data_root: PathBuf,
     bridge: Arc<crate::bridge::DesktopApiForwarder>,
