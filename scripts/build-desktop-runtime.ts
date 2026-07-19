@@ -101,6 +101,11 @@ interface NoticeRecord {
   readonly sha256: string;
 }
 
+/** Stable binary/code-unit ordering: never depend on the builder host's locale. */
+export function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function strictRecord(
   value: unknown,
   keys: readonly string[],
@@ -505,7 +510,10 @@ async function inventoryNotices(root: string): Promise<NoticeRecord[]> {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const fullPath = path.join(directory, entry.name);
       if (entry.isDirectory()) await visit(fullPath);
-      else if (entry.isFile() && /^(?:license|copying|notice)(?:\..*)?$/iu.test(entry.name)) {
+      else if (
+        entry.isFile() &&
+        /^(?:license|copying|copyright|notice)(?:\..*)?$/iu.test(entry.name)
+      ) {
         records.push({
           path: safeRelative(root, fullPath),
           sha256: sha256(await readFile(fullPath)),
@@ -514,7 +522,7 @@ async function inventoryNotices(root: string): Promise<NoticeRecord[]> {
     }
   };
   await visit(root);
-  return records.sort((left, right) => left.path.localeCompare(right.path));
+  return records.sort((left, right) => compareCodeUnits(left.path, right.path));
 }
 
 async function promote(stagingDirectory: string, outputDirectory: string): Promise<void> {
