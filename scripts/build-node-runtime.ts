@@ -29,6 +29,7 @@ const PROVENANCE = "node-runtime.provenance.json";
 
 type Target = "windows" | "linux";
 type Command = (file: string, arguments_: readonly string[], cwd?: string) => Promise<string>;
+type VerifiedArchiveWriter = (path: string, bytes: Uint8Array) => Promise<void>;
 
 export interface BuildNodeRuntimeOptions {
   readonly lock: RuntimeSourceLock;
@@ -37,6 +38,8 @@ export interface BuildNodeRuntimeOptions {
   readonly target: Target;
   /** Test seam. Production uses the platform tar executable without a shell. */
   readonly command?: Command;
+  /** Test seam. Production writes a create-new, owner-only verified archive. */
+  readonly writeVerifiedArchive?: VerifiedArchiveWriter;
 }
 
 function sha256(value: Uint8Array): string {
@@ -229,11 +232,18 @@ async function extractTar(
 async function writePrivateArchive(
   parent: string,
   bytes: Uint8Array,
+  writer: VerifiedArchiveWriter = async (archive, payload) =>
+    writeFile(archive, payload, { flag: "wx", mode: 0o600 }),
 ): Promise<{ directory: string; path: string }> {
   const directory = await mkdtemp(path.join(parent, ".node-runtime-archive-"));
   const archive = path.join(directory, "verified.tar.xz");
-  await writeFile(archive, bytes, { flag: "wx", mode: 0o600 });
-  return Object.freeze({ directory, path: archive });
+  try {
+    await writer(archive, bytes);
+    return Object.freeze({ directory, path: archive });
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
 }
 async function checksumTree(root: string): Promise<string> {
   const paths: string[] = [];
@@ -296,7 +306,11 @@ export async function buildNodeRuntime(
     await mkdir(staging, { mode: 0o700 });
     if (options.target === "windows") await extractZip(archiveBytes, artifact, staging);
     else {
-      const verified = await writePrivateArchive(parent, archiveBytes);
+      const verified = await writePrivateArchive(
+        parent,
+        archiveBytes,
+        options.writeVerifiedArchive,
+      );
       privateArchive = verified.directory;
       await extractTar(verified.path, artifact, staging, command);
       await rm(privateArchive, { recursive: true, force: true });

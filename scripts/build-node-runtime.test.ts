@@ -296,6 +296,35 @@ describe("Node desktop runtime bundles", () => {
     ).toEqual([]);
   });
 
+  it("removes a partially written private Linux archive when its writer fails", async () => {
+    const payload = Buffer.from("writer failure fixture archive");
+    const sources = await temporary();
+    const sourceDirectory = path.join(sources, "linux-x64");
+    await mkdir(sourceDirectory, { recursive: true });
+    await writeFile(path.join(sourceDirectory, "node-v24.18.0-linux-x64.tar.xz"), payload);
+    const output = path.join(await temporary(), "runtime");
+    let privateDirectory: string | undefined;
+    await expect(
+      buildNodeRuntime({
+        lock: (await linuxLockFor(payload)) as never,
+        sourceDirectory: sources,
+        outputDirectory: output,
+        target: "linux",
+        writeVerifiedArchive: async (archive) => {
+          privateDirectory = path.dirname(archive);
+          await writeFile(archive, "partial");
+          throw new Error("simulated private archive write failure");
+        },
+      }),
+    ).rejects.toThrow("simulated private archive write failure");
+    await expect(readdir(privateDirectory!)).rejects.toThrow();
+    expect(
+      (await readdir(path.dirname(output))).filter((name) =>
+        name.startsWith(".node-runtime-archive-"),
+      ),
+    ).toEqual([]);
+  });
+
   it("rejects hash, traversal, symlink, missing-layout, and version failures without publishing", async () => {
     const cases = [
       {
