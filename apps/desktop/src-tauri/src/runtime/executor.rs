@@ -239,12 +239,14 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
     pub(crate) fn production(
         config: NativeExecutorConfig,
         bridge: Arc<B>,
-    ) -> Result<NativeEffectExecutor<Self>, NativeExecutorError> {
+    ) -> Result<(NativeEffectExecutor<Self>, Arc<dyn ProcessGroupControl>), NativeExecutorError>
+    {
         config.validate()?;
-        Ok(NativeEffectExecutor::new(Self {
+        let process_control = platform_process_control();
+        let operations = NativeEffectExecutor::new(Self {
             config,
             bridge,
-            process_control: platform_process_control(),
+            process_control: Arc::clone(&process_control),
             runtime_lock: None,
             bundle: None,
             credential_store: None,
@@ -259,7 +261,8 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
             api: None,
             worker: None,
             api_target: None,
-        }))
+        });
+        Ok((operations, process_control))
     }
 
     fn cancelled(cancellation: &Cancellation) -> Result<(), NativeExecutorError> {

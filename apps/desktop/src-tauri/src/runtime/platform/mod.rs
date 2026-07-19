@@ -9,7 +9,7 @@ use super::ProcessGroupControl;
 
 #[cfg(unix)]
 pub(super) fn new_control() -> Arc<dyn ProcessGroupControl> {
-    Arc::new(unix::UnixProcessControl)
+    Arc::new(unix::UnixProcessControl::default())
 }
 
 #[cfg(windows)]

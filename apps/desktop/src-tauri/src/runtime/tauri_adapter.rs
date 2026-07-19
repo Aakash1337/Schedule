@@ -16,10 +16,13 @@ use tauri::{AppHandle, Manager};
 use super::{
     credentials::PgNames,
     executor::{NativeExecutorConfig, SystemOperations},
-    host::{HostError, RuntimeCompletion, RuntimeHost, RuntimeState, RuntimeStatus},
+    host::{
+        HostError, RuntimeCompletion, RuntimeHost, RuntimeState, RuntimeStatus, ShutdownOutcome,
+    },
     integrity::embedded_manifest_sha256,
     manifest::RuntimeManifestExpectations,
     paths::RuntimePaths,
+    process::ProcessGroupControl,
 };
 
 const RUNTIME_VERSION: &str = "runtime-1";
@@ -86,28 +89,30 @@ enum RuntimeOwner {
 /// executor failures, paths, credentials, or child process details to the UI.
 pub(crate) struct DesktopRuntimeAdapter {
     owner: Mutex<RuntimeOwner>,
+    containment: Option<Arc<dyn ProcessGroupControl>>,
     close_exit_scheduled: AtomicBool,
     final_exit_wait_started: AtomicBool,
 }
 
 impl DesktopRuntimeAdapter {
     pub(crate) fn setup(app: &AppHandle, bridge: Arc<crate::bridge::DesktopApiForwarder>) -> Self {
-        let owner = match setup_input(app, bridge) {
+        let (owner, containment) = match setup_input(app, bridge) {
             Ok((resource_root, data_root, bridge)) => {
                 match build_host(resource_root, data_root, bridge) {
-                    Ok(host) => {
+                    Ok((host, containment)) => {
                         let host = Arc::new(host);
                         // Auto-start only queues work on the worker thread; it never blocks setup.
                         let _ = host.auto_start();
-                        RuntimeOwner::Running(host)
+                        (RuntimeOwner::Running(host), Some(containment))
                     }
-                    Err(_) => RuntimeOwner::SetupFailure,
+                    Err(_) => (RuntimeOwner::SetupFailure, None),
                 }
             }
-            Err(_) => RuntimeOwner::SetupFailure,
+            Err(_) => (RuntimeOwner::SetupFailure, None),
         };
         Self {
             owner: Mutex::new(owner),
+            containment,
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
         }
@@ -115,6 +120,11 @@ impl DesktopRuntimeAdapter {
 
     pub(crate) fn status(&self) -> DesktopRuntimeStatus {
         match &*self.owner.lock().expect("runtime adapter poisoned") {
+            RuntimeOwner::Running(host)
+                if host.completion().outcome() == Some(ShutdownOutcome::WorkerFailed) =>
+            {
+                DesktopRuntimeStatus::setup_failure()
+            }
             RuntimeOwner::Running(host) => DesktopRuntimeStatus::from_host(host.status()),
             RuntimeOwner::SetupFailure => DesktopRuntimeStatus::setup_failure(),
         }
@@ -137,7 +147,9 @@ impl DesktopRuntimeAdapter {
     /// Safe from close and exit callbacks: it only queues shutdown work.
     pub(crate) fn request_shutdown(&self) -> Option<RuntimeCompletion> {
         match &*self.owner.lock().expect("runtime adapter poisoned") {
-            RuntimeOwner::Running(host) => host.shutdown().ok(),
+            RuntimeOwner::Running(host) => {
+                Some(host.shutdown().unwrap_or_else(|_| host.completion()))
+            }
             RuntimeOwner::SetupFailure => None,
         }
     }
@@ -159,10 +171,12 @@ impl DesktopRuntimeAdapter {
         {
             return;
         }
-        let Some(completion) = self.request_shutdown() else {
-            return;
-        };
-        wait_bounded(&completion, limit);
+        if let Some(completion) = self.request_shutdown() {
+            wait_bounded(&completion, limit);
+        }
+        if let Some(containment) = &self.containment {
+            let _ = containment.seal_and_force_stop_all();
+        }
     }
 }
 
@@ -191,7 +205,7 @@ fn build_host(
     resource_root: PathBuf,
     data_root: PathBuf,
     bridge: Arc<crate::bridge::DesktopApiForwarder>,
-) -> Result<RuntimeHost, ()> {
+) -> Result<(RuntimeHost, Arc<dyn ProcessGroupControl>), ()> {
     let manifest_sha256 = embedded_manifest_sha256().ok_or(())?;
     let paths = RuntimePaths::new(data_root, RUNTIME_VERSION, STAGING_NONCE).map_err(|_| ())?;
     let postgres_names = PgNames::new(
@@ -201,7 +215,7 @@ fn build_host(
         "schedule_runtime",
     )
     .map_err(|_| ())?;
-    let executor = SystemOperations::production(
+    let (executor, containment) = SystemOperations::production(
         NativeExecutorConfig {
             paths,
             resource_root,
@@ -214,7 +228,7 @@ fn build_host(
         bridge,
     )
     .map_err(|_| ())?;
-    Ok(RuntimeHost::spawn(executor))
+    Ok((RuntimeHost::spawn(executor), containment))
 }
 
 pub(crate) fn schedule_close(app: AppHandle, adapter: Arc<DesktopRuntimeAdapter>) {
@@ -249,6 +263,35 @@ mod tests {
     struct BlockingExecutor {
         entered: mpsc::Sender<()>,
         release: mpsc::Receiver<()>,
+    }
+
+    #[derive(Default)]
+    struct SealingControl {
+        sealed: AtomicBool,
+    }
+
+    impl ProcessGroupControl for SealingControl {
+        fn seal_and_force_stop_all(&self) -> Result<(), crate::runtime::process::ProcessError> {
+            self.sealed.store(true, Ordering::Release);
+            Ok(())
+        }
+    }
+
+    struct PanickingExecutor;
+
+    impl EffectExecutor for PanickingExecutor {
+        type Error = ();
+
+        fn execute(&mut self, _: Effect, _: &Cancellation) -> Result<EffectOutcome, Self::Error> {
+            panic!("intentional worker failure")
+        }
+        fn configure_bridge(&mut self, _: u64) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn clear_bridge(&mut self, _: u64) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn cancel(&mut self, _: u64) {}
     }
 
     impl EffectExecutor for BlockingExecutor {
@@ -308,6 +351,7 @@ mod tests {
     fn adapter_with(host: RuntimeHost) -> DesktopRuntimeAdapter {
         DesktopRuntimeAdapter {
             owner: Mutex::new(RuntimeOwner::Running(Arc::new(host))),
+            containment: None,
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
         }
@@ -317,6 +361,7 @@ mod tests {
     fn setup_failure_is_fatal_redacted_and_not_retryable() {
         let adapter = DesktopRuntimeAdapter {
             owner: Mutex::new(RuntimeOwner::SetupFailure),
+            containment: None,
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
         };
@@ -382,6 +427,7 @@ mod tests {
     fn setup_failure_admits_one_close_without_a_completion() {
         let adapter = DesktopRuntimeAdapter {
             owner: Mutex::new(RuntimeOwner::SetupFailure),
+            containment: None,
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
         };
@@ -401,6 +447,7 @@ mod tests {
     fn final_shutdown_wait_is_bounded() {
         let adapter = DesktopRuntimeAdapter {
             owner: Mutex::new(RuntimeOwner::SetupFailure),
+            containment: None,
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
         };
@@ -425,6 +472,49 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
         release_tx.send(()).unwrap();
         completion.wait();
+    }
+
+    #[test]
+    fn final_exit_seals_containment_after_its_deadline() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let host = RuntimeHost::spawn(BlockingExecutor {
+            entered: entered_tx,
+            release: release_rx,
+        });
+        host.auto_start().unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let completion = host.completion();
+        let containment = Arc::new(SealingControl::default());
+        let adapter = DesktopRuntimeAdapter {
+            owner: Mutex::new(RuntimeOwner::Running(Arc::new(host))),
+            containment: Some(containment.clone()),
+            close_exit_scheduled: AtomicBool::new(false),
+            final_exit_wait_started: AtomicBool::new(false),
+        };
+
+        adapter.bounded_shutdown(Duration::from_millis(1));
+        assert!(containment.sealed.load(Ordering::Acquire));
+        release_tx.send(()).unwrap();
+        completion.wait();
+    }
+
+    #[test]
+    fn worker_panic_becomes_fatal_and_retry_stays_unavailable() {
+        let host = RuntimeHost::spawn(PanickingExecutor);
+        let completion = host.completion();
+        let adapter = adapter_with(host);
+        match &*adapter.owner.lock().unwrap() {
+            RuntimeOwner::Running(host) => host.auto_start().unwrap(),
+            RuntimeOwner::SetupFailure => unreachable!(),
+        }
+        assert_eq!(completion.wait(), ShutdownOutcome::WorkerFailed);
+        assert_eq!(adapter.status(), DesktopRuntimeStatus::setup_failure());
+        assert_eq!(adapter.retry(), RuntimeRetryResult::Unavailable);
+        assert_eq!(
+            adapter.request_shutdown().unwrap().outcome(),
+            Some(ShutdownOutcome::WorkerFailed)
+        );
     }
 
     #[test]

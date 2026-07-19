@@ -234,6 +234,13 @@ fn is_safe_environment_key(key: &str) -> bool {
 /// attach the child afterward, and implement tree-aware graceful/forced termination. The fallback
 /// never invokes a shell and always operates on the owned direct child handle.
 pub(crate) trait ProcessGroupControl: Send + Sync {
+    /// Reserves the configure/spawn/attach handoff against the final containment barrier.
+    fn reserve_spawn(&self) -> Result<(), ProcessError> {
+        Ok(())
+    }
+
+    fn finish_spawn(&self) {}
+
     fn configure_command(
         &self,
         _role: ProcessRole,
@@ -262,9 +269,66 @@ pub(crate) trait ProcessGroupControl: Send + Sync {
             .map_err(|_| ProcessError::new("desktop.process_stop_failed"))
     }
 
-    /// Release platform ownership after the direct child has been reaped. Implementations also
-    /// use this boundary to ensure descendants cannot outlive their owned process tree.
+    /// Observes direct-child exit. Unix overrides this to avoid reaping the process-group leader
+    /// until its descendants have been terminated, which keeps the numeric group ID from reuse.
+    fn has_exited(
+        &self,
+        _identity: ChildIdentity,
+        child: &mut Child,
+    ) -> Result<bool, ProcessError> {
+        child
+            .try_wait()
+            .map(|status| status.is_some())
+            .map_err(|_| ProcessError::new("desktop.process_status_failed"))
+    }
+
+    /// Permanently rejects new ownership and force-stops every currently owned process tree.
+    /// This is the final bounded-exit containment barrier, not an ordinary lifecycle operation.
+    fn seal_and_force_stop_all(&self) -> Result<(), ProcessError> {
+        Ok(())
+    }
+
+    /// Releases platform ownership as the direct child exits. Unix callers invoke this before
+    /// reaping so descendants are terminated while the leader still pins its PID/PGID.
     fn release(&self, _identity: ChildIdentity) {}
+}
+
+pub(crate) struct ProcessSpawnReservation {
+    control: Arc<dyn ProcessGroupControl>,
+    active: bool,
+}
+
+impl ProcessSpawnReservation {
+    pub(crate) fn new(control: Arc<dyn ProcessGroupControl>) -> Result<Self, ProcessError> {
+        control.reserve_spawn()?;
+        Ok(Self {
+            control,
+            active: true,
+        })
+    }
+
+    pub(crate) fn attach(
+        mut self,
+        identity: ChildIdentity,
+        child: &mut Child,
+    ) -> Result<(), ProcessError> {
+        let result = self.control.attach(identity, child);
+        self.finish();
+        result
+    }
+
+    fn finish(&mut self) {
+        if self.active {
+            self.control.finish_spawn();
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for ProcessSpawnReservation {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 /// Creates the production tree-aware process controller for the current operating system.
@@ -311,14 +375,15 @@ impl OwnedProcess {
         if self.exited {
             return Ok(true);
         }
-        self.exited = self
-            .child
-            .try_wait()
-            .map_err(|_| ProcessError::new("desktop.process_status_failed"))?
-            .is_some();
+        self.exited = self.control.has_exited(self.identity, &mut self.child)?;
         if self.exited {
             self.shutdown_stdin.take();
+            // Unix releases/kills the group while the exited leader is still an unreaped zombie,
+            // so its PID/PGID cannot be recycled between observation and the final group signal.
             self.release_ownership();
+            self.child
+                .wait()
+                .map_err(|_| ProcessError::new("desktop.process_status_failed"))?;
             self.release_readers();
         }
         Ok(self.exited)
@@ -427,6 +492,7 @@ pub(crate) fn start_process_cancellable(
     if is_cancelled() {
         return Err(ProcessError::new("desktop.process_cancelled"));
     }
+    let reservation = ProcessSpawnReservation::new(Arc::clone(&control))?;
     let mut command = spec.command();
     control.configure_command(spec.role, &mut command)?;
 
@@ -437,7 +503,7 @@ pub(crate) fn start_process_cancellable(
         role: spec.role,
         pid: child.id(),
     };
-    if control.attach(identity, &mut child).is_err() {
+    if reservation.attach(identity, &mut child).is_err() {
         terminate_unowned_child(&mut child);
         return Err(ProcessError::new("desktop.process_group_failed"));
     }
@@ -540,7 +606,12 @@ fn terminate_attached_child(
     }
     let deadline = Instant::now() + FORCE_STOP_TIMEOUT;
     loop {
-        if matches!(child.try_wait(), Ok(Some(_))) || Instant::now() >= deadline {
+        if matches!(control.has_exited(identity, child), Ok(true)) {
+            control.release(identity);
+            let _ = child.wait();
+            return;
+        }
+        if Instant::now() >= deadline {
             control.release(identity);
             return;
         }
@@ -1118,6 +1189,38 @@ mod tests {
         let descendant_escaped = marker.exists();
         let _ = fs::remove_file(marker);
         assert!(!descendant_escaped);
+    }
+
+    #[test]
+    fn final_containment_kills_owned_groups_and_rejects_late_spawns() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let marker = env::temp_dir().join(format!(
+            "schedule-final-containment-{}-{nonce}.marker",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&marker);
+        let control = platform_process_control();
+        let spec = helper_spec(ProcessRole::Api, "tree_parent", Duration::from_secs(2))
+            .env(EXPLICIT_VALUE, marker.as_os_str())
+            .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
+        let started = start_process(spec, Arc::clone(&control)).unwrap();
+
+        control.seal_and_force_stop_all().unwrap();
+        thread::sleep(Duration::from_millis(750));
+        assert!(!marker.exists());
+        let late = start_process(
+            helper_spec(ProcessRole::Worker, "sleep", Duration::from_secs(1)),
+            control,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(late.code(), "desktop.process_group_failed");
+
+        drop(started);
+        let _ = fs::remove_file(marker);
     }
 
     #[test]

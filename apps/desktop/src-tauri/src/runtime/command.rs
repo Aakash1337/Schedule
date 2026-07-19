@@ -4,6 +4,7 @@
 //! formatting: PostgreSQL connection settings and migration diagnostics can contain credentials.
 
 use std::{
+    cell::Cell,
     ffi::OsString,
     fmt,
     io::Read,
@@ -17,7 +18,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::process::{ChildIdentity, ProcessError, ProcessGroupControl, ProcessRole};
+use super::process::{
+    ChildIdentity, ProcessError, ProcessGroupControl, ProcessRole, ProcessSpawnReservation,
+};
 
 const READ_CHUNK_BYTES: usize = 4 * 1024;
 const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
@@ -175,11 +178,20 @@ enum OutputEvent {
 struct AttachedCommandOwnership<'a> {
     control: &'a dyn ProcessGroupControl,
     identity: ChildIdentity,
+    released: Cell<bool>,
+}
+
+impl AttachedCommandOwnership<'_> {
+    fn release(&self) {
+        if !self.released.replace(true) {
+            self.control.release(self.identity);
+        }
+    }
 }
 
 impl Drop for AttachedCommandOwnership<'_> {
     fn drop(&mut self) {
-        self.control.release(self.identity);
+        self.release();
     }
 }
 
@@ -204,6 +216,8 @@ pub(crate) fn run_command_cancellable(
     if is_cancelled() {
         return Err(CommandError::new("desktop.command_cancelled"));
     }
+    let reservation =
+        ProcessSpawnReservation::new(Arc::clone(&control)).map_err(map_process_error)?;
     let mut command = spec.command();
     control
         .configure_command(ProcessRole::Database, &mut command)
@@ -215,25 +229,26 @@ pub(crate) fn run_command_cancellable(
         role: ProcessRole::Database,
         pid: child.id(),
     };
-    if control.attach(identity, &mut child).is_err() {
-        stop_and_reap(&control, identity, &mut child);
+    if reservation.attach(identity, &mut child).is_err() {
+        stop_unattached(&control, identity, &mut child);
         return Err(CommandError::new("desktop.command_group_failed"));
     }
     let ownership = AttachedCommandOwnership {
         control: control.as_ref(),
         identity,
+        released: Cell::new(false),
     };
     if is_cancelled() {
-        stop_and_reap(&control, identity, &mut child);
+        stop_and_reap(&control, &ownership, identity, &mut child);
         return Err(CommandError::new("desktop.command_cancelled"));
     }
 
     let Some(stdout) = child.stdout.take() else {
-        stop_and_reap(&control, identity, &mut child);
+        stop_and_reap(&control, &ownership, identity, &mut child);
         return Err(CommandError::new("desktop.command_output_failed"));
     };
     let Some(stderr) = child.stderr.take() else {
-        stop_and_reap(&control, identity, &mut child);
+        stop_and_reap(&control, &ownership, identity, &mut child);
         return Err(CommandError::new("desktop.command_output_failed"));
     };
     let (sender, receiver) = mpsc::sync_channel(16);
@@ -246,6 +261,7 @@ pub(crate) fn run_command_cancellable(
         &mut child,
         identity,
         &control,
+        &ownership,
         receiver,
         spec.timeout,
         spec.max_stdout_bytes,
@@ -266,6 +282,7 @@ fn collect_output(
     child: &mut Child,
     identity: ChildIdentity,
     control: &Arc<dyn ProcessGroupControl>,
+    ownership: &AttachedCommandOwnership<'_>,
     receiver: Receiver<OutputEvent>,
     timeout: Duration,
     stdout_limit: usize,
@@ -276,68 +293,69 @@ fn collect_output(
     let mut stdout = Vec::with_capacity(stdout_limit.min(READ_CHUNK_BYTES));
     let mut stderr = Vec::with_capacity(stderr_limit.min(READ_CHUNK_BYTES));
     let mut ended = 0;
-    let mut exit = None;
     let mut exited_at = None;
 
     loop {
         if is_cancelled() {
-            stop_and_reap(control, identity, child);
+            stop_and_reap(control, ownership, identity, child);
             return Err(CommandError::new("desktop.command_cancelled"));
         }
         match receiver.recv_timeout(POLL_INTERVAL) {
             Ok(OutputEvent::Bytes(Stream::Stdout, bytes)) => {
                 if let Err(error) = append_bounded(&mut stdout, bytes, stdout_limit) {
-                    stop_and_reap(control, identity, child);
+                    stop_and_reap(control, ownership, identity, child);
                     return Err(error);
                 }
             }
             Ok(OutputEvent::Bytes(Stream::Stderr, bytes)) => {
                 if let Err(error) = append_bounded(&mut stderr, bytes, stderr_limit) {
-                    stop_and_reap(control, identity, child);
+                    stop_and_reap(control, ownership, identity, child);
                     return Err(error);
                 }
             }
             Ok(OutputEvent::Ended) => ended += 1,
             Ok(OutputEvent::Failed) => {
-                stop_and_reap(control, identity, child);
+                stop_and_reap(control, ownership, identity, child);
                 return Err(CommandError::new("desktop.command_output_failed"));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
 
-        if exit.is_none() {
-            exit = match child.try_wait() {
-                Ok(status) => status,
+        if exited_at.is_none() {
+            match control.has_exited(identity, child) {
+                Ok(true) => exited_at = Some(Instant::now()),
+                Ok(false) => {}
                 Err(_) => {
-                    stop_and_reap(control, identity, child);
+                    stop_and_reap(control, ownership, identity, child);
                     return Err(CommandError::new("desktop.command_status_failed"));
                 }
-            };
-            if exit.is_some() {
-                exited_at = Some(Instant::now());
             }
         }
-        if let Some(status) = exit {
+        if let Some(exited_at) = exited_at {
             // Give normal readers a short bounded chance to flush. Do not wait indefinitely for
             // inherited pipe handles held by descendants.
             if ended >= 2 {
+                ownership.release();
+                let status = child
+                    .wait()
+                    .map_err(|_| CommandError::new("desktop.command_status_failed"))?;
                 return if status.success() {
                     Ok(CommandOutput { stdout, stderr })
                 } else {
-                    stop_and_reap(control, identity, child);
+                    stop_and_reap(control, ownership, identity, child);
                     Err(CommandError::new("desktop.command_exit_failed"))
                 };
             }
-            if exited_at.is_some_and(|at| at.elapsed() >= OUTPUT_SETTLE_TIMEOUT) {
+            if exited_at.elapsed() >= OUTPUT_SETTLE_TIMEOUT {
                 // A descendant may still own the inherited pipes after the direct child exits.
                 // Stop the prepared group before reporting the malformed command lifecycle.
-                stop_and_reap(control, identity, child);
+                stop_and_reap(control, ownership, identity, child);
                 return Err(CommandError::new("desktop.command_output_failed"));
             }
         }
         if Instant::now() >= deadline {
-            stop_and_reap(control, identity, child);
+            stop_and_reap(control, ownership, identity, child);
             return Err(CommandError::new("desktop.command_timeout"));
         }
     }
@@ -383,20 +401,34 @@ fn drain_stream<R: Read + Send + 'static>(
 
 fn stop_and_reap(
     control: &Arc<dyn ProcessGroupControl>,
+    ownership: &AttachedCommandOwnership<'_>,
     identity: ChildIdentity,
     child: &mut Child,
 ) {
     if control.force_stop(identity, child).is_err() {
+        ownership.release();
         kill_direct_child(child);
         return;
     }
     let until = Instant::now() + Duration::from_secs(2);
     while Instant::now() < until {
-        if matches!(child.try_wait(), Ok(Some(_))) {
+        if matches!(control.has_exited(identity, child), Ok(true)) {
+            ownership.release();
+            let _ = child.wait();
             return;
         }
         thread::sleep(POLL_INTERVAL);
     }
+    ownership.release();
+    kill_direct_child(child);
+}
+
+fn stop_unattached(
+    control: &Arc<dyn ProcessGroupControl>,
+    identity: ChildIdentity,
+    child: &mut Child,
+) {
+    let _ = control.force_stop(identity, child);
     kill_direct_child(child);
 }
 
