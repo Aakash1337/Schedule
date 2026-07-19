@@ -16,7 +16,10 @@ describe("desktop startup state", () => {
   ])("projects the %s phase without inventing progress", (phase, message) => {
     const state = reduceStartupState(initialStartupState, {
       type: "phase_changed",
-      phase: phase as Exclude<StartupPhase, "recoverable_failure" | "incompatible_data">,
+      phase: phase as Exclude<
+        StartupPhase,
+        "recoverable_failure" | "incompatible_data" | "fatal_failure"
+      >,
       message,
     });
 
