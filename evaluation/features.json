@@ -52,6 +52,11 @@
     "hosted-browser-e2e": {
       "command": "pnpm verify:hosted-web-e2e",
       "ci": true
+    },
+    "desktop-foundation": {
+      "command": "pnpm desktop:check",
+      "ci": true,
+      "workflow": ".github/workflows/desktop.yml"
     }
   },
   "features": [
@@ -4364,6 +4369,57 @@
           "file": "scripts/verify-hosted-oidc-composition.ts",
           "command": "hosted-oidc-composition-db",
           "anchors": ["and a transaction-authorized status update"]
+        }
+      ]
+    },
+    {
+      "id": "desktop-self-contained-runtime",
+      "status": "partial",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/DESKTOP.md",
+        "anchor": "## Implemented supervisor foundation"
+      },
+      "limitations": [
+        "The launch coordinator does not invoke these primitives yet, so the desktop correctly remains in foundation state.",
+        "Production Windows Job Object and Linux process-group controllers, private credential permissions, real pinned release artifacts, and first-launch PostgreSQL acceptance tests remain required."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/desktop/src-tauri/src/runtime/state.rs",
+          "command": "desktop-foundation",
+          "anchors": [
+            "failures_cleanup_and_only_recoverable_ones_can_retry",
+            "stop_cleans_up_every_in_progress_start_idempotently"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/desktop/src-tauri/src/runtime/integrity.rs",
+          "command": "desktop-foundation",
+          "anchors": [
+            "rejects_a_self_rewritten_manifest_without_the_embedded_anchor",
+            "component_tree_hash_matches_the_typescript_golden_bundle"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/desktop/src-tauri/src/runtime/command.rs",
+          "command": "desktop-foundation",
+          "anchors": [
+            "times_out_and_uses_the_injected_group_controller",
+            "rejects_oversized_output_without_retaining_it"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/build-desktop-runtime.test.ts",
+          "command": "desktop-foundation",
+          "anchors": [
+            "keeps the component tree hash compatible with the Rust verifier",
+            "rejects runtime manifests that the Rust supervisor cannot launch"
+          ]
         }
       ]
     }

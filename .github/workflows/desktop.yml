@@ -6,6 +6,8 @@ on:
     paths:
       - ".github/workflows/desktop.yml"
       - "apps/desktop/**"
+      - "scripts/build-desktop-runtime.ts"
+      - "scripts/build-desktop-runtime.test.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
@@ -18,6 +20,8 @@ on:
     paths:
       - ".github/workflows/desktop.yml"
       - "apps/desktop/**"
+      - "scripts/build-desktop-runtime.ts"
+      - "scripts/build-desktop-runtime.test.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
@@ -73,11 +77,11 @@ jobs:
           rustup default stable
           rustup component add rustfmt
       - run: pnpm install --frozen-lockfile
-      - name: Verify desktop frontend
-        run: pnpm --filter @schedule/desktop check
+      - name: Verify deterministic runtime assembly
+        run: pnpm exec vitest run scripts/build-desktop-runtime.test.ts
+      - name: Verify desktop frontend and supervisor
+        run: pnpm desktop:check
       - name: Check Rust formatting
         run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
-      - name: Test Rust shell
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
       - name: Compile native application
         run: pnpm --filter @schedule/desktop exec tauri build --no-bundle

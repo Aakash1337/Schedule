@@ -1,7 +1,7 @@
 # Desktop application
 
-Status: native foundation and authenticated request boundary; the self-contained service supervisor
-and product interface are not in this milestone yet.
+Status: native shell, authenticated request boundary, and tested supervisor foundation. The launch
+coordinator, bundled release artifacts, and product interface are not in this milestone yet.
 
 Schedule is gaining a native Tauri 2 shell for Windows and Linux while retaining the existing web
 application. The desktop and hosted applications will share domain behavior and API contracts, but
@@ -20,6 +20,35 @@ accessible startup-state model, the authenticated API/bridge contract, Windows a
 checks, and installer metadata. It intentionally reports that the local runtime is unavailable until
 the supervised runtime milestone lands; it must not present a scaffold as a working desktop release.
 
+## Implemented supervisor foundation
+
+The native build now contains the bounded primitives the launch coordinator will use:
+
+- A generation-aware lifecycle reducer orders lock acquisition, runtime verification, database
+  startup, backup-before-migration, API/worker startup, and reverse cleanup. Failure and user-stop
+  paths must finish cleanup before retry or restart can begin.
+- An operating-system file lock provides one runtime owner per user-data directory without deleting
+  the coordination file during shutdown.
+- A strict crash journal uses same-directory durable replacement. Windows uses `MoveFileExW` with
+  replace and write-through flags, so an old migration record is never deleted before its successor
+  is installed.
+- Long-lived child and one-shot command runners clear inherited environments, reject relative
+  executables, avoid shells, bound readiness/output/time, retain direct child handles, and expose
+  only stable errors. Production process-group and Job Object controllers are deliberately still
+  required before these runners can be connected to launch.
+- PostgreSQL 17 plans separate initdb's raw password file from libpq's pgpass format, start the real
+  `postgres` process directly, generate loopback-only SCRAM rules, define a private bootstrap step,
+  authenticate the expected server/data directory, and use bounded fast shutdown and backup
+  verification commands.
+- The runtime assembler accepts only pinned, symlink-free, portable Windows/Linux input trees. It
+  requires the complete PostgreSQL command set and pgcrypto files, creates a deterministic manifest,
+  SBOM, and license inventory, and emits the manifest SHA-256 for embedding into the signed native
+  binary. Rust compares that embedded trust anchor before accepting component hashes; a rewritten
+  colocated manifest is not trusted.
+
+These pieces are compiled and tested on Windows and Linux, but they are not yet invoked by `main`.
+The application therefore continues to report `foundation` rather than claiming it is ready.
+
 ## Runtime architecture
 
 The planned installed runtime has four layers:
@@ -36,7 +65,7 @@ SQLite would be a separate correctness-sensitive storage port rather than a pack
 
 Expected mutable locations are `%LOCALAPPDATA%\\Schedule` on Windows and
 `${XDG_DATA_HOME:-~/.local/share}/schedule` on Linux. Exact subdirectories and the recovery journal
-will be versioned by the supervisor implementation.
+are derived beneath that root by the supervisor path contract.
 
 ## Security boundary
 
@@ -92,8 +121,15 @@ Development currently requires the normal repository prerequisites plus the stab
 pnpm install
 pnpm desktop:dev
 pnpm desktop:check
+pnpm desktop:runtime:assemble -- <pinned runtime arguments>
 pnpm desktop:build
 ```
 
 `desktop:build` builds the installer formats supported by the current operating system. The current
 installer contains only the foundation shell and is not an end-user release.
+
+Runtime assembly performs no downloads. Release automation must supply production API/worker
+deployment trees, pinned Node and PostgreSQL 17 directories, their exact versions and tree hashes,
+and a target OS/architecture. The emitted `SCHEDULE_DESKTOP_RUNTIME_MANIFEST_SHA256` value must be
+present while compiling the signed native binary; a release build without that anchor cannot start
+the bundled runtime.
