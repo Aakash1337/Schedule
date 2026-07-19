@@ -1,0 +1,66 @@
+// @vitest-environment jsdom
+
+import { StrictMode } from "react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+vi.mock("../../web/src/App.js", () => ({
+  App: () => <main aria-label="Shared Schedule application">Shared Schedule application</main>,
+}));
+
+import { DesktopApp } from "./DesktopApp.js";
+
+describe("DesktopApp runtime gate", () => {
+  afterEach(cleanup);
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+  });
+
+  it("inspects once in StrictMode and keeps the shared App behind a recoverable error", async () => {
+    invokeMock.mockResolvedValue({ phase: "foundation", message: "Install the local runtime" });
+
+    const { container } = render(
+      <StrictMode>
+        <DesktopApp />
+      </StrictMode>,
+    );
+
+    expect(screen.queryByRole("main", { name: "Shared Schedule application" })).toBeNull();
+    expect((await screen.findByRole("alert")).textContent).toContain("Install the local runtime");
+    expect(container.querySelector(".startup-mark")?.getAttribute("data-state")).toBe("error");
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Retry startup" }).disabled).toBe(
+      false,
+    );
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("presents incompatible data as a blocking accessible error without mounting the App", async () => {
+    invokeMock.mockResolvedValue({ phase: "incompatible_data", message: "Update Schedule first" });
+
+    render(<DesktopApp />);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Update Schedule first");
+    expect(screen.queryByRole("button", { name: "Retry startup" })).toBeNull();
+    expect(screen.queryByRole("main", { name: "Shared Schedule application" })).toBeNull();
+  });
+
+  it("re-inspects after retry and mounts the shared App only when the runtime is ready", async () => {
+    invokeMock
+      .mockResolvedValueOnce({ phase: "foundation", message: "Install the local runtime" })
+      .mockResolvedValueOnce({ phase: "ready", message: "Ready" });
+
+    render(<DesktopApp />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Retry startup" }));
+    expect(screen.queryByRole("main", { name: "Shared Schedule application" })).toBeNull();
+
+    await waitFor(() => {
+      expect(screen.getByRole("main", { name: "Shared Schedule application" })).not.toBeNull();
+    });
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+});
