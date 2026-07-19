@@ -30,34 +30,39 @@ function render(next: StartupState): void {
       </div>
       <p class="startup-kicker">Local-first planning</p>
       <h1 id="startup-title">Schedule</h1>
-      <div class="startup-status" ${blocking ? 'role="alert"' : 'role="status" aria-live="polite"'} aria-busy="${String(busy)}">
-        <p class="startup-message">${escapeHtml(state.message)}</p>
-        ${state.detail === null ? "" : `<code>${escapeHtml(state.detail)}</code>`}
+      <div class="startup-status">
+        <p class="startup-message"></p>
       </div>
-      ${
-        state.phase === "recoverable_failure"
-          ? '<button class="startup-action" type="button" data-retry>Retry startup</button>'
-          : ""
-      }
     </section>
   `;
-  root.querySelector<HTMLButtonElement>("[data-retry]")?.addEventListener("click", () => {
-    render(reduceStartupState(state, { type: "retry" }));
-    void loadRuntime();
-  });
-}
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>'"]/gu, (character) => {
-    const entities: Readonly<Record<string, string>> = {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      "'": "&#39;",
-      '"': "&quot;",
-    };
-    return entities[character] ?? character;
-  });
+  const status = root.querySelector<HTMLElement>(".startup-status");
+  const message = root.querySelector<HTMLElement>(".startup-message");
+  if (status === null || message === null) throw new Error("The startup view is incomplete.");
+
+  status.setAttribute("aria-busy", String(busy));
+  status.setAttribute("role", blocking ? "alert" : "status");
+  if (!blocking) status.setAttribute("aria-live", "polite");
+  message.textContent = state.message;
+
+  if (state.detail !== null) {
+    const detail = document.createElement("code");
+    detail.textContent = state.detail;
+    status.append(detail);
+  }
+
+  if (state.phase === "recoverable_failure") {
+    const retry = document.createElement("button");
+    retry.className = "startup-action";
+    retry.type = "button";
+    retry.dataset.retry = "";
+    retry.textContent = "Retry startup";
+    retry.addEventListener("click", () => {
+      render(reduceStartupState(state, { type: "retry" }));
+      void loadRuntime();
+    });
+    root.querySelector(".startup-shell")?.append(retry);
+  }
 }
 
 async function loadRuntime(): Promise<void> {
