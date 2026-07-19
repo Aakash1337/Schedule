@@ -16,6 +16,8 @@ export interface RuntimeStatus {
   readonly message: string;
 }
 
+export type RuntimeRetryResult = "accepted" | "busy" | "unavailable";
+
 const runtimeStatusPollMs = 250;
 const runtimeStatusTimeoutMs = 5_000;
 
@@ -38,6 +40,12 @@ export function runtimeStatusAction(status: RuntimeStatus): StartupAction {
         message: status.message,
         detail: "desktop.runtime_unavailable",
       };
+    case "fatal_failure":
+      return {
+        type: "fatal",
+        message: status.message,
+        detail: "desktop.runtime_initialization_failed",
+      };
     case "foundation":
       return {
         type: "failed",
@@ -47,18 +55,26 @@ export function runtimeStatusAction(status: RuntimeStatus): StartupAction {
   }
 }
 
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("desktop runtime command timed out")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
 export async function loadRuntimeStatus(
   inspect: () => Promise<RuntimeStatus> = () => invoke<RuntimeStatus>("runtime_status"),
   timeoutMs = runtimeStatusTimeoutMs,
 ): Promise<StartupAction> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const status = await Promise.race([
-      inspect(),
-      new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error("runtime_status timed out")), timeoutMs);
-      }),
-    ]);
+    const status = await withTimeout(inspect(), timeoutMs);
     return runtimeStatusAction(status);
   } catch {
     return {
@@ -66,8 +82,17 @@ export async function loadRuntimeStatus(
       message: "Schedule could not inspect its local runtime",
       detail: "desktop.runtime_unavailable",
     };
-  } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+export async function requestRuntimeRetry(
+  retry: () => Promise<RuntimeRetryResult> = () => invoke<RuntimeRetryResult>("runtime_retry"),
+  timeoutMs = runtimeStatusTimeoutMs,
+): Promise<RuntimeRetryResult | undefined> {
+  try {
+    return await withTimeout(retry(), timeoutMs);
+  } catch {
+    return undefined;
   }
 }
 
@@ -79,7 +104,10 @@ function StartupGate({
   readonly onRetry: () => void;
 }) {
   const busy = isBusyStartupPhase(state.phase);
-  const blocking = state.phase === "recoverable_failure" || state.phase === "incompatible_data";
+  const blocking =
+    state.phase === "recoverable_failure" ||
+    state.phase === "incompatible_data" ||
+    state.phase === "fatal_failure";
 
   return (
     <section className="startup-shell" aria-labelledby="startup-title">
@@ -112,6 +140,7 @@ export function DesktopApp() {
   const pollTimer = useRef<number | null>(null);
   const inspectionEpoch = useRef(0);
   const inspectionInFlight = useRef(false);
+  const retryInFlight = useRef(false);
 
   const inspectRuntime = useCallback(async function inspectRuntime() {
     if (inspectionInFlight.current) return;
@@ -144,10 +173,20 @@ export function DesktopApp() {
   }, [inspectRuntime]);
 
   const retry = useCallback(() => {
-    if (inspectionInFlight.current) return;
+    if (retryInFlight.current || inspectionInFlight.current) return;
+    retryInFlight.current = true;
     if (pollTimer.current !== null) window.clearTimeout(pollTimer.current);
-    setState((current) => reduceStartupState(current, { type: "retry" }));
-    void inspectRuntime();
+    void requestRuntimeRetry()
+      .then((result) => {
+        if (!mounted.current) return;
+        if (result === "accepted" || result === "busy") {
+          setState((current) => reduceStartupState(current, { type: "retry" }));
+        }
+        void inspectRuntime();
+      })
+      .finally(() => {
+        retryInFlight.current = false;
+      });
   }, [inspectRuntime]);
 
   return state.phase === "ready" ? <App /> : <StartupGate state={state} onRetry={retry} />;

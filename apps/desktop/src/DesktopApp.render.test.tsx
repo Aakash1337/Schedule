@@ -54,6 +54,7 @@ describe("DesktopApp runtime gate", () => {
   it("re-inspects after retry and mounts the shared App only when the runtime is ready", async () => {
     invokeMock
       .mockResolvedValueOnce({ phase: "foundation", message: "Install the local runtime" })
+      .mockResolvedValueOnce("accepted")
       .mockResolvedValueOnce({ phase: "ready", message: "Ready" });
 
     render(<DesktopApp />);
@@ -64,7 +65,8 @@ describe("DesktopApp runtime gate", () => {
     await waitFor(() => {
       expect(screen.getByRole("main", { name: "Shared Schedule application" })).not.toBeNull();
     });
-    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenCalledTimes(3);
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "runtime_retry");
   });
 
   it("polls an active startup until the shared application is ready", async () => {
@@ -95,6 +97,7 @@ describe("DesktopApp runtime gate", () => {
     });
     invokeMock
       .mockResolvedValueOnce({ phase: "foundation", message: "Install the local runtime" })
+      .mockResolvedValueOnce("accepted")
       .mockReturnValueOnce(retryStatus);
 
     render(<DesktopApp />);
@@ -106,7 +109,8 @@ describe("DesktopApp runtime gate", () => {
       retry.click();
       retry.click();
     });
-    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenCalledTimes(3);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "runtime_retry")).toHaveLength(1);
 
     await act(async () => resolveRetry({ phase: "ready", message: "Ready" }));
     expect(screen.getByRole("main", { name: "Shared Schedule application" })).not.toBeNull();

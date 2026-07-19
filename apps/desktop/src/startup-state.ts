@@ -4,7 +4,8 @@ export type StartupPhase =
   | "starting_services"
   | "ready"
   | "recoverable_failure"
-  | "incompatible_data";
+  | "incompatible_data"
+  | "fatal_failure";
 
 export interface StartupState {
   readonly phase: StartupPhase;
@@ -16,11 +17,12 @@ export interface StartupState {
 export type StartupAction =
   | {
       readonly type: "phase_changed";
-      readonly phase: Exclude<StartupPhase, "recoverable_failure" | "incompatible_data">;
+      readonly phase: Exclude<StartupPhase, "recoverable_failure" | "incompatible_data" | "fatal_failure">;
       readonly message: string;
     }
   | { readonly type: "failed"; readonly message: string; readonly detail?: string }
   | { readonly type: "incompatible"; readonly message: string; readonly detail?: string }
+  | { readonly type: "fatal"; readonly message: string; readonly detail?: string }
   | { readonly type: "retry" };
 
 export const initialStartupState: StartupState = Object.freeze({
@@ -49,6 +51,13 @@ export function reduceStartupState(state: StartupState, action: StartupAction): 
     case "incompatible":
       return {
         phase: "incompatible_data",
+        message: action.message,
+        detail: action.detail ?? null,
+        attempt: state.attempt,
+      };
+    case "fatal":
+      return {
+        phase: "fatal_failure",
         message: action.message,
         detail: action.detail ?? null,
         attempt: state.attempt,
