@@ -353,7 +353,7 @@ pub(crate) struct OwnedProcess {
     child: Child,
     control: Arc<dyn ProcessGroupControl>,
     readers: Vec<JoinHandle<()>>,
-    guardian_channel: Arc<GuardianChannel>,
+    _guardian_channel: Arc<GuardianChannel>,
     exited: bool,
     ownership_released: bool,
 }
@@ -385,10 +385,6 @@ impl OwnedProcess {
         }
 
         let graceful_deadline = Instant::now() + graceful_timeout;
-        if self.request_desktop_shutdown() && self.wait_until(graceful_deadline)? {
-            return Ok(());
-        }
-
         let graceful_result = self
             .control
             .request_graceful_stop(self.identity, &mut self.child);
@@ -440,10 +436,6 @@ impl OwnedProcess {
             self.ownership_released = true;
         }
     }
-
-    fn request_desktop_shutdown(&mut self) -> bool {
-        self.guardian_channel.send(guardian::GRACEFUL).is_ok()
-    }
 }
 
 impl Drop for OwnedProcess {
@@ -494,21 +486,27 @@ pub(crate) fn start_process_cancellable(
         return Err(ProcessError::new("desktop.process_cancelled"));
     }
 
-    if let Err(error) = spawned.commit() {
+    // Install both bounded drains before COMMIT. A newly admitted payload can therefore never fill
+    // its inherited guardian pipes while the parent is still completing launch admission.
+    let Some(stdout) = spawned.child.stdout.take() else {
+        terminate_attached_child(&control, identity, &mut spawned.child);
+        return Err(ProcessError::new("desktop.process_output_failed"));
+    };
+    let Some(stderr) = spawned.child.stderr.take() else {
+        terminate_attached_child(&control, identity, &mut spawned.child);
+        return Err(ProcessError::new("desktop.process_output_failed"));
+    };
+    if let Err(error) = spawned.prepare() {
         terminate_attached_child(&control, identity, &mut spawned.child);
         return Err(error);
     }
-    let (mut child, guardian_channel) = spawned.into_parts();
-
-    let Some(stdout) = child.stdout.take() else {
-        terminate_attached_child(&control, identity, &mut child);
-        return Err(ProcessError::new("desktop.process_output_failed"));
+    let stderr = match guardian::await_ack(stderr, spec.startup_timeout, is_cancelled) {
+        Ok(stderr) => stderr,
+        Err(error) => {
+            terminate_attached_child(&control, identity, &mut spawned.child);
+            return Err(error);
+        }
     };
-    let Some(stderr) = child.stderr.take() else {
-        terminate_attached_child(&control, identity, &mut child);
-        return Err(ProcessError::new("desktop.process_output_failed"));
-    };
-
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
     let readiness_complete = Arc::new(AtomicBool::new(false));
     let stdout_probe = spec
@@ -534,12 +532,18 @@ pub(crate) fn start_process_cancellable(
         ),
     ];
 
+    if let Err(error) = spawned.commit() {
+        terminate_attached_child(&control, identity, &mut spawned.child);
+        return Err(error);
+    }
+    let (child, guardian_channel) = spawned.into_parts();
+
     let mut process = OwnedProcess {
         identity,
         child,
         control,
         readers,
-        guardian_channel,
+        _guardian_channel: guardian_channel,
         exited: false,
         ownership_released: false,
     };
@@ -806,6 +810,7 @@ impl Drop for ProcessSet {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashMap,
         env,
         ffi::OsStr,
         fs,
@@ -825,7 +830,8 @@ mod tests {
         let executable = env::current_exe().unwrap();
         let working_directory = env::current_dir().unwrap();
         ProcessSpec::new(role, executable, working_directory, timeout)
-            .arg("subprocess_helper")
+            .arg("runtime::process::tests::subprocess_helper")
+            .arg("--exact")
             .arg("--nocapture")
             .env(CHILD_MODE, mode)
     }
@@ -845,6 +851,11 @@ mod tests {
                 // Model a real service: readiness is valid only while the child remains alive.
                 thread::sleep(Duration::from_secs(2));
             }
+            Ok("burst_ready") => {
+                println!("{}", "x".repeat(256 * 1024));
+                println!("{}burst", String::from_utf8_lossy(READY_PREFIX));
+                thread::sleep(Duration::from_secs(2));
+            }
             Ok("sleep") => thread::sleep(Duration::from_secs(2)),
             Ok("await_shutdown") => {
                 let mut line = String::new();
@@ -859,7 +870,8 @@ mod tests {
             }
             Ok("tree_parent") => {
                 Command::new(env::current_exe().unwrap())
-                    .arg("subprocess_helper")
+                    .arg("runtime::process::tests::subprocess_helper")
+                    .arg("--exact")
                     .arg("--nocapture")
                     .env_clear()
                     .env(CHILD_MODE, "tree_descendant")
@@ -905,6 +917,16 @@ mod tests {
             started.readiness.as_ref().unwrap().as_bytes(),
             br#"{"explicit":"allowed","pathAbsent":true}"#
         );
+        started.process.stop(Duration::ZERO).unwrap();
+    }
+
+    #[test]
+    fn drains_service_output_beyond_pipe_capacity_before_readiness() {
+        let spec = helper_spec(ProcessRole::Api, "burst_ready", Duration::from_secs(5))
+            .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
+        let mut started = start_process(spec, Arc::new(DirectChildControl)).unwrap();
+
+        assert_eq!(started.readiness.as_ref().unwrap().as_bytes(), b"burst");
         started.process.stop(Duration::ZERO).unwrap();
     }
 
@@ -999,7 +1021,9 @@ mod tests {
     struct RecordingControl {
         attached: Mutex<Vec<ProcessRole>>,
         stopped: Mutex<Vec<ProcessRole>>,
+        forced: Mutex<Vec<ProcessRole>>,
         released: Mutex<Vec<ProcessRole>>,
+        channels: Mutex<HashMap<u32, (ProcessRole, Arc<GuardianChannel>)>>,
     }
 
     impl ProcessGroupControl for RecordingControl {
@@ -1007,25 +1031,57 @@ mod tests {
             &self,
             identity: ChildIdentity,
             _child: &mut Child,
-            _channel: Arc<GuardianChannel>,
+            channel: Arc<GuardianChannel>,
         ) -> Result<(), ProcessError> {
             self.attached.lock().unwrap().push(identity.role);
+            self.channels
+                .lock()
+                .unwrap()
+                .insert(identity.pid, (identity.role, channel));
             Ok(())
         }
 
         fn request_graceful_stop(
             &self,
             identity: ChildIdentity,
-            child: &mut Child,
+            _child: &mut Child,
         ) -> Result<(), ProcessError> {
             self.stopped.lock().unwrap().push(identity.role);
-            child
-                .kill()
-                .map_err(|_| ProcessError::new("desktop.process_stop_failed"))
+            let channel = self
+                .channels
+                .lock()
+                .unwrap()
+                .get(&identity.pid)
+                .filter(|entry| entry.0 == identity.role)
+                .map(|entry| Arc::clone(&entry.1))
+                .ok_or_else(|| ProcessError::new("desktop.process_stop_failed"))?;
+            channel.send(guardian::GRACEFUL)
+        }
+
+        fn force_stop(
+            &self,
+            identity: ChildIdentity,
+            child: &mut Child,
+        ) -> Result<(), ProcessError> {
+            self.forced.lock().unwrap().push(identity.role);
+            let channel = self
+                .channels
+                .lock()
+                .unwrap()
+                .get(&identity.pid)
+                .filter(|entry| entry.0 == identity.role)
+                .map(|entry| Arc::clone(&entry.1))
+                .ok_or_else(|| ProcessError::new("desktop.process_stop_failed"))?;
+            match channel.send(guardian::FORCE) {
+                Ok(()) => Ok(()),
+                Err(_) if matches!(child.try_wait(), Ok(Some(_))) => Ok(()),
+                Err(error) => Err(error),
+            }
         }
 
         fn release(&self, identity: ChildIdentity) {
             self.released.lock().unwrap().push(identity.role);
+            self.channels.lock().unwrap().remove(&identity.pid);
         }
     }
 
@@ -1054,7 +1110,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_shutdown_pipe_delivers_one_line_without_platform_fallback() {
+    fn desktop_shutdown_pipe_delivers_one_line_through_platform_control() {
         let control = Arc::new(RecordingControl::default());
         let mut started = start_process(
             helper_spec(ProcessRole::Api, "await_shutdown", Duration::from_secs(1))
@@ -1065,11 +1121,12 @@ mod tests {
 
         started.process.stop(Duration::from_secs(1)).unwrap();
         assert!(started.process.has_exited().unwrap());
-        assert!(control.stopped.lock().unwrap().is_empty());
+        assert_eq!(*control.stopped.lock().unwrap(), vec![ProcessRole::Api]);
+        assert!(control.forced.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn broken_desktop_shutdown_pipe_falls_back_to_platform_control() {
+    fn broken_desktop_shutdown_pipe_escalates_to_force_stop() {
         let control = Arc::new(RecordingControl::default());
         let mut started = start_process(
             helper_spec(ProcessRole::Worker, "closed_stdin", Duration::from_secs(2))
@@ -1081,6 +1138,7 @@ mod tests {
 
         started.process.stop(Duration::from_millis(100)).unwrap();
         assert_eq!(*control.stopped.lock().unwrap(), vec![ProcessRole::Worker]);
+        assert_eq!(*control.forced.lock().unwrap(), vec![ProcessRole::Worker]);
     }
 
     #[test]

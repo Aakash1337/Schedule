@@ -62,13 +62,17 @@ will use:
   executables, avoid shells, bound readiness/output/time, and expose only stable errors. Their only
   pre-admission child is an inert copy of the signed Schedule binary in an exact hidden guardian
   mode. A bounded binary launch packet crosses a private inherited pipe; paths, arguments, working
-  directory, and environment never enter guardian arguments, logs, or temporary files. The final
-  barrier can atomically abort COMMIT without waiting for a stalled packet writer, and desktop
-  process exit closes every pipe handle as the independent liveness fail-safe.
-- On Windows, each guardian creates a private kill-on-close Job, creates the payload suspended,
-  assigns it to that Job, and resumes it only after COMMIT. Pipe EOF or FORCE terminates the Job;
-  guardian exit closes its sole Job handle and therefore kills remaining descendants. On Linux, the
-  guardian creates an isolated session, becomes a child subreaper, gives the direct payload a
+  directory, and environment never enter guardian arguments, logs, or temporary files. The parent
+  consumes an exact guardian-ready acknowledgement from stderr, installs bounded stdout and stderr
+  drains, and only then sends COMMIT. The final barrier atomically rejects an open admission or
+  makes an in-progress admission force-stop before releasing its writer, without waiting for a
+  stalled packet writer. Desktop process exit closes every pipe handle as the independent liveness
+  fail-safe.
+- On Windows, each guardian creates a private kill-on-close Job and joins it before creating the
+  payload suspended. It verifies that the payload inherited Job membership before acknowledging
+  readiness and resumes it only after COMMIT. Pipe EOF or FORCE terminates the Job; guardian exit
+  closes its sole Job handle and therefore kills remaining descendants. On Linux, the guardian
+  creates an isolated session, becomes a child subreaper, gives the direct payload a
   parent-death signal, and keeps the control descriptor close-on-exec. EOF or FORCE kills the
   payload group, walks adopted descendants (including new groups/sessions), and reaps until the
   kernel reports no children. Ownership is released exactly once after the guardian exits.

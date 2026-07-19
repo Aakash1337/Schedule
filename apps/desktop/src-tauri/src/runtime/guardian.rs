@@ -29,11 +29,15 @@ const MAX_FIELD_BYTES: usize = 1024 * 1024;
 const MAX_ARGUMENTS: usize = 256;
 const MAX_ENVIRONMENT: usize = 256;
 const COMMIT: u8 = b'C';
+const ACK: &[u8; 8] = b"SCHACK01";
 pub(super) const GRACEFUL: u8 = b'S';
 pub(super) const FORCE: u8 = b'F';
 const OPEN: u8 = 0;
-const COMMITTED: u8 = 1;
-const ABORTED: u8 = 2;
+const COMMITTING: u8 = 1;
+const COMMITTED: u8 = 2;
+const ABORTED: u8 = 3;
+#[cfg(all(test, windows))]
+const TEST_PRE_ACK_STALL: &str = "SCHEDULE_GUARDIAN_TEST_PRE_ACK_STALL";
 
 /// Launch data deliberately has no `Debug`; fields can contain credentials.
 pub(super) struct LaunchSpec {
@@ -77,7 +81,7 @@ impl GuardianChannel {
         }
     }
 
-    pub(super) fn commit(&self, mut packet: Vec<u8>) -> Result<(), ProcessError> {
+    fn prepare(&self, mut packet: Vec<u8>) -> Result<(), ProcessError> {
         let result = (|| {
             let mut writer = self
                 .writer
@@ -85,23 +89,45 @@ impl GuardianChannel {
                 .map_err(|_| ProcessError::new("desktop.process_control_failed"))?;
             writer
                 .write_all(&packet)
-                .map_err(|_| ProcessError::new("desktop.process_control_failed"))?;
-            if self
-                .admission
-                .compare_exchange(OPEN, COMMITTED, Ordering::AcqRel, Ordering::Acquire)
-                .is_err()
-            {
-                let _ = writer.write_all(&[FORCE]);
-                let _ = writer.flush();
-                return Err(ProcessError::new("desktop.process_group_failed"));
-            }
-            writer
-                .write_all(&[COMMIT])
                 .and_then(|()| writer.flush())
                 .map_err(|_| ProcessError::new("desktop.process_control_failed"))
         })();
         packet.zeroize();
         result
+    }
+
+    fn commit(&self) -> Result<(), ProcessError> {
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| ProcessError::new("desktop.process_control_failed"))?;
+        if self
+            .admission
+            .compare_exchange(OPEN, COMMITTING, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            let _ = writer.write_all(&[FORCE]);
+            let _ = writer.flush();
+            return Err(ProcessError::new("desktop.process_group_failed"));
+        }
+        if writer
+            .write_all(&[COMMIT])
+            .and_then(|()| writer.flush())
+            .is_err()
+        {
+            self.admission.store(ABORTED, Ordering::Release);
+            return Err(ProcessError::new("desktop.process_control_failed"));
+        }
+        if self
+            .admission
+            .compare_exchange(COMMITTING, COMMITTED, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            let _ = writer.write_all(&[FORCE]);
+            let _ = writer.flush();
+            return Err(ProcessError::new("desktop.process_group_failed"));
+        }
+        Ok(())
     }
 
     pub(super) fn send(&self, command: u8) -> Result<(), ProcessError> {
@@ -118,9 +144,7 @@ impl GuardianChannel {
     /// Used by the final barrier: atomically prevents a not-yet-committed launch, then makes one
     /// non-blocking best-effort FORCE write. Process exit closing the pipe is the fail-safe.
     pub(super) fn abort_and_try_force(&self) {
-        let _ = self
-            .admission
-            .compare_exchange(OPEN, ABORTED, Ordering::AcqRel, Ordering::Acquire);
+        self.admission.store(ABORTED, Ordering::Release);
         if let Ok(mut writer) = self.writer.try_lock() {
             let _ = writer.write_all(&[FORCE]);
             let _ = writer.flush();
@@ -135,13 +159,45 @@ pub(super) struct SpawnedGuardian {
 }
 
 impl SpawnedGuardian {
-    pub(super) fn commit(&mut self) -> Result<(), ProcessError> {
-        self.channel.commit(std::mem::take(&mut self.packet))?;
-        Ok(())
+    pub(super) fn prepare(&mut self) -> Result<(), ProcessError> {
+        self.channel.prepare(std::mem::take(&mut self.packet))
+    }
+
+    pub(super) fn commit(&self) -> Result<(), ProcessError> {
+        self.channel.commit()
     }
 
     pub(super) fn into_parts(self) -> (Child, Arc<GuardianChannel>) {
         (self.child, self.channel)
+    }
+}
+
+pub(super) fn await_ack<R: Read + Send + 'static>(
+    mut reader: R,
+    timeout: Duration,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<R, ProcessError> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let mut ack = [0_u8; ACK.len()];
+        let valid = reader.read_exact(&mut ack).is_ok() && &ack == ACK;
+        let _ = sender.send((valid, reader));
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if is_cancelled() {
+            return Err(ProcessError::new("desktop.process_cancelled"));
+        }
+        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            return Err(ProcessError::new("desktop.process_start_timeout"));
+        };
+        match receiver.recv_timeout(remaining.min(Duration::from_millis(20))) {
+            Ok((true, reader)) => return Ok(reader),
+            Ok((false, _)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(ProcessError::new("desktop.process_group_failed"));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
     }
 }
 
@@ -175,7 +231,8 @@ fn guardian_command() -> Result<Command, ProcessError> {
     command.arg(MODE);
     #[cfg(test)]
     command
-        .arg("guardian_subprocess_helper")
+        .arg("runtime::guardian::tests::guardian_subprocess_helper")
+        .arg("--exact")
         .arg("--nocapture")
         .env("SCHEDULE_GUARDIAN_TEST", "1");
     Ok(command)
@@ -493,6 +550,14 @@ fn await_commit(input: &mut impl Read) -> Result<(), ()> {
     (command[0] == COMMIT).then_some(()).ok_or(())
 }
 
+fn acknowledge_ready() -> Result<(), ()> {
+    let mut output = io::stderr().lock();
+    output
+        .write_all(ACK)
+        .and_then(|()| output.flush())
+        .map_err(|_| ())
+}
+
 #[cfg(unix)]
 mod platform {
     use std::{fs, mem::MaybeUninit, os::unix::process::CommandExt};
@@ -526,6 +591,7 @@ mod platform {
         mut spec: DecodedSpec,
         mut input: impl Read + Send + 'static,
     ) -> Result<i32, ()> {
+        acknowledge_ready()?;
         await_commit(&mut input)?;
         let mut command = spec.command();
         let guardian_pid = unsafe { libc::getpid() };
@@ -687,13 +753,13 @@ mod platform {
                 Thread32Next,
             },
             JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-                SetInformationJobObject, TerminateJobObject,
+                AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
             },
             Threading::{
-                CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, OpenThread, ResumeThread,
-                THREAD_SUSPEND_RESUME,
+                CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, GetCurrentProcess, OpenThread,
+                ResumeThread, THREAD_SUSPEND_RESUME,
             },
         },
     };
@@ -721,19 +787,39 @@ mod platform {
         mut input: impl Read + Send + 'static,
     ) -> Result<i32, ()> {
         let job = create_job()?;
+        if unsafe { AssignProcessToJobObject(job.0, GetCurrentProcess()) } == 0 {
+            return Err(());
+        }
         let mut command = spec.command();
         command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
         let mut child = command.spawn().map_err(|_| ())?;
         drop(command);
         let process = child.as_raw_handle() as HANDLE;
-        if unsafe { AssignProcessToJobObject(job.0, process) } == 0 {
-            let _ = child.kill();
+        let mut inherited_job = 0;
+        if unsafe { IsProcessInJob(process, job.0, &mut inherited_job) } == 0 || inherited_job == 0
+        {
             return Err(());
         }
         let thread = primary_thread(child.id())?;
         let mut payload_stdin = child.stdin.take();
+        #[cfg(test)]
+        let stall_before_ack = spec
+            .environment
+            .iter()
+            .any(|(key, value)| key == TEST_PRE_ACK_STALL && value == "1");
         spec.arguments.clear();
         spec.environment.clear();
+        #[cfg(test)]
+        if stall_before_ack {
+            let mut output = io::stdout().lock();
+            output.write_all(b"SCHPID01").map_err(|_| ())?;
+            output
+                .write_all(&child.id().to_le_bytes())
+                .and_then(|()| output.flush())
+                .map_err(|_| ())?;
+            thread::sleep(Duration::from_secs(5));
+        }
+        acknowledge_ready()?;
         // Until this exact byte arrives, the only executable payload is suspended inside the Job.
         if await_commit(&mut input).is_err() {
             terminate(&job);
@@ -748,8 +834,9 @@ mod platform {
         let receiver = control_reader(input);
         loop {
             if let Some(status) = child.try_wait().map_err(|_| ())? {
-                // Closing the sole kill-on-close handle terminates any surviving descendants.
-                drop(job);
+                // Keep the Job handle live through `process::exit`; kernel handle closure then
+                // kills surviving descendants without changing the guardian's reported status.
+                std::mem::forget(job);
                 return Ok(status_code(status));
             }
             match receiver.recv_timeout(Duration::from_millis(20)) {
@@ -897,7 +984,8 @@ mod tests {
             env::current_exe().unwrap(),
             env::current_dir().unwrap(),
             vec![
-                OsString::from("payload_helper"),
+                OsString::from("runtime::guardian::tests::payload_helper"),
+                OsString::from("--exact"),
                 OsString::from("--nocapture"),
             ],
             environment,
@@ -916,6 +1004,15 @@ mod tests {
         ))
     }
 
+    fn admit(mut spawned: SpawnedGuardian) -> SpawnedGuardian {
+        let stderr = spawned.child.stderr.take().unwrap();
+        spawned.prepare().unwrap();
+        let stderr = await_ack(stderr, Duration::from_secs(2), &|| false).unwrap();
+        spawned.child.stderr = Some(stderr);
+        spawned.commit().unwrap();
+        spawned
+    }
+
     #[test]
     fn closing_parent_endpoint_before_commit_never_executes_payload() {
         let marker = marker_path();
@@ -930,6 +1027,7 @@ mod tests {
     fn aborted_admission_cannot_commit_or_execute_payload() {
         let marker = marker_path();
         let mut spawned = spawn(payload("marker", Some(&marker))).unwrap();
+        spawned.prepare().unwrap();
         spawned.channel.abort_and_try_force();
         assert!(spawned.commit().is_err());
         let _ = spawned.child.wait();
@@ -952,6 +1050,15 @@ mod tests {
         };
         reservation
             .attach(identity, &mut spawned.child, Arc::clone(&spawned.channel))
+            .unwrap();
+        let stderr = spawned.child.stderr.take().unwrap();
+        spawned.prepare().unwrap();
+        let stderr = await_ack(stderr, Duration::from_secs(2), &|| false).unwrap();
+        spawned.child.stderr = Some(stderr);
+        spawned
+            .channel
+            .admission
+            .compare_exchange(OPEN, COMMITTING, Ordering::AcqRel, Ordering::Acquire)
             .unwrap();
         let writer = spawned.channel.writer.lock().unwrap();
         let barrier = {
@@ -976,13 +1083,55 @@ mod tests {
     #[test]
     fn control_endpoint_loss_kills_a_committed_payload_tree() {
         let marker = marker_path();
-        let mut spawned = spawn(payload("tree", Some(&marker))).unwrap();
-        spawned.commit().unwrap();
+        let spawned = admit(spawn(payload("tree", Some(&marker))).unwrap());
         let (mut child, channel) = spawned.into_parts();
         drop(channel);
         assert!(child.wait().unwrap().code() != Some(0));
         thread::sleep(Duration::from_millis(500));
         assert!(!marker.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn guardian_loss_before_ack_cannot_orphan_the_suspended_payload() {
+        use windows_sys::Win32::{
+            Foundation::CloseHandle,
+            System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+        };
+
+        let mut spec = payload("marker", Some(&marker_path()));
+        spec.environment
+            .push((OsString::from(TEST_PRE_ACK_STALL), OsString::from("1")));
+        let mut spawned = spawn(spec).unwrap();
+        let mut stdout = spawned.child.stdout.take().unwrap();
+        spawned.prepare().unwrap();
+        let mut observed = Vec::new();
+        while !observed.ends_with(b"SCHPID01") {
+            let mut byte = [0_u8; 1];
+            stdout.read_exact(&mut byte).unwrap();
+            observed.push(byte[0]);
+            assert!(observed.len() < 16 * 1024);
+        }
+        let mut pid = [0_u8; 4];
+        stdout.read_exact(&mut pid).unwrap();
+        let payload_pid = u32::from_le_bytes(pid);
+
+        spawned.child.kill().unwrap();
+        let _ = spawned.child.wait();
+        drop(spawned.channel);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, payload_pid) };
+            if process.is_null() {
+                break;
+            }
+            let _ = unsafe { CloseHandle(process) };
+            assert!(
+                std::time::Instant::now() < deadline,
+                "suspended payload survived guardian"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]
