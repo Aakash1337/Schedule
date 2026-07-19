@@ -1,6 +1,6 @@
 # Desktop application
 
-Status: native shell, authenticated request boundary, and tested coordinator/runtime foundation.
+Status: native shell, authenticated request boundary, and tested coordinator/host/runtime foundation.
 The native effect executor, bundled release artifacts, and product interface are not in this
 milestone yet.
 
@@ -32,9 +32,11 @@ will use:
   paths must finish cleanup before retry or restart can begin.
 - A serialized coordinator drives that reducer through a fakeable executor, checks cancellation at
   effect boundaries, configures the private bridge only after API readiness, clears it before API
-  shutdown, and attempts every reverse-cleanup effect while retaining the first cleanup error. Its
-  current synchronous boundary still requires an asynchronous native host adapter to interrupt an
-  effect that is blocked inside platform I/O.
+  shutdown, and attempts every reverse-cleanup effect while retaining the first cleanup error.
+- A UI-agnostic host owns the coordinator on one dedicated thread. It pre-arms cancellation before
+  queueing startup, coalesces overlapping lifecycle commands, linearizes shutdown admission, retries
+  idempotent cleanup within a fixed budget, and exposes only redacted status and terminal shutdown
+  outcomes. Executor panics, including destructor panics, cannot strand completion waiters.
 - An operating-system file lock provides one runtime owner per user-data directory without deleting
   the coordination file during shutdown.
 - A strict crash journal uses same-directory durable replacement. Windows uses `MoveFileExW` with
@@ -69,8 +71,8 @@ will use:
   one canonical, non-link runtime root, it resolves fixed absolute Node, API, worker, migration, and
   PostgreSQL tool paths from that same tree. Unix links and all Windows reparse points fail closed.
 
-These pieces are compiled and tested on Windows and Linux, but the coordinator still has no native
-effect executor and is not invoked by `main`. The application therefore continues to report
+These pieces are compiled and tested on Windows and Linux, but the host still has no native effect
+executor and is not invoked by `main`. The application therefore continues to report
 `foundation` rather than claiming it is ready. Launch integration must call the durable credential
 store and stale-secret scavenger only while holding the singleton lock, refuse to regenerate
 credentials for an existing cluster, and run `pg_ctl stop -m fast` successfully before treating
