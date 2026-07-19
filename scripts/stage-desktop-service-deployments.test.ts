@@ -34,6 +34,10 @@ async function fixture(mutate?: RawMutation): Promise<{
 }> {
   const root = await mkdtemp(path.join(os.tmpdir(), "schedule-deploy-"));
   roots.push(root);
+  await Promise.all([
+    mkdir(path.join(root, "apps", "api"), { recursive: true }),
+    mkdir(path.join(root, "apps", "worker"), { recursive: true }),
+  ]);
   const deploy: DeployCommand = async (_command, arguments_) => {
     const destination = arguments_[arguments_.length - 1] as string;
     const api = arguments_.includes("@schedule/api");
@@ -82,15 +86,26 @@ async function expectFailure(mutate: RawMutation, message: string): Promise<void
 
 describe("stageDesktopServiceDeployments", () => {
   it("materializes internal workspace links and preserves package metadata", async () => {
-    const setup = await fixture(async (destination, api) => {
+    const setup = await fixture(async (destination, api, root) => {
       if (!api) return;
-      await mkdir(path.join(destination, "workspace-package"));
-      await writeFile(path.join(destination, "workspace-package", "package.json"), "{}");
+      const workspacePackage = path.join(destination, "workspace-package");
+      await mkdir(workspacePackage);
+      await writeFile(path.join(workspacePackage, "package.json"), "{}");
       await symlink(
-        path.join(destination, "workspace-package"),
+        workspacePackage,
         path.join(destination, "node_modules", "workspace-package"),
         "junction",
       );
+      const selfLink = path.join(
+        destination,
+        "node_modules",
+        ".pnpm",
+        "node_modules",
+        "@schedule",
+        "api",
+      );
+      await mkdir(path.dirname(selfLink), { recursive: true });
+      await symlink(path.join(root, "apps", "api"), selfLink, "junction");
     });
     const result = await stageDesktopServiceDeployments({
       sourceDirectory: setup.root,
@@ -190,7 +205,7 @@ describe("stageDesktopServiceDeployments", () => {
         "invalid migration tag",
       ],
     ];
-    for (const [_name, mutate, message] of cases) await expectFailure(mutate, message);
+    for (const [, mutate, message] of cases) await expectFailure(mutate, message);
   });
 
   it("rejects nonportable and case-colliding paths where the host can create them", async () => {

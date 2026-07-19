@@ -75,15 +75,23 @@ async function reserveOutput(directory: string, label: string): Promise<void> {
     await mkdir(directory);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error(`${label} already exists and will not be replaced: ${directory}`);
+      throw new Error(`${label} already exists and will not be replaced: ${directory}`, {
+        cause: error,
+      });
     }
     throw error;
   }
 }
 
-async function copyMaterializedTree(rawRoot: string, destination: string): Promise<void> {
+async function copyMaterializedTree(
+  rawRoot: string,
+  destination: string,
+  selfLink: Readonly<{ relative: string; target: string }>,
+): Promise<void> {
   const canonicalRoot = await realpath(rawRoot);
   const canonicalRootIdentity = pathIdentity(canonicalRoot);
+  const canonicalSelfLinkTarget = pathIdentity(await realpath(selfLink.target));
+  const expectedSelfLink = pathIdentity(path.join(rawRoot, ...selfLink.relative.split("/")));
   const rootEntry = await lstat(rawRoot).catch(() => null);
   if (rootEntry === null || !rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
     throw new Error(`Raw deployment must be a non-symlink directory: ${rawRoot}`);
@@ -117,6 +125,12 @@ async function copyMaterializedTree(rawRoot: string, destination: string): Promi
       else if (entry.isFile()) await copyFile(childSource, childTarget, 0);
       else if (entry.isSymbolicLink()) {
         const canonicalTarget = await realpath(childSource);
+        if (
+          pathIdentity(childSource) === expectedSelfLink &&
+          pathIdentity(canonicalTarget) === canonicalSelfLinkTarget
+        ) {
+          continue;
+        }
         if (pathIdentity(canonicalTarget) !== canonicalRootIdentity) {
           relativeWithin(canonicalRoot, canonicalTarget);
         }
@@ -255,8 +269,14 @@ export async function stageDesktopServiceDeployments(
     );
     const api = path.join(outputDirectory, "api");
     const worker = path.join(outputDirectory, "worker");
-    await copyMaterializedTree(rawApi, api);
-    await copyMaterializedTree(rawWorker, worker);
+    await copyMaterializedTree(rawApi, api, {
+      relative: "node_modules/.pnpm/node_modules/@schedule/api",
+      target: path.join(sourceDirectory, "apps", "api"),
+    });
+    await copyMaterializedTree(rawWorker, worker, {
+      relative: "node_modules/.pnpm/node_modules/@schedule/worker",
+      target: path.join(sourceDirectory, "apps", "worker"),
+    });
     await Promise.all([validateApiDeployment(api), validateWorkerDeployment(worker)]);
     const apiSha256 = await hashTree(api);
     const workerSha256 = await hashTree(worker);
