@@ -1,9 +1,9 @@
 use std::{
     ffi::OsString,
     fmt,
-    io::{self, Read, Write},
+    io::{self, Read},
     path::PathBuf,
-    process::{Child, ChildStdin, Command, Stdio},
+    process::Child,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -12,6 +12,8 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+
+use super::guardian::{self, GuardianChannel, LaunchSpec};
 
 #[path = "platform/mod.rs"]
 mod platform;
@@ -204,21 +206,14 @@ impl ProcessSpec {
         Ok(())
     }
 
-    fn command(&self) -> Command {
-        let mut command = Command::new(&self.program);
-        command
-            .args(&self.arguments)
-            .current_dir(&self.working_directory)
-            .env_clear()
-            .envs(self.environment.iter().map(|(key, value)| (key, value)))
-            .stdin(if self.desktop_shutdown_stdin {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        command
+    fn launch_spec(&self) -> LaunchSpec {
+        LaunchSpec::new(
+            self.program.clone(),
+            self.working_directory.clone(),
+            self.arguments.clone(),
+            self.environment.clone(),
+            self.desktop_shutdown_stdin,
+        )
     }
 }
 
@@ -230,9 +225,8 @@ fn is_safe_environment_key(key: &str) -> bool {
         && key.as_bytes()[0].is_ascii_uppercase()
 }
 
-/// Platform implementations may prepare a Unix process group or Windows Job Object before spawn,
-/// attach the child afterward, and implement tree-aware graceful/forced termination. The fallback
-/// never invokes a shell and always operates on the owned direct child handle.
+/// Controllers register inert same-binary guardians and retain their private liveness channels.
+/// The fallback never invokes a shell and always operates on the owned guardian handle.
 pub(crate) trait ProcessGroupControl: Send + Sync {
     /// Reserves the configure/spawn/attach handoff against the final containment barrier.
     fn reserve_spawn(&self) -> Result<(), ProcessError> {
@@ -241,15 +235,12 @@ pub(crate) trait ProcessGroupControl: Send + Sync {
 
     fn finish_spawn(&self) {}
 
-    fn configure_command(
+    fn attach(
         &self,
-        _role: ProcessRole,
-        _command: &mut Command,
+        _identity: ChildIdentity,
+        _child: &mut Child,
+        _channel: Arc<GuardianChannel>,
     ) -> Result<(), ProcessError> {
-        Ok(())
-    }
-
-    fn attach(&self, _identity: ChildIdentity, _child: &mut Child) -> Result<(), ProcessError> {
         Ok(())
     }
 
@@ -269,8 +260,8 @@ pub(crate) trait ProcessGroupControl: Send + Sync {
             .map_err(|_| ProcessError::new("desktop.process_stop_failed"))
     }
 
-    /// Observes direct-child exit. Unix overrides this to avoid reaping the process-group leader
-    /// until its descendants have been terminated, which keeps the numeric group ID from reuse.
+    /// Observes guardian exit. A guardian reports only after its platform boundary has contained
+    /// and reaped the requested payload tree.
     fn has_exited(
         &self,
         _identity: ChildIdentity,
@@ -311,8 +302,9 @@ impl ProcessSpawnReservation {
         mut self,
         identity: ChildIdentity,
         child: &mut Child,
+        channel: Arc<GuardianChannel>,
     ) -> Result<(), ProcessError> {
-        let result = self.control.attach(identity, child);
+        let result = self.control.attach(identity, child, channel);
         self.finish();
         result
     }
@@ -361,7 +353,7 @@ pub(crate) struct OwnedProcess {
     child: Child,
     control: Arc<dyn ProcessGroupControl>,
     readers: Vec<JoinHandle<()>>,
-    shutdown_stdin: Option<ChildStdin>,
+    guardian_channel: Arc<GuardianChannel>,
     exited: bool,
     ownership_released: bool,
 }
@@ -377,9 +369,7 @@ impl OwnedProcess {
         }
         self.exited = self.control.has_exited(self.identity, &mut self.child)?;
         if self.exited {
-            self.shutdown_stdin.take();
-            // Unix releases/kills the group while the exited leader is still an unreaped zombie,
-            // so its PID/PGID cannot be recycled between observation and the final group signal.
+            // The guardian has already contained and reaped its payload tree before it exits.
             self.release_ownership();
             self.child
                 .wait()
@@ -452,21 +442,12 @@ impl OwnedProcess {
     }
 
     fn request_desktop_shutdown(&mut self) -> bool {
-        let Some(mut stdin) = self.shutdown_stdin.take() else {
-            return false;
-        };
-        let delivered = stdin
-            .write_all(b"shutdown\n")
-            .and_then(|()| stdin.flush())
-            .is_ok();
-        drop(stdin);
-        delivered
+        self.guardian_channel.send(guardian::GRACEFUL).is_ok()
     }
 }
 
 impl Drop for OwnedProcess {
     fn drop(&mut self) {
-        self.shutdown_stdin.take();
         if !self.exited {
             let _ = self.control.force_stop(self.identity, &mut self.child);
             let _ = self.wait_until(Instant::now() + FORCE_STOP_TIMEOUT);
@@ -493,34 +474,31 @@ pub(crate) fn start_process_cancellable(
         return Err(ProcessError::new("desktop.process_cancelled"));
     }
     let reservation = ProcessSpawnReservation::new(Arc::clone(&control))?;
-    let mut command = spec.command();
-    control.configure_command(spec.role, &mut command)?;
-
-    let mut child = command
-        .spawn()
-        .map_err(|_| ProcessError::new("desktop.process_spawn_failed"))?;
+    let mut spawned = guardian::spawn(spec.launch_spec())?;
+    let mut child = spawned.child;
     let identity = ChildIdentity {
         role: spec.role,
         pid: child.id(),
     };
-    if reservation.attach(identity, &mut child).is_err() {
+    let channel = Arc::clone(&spawned.channel);
+    if reservation
+        .attach(identity, &mut child, Arc::clone(&channel))
+        .is_err()
+    {
         terminate_unowned_child(&mut child);
         return Err(ProcessError::new("desktop.process_group_failed"));
     }
+    spawned.child = child;
     if is_cancelled() {
-        terminate_attached_child(&control, identity, &mut child);
+        terminate_attached_child(&control, identity, &mut spawned.child);
         return Err(ProcessError::new("desktop.process_cancelled"));
     }
 
-    let shutdown_stdin = if spec.desktop_shutdown_stdin {
-        let Some(stdin) = child.stdin.take() else {
-            terminate_attached_child(&control, identity, &mut child);
-            return Err(ProcessError::new("desktop.process_control_failed"));
-        };
-        Some(stdin)
-    } else {
-        None
-    };
+    if let Err(error) = spawned.commit() {
+        terminate_attached_child(&control, identity, &mut spawned.child);
+        return Err(error);
+    }
+    let (mut child, guardian_channel) = spawned.into_parts();
 
     let Some(stdout) = child.stdout.take() else {
         terminate_attached_child(&control, identity, &mut child);
@@ -561,7 +539,7 @@ pub(crate) fn start_process_cancellable(
         child,
         control,
         readers,
-        shutdown_stdin,
+        guardian_channel,
         exited: false,
         ownership_released: false,
     };
@@ -831,6 +809,7 @@ mod tests {
         env,
         ffi::OsStr,
         fs,
+        process::Command,
         sync::Mutex,
         thread,
         time::{SystemTime, UNIX_EPOCH},
@@ -1018,23 +997,18 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingControl {
-        configured: Mutex<Vec<ProcessRole>>,
         attached: Mutex<Vec<ProcessRole>>,
         stopped: Mutex<Vec<ProcessRole>>,
         released: Mutex<Vec<ProcessRole>>,
     }
 
     impl ProcessGroupControl for RecordingControl {
-        fn configure_command(
+        fn attach(
             &self,
-            role: ProcessRole,
-            _command: &mut Command,
+            identity: ChildIdentity,
+            _child: &mut Child,
+            _channel: Arc<GuardianChannel>,
         ) -> Result<(), ProcessError> {
-            self.configured.lock().unwrap().push(role);
-            Ok(())
-        }
-
-        fn attach(&self, identity: ChildIdentity, _child: &mut Child) -> Result<(), ProcessError> {
             self.attached.lock().unwrap().push(identity.role);
             Ok(())
         }
@@ -1075,7 +1049,6 @@ mod tests {
             *control.stopped.lock().unwrap(),
             vec![ProcessRole::Worker, ProcessRole::Api, ProcessRole::Database]
         );
-        assert_eq!(control.configured.lock().unwrap().len(), 3);
         assert_eq!(control.attached.lock().unwrap().len(), 3);
         assert_eq!(control.released.lock().unwrap().len(), 3);
     }
@@ -1123,6 +1096,7 @@ mod tests {
                 &self,
                 _identity: ChildIdentity,
                 child: &mut Child,
+                _channel: Arc<GuardianChannel>,
             ) -> Result<(), ProcessError> {
                 child.stdout.take();
                 Ok(())
@@ -1241,10 +1215,7 @@ mod tests {
         let spec = helper_spec(ProcessRole::Api, "tree_parent", Duration::from_secs(2))
             .env(EXPLICIT_VALUE, marker.as_os_str())
             .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
-        let mut command = spec.command();
-        control
-            .configure_command(ProcessRole::Api, &mut command)
-            .unwrap();
+        let mut guardian = guardian::spawn(spec.launch_spec()).unwrap();
 
         let started = Instant::now();
         control
@@ -1252,12 +1223,19 @@ mod tests {
             .unwrap();
         assert!(started.elapsed() < Duration::from_secs(1));
 
-        let mut child = command.spawn().unwrap();
+        let mut child = guardian.child;
         let identity = ChildIdentity {
             role: ProcessRole::Api,
             pid: child.id(),
         };
-        assert!(reservation.attach(identity, &mut child).is_err());
+        assert!(
+            reservation
+                .attach(identity, &mut child, Arc::clone(&guardian.channel))
+                .is_err()
+        );
+        guardian.child = child;
+        assert!(guardian.commit().is_err());
+        let mut child = guardian.child;
         terminate_unowned_child(&mut child);
         thread::sleep(Duration::from_millis(750));
         assert!(!marker.exists());

@@ -9,7 +9,7 @@ use std::{
     fmt,
     io::Read,
     path::PathBuf,
-    process::{Child, Command, Stdio},
+    process::Child,
     sync::{
         Arc,
         mpsc::{self, Receiver, SyncSender},
@@ -18,8 +18,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::process::{
-    ChildIdentity, ProcessError, ProcessGroupControl, ProcessRole, ProcessSpawnReservation,
+use super::{
+    guardian::{self, GuardianChannel, LaunchSpec},
+    process::{
+        ChildIdentity, ProcessError, ProcessGroupControl, ProcessRole, ProcessSpawnReservation,
+    },
 };
 
 const READ_CHUNK_BYTES: usize = 4 * 1024;
@@ -100,17 +103,14 @@ impl CommandSpec {
         Ok(())
     }
 
-    fn command(&self) -> Command {
-        let mut command = Command::new(&self.program);
-        command
-            .args(&self.arguments)
-            .current_dir(&self.working_directory)
-            .env_clear()
-            .envs(self.environment.iter().map(|(key, value)| (key, value)))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        command
+    fn launch_spec(&self) -> LaunchSpec {
+        LaunchSpec::new(
+            self.program.clone(),
+            self.working_directory.clone(),
+            self.arguments.clone(),
+            self.environment.clone(),
+            false,
+        )
     }
 }
 
@@ -178,6 +178,7 @@ enum OutputEvent {
 struct AttachedCommandOwnership<'a> {
     control: &'a dyn ProcessGroupControl,
     identity: ChildIdentity,
+    _guardian_channel: Arc<GuardianChannel>,
     released: Cell<bool>,
 }
 
@@ -218,24 +219,30 @@ pub(crate) fn run_command_cancellable(
     }
     let reservation =
         ProcessSpawnReservation::new(Arc::clone(&control)).map_err(map_process_error)?;
-    let mut command = spec.command();
-    control
-        .configure_command(ProcessRole::Database, &mut command)
-        .map_err(map_process_error)?;
-    let mut child = command
-        .spawn()
-        .map_err(|_| CommandError::new("desktop.command_spawn_failed"))?;
+    let mut spawned = guardian::spawn(spec.launch_spec()).map_err(map_process_error)?;
+    let mut child = spawned.child;
     let identity = ChildIdentity {
         role: ProcessRole::Database,
         pid: child.id(),
     };
-    if reservation.attach(identity, &mut child).is_err() {
+    let guardian_channel = Arc::clone(&spawned.channel);
+    if reservation
+        .attach(identity, &mut child, Arc::clone(&guardian_channel))
+        .is_err()
+    {
         stop_unattached(&control, identity, &mut child);
         return Err(CommandError::new("desktop.command_group_failed"));
     }
+    spawned.child = child;
+    if spawned.commit().is_err() {
+        stop_unattached(&control, identity, &mut spawned.child);
+        return Err(CommandError::new("desktop.command_group_failed"));
+    }
+    let (mut child, guardian_channel) = spawned.into_parts();
     let ownership = AttachedCommandOwnership {
         control: control.as_ref(),
         identity,
+        _guardian_channel: guardian_channel,
         released: Cell::new(false),
     };
     if is_cancelled() {
@@ -451,6 +458,7 @@ fn map_process_error(_error: ProcessError) -> CommandError {
 mod tests {
     use std::{
         env, fs,
+        process::Command,
         sync::{
             Arc, Mutex,
             atomic::{AtomicBool, Ordering},
@@ -470,7 +478,12 @@ mod tests {
     }
 
     impl ProcessGroupControl for RecordingControl {
-        fn attach(&self, _identity: ChildIdentity, _child: &mut Child) -> Result<(), ProcessError> {
+        fn attach(
+            &self,
+            _identity: ChildIdentity,
+            _child: &mut Child,
+            _channel: Arc<GuardianChannel>,
+        ) -> Result<(), ProcessError> {
             if self.fail_attach {
                 Err(ProcessError::new("test.group_attach_failed"))
             } else {
@@ -667,18 +680,15 @@ mod tests {
     }
 
     #[test]
-    fn stops_the_group_when_descendants_keep_output_pipes_open() {
+    fn guardian_closes_descendant_output_pipes_before_reporting_success() {
         let control = Arc::new(RecordingControl::default());
-        let error = match run_command(
+        let _output = run_command(
             helper("pipe_descendant", Duration::from_secs(2)),
             control.clone(),
-        ) {
-            Ok(_) => panic!("pipe-holding descendant unexpectedly settled"),
-            Err(error) => error,
-        };
+        )
+        .unwrap();
 
-        assert_eq!(error.code(), "desktop.command_output_failed");
-        assert_eq!(*control.stops.lock().unwrap(), 1);
+        assert_eq!(*control.stops.lock().unwrap(), 0);
         assert_eq!(*control.releases.lock().unwrap(), 1);
     }
 
