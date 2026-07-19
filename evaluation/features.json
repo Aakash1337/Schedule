@@ -4382,7 +4382,7 @@
         "anchor": "## Implemented supervisor foundation"
       },
       "limitations": [
-        "The pure coordinator is tested, but its native effect executor and asynchronous Tauri host adapter are not implemented or invoked by main, so the desktop correctly remains in foundation state.",
+        "The pure coordinator and verified fixed-path runtime resolver are tested, but the native effect executor and asynchronous Tauri host adapter are not implemented or invoked by main, so the desktop correctly remains in foundation state.",
         "The durable PostgreSQL credential store and bounded stale-secret scavenger are implemented, but launch integration must invoke them under the singleton lock, preserve existing-cluster credentials, and enforce pg_ctl shutdown before cluster initialization ships.",
         "Real pinned runtime artifacts, installers, first-launch PostgreSQL acceptance, Linux hard-crash descendant validation, and supported Windows outer-Job validation remain required."
       ],
@@ -4413,6 +4413,16 @@
           "anchors": [
             "rejects_a_self_rewritten_manifest_without_the_embedded_anchor",
             "component_tree_hash_matches_the_typescript_golden_bundle"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/desktop/src-tauri/src/runtime/bundle.rs",
+          "command": "desktop-foundation",
+          "anchors": [
+            "resolves_all_absolute_runtime_paths_for_each_platform_suffix",
+            "rejects_missing_wrong_kind_or_wrong_suffix_paths",
+            "rejects_windows_reparse_points_when_symlink_creation_is_available"
           ]
         },
         {
