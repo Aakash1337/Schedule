@@ -110,6 +110,16 @@ pub(crate) struct PgRolePasswords {
     runtime_password: SecretString,
 }
 
+/// A PostgreSQL connection URL containing one role password. It intentionally
+/// has no `Debug` or `Display` implementation and zeroizes its allocation.
+pub(crate) struct DatabaseUrl(Zeroizing<String>);
+
+impl DatabaseUrl {
+    pub(crate) fn expose(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
 impl PgRolePasswords {
     pub(crate) fn generate_for_cluster_initialization() -> Result<Self, CredentialError> {
         Ok(Self {
@@ -117,6 +127,32 @@ impl PgRolePasswords {
             owner_password: SecretString::generate()?,
             runtime_password: SecretString::generate()?,
         })
+    }
+
+    pub(crate) fn owner_database_url(
+        &self,
+        names: &PgNames,
+        port: u16,
+    ) -> Result<DatabaseUrl, CredentialError> {
+        database_url(
+            names.database(),
+            names.owner(),
+            self.owner_password.expose(),
+            port,
+        )
+    }
+
+    pub(crate) fn runtime_database_url(
+        &self,
+        names: &PgNames,
+        port: u16,
+    ) -> Result<DatabaseUrl, CredentialError> {
+        database_url(
+            names.database(),
+            names.runtime(),
+            self.runtime_password.expose(),
+            port,
+        )
     }
 }
 
@@ -392,6 +428,68 @@ impl PgNames {
             Err(CredentialError::InvalidInput)
         }
     }
+
+    pub(crate) fn database(&self) -> &str {
+        &self.database
+    }
+
+    pub(crate) fn cluster_admin(&self) -> &str {
+        &self.cluster_admin
+    }
+
+    pub(crate) fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    pub(crate) fn runtime(&self) -> &str {
+        &self.runtime
+    }
+}
+
+fn database_url(
+    database: &str,
+    user: &str,
+    password: &str,
+    port: u16,
+) -> Result<DatabaseUrl, CredentialError> {
+    if port == 0 || !safe_pg_identifier(database) || !safe_pg_identifier(user) {
+        return Err(CredentialError::InvalidInput);
+    }
+    // Identifiers and generated passwords use URL-unreserved characters only,
+    // so no lossy or ambiguous escaping is required here.
+    let mut value = Zeroizing::new(String::with_capacity(256));
+    let initial_capacity = value.capacity();
+    use std::fmt::Write as _;
+    write!(
+        value,
+        "postgresql://{user}:{password}@{LOOPBACK_HOST}:{port}/{database}"
+    )
+    .map_err(|_| CredentialError::PrivateStorageUnavailable)?;
+    require_unchanged_capacity(&value, initial_capacity)?;
+    Ok(DatabaseUrl(value))
+}
+
+/// Creates or verifies one application-owned private root below an existing
+/// trusted user-data parent.
+pub(crate) fn prepare_private_root(path: &Path) -> Result<(), CredentialError> {
+    if !path.is_absolute() {
+        return Err(CredentialError::InvalidInput);
+    }
+    let parent = path
+        .parent()
+        .ok_or(CredentialError::PrivateStorageUnavailable)?;
+    reject_link_components(parent)?;
+    match create_private_directory(path) {
+        Ok(()) => sync_directory(parent)?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err(CredentialError::PrivateStorageUnavailable),
+    }
+    reject_private_directory(path)
+}
+
+/// Creates or verifies a direct private child of an already-private parent.
+pub(crate) fn prepare_private_child(path: &Path, parent: &Path) -> Result<(), CredentialError> {
+    ensure_private_directory(path, parent)
 }
 
 /// Secret-free libpq settings. Authentication happens through `PGPASSFILE`.
@@ -496,6 +594,12 @@ impl PrivateRuntimeFiles {
         self.cleanup_inner()
     }
 
+    /// Retries cleanup without relinquishing ownership when an individual
+    /// deletion fails, allowing lifecycle cleanup to be retried safely.
+    pub(crate) fn cleanup_in_place(&mut self) -> Result<(), CredentialError> {
+        self.cleanup_inner()
+    }
+
     /// Creates the one-line `initdb --pwfile` input for the cluster administrator.
     pub(crate) fn write_initial_password(
         &mut self,
@@ -575,9 +679,12 @@ impl PrivateRuntimeFiles {
         use std::fmt::Write as _;
         write!(
             sql,
-            "CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '{}';\n\
-             CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '{}';\n\
-             CREATE DATABASE {} OWNER {} TEMPLATE template0 ENCODING 'UTF8';\n\
+            "SELECT 'CREATE ROLE {}' WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '{}') \\gexec\n\
+             ALTER ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '{}';\n\
+             SELECT 'CREATE ROLE {}' WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '{}') \\gexec\n\
+             ALTER ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '{}';\n\
+             SELECT 'CREATE DATABASE {} OWNER {} TEMPLATE template0 ENCODING ''UTF8''' WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_database WHERE datname = '{}') \\gexec\n\
+             ALTER DATABASE {} OWNER TO {};\n\
              REVOKE ALL ON DATABASE {} FROM PUBLIC;\n\
              GRANT CONNECT ON DATABASE {} TO {};\n\
              \\connect {}\n\
@@ -589,9 +696,16 @@ impl PrivateRuntimeFiles {
              ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {};\n\
              ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {};\n",
             names.owner,
+            names.owner,
+            names.owner,
             passwords.owner_password.expose(),
             names.runtime,
+            names.runtime,
+            names.runtime,
             passwords.runtime_password.expose(),
+            names.database,
+            names.owner,
+            names.database,
             names.database,
             names.owner,
             names.database,
@@ -1072,12 +1186,13 @@ mod windows_private {
         Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE},
         Security::{
             ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_REVISION, ACL_SIZE_INFORMATION,
-            AclSizeInformation, AddAccessAllowedAce, DACL_SECURITY_INFORMATION, EqualSid, GetAce,
-            GetAclInformation, GetFileSecurityW, GetLengthSid, GetSecurityDescriptorControl,
-            GetSecurityDescriptorDacl, GetTokenInformation, InitializeAcl,
-            InitializeSecurityDescriptor, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
-            SECURITY_DESCRIPTOR, SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
-            TOKEN_QUERY, TOKEN_USER, TokenUser,
+            AclSizeInformation, AddAccessAllowedAce, AddAccessAllowedAceEx, CONTAINER_INHERIT_ACE,
+            DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetFileSecurityW,
+            GetLengthSid, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+            GetTokenInformation, InitializeAcl, InitializeSecurityDescriptor, OBJECT_INHERIT_ACE,
+            SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR,
+            SetSecurityDescriptorControl, SetSecurityDescriptorDacl, TOKEN_QUERY, TOKEN_USER,
+            TokenUser,
         },
         Storage::FileSystem::{
             CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
@@ -1114,11 +1229,12 @@ mod windows_private {
     fn with_user_only_security<T>(
         operation: impl FnOnce(*const SECURITY_ATTRIBUTES, *mut core::ffi::c_void) -> std::io::Result<T>,
     ) -> std::io::Result<T> {
-        with_user_only_security_control(true, operation)
+        with_user_only_security_control(true, false, operation)
     }
 
     fn with_user_only_security_control<T>(
         protect_dacl: bool,
+        inherit_to_children: bool,
         operation: impl FnOnce(*const SECURITY_ATTRIBUTES, *mut core::ffi::c_void) -> std::io::Result<T>,
     ) -> std::io::Result<T> {
         let mut token = ptr::null_mut();
@@ -1161,9 +1277,21 @@ mod windows_private {
             size_of::<ACL>() + size_of::<ACCESS_ALLOWED_ACE>() - size_of::<u32>() + sid_length;
         let mut acl_words = vec![0_u32; acl_bytes.div_ceil(size_of::<u32>())];
         let acl = acl_words.as_mut_ptr().cast::<ACL>();
-        if unsafe { InitializeAcl(acl, acl_bytes as u32, ACL_REVISION) } == 0
-            || unsafe { AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS, sid) } == 0
-        {
+        let initialized = unsafe { InitializeAcl(acl, acl_bytes as u32, ACL_REVISION) } != 0;
+        let added = if inherit_to_children {
+            unsafe {
+                AddAccessAllowedAceEx(
+                    acl,
+                    ACL_REVISION,
+                    OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+                    FILE_ALL_ACCESS,
+                    sid,
+                )
+            }
+        } else {
+            unsafe { AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS, sid) }
+        };
+        if !initialized || added == 0 {
             return Err(std::io::Error::last_os_error());
         }
 
@@ -1195,13 +1323,14 @@ mod windows_private {
         path: &[u16],
         expected_sid: *mut core::ffi::c_void,
     ) -> std::io::Result<()> {
-        verify_user_only_dacl_control(path, expected_sid, true)
+        verify_user_only_dacl_control(path, expected_sid, true, false)
     }
 
     fn verify_user_only_dacl_control(
         path: &[u16],
         expected_sid: *mut core::ffi::c_void,
         require_protected: bool,
+        require_inheritance: bool,
     ) -> std::io::Result<()> {
         let mut needed = 0_u32;
         unsafe {
@@ -1279,7 +1408,11 @@ mod windows_private {
             return Err(std::io::Error::last_os_error());
         }
         let header = unsafe { &*raw_ace.cast::<ACE_HEADER>() };
-        if header.AceType != 0 || usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>() {
+        let inheritance = (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8;
+        if header.AceType != 0
+            || usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>()
+            || (require_inheritance && header.AceFlags & inheritance != inheritance)
+        {
             return Err(std::io::Error::other("private DACL rejected"));
         }
         let ace = unsafe { &*raw_ace.cast::<ACCESS_ALLOWED_ACE>() };
@@ -1292,11 +1425,11 @@ mod windows_private {
 
     fn create_directory_control(path: &Path, protect_dacl: bool) -> std::io::Result<()> {
         let path = wide(path)?;
-        with_user_only_security_control(protect_dacl, |security, sid| {
+        with_user_only_security_control(protect_dacl, true, |security, sid| {
             if unsafe { CreateDirectoryW(path.as_ptr(), security) } == 0 {
                 Err(std::io::Error::last_os_error())
             } else {
-                verify_user_only_dacl_control(&path, sid, protect_dacl)
+                verify_user_only_dacl_control(&path, sid, protect_dacl, true)
             }
         })
     }
@@ -1307,7 +1440,7 @@ mod windows_private {
 
     fn create_file_control(path: &Path, protect_dacl: bool) -> std::io::Result<File> {
         let path = wide(path)?;
-        with_user_only_security_control(protect_dacl, |security, sid| {
+        with_user_only_security_control(protect_dacl, false, |security, sid| {
             let handle = unsafe {
                 CreateFileW(
                     path.as_ptr(),
@@ -1323,7 +1456,7 @@ mod windows_private {
                 Err(std::io::Error::last_os_error())
             } else {
                 let file = unsafe { File::from_raw_handle(handle) };
-                verify_user_only_dacl_control(&path, sid, protect_dacl)?;
+                verify_user_only_dacl_control(&path, sid, protect_dacl, false)?;
                 Ok(file)
             }
         })
@@ -1356,6 +1489,12 @@ mod windows_private {
     pub(super) fn verify_private(path: &Path) -> Result<(), CredentialError> {
         let path = wide(path).map_err(|_| CredentialError::PrivateStorageUnavailable)?;
         with_user_only_security(|_, sid| verify_user_only_dacl(&path, sid))
+            .map_err(|_| CredentialError::PrivateStorageUnavailable)
+    }
+
+    pub(super) fn verify_private_directory(path: &Path) -> Result<(), CredentialError> {
+        let path = wide(path).map_err(|_| CredentialError::PrivateStorageUnavailable)?;
+        with_user_only_security(|_, sid| verify_user_only_dacl_control(&path, sid, true, true))
             .map_err(|_| CredentialError::PrivateStorageUnavailable)
     }
 
@@ -1409,7 +1548,7 @@ fn verify_private_directory_permissions(
     path: &Path,
     _metadata: &fs::Metadata,
 ) -> Result<(), CredentialError> {
-    windows_private::verify_private(path)
+    windows_private::verify_private_directory(path)
 }
 
 #[cfg(windows)]
@@ -1499,6 +1638,23 @@ mod tests {
         for (index, secret) in secrets.iter().enumerate() {
             assert!(!secrets[..index].contains(secret));
         }
+    }
+
+    #[test]
+    fn builds_role_scoped_urls_without_debug_or_display_exposure() {
+        let passwords = PgRolePasswords::generate_for_cluster_initialization().unwrap();
+        let names = names();
+        let owner = passwords.owner_database_url(&names, 54_321).unwrap();
+        let runtime = passwords.runtime_database_url(&names, 54_321).unwrap();
+        assert!(owner.expose().starts_with("postgresql://schedule_owner:"));
+        assert!(
+            runtime
+                .expose()
+                .starts_with("postgresql://schedule_runtime:")
+        );
+        assert!(owner.expose().ends_with("@127.0.0.1:54321/schedule"));
+        assert!(runtime.expose().ends_with("@127.0.0.1:54321/schedule"));
+        assert_ne!(owner.expose(), runtime.expose());
     }
 
     #[test]
@@ -1602,8 +1758,18 @@ mod tests {
             "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS";
         assert_eq!(sql_text.matches(restrictions).count(), 2);
         assert!(sql_text.contains(
-            "CREATE DATABASE schedule OWNER schedule_owner TEMPLATE template0 ENCODING 'UTF8';"
+            "CREATE DATABASE schedule OWNER schedule_owner TEMPLATE template0 ENCODING ''UTF8''"
         ));
+        assert!(sql_text.contains(
+            "WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_database WHERE datname = 'schedule') \\gexec"
+        ));
+        assert!(sql_text.contains("ALTER DATABASE schedule OWNER TO schedule_owner;"));
+        for role in ["schedule_owner", "schedule_runtime"] {
+            assert!(sql_text.contains(&format!(
+                "WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '{role}') \\gexec"
+            )));
+            assert!(sql_text.contains(&format!("ALTER ROLE {role} LOGIN NOSUPERUSER")));
+        }
         assert!(sql_text.contains("REVOKE ALL ON DATABASE schedule FROM PUBLIC;"));
         let reconnect = sql_text.find("\\connect schedule\n").unwrap();
         let schema_revoke = sql_text

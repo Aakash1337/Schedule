@@ -2,6 +2,7 @@ mod bundle;
 mod command;
 mod coordinator;
 mod credentials;
+mod executor;
 mod host;
 mod integrity;
 mod journal;
