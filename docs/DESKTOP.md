@@ -1,7 +1,8 @@
 # Desktop application
 
-Status: native shell, authenticated request boundary, and tested supervisor foundation. The launch
-coordinator, bundled release artifacts, and product interface are not in this milestone yet.
+Status: native shell, authenticated request boundary, and tested supervisor/platform foundation.
+The launch coordinator, bundled release artifacts, and product interface are not in this milestone
+yet.
 
 Schedule is gaining a native Tauri 2 shell for Windows and Linux while retaining the existing web
 application. The desktop and hosted applications will share domain behavior and API contracts, but
@@ -16,9 +17,10 @@ PostgreSQL and will not need to open a browser or enter a local URL.
 
 The implemented foundation provides the native window, an empty built-in capability set, an
 origin-locked navigation policy, strict production and development content security policies, an
-accessible startup-state model, the authenticated API/bridge contract, Windows and Linux compile
-checks, and installer metadata. It intentionally reports that the local runtime is unavailable until
-the supervised runtime milestone lands; it must not present a scaffold as a working desktop release.
+accessible startup-state model, the authenticated API/bridge contract, platform process
+containment, private temporary launch material, Windows and Linux compile checks, and installer
+metadata. It intentionally reports that the local runtime is unavailable until the supervised
+runtime milestone lands; it must not present a scaffold as a working desktop release.
 
 ## Implemented supervisor foundation
 
@@ -34,8 +36,17 @@ The native build now contains the bounded primitives the launch coordinator will
   is installed.
 - Long-lived child and one-shot command runners clear inherited environments, reject relative
   executables, avoid shells, bound readiness/output/time, retain direct child handles, and expose
-  only stable errors. Production process-group and Job Object controllers are deliberately still
-  required before these runners can be connected to launch.
+  only stable errors. Windows creates a private kill-on-close Job Object and assigns each suspended
+  child before it can execute. Linux starts a new session/process group and gives the direct child a
+  parent-death signal. Ownership is released exactly once after reaping, which also prevents
+  surviving descendants from escaping ordinary shutdown.
+- Desktop API and worker processes emit bounded, token-free dynamic-port readiness records and
+  accept only the inherited `shutdown` line. EOF or a control-stream failure requests graceful
+  shutdown; non-desktop deployments retain their existing signal behavior and do not consume stdin.
+- Per-launch bearer and PostgreSQL bootstrap secrets use operating-system entropy. Temporary files
+  are exclusively created beneath a private directory with Unix `0700`/`0600` modes or a protected
+  current-user-only Windows DACL. Generated bootstrap SQL creates distinct constrained roles and
+  grants the runtime role only the required database/schema access.
 - PostgreSQL 17 plans separate initdb's raw password file from libpq's pgpass format, start the real
   `postgres` process directly, generate loopback-only SCRAM rules, define a private bootstrap step,
   authenticate the expected server/data directory, and use bounded fast shutdown and backup
@@ -47,7 +58,12 @@ The native build now contains the bounded primitives the launch coordinator will
   colocated manifest is not trusted.
 
 These pieces are compiled and tested on Windows and Linux, but they are not yet invoked by `main`.
-The application therefore continues to report `foundation` rather than claiming it is ready.
+The application therefore continues to report `foundation` rather than claiming it is ready. The
+coordinator must add a protected durable PostgreSQL credential store/load path before initializing a
+cluster, scavenge stale temporary-secret directories at startup, and run `pg_ctl stop -m fast`
+successfully before treating platform containment as the database shutdown fallback. Release
+acceptance must also exercise real descendant trees on Linux and supported Windows launch
+environments; a Linux parent-death signal covers the direct child, not arbitrary grandchildren.
 
 ## Runtime architecture
 
@@ -87,7 +103,9 @@ every restart.
 The shell currently grants no shell or filesystem capability. Remote navigation and new remote
 windows will remain disabled. Runtime processes will use non-administrative database roles, private
 data-directory permissions, bounded readiness handshakes, ownership-checked shutdown, and redacted
-diagnostics.
+diagnostics. Temporary deletion and Rust buffer zeroization are logical cleanup, not secure erase of
+filesystem remnants, page cache, or copies held by child libraries. The current path checks assume a
+trusted per-user data-root hierarchy rather than an attacker who can replace its parent directories.
 
 ## Data lifecycle and recovery
 
