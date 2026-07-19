@@ -1,4 +1,5 @@
 mod command;
+mod coordinator;
 mod credentials;
 mod integrity;
 mod journal;

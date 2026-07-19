@@ -1,8 +1,8 @@
 # Desktop application
 
-Status: native shell, authenticated request boundary, and tested supervisor/platform foundation.
-The launch coordinator, bundled release artifacts, and product interface are not in this milestone
-yet.
+Status: native shell, authenticated request boundary, and tested coordinator/platform foundation.
+The native effect executor, bundled release artifacts, and product interface are not in this
+milestone yet.
 
 Schedule is gaining a native Tauri 2 shell for Windows and Linux while retaining the existing web
 application. The desktop and hosted applications will share domain behavior and API contracts, but
@@ -24,11 +24,17 @@ runtime milestone lands; it must not present a scaffold as a working desktop rel
 
 ## Implemented supervisor foundation
 
-The native build now contains the bounded primitives the launch coordinator will use:
+The native build now contains the bounded primitives and pure coordinator that launch integration
+will use:
 
 - A generation-aware lifecycle reducer orders lock acquisition, runtime verification, database
   startup, backup-before-migration, API/worker startup, and reverse cleanup. Failure and user-stop
   paths must finish cleanup before retry or restart can begin.
+- A serialized coordinator drives that reducer through a fakeable executor, checks cancellation at
+  effect boundaries, configures the private bridge only after API readiness, clears it before API
+  shutdown, and attempts every reverse-cleanup effect while retaining the first cleanup error. Its
+  current synchronous boundary still requires an asynchronous native host adapter to interrupt an
+  effect that is blocked inside platform I/O.
 - An operating-system file lock provides one runtime owner per user-data directory without deleting
   the coordination file during shutdown.
 - A strict crash journal uses same-directory durable replacement. Windows uses `MoveFileExW` with
@@ -57,13 +63,14 @@ The native build now contains the bounded primitives the launch coordinator will
   binary. Rust compares that embedded trust anchor before accepting component hashes; a rewritten
   colocated manifest is not trusted.
 
-These pieces are compiled and tested on Windows and Linux, but they are not yet invoked by `main`.
-The application therefore continues to report `foundation` rather than claiming it is ready. The
-coordinator must add a protected durable PostgreSQL credential store/load path before initializing a
-cluster, scavenge stale temporary-secret directories at startup, and run `pg_ctl stop -m fast`
-successfully before treating platform containment as the database shutdown fallback. Release
-acceptance must also exercise real descendant trees on Linux and supported Windows launch
-environments; a Linux parent-death signal covers the direct child, not arbitrary grandchildren.
+These pieces are compiled and tested on Windows and Linux, but the coordinator still has no native
+effect executor and is not invoked by `main`. The application therefore continues to report
+`foundation` rather than claiming it is ready. Launch integration must add a protected durable
+PostgreSQL credential store/load path before initializing a cluster, scavenge stale temporary-secret
+directories at startup, and run `pg_ctl stop -m fast` successfully before treating platform
+containment as the database shutdown fallback. Release acceptance must also exercise real descendant
+trees on Linux and supported Windows launch environments; a Linux parent-death signal covers the
+direct child, not arbitrary grandchildren.
 
 ## Runtime architecture
 
