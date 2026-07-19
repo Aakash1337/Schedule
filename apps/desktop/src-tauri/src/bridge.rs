@@ -286,7 +286,7 @@ fn validate_request(request: &DesktopApiRequest) -> Result<(), DesktopApiBridgeE
 
 #[tauri::command]
 pub async fn api_request(
-    forwarder: State<'_, DesktopApiForwarder>,
+    forwarder: State<'_, Arc<DesktopApiForwarder>>,
     request: DesktopApiRequest,
 ) -> Result<DesktopApiResponse, DesktopApiBridgeError> {
     forwarder.forward(request).await

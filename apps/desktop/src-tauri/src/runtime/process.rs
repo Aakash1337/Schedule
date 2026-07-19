@@ -1,9 +1,9 @@
 use std::{
     ffi::OsString,
     fmt,
-    io::{self, Read, Write},
+    io::{self, Read},
     path::PathBuf,
-    process::{Child, ChildStdin, Command, Stdio},
+    process::Child,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -12,6 +12,8 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+
+use super::guardian::{self, GuardianChannel, LaunchSpec};
 
 #[path = "platform/mod.rs"]
 mod platform;
@@ -204,21 +206,14 @@ impl ProcessSpec {
         Ok(())
     }
 
-    fn command(&self) -> Command {
-        let mut command = Command::new(&self.program);
-        command
-            .args(&self.arguments)
-            .current_dir(&self.working_directory)
-            .env_clear()
-            .envs(self.environment.iter().map(|(key, value)| (key, value)))
-            .stdin(if self.desktop_shutdown_stdin {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        command
+    fn launch_spec(&self) -> LaunchSpec {
+        LaunchSpec::new(
+            self.program.clone(),
+            self.working_directory.clone(),
+            self.arguments.clone(),
+            self.environment.clone(),
+            self.desktop_shutdown_stdin,
+        )
     }
 }
 
@@ -230,19 +225,22 @@ fn is_safe_environment_key(key: &str) -> bool {
         && key.as_bytes()[0].is_ascii_uppercase()
 }
 
-/// Platform implementations may prepare a Unix process group or Windows Job Object before spawn,
-/// attach the child afterward, and implement tree-aware graceful/forced termination. The fallback
-/// never invokes a shell and always operates on the owned direct child handle.
-pub(crate) trait ProcessGroupControl: Send + Sync {
-    fn configure_command(
-        &self,
-        _role: ProcessRole,
-        _command: &mut Command,
-    ) -> Result<(), ProcessError> {
+/// Controllers register inert same-binary guardians and retain their private liveness channels.
+/// The fallback never invokes a shell and always operates on the owned guardian handle.
+pub(super) trait ProcessGroupControl: Send + Sync {
+    /// Reserves the configure/spawn/attach handoff against the final containment barrier.
+    fn reserve_spawn(&self) -> Result<(), ProcessError> {
         Ok(())
     }
 
-    fn attach(&self, _identity: ChildIdentity, _child: &mut Child) -> Result<(), ProcessError> {
+    fn finish_spawn(&self) {}
+
+    fn attach(
+        &self,
+        _identity: ChildIdentity,
+        _child: &mut Child,
+        _channel: Arc<GuardianChannel>,
+    ) -> Result<(), ProcessError> {
         Ok(())
     }
 
@@ -262,18 +260,76 @@ pub(crate) trait ProcessGroupControl: Send + Sync {
             .map_err(|_| ProcessError::new("desktop.process_stop_failed"))
     }
 
-    /// Release platform ownership after the direct child has been reaped. Implementations also
-    /// use this boundary to ensure descendants cannot outlive their owned process tree.
+    /// Observes guardian exit. A guardian reports only after its platform boundary has contained
+    /// and reaped the requested payload tree.
+    fn has_exited(
+        &self,
+        _identity: ChildIdentity,
+        child: &mut Child,
+    ) -> Result<bool, ProcessError> {
+        child
+            .try_wait()
+            .map(|status| status.is_some())
+            .map_err(|_| ProcessError::new("desktop.process_status_failed"))
+    }
+
+    /// Permanently rejects new ownership and force-stops every currently owned process tree.
+    /// This is the final bounded-exit containment barrier, not an ordinary lifecycle operation.
+    fn seal_and_force_stop_all(&self, _pending_spawn_wait: Duration) -> Result<(), ProcessError> {
+        Ok(())
+    }
+
+    /// Releases platform ownership as the direct child exits. Unix callers invoke this before
+    /// reaping so descendants are terminated while the leader still pins its PID/PGID.
     fn release(&self, _identity: ChildIdentity) {}
 }
 
+pub(super) struct ProcessSpawnReservation {
+    control: Arc<dyn ProcessGroupControl>,
+    active: bool,
+}
+
+impl ProcessSpawnReservation {
+    pub(super) fn new(control: Arc<dyn ProcessGroupControl>) -> Result<Self, ProcessError> {
+        control.reserve_spawn()?;
+        Ok(Self {
+            control,
+            active: true,
+        })
+    }
+
+    pub(super) fn attach(
+        mut self,
+        identity: ChildIdentity,
+        child: &mut Child,
+        channel: Arc<GuardianChannel>,
+    ) -> Result<(), ProcessError> {
+        let result = self.control.attach(identity, child, channel);
+        self.finish();
+        result
+    }
+
+    fn finish(&mut self) {
+        if self.active {
+            self.control.finish_spawn();
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for ProcessSpawnReservation {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 /// Creates the production tree-aware process controller for the current operating system.
-pub(crate) fn platform_process_control() -> Arc<dyn ProcessGroupControl> {
+pub(super) fn platform_process_control() -> Arc<dyn ProcessGroupControl> {
     platform::new_control()
 }
 
 #[cfg(test)]
-pub(crate) struct DirectChildControl;
+pub(super) struct DirectChildControl;
 
 #[cfg(test)]
 impl ProcessGroupControl for DirectChildControl {}
@@ -297,7 +353,7 @@ pub(crate) struct OwnedProcess {
     child: Child,
     control: Arc<dyn ProcessGroupControl>,
     readers: Vec<JoinHandle<()>>,
-    shutdown_stdin: Option<ChildStdin>,
+    _guardian_channel: Arc<GuardianChannel>,
     exited: bool,
     ownership_released: bool,
 }
@@ -311,14 +367,13 @@ impl OwnedProcess {
         if self.exited {
             return Ok(true);
         }
-        self.exited = self
-            .child
-            .try_wait()
-            .map_err(|_| ProcessError::new("desktop.process_status_failed"))?
-            .is_some();
+        self.exited = self.control.has_exited(self.identity, &mut self.child)?;
         if self.exited {
-            self.shutdown_stdin.take();
+            // The guardian has already contained and reaped its payload tree before it exits.
             self.release_ownership();
+            self.child
+                .wait()
+                .map_err(|_| ProcessError::new("desktop.process_status_failed"))?;
             self.release_readers();
         }
         Ok(self.exited)
@@ -330,10 +385,6 @@ impl OwnedProcess {
         }
 
         let graceful_deadline = Instant::now() + graceful_timeout;
-        if self.request_desktop_shutdown() && self.wait_until(graceful_deadline)? {
-            return Ok(());
-        }
-
         let graceful_result = self
             .control
             .request_graceful_stop(self.identity, &mut self.child);
@@ -385,23 +436,10 @@ impl OwnedProcess {
             self.ownership_released = true;
         }
     }
-
-    fn request_desktop_shutdown(&mut self) -> bool {
-        let Some(mut stdin) = self.shutdown_stdin.take() else {
-            return false;
-        };
-        let delivered = stdin
-            .write_all(b"shutdown\n")
-            .and_then(|()| stdin.flush())
-            .is_ok();
-        drop(stdin);
-        delivered
-    }
 }
 
 impl Drop for OwnedProcess {
     fn drop(&mut self) {
-        self.shutdown_stdin.take();
         if !self.exited {
             let _ = self.control.force_stop(self.identity, &mut self.child);
             let _ = self.wait_until(Instant::now() + FORCE_STOP_TIMEOUT);
@@ -411,14 +449,14 @@ impl Drop for OwnedProcess {
     }
 }
 
-pub(crate) fn start_process(
+pub(super) fn start_process(
     spec: ProcessSpec,
     control: Arc<dyn ProcessGroupControl>,
 ) -> Result<StartedProcess, ProcessError> {
     start_process_cancellable(spec, control, &|| false)
 }
 
-pub(crate) fn start_process_cancellable(
+pub(super) fn start_process_cancellable(
     spec: ProcessSpec,
     control: Arc<dyn ProcessGroupControl>,
     is_cancelled: &dyn Fn() -> bool,
@@ -427,44 +465,49 @@ pub(crate) fn start_process_cancellable(
     if is_cancelled() {
         return Err(ProcessError::new("desktop.process_cancelled"));
     }
-    let mut command = spec.command();
-    control.configure_command(spec.role, &mut command)?;
-
-    let mut child = command
-        .spawn()
-        .map_err(|_| ProcessError::new("desktop.process_spawn_failed"))?;
+    let startup_deadline = Instant::now() + spec.startup_timeout;
+    let reservation = ProcessSpawnReservation::new(Arc::clone(&control))?;
+    let mut spawned = guardian::spawn(spec.launch_spec())?;
+    let mut child = spawned.child;
     let identity = ChildIdentity {
         role: spec.role,
         pid: child.id(),
     };
-    if control.attach(identity, &mut child).is_err() {
+    let channel = Arc::clone(&spawned.channel);
+    if reservation
+        .attach(identity, &mut child, Arc::clone(&channel))
+        .is_err()
+    {
         terminate_unowned_child(&mut child);
         return Err(ProcessError::new("desktop.process_group_failed"));
     }
+    spawned.child = child;
     if is_cancelled() {
-        terminate_attached_child(&control, identity, &mut child);
+        terminate_attached_child(&control, identity, &mut spawned.child);
         return Err(ProcessError::new("desktop.process_cancelled"));
     }
 
-    let shutdown_stdin = if spec.desktop_shutdown_stdin {
-        let Some(stdin) = child.stdin.take() else {
-            terminate_attached_child(&control, identity, &mut child);
-            return Err(ProcessError::new("desktop.process_control_failed"));
-        };
-        Some(stdin)
-    } else {
-        None
-    };
-
-    let Some(stdout) = child.stdout.take() else {
-        terminate_attached_child(&control, identity, &mut child);
+    // Install both bounded drains before COMMIT. A newly admitted payload can therefore never fill
+    // its inherited guardian pipes while the parent is still completing launch admission.
+    let Some(stdout) = spawned.child.stdout.take() else {
+        terminate_attached_child(&control, identity, &mut spawned.child);
         return Err(ProcessError::new("desktop.process_output_failed"));
     };
-    let Some(stderr) = child.stderr.take() else {
-        terminate_attached_child(&control, identity, &mut child);
+    let Some(stderr) = spawned.child.stderr.take() else {
+        terminate_attached_child(&control, identity, &mut spawned.child);
         return Err(ProcessError::new("desktop.process_output_failed"));
     };
-
+    if let Err(error) = spawned.prepare() {
+        terminate_attached_child(&control, identity, &mut spawned.child);
+        return Err(error);
+    }
+    let stderr = match guardian::await_ack(stderr, startup_deadline, is_cancelled) {
+        Ok(stderr) => stderr,
+        Err(error) => {
+            terminate_attached_child(&control, identity, &mut spawned.child);
+            return Err(error);
+        }
+    };
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
     let readiness_complete = Arc::new(AtomicBool::new(false));
     let stdout_probe = spec
@@ -490,22 +533,23 @@ pub(crate) fn start_process_cancellable(
         ),
     ];
 
+    if let Err(error) = spawned.commit() {
+        terminate_attached_child(&control, identity, &mut spawned.child);
+        return Err(error);
+    }
+    let (child, guardian_channel) = spawned.into_parts();
+
     let mut process = OwnedProcess {
         identity,
         child,
         control,
         readers,
-        shutdown_stdin,
+        _guardian_channel: guardian_channel,
         exited: false,
         ownership_released: false,
     };
     let readiness = if spec.readiness.is_some() {
-        match await_readiness(
-            &mut process,
-            ready_receiver,
-            spec.startup_timeout,
-            is_cancelled,
-        ) {
+        match await_readiness(&mut process, ready_receiver, startup_deadline, is_cancelled) {
             Ok(payload) => Some(payload),
             Err(error) => {
                 let _ = process.stop(Duration::ZERO);
@@ -540,7 +584,12 @@ fn terminate_attached_child(
     }
     let deadline = Instant::now() + FORCE_STOP_TIMEOUT;
     loop {
-        if matches!(child.try_wait(), Ok(Some(_))) || Instant::now() >= deadline {
+        if matches!(control.has_exited(identity, child), Ok(true)) {
+            control.release(identity);
+            let _ = child.wait();
+            return;
+        }
+        if Instant::now() >= deadline {
             control.release(identity);
             return;
         }
@@ -557,10 +606,9 @@ enum ReadinessEvent {
 fn await_readiness(
     process: &mut OwnedProcess,
     receiver: Receiver<ReadinessEvent>,
-    timeout: Duration,
+    deadline: Instant,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<ReadyPayload, ProcessError> {
-    let deadline = Instant::now() + timeout;
     loop {
         if is_cancelled() {
             return Err(ProcessError::new("desktop.process_cancelled"));
@@ -757,9 +805,11 @@ impl Drop for ProcessSet {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashMap,
         env,
         ffi::OsStr,
         fs,
+        process::Command,
         sync::Mutex,
         thread,
         time::{SystemTime, UNIX_EPOCH},
@@ -770,12 +820,14 @@ mod tests {
     const CHILD_MODE: &str = "SCHEDULE_PROCESS_TEST_MODE";
     const EXPLICIT_VALUE: &str = "SCHEDULE_EXPLICIT_VALUE";
     const READY_PREFIX: &[u8] = b"SCHEDULE_TEST_READY_V1 ";
+    const ACK_DELAY_MS: &str = "SCHEDULE_GUARDIAN_TEST_ACK_DELAY_MS";
 
     fn helper_spec(role: ProcessRole, mode: &str, timeout: Duration) -> ProcessSpec {
         let executable = env::current_exe().unwrap();
         let working_directory = env::current_dir().unwrap();
         ProcessSpec::new(role, executable, working_directory, timeout)
-            .arg("subprocess_helper")
+            .arg("runtime::process::tests::subprocess_helper")
+            .arg("--exact")
             .arg("--nocapture")
             .env(CHILD_MODE, mode)
     }
@@ -795,6 +847,16 @@ mod tests {
                 // Model a real service: readiness is valid only while the child remains alive.
                 thread::sleep(Duration::from_secs(2));
             }
+            Ok("burst_ready") => {
+                println!("{}", "x".repeat(256 * 1024));
+                println!("{}burst", String::from_utf8_lossy(READY_PREFIX));
+                thread::sleep(Duration::from_secs(2));
+            }
+            Ok("delayed_ready") => {
+                thread::sleep(Duration::from_millis(100));
+                println!("{}delayed", String::from_utf8_lossy(READY_PREFIX));
+                thread::sleep(Duration::from_secs(2));
+            }
             Ok("sleep") => thread::sleep(Duration::from_secs(2)),
             Ok("await_shutdown") => {
                 let mut line = String::new();
@@ -809,7 +871,8 @@ mod tests {
             }
             Ok("tree_parent") => {
                 Command::new(env::current_exe().unwrap())
-                    .arg("subprocess_helper")
+                    .arg("runtime::process::tests::subprocess_helper")
+                    .arg("--exact")
                     .arg("--nocapture")
                     .env_clear()
                     .env(CHILD_MODE, "tree_descendant")
@@ -855,6 +918,16 @@ mod tests {
             started.readiness.as_ref().unwrap().as_bytes(),
             br#"{"explicit":"allowed","pathAbsent":true}"#
         );
+        started.process.stop(Duration::ZERO).unwrap();
+    }
+
+    #[test]
+    fn drains_service_output_beyond_pipe_capacity_before_readiness() {
+        let spec = helper_spec(ProcessRole::Api, "burst_ready", Duration::from_secs(5))
+            .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
+        let mut started = start_process(spec, Arc::new(DirectChildControl)).unwrap();
+
+        assert_eq!(started.readiness.as_ref().unwrap().as_bytes(), b"burst");
         started.process.stop(Duration::ZERO).unwrap();
     }
 
@@ -925,6 +998,22 @@ mod tests {
     }
 
     #[test]
+    fn startup_timeout_is_shared_by_guardian_ack_and_readiness() {
+        let spec = helper_spec(
+            ProcessRole::Api,
+            "delayed_ready",
+            Duration::from_millis(150),
+        )
+        .env(ACK_DELAY_MS, "100")
+        .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
+        let error = start_process(spec, Arc::new(DirectChildControl))
+            .err()
+            .expect("combined admission and readiness exceeded the startup timeout");
+
+        assert_eq!(error.code(), "desktop.process_start_timeout");
+    }
+
+    #[test]
     fn startup_cancellation_terminates_and_reaps_the_child() {
         let cancelled = Arc::new(AtomicBool::new(false));
         let setter = Arc::clone(&cancelled);
@@ -947,40 +1036,69 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingControl {
-        configured: Mutex<Vec<ProcessRole>>,
         attached: Mutex<Vec<ProcessRole>>,
         stopped: Mutex<Vec<ProcessRole>>,
+        forced: Mutex<Vec<ProcessRole>>,
         released: Mutex<Vec<ProcessRole>>,
+        channels: Mutex<HashMap<u32, (ProcessRole, Arc<GuardianChannel>)>>,
     }
 
     impl ProcessGroupControl for RecordingControl {
-        fn configure_command(
+        fn attach(
             &self,
-            role: ProcessRole,
-            _command: &mut Command,
+            identity: ChildIdentity,
+            _child: &mut Child,
+            channel: Arc<GuardianChannel>,
         ) -> Result<(), ProcessError> {
-            self.configured.lock().unwrap().push(role);
-            Ok(())
-        }
-
-        fn attach(&self, identity: ChildIdentity, _child: &mut Child) -> Result<(), ProcessError> {
             self.attached.lock().unwrap().push(identity.role);
+            self.channels
+                .lock()
+                .unwrap()
+                .insert(identity.pid, (identity.role, channel));
             Ok(())
         }
 
         fn request_graceful_stop(
             &self,
             identity: ChildIdentity,
-            child: &mut Child,
+            _child: &mut Child,
         ) -> Result<(), ProcessError> {
             self.stopped.lock().unwrap().push(identity.role);
-            child
-                .kill()
-                .map_err(|_| ProcessError::new("desktop.process_stop_failed"))
+            let channel = self
+                .channels
+                .lock()
+                .unwrap()
+                .get(&identity.pid)
+                .filter(|entry| entry.0 == identity.role)
+                .map(|entry| Arc::clone(&entry.1))
+                .ok_or_else(|| ProcessError::new("desktop.process_stop_failed"))?;
+            channel.send(guardian::GRACEFUL)
+        }
+
+        fn force_stop(
+            &self,
+            identity: ChildIdentity,
+            child: &mut Child,
+        ) -> Result<(), ProcessError> {
+            self.forced.lock().unwrap().push(identity.role);
+            let channel = self
+                .channels
+                .lock()
+                .unwrap()
+                .get(&identity.pid)
+                .filter(|entry| entry.0 == identity.role)
+                .map(|entry| Arc::clone(&entry.1))
+                .ok_or_else(|| ProcessError::new("desktop.process_stop_failed"))?;
+            match channel.send(guardian::FORCE) {
+                Ok(()) => Ok(()),
+                Err(_) if matches!(child.try_wait(), Ok(Some(_))) => Ok(()),
+                Err(error) => Err(error),
+            }
         }
 
         fn release(&self, identity: ChildIdentity) {
             self.released.lock().unwrap().push(identity.role);
+            self.channels.lock().unwrap().remove(&identity.pid);
         }
     }
 
@@ -1004,13 +1122,12 @@ mod tests {
             *control.stopped.lock().unwrap(),
             vec![ProcessRole::Worker, ProcessRole::Api, ProcessRole::Database]
         );
-        assert_eq!(control.configured.lock().unwrap().len(), 3);
         assert_eq!(control.attached.lock().unwrap().len(), 3);
         assert_eq!(control.released.lock().unwrap().len(), 3);
     }
 
     #[test]
-    fn desktop_shutdown_pipe_delivers_one_line_without_platform_fallback() {
+    fn desktop_shutdown_pipe_delivers_one_line_through_platform_control() {
         let control = Arc::new(RecordingControl::default());
         let mut started = start_process(
             helper_spec(ProcessRole::Api, "await_shutdown", Duration::from_secs(1))
@@ -1021,11 +1138,12 @@ mod tests {
 
         started.process.stop(Duration::from_secs(1)).unwrap();
         assert!(started.process.has_exited().unwrap());
-        assert!(control.stopped.lock().unwrap().is_empty());
+        assert_eq!(*control.stopped.lock().unwrap(), vec![ProcessRole::Api]);
+        assert!(control.forced.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn broken_desktop_shutdown_pipe_falls_back_to_platform_control() {
+    fn broken_desktop_shutdown_pipe_escalates_to_force_stop() {
         let control = Arc::new(RecordingControl::default());
         let mut started = start_process(
             helper_spec(ProcessRole::Worker, "closed_stdin", Duration::from_secs(2))
@@ -1037,6 +1155,7 @@ mod tests {
 
         started.process.stop(Duration::from_millis(100)).unwrap();
         assert_eq!(*control.stopped.lock().unwrap(), vec![ProcessRole::Worker]);
+        assert_eq!(*control.forced.lock().unwrap(), vec![ProcessRole::Worker]);
     }
 
     #[test]
@@ -1052,6 +1171,7 @@ mod tests {
                 &self,
                 _identity: ChildIdentity,
                 child: &mut Child,
+                _channel: Arc<GuardianChannel>,
             ) -> Result<(), ProcessError> {
                 child.stdout.take();
                 Ok(())
@@ -1118,6 +1238,84 @@ mod tests {
         let descendant_escaped = marker.exists();
         let _ = fs::remove_file(marker);
         assert!(!descendant_escaped);
+    }
+
+    #[test]
+    fn final_containment_kills_owned_groups_and_rejects_late_spawns() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let marker = env::temp_dir().join(format!(
+            "schedule-final-containment-{}-{nonce}.marker",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&marker);
+        let control = platform_process_control();
+        let spec = helper_spec(ProcessRole::Api, "tree_parent", Duration::from_secs(2))
+            .env(EXPLICIT_VALUE, marker.as_os_str())
+            .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
+        let started = start_process(spec, Arc::clone(&control)).unwrap();
+
+        control
+            .seal_and_force_stop_all(Duration::from_secs(1))
+            .unwrap();
+        thread::sleep(Duration::from_millis(750));
+        assert!(!marker.exists());
+        let late = start_process(
+            helper_spec(ProcessRole::Worker, "sleep", Duration::from_secs(1)),
+            control,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(late.code(), "desktop.process_group_failed");
+
+        drop(started);
+        let _ = fs::remove_file(marker);
+    }
+
+    #[test]
+    fn final_containment_deadline_rejects_a_late_reserved_spawn() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let marker = env::temp_dir().join(format!(
+            "schedule-late-spawn-{}-{nonce}.marker",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&marker);
+        let control = platform_process_control();
+        let reservation = ProcessSpawnReservation::new(Arc::clone(&control)).unwrap();
+        let spec = helper_spec(ProcessRole::Api, "tree_parent", Duration::from_secs(2))
+            .env(EXPLICIT_VALUE, marker.as_os_str())
+            .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
+        let mut guardian = guardian::spawn(spec.launch_spec()).unwrap();
+
+        let started = Instant::now();
+        control
+            .seal_and_force_stop_all(Duration::from_millis(10))
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        let mut child = guardian.child;
+        let identity = ChildIdentity {
+            role: ProcessRole::Api,
+            pid: child.id(),
+        };
+        assert!(
+            reservation
+                .attach(identity, &mut child, Arc::clone(&guardian.channel))
+                .is_err()
+        );
+        guardian.child = child;
+        assert!(guardian.commit().is_err());
+        let mut child = guardian.child;
+        terminate_unowned_child(&mut child);
+        thread::sleep(Duration::from_millis(750));
+        assert!(!marker.exists());
+        assert!(ProcessSpawnReservation::new(control).is_err());
+        let _ = fs::remove_file(marker);
     }
 
     #[test]

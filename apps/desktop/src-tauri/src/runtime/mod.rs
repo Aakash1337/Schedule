@@ -3,6 +3,7 @@ mod command;
 mod coordinator;
 mod credentials;
 mod executor;
+pub(crate) mod guardian;
 mod host;
 mod integrity;
 mod journal;
@@ -12,6 +13,7 @@ mod paths;
 mod postgres;
 mod process;
 mod state;
+pub(crate) mod tauri_adapter;
 
 fn safe_pg_identifier(value: &str) -> bool {
     !value.is_empty()

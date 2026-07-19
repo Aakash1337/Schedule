@@ -3,25 +3,23 @@
 mod bridge;
 mod runtime;
 
-use serde::Serialize;
 use tauri::{
-    Url, WebviewUrl,
+    Manager, RunEvent, Url, WebviewUrl, WindowEvent,
     webview::{NewWindowResponse, WebviewWindowBuilder},
 };
 
-#[derive(Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DesktopRuntimeStatus {
-    phase: &'static str,
-    message: &'static str,
+#[tauri::command]
+fn runtime_status(
+    runtime: tauri::State<'_, std::sync::Arc<runtime::tauri_adapter::DesktopRuntimeAdapter>>,
+) -> runtime::tauri_adapter::DesktopRuntimeStatus {
+    runtime.status()
 }
 
 #[tauri::command]
-fn runtime_status() -> DesktopRuntimeStatus {
-    DesktopRuntimeStatus {
-        phase: "foundation",
-        message: "The self-contained local runtime is not installed in this build yet.",
-    }
+fn runtime_retry(
+    runtime: tauri::State<'_, std::sync::Arc<runtime::tauri_adapter::DesktopRuntimeAdapter>>,
+) -> runtime::tauri_adapter::RuntimeRetryResult {
+    runtime.retry()
 }
 
 fn is_allowed_navigation(url: &Url, allow_development_origin: bool) -> bool {
@@ -44,17 +42,6 @@ fn is_allowed_navigation(url: &Url, allow_development_origin: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn foundation_status_does_not_claim_the_runtime_is_ready() {
-        assert_eq!(
-            runtime_status(),
-            DesktopRuntimeStatus {
-                phase: "foundation",
-                message: "The self-contained local runtime is not installed in this build yet.",
-            }
-        );
-    }
 
     #[test]
     fn navigation_is_limited_to_exact_application_origins() {
@@ -86,11 +73,23 @@ mod tests {
 }
 
 fn main() {
-    let api_forwarder = bridge::DesktopApiForwarder::new()
-        .expect("Schedule desktop API bridge failed to initialize");
-    tauri::Builder::default()
-        .manage(api_forwarder)
+    if runtime::guardian::run_if_requested() {
+        return;
+    }
+    let api_forwarder = std::sync::Arc::new(
+        bridge::DesktopApiForwarder::new()
+            .expect("Schedule desktop API bridge failed to initialize"),
+    );
+    let app = tauri::Builder::default()
+        .manage(api_forwarder.clone())
         .setup(|app| {
+            let runtime = runtime::tauri_adapter::DesktopRuntimeAdapter::setup(
+                &app.handle(),
+                app.state::<std::sync::Arc<bridge::DesktopApiForwarder>>()
+                    .inner()
+                    .clone(),
+            );
+            app.manage(std::sync::Arc::new(runtime));
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Schedule")
                 .inner_size(1180.0, 780.0)
@@ -104,8 +103,28 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             runtime_status,
+            runtime_retry,
             bridge::api_request
         ])
-        .run(tauri::generate_context!())
-        .expect("Schedule desktop failed to start");
+        .build(tauri::generate_context!())
+        .expect("Schedule desktop failed to build");
+    app.run(|app, event| match event {
+        RunEvent::WindowEvent {
+            event: WindowEvent::CloseRequested { api, .. },
+            ..
+        } => {
+            api.prevent_close();
+            runtime::tauri_adapter::schedule_close(
+                app.clone(),
+                app.state::<std::sync::Arc<runtime::tauri_adapter::DesktopRuntimeAdapter>>()
+                    .inner()
+                    .clone(),
+            );
+        }
+        RunEvent::ExitRequested { .. } => {
+            app.state::<std::sync::Arc<runtime::tauri_adapter::DesktopRuntimeAdapter>>()
+                .bounded_shutdown(runtime::tauri_adapter::final_shutdown_wait());
+        }
+        _ => {}
+    });
 }

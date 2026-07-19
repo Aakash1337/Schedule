@@ -4,11 +4,12 @@
 //! formatting: PostgreSQL connection settings and migration diagnostics can contain credentials.
 
 use std::{
+    cell::Cell,
     ffi::OsString,
     fmt,
     io::Read,
     path::PathBuf,
-    process::{Child, Command, Stdio},
+    process::Child,
     sync::{
         Arc,
         mpsc::{self, Receiver, SyncSender},
@@ -17,7 +18,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::process::{ChildIdentity, ProcessError, ProcessGroupControl, ProcessRole};
+use super::{
+    guardian::{self, GuardianChannel, LaunchSpec},
+    process::{
+        ChildIdentity, ProcessError, ProcessGroupControl, ProcessRole, ProcessSpawnReservation,
+    },
+};
 
 const READ_CHUNK_BYTES: usize = 4 * 1024;
 const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
@@ -97,17 +103,14 @@ impl CommandSpec {
         Ok(())
     }
 
-    fn command(&self) -> Command {
-        let mut command = Command::new(&self.program);
-        command
-            .args(&self.arguments)
-            .current_dir(&self.working_directory)
-            .env_clear()
-            .envs(self.environment.iter().map(|(key, value)| (key, value)))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        command
+    fn launch_spec(&self) -> LaunchSpec {
+        LaunchSpec::new(
+            self.program.clone(),
+            self.working_directory.clone(),
+            self.arguments.clone(),
+            self.environment.clone(),
+            false,
+        )
     }
 }
 
@@ -175,11 +178,21 @@ enum OutputEvent {
 struct AttachedCommandOwnership<'a> {
     control: &'a dyn ProcessGroupControl,
     identity: ChildIdentity,
+    _guardian_channel: Arc<GuardianChannel>,
+    released: Cell<bool>,
+}
+
+impl AttachedCommandOwnership<'_> {
+    fn release(&self) {
+        if !self.released.replace(true) {
+            self.control.release(self.identity);
+        }
+    }
 }
 
 impl Drop for AttachedCommandOwnership<'_> {
     fn drop(&mut self) {
-        self.control.release(self.identity);
+        self.release();
     }
 }
 
@@ -188,14 +201,14 @@ impl Drop for AttachedCommandOwnership<'_> {
 /// overflow. The direct child is always reaped; reader threads are only joined if already done,
 /// because a descendant may retain an inherited output pipe after its parent exits. Every
 /// successfully attached platform owner is released exactly once before return.
-pub(crate) fn run_command(
+pub(super) fn run_command(
     spec: CommandSpec,
     control: Arc<dyn ProcessGroupControl>,
 ) -> Result<CommandOutput, CommandError> {
     run_command_cancellable(spec, control, &|| false)
 }
 
-pub(crate) fn run_command_cancellable(
+pub(super) fn run_command_cancellable(
     spec: CommandSpec,
     control: Arc<dyn ProcessGroupControl>,
     is_cancelled: &dyn Fn() -> bool,
@@ -204,37 +217,55 @@ pub(crate) fn run_command_cancellable(
     if is_cancelled() {
         return Err(CommandError::new("desktop.command_cancelled"));
     }
-    let mut command = spec.command();
-    control
-        .configure_command(ProcessRole::Database, &mut command)
-        .map_err(map_process_error)?;
-    let mut child = command
-        .spawn()
-        .map_err(|_| CommandError::new("desktop.command_spawn_failed"))?;
+    let deadline = Instant::now() + spec.timeout;
+    let reservation =
+        ProcessSpawnReservation::new(Arc::clone(&control)).map_err(map_process_error)?;
+    let mut spawned = guardian::spawn(spec.launch_spec()).map_err(map_process_error)?;
+    let mut child = spawned.child;
     let identity = ChildIdentity {
         role: ProcessRole::Database,
         pid: child.id(),
     };
-    if control.attach(identity, &mut child).is_err() {
-        stop_and_reap(&control, identity, &mut child);
+    let guardian_channel = Arc::clone(&spawned.channel);
+    if reservation
+        .attach(identity, &mut child, Arc::clone(&guardian_channel))
+        .is_err()
+    {
+        stop_unattached(&control, identity, &mut child);
         return Err(CommandError::new("desktop.command_group_failed"));
     }
+    spawned.child = child;
     let ownership = AttachedCommandOwnership {
         control: control.as_ref(),
         identity,
+        _guardian_channel: guardian_channel,
+        released: Cell::new(false),
     };
     if is_cancelled() {
-        stop_and_reap(&control, identity, &mut child);
+        stop_and_reap(&control, &ownership, identity, &mut spawned.child);
         return Err(CommandError::new("desktop.command_cancelled"));
     }
 
-    let Some(stdout) = child.stdout.take() else {
-        stop_and_reap(&control, identity, &mut child);
+    // Command output is bounded by `collect_output`; begin draining before COMMIT so even a payload
+    // that writes immediately cannot fill the inherited guardian pipes during admission.
+    let Some(stdout) = spawned.child.stdout.take() else {
+        stop_and_reap(&control, &ownership, identity, &mut spawned.child);
         return Err(CommandError::new("desktop.command_output_failed"));
     };
-    let Some(stderr) = child.stderr.take() else {
-        stop_and_reap(&control, identity, &mut child);
+    let Some(stderr) = spawned.child.stderr.take() else {
+        stop_and_reap(&control, &ownership, identity, &mut spawned.child);
         return Err(CommandError::new("desktop.command_output_failed"));
+    };
+    if spawned.prepare().is_err() {
+        stop_and_reap(&control, &ownership, identity, &mut spawned.child);
+        return Err(CommandError::new("desktop.command_group_failed"));
+    }
+    let stderr = match guardian::await_ack(stderr, deadline, is_cancelled) {
+        Ok(stderr) => stderr,
+        Err(error) => {
+            stop_and_reap(&control, &ownership, identity, &mut spawned.child);
+            return Err(map_guardian_start_error(error));
+        }
     };
     let (sender, receiver) = mpsc::sync_channel(16);
     let readers = [
@@ -242,12 +273,19 @@ pub(crate) fn run_command_cancellable(
         drain_stream(stderr, Stream::Stderr, sender),
     ];
 
+    if spawned.commit().is_err() {
+        stop_and_reap(&control, &ownership, identity, &mut spawned.child);
+        return Err(CommandError::new("desktop.command_group_failed"));
+    }
+    let (mut child, _guardian_channel) = spawned.into_parts();
+
     let result = collect_output(
         &mut child,
         identity,
         &control,
+        &ownership,
         receiver,
-        spec.timeout,
+        deadline,
         spec.max_stdout_bytes,
         spec.max_stderr_bytes,
         is_cancelled,
@@ -266,78 +304,83 @@ fn collect_output(
     child: &mut Child,
     identity: ChildIdentity,
     control: &Arc<dyn ProcessGroupControl>,
+    ownership: &AttachedCommandOwnership<'_>,
     receiver: Receiver<OutputEvent>,
-    timeout: Duration,
+    deadline: Instant,
     stdout_limit: usize,
     stderr_limit: usize,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<CommandOutput, CommandError> {
-    let deadline = Instant::now() + timeout;
     let mut stdout = Vec::with_capacity(stdout_limit.min(READ_CHUNK_BYTES));
     let mut stderr = Vec::with_capacity(stderr_limit.min(READ_CHUNK_BYTES));
     let mut ended = 0;
-    let mut exit = None;
     let mut exited_at = None;
 
     loop {
         if is_cancelled() {
-            stop_and_reap(control, identity, child);
+            stop_and_reap(control, ownership, identity, child);
             return Err(CommandError::new("desktop.command_cancelled"));
         }
-        match receiver.recv_timeout(POLL_INTERVAL) {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            stop_and_reap(control, ownership, identity, child);
+            return Err(CommandError::new("desktop.command_timeout"));
+        };
+        match receiver.recv_timeout(remaining.min(POLL_INTERVAL)) {
             Ok(OutputEvent::Bytes(Stream::Stdout, bytes)) => {
                 if let Err(error) = append_bounded(&mut stdout, bytes, stdout_limit) {
-                    stop_and_reap(control, identity, child);
+                    stop_and_reap(control, ownership, identity, child);
                     return Err(error);
                 }
             }
             Ok(OutputEvent::Bytes(Stream::Stderr, bytes)) => {
                 if let Err(error) = append_bounded(&mut stderr, bytes, stderr_limit) {
-                    stop_and_reap(control, identity, child);
+                    stop_and_reap(control, ownership, identity, child);
                     return Err(error);
                 }
             }
             Ok(OutputEvent::Ended) => ended += 1,
             Ok(OutputEvent::Failed) => {
-                stop_and_reap(control, identity, child);
+                stop_and_reap(control, ownership, identity, child);
                 return Err(CommandError::new("desktop.command_output_failed"));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
 
-        if exit.is_none() {
-            exit = match child.try_wait() {
-                Ok(status) => status,
+        if exited_at.is_none() {
+            match control.has_exited(identity, child) {
+                Ok(true) => exited_at = Some(Instant::now()),
+                Ok(false) => {}
                 Err(_) => {
-                    stop_and_reap(control, identity, child);
+                    stop_and_reap(control, ownership, identity, child);
                     return Err(CommandError::new("desktop.command_status_failed"));
                 }
-            };
-            if exit.is_some() {
-                exited_at = Some(Instant::now());
             }
         }
-        if let Some(status) = exit {
+        if let Some(exited_at) = exited_at {
             // Give normal readers a short bounded chance to flush. Do not wait indefinitely for
             // inherited pipe handles held by descendants.
             if ended >= 2 {
+                ownership.release();
+                let status = child
+                    .wait()
+                    .map_err(|_| CommandError::new("desktop.command_status_failed"))?;
                 return if status.success() {
                     Ok(CommandOutput { stdout, stderr })
                 } else {
-                    stop_and_reap(control, identity, child);
+                    stop_and_reap(control, ownership, identity, child);
                     Err(CommandError::new("desktop.command_exit_failed"))
                 };
             }
-            if exited_at.is_some_and(|at| at.elapsed() >= OUTPUT_SETTLE_TIMEOUT) {
+            if exited_at.elapsed() >= OUTPUT_SETTLE_TIMEOUT {
                 // A descendant may still own the inherited pipes after the direct child exits.
                 // Stop the prepared group before reporting the malformed command lifecycle.
-                stop_and_reap(control, identity, child);
+                stop_and_reap(control, ownership, identity, child);
                 return Err(CommandError::new("desktop.command_output_failed"));
             }
         }
         if Instant::now() >= deadline {
-            stop_and_reap(control, identity, child);
+            stop_and_reap(control, ownership, identity, child);
             return Err(CommandError::new("desktop.command_timeout"));
         }
     }
@@ -383,20 +426,34 @@ fn drain_stream<R: Read + Send + 'static>(
 
 fn stop_and_reap(
     control: &Arc<dyn ProcessGroupControl>,
+    ownership: &AttachedCommandOwnership<'_>,
     identity: ChildIdentity,
     child: &mut Child,
 ) {
     if control.force_stop(identity, child).is_err() {
+        ownership.release();
         kill_direct_child(child);
         return;
     }
     let until = Instant::now() + Duration::from_secs(2);
     while Instant::now() < until {
-        if matches!(child.try_wait(), Ok(Some(_))) {
+        if matches!(control.has_exited(identity, child), Ok(true)) {
+            ownership.release();
+            let _ = child.wait();
             return;
         }
         thread::sleep(POLL_INTERVAL);
     }
+    ownership.release();
+    kill_direct_child(child);
+}
+
+fn stop_unattached(
+    control: &Arc<dyn ProcessGroupControl>,
+    identity: ChildIdentity,
+    child: &mut Child,
+) {
+    let _ = control.force_stop(identity, child);
     kill_direct_child(child);
 }
 
@@ -415,10 +472,19 @@ fn map_process_error(_error: ProcessError) -> CommandError {
     CommandError::new("desktop.command_group_failed")
 }
 
+fn map_guardian_start_error(error: ProcessError) -> CommandError {
+    match error.code() {
+        "desktop.process_cancelled" => CommandError::new("desktop.command_cancelled"),
+        "desktop.process_start_timeout" => CommandError::new("desktop.command_timeout"),
+        _ => CommandError::new("desktop.command_group_failed"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
         env, fs,
+        process::Command,
         sync::{
             Arc, Mutex,
             atomic::{AtomicBool, Ordering},
@@ -429,6 +495,7 @@ mod tests {
 
     const MODE: &str = "SCHEDULE_COMMAND_TEST_MODE";
     const VALUE: &str = "SCHEDULE_COMMAND_VALUE";
+    const ACK_DELAY_MS: &str = "SCHEDULE_GUARDIAN_TEST_ACK_DELAY_MS";
 
     #[derive(Default)]
     struct RecordingControl {
@@ -438,7 +505,12 @@ mod tests {
     }
 
     impl ProcessGroupControl for RecordingControl {
-        fn attach(&self, _identity: ChildIdentity, _child: &mut Child) -> Result<(), ProcessError> {
+        fn attach(
+            &self,
+            _identity: ChildIdentity,
+            _child: &mut Child,
+            _channel: Arc<GuardianChannel>,
+        ) -> Result<(), ProcessError> {
             if self.fail_attach {
                 Err(ProcessError::new("test.group_attach_failed"))
             } else {
@@ -467,7 +539,8 @@ mod tests {
             env::current_dir().unwrap(),
             timeout,
         )
-        .arg("command_subprocess_helper")
+        .arg("runtime::command::tests::command_subprocess_helper")
+        .arg("--exact")
         .arg("--nocapture")
         .env(MODE, mode)
     }
@@ -485,13 +558,18 @@ mod tests {
             }
             Ok("failure") => std::process::exit(7),
             Ok("sleep") => thread::sleep(Duration::from_secs(2)),
+            Ok("delayed_success") => {
+                thread::sleep(Duration::from_millis(100));
+                print!("done");
+            }
             Ok("delayed_marker") => {
                 thread::sleep(Duration::from_millis(350));
                 fs::write(env::var_os(VALUE).unwrap(), b"alive").unwrap();
             }
             Ok("pipe_descendant") => {
                 Command::new(env::current_exe().unwrap())
-                    .arg("command_subprocess_helper")
+                    .arg("runtime::command::tests::command_subprocess_helper")
+                    .arg("--exact")
                     .arg("--nocapture")
                     .env_clear()
                     .env(MODE, "pipe_descendant_child")
@@ -500,6 +578,7 @@ mod tests {
             }
             Ok("pipe_descendant_child") => thread::sleep(Duration::from_millis(600)),
             Ok("large") => print!("{}", "x".repeat(2048)),
+            Ok("pipe_burst") => print!("{}", "z".repeat(256 * 1024)),
             _ => {}
         }
     }
@@ -563,6 +642,21 @@ mod tests {
             Ok(_) => panic!("sleeping helper unexpectedly succeeded"),
             Err(error) => error,
         };
+        assert_eq!(error.code(), "desktop.command_timeout");
+        assert_eq!(*control.stops.lock().unwrap(), 1);
+        assert_eq!(*control.releases.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn command_timeout_is_shared_by_guardian_ack_and_payload() {
+        let control = Arc::new(RecordingControl::default());
+        let error = run_command(
+            helper("delayed_success", Duration::from_millis(150)).env(ACK_DELAY_MS, "100"),
+            control.clone(),
+        )
+        .err()
+        .expect("combined admission and payload execution exceeded the command timeout");
+
         assert_eq!(error.code(), "desktop.command_timeout");
         assert_eq!(*control.stops.lock().unwrap(), 1);
         assert_eq!(*control.releases.lock().unwrap(), 1);
@@ -635,18 +729,29 @@ mod tests {
     }
 
     #[test]
-    fn stops_the_group_when_descendants_keep_output_pipes_open() {
+    fn guardian_closes_descendant_output_pipes_before_reporting_success() {
         let control = Arc::new(RecordingControl::default());
-        let error = match run_command(
+        let _output = run_command(
             helper("pipe_descendant", Duration::from_secs(2)),
             control.clone(),
-        ) {
-            Ok(_) => panic!("pipe-holding descendant unexpectedly settled"),
-            Err(error) => error,
-        };
+        )
+        .unwrap();
 
-        assert_eq!(error.code(), "desktop.command_output_failed");
-        assert_eq!(*control.stops.lock().unwrap(), 1);
+        assert_eq!(*control.stops.lock().unwrap(), 0);
+        assert_eq!(*control.releases.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn drains_payload_output_beyond_pipe_capacity_from_commit() {
+        let control = Arc::new(RecordingControl::default());
+        let output = run_command(
+            helper("pipe_burst", Duration::from_secs(2)).output_bounds(512 * 1024, 64 * 1024),
+            control.clone(),
+        )
+        .unwrap();
+
+        assert!(output.stdout().len() >= 256 * 1024);
+        assert_eq!(*control.stops.lock().unwrap(), 0);
         assert_eq!(*control.releases.lock().unwrap(), 1);
     }
 

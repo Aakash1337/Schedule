@@ -1,40 +1,43 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { loadRuntimeStatus, runtimeStatusAction } from "./DesktopApp.js";
+import { loadRuntimeStatus, requestRuntimeRetry, runtimeStatusAction } from "./DesktopApp.js";
 
 describe("desktop runtime gate", () => {
   afterEach(() => vi.useRealTimers());
 
   it("allows the shared application to mount only after a ready runtime", () => {
-    expect(runtimeStatusAction({ phase: "ready", message: "Local API is ready" })).toEqual({
-      type: "phase_changed",
-      phase: "ready",
-      message: "Local API is ready",
-    });
+    expect(
+      runtimeStatusAction({ phase: "ready", message: "Local API is ready", generation: 1 }),
+    ).toEqual({ type: "phase_changed", phase: "ready", message: "Local API is ready" });
   });
 
   it("keeps reported startup work and incompatible data in the native gate", () => {
-    expect(runtimeStatusAction({ phase: "migrating", message: "Applying updates" })).toEqual({
-      type: "phase_changed",
-      phase: "migrating",
-      message: "Applying updates",
-    });
-    expect(runtimeStatusAction({ phase: "incompatible_data", message: "Update Schedule" })).toEqual(
-      {
-        type: "incompatible",
+    expect(
+      runtimeStatusAction({ phase: "migrating", message: "Applying updates", generation: 2 }),
+    ).toEqual({ type: "phase_changed", phase: "migrating", message: "Applying updates" });
+    expect(
+      runtimeStatusAction({
+        phase: "incompatible_data",
         message: "Update Schedule",
-        detail: "desktop.data_incompatible",
-      },
-    );
+        generation: 2,
+      }),
+    ).toEqual({
+      type: "incompatible",
+      message: "Update Schedule",
+      detail: "desktop.data_incompatible",
+    });
   });
 
   it("keeps an unavailable runtime behind a recoverable retry gate", async () => {
     await expect(
       loadRuntimeStatus(async () => Promise.reject(new Error("offline"))),
     ).resolves.toEqual({
-      type: "failed",
-      message: "Schedule could not inspect its local runtime",
-      detail: "desktop.runtime_unavailable",
+      action: {
+        type: "failed",
+        message: "Schedule could not inspect its local runtime",
+        detail: "desktop.runtime_unavailable",
+      },
+      generation: null,
     });
   });
 
@@ -45,9 +48,18 @@ describe("desktop runtime gate", () => {
     await vi.advanceTimersByTimeAsync(50);
 
     await expect(action).resolves.toEqual({
-      type: "failed",
-      message: "Schedule could not inspect its local runtime",
-      detail: "desktop.runtime_unavailable",
+      action: {
+        type: "failed",
+        message: "Schedule could not inspect its local runtime",
+        detail: "desktop.runtime_unavailable",
+      },
+      generation: null,
     });
+  });
+
+  it("bounds a failed native retry without exposing its error", async () => {
+    await expect(
+      requestRuntimeRetry(async () => Promise.reject(new Error("offline"))),
+    ).resolves.toBe(undefined);
   });
 });
