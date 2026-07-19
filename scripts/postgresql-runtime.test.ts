@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -11,6 +12,7 @@ import {
   type PostgreSqlRuntimeLock,
   type PostgreSqlRuntimeTarget,
 } from "./postgresql-runtime.js";
+import { runPostgresCommand } from "./smoke-postgresql-runtime.js";
 
 const roots: string[] = [];
 
@@ -18,6 +20,36 @@ async function temporary(): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), "schedule-pg-runtime-"));
   roots.push(root);
   return root;
+}
+
+function processExists(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readPidWhenReady(pidFile: string): Promise<number> {
+  const deadline = Date.now() + 4000;
+  while (Date.now() < deadline) {
+    const value = await readFile(pidFile, "utf8").catch(() => "");
+    const processId = Number(value);
+    if (Number.isInteger(processId) && processId > 0) return processId;
+    await delay(25);
+  }
+  throw new Error("Synthetic descendant did not report its PID.");
+}
+
+async function waitForProcessExit(processId: number): Promise<boolean> {
+  const deadline = Date.now() + 2000;
+  while (processExists(processId) && Date.now() < deadline) await delay(25);
+  return !processExists(processId);
+}
+
+function forceProcessExit(processId: number | undefined): void {
+  if (processId !== undefined && processExists(processId)) process.kill(processId, "SIGKILL");
 }
 
 afterEach(async () => {
@@ -40,7 +72,7 @@ function lock(): PostgreSqlRuntimeLock {
       },
       zlib: {
         version: "1.3.2",
-        url: "https://zlib.net/fossils/zlib-1.3.2.tar.gz",
+        url: "https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz",
         sha256: "c".repeat(64),
       },
     },
@@ -114,8 +146,10 @@ describe("PostgreSQL runtime lock", () => {
     ).toBe(true);
     const vcpkg = JSON.parse(await readFile("scripts/postgresql-runtime/vcpkg.json", "utf8")) as {
       "builtin-baseline": string;
+      dependencies: Array<string | { host?: boolean; name: string }>;
     };
     expect(vcpkg["builtin-baseline"]).toBe(committed.windowsDependencies.vcpkgBaseline);
+    expect(vcpkg.dependencies).toContainEqual({ name: "pkgconf", host: true });
     const workflow = await readFile(".github/workflows/postgresql-runtime.yml", "utf8");
     expect(workflow).toContain(`ref: ${committed.windowsDependencies.vcpkgBaseline}`);
     const actionRefs = [...workflow.matchAll(/\buses:\s+[^@\s]+@([^\s]+)/gu)].map(
@@ -130,11 +164,30 @@ describe("PostgreSQL runtime lock", () => {
     expect(requirements).toContain(`meson==${committed.windowsDependencies.mesonVersion} `);
     expect(requirements).toContain(`ninja==${committed.windowsDependencies.ninjaVersion} `);
     const windowsBuilder = await readFile("scripts/build-postgresql-runtime-windows.ps1", "utf8");
+    const linuxBuilder = await readFile("scripts/build-postgresql-runtime-linux.sh", "utf8");
+    const smoke = await readFile("scripts/smoke-postgresql-runtime.ts", "utf8");
+    expect(linuxBuilder).toContain('make -j"$JOBS" install_dev LIBS= INSTALL_LIBS=');
+    expect(linuxBuilder).not.toContain("make install_sw");
+    expect(smoke).toContain('["-D", data, "-l", serverLog, "-w", "start"]');
+    expect(smoke).toContain('writeFile(serverLog, "", { mode: 0o600 })');
     expect(windowsBuilder).toContain("sysconfig.get_path('scripts')");
     expect(windowsBuilder).toContain("importlib.metadata as m");
     expect(windowsBuilder).toContain("$env:PATH = $ScriptsItem.FullName");
     expect(windowsBuilder).toContain("& $MesonExecutable setup");
     expect(windowsBuilder).toContain("& $NinjaExecutable --version");
+    expect(windowsBuilder).toContain("$env:PKG_CONFIG = $PkgconfItem.FullName");
+    expect(windowsBuilder).toContain("--exists openssl zlib");
+    expect(windowsBuilder).toContain('$_.Extension -in @(".exe", ".dll")');
+    expect(windowsBuilder).toContain('$_.Extension -in @(".lib", ".pdb")');
+    expect(windowsBuilder).toContain('"BUILD-VCPKG-STATUS.txt"');
+    expect(windowsBuilder).not.toMatch(/-Include \*\.(?:exe|dll|lib|pdb)/u);
+    expect(windowsBuilder).toContain("[BitConverter]::ToUInt16($Bytes, $PeOffset + 4) -eq 0x8664");
+    expect(windowsBuilder).not.toContain("dumpbin.exe /nologo /headers");
+    expect(windowsBuilder).toContain("api-ms-win-.*|ext-ms-win-.*");
+    expect(windowsBuilder).not.toContain("api-ms-win-|ext-ms-win-|kernel32");
+    expect(windowsBuilder).toContain(
+      `-Dc_link_args=['crypt32.lib','ws2_32.lib','advapi32.lib','user32.lib']`,
+    );
     expect(windowsBuilder).toContain(
       '$Lock.windowsDependencies.ninjaVersion + ".git.kitware.jobserver-pipe-1"',
     );
@@ -146,6 +199,90 @@ describe("PostgreSQL runtime lock", () => {
 });
 
 describe("PostgreSQL runtime sealing", () => {
+  it("process-tree timeout terminates a live command and its descendant", async () => {
+    const root = await temporary();
+    const pidFile = path.join(root, "descendant.pid");
+    const childSource = [
+      'const { spawn } = require("node:child_process");',
+      'const { writeFileSync } = require("node:fs");',
+      'const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)"],',
+      '  { stdio: ["ignore", 1, 2], windowsHide: true });',
+      `writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+      "setTimeout(() => {}, 10000);",
+    ].join("\n");
+    let descendant: number | undefined;
+    try {
+      const command = runPostgresCommand(process.execPath, ["-e", childSource], process.env, 3000);
+      descendant = await readPidWhenReady(pidFile);
+      await expect(command).rejects.toThrow("exceeded its 3000 ms limit");
+      expect(await waitForProcessExit(descendant)).toBe(true);
+    } finally {
+      forceProcessExit(descendant);
+    }
+  });
+
+  it("process-tree timeout fails safely when the root exited but a descendant retained pipes", async () => {
+    const root = await temporary();
+    const pidFile = path.join(root, "orphan.pid");
+    const childSource = [
+      'const { spawn } = require("node:child_process");',
+      'const { writeFileSync } = require("node:fs");',
+      'const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)"],',
+      '  { detached: true, stdio: ["ignore", 1, 2], windowsHide: true });',
+      `writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+      "child.unref();",
+    ].join("\n");
+    let descendant: number | undefined;
+    try {
+      const command = runPostgresCommand(process.execPath, ["-e", childSource], process.env, 3000);
+      descendant = await readPidWhenReady(pidFile);
+      await expect(command).rejects.toThrow("exceeded its 3000 ms limit");
+      expect(processExists(descendant)).toBe(true);
+    } finally {
+      forceProcessExit(descendant);
+    }
+  });
+
+  it("process-tree timeout avoids retained pipes when output capture is disabled", async () => {
+    const root = await temporary();
+    const pidFile = path.join(root, "ignored-output-descendant.pid");
+    const childSource = [
+      'const { spawn } = require("node:child_process");',
+      'const { writeFileSync } = require("node:fs");',
+      'const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)"],',
+      '  { detached: true, stdio: ["ignore", 1, 2], windowsHide: true });',
+      `writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+      "child.unref();",
+    ].join("\n");
+    let descendant: number | undefined;
+    try {
+      const started = Date.now();
+      const command = runPostgresCommand(
+        process.execPath,
+        ["-e", childSource],
+        process.env,
+        3000,
+        false,
+      );
+      descendant = await readPidWhenReady(pidFile);
+      await expect(command).resolves.toEqual({ stdout: "", stderr: "" });
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(processExists(descendant)).toBe(true);
+    } finally {
+      forceProcessExit(descendant);
+    }
+  });
+
+  it("bounds and redacts command failure diagnostics", async () => {
+    const error = await runPostgresCommand(
+      process.execPath,
+      ["-e", `process.stderr.write(${JSON.stringify(os.tmpdir())}); process.exit(2)`],
+      process.env,
+    ).catch((failure: unknown) => failure);
+    expect(String(error)).toContain("<temporary>");
+    expect(String(error)).not.toContain(os.tmpdir());
+  });
+
   it.each(["linux-x64", "windows-x64"] as const)(
     "seals and then verifies a deterministic %s inventory",
     async (target) => {

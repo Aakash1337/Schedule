@@ -75,8 +75,7 @@ popd >/dev/null
 
 pushd "$WORK/openssl-source/openssl-$OPENSSL_VERSION" >/dev/null
 ./Configure linux-x86_64 shared --prefix="$DEPS" --openssldir="$DEPS/ssl" --libdir=lib no-docs no-tests
-make -j"$JOBS"
-make install_sw
+make -j"$JOBS" install_dev LIBS= INSTALL_LIBS=
 popd >/dev/null
 
 PG_SOURCE="$WORK/postgresql-source/postgresql-$PG_VERSION"

@@ -121,7 +121,8 @@ export function parsePostgreSqlRuntimeLock(value: unknown): PostgreSqlRuntimeLoc
       `https://ftp.postgresql.org/pub/source/v${postgresql.version}/postgresql-${postgresql.version}.tar.gz` ||
     openssl.url !==
       `https://github.com/openssl/openssl/releases/download/openssl-${openssl.version}/openssl-${openssl.version}.tar.gz` ||
-    zlib.url !== `https://zlib.net/fossils/zlib-${zlib.version}.tar.gz`
+    zlib.url !==
+      `https://github.com/madler/zlib/releases/download/v${zlib.version}/zlib-${zlib.version}.tar.gz`
   ) {
     throw new Error("PostgreSQL runtime sources are not the supported canonical releases.");
   }
