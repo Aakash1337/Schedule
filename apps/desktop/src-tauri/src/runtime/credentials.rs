@@ -1073,10 +1073,11 @@ mod windows_private {
         Security::{
             ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_REVISION, ACL_SIZE_INFORMATION,
             AclSizeInformation, AddAccessAllowedAce, DACL_SECURITY_INFORMATION, EqualSid, GetAce,
-            GetAclInformation, GetFileSecurityW, GetLengthSid, GetSecurityDescriptorDacl,
-            GetTokenInformation, InitializeAcl, InitializeSecurityDescriptor, SE_DACL_PROTECTED,
-            SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SetSecurityDescriptorControl,
-            SetSecurityDescriptorDacl, TOKEN_QUERY, TOKEN_USER, TokenUser,
+            GetAclInformation, GetFileSecurityW, GetLengthSid, GetSecurityDescriptorControl,
+            GetSecurityDescriptorDacl, GetTokenInformation, InitializeAcl,
+            InitializeSecurityDescriptor, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
+            SECURITY_DESCRIPTOR, SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
+            TOKEN_QUERY, TOKEN_USER, TokenUser,
         },
         Storage::FileSystem::{
             CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
@@ -1111,6 +1112,13 @@ mod windows_private {
     }
 
     fn with_user_only_security<T>(
+        operation: impl FnOnce(*const SECURITY_ATTRIBUTES, *mut core::ffi::c_void) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        with_user_only_security_control(true, operation)
+    }
+
+    fn with_user_only_security_control<T>(
+        protect_dacl: bool,
         operation: impl FnOnce(*const SECURITY_ATTRIBUTES, *mut core::ffi::c_void) -> std::io::Result<T>,
     ) -> std::io::Result<T> {
         let mut token = ptr::null_mut();
@@ -1164,9 +1172,14 @@ mod windows_private {
         if unsafe { InitializeSecurityDescriptor(descriptor_ptr, SECURITY_DESCRIPTOR_REVISION) }
             == 0
             || unsafe { SetSecurityDescriptorDacl(descriptor_ptr, 1, acl, 0) } == 0
-            || unsafe {
-                SetSecurityDescriptorControl(descriptor_ptr, SE_DACL_PROTECTED, SE_DACL_PROTECTED)
-            } == 0
+            || (protect_dacl
+                && unsafe {
+                    SetSecurityDescriptorControl(
+                        descriptor_ptr,
+                        SE_DACL_PROTECTED,
+                        SE_DACL_PROTECTED,
+                    )
+                } == 0)
         {
             return Err(std::io::Error::last_os_error());
         }
@@ -1181,6 +1194,14 @@ mod windows_private {
     fn verify_user_only_dacl(
         path: &[u16],
         expected_sid: *mut core::ffi::c_void,
+    ) -> std::io::Result<()> {
+        verify_user_only_dacl_control(path, expected_sid, true)
+    }
+
+    fn verify_user_only_dacl_control(
+        path: &[u16],
+        expected_sid: *mut core::ffi::c_void,
+        require_protected: bool,
     ) -> std::io::Result<()> {
         let mut needed = 0_u32;
         unsafe {
@@ -1208,6 +1229,20 @@ mod windows_private {
         } == 0
         {
             return Err(std::io::Error::last_os_error());
+        }
+
+        let mut control = 0_u16;
+        let mut revision = 0_u32;
+        if unsafe {
+            GetSecurityDescriptorControl(
+                descriptor.as_mut_ptr().cast(),
+                &mut control,
+                &mut revision,
+            )
+        } == 0
+            || (require_protected && control & SE_DACL_PROTECTED == 0)
+        {
+            return Err(std::io::Error::other("private DACL rejected"));
         }
 
         let mut present = 0;
@@ -1255,20 +1290,24 @@ mod windows_private {
         Ok(())
     }
 
-    pub(super) fn create_directory(path: &Path) -> std::io::Result<()> {
+    fn create_directory_control(path: &Path, protect_dacl: bool) -> std::io::Result<()> {
         let path = wide(path)?;
-        with_user_only_security(|security, sid| {
+        with_user_only_security_control(protect_dacl, |security, sid| {
             if unsafe { CreateDirectoryW(path.as_ptr(), security) } == 0 {
                 Err(std::io::Error::last_os_error())
             } else {
-                verify_user_only_dacl(&path, sid)
+                verify_user_only_dacl_control(&path, sid, protect_dacl)
             }
         })
     }
 
-    pub(super) fn create_file(path: &Path) -> std::io::Result<File> {
+    pub(super) fn create_directory(path: &Path) -> std::io::Result<()> {
+        create_directory_control(path, true)
+    }
+
+    fn create_file_control(path: &Path, protect_dacl: bool) -> std::io::Result<File> {
         let path = wide(path)?;
-        with_user_only_security(|security, sid| {
+        with_user_only_security_control(protect_dacl, |security, sid| {
             let handle = unsafe {
                 CreateFileW(
                     path.as_ptr(),
@@ -1284,10 +1323,24 @@ mod windows_private {
                 Err(std::io::Error::last_os_error())
             } else {
                 let file = unsafe { File::from_raw_handle(handle) };
-                verify_user_only_dacl(&path, sid)?;
+                verify_user_only_dacl_control(&path, sid, protect_dacl)?;
                 Ok(file)
             }
         })
+    }
+
+    pub(super) fn create_file(path: &Path) -> std::io::Result<File> {
+        create_file_control(path, true)
+    }
+
+    #[cfg(test)]
+    pub(super) fn create_unprotected_directory(path: &Path) -> std::io::Result<()> {
+        create_directory_control(path, false)
+    }
+
+    #[cfg(test)]
+    pub(super) fn create_unprotected_file(path: &Path) -> std::io::Result<File> {
+        create_file_control(path, false)
     }
 
     pub(super) fn reject_reparse(path: &Path) -> Result<(), CredentialError> {
@@ -2084,6 +2137,38 @@ mod tests {
         fs::remove_dir(&paths.temporary_secrets_root).unwrap();
         fs::remove_dir(actual_temp).unwrap();
         fs::remove_file(target).unwrap();
+        fs::remove_dir(&paths.private_root).unwrap();
+        fs::remove_dir(parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_unprotected_user_only_dacls_are_rejected() {
+        let parent = test_parent();
+        let paths = runtime_paths(&parent);
+        let store = PgCredentialStore::prepare(&paths).unwrap();
+
+        fs::remove_dir(&paths.temporary_secrets_root).unwrap();
+        windows_private::create_unprotected_directory(&paths.temporary_secrets_root).unwrap();
+        assert_eq!(
+            scavenge_stale_launch_secrets(&paths.temporary_secrets_root),
+            Err(CredentialError::PrivateStorageUnavailable)
+        );
+        fs::remove_dir(&paths.temporary_secrets_root).unwrap();
+        create_private_directory(&paths.temporary_secrets_root).unwrap();
+
+        let contents = canonical_test_record();
+        let mut file = windows_private::create_unprotected_file(&paths.credentials_store).unwrap();
+        file.write_all(contents.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        assert_eq!(
+            store.load(&names()).err(),
+            Some(CredentialError::PrivateStorageUnavailable)
+        );
+
+        fs::remove_file(&paths.credentials_store).unwrap();
+        fs::remove_dir(&paths.temporary_secrets_root).unwrap();
         fs::remove_dir(&paths.private_root).unwrap();
         fs::remove_dir(parent).unwrap();
     }
