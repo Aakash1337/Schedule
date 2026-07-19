@@ -1,6 +1,6 @@
 # Desktop application
 
-Status: native shell, authenticated request boundary, and tested coordinator/platform foundation.
+Status: native shell, authenticated request boundary, and tested coordinator/runtime foundation.
 The native effect executor, bundled release artifacts, and product interface are not in this
 milestone yet.
 
@@ -62,10 +62,12 @@ will use:
   authenticate the expected server/data directory, and use bounded fast shutdown and backup
   verification commands.
 - The runtime assembler accepts only pinned, symlink-free, portable Windows/Linux input trees. It
-  requires the complete PostgreSQL command set and pgcrypto files, creates a deterministic manifest,
-  SBOM, and license inventory, and emits the manifest SHA-256 for embedding into the signed native
-  binary. Rust compares that embedded trust anchor before accepting component hashes; a rewritten
-  colocated manifest is not trusted.
+  requires the complete PostgreSQL command set, compiled database migration entrypoint, and pgcrypto
+  files; creates a deterministic manifest, SBOM, and license inventory; and emits the manifest
+  SHA-256 for embedding into the signed native binary. Rust compares that embedded trust anchor
+  before accepting component hashes; a rewritten colocated manifest is not trusted. After verifying
+  one canonical, non-link runtime root, it resolves fixed absolute Node, API, worker, migration, and
+  PostgreSQL tool paths from that same tree. Unix links and all Windows reparse points fail closed.
 
 These pieces are compiled and tested on Windows and Linux, but the coordinator still has no native
 effect executor and is not invoked by `main`. The application therefore continues to report
