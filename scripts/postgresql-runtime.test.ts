@@ -131,10 +131,17 @@ describe("PostgreSQL runtime lock", () => {
     expect(requirements).toContain(`ninja==${committed.windowsDependencies.ninjaVersion} `);
     const windowsBuilder = await readFile("scripts/build-postgresql-runtime-windows.ps1", "utf8");
     expect(windowsBuilder).toContain("sysconfig.get_path('scripts')");
+    expect(windowsBuilder).toContain("importlib.metadata as m");
     expect(windowsBuilder).toContain("$env:PATH = $ScriptsItem.FullName");
     expect(windowsBuilder).toContain("& $MesonExecutable setup");
     expect(windowsBuilder).toContain("& $NinjaExecutable --version");
+    expect(windowsBuilder).toContain(
+      '$Lock.windowsDependencies.ninjaVersion + ".git.kitware.jobserver-pipe-1"',
+    );
     expect(windowsBuilder).not.toMatch(/&\s+meson\b|&\s+ninja\b/iu);
+    expect(workflow.match(/^\s+- "scripts\/acquire-desktop-runtime-sources\.ts"$/gmu)).toHaveLength(
+      2,
+    );
   });
 });
 

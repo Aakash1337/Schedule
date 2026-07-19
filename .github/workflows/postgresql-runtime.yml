@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/postgresql-runtime.yml"
       - "scripts/build-postgresql-runtime-*"
+      - "scripts/acquire-desktop-runtime-sources.ts"
       - "scripts/postgresql-runtime*"
       - "scripts/postgresql-runtime/**"
       - "scripts/smoke-postgresql-runtime.ts"
@@ -18,6 +19,7 @@ on:
     paths:
       - ".github/workflows/postgresql-runtime.yml"
       - "scripts/build-postgresql-runtime-*"
+      - "scripts/acquire-desktop-runtime-sources.ts"
       - "scripts/postgresql-runtime*"
       - "scripts/postgresql-runtime/**"
       - "scripts/smoke-postgresql-runtime.ts"

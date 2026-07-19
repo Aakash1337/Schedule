@@ -105,8 +105,14 @@ foreach ($PinnedTool in @($MesonExecutable, $NinjaExecutable)) {
   if ($Item.PSIsContainer -or $Item.LinkType) { throw "Pinned Python build tool is not a regular file: $PinnedTool" }
 }
 $env:PATH = $ScriptsItem.FullName + [IO.Path]::PathSeparator + $env:PATH
-if ((& $MesonExecutable --version).Trim() -ne $Lock.windowsDependencies.mesonVersion) { throw "Meson version does not match the lock." }
-if ((& $NinjaExecutable --version).Trim() -ne $Lock.windowsDependencies.ninjaVersion) { throw "Ninja version does not match the lock." }
+$DistributionVersions = (& $PythonExecutable -c "import importlib.metadata as m, json; print(json.dumps({'meson': m.version('meson'), 'ninja': m.version('ninja')}))") | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $DistributionVersions.meson -ne $Lock.windowsDependencies.mesonVersion) { throw "Installed Meson distribution does not match the lock." }
+if ($DistributionVersions.ninja -ne $Lock.windowsDependencies.ninjaVersion) { throw "Installed Ninja distribution does not match the lock." }
+$MesonBinaryVersion = (& $MesonExecutable --version).Trim()
+$NinjaBinaryVersion = (& $NinjaExecutable --version).Trim()
+if ($MesonBinaryVersion -ne $Lock.windowsDependencies.mesonVersion) { throw "Meson binary does not match the locked distribution." }
+$ExpectedNinjaBinaryVersion = $Lock.windowsDependencies.ninjaVersion + ".git.kitware.jobserver-pipe-1"
+if ($NinjaBinaryVersion -ne $ExpectedNinjaBinaryVersion) { throw "Ninja binary is not the expected locked wheel build." }
 
 $Work = Join-Path $BuildRoot ("postgresql-windows-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $Work | Out-Null
