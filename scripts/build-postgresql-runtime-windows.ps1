@@ -18,6 +18,12 @@ $VcpkgRoot = [IO.Path]::GetFullPath($VcpkgRoot)
 function Assert-Command([string]$Name) {
   if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) { throw "Missing build tool: $Name" }
 }
+function Resolve-RegularCommand([string]$Name) {
+  $Command = Get-Command $Name -CommandType Application -ErrorAction Stop | Select-Object -First 1
+  $Item = Get-Item -LiteralPath $Command.Source -Force
+  if ($Item.PSIsContainer -or $Item.LinkType) { throw "Build tool is not a regular file: $Name" }
+  return $Item.FullName
+}
 function Assert-Hash([string]$Path, [string]$Expected) {
   if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Expected) {
     throw "SHA-256 mismatch: $Path"
@@ -86,9 +92,21 @@ if ((& git -C $VcpkgRoot rev-parse HEAD).Trim() -ne $Lock.windowsDependencies.vc
 }
 
 Import-VsEnvironment
-foreach ($Command in @("curl.exe", "git", "python", "meson", "ninja", "tar.exe", "dumpbin.exe", "pnpm")) { Assert-Command $Command }
-if ((& meson --version).Trim() -ne $Lock.windowsDependencies.mesonVersion) { throw "Meson version does not match the lock." }
-if ((& ninja --version).Trim() -ne $Lock.windowsDependencies.ninjaVersion) { throw "Ninja version does not match the lock." }
+foreach ($Command in @("curl.exe", "git", "python.exe", "tar.exe", "dumpbin.exe", "pnpm")) { Assert-Command $Command }
+$PythonExecutable = Resolve-RegularCommand "python.exe"
+$PythonScripts = (& $PythonExecutable -c "import sysconfig; print(sysconfig.get_path('scripts'))").Trim()
+if ($LASTEXITCODE -ne 0 -or -not [IO.Path]::IsPathRooted($PythonScripts)) { throw "Could not resolve Python's scripts directory." }
+$ScriptsItem = Get-Item -LiteralPath $PythonScripts -Force
+if (-not $ScriptsItem.PSIsContainer -or $ScriptsItem.LinkType) { throw "Python's scripts path is not a regular directory." }
+$MesonExecutable = Join-Path $ScriptsItem.FullName "meson.exe"
+$NinjaExecutable = Join-Path $ScriptsItem.FullName "ninja.exe"
+foreach ($PinnedTool in @($MesonExecutable, $NinjaExecutable)) {
+  $Item = Get-Item -LiteralPath $PinnedTool -Force
+  if ($Item.PSIsContainer -or $Item.LinkType) { throw "Pinned Python build tool is not a regular file: $PinnedTool" }
+}
+$env:PATH = $ScriptsItem.FullName + [IO.Path]::PathSeparator + $env:PATH
+if ((& $MesonExecutable --version).Trim() -ne $Lock.windowsDependencies.mesonVersion) { throw "Meson version does not match the lock." }
+if ((& $NinjaExecutable --version).Trim() -ne $Lock.windowsDependencies.ninjaVersion) { throw "Ninja version does not match the lock." }
 
 $Work = Join-Path $BuildRoot ("postgresql-windows-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $Work | Out-Null
@@ -119,7 +137,7 @@ try {
 
   $TripletRoot = Join-Path $InstallRoot $Lock.windowsDependencies.triplet
   $MesonBuild = Join-Path $Work "meson-build"
-  & meson setup $MesonBuild $Source `
+  & $MesonExecutable setup $MesonBuild $Source `
     "--prefix=$OutputDirectory" `
     --buildtype=release `
     --wrap-mode=nodownload `
@@ -145,9 +163,9 @@ try {
     -Dlibxslt=disabled `
     -Drpath=false
   if ($LASTEXITCODE -ne 0) { throw "PostgreSQL Meson configuration failed." }
-  & meson compile -C $MesonBuild
+  & $MesonExecutable compile -C $MesonBuild
   if ($LASTEXITCODE -ne 0) { throw "PostgreSQL compilation failed." }
-  & meson install -C $MesonBuild --no-rebuild
+  & $MesonExecutable install -C $MesonBuild --no-rebuild
   if ($LASTEXITCODE -ne 0) { throw "PostgreSQL installation failed." }
 
   @("include", "lib\pkgconfig", "lib\pgxs", "share\doc", "share\man") | ForEach-Object {

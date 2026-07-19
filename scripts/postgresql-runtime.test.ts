@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -67,7 +67,7 @@ async function fakeRuntime(root: string, target: PostgreSqlRuntimeTarget): Promi
     "share/postgresql.conf.sample",
     "share/extension/pgcrypto.control",
     "share/extension/pgcrypto--1.3.sql",
-    target === "windows-x64" ? "lib/pgcrypto.dll" : "lib/postgresql/pgcrypto.so",
+    target === "windows-x64" ? "lib/pgcrypto.dll" : "lib/pgcrypto.so",
     "LICENSES/PostgreSQL.txt",
     "LICENSES/OpenSSL.txt",
     "LICENSES/zlib.txt",
@@ -129,6 +129,12 @@ describe("PostgreSQL runtime lock", () => {
     );
     expect(requirements).toContain(`meson==${committed.windowsDependencies.mesonVersion} `);
     expect(requirements).toContain(`ninja==${committed.windowsDependencies.ninjaVersion} `);
+    const windowsBuilder = await readFile("scripts/build-postgresql-runtime-windows.ps1", "utf8");
+    expect(windowsBuilder).toContain("sysconfig.get_path('scripts')");
+    expect(windowsBuilder).toContain("$env:PATH = $ScriptsItem.FullName");
+    expect(windowsBuilder).toContain("& $MesonExecutable setup");
+    expect(windowsBuilder).toContain("& $NinjaExecutable --version");
+    expect(windowsBuilder).not.toMatch(/&\s+meson\b|&\s+ninja\b/iu);
   });
 });
 
@@ -152,6 +158,22 @@ describe("PostgreSQL runtime sealing", () => {
     await fakeRuntime(root, "linux-x64");
     await rm(path.join(root, "bin", "postgres"));
     await expect(sealPostgreSqlRuntime(root, "linux-x64", lock())).rejects.toThrow("bin/postgres");
+  });
+
+  it("requires the standard Linux pgcrypto install path accepted by the assembler", async () => {
+    const root = await temporary();
+    await fakeRuntime(root, "linux-x64");
+    await mkdir(path.join(root, "lib", "postgresql"), { recursive: true });
+    await rename(
+      path.join(root, "lib", "pgcrypto.so"),
+      path.join(root, "lib", "postgresql", "pgcrypto.so"),
+    );
+    await expect(sealPostgreSqlRuntime(root, "linux-x64", lock())).rejects.toThrow(
+      "lib/pgcrypto.so",
+    );
+    expect(await readFile("scripts/build-desktop-runtime.ts", "utf8")).toContain(
+      '"lib/pgcrypto.so"',
+    );
   });
 
   it("materializes contained file links and rejects escaping links", async () => {

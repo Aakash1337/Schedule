@@ -229,10 +229,7 @@ export async function assertPostgreSqlRuntime(
     requireRegular(root, "share/postgresql.conf.sample"),
     requireRegular(root, "share/extension/pgcrypto.control"),
     requireRegular(root, "share/extension/pgcrypto--1.3.sql"),
-    requireRegular(
-      root,
-      target === "windows-x64" ? "lib/pgcrypto.dll" : "lib/postgresql/pgcrypto.so",
-    ),
+    requireRegular(root, target === "windows-x64" ? "lib/pgcrypto.dll" : "lib/pgcrypto.so"),
     requireRegular(root, "LICENSES/PostgreSQL.txt"),
     requireRegular(root, "LICENSES/OpenSSL.txt"),
     requireRegular(root, "LICENSES/zlib.txt"),
