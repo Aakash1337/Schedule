@@ -16,6 +16,9 @@ pub(crate) struct RuntimePaths {
     pub(crate) staging: PathBuf,
     pub(crate) backups: PathBuf,
     pub(crate) logs: PathBuf,
+    pub(crate) private_root: PathBuf,
+    pub(crate) credentials_store: PathBuf,
+    pub(crate) temporary_secrets_root: PathBuf,
     pub(crate) journal: PathBuf,
     pub(crate) singleton_lock: PathBuf,
 }
@@ -45,6 +48,7 @@ impl RuntimePaths {
         let data_root = data_root.into();
         let runtime_root = data_root.join("runtime");
         let runtime_versions_root = runtime_root.join("versions");
+        let private_root = data_root.join("private");
 
         Ok(Self {
             runtime_version: runtime_versions_root.join(runtime_version),
@@ -52,9 +56,12 @@ impl RuntimePaths {
             staging: runtime_root.join("staging").join(staging_nonce),
             backups: data_root.join("backups"),
             logs: data_root.join("logs"),
+            credentials_store: private_root.join("postgresql-credentials.v1.json"),
+            temporary_secrets_root: private_root.join("temp"),
             journal: runtime_root.join("journal.json"),
             singleton_lock: runtime_root.join("singleton.lock"),
             data_root,
+            private_root,
             runtime_root: runtime_root.clone(),
             runtime_versions_root,
             staging_root: runtime_root.join("staging"),
@@ -108,6 +115,15 @@ mod tests {
         );
         assert_eq!(paths.backups, PathBuf::from("user-data/backups"));
         assert_eq!(paths.logs, PathBuf::from("user-data/logs"));
+        assert_eq!(paths.private_root, PathBuf::from("user-data/private"));
+        assert_eq!(
+            paths.credentials_store,
+            PathBuf::from("user-data/private/postgresql-credentials.v1.json")
+        );
+        assert_eq!(
+            paths.temporary_secrets_root,
+            PathBuf::from("user-data/private/temp")
+        );
         assert_eq!(
             paths.journal,
             PathBuf::from("user-data/runtime/journal.json")
@@ -139,5 +155,14 @@ mod tests {
             assert!(RuntimePaths::new("data", unsafe_component, "safe").is_err());
             assert!(RuntimePaths::new("data", "safe", unsafe_component).is_err());
         }
+    }
+
+    #[test]
+    fn path_errors_do_not_echo_injected_components_or_roots() {
+        let injected = "secret/path-value";
+        let error = RuntimePaths::new("C:/Users/private/schedule", injected, "safe").unwrap_err();
+        let rendered = format!("{error:?}|{error}");
+        assert!(!rendered.contains(injected));
+        assert!(!rendered.contains("C:/Users/private/schedule"));
     }
 }
