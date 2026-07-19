@@ -5,7 +5,7 @@ use std::{
     os::windows::{io::AsRawHandle, process::CommandExt},
     process::{Child, Command},
     ptr,
-    sync::Mutex,
+    sync::{Condvar, Mutex},
 };
 
 use windows_sys::Win32::{
@@ -31,15 +31,50 @@ use super::super::{ChildIdentity, ProcessError, ProcessGroupControl, ProcessRole
 
 #[derive(Default)]
 pub(super) struct WindowsProcessControl {
-    jobs: Mutex<HashMap<u32, OwnedHandle>>,
+    ownership: Mutex<WindowsOwnership>,
+    spawn_finished: Condvar,
+}
+
+#[derive(Default)]
+struct WindowsOwnership {
+    sealed: bool,
+    pending_spawns: usize,
+    jobs: HashMap<u32, OwnedHandle>,
 }
 
 impl ProcessGroupControl for WindowsProcessControl {
+    fn reserve_spawn(&self) -> Result<(), ProcessError> {
+        let mut ownership = self
+            .ownership
+            .lock()
+            .map_err(|_| ProcessError::new("desktop.process_group_failed"))?;
+        if ownership.sealed {
+            return Err(ProcessError::new("desktop.process_group_failed"));
+        }
+        ownership.pending_spawns += 1;
+        Ok(())
+    }
+
+    fn finish_spawn(&self) {
+        if let Ok(mut ownership) = self.ownership.lock() {
+            ownership.pending_spawns = ownership.pending_spawns.saturating_sub(1);
+            self.spawn_finished.notify_all();
+        }
+    }
+
     fn configure_command(
         &self,
         _role: ProcessRole,
         command: &mut Command,
     ) -> Result<(), ProcessError> {
+        if self
+            .ownership
+            .lock()
+            .map_err(|_| ProcessError::new("desktop.process_group_failed"))?
+            .sealed
+        {
+            return Err(ProcessError::new("desktop.process_group_failed"));
+        }
         command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
         Ok(())
     }
@@ -54,14 +89,17 @@ impl ProcessGroupControl for WindowsProcessControl {
 
         let primary_thread = suspended_thread(identity.pid)?;
         {
-            let mut jobs = self
-                .jobs
+            let mut ownership = self
+                .ownership
                 .lock()
                 .map_err(|_| ProcessError::new("desktop.process_group_failed"))?;
-            if jobs.contains_key(&identity.pid) {
+            if ownership.sealed || ownership.jobs.contains_key(&identity.pid) {
+                // SAFETY: the child is already attached to this private kill-on-close Job and is
+                // still suspended, so termination cannot race descendant creation.
+                let _ = unsafe { TerminateJobObject(job.0, 1) };
                 return Err(ProcessError::new("desktop.process_group_failed"));
             }
-            jobs.insert(identity.pid, job);
+            ownership.jobs.insert(identity.pid, job);
         }
 
         // The child cannot execute or create descendants until after Job assignment and ownership
@@ -88,11 +126,11 @@ impl ProcessGroupControl for WindowsProcessControl {
     }
 
     fn force_stop(&self, identity: ChildIdentity, child: &mut Child) -> Result<(), ProcessError> {
-        let jobs = self
-            .jobs
+        let ownership = self
+            .ownership
             .lock()
             .map_err(|_| ProcessError::new("desktop.process_stop_failed"))?;
-        let Some(job) = jobs.get(&identity.pid) else {
+        let Some(job) = ownership.jobs.get(&identity.pid) else {
             return child
                 .kill()
                 .map_err(|_| ProcessError::new("desktop.process_stop_failed"));
@@ -108,19 +146,41 @@ impl ProcessGroupControl for WindowsProcessControl {
     fn release(&self, identity: ChildIdentity) {
         self.remove_job(identity.pid);
     }
+
+    fn seal_and_force_stop_all(&self) -> Result<(), ProcessError> {
+        let mut ownership = self
+            .ownership
+            .lock()
+            .map_err(|_| ProcessError::new("desktop.process_stop_failed"))?;
+        ownership.sealed = true;
+        let ownership = self
+            .spawn_finished
+            .wait_while(ownership, |ownership| ownership.pending_spawns != 0)
+            .map_err(|_| ProcessError::new("desktop.process_stop_failed"))?;
+        let mut failed = false;
+        for job in ownership.jobs.values() {
+            // SAFETY: the map owns each valid Job handle for the duration of the call.
+            failed |= unsafe { TerminateJobObject(job.0, 1) } == 0;
+        }
+        if failed {
+            Err(ProcessError::new("desktop.process_stop_failed"))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl WindowsProcessControl {
     fn has_job(&self, pid: u32) -> Result<bool, ProcessError> {
-        self.jobs
+        self.ownership
             .lock()
-            .map(|jobs| jobs.contains_key(&pid))
+            .map(|ownership| ownership.jobs.contains_key(&pid))
             .map_err(|_| ProcessError::new("desktop.process_stop_failed"))
     }
 
     fn remove_job(&self, pid: u32) {
-        if let Ok(mut jobs) = self.jobs.lock() {
-            jobs.remove(&pid);
+        if let Ok(mut ownership) = self.ownership.lock() {
+            ownership.jobs.remove(&pid);
         }
     }
 }
