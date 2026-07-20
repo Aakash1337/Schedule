@@ -136,11 +136,11 @@ jobs:
             --postgres "$RUNNER_TEMP/postgresql-runtime" --postgres-version "$postgres_version"
       - name: Archive verified runtime
         shell: bash
-        run: tar -czf "$RUNNER_TEMP/runtime-${{ matrix.target }}-x64.tar.gz" -C "$RUNNER_TEMP/runtime" .
+        run: tar -czf "runtime-${{ matrix.target }}-x64.tar.gz" -C "$RUNNER_TEMP/runtime" .
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: desktop-runtime-${{ matrix.target }}-x64
-          path: ${{ runner.temp }}/runtime-${{ matrix.target }}-x64.tar.gz
+          path: runtime-${{ matrix.target }}-x64.tar.gz
           if-no-files-found: error
           retention-days: 14
 

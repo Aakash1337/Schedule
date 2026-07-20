@@ -92,6 +92,7 @@ test("reviews and explicitly confirms local work and calendar proposals through 
     }
   });
 
+  await page.clock.install({ time: new Date("2026-07-17T12:00:00.000Z") });
   await page.goto("/");
   const expectedOrigin = new URL(page.url()).origin;
   const onboardingHeading = page.getByRole("heading", { name: "Give your days a shape." });
