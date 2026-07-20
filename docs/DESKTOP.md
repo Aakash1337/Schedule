@@ -233,6 +233,12 @@ gh run download <run-id> --repo Aakash1337/Schedule -n schedule-desktop-windows-
 gh run download <run-id> --repo Aakash1337/Schedule -n schedule-desktop-linux-x64 -D artifacts/linux
 ```
 
+On Windows, open the downloaded `*-setup.exe`, complete the installer, then launch **Schedule** from
+the Start menu; the application starts and stops its private local services automatically. On Linux,
+install the downloaded Debian package with `sudo apt install ./<package>.deb`, then open **Schedule**
+from the application menu (or run `schedule-desktop`). Prefer those install-smoked NSIS and Debian
+artifacts over MSI or AppImage for now.
+
 Windows produces NSIS and MSI where the runner supports them. Linux produces AppImage and Debian
 packages where the runner supports them. CI install-smokes NSIS and extracts/smokes the Debian package;
 MSI and AppImage are built and uploaded but not separately install-smoked. The smoke validates the

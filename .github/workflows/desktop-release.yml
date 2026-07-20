@@ -78,9 +78,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y build-essential ca-certificates curl patchelf perl
       - run: pnpm install --frozen-lockfile
-      - name: Build production service deployments
-        shell: bash
-        run: pnpm exec tsx scripts/stage-desktop-service-deployments.ts "$RUNNER_TEMP/services"
       - name: Acquire pinned archives
         shell: bash
         run: pnpm exec tsx scripts/acquire-desktop-runtime-sources.ts --lock runtime-sources.lock.json --output "$RUNNER_TEMP/sources"
@@ -113,6 +110,18 @@ jobs:
           -OutputDirectory "$env:RUNNER_TEMP/postgresql-runtime"
           -BuildRoot "$env:RUNNER_TEMP/postgresql-build"
           -VcpkgRoot "$env:GITHUB_WORKSPACE/.postgresql-build/vcpkg"
+      - name: Build deployable desktop services
+        shell: bash
+        run: |
+          pnpm build:packages
+          pnpm --filter @schedule/api build
+          pnpm --filter @schedule/worker build
+      # Legacy pnpm deploy can prune shared dev-tool links, so restore them before assembly.
+      - name: Stage production service deployments
+        shell: bash
+        run: pnpm desktop:runtime:stage-services "$RUNNER_TEMP/services"
+      - name: Restore development tools after deployment staging
+        run: pnpm install --frozen-lockfile --prod=false
       - name: Assemble authenticated runtime
         shell: bash
         env:
