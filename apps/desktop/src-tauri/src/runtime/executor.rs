@@ -517,7 +517,13 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         }
         let bundle = self.require_bundle()?;
         let connection = self.admin_connection(self.config.postgres_names.database())?;
-        let plan = start_plan(postgres_bin(bundle)?, self.database_data()?, &connection);
+        let startup_log = self.config.paths.logs.join("postgres-startup.log");
+        let plan = start_plan(
+            postgres_bin(bundle)?,
+            self.database_data()?,
+            &startup_log,
+            &connection,
+        );
         ensure_program(&plan, &bundle.postgresql.postgres)?;
         let mut spec = ProcessSpec::new(
             ProcessRole::Database,

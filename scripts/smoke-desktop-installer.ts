@@ -56,8 +56,7 @@ async function exactMarker(file: string, expected: string): Promise<boolean> {
   return (await readFile(file, "utf8").catch(() => "")) === expected;
 }
 
-async function postgresLogState(dataRoot: string): Promise<string> {
-  const log = path.join(dataRoot, "logs", "postgresql.log");
+async function postgresLogState(log: string): Promise<string> {
   const entry = await lstat(log).catch(() => null);
   if (entry?.isFile() !== true || entry.isSymbolicLink() || entry.size > MAX_DIAGNOSTIC_FILE_BYTES)
     return "missing";
@@ -165,15 +164,23 @@ async function lifecycleDiagnostic(dataRoot: string): Promise<string> {
       return "journal invalid";
     const staging = path.join(dataRoot, "postgresql", ".schedule-initializing-v1");
     const finalData = path.join(dataRoot, "postgresql", "data");
-    const [stagingPresent, finalPresent, initdbMarker, bootstrapMarker, postmasterOpts, log] =
-      await Promise.all([
-        regularDirectory(staging),
-        regularDirectory(finalData),
-        exactMarker(path.join(staging, "SCHEDULE_INITDB_COMPLETE_V1"), "schedule-initdb-v1\n"),
-        exactMarker(path.join(staging, "SCHEDULE_BOOTSTRAPPED_V1"), "schedule-bootstrap-v1\n"),
-        regularFile(path.join(staging, "postmaster.opts")),
-        postgresLogState(dataRoot),
-      ]);
+    const [
+      stagingPresent,
+      finalPresent,
+      initdbMarker,
+      bootstrapMarker,
+      postmasterOpts,
+      startupLog,
+      collectorLog,
+    ] = await Promise.all([
+      regularDirectory(staging),
+      regularDirectory(finalData),
+      exactMarker(path.join(staging, "SCHEDULE_INITDB_COMPLETE_V1"), "schedule-initdb-v1\n"),
+      exactMarker(path.join(staging, "SCHEDULE_BOOTSTRAPPED_V1"), "schedule-bootstrap-v1\n"),
+      regularFile(path.join(staging, "postmaster.opts")),
+      postgresLogState(path.join(dataRoot, "logs", "postgres-startup.log")),
+      postgresLogState(path.join(dataRoot, "logs", "postgresql.log")),
+    ]);
     return [
       `attempt ${attempt}`,
       `phase ${phase}`,
@@ -183,7 +190,8 @@ async function lifecycleDiagnostic(dataRoot: string): Promise<string> {
       `initdb-marker ${initdbMarker}`,
       `bootstrap-marker ${bootstrapMarker}`,
       `postmaster-opts ${postmasterOpts}`,
-      `postgres-log ${log}`,
+      `postgres-startup-log ${startupLog}`,
+      `postgres-log ${collectorLog}`,
     ].join(", ");
   } catch {
     return "journal invalid";

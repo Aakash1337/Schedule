@@ -143,6 +143,10 @@ test("reports only validated lifecycle state for a native startup failure", asyn
       await writeFile(path.join(staging, "SCHEDULE_BOOTSTRAPPED_V1"), "schedule-bootstrap-v1\n");
       await writeFile(path.join(staging, "postmaster.opts"), "redacted fixture");
       await writeFile(
+        path.join(dataRoot, "logs", "postgres-startup.log"),
+        "database system is ready to accept connections\nFATAL: private startup diagnostic must not escape\n",
+      );
+      await writeFile(
         path.join(dataRoot, "logs", "postgresql.log"),
         "database system is ready to accept connections\nFATAL: private diagnostic must not escape\n",
       );
@@ -157,8 +161,9 @@ test("reports only validated lifecycle state for a native startup failure", asyn
     },
   });
   await expect(result).rejects.toThrow(
-    "Installed Schedule lifecycle smoke failed (exit code 11, attempt 2, phase starting_database, prior-success false, staging true, final false, initdb-marker true, bootstrap-marker true, postmaster-opts true, postgres-log fatal).",
+    "Installed Schedule lifecycle smoke failed (exit code 11, attempt 2, phase starting_database, prior-success false, staging true, final false, initdb-marker true, bootstrap-marker true, postmaster-opts true, postgres-startup-log fatal, postgres-log fatal).",
   );
+  await expect(result).rejects.not.toThrow("private startup diagnostic must not escape");
   await expect(result).rejects.not.toThrow("private diagnostic must not escape");
 });
 
