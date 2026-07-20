@@ -2,7 +2,11 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
-import { parsePortableCommand, readMigrationIdentity } from "./portable-database.js";
+import {
+  parsePortableCommand,
+  readMigrationIdentity,
+  shouldRemovePortableExportResult,
+} from "./portable-database.js";
 
 describe("portable database identity and safety", () => {
   it("uses a stable canonical migration fingerprint", async () => {
@@ -34,5 +38,12 @@ describe("portable migration CLI", () => {
       parsePortableCommand(["import", "backup.schedule", "--confirm=replace-schedule"]),
     ).toEqual({ kind: "import", archivePath: "backup.schedule" });
     expect(() => parsePortableCommand(["import", "backup.schedule"])).toThrow(/Usage/);
+  });
+});
+
+describe("portable export cleanup", () => {
+  it("retains a verified archive when only cleanup fails", () => {
+    expect(shouldRemovePortableExportResult(undefined)).toBe(false);
+    expect(shouldRemovePortableExportResult(new Error("archive write failed"))).toBe(true);
   });
 });

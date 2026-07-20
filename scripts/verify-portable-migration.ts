@@ -20,6 +20,7 @@ import {
   disposableRecoveryDatabaseName,
   errorMessage,
   initializeDisposableRecoveryActiveDatabase,
+  quoteIdentifier,
   type DisposableRecoveryPlan,
   type DisposableRecoveryRole,
   rollbackDisposableScheduleDatabase,
@@ -266,24 +267,24 @@ async function inspectLockedDatabase<Result>(
   assert.equal(await databaseAllowsConnections(databaseName), false);
   await runPsql(
     "postgres",
-    `ALTER DATABASE ${JSON.stringify(databaseName)} WITH ALLOW_CONNECTIONS true;`,
+    `ALTER DATABASE ${quoteIdentifier(databaseName)} WITH ALLOW_CONNECTIONS true;`,
   );
   try {
     return await operation();
   } finally {
     await runPsql(
       "postgres",
-      `ALTER DATABASE ${JSON.stringify(databaseName)} WITH ALLOW_CONNECTIONS false;`,
+      `ALTER DATABASE ${quoteIdentifier(databaseName)} WITH ALLOW_CONNECTIONS false;`,
     );
   }
 }
 
 async function portableRowCounts(databaseName: string): Promise<Record<string, number>> {
   const query = portableDataPolicyV1.includedTables
-    .map((table) => `SELECT '${table}=' || count(*)::text FROM public."${table}"`)
+    .map((table) => `SELECT '${table}=' || count(*)::text FROM public.${quoteIdentifier(table)}`)
     .join("\nUNION ALL\n");
   return Object.fromEntries(
-    (await runPsql(databaseName, query))
+    (await runPsql(databaseName, query, { quiet: true }))
       .trim()
       .split(/\r?\n/)
       .filter(Boolean)
@@ -296,16 +297,47 @@ async function portableRowCounts(databaseName: string): Promise<Record<string, n
   );
 }
 
+async function assertPortableSequenceCoverage(databaseName: string): Promise<void> {
+  const includedTables = portableDataPolicyV1.includedTables
+    .map((table) => `'${table}'`)
+    .join(", ");
+  const actual = (
+    await runPsql(
+      databaseName,
+      `SELECT sequence.relname
+       FROM pg_catalog.pg_class AS sequence
+       JOIN pg_catalog.pg_namespace AS sequence_schema
+         ON sequence_schema.oid = sequence.relnamespace
+       JOIN pg_catalog.pg_depend AS dependency ON dependency.objid = sequence.oid
+       JOIN pg_catalog.pg_class AS owning_table ON owning_table.oid = dependency.refobjid
+       JOIN pg_catalog.pg_namespace AS table_schema
+         ON table_schema.oid = owning_table.relnamespace
+       WHERE sequence.relkind = 'S'
+         AND sequence_schema.nspname = 'public'
+         AND table_schema.nspname = 'public'
+         AND dependency.deptype IN ('a', 'i')
+         AND owning_table.relname IN (${includedTables})
+       ORDER BY sequence.relname;`,
+      { quiet: true },
+    )
+  )
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean);
+  assert.deepEqual(actual, [...portableDataPolicyV1.sequences].sort());
+}
+
 async function produceArchive(archivePath: string): Promise<void> {
   const sourcePlan = createDisposableRecoveryPlan();
   let failure: unknown;
   try {
     await initializeDisposableRecoveryActiveDatabase(sourcePlan);
+    await assertPortableSequenceCoverage(sourcePlan.activeDatabase);
     await runPsql(sourcePlan.activeDatabase, portableFixtureSql);
     const expectedSignals = await portableDatabaseSignals(sourcePlan.activeDatabase);
     await runPsql(
       "postgres",
-      `ALTER DATABASE ${JSON.stringify(sourcePlan.activeDatabase)} SET TIME ZONE 'Pacific/Chatham';`,
+      `ALTER DATABASE ${quoteIdentifier(sourcePlan.activeDatabase)} SET TIME ZONE 'Pacific/Chatham';`,
     );
     assert.deepEqual(
       await portableDatabaseSignals(sourcePlan.activeDatabase),

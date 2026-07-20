@@ -75,6 +75,10 @@ export interface PortableImportOptions {
   readonly previousDatabase?: string;
 }
 
+export function shouldRemovePortableExportResult(operationError: unknown): boolean {
+  return operationError !== undefined;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -848,7 +852,9 @@ export async function exportPortableScheduleData(
     cleanupErrors.push(error);
   }
   if (operationError !== undefined || cleanupErrors.length > 0) {
-    if (result !== undefined) await rm(result.path, { force: true });
+    if (result !== undefined && shouldRemovePortableExportResult(operationError)) {
+      await rm(result.path, { force: true });
+    }
     const errors =
       operationError === undefined ? cleanupErrors : [operationError, ...cleanupErrors];
     throw errors.length === 1
