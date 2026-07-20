@@ -20,6 +20,9 @@ sha2 = "0.10.9"
 tauri = { version = "2.11.5", features = [] }
 zeroize = "1.8.2"
 
+[dev-dependencies]
+tauri = { version = "2.11.5", features = ["test"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",

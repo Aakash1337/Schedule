@@ -559,11 +559,27 @@ mod tests {
     }
 
     #[test]
-    fn runtime_data_uses_a_dedicated_child_of_tauri_app_data() {
+    fn storage_abi_is_stable_for_windows_and_linux() {
+        let config: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tauri.conf.json"
+        )))
+        .unwrap();
+        let app = tauri::test::mock_builder()
+            .build(tauri::generate_context!())
+            .unwrap();
+        let resolved_app_data = app.path().app_local_data_dir().unwrap();
         let app_data = PathBuf::from("app-local-data");
         let runtime_data = runtime_data_root(app_data.clone());
 
-        assert_eq!(runtime_data, app_data.join(RUNTIME_DATA_DIRECTORY));
+        assert_eq!(config["identifier"], "com.aakash.schedule");
+        assert_eq!(RUNTIME_DATA_DIRECTORY, "data");
+        assert!(resolved_app_data.ends_with("com.aakash.schedule"));
+        assert_eq!(
+            runtime_data_root(resolved_app_data.clone()),
+            resolved_app_data.join("data")
+        );
+        assert_eq!(runtime_data, app_data.join("data"));
         assert_ne!(runtime_data, app_data);
     }
 }

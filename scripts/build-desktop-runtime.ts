@@ -15,6 +15,7 @@ import {
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { loadMigrationManifest } from "../packages/database/src/migration-ledger.js";
 
 const MANIFEST_NAME = "runtime-manifest.json";
 const SBOM_NAME = "runtime-sbom.json";
@@ -416,8 +417,21 @@ export async function validateDesktopRuntime(root: string): Promise<DesktopRunti
   );
   await requireFile(
     runtimeRoot,
+    "api/node_modules/@schedule/database/dist/migration-ledger.js",
+    "Database migration ledger helper",
+  );
+  await requireFile(
+    runtimeRoot,
     "api/node_modules/@schedule/database/drizzle/meta/_journal.json",
     "Migration journal",
+  );
+  await requireFile(
+    runtimeRoot,
+    "api/node_modules/@schedule/database/drizzle/meta/_migration_manifest.json",
+    "Immutable migration manifest",
+  );
+  await loadMigrationManifest(
+    path.join(runtimeRoot, "api", "node_modules", "@schedule", "database", "drizzle"),
   );
   await requireFile(runtimeRoot, `node/node${executable}`, "Node executable");
   await Promise.all(
@@ -596,8 +610,21 @@ export async function buildDesktopRuntime(
   );
   await requireFile(
     apiDeploymentDirectory,
+    "node_modules/@schedule/database/dist/migration-ledger.js",
+    "Database migration ledger helper",
+  );
+  await requireFile(
+    apiDeploymentDirectory,
     "node_modules/@schedule/database/drizzle/meta/_journal.json",
     "Migration journal",
+  );
+  await requireFile(
+    apiDeploymentDirectory,
+    "node_modules/@schedule/database/drizzle/meta/_migration_manifest.json",
+    "Immutable migration manifest",
+  );
+  await loadMigrationManifest(
+    path.join(apiDeploymentDirectory, "node_modules", "@schedule", "database", "drizzle"),
   );
   await requireFile(nodeRuntimeDirectory, `node${executable}`, "Node executable");
   await Promise.all(

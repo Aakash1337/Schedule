@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v6
         with:
           version: 11.7.0
@@ -27,6 +29,8 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Enforce immutable migration history and destructive-change review
+        run: pnpm verify:migration-policy -- --base "${{ github.event.pull_request.base.sha || github.event.before }}"
       - run: pnpm check
       - name: Enforce coverage floors
         run: pnpm test:coverage
@@ -71,6 +75,8 @@ jobs:
         run: pnpm build:packages
       - name: Apply database migrations
         run: pnpm db:migrate
+      - name: Verify migration-ledger serialization and fail-closed admission
+        run: pnpm verify:migration-ledger
       - name: Verify database integrations against PostgreSQL
         run: pnpm verify:database
       - name: Verify the Hermes adapter against the real integration gateway

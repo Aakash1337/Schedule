@@ -29,5 +29,8 @@ describe("database operation deadlines", () => {
     expect(() => createDatabase("postgres://unused", 1, { statementTimeoutMs: 0 })).toThrow(
       /positive 32-bit integer/,
     );
+    expect(() => createDatabase("postgres://unused", 1, { idleTimeoutSeconds: -1 })).toThrow(
+      /non-negative 32-bit integer/,
+    );
   });
 });

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -51,8 +52,42 @@ async function fixture(): Promise<{
       "migration",
     ),
     writeFile(
+      path.join(api, "node_modules", "@schedule", "database", "dist", "migration-ledger.js"),
+      "migration ledger",
+    ),
+    writeFile(
       path.join(api, "node_modules", "@schedule", "database", "drizzle", "meta", "_journal.json"),
-      "[]",
+      JSON.stringify({
+        version: "7",
+        dialect: "postgresql",
+        entries: [{ idx: 0, version: "7", when: 1, tag: "0000_initial", breakpoints: true }],
+      }),
+    ),
+    writeFile(
+      path.join(
+        api,
+        "node_modules",
+        "@schedule",
+        "database",
+        "drizzle",
+        "meta",
+        "_migration_manifest.json",
+      ),
+      JSON.stringify({
+        schemaVersion: 1,
+        entries: [
+          {
+            tag: "0000_initial",
+            createdAt: 1,
+            sha256: createHash("sha256").update("select 1;").digest("hex"),
+            compatibleSha256: [],
+          },
+        ],
+      }),
+    ),
+    writeFile(
+      path.join(api, "node_modules", "@schedule", "database", "drizzle", "0000_initial.sql"),
+      "select 1;",
     ),
     writeFile(path.join(worker, "dist", "index.js"), "worker"),
     writeFile(path.join(node, `node${executable}`), "node"),
@@ -201,6 +236,41 @@ describe("buildDesktopRuntime", () => {
     );
     await expect(buildDesktopRuntime({ ...options, sources: await pins(options) })).rejects.toThrow(
       "Database migration entrypoint is required",
+    );
+  });
+
+  it("requires the deployed database migration ledger helper", async () => {
+    const { options } = await fixture();
+    await rm(
+      path.join(
+        options.apiDeploymentDirectory,
+        "node_modules",
+        "@schedule",
+        "database",
+        "dist",
+        "migration-ledger.js",
+      ),
+    );
+    await expect(buildDesktopRuntime({ ...options, sources: await pins(options) })).rejects.toThrow(
+      "Database migration ledger helper is required",
+    );
+  });
+
+  it("requires the immutable migration manifest", async () => {
+    const { options } = await fixture();
+    await rm(
+      path.join(
+        options.apiDeploymentDirectory,
+        "node_modules",
+        "@schedule",
+        "database",
+        "drizzle",
+        "meta",
+        "_migration_manifest.json",
+      ),
+    );
+    await expect(buildDesktopRuntime({ ...options, sources: await pins(options) })).rejects.toThrow(
+      "Immutable migration manifest is required",
     );
   });
 

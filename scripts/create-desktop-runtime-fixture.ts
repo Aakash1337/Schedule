@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -24,7 +25,36 @@ export async function createDesktopRuntimeFixture(outputDirectory: string): Prom
     write(api, "dist/server.js", "fixture api"),
     write(worker, "dist/index.js", "fixture worker"),
     write(api, "node_modules/@schedule/database/dist/migrate.js", "fixture migration"),
-    write(api, "node_modules/@schedule/database/drizzle/meta/_journal.json", "{}"),
+    write(
+      api,
+      "node_modules/@schedule/database/dist/migration-ledger.js",
+      "fixture migration ledger",
+    ),
+    write(
+      api,
+      "node_modules/@schedule/database/drizzle/meta/_journal.json",
+      JSON.stringify({
+        version: "7",
+        dialect: "postgresql",
+        entries: [{ idx: 0, version: "7", when: 1, tag: "0000_initial", breakpoints: true }],
+      }),
+    ),
+    write(
+      api,
+      "node_modules/@schedule/database/drizzle/meta/_migration_manifest.json",
+      JSON.stringify({
+        schemaVersion: 1,
+        entries: [
+          {
+            tag: "0000_initial",
+            createdAt: 1,
+            sha256: createHash("sha256").update("select 1;").digest("hex"),
+            compatibleSha256: [],
+          },
+        ],
+      }),
+    ),
+    write(api, "node_modules/@schedule/database/drizzle/0000_initial.sql", "select 1;"),
     write(node, `node${suffix}`, "fixture node"),
     write(postgresql, "share/postgresql.conf.sample", "fixture config"),
     write(postgresql, "share/extension/pgcrypto.control", "default_version = '1.3'\n"),

@@ -14,6 +14,10 @@ export interface DatabasePoolOptions {
   readonly readOnly?: boolean;
   /** PostgreSQL-enforced statement deadline for every session in this pool. */
   readonly statementTimeoutMs?: number;
+  /** Pool idle lifetime in seconds; zero keeps a migration lock session alive until explicit close. */
+  readonly idleTimeoutSeconds?: number;
+  /** Keep fixed-protocol maintenance commands free of PostgreSQL NOTICE output. */
+  readonly suppressNotices?: boolean;
   readonly applicationName?: string;
 }
 
@@ -22,6 +26,13 @@ const DEFAULT_HEALTH_CHECK_TIMEOUT_MS = 5_000;
 function requirePositiveTimeout(value: number): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647) {
     throw new RangeError("Database statement timeout must be a positive 32-bit integer.");
+  }
+  return value;
+}
+
+function requireIdleTimeout(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 2_147_483_647) {
+    throw new RangeError("Database idle timeout must be a non-negative 32-bit integer.");
   }
   return value;
 }
@@ -35,11 +46,14 @@ export function createDatabase(
     options.statementTimeoutMs === undefined
       ? undefined
       : requirePositiveTimeout(options.statementTimeoutMs);
+  const idleTimeout =
+    options.idleTimeoutSeconds === undefined ? 20 : requireIdleTimeout(options.idleTimeoutSeconds);
   const client = postgres(databaseUrl, {
     max: maxConnections,
-    idle_timeout: 20,
+    idle_timeout: idleTimeout,
     connect_timeout: 10,
     prepare: false,
+    ...(options.suppressNotices === true ? { onnotice: () => undefined } : {}),
     connection: {
       ...(options.readOnly === undefined
         ? {}

@@ -153,8 +153,42 @@ async function desktopAssemblerFixture(
       "migrate",
     ),
     writeFile(
+      path.join(api, "node_modules", "@schedule", "database", "dist", "migration-ledger.js"),
+      "migration ledger",
+    ),
+    writeFile(
       path.join(api, "node_modules", "@schedule", "database", "drizzle", "meta", "_journal.json"),
-      "[]",
+      JSON.stringify({
+        version: "7",
+        dialect: "postgresql",
+        entries: [{ idx: 0, version: "7", when: 1, tag: "0000_initial", breakpoints: true }],
+      }),
+    ),
+    writeFile(
+      path.join(
+        api,
+        "node_modules",
+        "@schedule",
+        "database",
+        "drizzle",
+        "meta",
+        "_migration_manifest.json",
+      ),
+      JSON.stringify({
+        schemaVersion: 1,
+        entries: [
+          {
+            tag: "0000_initial",
+            createdAt: 1,
+            sha256: createHash("sha256").update("select 1;").digest("hex"),
+            compatibleSha256: [],
+          },
+        ],
+      }),
+    ),
+    writeFile(
+      path.join(api, "node_modules", "@schedule", "database", "drizzle", "0000_initial.sql"),
+      "select 1;",
     ),
     writeFile(path.join(worker, "dist", "index.js"), "worker"),
     ...["initdb", "pg_ctl", "pg_dump", "pg_isready", "pg_restore", "postgres", "psql"].map((tool) =>
