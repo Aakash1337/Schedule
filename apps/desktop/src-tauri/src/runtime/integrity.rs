@@ -68,8 +68,9 @@ pub fn load_and_verify_runtime_bundle(
 /// Establish one stable, non-link identity for the immutable root before any bundle access.
 fn canonical_runtime_root(root: &Path) -> Result<PathBuf, RuntimeIntegrityError> {
     assert_directory(root, "runtime root")?;
-    root.canonicalize()
-        .map_err(|_| error("runtime root cannot be canonicalized"))
+    // Bundled tools such as initdb launch sibling programs and are not all
+    // compatible with Windows' verbatim `\\?\` path spelling.
+    dunce::canonicalize(root).map_err(|_| error("runtime root cannot be canonicalized"))
 }
 
 /// Verify target metadata, every required component tree, and the launch/SBOM/license files.
@@ -473,8 +474,10 @@ mod tests {
             load_and_verify_runtime_bundle(&fixture.0, &expectations(), &trust_anchor).unwrap();
         assert_eq!(
             bundle.node,
-            fixture.0.join("node/node.exe").canonicalize().unwrap()
+            dunce::canonicalize(fixture.0.join("node/node.exe")).unwrap()
         );
+        #[cfg(windows)]
+        assert!(!bundle.node.to_string_lossy().starts_with(r"\\?\"));
     }
 
     #[test]

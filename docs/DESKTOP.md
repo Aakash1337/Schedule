@@ -1,26 +1,26 @@
 # Desktop application
 
-Status: native shell, shared product interface, authenticated request boundary, and tested
-coordinator/host/runtime foundation. The native effect executor and bundled release artifacts are not
-in this milestone yet.
+Status: native shell, shared product interface, supervised private runtime, authenticated request
+boundary, and verified Windows/Linux installer pipeline.
 
-Schedule is gaining a native Tauri 2 shell for Windows and Linux while retaining the existing web
-application. The desktop and hosted applications will share domain behavior and API contracts, but
+Schedule provides a native Tauri 2 shell for Windows and Linux while retaining the existing web
+application. The desktop and hosted applications share domain behavior and API contracts, but
 their runtime and authentication profiles remain deliberately separate.
 
 ## User experience target
 
-The completed desktop distribution will be installed and opened like any other application. It will
-start its private database, API, and worker automatically, show explicit startup and recovery states,
-and shut them down with the application. End users will not install Node.js, pnpm, Docker, or
-PostgreSQL and will not need to open a browser or enter a local URL.
+The desktop distribution installs and opens like any other application. It starts its private
+database, API, and worker automatically, shows explicit startup and recovery states, and shuts them
+down with the application. End users do not install Node.js, pnpm, Docker, or PostgreSQL and do not
+need to open a browser or enter a local URL.
 
-The implemented foundation provides the native window, an empty built-in capability set, an
+The desktop distribution provides the native window, an empty built-in capability set, an
 origin-locked navigation policy, strict production and development content security policies, an
 accessible startup-state model, the authenticated API/bridge contract, platform process
-containment, private temporary launch material, Windows and Linux compile checks, and installer
-metadata. It intentionally reports that the local runtime is unavailable until the supervised
-runtime milestone lands; it must not present a scaffold as a working desktop release.
+containment, private temporary launch material, verified bundled services and PostgreSQL, Windows
+and Linux compile checks, and installer metadata. It starts and stops that private runtime with the
+application and reports bounded startup, recovery, and incompatibility states without exposing
+runtime secrets.
 
 ## Shared product interface
 
@@ -38,10 +38,9 @@ keeps desktop and hosted behavior aligned without a copied UI. If either surface
 from a separate repository, these shared sources must first move behind an explicit workspace
 package boundary.
 
-## Implemented supervisor foundation
+## Implemented supervisor and runtime
 
-The native build now contains the bounded primitives and pure coordinator that launch integration
-will use:
+The native build uses these bounded primitives and its pure coordinator for launch integration:
 
 - A generation-aware lifecycle reducer orders lock acquisition, runtime verification, database
   startup, backup-before-migration, API/worker startup, and reverse cleanup. Failure and user-stop
@@ -60,7 +59,7 @@ will use:
   is installed.
 - Long-lived child and one-shot command runners clear inherited environments, reject relative
   executables, avoid shells, bound readiness/output/time, and expose only stable errors. Their only
-  pre-admission child is an inert copy of the signed Schedule binary in an exact hidden guardian
+  pre-admission child is an inert copy of the native Schedule binary in an exact hidden guardian
   mode. A bounded binary launch packet crosses a private inherited pipe; paths, arguments, working
   directory, and environment never enter guardian arguments, logs, or temporary files. The parent
   consumes an exact guardian-ready acknowledgement from stderr, installs bounded stdout and stderr
@@ -94,7 +93,7 @@ will use:
 - The runtime assembler accepts only pinned, symlink-free, portable Windows/Linux input trees. It
   requires the complete PostgreSQL command set, compiled database migration entrypoint, and pgcrypto
   files; creates a deterministic manifest, SBOM, and license inventory; and emits the manifest
-  SHA-256 for embedding into the signed native binary. Rust compares that embedded trust anchor
+  SHA-256 for embedding into the native binary. Rust compares that embedded trust anchor
   before accepting component hashes; a rewritten colocated manifest is not trusted. After verifying
   one canonical, non-link runtime root, it resolves fixed absolute Node, API, worker, migration, and
   PostgreSQL tool paths from that same tree. Unix links and all Windows reparse points fail closed.
@@ -123,7 +122,7 @@ scope; Schedule's bundled and integrity-checked runtime is not an adversarial-co
 
 ## Runtime architecture
 
-The planned installed runtime has four layers:
+The installed runtime has four layers:
 
 1. The Tauri process owns lifecycle, recovery, and the private request bridge.
 2. The existing React interface is bundled as native application assets.
@@ -135,9 +134,11 @@ PostgreSQL remains the local store because the implemented planner and delivery 
 PostgreSQL transactions, locks, JSON/array types, triggers, and migration behavior. Replacing it with
 SQLite would be a separate correctness-sensitive storage port rather than a packaging shortcut.
 
-Expected mutable locations are `%LOCALAPPDATA%\\Schedule` on Windows and
-`${XDG_DATA_HOME:-~/.local/share}/schedule` on Linux. Exact subdirectories and the recovery journal
-are derived beneath that root by the supervisor path contract.
+The private service data lives in the dedicated `data` child of Tauri's per-user local app-data
+directory: `%LOCALAPPDATA%\\com.aakash.schedule\\data` on Windows and
+`${XDG_DATA_HOME:-~/.local/share}/com.aakash.schedule/data` on Linux. Keeping it separate from the
+WebView profile lets the supervisor create and verify its own private root. Exact subdirectories and
+the recovery journal are derived beneath that root by the supervisor path contract.
 
 ## Security boundary
 
@@ -152,12 +153,11 @@ when forwarding allowlisted `/v1/workspaces` requests. Renderer-supplied authori
 headers never cross the bridge. The native client disables proxies and redirects, bounds paths and
 bodies, limits concurrent requests, and preserves only the response status, JSON body, and request
 ID. The credential never enters JavaScript, URLs, process arguments, persisted configuration, or
-logs. The bridge is registered but intentionally has no target until the next supervisor milestone
-completes startup; that supervisor must clear the target on API exit and issue a fresh credential on
-every restart.
+logs. The supervisor assigns the bridge target only after authenticated API readiness, clears it on
+API exit, and issues a fresh credential on every restart.
 
-The shell currently grants no shell or filesystem capability. Remote navigation and new remote
-windows will remain disabled. Runtime processes will use non-administrative database roles, private
+The shell grants no shell or filesystem capability. Remote navigation and new remote windows are
+disabled. Runtime processes use non-administrative database roles, private
 data-directory permissions, bounded readiness handshakes, ownership-checked shutdown, and redacted
 diagnostics. Temporary deletion and Rust buffer zeroization are logical cleanup, not secure erase of
 filesystem remnants, page cache, or copies held by child libraries. The current path checks assume a
@@ -167,8 +167,8 @@ and does not protect against administrators, root, or malware already running as
 
 ## Data lifecycle and recovery
 
-First launch will initialize a staged private database cluster, apply migrations, validate the
-result, and promote it atomically. Later upgrades will create a verified pre-migration backup before
+First launch initializes a staged private database cluster, applies migrations, validates the
+result, and promotes it atomically. Later upgrades create a verified pre-migration backup before
 changing user data. An interrupted or incompatible upgrade will fail closed into a recovery screen;
 the application will not silently discard or recreate an existing database.
 
@@ -212,13 +212,50 @@ pnpm desktop:build -- --runtime E:\release-inputs\runtime-windows-x86_64
 
 The packager stages that root as Tauri's immutable `resources/runtime`, compiles with the manifest
 SHA-256 in `SCHEDULE_DESKTOP_RUNTIME_MANIFEST_SHA256`, and removes its staging directory afterwards.
-It is not an end-user installer release until CI supplies real, verified Node and PostgreSQL runtime
-artifacts for the selected target.
+
+## Release automation
+
+The `desktop-release` workflow runs on manual dispatch, with a path-filtered pull request trigger that
+verifies changes to its release inputs. For each Windows x64 and Linux x64 build
+it creates production API and worker deploy trees, downloads locked source archives, builds and verifies
+the minimal Node runtime and PostgreSQL 17 runtime, assembles the authenticated runtime, then builds the
+native Tauri installers. It retains the installers plus the runtime manifest, SBOM, license inventory,
+component provenance, installer hashes, and workflow provenance as one Actions artifact set for 90
+days. These are verified CI/test installers, not published releases. In particular, the Windows
+installers are not Authenticode-signed and may show a SmartScreen warning. Tag publication and public
+release claims remain disabled until a real code-signing identity and release policy are configured.
+
+Build and download the current `main` installers with GitHub CLI:
+
+```powershell
+gh workflow run desktop-release.yml --repo Aakash1337/Schedule --ref main
+gh run list --repo Aakash1337/Schedule --workflow desktop-release.yml --limit 1
+gh run watch <run-id> --repo Aakash1337/Schedule --exit-status
+gh run download <run-id> --repo Aakash1337/Schedule -n schedule-desktop-windows-x64 -D artifacts/windows
+gh run download <run-id> --repo Aakash1337/Schedule -n schedule-desktop-linux-x64 -D artifacts/linux
+```
+
+On Windows, open the downloaded `*-setup.exe`, complete the installer, then launch **Schedule** from
+the Start menu; the application starts and stops its private local services automatically. On Linux,
+install the downloaded Debian package with `sudo apt install ./<package>.deb`, then open **Schedule**
+from the application menu (or run `schedule-desktop`). Prefer those install-smoked NSIS and Debian
+artifacts over MSI or AppImage for now.
+
+Windows produces NSIS and MSI where the runner supports them. Linux produces AppImage and Debian
+packages where the runner supports them. CI install-smokes NSIS and extracts/smokes the Debian package;
+MSI and AppImage are built and uploaded but not separately install-smoked. The smoke validates the
+complete immutable runtime contract at Tauri's `$RESOURCE/runtime` mapping (including hashes,
+inventories, and launch files), then runs the bundled Node and PostgreSQL binaries with `--version`.
+This validates packaged resource integrity and executable availability, then invokes the installed native
+binary's bounded headless lifecycle hook twice against the same isolated data directory. That establishes
+the embedded manifest anchor, startup, orderly shutdown, and restart path without pretending that an
+arbitrary GUI/webview process proves readiness. Each invocation is shell-free, hidden on Windows, bounded
+to 450 seconds, and reports only a numeric exit code on failure.
 
 Runtime assembly performs no downloads. Release automation must supply production API/worker
 deployment trees, pinned Node and PostgreSQL 17 directories, their exact versions and tree hashes,
 and a target OS/architecture. The emitted `SCHEDULE_DESKTOP_RUNTIME_MANIFEST_SHA256` value must be
-present while compiling the signed native binary; a release build without that anchor cannot start
+present while compiling the native binary; a release build without that anchor cannot start
 the bundled runtime.
 
 ### Pinned source acquisition
@@ -245,12 +282,11 @@ relative RUNPATHs and an Ubuntu 22.04 GLIBC symbol floor; Windows walks PE depen
 non-system Visual C++ runtime DLLs. This evidence does not claim compatibility with other Linux
 distributions, Windows versions, or CPU architectures.
 
-The Node and PostgreSQL workflows produce verified native component artifacts, while service
-staging produces the API and worker deployment trees. `desktop:runtime:assemble` validates those
-four supplied trees, and `desktop:build` embeds the resulting manifest hash before packaging. A
-production release must still consume the matching platform artifacts and independently verify
-upstream release signatures; a committed hash protects the selected bytes but does not replace that
-provenance check.
+This command is deliberately an acquisition step, not a package builder. The release workflow then
+runs the same pinned Node and PostgreSQL builders for each target, stages the API and worker,
+validates and assembles all four trees, embeds the manifest hash in the Tauri binary, and runs
+installer plus first-launch smoke tests. A committed hash protects the selected bytes but does not
+replace an independently verified upstream release-signature process.
 
 The acquisition directory must remain private to the same user; this developer tool does not try to
 defend against a same-user process modifying a published archive after it returns. The release

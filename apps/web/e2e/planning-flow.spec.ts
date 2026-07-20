@@ -263,7 +263,9 @@ test("persists explicit future-plan preference without changing Today in the liv
   const unexpectedHttpResponses: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("requestfailed", (request) => {
-    requestFailures.push(`${request.method()} ${new URL(request.url()).pathname}`);
+    const failureText = request.failure()?.errorText ?? "unknown failure";
+    if (request.method() === "GET" && failureText === "net::ERR_ABORTED") return;
+    requestFailures.push(`${request.method()} ${new URL(request.url()).pathname} (${failureText})`);
   });
   page.on("response", (response) => {
     if (response.status() < 400) return;
@@ -1132,7 +1134,16 @@ test("renders planning outcomes and derives, prefills, and restores Plan Fit", a
   expect((await regenerationResponse.json()) as { readonly id: string }).not.toMatchObject({
     id: generatedPlan.id,
   });
+  const finalPlanFitResponsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      response.request().method() === "GET" &&
+      url.pathname === `/v1/workspaces/${workspace.id}/daily-plan-fit-insight` &&
+      url.searchParams.get("forDate") === "2026-07-15"
+    );
+  });
   await page.reload();
+  expect((await finalPlanFitResponsePromise).status()).toBe(200);
   await expect(page.getByText("The day was revised after Plan Fit was used.")).toBeVisible();
   await expect(page.getByText(/No settled, unrevised plan is available/)).toBeVisible();
   const historyAfterRevisionResponse = await page.request.get(

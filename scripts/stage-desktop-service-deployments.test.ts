@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   stageDesktopServiceDeployments,
@@ -46,19 +47,56 @@ async function fixture(mutate?: RawMutation): Promise<{
       path.join(destination, "dist", api ? "server.js" : "index.js"),
       api ? "api" : "worker",
     );
+    await writeFile(
+      path.join(destination, "package.json"),
+      JSON.stringify({
+        name: api ? "@schedule/api" : "@schedule/worker",
+        version: "1.0.0",
+        license: "MIT",
+        dependencies: api
+          ? { "@schedule/database": "workspace:*" }
+          : { "@schedule/config": "workspace:*" },
+      }),
+    );
     if (api) {
       const database = path.join(destination, databaseRelative);
       await mkdir(path.join(database, "dist"), { recursive: true });
       await mkdir(path.join(database, "drizzle", "meta"), { recursive: true });
-      await writeFile(path.join(database, "dist", "migrate.js"), "migration");
+      await mkdir(path.join(destination, "node_modules", "dotenv"), { recursive: true });
+      await writeFile(
+        path.join(database, "dist", "migrate.js"),
+        'import "dotenv/config"; export const stagedMigrationFixture = true;',
+      );
+      await writeFile(
+        path.join(database, "package.json"),
+        JSON.stringify({ name: "@schedule/database", dependencies: { dotenv: "1.0.0" } }),
+      );
+      await writeFile(
+        path.join(destination, "node_modules", "dotenv", "package.json"),
+        JSON.stringify({
+          name: "dotenv",
+          version: "1.0.0",
+          type: "module",
+          exports: { "./config": "./config.js" },
+        }),
+      );
+      await writeFile(path.join(destination, "node_modules", "dotenv", "config.js"), "");
       await writeFile(
         path.join(database, "drizzle", "meta", "_journal.json"),
         JSON.stringify({ entries: [{ tag: "0000_initial" }] }),
       );
       await writeFile(path.join(database, "drizzle", "0000_initial.sql"), "select 1;");
+    } else {
+      const config = path.join(destination, "node_modules", "@schedule", "config");
+      await mkdir(config, { recursive: true });
+      await mkdir(path.join(destination, "node_modules", "zod"), { recursive: true });
       await writeFile(
-        path.join(destination, "package.json"),
-        JSON.stringify({ name: "@schedule/api", version: "1.0.0", license: "MIT" }),
+        path.join(config, "package.json"),
+        JSON.stringify({ name: "@schedule/config", dependencies: { zod: "1.0.0" } }),
+      );
+      await writeFile(
+        path.join(destination, "node_modules", "zod", "package.json"),
+        JSON.stringify({ name: "zod", version: "1.0.0" }),
       );
     }
     await mutate?.(destination, api, root);
@@ -121,9 +159,31 @@ describe("stageDesktopServiceDeployments", () => {
     ).toBe(false);
     expect(
       JSON.parse(await readFile(path.join(result.apiDeploymentDirectory, "package.json"), "utf8")),
-    ).toMatchObject({
-      license: "MIT",
+    ).toMatchObject({ name: "@schedule/api", license: "MIT" });
+    await expect(
+      import(
+        pathToFileURL(
+          path.join(result.apiDeploymentDirectory, databaseRelative, "dist", "migrate.js"),
+        ).href
+      ),
+    ).resolves.toMatchObject({ stagedMigrationFixture: true });
+  });
+
+  it("requests a hoisted deploy so materialized workspace dependencies stay resolvable", async () => {
+    const setup = await fixture();
+    const calls: string[][] = [];
+    await stageDesktopServiceDeployments({
+      sourceDirectory: setup.root,
+      outputDirectory: setup.output,
+      deploy: async (command, arguments_, options) => {
+        calls.push([...arguments_]);
+        await setup.deploy(command, arguments_, options);
+      },
     });
+    expect(calls).toHaveLength(2);
+    expect(calls.every((arguments_) => arguments_[0] === "--config.node-linker=hoisted")).toBe(
+      true,
+    );
   });
 
   it("rejects invalid raw trees and cleans failed staging", async () => {
@@ -162,6 +222,24 @@ describe("stageDesktopServiceDeployments", () => {
           if (api) await unlink(path.join(destination, databaseRelative, "dist", "migrate.js"));
         },
         "Database migration entrypoint",
+      ],
+      [
+        "missing materialized workspace dependency",
+        async (destination, api) => {
+          if (api) await unlink(path.join(destination, "node_modules", "dotenv", "package.json"));
+        },
+        "Runtime dependency dotenv",
+      ],
+      [
+        "missing workspace package scope",
+        async (destination, api) => {
+          if (!api)
+            await rm(path.join(destination, "node_modules", "@schedule"), {
+              recursive: true,
+              force: true,
+            });
+        },
+        "Runtime dependency @schedule/config",
       ],
       [
         "missing migration journal",

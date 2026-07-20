@@ -157,6 +157,52 @@ async function requireFile(root: string, relative: string, label: string): Promi
   }
 }
 
+async function validateDeclaredDependencies(
+  root: string,
+  packageDirectory: string,
+  label: string,
+): Promise<void> {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(await readFile(path.join(packageDirectory, "package.json"), "utf8"));
+  } catch {
+    throw new Error(`${label} needs valid package metadata.`);
+  }
+  const dependencies = (manifest as { dependencies?: unknown }).dependencies;
+  if (
+    dependencies !== undefined &&
+    (typeof dependencies !== "object" || dependencies === null || Array.isArray(dependencies))
+  ) {
+    throw new Error(`${label} has invalid dependencies.`);
+  }
+  for (const dependency of Object.keys(dependencies ?? {})) {
+    await requireFile(
+      root,
+      `node_modules/${dependency}/package.json`,
+      `Runtime dependency ${dependency} for ${label}`,
+    );
+  }
+}
+
+async function validateWorkspaceDependencyClosure(root: string): Promise<void> {
+  await validateDeclaredDependencies(root, root, "Deployment root");
+  const scope = path.join(root, "node_modules", "@schedule");
+  const packages = await readdir(scope, { withFileTypes: true }).catch(() => null);
+  if (packages === null || packages.length === 0) {
+    throw new Error("Deployment needs materialized @schedule runtime packages.");
+  }
+  for (const entry of packages) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) {
+      throw new Error(`Workspace deployment package @schedule/${entry.name} must be a directory.`);
+    }
+    await validateDeclaredDependencies(
+      root,
+      path.join(scope, entry.name),
+      `Workspace deployment package @schedule/${entry.name}`,
+    );
+  }
+}
+
 function assertMigrationTag(tag: string): void {
   if (tag.includes("/") || tag.includes("\\") || !isPortableComponent(tag)) {
     throw new Error("Migration journal contains an invalid migration tag.");
@@ -213,10 +259,12 @@ async function validateApiDeployment(root: string): Promise<void> {
       "Journaled SQL migration",
     );
   }
+  await validateWorkspaceDependencyClosure(root);
 }
 
 async function validateWorkerDeployment(root: string): Promise<void> {
   await requireFile(root, "dist/index.js", "Worker entrypoint");
+  await validateWorkspaceDependencyClosure(root);
 }
 
 async function currentPnpmCli(): Promise<string> {
@@ -259,14 +307,22 @@ export async function stageDesktopServiceDeployments(
     const rawApi = path.join(rawDirectory, "api");
     const rawWorker = path.join(rawDirectory, "worker");
     const deploy = options.deploy ?? runPnpmDeploy;
-    await deploy("pnpm", ["--filter", "@schedule/api", "deploy", "--prod", "--legacy", rawApi], {
-      cwd: sourceDirectory,
-    });
-    await deploy(
-      "pnpm",
-      ["--filter", "@schedule/worker", "deploy", "--prod", "--legacy", rawWorker],
-      { cwd: sourceDirectory },
-    );
+    const deployPackage = async (name: string, destination: string) =>
+      await deploy(
+        "pnpm",
+        [
+          "--config.node-linker=hoisted",
+          "--filter",
+          name,
+          "deploy",
+          "--prod",
+          "--legacy",
+          destination,
+        ],
+        { cwd: sourceDirectory },
+      );
+    await deployPackage("@schedule/api", rawApi);
+    await deployPackage("@schedule/worker", rawWorker);
     const api = path.join(outputDirectory, "api");
     const worker = path.join(outputDirectory, "worker");
     await copyMaterializedTree(rawApi, api, {

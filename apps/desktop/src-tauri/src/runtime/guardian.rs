@@ -23,7 +23,7 @@ use zeroize::Zeroize;
 use super::process::ProcessError;
 
 const MODE: &str = "--schedule-runtime-guardian";
-const MAGIC: &[u8; 8] = b"SCHGRD01";
+const MAGIC: &[u8; 8] = b"SCHGRD02";
 const MAX_PACKET_BYTES: usize = 4 * 1024 * 1024;
 const MAX_FIELD_BYTES: usize = 1024 * 1024;
 const MAX_ARGUMENTS: usize = 256;
@@ -48,6 +48,7 @@ pub(super) struct LaunchSpec {
     arguments: Vec<OsString>,
     environment: Vec<(OsString, OsString)>,
     payload_stdin: bool,
+    database_payload: bool,
 }
 
 impl LaunchSpec {
@@ -57,6 +58,7 @@ impl LaunchSpec {
         arguments: Vec<OsString>,
         environment: Vec<(OsString, OsString)>,
         payload_stdin: bool,
+        database_payload: bool,
     ) -> Self {
         Self {
             program,
@@ -64,7 +66,13 @@ impl LaunchSpec {
             arguments,
             environment,
             payload_stdin,
+            database_payload,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_database_payload(&self) -> bool {
+        self.database_payload
     }
 }
 
@@ -283,10 +291,11 @@ struct DecodedSpec {
     arguments: Vec<OsString>,
     environment: Vec<(OsString, OsString)>,
     payload_stdin: bool,
+    database_payload: bool,
 }
 
 impl DecodedSpec {
-    fn command(&self) -> Command {
+    fn command(&self) -> Result<Command, ()> {
         let mut command = Command::new(&self.program);
         command
             .args(&self.arguments)
@@ -300,7 +309,8 @@ impl DecodedSpec {
             })
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        command
+        platform::configure_payload_environment(&mut command)?;
+        Ok(command)
     }
 }
 
@@ -310,7 +320,11 @@ fn encode(spec: &LaunchSpec) -> Result<Vec<u8>, ProcessError> {
     }
     let mut body = Vec::new();
     let encoded = (|| {
+        if spec.payload_stdin && spec.database_payload {
+            return Err(ProcessError::new("desktop.process_spec_invalid"));
+        }
         body.push(u8::from(spec.payload_stdin));
+        body.push(u8::from(spec.database_payload));
         push_u32(&mut body, spec.arguments.len())?;
         push_u32(&mut body, spec.environment.len())?;
         push_os(&mut body, spec.program.as_os_str())?;
@@ -367,6 +381,14 @@ fn decode(packet: &[u8]) -> Result<DecodedSpec, ()> {
         1 => true,
         _ => return Err(()),
     };
+    let database_payload = match cursor.byte()? {
+        0 => false,
+        1 => true,
+        _ => return Err(()),
+    };
+    if payload_stdin && database_payload {
+        return Err(());
+    }
     let argument_count = cursor.u32()? as usize;
     let environment_count = cursor.u32()? as usize;
     if argument_count > MAX_ARGUMENTS || environment_count > MAX_ENVIRONMENT {
@@ -410,6 +432,7 @@ fn decode(packet: &[u8]) -> Result<DecodedSpec, ()> {
         arguments,
         environment,
         payload_stdin,
+        database_payload,
     })
 }
 
@@ -600,6 +623,10 @@ mod platform {
         Ok(())
     }
 
+    pub(super) fn configure_payload_environment(_command: &mut Command) -> Result<(), ()> {
+        Ok(())
+    }
+
     pub(super) fn control_cloexec() -> Result<(), ()> {
         // SAFETY: fd 0 is the inherited guardian control pipe. The guardian continues to use it,
         // while FD_CLOEXEC guarantees the payload cannot keep its liveness endpoint open.
@@ -619,7 +646,7 @@ mod platform {
         delay_test_ack(&spec);
         acknowledge_ready()?;
         await_commit(&mut input)?;
-        let mut command = spec.command();
+        let mut command = spec.command()?;
         let guardian_pid = unsafe { libc::getpid() };
         // Keep the payload in a distinct group inside the guardian's isolated session. This makes
         // graceful service termination precise; FORCE also walks adopted descendants on Linux.
@@ -763,17 +790,37 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use std::{
-        mem::size_of,
-        os::windows::{io::AsRawHandle, process::CommandExt},
+        mem::{size_of, size_of_val},
+        os::windows::{
+            ffi::{OsStrExt, OsStringExt},
+            io::AsRawHandle,
+            process::CommandExt,
+        },
         ptr,
     };
 
     use windows_sys::Win32::{
         Foundation::{
-            CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+            CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_SUCCESS, GENERIC_ALL,
+            HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, LocalFree, SetHandleInformation,
+            WAIT_OBJECT_0, WAIT_TIMEOUT,
+        },
+        Security::{
+            Authorization::{
+                EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SetEntriesInAclW,
+                TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+            },
+            CreateRestrictedToken, CreateWellKnownSid, DISABLE_MAX_PRIVILEGE, GetTokenInformation,
+            SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES, SetTokenInformation,
+            TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE,
+            TOKEN_QUERY, TOKEN_USER, TokenDefaultDacl, TokenUser, WinBuiltinAdministratorsSid,
+            WinBuiltinPowerUsersSid,
+        },
+        Storage::FileSystem::{
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
         },
         System::{
-            Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent, GetStdHandle, STD_INPUT_HANDLE},
+            Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE},
             Diagnostics::ToolHelp::{
                 CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First,
                 Thread32Next,
@@ -783,17 +830,74 @@ mod platform {
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                 JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
             },
+            SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW},
             Threading::{
-                CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, GetCurrentProcess, OpenThread,
-                ResumeThread, THREAD_SUSPEND_RESUME,
+                CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+                CreateProcessAsUserW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+                GetCurrentProcess, GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList,
+                OpenProcessToken, OpenThread, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+                THREAD_SUSPEND_RESUME, UpdateProcThreadAttribute, WaitForSingleObject,
             },
         },
     };
+    use zeroize::Zeroizing;
+
+    #[cfg(test)]
+    use windows_sys::Win32::Security::{CheckTokenMembership, TOKEN_PRIVILEGES, TokenPrivileges};
 
     use super::*;
 
     pub(super) fn prepare_guardian() -> Result<(), ()> {
         Ok(())
+    }
+
+    pub(super) fn configure_payload_environment(command: &mut Command) -> Result<(), ()> {
+        // PostgreSQL's Windows tools need these OS roots even when the payload otherwise
+        // runs with a deliberately empty, allowlisted environment.
+        for (key, value) in trusted_system_environment()? {
+            command.env(key, value);
+        }
+        Ok(())
+    }
+
+    pub(super) fn trusted_system_environment() -> Result<[(OsString, OsString); 3], ()> {
+        let windows =
+            system_directory(|buffer, length| unsafe { GetWindowsDirectoryW(buffer, length) })?;
+        let system =
+            system_directory(|buffer, length| unsafe { GetSystemDirectoryW(buffer, length) })?;
+        let comspec = system.join("cmd.exe");
+        if !comspec.is_file() {
+            return Err(());
+        }
+        Ok([
+            (OsString::from("SYSTEMROOT"), windows.as_os_str().to_owned()),
+            (OsString::from("WINDIR"), windows.as_os_str().to_owned()),
+            (OsString::from("COMSPEC"), comspec.into_os_string()),
+        ])
+    }
+
+    fn system_directory(get: impl Fn(*mut u16, u32) -> u32) -> Result<PathBuf, ()> {
+        const MAX_WINDOWS_PATH: usize = 32_768;
+        let mut buffer = vec![0_u16; 260];
+        loop {
+            let length = get(
+                buffer.as_mut_ptr(),
+                buffer.len().try_into().map_err(|_| ())?,
+            );
+            if length == 0 {
+                return Err(());
+            }
+            let length = length as usize;
+            if length < buffer.len() {
+                let path = PathBuf::from(OsString::from_wide(&buffer[..length]));
+                return path.is_absolute().then_some(path).ok_or(());
+            }
+            if length >= MAX_WINDOWS_PATH {
+                return Err(());
+            }
+            buffer.resize(length + 1, 0);
+        }
     }
 
     pub(super) fn control_cloexec() -> Result<(), ()> {
@@ -816,18 +920,16 @@ mod platform {
         if unsafe { AssignProcessToJobObject(job.0, GetCurrentProcess()) } == 0 {
             return Err(());
         }
-        let mut command = spec.command();
-        command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
-        let mut child = command.spawn().map_err(|_| ())?;
-        drop(command);
-        let process = child.as_raw_handle() as HANDLE;
+        let mut payload = Payload::spawn(&spec)?;
+        let process = payload.process_handle();
         let mut inherited_job = 0;
         if unsafe { IsProcessInJob(process, job.0, &mut inherited_job) } == 0 || inherited_job == 0
         {
+            terminate(&job);
+            let _ = payload.wait();
             return Err(());
         }
-        let thread = primary_thread(child.id())?;
-        let mut payload_stdin = child.stdin.take();
+        let mut payload_stdin = payload.take_stdin();
         #[cfg(test)]
         delay_test_ack(&spec);
         #[cfg(test)]
@@ -842,7 +944,7 @@ mod platform {
             let mut output = io::stdout().lock();
             output.write_all(b"SCHPID01").map_err(|_| ())?;
             output
-                .write_all(&child.id().to_le_bytes())
+                .write_all(&payload.id().to_le_bytes())
                 .and_then(|()| output.flush())
                 .map_err(|_| ())?;
             thread::sleep(Duration::from_secs(5));
@@ -851,39 +953,587 @@ mod platform {
         // Until this exact byte arrives, the only executable payload is suspended inside the Job.
         if await_commit(&mut input).is_err() {
             terminate(&job);
-            let _ = child.wait();
+            let _ = payload.wait();
             return Err(());
         }
-        if unsafe { ResumeThread(thread.0) } == u32::MAX {
+        if payload.resume().is_err() {
             terminate(&job);
-            let _ = child.wait();
+            let _ = payload.wait();
             return Err(());
         }
         let receiver = control_reader(input);
         loop {
-            if let Some(status) = child.try_wait().map_err(|_| ())? {
+            if let Some(code) = payload.try_wait()? {
                 // Keep the Job handle live through `process::exit`; kernel handle closure then
                 // kills surviving descendants without changing the guardian's reported status.
                 std::mem::forget(job);
-                return Ok(status_code(status));
+                return Ok(code);
             }
             match receiver.recv_timeout(Duration::from_millis(20)) {
                 Ok(ControlEvent::Graceful) => {
                     if let Some(mut stdin) = payload_stdin.take() {
                         let _ = stdin.write_all(b"shutdown\n");
                         let _ = stdin.flush();
-                    } else {
-                        let _ = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
                     }
                 }
                 Ok(ControlEvent::Force) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                     terminate(&job);
-                    let _ = child.wait();
+                    let _ = payload.wait();
                     return Err(());
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
         }
+    }
+
+    enum Payload {
+        Standard {
+            child: Child,
+            thread: Option<OwnedHandle>,
+        },
+        Restricted {
+            process: OwnedHandle,
+            thread: Option<OwnedHandle>,
+            #[cfg(test)]
+            pid: u32,
+        },
+    }
+
+    impl Payload {
+        fn spawn(spec: &DecodedSpec) -> Result<Self, ()> {
+            if spec.database_payload {
+                let restricted = spawn_restricted_database(spec)?;
+                Ok(Self::Restricted {
+                    process: restricted.process,
+                    thread: Some(restricted.thread),
+                    #[cfg(test)]
+                    pid: restricted.pid,
+                })
+            } else {
+                let mut command = spec.command()?;
+                command.creation_flags(payload_creation_flags());
+                let child = command.spawn().map_err(|_| ())?;
+                let thread = primary_thread(child.id())?;
+                Ok(Self::Standard {
+                    child,
+                    thread: Some(thread),
+                })
+            }
+        }
+
+        #[cfg(test)]
+        fn id(&self) -> u32 {
+            match self {
+                Self::Standard { child, .. } => child.id(),
+                Self::Restricted { pid, .. } => *pid,
+            }
+        }
+
+        fn process_handle(&self) -> HANDLE {
+            match self {
+                Self::Standard { child, .. } => child.as_raw_handle() as HANDLE,
+                Self::Restricted { process, .. } => process.0,
+            }
+        }
+
+        fn take_stdin(&mut self) -> Option<ChildStdin> {
+            match self {
+                Self::Standard { child, .. } => child.stdin.take(),
+                Self::Restricted { .. } => None,
+            }
+        }
+
+        fn resume(&mut self) -> Result<(), ()> {
+            let thread = match self {
+                Self::Standard { thread, .. } | Self::Restricted { thread, .. } => thread.take(),
+            }
+            .ok_or(())?;
+            (unsafe { ResumeThread(thread.0) } != u32::MAX)
+                .then_some(())
+                .ok_or(())
+        }
+
+        fn try_wait(&mut self) -> Result<Option<i32>, ()> {
+            match self {
+                Self::Standard { child, .. } => child
+                    .try_wait()
+                    .map(|status| status.map(status_code))
+                    .map_err(|_| ()),
+                Self::Restricted { process, .. } => {
+                    match unsafe { WaitForSingleObject(process.0, 0) } {
+                        WAIT_OBJECT_0 => restricted_exit_code(process.0).map(Some),
+                        WAIT_TIMEOUT => Ok(None),
+                        _ => Err(()),
+                    }
+                }
+            }
+        }
+
+        fn wait(&mut self) -> Result<i32, ()> {
+            match self {
+                Self::Standard { child, .. } => child.wait().map(status_code).map_err(|_| ()),
+                Self::Restricted { process, .. } => {
+                    if unsafe { WaitForSingleObject(process.0, INFINITE) } != WAIT_OBJECT_0 {
+                        return Err(());
+                    }
+                    restricted_exit_code(process.0)
+                }
+            }
+        }
+    }
+
+    struct RestrictedPayload {
+        process: OwnedHandle,
+        thread: OwnedHandle,
+        #[cfg(test)]
+        pid: u32,
+    }
+
+    fn restricted_exit_code(process: HANDLE) -> Result<i32, ()> {
+        let mut code = 0;
+        if unsafe { GetExitCodeProcess(process, &mut code) } == 0 {
+            Err(())
+        } else {
+            Ok(code as i32)
+        }
+    }
+
+    fn spawn_restricted_database(spec: &DecodedSpec) -> Result<RestrictedPayload, ()> {
+        if spec.payload_stdin {
+            return Err(());
+        }
+        let token = restricted_database_token()?;
+        let application = wide_c_string(&spec.program)?;
+        let mut command_line = windows_command_line(&spec.program, &spec.arguments)?;
+        let working_directory = wide_c_string(&spec.working_directory)?;
+        let environment = windows_environment_block(spec)?;
+        let stdin = null_input_handle()?;
+        let stdout = duplicate_standard_handle(STD_OUTPUT_HANDLE)?;
+        let stderr = duplicate_standard_handle(STD_ERROR_HANDLE)?;
+        let inherited = [stdin.0, stdout.0, stderr.0];
+        let attributes = OwnedAttributeList::new(&inherited)?;
+        let mut startup = STARTUPINFOEXW::default();
+        startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = stdin.0;
+        startup.StartupInfo.hStdOutput = stdout.0;
+        startup.StartupInfo.hStdError = stderr.0;
+        startup.lpAttributeList = attributes.pointer;
+        let mut information = PROCESS_INFORMATION::default();
+        let created = unsafe {
+            CreateProcessAsUserW(
+                token.0,
+                application.as_ptr(),
+                command_line.as_mut_ptr(),
+                ptr::null(),
+                ptr::null(),
+                1,
+                payload_creation_flags()
+                    | CREATE_UNICODE_ENVIRONMENT
+                    | EXTENDED_STARTUPINFO_PRESENT,
+                environment.as_ptr().cast(),
+                working_directory.as_ptr(),
+                &startup.StartupInfo,
+                &mut information,
+            )
+        };
+        if created == 0 {
+            return Err(());
+        }
+        Ok(RestrictedPayload {
+            process: OwnedHandle::new(information.hProcess)?,
+            thread: OwnedHandle::new(information.hThread)?,
+            #[cfg(test)]
+            pid: information.dwProcessId,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn current_process_restriction_probe() -> u8 {
+        let mut token = ptr::null_mut();
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return 1;
+        }
+        let Ok(token) = OwnedHandle::new(token) else {
+            return 2;
+        };
+        let mut administrators = [0_u8; SECURITY_MAX_SID_SIZE as usize];
+        if create_well_known_sid(WinBuiltinAdministratorsSid, &mut administrators).is_err() {
+            return 3;
+        }
+        let Ok(privilege_information) = token_information(token.0, TokenPrivileges) else {
+            return 4;
+        };
+        if privilege_information.len() * size_of::<usize>() < size_of::<TOKEN_PRIVILEGES>() {
+            return 4;
+        }
+        // SAFETY: token_information returns aligned storage for TOKEN_PRIVILEGES.
+        let privileges = unsafe { &*privilege_information.as_ptr().cast::<TOKEN_PRIVILEGES>() };
+        if privileges.PrivilegeCount > 1 {
+            return 4;
+        }
+        let mut is_admin = 0;
+        let membership_checked = unsafe {
+            CheckTokenMembership(
+                ptr::null_mut(),
+                administrators.as_mut_ptr().cast(),
+                &mut is_admin,
+            ) != 0
+        };
+        if !membership_checked {
+            5
+        } else if is_admin != 0 {
+            6
+        } else {
+            0
+        }
+    }
+
+    fn restricted_database_token() -> Result<OwnedHandle, ()> {
+        let mut original = ptr::null_mut();
+        if unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT,
+                &mut original,
+            )
+        } == 0
+        {
+            return Err(());
+        }
+        let original = OwnedHandle::new(original)?;
+        let mut administrators = [0_u8; SECURITY_MAX_SID_SIZE as usize];
+        let mut power_users = [0_u8; SECURITY_MAX_SID_SIZE as usize];
+        create_well_known_sid(WinBuiltinAdministratorsSid, &mut administrators)?;
+        create_well_known_sid(WinBuiltinPowerUsersSid, &mut power_users)?;
+        let disabled = [
+            SID_AND_ATTRIBUTES {
+                Sid: administrators.as_mut_ptr().cast(),
+                Attributes: 0,
+            },
+            SID_AND_ATTRIBUTES {
+                Sid: power_users.as_mut_ptr().cast(),
+                Attributes: 0,
+            },
+        ];
+        let mut restricted = ptr::null_mut();
+        if unsafe {
+            CreateRestrictedToken(
+                original.0,
+                DISABLE_MAX_PRIVILEGE,
+                disabled.len() as u32,
+                disabled.as_ptr(),
+                0,
+                ptr::null(),
+                0,
+                ptr::null(),
+                &mut restricted,
+            )
+        } == 0
+        {
+            return Err(());
+        }
+        let restricted = OwnedHandle::new(restricted)?;
+        add_user_to_token_dacl(restricted.0)?;
+        Ok(restricted)
+    }
+
+    fn create_well_known_sid(kind: i32, storage: &mut [u8]) -> Result<(), ()> {
+        let mut length = storage.len().try_into().map_err(|_| ())?;
+        if unsafe {
+            CreateWellKnownSid(
+                kind,
+                ptr::null_mut(),
+                storage.as_mut_ptr().cast(),
+                &mut length,
+            )
+        } == 0
+        {
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+
+    // PostgreSQL's restricted-token launcher performs the same repair: an elevated user's
+    // default DACL can otherwise lose its only usable ACE when Administrators becomes deny-only.
+    fn add_user_to_token_dacl(token: HANDLE) -> Result<(), ()> {
+        let user_information = token_information(token, TokenUser)?;
+        let default_information = token_information(token, TokenDefaultDacl)?;
+        if user_information.len() * size_of::<usize>() < size_of::<TOKEN_USER>()
+            || default_information.len() * size_of::<usize>() < size_of::<TOKEN_DEFAULT_DACL>()
+        {
+            return Err(());
+        }
+        // SAFETY: token_information returns suitably aligned storage containing the requested
+        // structure, and both buffers remain live through the native calls below.
+        let user = unsafe { &*user_information.as_ptr().cast::<TOKEN_USER>() };
+        let current = unsafe { &*default_information.as_ptr().cast::<TOKEN_DEFAULT_DACL>() };
+        if user.User.Sid.is_null() {
+            return Err(());
+        }
+        let entry = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: GENERIC_ALL,
+            grfAccessMode: GRANT_ACCESS,
+            grfInheritance: 0,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: ptr::null_mut(),
+                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_USER,
+                ptstrName: user.User.Sid.cast(),
+            },
+        };
+        let mut acl = ptr::null_mut();
+        if unsafe { SetEntriesInAclW(1, &entry, current.DefaultDacl, &mut acl) } != ERROR_SUCCESS
+            || acl.is_null()
+        {
+            return Err(());
+        }
+        let acl = OwnedLocalAllocation(acl.cast());
+        let updated = TOKEN_DEFAULT_DACL {
+            DefaultDacl: acl.0.cast(),
+        };
+        if unsafe {
+            SetTokenInformation(
+                token,
+                TokenDefaultDacl,
+                (&updated as *const TOKEN_DEFAULT_DACL).cast(),
+                size_of::<TOKEN_DEFAULT_DACL>() as u32,
+            )
+        } == 0
+        {
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn token_information(token: HANDLE, class: i32) -> Result<Vec<usize>, ()> {
+        let mut bytes = 0;
+        let _ = unsafe { GetTokenInformation(token, class, ptr::null_mut(), 0, &mut bytes) };
+        if bytes == 0 {
+            return Err(());
+        }
+        let words = (bytes as usize).div_ceil(size_of::<usize>());
+        let mut storage = vec![0_usize; words];
+        let capacity = (storage.len() * size_of::<usize>())
+            .try_into()
+            .map_err(|_| ())?;
+        if unsafe {
+            GetTokenInformation(
+                token,
+                class,
+                storage.as_mut_ptr().cast(),
+                capacity,
+                &mut bytes,
+            )
+        } == 0
+        {
+            Err(())
+        } else {
+            Ok(storage)
+        }
+    }
+
+    pub(super) fn windows_command_line(
+        program: &OsStr,
+        arguments: &[OsString],
+    ) -> Result<Zeroizing<Vec<u16>>, ()> {
+        let mut command = Zeroizing::new(Vec::new());
+        append_windows_argument(&mut command, program)?;
+        for argument in arguments {
+            command.push(b' ' as u16);
+            append_windows_argument(&mut command, argument)?;
+        }
+        if command.len() >= 32_767 {
+            return Err(());
+        }
+        command.push(0);
+        Ok(command)
+    }
+
+    fn append_windows_argument(target: &mut Vec<u16>, argument: &OsStr) -> Result<(), ()> {
+        let mut units = Zeroizing::new(argument.encode_wide().collect::<Vec<_>>());
+        if units.contains(&0) {
+            return Err(());
+        }
+        let quoted = units.is_empty()
+            || units
+                .iter()
+                .any(|unit| *unit == b' ' as u16 || *unit == b'\t' as u16 || *unit == b'"' as u16);
+        if !quoted {
+            target.extend_from_slice(&units);
+            return Ok(());
+        }
+        target.push(b'"' as u16);
+        let mut backslashes = 0_usize;
+        for unit in units.drain(..) {
+            if unit == b'\\' as u16 {
+                backslashes += 1;
+            } else if unit == b'"' as u16 {
+                target.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2 + 1));
+                target.push(unit);
+                backslashes = 0;
+            } else {
+                target.extend(std::iter::repeat_n(b'\\' as u16, backslashes));
+                target.push(unit);
+                backslashes = 0;
+            }
+        }
+        target.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2));
+        target.push(b'"' as u16);
+        Ok(())
+    }
+
+    fn windows_environment_block(spec: &DecodedSpec) -> Result<Zeroizing<Vec<u16>>, ()> {
+        let trusted = trusted_system_environment()?;
+        let mut entries = spec
+            .environment
+            .iter()
+            .filter(|(key, _)| !trusted.iter().any(|(name, _)| name == key))
+            .map(|(key, value)| (key.as_os_str(), value.as_os_str()))
+            .collect::<Vec<_>>();
+        entries.extend(
+            trusted
+                .iter()
+                .map(|(key, value)| (key.as_os_str(), value.as_os_str())),
+        );
+        entries.sort_by(|left, right| left.0.cmp(right.0));
+        let mut block = Zeroizing::new(Vec::new());
+        for (key, value) in entries {
+            append_environment_value(&mut block, key)?;
+            block.push(b'=' as u16);
+            append_environment_value(&mut block, value)?;
+            block.push(0);
+        }
+        block.push(0);
+        if block.len() > 32_767 {
+            Err(())
+        } else {
+            Ok(block)
+        }
+    }
+
+    fn append_environment_value(target: &mut Vec<u16>, value: &OsStr) -> Result<(), ()> {
+        for unit in value.encode_wide() {
+            if unit == 0 {
+                return Err(());
+            }
+            target.push(unit);
+        }
+        Ok(())
+    }
+
+    fn wide_c_string(value: &OsStr) -> Result<Vec<u16>, ()> {
+        let mut wide = value.encode_wide().collect::<Vec<_>>();
+        if wide.contains(&0) || wide.len() >= 32_767 {
+            return Err(());
+        }
+        wide.push(0);
+        Ok(wide)
+    }
+
+    fn duplicate_standard_handle(kind: u32) -> Result<OwnedHandle, ()> {
+        let source = unsafe { GetStdHandle(kind) };
+        if source.is_null() || source == INVALID_HANDLE_VALUE {
+            return Err(());
+        }
+        let process = unsafe { GetCurrentProcess() };
+        let mut duplicate = ptr::null_mut();
+        if unsafe {
+            DuplicateHandle(
+                process,
+                source,
+                process,
+                &mut duplicate,
+                0,
+                1,
+                DUPLICATE_SAME_ACCESS,
+            )
+        } == 0
+        {
+            Err(())
+        } else {
+            OwnedHandle::new(duplicate)
+        }
+    }
+
+    fn null_input_handle() -> Result<OwnedHandle, ()> {
+        let name = [b'N' as u16, b'U' as u16, b'L' as u16, 0];
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: ptr::null_mut(),
+            bInheritHandle: 1,
+        };
+        OwnedHandle::new(unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                windows_sys::Win32::Foundation::GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                &attributes,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                ptr::null_mut(),
+            )
+        })
+    }
+
+    struct OwnedAttributeList {
+        _storage: Vec<usize>,
+        pointer: windows_sys::Win32::System::Threading::LPPROC_THREAD_ATTRIBUTE_LIST,
+    }
+
+    impl OwnedAttributeList {
+        fn new(handles: &[HANDLE]) -> Result<Self, ()> {
+            let mut bytes = 0;
+            let _ = unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut bytes) };
+            if bytes == 0 {
+                return Err(());
+            }
+            let mut storage = vec![0_usize; bytes.div_ceil(size_of::<usize>())];
+            let pointer = storage.as_mut_ptr().cast();
+            if unsafe { InitializeProcThreadAttributeList(pointer, 1, 0, &mut bytes) } == 0 {
+                return Err(());
+            }
+            let attributes = Self {
+                _storage: storage,
+                pointer,
+            };
+            if unsafe {
+                UpdateProcThreadAttribute(
+                    pointer,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                    handles.as_ptr().cast(),
+                    size_of_val(handles),
+                    ptr::null_mut(),
+                    ptr::null(),
+                )
+            } == 0
+            {
+                return Err(());
+            }
+            Ok(attributes)
+        }
+    }
+
+    impl Drop for OwnedAttributeList {
+        fn drop(&mut self) {
+            unsafe { DeleteProcThreadAttributeList(self.pointer) };
+        }
+    }
+
+    struct OwnedLocalAllocation(*mut core::ffi::c_void);
+
+    impl Drop for OwnedLocalAllocation {
+        fn drop(&mut self) {
+            let _ = unsafe { LocalFree(self.0) };
+        }
+    }
+
+    pub(super) const fn payload_creation_flags() -> u32 {
+        CREATE_SUSPENDED | CREATE_NO_WINDOW
     }
 
     fn create_job() -> Result<OwnedHandle, ()> {
@@ -999,6 +1649,29 @@ mod tests {
                     std::process::exit(9);
                 }
             }
+            #[cfg(windows)]
+            Ok("restricted_probe") => {
+                let token_probe = platform::current_process_restriction_probe();
+                if token_probe != 0 {
+                    std::process::exit(20 + i32::from(token_probe));
+                }
+                let marker = PathBuf::from(env::var_os(VALUE_ENV).unwrap());
+                let nested = marker.with_extension("nested");
+                let status = Command::new(env::current_exe().unwrap())
+                    .arg("runtime::guardian::tests::payload_helper")
+                    .arg("--exact")
+                    .arg("--nocapture")
+                    .env_clear()
+                    .env(MODE_ENV, "marker")
+                    .env(VALUE_ENV, &nested)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .status();
+                if !matches!(status, Ok(status) if status.success()) {
+                    std::process::exit(21);
+                }
+                fs::write(marker, b"restricted").unwrap();
+            }
             _ => {}
         }
     }
@@ -1018,7 +1691,14 @@ mod tests {
             ],
             environment,
             mode == "await_shutdown",
+            false,
         )
+    }
+
+    fn database_payload(mode: &str, value: Option<&Path>) -> LaunchSpec {
+        let mut spec = payload(mode, value);
+        spec.database_payload = true;
+        spec
     }
 
     fn marker_path() -> PathBuf {
@@ -1163,6 +1843,86 @@ mod tests {
         assert!(!marker.exists());
     }
 
+    #[test]
+    fn guardian_packet_round_trips_database_payload_and_rejects_conflicts() {
+        let spec = database_payload("marker", Some(&marker_path()));
+        let packet = encode(&spec).unwrap();
+        let decoded = decode(&packet[12..]).unwrap();
+        assert!(decoded.database_payload);
+        assert!(!decoded.payload_stdin);
+
+        let mut malformed = packet[12..].to_vec();
+        malformed[1] = 2;
+        assert!(decode(&malformed).is_err());
+
+        let invalid = database_payload("await_shutdown", None);
+        assert!(encode(&invalid).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn database_payload_runs_restricted_and_can_create_pipes_and_processes() {
+        let marker = marker_path();
+        let nested = marker.with_extension("nested");
+        let spawned = admit(spawn(database_payload("restricted_probe", Some(&marker))).unwrap());
+        let (mut child, channel) = spawned.into_parts();
+        assert_eq!(child.wait().unwrap().code(), Some(0));
+        drop(channel);
+        assert_eq!(fs::read(&marker).unwrap(), b"restricted");
+        assert!(nested.is_file());
+        let _ = fs::remove_file(marker);
+        let _ = fs::remove_file(nested);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_command_line_quotes_spaces_quotes_and_trailing_backslashes() {
+        let command = platform::windows_command_line(
+            OsStr::new(r"C:\Program Files\Schedule\schedule.exe"),
+            &[
+                OsString::from("plain"),
+                OsString::from("two words"),
+                OsString::from("quote\"here"),
+                OsString::from(r"C:\tail with space\"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf16(&command[..command.len() - 1]).unwrap(),
+            r#""C:\Program Files\Schedule\schedule.exe" plain "two words" "quote\"here" "C:\tail with space\\""#
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_payload_environment_uses_system_paths() {
+        let environment = platform::trusted_system_environment().unwrap();
+        let value = |key: &str| {
+            PathBuf::from(
+                environment
+                    .iter()
+                    .find(|(name, _)| name == key)
+                    .unwrap()
+                    .1
+                    .clone(),
+            )
+        };
+        assert!(value("SYSTEMROOT").is_absolute());
+        assert_eq!(value("WINDIR"), value("SYSTEMROOT"));
+        assert_eq!(value("COMSPEC").file_name(), Some(OsStr::new("cmd.exe")));
+        assert!(value("COMSPEC").is_file());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_payloads_never_open_console_windows() {
+        assert_ne!(
+            platform::payload_creation_flags()
+                & windows_sys::Win32::System::Threading::CREATE_NO_WINDOW,
+            0
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn guardian_loss_before_ack_cannot_orphan_the_suspended_payload() {
@@ -1171,7 +1931,7 @@ mod tests {
             System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
         };
 
-        let mut spec = payload("marker", Some(&marker_path()));
+        let mut spec = database_payload("marker", Some(&marker_path()));
         spec.environment
             .push((OsString::from(TEST_PRE_ACK_STALL), OsString::from("1")));
         let mut spawned = spawn(spec).unwrap();

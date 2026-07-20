@@ -23,6 +23,7 @@ use super::{
 
 const FINAL_SHUTDOWN_WAIT: Duration = Duration::from_secs(20);
 const NORMAL_CLOSE_WAIT: Duration = Duration::from_secs(120);
+const RUNTIME_DATA_DIRECTORY: &str = "data";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -205,12 +206,19 @@ fn setup_input(
     bridge: Arc<crate::bridge::DesktopApiForwarder>,
 ) -> Result<(PathBuf, PathBuf, Arc<crate::bridge::DesktopApiForwarder>), ()> {
     let resource_root = runtime_resource_root(app.path().resource_dir().map_err(|_| ())?);
-    let data_root = app.path().app_local_data_dir().map_err(|_| ())?;
+    // WebView creates the Tauri app-data directory before setup runs. Keep the
+    // service runtime in its own child so Rust can create and verify a private
+    // root instead of inheriting the browser profile directory's permissions.
+    let data_root = runtime_data_root(app.path().app_local_data_dir().map_err(|_| ())?);
     Ok((resource_root, data_root, bridge))
 }
 
 fn runtime_resource_root(resource_dir: PathBuf) -> PathBuf {
     resource_dir.join("runtime")
+}
+
+fn runtime_data_root(app_local_data_dir: PathBuf) -> PathBuf {
+    app_local_data_dir.join(RUNTIME_DATA_DIRECTORY)
 }
 
 pub(crate) fn schedule_close(app: AppHandle, adapter: Arc<DesktopRuntimeAdapter>) {
@@ -548,5 +556,14 @@ mod tests {
                 build_host(PathBuf::from("relative"), PathBuf::from("relative"), bridge).is_err()
             );
         }
+    }
+
+    #[test]
+    fn runtime_data_uses_a_dedicated_child_of_tauri_app_data() {
+        let app_data = PathBuf::from("app-local-data");
+        let runtime_data = runtime_data_root(app_data.clone());
+
+        assert_eq!(runtime_data, app_data.join(RUNTIME_DATA_DIRECTORY));
+        assert_ne!(runtime_data, app_data);
     }
 }

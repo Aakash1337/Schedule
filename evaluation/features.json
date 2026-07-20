@@ -4421,12 +4421,12 @@
       "risk": "critical",
       "contract": {
         "file": "docs/DESKTOP.md",
-        "anchor": "## Implemented supervisor foundation"
+        "anchor": "## Implemented supervisor and runtime"
       },
       "limitations": [
-        "The pure coordinator, asynchronous native host, and verified fixed-path runtime resolver are tested, but the native effect executor is not implemented and the host is not invoked by main, so the desktop correctly remains in foundation state.",
-        "The durable PostgreSQL credential store and bounded stale-secret scavenger are implemented, but launch integration must invoke them under the singleton lock, preserve existing-cluster credentials, and enforce pg_ctl shutdown before cluster initialization ships.",
-        "Real pinned runtime artifacts, installers, first-launch PostgreSQL acceptance, Linux hard-crash descendant validation, and supported Windows outer-Job validation remain required."
+        "Automated native packaging and installed lifecycle acceptance currently cover Windows x64 and Ubuntu 22.04 Linux x64; macOS, ARM, and other Linux distributions are not claimed.",
+        "CI install-smokes NSIS and Debian packages. MSI and AppImage are produced but are not independently install-smoked.",
+        "Windows CI/test installers are not Authenticode-signed and are not published as production releases."
       ],
       "evidence": [
         {
@@ -4499,7 +4499,7 @@
             "desktop_shutdown_pipe_delivers_one_line_through_platform_control",
             "platform_control_stops_the_owned_descendant_tree",
             "post_attach_setup_failure_force_stops_and_releases_platform_ownership",
-            "windows_job_assigns_before_readiness_and_stops_the_child"
+            "windows_no_console_payload_without_stdin_escalates_through_job"
           ]
         },
         {
@@ -4549,6 +4549,16 @@
             "rejects a publish-time collision after verification reaches the link boundary",
             "handles a verified temporary pathname swap without publishing malicious bytes",
             "handles target replacement through a link without an escaped or malicious final write"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/smoke-desktop-installer.test.ts",
+          "command": "unit",
+          "anchors": [
+            "runs the installed native lifecycle twice against one isolated data root",
+            "redacts native launch failures to an exit code",
+            "requires exactly one Debian Schedule executable"
           ]
         }
       ]

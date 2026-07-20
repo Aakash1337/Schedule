@@ -10,9 +10,7 @@ use std::{
 };
 
 use super::integrity::is_link_or_reparse;
-use super::manifest::{
-    RuntimeArtifacts, RuntimeComponentName, RuntimeLaunchPath, RuntimeManifest, RuntimeOs,
-};
+use super::manifest::{RuntimeComponentName, RuntimeLaunchPath, RuntimeManifest, RuntimeOs};
 
 const MIGRATION_ENTRYPOINT: &str = "api/node_modules/@schedule/database/dist/migrate.js";
 
@@ -161,8 +159,7 @@ fn resolve_regular(root: &Path, relative: &str) -> Result<PathBuf, RuntimeBundle
             "runtime bundle path is not a regular file",
         ));
     }
-    let canonical = path
-        .canonicalize()
+    let canonical = dunce::canonicalize(&path)
         .map_err(|_| RuntimeBundleError("runtime bundle file cannot be canonicalized"))?;
     if !canonical.starts_with(root) {
         return Err(RuntimeBundleError("runtime bundle path escapes its root"));
@@ -180,7 +177,7 @@ mod tests {
 
     use super::*;
     use crate::runtime::manifest::{
-        RuntimeArch, RuntimeComponent, RuntimeManifest, RuntimeOs, RuntimeTarget,
+        RuntimeArch, RuntimeArtifacts, RuntimeComponent, RuntimeManifest, RuntimeOs, RuntimeTarget,
     };
 
     struct Fixture(PathBuf);
@@ -204,7 +201,7 @@ mod tests {
         }
 
         fn canonical_root(&self) -> PathBuf {
-            self.0.canonicalize().unwrap()
+            dunce::canonicalize(&self.0).unwrap()
         }
     }
 

@@ -45,6 +45,8 @@ const WORKER_READY_PREFIX: &[u8] = b"SCHEDULE_DESKTOP_WORKER_READY_V1 ";
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(45);
 const DATABASE_READY_TIMEOUT: Duration = Duration::from_secs(45);
 const DATABASE_READY_RETRY: Duration = Duration::from_millis(100);
+const DATABASE_PROMOTION_RETRY_TIMEOUT: Duration = Duration::from_secs(3);
+const DATABASE_PROMOTION_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const DATABASE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const DATABASE_BACKUP_TIMEOUT: Duration = Duration::from_secs(300);
 const MIGRATION_TIMEOUT: Duration = Duration::from_secs(300);
@@ -445,8 +447,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
             if final_data.exists() {
                 return Ok(EffectOutcome::Incompatible(Incompatibility::DatabaseFormat));
             }
-            fs::rename(self.database_data()?, &final_data)
-                .map_err(|_| NativeExecutorError::new("desktop.database_promote_failed"))?;
+            promote_database_directory(self.database_data()?, &final_data, cancellation)?;
             sync_directory(
                 final_data
                     .parent()
@@ -530,25 +531,62 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         for (key, value) in plan.environment {
             spec = spec.env(key, value);
         }
-        let started = start_process_cancellable(spec, Arc::clone(&self.process_control), &|| {
-            cancellation.is_cancelled()
-        })
-        .map_err(process_error)?;
+        spec = spec.classify_postgres_startup_stderr();
+        let started =
+            match start_process_cancellable(spec, Arc::clone(&self.process_control), &|| {
+                cancellation.is_cancelled()
+            }) {
+                Ok(started) => started,
+                Err(error) => {
+                    if error.code() != "desktop.process_cancelled" {
+                        eprintln!("SCHEDULE_DESKTOP_DATABASE_STARTUP=guardian_admission_failed");
+                    }
+                    return Err(process_error(error));
+                }
+            };
         self.database = Some(started.process);
         Ok(())
     }
 
-    fn await_database(&self, cancellation: &Cancellation) -> Result<(), NativeExecutorError> {
-        let bundle = self.require_bundle()?;
+    fn await_database(&mut self, cancellation: &Cancellation) -> Result<(), NativeExecutorError> {
+        let postgres_bin = postgres_bin(self.require_bundle()?)?.to_owned();
+        let pg_isready = self.require_bundle()?.postgresql.pg_isready.clone();
         let connection = self.admin_connection("postgres")?;
         let deadline = std::time::Instant::now() + DATABASE_READY_TIMEOUT;
         loop {
             Self::cancelled(cancellation)?;
-            let plan = readiness_plan(postgres_bin(bundle)?, &connection);
+            let (exited, exit_code, stderr_class) = {
+                let database = self
+                    .database
+                    .as_mut()
+                    .ok_or_else(|| NativeExecutorError::new("desktop.executor_state_invalid"))?;
+                let exited = database.has_exited().map_err(process_error)?;
+                let stderr_class = exited
+                    .then(|| database.postgres_startup_stderr_class())
+                    .flatten();
+                (exited, database.exit_code_u32(), stderr_class)
+            };
+            if exited {
+                match (exit_code, stderr_class) {
+                    (Some(1), Some(class)) => eprintln!(
+                        "SCHEDULE_DESKTOP_DATABASE_STARTUP=post_admission_exit:1:{}",
+                        class
+                    ),
+                    (Some(code), _) => {
+                        eprintln!("SCHEDULE_DESKTOP_DATABASE_STARTUP=post_admission_exit:{code}")
+                    }
+                    (None, _) => {
+                        eprintln!("SCHEDULE_DESKTOP_DATABASE_STARTUP=post_admission_exit:unknown")
+                    }
+                }
+                self.database.take();
+                return Err(NativeExecutorError::new("desktop.database_exited_early"));
+            }
+            let plan = readiness_plan(&postgres_bin, &connection);
             if self
                 .run_pg(
                     plan,
-                    &bundle.postgresql.pg_isready,
+                    &pg_isready,
                     Duration::from_secs(6),
                     4096,
                     Some(cancellation),
@@ -656,18 +694,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         {
             return Err(NativeExecutorError::new("desktop.backup_invalid"));
         }
-        let file = fs::File::open(&pending)
-            .map_err(|_| NativeExecutorError::new("desktop.backup_invalid"))?;
-        if file
-            .metadata()
-            .map_err(|_| NativeExecutorError::new("desktop.backup_invalid"))?
-            .len()
-            != metadata.len()
-        {
-            return Err(NativeExecutorError::new("desktop.backup_invalid"));
-        }
-        file.sync_all()
-            .map_err(|_| NativeExecutorError::new("desktop.backup_invalid"))?;
+        sync_backup_file(&pending, metadata.len())?;
         let verify = restore_verify_plan(postgres_bin(bundle)?, &pending);
         let catalog = self.run_pg(
             verify,
@@ -965,6 +992,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
     ) -> Result<CommandOutput, NativeExecutorError> {
         ensure_program(&plan, expected_program)?;
         let mut spec = CommandSpec::new(plan.program, &self.require_bundle()?.root, timeout)
+            .database_payload()
             .output_bounds(output_bound, output_bound);
         for argument in plan.arguments {
             spec = spec.arg(argument);
@@ -1303,6 +1331,63 @@ fn reset_incomplete_cluster(path: &Path) -> Result<(), NativeExecutorError> {
     )
 }
 
+fn promote_database_directory(
+    source: &Path,
+    destination: &Path,
+    cancellation: &Cancellation,
+) -> Result<(), NativeExecutorError> {
+    promote_database_directory_with(source, destination, cancellation, |source, destination| {
+        fs::rename(source, destination)
+    })
+}
+
+fn promote_database_directory_with(
+    source: &Path,
+    destination: &Path,
+    cancellation: &Cancellation,
+    mut rename: impl FnMut(&Path, &Path) -> io::Result<()>,
+) -> Result<(), NativeExecutorError> {
+    let deadline = std::time::Instant::now() + DATABASE_PROMOTION_RETRY_TIMEOUT;
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(NativeExecutorError::new("desktop.operation_cancelled"));
+        }
+        match rename(source, destination) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if transient_database_promotion_error(&error)
+                    && promotion_source_is_directory(source)
+                    && promotion_destination_is_absent(destination)
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(DATABASE_PROMOTION_RETRY_INTERVAL);
+            }
+            Err(_) => {
+                return Err(NativeExecutorError::new("desktop.database_promote_failed"));
+            }
+        }
+    }
+}
+
+fn promotion_source_is_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.is_dir() && !super::integrity::is_link_or_reparse(&metadata))
+}
+
+fn promotion_destination_is_absent(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+}
+
+#[cfg(windows)]
+fn transient_database_promotion_error(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5 | 32 | 33))
+}
+
+#[cfg(not(windows))]
+fn transient_database_promotion_error(_error: &io::Error) -> bool {
+    false
+}
+
 fn validate_removable_tree(path: &Path, entries: &mut usize) -> Result<(), NativeExecutorError> {
     *entries = entries.saturating_add(1);
     if *entries > 200_000 {
@@ -1338,6 +1423,26 @@ impl Drop for PendingFile {
             let _ = fs::remove_file(path);
         }
     }
+}
+
+fn sync_backup_file(path: &Path, expected_len: u64) -> Result<(), NativeExecutorError> {
+    // FlushFileBuffers requires a write-capable handle on Windows even though
+    // pg_dump has already finished writing the archive.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|_| NativeExecutorError::new("desktop.backup_invalid"))?;
+    if file
+        .metadata()
+        .map_err(|_| NativeExecutorError::new("desktop.backup_invalid"))?
+        .len()
+        != expected_len
+    {
+        return Err(NativeExecutorError::new("desktop.backup_invalid"));
+    }
+    file.sync_all()
+        .map_err(|_| NativeExecutorError::new("desktop.backup_invalid"))
 }
 
 fn random_suffix() -> Result<String, NativeExecutorError> {
@@ -1637,6 +1742,134 @@ mod tests {
         assert!(executor.operations().calls.is_empty());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn database_promotion_retries_transient_windows_failures() {
+        for code in [5, 32, 33] {
+            let root = std::env::temp_dir().join(format!(
+                "schedule-promotion-retry-{code}-{}-{}",
+                std::process::id(),
+                random_suffix().unwrap()
+            ));
+            let source = root.join("source");
+            let destination = root.join("destination");
+            fs::create_dir_all(&source).unwrap();
+            let mut attempts = 0;
+
+            promote_database_directory_with(
+                &source,
+                &destination,
+                &Cancellation::default(),
+                |source, destination| {
+                    attempts += 1;
+                    if attempts < 3 {
+                        Err(io::Error::from_raw_os_error(code))
+                    } else {
+                        fs::rename(source, destination)
+                    }
+                },
+            )
+            .unwrap();
+
+            assert_eq!(attempts, 3);
+            assert!(!source.exists());
+            assert!(destination.is_dir());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn database_promotion_observes_cancellation_between_retries() {
+        let root = std::env::temp_dir().join(format!(
+            "schedule-promotion-cancel-{}-{}",
+            std::process::id(),
+            random_suffix().unwrap()
+        ));
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        let cancellation = Cancellation::default();
+        let mut attempts = 0;
+
+        let error =
+            promote_database_directory_with(&source, &destination, &cancellation, |_, _| {
+                attempts += 1;
+                cancellation.cancel();
+                Err(io::Error::from_raw_os_error(32))
+            })
+            .unwrap_err();
+
+        assert_eq!(error.code(), "desktop.operation_cancelled");
+        assert_eq!(attempts, 1);
+        assert!(source.is_dir());
+        assert!(!destination.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn database_promotion_does_not_retry_nontransient_failures() {
+        let root = std::env::temp_dir().join(format!(
+            "schedule-promotion-nontransient-{}-{}",
+            std::process::id(),
+            random_suffix().unwrap()
+        ));
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        let mut attempts = 0;
+
+        let error = promote_database_directory_with(
+            &source,
+            &destination,
+            &Cancellation::default(),
+            |_, _| {
+                attempts += 1;
+                Err(io::Error::new(io::ErrorKind::InvalidInput, "test"))
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), "desktop.database_promote_failed");
+        assert_eq!(attempts, 1);
+        assert!(source.is_dir());
+        assert!(!destination.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn database_promotion_fails_closed_if_the_destination_appears() {
+        let root = std::env::temp_dir().join(format!(
+            "schedule-promotion-collision-{}-{}",
+            std::process::id(),
+            random_suffix().unwrap()
+        ));
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        let mut attempts = 0;
+
+        let error = promote_database_directory_with(
+            &source,
+            &destination,
+            &Cancellation::default(),
+            |_, destination| {
+                attempts += 1;
+                fs::create_dir(destination).unwrap();
+                Err(io::Error::from_raw_os_error(32))
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), "desktop.database_promote_failed");
+        assert_eq!(attempts, 1);
+        assert!(source.is_dir());
+        assert!(destination.is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn readiness_payload_is_exact_bounded_json() {
         assert_eq!(
@@ -1809,6 +2042,23 @@ mod tests {
         assert_eq!(fs::read(&destination).unwrap(), b"complete-one");
         assert_eq!(fs::read(&second_source).unwrap(), b"complete-two");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn completed_backup_can_be_durably_synced() {
+        let root = std::env::temp_dir().join(format!(
+            "schedule-executor-backup-sync-{}-{}",
+            std::process::id(),
+            random_suffix().unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        let backup = root.join("backup.dump");
+        fs::write(&backup, b"complete-backup").unwrap();
+
+        sync_backup_file(&backup, 15).unwrap();
+
+        fs::remove_file(backup).unwrap();
+        fs::remove_dir(root).unwrap();
     }
 
     #[test]

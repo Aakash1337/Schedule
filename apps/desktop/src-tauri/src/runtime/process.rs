@@ -6,7 +6,7 @@ use std::{
     process::Child,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
@@ -22,6 +22,128 @@ const OUTPUT_CHUNK_BYTES: usize = 4 * 1024;
 const MAX_READINESS_LINE_BYTES: usize = 16 * 1024;
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const FORCE_STOP_TIMEOUT: Duration = Duration::from_secs(2);
+const STDERR_DIAGNOSTIC_DRAIN_TIMEOUT: Duration = Duration::from_millis(100);
+const STDERR_UNCLASSIFIED: u8 = 1;
+const STDERR_CLASS_NAMES: [&str; 12] = [
+    "",
+    "unclassified",
+    "arguments",
+    "configuration",
+    "data_directory",
+    "control_file",
+    "lock_file",
+    "tcp_bind",
+    "process",
+    "resource",
+    "access",
+    "filesystem",
+];
+const POSTGRES_STDERR_PATTERNS: &[(&[&[u8]], u8)] = &[
+    (&[b"invalid argument", b"try \""], 2),
+    (
+        &[
+            b"configuration file",
+            b"invalid value for parameter",
+            b"unrecognized configuration parameter",
+            b"invalid list syntax in parameter",
+        ],
+        3,
+    ),
+    (&[b"data directory", b"pg_version"], 4),
+    (&[b"pg_control", b"database files are incompatible"], 5),
+    (&[b"postmaster.pid", b"lock file"], 6),
+    (
+        &[
+            b"could not bind",
+            b"tcp/ip sockets",
+            b"listen socket",
+            b"no socket created for listening",
+        ],
+        7,
+    ),
+    (
+        &[
+            b"i/o completion port",
+            b"register process for wait",
+            b"duplicate postmaster handle",
+            b"could not create child process",
+            b"could not start process",
+        ],
+        8,
+    ),
+    (
+        &[
+            b"out of memory",
+            b"not enough storage",
+            b"insufficient system resources",
+            b"shared memory",
+            b"semaphore",
+        ],
+        9,
+    ),
+    (
+        &[
+            b"permission denied",
+            b"access is denied",
+            b"access denied",
+            b"error code 5",
+        ],
+        10,
+    ),
+    (
+        &[
+            b"could not open file",
+            b"could not create file",
+            b"could not write file",
+            b"could not change directory",
+            b"no such file or directory",
+        ],
+        11,
+    ),
+];
+
+struct StderrDiagnostic {
+    class: AtomicU8,
+    complete: AtomicBool,
+}
+
+impl StderrDiagnostic {
+    fn new() -> Self {
+        Self {
+            class: AtomicU8::new(0),
+            complete: AtomicBool::new(false),
+        }
+    }
+
+    fn observe(&self, line: &[u8]) {
+        let class = classify_postgres_startup_stderr(line);
+        let current = self.class.load(Ordering::Acquire);
+        if current == 0 || (current == STDERR_UNCLASSIFIED && class != STDERR_UNCLASSIFIED) {
+            let _ =
+                self.class
+                    .compare_exchange(current, class, Ordering::AcqRel, Ordering::Acquire);
+        }
+    }
+
+    fn finish(&self) {
+        self.complete.store(true, Ordering::Release);
+    }
+
+    fn wait_for_class(&self) -> Option<&'static str> {
+        let deadline = Instant::now() + STDERR_DIAGNOSTIC_DRAIN_TIMEOUT;
+        while !self.complete.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        postgres_startup_stderr_class_name(self.class.load(Ordering::Acquire))
+    }
+}
+
+fn postgres_startup_stderr_class_name(code: u8) -> Option<&'static str> {
+    STDERR_CLASS_NAMES
+        .get(usize::from(code))
+        .copied()
+        .filter(|name| !name.is_empty())
+}
 
 /// Stable process roles also define the only valid shutdown order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,6 +258,7 @@ pub(crate) struct ProcessSpec {
     readiness: Option<ReadinessSpec>,
     startup_timeout: Duration,
     desktop_shutdown_stdin: bool,
+    classify_postgres_startup_stderr: bool,
 }
 
 impl ProcessSpec {
@@ -154,6 +277,7 @@ impl ProcessSpec {
             readiness: None,
             startup_timeout,
             desktop_shutdown_stdin: false,
+            classify_postgres_startup_stderr: false,
         }
     }
 
@@ -178,11 +302,17 @@ impl ProcessSpec {
         self
     }
 
+    pub(crate) fn classify_postgres_startup_stderr(mut self) -> Self {
+        self.classify_postgres_startup_stderr = true;
+        self
+    }
+
     fn validate(&self) -> Result<(), ProcessError> {
         if !self.program.is_absolute()
             || !self.working_directory.is_absolute()
             || self.startup_timeout.is_zero()
             || (self.desktop_shutdown_stdin && self.role == ProcessRole::Database)
+            || (self.classify_postgres_startup_stderr && self.role != ProcessRole::Database)
         {
             return Err(ProcessError::new("desktop.process_spec_invalid"));
         }
@@ -213,6 +343,7 @@ impl ProcessSpec {
             self.arguments.clone(),
             self.environment.clone(),
             self.desktop_shutdown_stdin,
+            self.role == ProcessRole::Database,
         )
     }
 }
@@ -355,12 +486,24 @@ pub(crate) struct OwnedProcess {
     readers: Vec<JoinHandle<()>>,
     _guardian_channel: Arc<GuardianChannel>,
     exited: bool,
+    exit_code_u32: Option<u32>,
+    stderr_diagnostic: Option<Arc<StderrDiagnostic>>,
     ownership_released: bool,
 }
 
 impl OwnedProcess {
     pub(crate) fn identity(&self) -> ChildIdentity {
         self.identity
+    }
+
+    pub(crate) fn exit_code_u32(&self) -> Option<u32> {
+        self.exit_code_u32
+    }
+
+    pub(crate) fn postgres_startup_stderr_class(&self) -> Option<&'static str> {
+        self.stderr_diagnostic
+            .as_ref()
+            .and_then(|diagnostic| diagnostic.wait_for_class())
     }
 
     pub(crate) fn has_exited(&mut self) -> Result<bool, ProcessError> {
@@ -371,9 +514,11 @@ impl OwnedProcess {
         if self.exited {
             // The guardian has already contained and reaped its payload tree before it exits.
             self.release_ownership();
-            self.child
+            let status = self
+                .child
                 .wait()
                 .map_err(|_| ProcessError::new("desktop.process_status_failed"))?;
+            self.exit_code_u32 = status.code().map(|code| code as u32);
             self.release_readers();
         }
         Ok(self.exited)
@@ -518,18 +663,23 @@ pub(super) fn start_process_cancellable(
         .readiness
         .as_ref()
         .filter(|probe| probe.stream == OutputStream::Stderr);
+    let stderr_diagnostic = spec
+        .classify_postgres_startup_stderr
+        .then(|| Arc::new(StderrDiagnostic::new()));
     let readers = vec![
         spawn_output_reader(
             stdout,
             stdout_probe,
             ready_sender.clone(),
             Arc::clone(&readiness_complete),
+            None,
         ),
         spawn_output_reader(
             stderr,
             stderr_probe,
             ready_sender,
             Arc::clone(&readiness_complete),
+            stderr_diagnostic.as_ref().map(Arc::clone),
         ),
     ];
 
@@ -546,6 +696,8 @@ pub(super) fn start_process_cancellable(
         readers,
         _guardian_channel: guardian_channel,
         exited: false,
+        exit_code_u32: None,
+        stderr_diagnostic,
         ownership_released: false,
     };
     let readiness = if spec.readiness.is_some() {
@@ -648,6 +800,7 @@ fn spawn_output_reader<R: Read + Send + 'static>(
     readiness: Option<&ReadinessSpec>,
     sender: SyncSender<ReadinessEvent>,
     complete: Arc<AtomicBool>,
+    diagnostic: Option<Arc<StderrDiagnostic>>,
 ) -> JoinHandle<()> {
     let probe = readiness.map(|probe| {
         (
@@ -662,6 +815,9 @@ fn spawn_output_reader<R: Read + Send + 'static>(
             .map_or(MAX_READINESS_LINE_BYTES, |probe| probe.1);
         let mut scanner = BoundedLineScanner::new(max_line_bytes);
         let result = scanner.read(reader, |line| {
+            if let Some(diagnostic) = &diagnostic {
+                diagnostic.observe(line);
+            }
             let Some((prefix, _, max_payload_bytes)) = &probe else {
                 return;
             };
@@ -677,6 +833,9 @@ fn spawn_output_reader<R: Read + Send + 'static>(
                 }
             }
         });
+        if let Some(diagnostic) = &diagnostic {
+            diagnostic.finish();
+        }
         if probe.is_some() && !complete.load(Ordering::Acquire) {
             let event = if result.is_ok() {
                 ReadinessEvent::Ended
@@ -686,6 +845,18 @@ fn spawn_output_reader<R: Read + Send + 'static>(
             send_once(&complete, &sender, event);
         }
     })
+}
+
+fn classify_postgres_startup_stderr(line: &[u8]) -> u8 {
+    for (needles, class) in POSTGRES_STDERR_PATTERNS {
+        if needles.iter().any(|needle| {
+            line.windows(needle.len())
+                .any(|window| window.eq_ignore_ascii_case(needle))
+        }) {
+            return *class;
+        }
+    }
+    STDERR_UNCLASSIFIED
 }
 
 fn send_once(complete: &AtomicBool, sender: &SyncSender<ReadinessEvent>, event: ReadinessEvent) {
@@ -858,6 +1029,11 @@ mod tests {
                 thread::sleep(Duration::from_secs(2));
             }
             Ok("sleep") => thread::sleep(Duration::from_secs(2)),
+            Ok("exit_37") => std::process::exit(37),
+            Ok("stderr_bind_exit") => {
+                eprintln!("LOG: could not bind IPv4 address \"private-host\": access denied");
+                std::process::exit(1);
+            }
             Ok("await_shutdown") => {
                 let mut line = String::new();
                 if std::io::stdin().read_line(&mut line).is_err() || line != "shutdown\n" {
@@ -932,6 +1108,64 @@ mod tests {
     }
 
     #[test]
+    fn retains_the_guardian_payload_exit_code() {
+        let spec = helper_spec(ProcessRole::Database, "exit_37", Duration::from_secs(2));
+        let mut started = start_process(spec, Arc::new(DirectChildControl)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !started.process.has_exited().unwrap() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(PROCESS_POLL_INTERVAL);
+        }
+        assert_eq!(started.process.exit_code_u32(), Some(37));
+    }
+
+    #[test]
+    fn classifies_database_stderr_without_retaining_child_output() {
+        let spec = helper_spec(
+            ProcessRole::Database,
+            "stderr_bind_exit",
+            Duration::from_secs(2),
+        )
+        .classify_postgres_startup_stderr();
+        let mut started = start_process(spec, Arc::new(DirectChildControl)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !started.process.has_exited().unwrap() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(PROCESS_POLL_INTERVAL);
+        }
+
+        assert_eq!(started.process.exit_code_u32(), Some(1));
+        assert_eq!(
+            started.process.postgres_startup_stderr_class(),
+            Some("tcp_bind")
+        );
+    }
+
+    #[test]
+    fn postgres_stderr_classifier_uses_only_fixed_categories() {
+        let cases: &[(&[u8], &str)] = &[
+            (
+                b"FATAL: data directory has invalid permissions",
+                "data_directory",
+            ),
+            (b"FATAL: could not open file pg_control", "control_file"),
+            (
+                b"FATAL: lock file postmaster.pid already exists",
+                "lock_file",
+            ),
+            (b"FATAL: invalid value for parameter", "configuration"),
+            (b"FATAL: insufficient system resources", "resource"),
+            (b"FATAL: private-token=C:\\private", "unclassified"),
+        ];
+        for (line, expected) in cases {
+            assert_eq!(
+                postgres_startup_stderr_class_name(classify_postgres_startup_stderr(line)),
+                Some(*expected)
+            );
+        }
+    }
+
+    #[test]
     fn rejects_relative_programs_duplicate_or_unsafe_environment_and_invalid_probes() {
         let cwd = env::current_dir().unwrap();
         let relative = ProcessSpec::new(ProcessRole::Api, "node", &cwd, Duration::from_secs(1));
@@ -971,6 +1205,11 @@ mod tests {
             helper_spec(ProcessRole::Database, "sleep", Duration::from_secs(1))
                 .desktop_shutdown_stdin();
         assert!(database_control_pipe.validate().is_err());
+
+        let non_database_diagnostic =
+            helper_spec(ProcessRole::Api, "sleep", Duration::from_secs(1))
+                .classify_postgres_startup_stderr();
+        assert!(non_database_diagnostic.validate().is_err());
     }
 
     #[test]
@@ -1208,9 +1447,10 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_job_assigns_before_readiness_and_stops_the_child() {
+    fn windows_no_console_payload_without_stdin_escalates_through_job() {
         let spec = helper_spec(ProcessRole::Api, "ready", Duration::from_secs(2))
             .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
+        assert!(!spec.desktop_shutdown_stdin);
         let mut started = start_process(spec, platform_process_control()).unwrap();
         assert!(started.readiness.is_some());
         started.process.stop(Duration::ZERO).unwrap();

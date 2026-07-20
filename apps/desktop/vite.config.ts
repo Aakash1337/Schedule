@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
   clearScreen: false,
@@ -9,5 +9,8 @@ export default defineConfig({
   },
   build: {
     target: ["es2022", "chrome105", "safari13"],
+  },
+  test: {
+    exclude: [...configDefaults.exclude, "src-tauri/target/**"],
   },
 });
