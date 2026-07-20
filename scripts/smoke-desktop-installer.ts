@@ -133,7 +133,7 @@ async function defaultLaunch(
       shell: false,
       timeout: options.timeout,
       windowsHide: options.windowsHide,
-      maxBuffer: 1_024,
+      maxBuffer: 1_024 * 1_024,
     });
     return { exitCode: 0 };
   } catch (error) {
