@@ -32,6 +32,11 @@ export async function createDesktopRuntimeFixture(outputDirectory: string): Prom
     ),
     write(
       api,
+      "node_modules/@schedule/database/dist/migration-sql.js",
+      "fixture migration SQL safety",
+    ),
+    write(
+      api,
       "node_modules/@schedule/database/drizzle/meta/_journal.json",
       JSON.stringify({
         version: "7",

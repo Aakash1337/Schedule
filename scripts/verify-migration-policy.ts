@@ -3,6 +3,14 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+import {
+  controlsMigrationTransaction,
+  migrationSqlStatements,
+  postgresKeyword,
+  postgresPattern,
+  type MigrationSqlStatement,
+} from "../packages/database/src/migration-sql.js";
+
 type JournalEntry = {
   readonly idx: number;
   readonly version: "7";
@@ -26,18 +34,11 @@ type ManifestEntry = {
 
 type Manifest = { readonly schemaVersion: 1; readonly entries: readonly ManifestEntry[] };
 
-type SqlStatement = {
-  readonly source: string;
-  readonly searchable: string;
-  readonly containsDollarQuote: boolean;
-};
-
 const migrationDirectory = "packages/database/drizzle";
 const journalPath = `${migrationDirectory}/meta/_journal.json`;
 const manifestPath = `${migrationDirectory}/meta/_migration_manifest.json`;
 const safeTag = /^\d{4}_[a-z0-9_-]+$/u;
 const sha256 = /^[a-f0-9]{64}$/u;
-const statementBreakpoint = "--> statement-breakpoint";
 const destructiveReview =
   /^\s*--\s*schedule-migration-review:\s*destructive-data-change\s*\r?\n\s*--\s*schedule-migration-reason:\s*\S[^\r\n]*\r?\n/iu;
 const bootstrapCompatibleHashes = new Map<string, readonly string[]>([
@@ -268,162 +269,104 @@ function assertAppendedEntriesHaveNoAliases(entries: readonly ManifestEntry[]): 
   }
 }
 
-function dollarQuoteDelimiter(source: string, index: number): string | undefined {
-  const match = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/u.exec(source.slice(index));
-  return match?.[0];
-}
-
-function sqlStatements(source: string): readonly SqlStatement[] {
-  const statements: SqlStatement[] = [];
-  let statementStart = 0;
-  let searchable = "";
-  let containsDollarQuote = false;
-  let index = 0;
-
-  const finish = (end: number): void => {
-    const statementSource = source.slice(statementStart, end);
-    if (statementSource.trim() !== "") {
-      statements.push({ source: statementSource, searchable, containsDollarQuote });
-    }
-    searchable = "";
-    containsDollarQuote = false;
-  };
-
-  while (index < source.length) {
-    if (source.startsWith(statementBreakpoint, index)) {
-      finish(index);
-      const newline = source.indexOf("\n", index + statementBreakpoint.length);
-      index = newline === -1 ? source.length : newline + 1;
-      statementStart = index;
-      continue;
-    }
-
-    const character = source[index] ?? "";
-    const next = source[index + 1] ?? "";
-    if (character === "-" && next === "-") {
-      const newline = source.indexOf("\n", index + 2);
-      searchable += " ";
-      index = newline === -1 ? source.length : newline;
-      continue;
-    }
-    if (character === "/" && next === "*") {
-      let depth = 1;
-      index += 2;
-      while (index < source.length && depth > 0) {
-        if (source[index] === "/" && source[index + 1] === "*") {
-          depth += 1;
-          index += 2;
-        } else if (source[index] === "*" && source[index + 1] === "/") {
-          depth -= 1;
-          index += 2;
-        } else {
-          index += 1;
-        }
-      }
-      if (depth !== 0) throw new Error("New migration contains an unterminated block comment.");
-      searchable += " ";
-      continue;
-    }
-    if (character === "'") {
-      const prefix = source[index - 1];
-      const beforePrefix = source[index - 2];
-      const escapeBackslashes =
-        (prefix === "E" || prefix === "e") &&
-        (beforePrefix === undefined || !/[A-Za-z0-9_$]/u.test(beforePrefix));
-      index += 1;
-      let closed = false;
-      while (index < source.length) {
-        if (escapeBackslashes && source[index] === "\\") {
-          index += 2;
-        } else if (source[index] === "'" && source[index + 1] === "'") {
-          index += 2;
-        } else if (source[index] === "'") {
-          index += 1;
-          closed = true;
-          break;
-        } else {
-          index += 1;
-        }
-      }
-      if (!closed) throw new Error("New migration contains an unterminated string literal.");
-      searchable += "''";
-      continue;
-    }
-    if (character === '"') {
-      const quotedStart = index;
-      index += 1;
-      let closed = false;
-      while (index < source.length) {
-        if (source[index] === '"' && source[index + 1] === '"') {
-          index += 2;
-        } else if (source[index] === '"') {
-          index += 1;
-          closed = true;
-          break;
-        } else {
-          index += 1;
-        }
-      }
-      if (!closed) throw new Error("New migration contains an unterminated quoted identifier.");
-      const quotedIdentifier = source.slice(quotedStart + 1, index - 1).replaceAll('""', '"');
-      searchable += quotedIdentifier === "setval" ? '"setval"' : '""';
-      continue;
-    }
-    if (character === "$") {
-      const delimiter = dollarQuoteDelimiter(source, index);
-      if (delimiter !== undefined) {
-        const end = source.indexOf(delimiter, index + delimiter.length);
-        if (end === -1) throw new Error("New migration contains an unterminated dollar quote.");
-        containsDollarQuote = true;
-        searchable += " ";
-        index = end + delimiter.length;
-        continue;
-      }
-    }
-    if (character === ";") {
-      finish(index);
-      index += 1;
-      statementStart = index;
-      continue;
-    }
-    searchable += character;
-    index += 1;
-  }
-  finish(source.length);
-  return statements;
-}
-
-function destructiveOperation(statement: SqlStatement): string | undefined {
+function destructiveOperation(statement: MigrationSqlStatement): string | undefined {
   if (statement.containsDollarQuote) return "procedural or dollar-quoted SQL";
   const sql = statement.searchable.replaceAll(/\s+/gu, " ").trim();
+  const keyword = postgresKeyword;
+  if (
+    postgresPattern(
+      `^(?:${keyword("DO")}|${keyword("CALL")}|${keyword("CREATE")}\\s+(?:${keyword("OR")}\\s+${keyword("REPLACE")}\\s+)?(?:${keyword("FUNCTION")}|${keyword("PROCEDURE")}))`,
+    ).test(sql)
+  ) {
+    return "procedural SQL";
+  }
   const rules: readonly [RegExp, string][] = [
     [
-      /\bDROP\s+(?:TABLE|SCHEMA|DATABASE|TYPE|DOMAIN|SEQUENCE|EXTENSION|OWNED|MATERIALIZED\s+VIEW)\b/iu,
+      postgresPattern(
+        `${keyword("DROP")}\\s+(?:${[
+          "TABLE",
+          "SCHEMA",
+          "DATABASE",
+          "TYPE",
+          "DOMAIN",
+          "SEQUENCE",
+          "EXTENSION",
+          "OWNED",
+        ]
+          .map(keyword)
+          .join("|")}|${keyword("MATERIALIZED")}\\s+${keyword("VIEW")})`,
+      ),
       "DROP data-bearing or compatibility-critical objects",
     ],
-    [/\bTRUNCATE(?:\s+TABLE)?\b/iu, "TRUNCATE"],
-    [/\bDELETE\s+FROM\b/iu, "DELETE FROM"],
-    [/\bUPDATE\b/iu, "UPDATE"],
-    [/\bMERGE\b/iu, "MERGE"],
-    [/\bSETVAL"?\s*\(/iu, "sequence SETVAL"],
-    [/\bALTER\s+SEQUENCE\b[\s\S]*\bRESTART\b/iu, "ALTER SEQUENCE RESTART"],
-    [/\bALTER\s+TABLE\b[\s\S]*\bDROP\s+COLUMN\b/iu, "ALTER TABLE DROP COLUMN"],
-    [/\bALTER\s+TABLE\b[\s\S]*\bDROP\s+IDENTITY\b/iu, "ALTER TABLE DROP IDENTITY"],
+    [postgresPattern(`${keyword("TRUNCATE")}(?:\\s+${keyword("TABLE")})?`), "TRUNCATE"],
+    [postgresPattern(`${keyword("DELETE")}\\s+${keyword("FROM")}`), "DELETE FROM"],
+    [postgresPattern(keyword("UPDATE")), "UPDATE"],
+    [postgresPattern(keyword("MERGE")), "MERGE"],
+    [postgresPattern(`(?:${keyword("SETVAL")}|"setval")\\s*\\(`), "sequence SETVAL"],
     [
-      /\bALTER\s+TABLE\b[\s\S]*\bALTER\s+COLUMN\b[\s\S]*\bRESTART\b/iu,
+      postgresPattern(
+        `${keyword("ALTER")}\\s+${keyword("SEQUENCE")}[\\s\\S]*${keyword("RESTART")}`,
+      ),
+      "ALTER SEQUENCE RESTART",
+    ],
+    [
+      postgresPattern(
+        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*${keyword("DROP")}\\s+${keyword("COLUMN")}`,
+      ),
+      "ALTER TABLE DROP COLUMN",
+    ],
+    [
+      postgresPattern(
+        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*${keyword("DROP")}\\s+${keyword("IDENTITY")}`,
+      ),
+      "ALTER TABLE DROP IDENTITY",
+    ],
+    [
+      postgresPattern(
+        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*${keyword("ALTER")}\\s+${keyword("COLUMN")}[\\s\\S]*${keyword("RESTART")}`,
+      ),
       "ALTER TABLE identity RESTART",
     ],
     [
-      /\bALTER\s+TABLE\b[\s\S]*\bALTER\s+COLUMN\b[\s\S]*\bTYPE\b/iu,
+      postgresPattern(
+        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*${keyword("ALTER")}\\s+${keyword("COLUMN")}[\\s\\S]*${keyword("TYPE")}`,
+      ),
       "ALTER TABLE ALTER COLUMN TYPE",
     ],
-    [/\bALTER\s+TABLE\b[\s\S]*\bRENAME\s+COLUMN\b/iu, "ALTER TABLE RENAME COLUMN"],
+    [
+      postgresPattern(
+        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*${keyword("RENAME")}\\s+${keyword("COLUMN")}`,
+      ),
+      "ALTER TABLE RENAME COLUMN",
+    ],
   ];
   return rules.find(([pattern]) => pattern.test(sql))?.[1];
 }
 
+function changesStringConformance(statement: MigrationSqlStatement): boolean {
+  const sql = statement.searchable.replaceAll(/\s+/gu, " ").trim();
+  const keyword = postgresKeyword;
+  const setting = `(?:${keyword("STANDARD_CONFORMING_STRINGS")}|"standard_conforming_strings")`;
+  const directChange = postgresPattern(
+    `(?:${keyword("SET")}\\s+(?:(?:${keyword("LOCAL")}|${keyword("SESSION")})\\s+)?${setting}|${keyword("RESET")}\\s+(?:${setting}|${keyword("ALL")}))`,
+  );
+  const setConfig = postgresPattern(`(?:${keyword("SET_CONFIG")}|"set_config")\\s*\\(`);
+  return directChange.test(sql) || setConfig.test(sql);
+}
+
 function assertReviewedDestructiveSql(tag: string, source: string): void {
-  for (const statement of sqlStatements(source)) {
+  for (const statement of migrationSqlStatements(source)) {
+    if (controlsMigrationTransaction(statement)) {
+      throw new Error(`New migration ${tag} may not control its migration transaction.`);
+    }
+    if (statement.containsUnicodeEscapedIdentifier) {
+      throw new Error(`New migration ${tag} may not use Unicode-escaped identifiers.`);
+    }
+    if (changesStringConformance(statement)) {
+      throw new Error(
+        `New migration ${tag} may not change standard_conforming_strings or call set_config.`,
+      );
+    }
     const operation = destructiveOperation(statement);
     if (operation !== undefined && !destructiveReview.test(statement.source)) {
       throw new Error(

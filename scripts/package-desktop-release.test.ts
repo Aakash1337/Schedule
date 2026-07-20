@@ -37,6 +37,10 @@ async function fixture(): Promise<{ repository: string; runtime: string }> {
       "migration ledger",
     ),
     writeFile(
+      path.join(api, "node_modules/@schedule/database/dist/migration-sql.js"),
+      "migration SQL safety",
+    ),
+    writeFile(
       path.join(api, "node_modules/@schedule/database/drizzle/meta/_journal.json"),
       JSON.stringify({
         version: "7",

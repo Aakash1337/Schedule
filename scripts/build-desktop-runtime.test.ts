@@ -56,6 +56,10 @@ async function fixture(): Promise<{
       "migration ledger",
     ),
     writeFile(
+      path.join(api, "node_modules", "@schedule", "database", "dist", "migration-sql.js"),
+      "migration SQL safety",
+    ),
+    writeFile(
       path.join(api, "node_modules", "@schedule", "database", "drizzle", "meta", "_journal.json"),
       JSON.stringify({
         version: "7",
@@ -253,6 +257,23 @@ describe("buildDesktopRuntime", () => {
     );
     await expect(buildDesktopRuntime({ ...options, sources: await pins(options) })).rejects.toThrow(
       "Database migration ledger helper is required",
+    );
+  });
+
+  it("requires the deployed database migration SQL safety helper", async () => {
+    const { options } = await fixture();
+    await rm(
+      path.join(
+        options.apiDeploymentDirectory,
+        "node_modules",
+        "@schedule",
+        "database",
+        "dist",
+        "migration-sql.js",
+      ),
+    );
+    await expect(buildDesktopRuntime({ ...options, sources: await pins(options) })).rejects.toThrow(
+      "Database migration SQL safety helper is required",
     );
   });
 

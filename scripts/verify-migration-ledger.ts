@@ -147,6 +147,41 @@ async function createDisposable(admin: DatabaseConnection, name: string): Promis
   await admin.sql.unsafe(`create database ${quotedDatabase(name)}`);
 }
 
+async function requirePinnedStringSyntax(
+  databaseUrl: string,
+  mutation: "none" | "session" | "persistent" = "none",
+): Promise<void> {
+  const guard = createDatabase(databaseUrl, 1);
+  try {
+    await guard.sql.unsafe(`
+      create function public.schedule_require_standard_strings()
+      returns event_trigger
+      language plpgsql
+      as $guard$
+      begin
+        if current_setting('standard_conforming_strings') <> 'on' then
+          raise exception 'migration string syntax is not pinned';
+        end if;
+        ${
+          mutation === "session"
+            ? "perform set_config('standard_conforming_strings', 'off', false);"
+            : mutation === "persistent"
+              ? "execute format('alter database %I set schedule.verifier_persistent = %L', current_database(), 'changed');"
+              : ""
+        }
+      end
+      $guard$
+    `);
+    await guard.sql.unsafe(`
+      create event trigger schedule_require_standard_strings
+      on ddl_command_start
+      execute function public.schedule_require_standard_strings()
+    `);
+  } finally {
+    await guard.close();
+  }
+}
+
 async function dropDisposable(admin: DatabaseConnection, name: string): Promise<void> {
   await admin.sql.unsafe(`drop database if exists ${quotedDatabase(name)} with (force)`);
 }
@@ -174,6 +209,25 @@ async function assertCanonicalLedger(
   });
 }
 
+async function assertNoPartialMigration(connection: DatabaseConnection): Promise<void> {
+  const [rolledBack] = await connection.sql<
+    { ledger: string | null; persistentChanges: number; schema: boolean }[]
+  >`
+    select
+      to_regclass('drizzle.__drizzle_migrations')::text as ledger,
+      exists(select 1 from pg_catalog.pg_namespace where nspname = 'drizzle') as schema,
+      (select count(*)::integer
+        from pg_catalog.pg_db_role_setting
+        where setdatabase = (select oid from pg_catalog.pg_database where datname = current_database())
+          and setconfig @> array['schedule.verifier_persistent=changed']) as "persistentChanges"
+  `;
+  assert.deepEqual(
+    rolledBack,
+    { ledger: null, persistentChanges: 0, schema: false },
+    "guard violation left partial migration state",
+  );
+}
+
 async function retainedSnapshot(connection: DatabaseConnection): Promise<{
   readonly rows: number;
   readonly ledgers: number;
@@ -196,25 +250,55 @@ export async function verifyMigrationLedger(sourceDatabaseUrl: string): Promise<
   await access(migrateEntryPoint);
   const nonce = randomUUID().replaceAll("-", "");
   const cleanName = disposableDatabaseName(nonce);
+  const sessionMutationName = disposableDatabaseName(randomUUID().replaceAll("-", ""));
+  const persistentMutationName = disposableDatabaseName(randomUUID().replaceAll("-", ""));
   const retainedName = disposableDatabaseName(randomUUID().replaceAll("-", ""));
   const admin = createDatabase(databaseUrlFor(sourceDatabaseUrl, "postgres"), 1, {
     applicationName: "schedule-migration-ledger-verifier",
   });
   let clean: DatabaseConnection | undefined;
+  let sessionMutation: DatabaseConnection | undefined;
+  let persistentMutation: DatabaseConnection | undefined;
   let retained: DatabaseConnection | undefined;
   let cleanCreated = false;
+  let sessionMutationCreated = false;
+  let persistentMutationCreated = false;
   let retainedCreated = false;
   try {
     await createDisposable(admin, cleanName);
     cleanCreated = true;
     const cleanUrl = databaseUrlFor(sourceDatabaseUrl, cleanName);
+    await requirePinnedStringSyntax(cleanUrl);
+    await admin.sql.unsafe(
+      `alter database ${quotedDatabase(cleanName)} set standard_conforming_strings = off`,
+    );
+    clean = createDatabase(cleanUrl, 1);
+    const [untrustedDefault] = await clean.sql<{ value: string }[]>`
+      select current_setting('standard_conforming_strings') as value
+    `;
+    assert.equal(untrustedDefault?.value, "off", "database string default was not changed");
     const [first, second] = await Promise.all([runMigrator(cleanUrl), runMigrator(cleanUrl)]);
     assertNormalMigration(first, 0);
     assertNormalMigration(second, 0);
-    clean = createDatabase(cleanUrl, 1);
     const manifest = await loadMigrationManifest(migrationsFolder);
     await assertCanonicalLedger(clean, manifest.entries.length);
     assertExactStatus(await runMigrator(cleanUrl, true), statusLine);
+
+    await createDisposable(admin, sessionMutationName);
+    sessionMutationCreated = true;
+    const sessionMutationUrl = databaseUrlFor(sourceDatabaseUrl, sessionMutationName);
+    await requirePinnedStringSyntax(sessionMutationUrl, "session");
+    assertNormalMigration(await runMigrator(sessionMutationUrl), 1);
+    sessionMutation = createDatabase(sessionMutationUrl, 1);
+    await assertNoPartialMigration(sessionMutation);
+
+    await createDisposable(admin, persistentMutationName);
+    persistentMutationCreated = true;
+    const persistentMutationUrl = databaseUrlFor(sourceDatabaseUrl, persistentMutationName);
+    await requirePinnedStringSyntax(persistentMutationUrl, "persistent");
+    assertNormalMigration(await runMigrator(persistentMutationUrl), 1);
+    persistentMutation = createDatabase(persistentMutationUrl, 1);
+    await assertNoPartialMigration(persistentMutation);
 
     await createDisposable(admin, retainedName);
     retainedCreated = true;
@@ -230,8 +314,16 @@ export async function verifyMigrationLedger(sourceDatabaseUrl: string): Promise<
     assert.deepEqual(await retainedSnapshot(retained), before, "divergent database was mutated");
   } finally {
     await close(clean);
+    await close(sessionMutation);
+    await close(persistentMutation);
     await close(retained);
     if (cleanCreated) await dropDisposable(admin, cleanName).catch(() => undefined);
+    if (sessionMutationCreated) {
+      await dropDisposable(admin, sessionMutationName).catch(() => undefined);
+    }
+    if (persistentMutationCreated) {
+      await dropDisposable(admin, persistentMutationName).catch(() => undefined);
+    }
     if (retainedCreated) await dropDisposable(admin, retainedName).catch(() => undefined);
     await admin.close();
   }

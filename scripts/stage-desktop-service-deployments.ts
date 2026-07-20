@@ -222,6 +222,11 @@ async function validateApiDeployment(root: string): Promise<void> {
     "node_modules/@schedule/database/dist/migration-ledger.js",
     "Database migration ledger helper",
   );
+  await requireFile(
+    root,
+    "node_modules/@schedule/database/dist/migration-sql.js",
+    "Database migration SQL safety helper",
+  );
   const journal = path.join(
     root,
     "node_modules",

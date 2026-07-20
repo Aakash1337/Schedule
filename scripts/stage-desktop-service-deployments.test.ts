@@ -73,6 +73,10 @@ async function fixture(mutate?: RawMutation): Promise<{
         "export const stagedMigrationLedgerFixture = true;",
       );
       await writeFile(
+        path.join(database, "dist", "migration-sql.js"),
+        "export const stagedMigrationSqlFixture = true;",
+      );
+      await writeFile(
         path.join(database, "package.json"),
         JSON.stringify({ name: "@schedule/database", dependencies: { dotenv: "1.0.0" } }),
       );
@@ -254,6 +258,14 @@ describe("stageDesktopServiceDeployments", () => {
             await unlink(path.join(destination, databaseRelative, "dist", "migration-ledger.js"));
         },
         "Database migration ledger helper",
+      ],
+      [
+        "missing migration SQL safety helper",
+        async (destination, api) => {
+          if (api)
+            await unlink(path.join(destination, databaseRelative, "dist", "migration-sql.js"));
+        },
+        "Database migration SQL safety helper",
       ],
       [
         "missing materialized workspace dependency",

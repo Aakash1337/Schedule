@@ -32,10 +32,27 @@ The gate requires this acknowledgement for data-rewriting `UPDATE`, `MERGE`, `DE
 `TRUNCATE` statements; sequence resets; dropping data-bearing or compatibility-critical objects;
 and dropping, changing the type of, or renaming a column. Dollar-quoted or procedural SQL also
 requires the acknowledgement because a lexical gate cannot prove dynamic SQL is harmless.
-Statement separators are recognized only outside comments, strings, quoted identifiers, and
-dollar-quoted bodies. The recognition rules are deliberately conservative. The acknowledgement is
-an explicit policy record, not a replacement for normal pull-request review or a populated-data
-migration test.
+Unicode-escaped quoted identifiers are forbidden because they can hide protected operations. Exact Drizzle
+`--> statement-breakpoint` markers are raw boundaries before lexical analysis, matching the runtime
+migrator; semicolons are boundaries only outside comments, strings, quoted identifiers, and
+dollar-quoted bodies. Keyword boundaries follow PostgreSQL identifier rules, including dollar signs
+and non-ASCII characters.
+
+The policy gate and runtime share the SQL statement lexer. The migration connection pins
+`standard_conforming_strings=on` before every top-level statement and verifies it again afterward.
+New migrations may not change or reset that setting or call `set_config`, so computed setting names
+cannot bypass the rule. The runtime also rejects persistent database or role setting changes. The
+live PostgreSQL verifier forces an unsafe database default, a mid-migration session change, and a
+persistent database setting change; the first must still migrate safely and both changes must roll
+back without partial migration state.
+These recognition rules are deliberately conservative. The acknowledgement is an explicit policy
+record, not a replacement for normal pull-request review or a populated-data migration test.
+
+Migration SQL may not issue top-level transaction-control commands such as `COMMIT`, `ROLLBACK`,
+`BEGIN`, or `SAVEPOINT`. Both CI and the runtime reject them with the shared lexer before execution.
+The runtime owns the single transaction that covers every pending migration; a migration cannot end
+it early, even with a destructive-change acknowledgement. Parenthesized rule actions and SQL-standard
+`BEGIN ATOMIC` function or procedure bodies remain single statements under this boundary check.
 
 ## Historical compatibility hashes
 

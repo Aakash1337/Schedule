@@ -239,6 +239,28 @@ describe("migration policy", () => {
     ).not.toThrow();
   });
 
+  it("raw-splits Drizzle breakpoints before lexical analysis", async () => {
+    const bypass = await fixture();
+    await append(
+      bypass.root,
+      "0001_next",
+      "SELECT 1;\n--> statement-breakpoint DELETE FROM things;\n",
+    );
+    expect(() => verifyMigrationPolicy({ repositoryRoot: bypass.root, base: bypass.base })).toThrow(
+      /schedule-migration-review/u,
+    );
+
+    const embedded = await fixture();
+    await append(
+      embedded.root,
+      "0001_next",
+      "SELECT '--> statement-breakpoint inside a string';\n",
+    );
+    expect(() =>
+      verifyMigrationPolicy({ repositoryRoot: embedded.root, base: embedded.base }),
+    ).toThrow(/unterminated string literal/u);
+  });
+
   it("distinguishes standard strings from PostgreSQL escape strings", async () => {
     const { root, base } = await fixture();
     await append(
@@ -254,9 +276,113 @@ DELETE FROM things;
     expect(() => verifyMigrationPolicy({ repositoryRoot: root, base })).not.toThrow();
   });
 
+  it("forbids migrations from changing standard string conformance", async () => {
+    for (const sql of [
+      String.raw`-- schedule-migration-review: destructive-data-change
+-- schedule-migration-reason: review cannot weaken the policy lexer
+SET standard_conforming_strings = off;
+--> statement-breakpoint
+SELECT 'a\'b'; DELETE FROM things; SELECT 'c\'d';
+`,
+      "SELECT set_config('standard_conforming_strings', 'off', false);\n",
+      "SELECT set_config('standard_' || 'conforming_strings', 'off', false);\n",
+      "SELECT set_config($setting$standard_conforming_strings$setting$, 'off', false);\n",
+      'ALTER ROLE CURRENT_USER SET "STANDARD_CONFORMING_STRINGS" = off;\n',
+      String.raw`-- schedule-migration-review: destructive-data-change
+-- schedule-migration-reason: Unicode review cannot weaken the parser contract
+SET U&"\0073tandard_conforming_strings" = off;
+`,
+    ]) {
+      const { root, base } = await fixture();
+      await append(root, "0001_next", sql);
+      expect(() => verifyMigrationPolicy({ repositoryRoot: root, base })).toThrow(
+        /may not (?:change standard_conforming_strings|use Unicode-escaped identifiers)/u,
+      );
+    }
+  }, 20_000);
+
+  it("forbids top-level transaction control without confusing SQL and procedural END", async () => {
+    for (const sql of [
+      "COMMIT AND CHAIN;\n",
+      "END;\n",
+      "ROLLBACK TO SAVEPOINT before_change;\n",
+      "ABORT;\n",
+      "BEGIN;\n",
+      "START TRANSACTION;\n",
+      "SAVEPOINT before_change;\n",
+      "RELEASE SAVEPOINT before_change;\n",
+      "PREPARE TRANSACTION 'migration';\n",
+    ]) {
+      const { root, base } = await fixture();
+      await append(root, "0001_next", sql);
+      expect(() => verifyMigrationPolicy({ repositoryRoot: root, base })).toThrow(
+        /may not control its migration transaction/u,
+      );
+    }
+
+    const harmless = await fixture();
+    await append(harmless.root, "0001_next", "SELECT CASE WHEN true THEN 1 ELSE 0 END;\n");
+    expect(() =>
+      verifyMigrationPolicy({ repositoryRoot: harmless.root, base: harmless.base }),
+    ).not.toThrow();
+  }, 20_000);
+
+  it("uses PostgreSQL identifier boundaries for keywords and E-string prefixes", async () => {
+    const { root, base } = await fixture();
+    await append(
+      root,
+      "0001_next",
+      String.raw`CREATE TABLE pre$UPDATE (id integer);
+CREATE TABLE préUPDATE (id integer);
+SELECT foo$setval(1);
+SELECT préE'C:\';
+SET search_path = standard_conforming_strings, public;
+`,
+    );
+    expect(() => verifyMigrationPolicy({ repositoryRoot: root, base })).not.toThrow();
+  });
+
+  it("forbids Unicode-escaped identifiers that can hide protected functions", async () => {
+    const sql = String.raw`SELECT pg_catalog.U&"\0073etval"('things_id_seq'::regclass, 1, false);
+`;
+    const unreviewed = await fixture();
+    await append(unreviewed.root, "0001_next", sql);
+    expect(() =>
+      verifyMigrationPolicy({ repositoryRoot: unreviewed.root, base: unreviewed.base }),
+    ).toThrow(/may not use Unicode-escaped identifiers/u);
+
+    const reviewed = await fixture();
+    await append(
+      reviewed.root,
+      "0001_next",
+      `-- schedule-migration-review: destructive-data-change\n-- schedule-migration-reason: reviewed Unicode identifier\n${sql}`,
+    );
+    expect(() =>
+      verifyMigrationPolicy({ repositoryRoot: reviewed.root, base: reviewed.base }),
+    ).toThrow(/may not use Unicode-escaped identifiers/u);
+  });
+
+  it("requires review for single-quoted procedural SQL", async () => {
+    const body = "DO 'BEGIN RAISE NOTICE ''safe''; END';\n";
+    const unreviewed = await fixture();
+    await append(unreviewed.root, "0001_next", body);
+    expect(() =>
+      verifyMigrationPolicy({ repositoryRoot: unreviewed.root, base: unreviewed.base }),
+    ).toThrow(/procedural SQL/u);
+
+    const reviewed = await fixture();
+    await append(
+      reviewed.root,
+      "0001_next",
+      `-- schedule-migration-review: destructive-data-change\n-- schedule-migration-reason: reviewed procedural migration\n${body}`,
+    );
+    expect(() =>
+      verifyMigrationPolicy({ repositoryRoot: reviewed.root, base: reviewed.base }),
+    ).not.toThrow();
+  });
+
   it("requires review for dollar-quoted procedural SQL and does not split inside its body", async () => {
-    const body =
-      "DO $body$ BEGIN RAISE NOTICE '--> statement-breakpoint DROP TABLE'; END $body$;\n";
+    const body = "DO $body$ BEGIN RAISE NOTICE 'DROP TABLE; still text'; END $body$;\n";
     const unreviewed = await fixture();
     await append(unreviewed.root, "0001_next", body);
     expect(() =>
@@ -268,6 +394,25 @@ DELETE FROM things;
       reviewed.root,
       "0001_next",
       `-- schedule-migration-review: destructive-data-change\n-- schedule-migration-reason: reviewed procedural migration\n${body}`,
+    );
+    expect(() =>
+      verifyMigrationPolicy({ repositoryRoot: reviewed.root, base: reviewed.base }),
+    ).not.toThrow();
+  });
+
+  it("recognizes non-ASCII dollar tags without mistaking dollar identifiers for openers", async () => {
+    const body = "DO $é$ BEGIN RAISE NOTICE 'safe'; END $é$;\n";
+    const unreviewed = await fixture();
+    await append(unreviewed.root, "0001_next", body);
+    expect(() =>
+      verifyMigrationPolicy({ repositoryRoot: unreviewed.root, base: unreviewed.base }),
+    ).toThrow(/procedural or dollar-quoted SQL/u);
+
+    const reviewed = await fixture();
+    await append(
+      reviewed.root,
+      "0001_next",
+      `-- schedule-migration-review: destructive-data-change\n-- schedule-migration-reason: reviewed procedural migration\n${body}\nSELECT schedule$archive$;\n`,
     );
     expect(() =>
       verifyMigrationPolicy({ repositoryRoot: reviewed.root, base: reviewed.base }),

@@ -422,6 +422,11 @@ export async function validateDesktopRuntime(root: string): Promise<DesktopRunti
   );
   await requireFile(
     runtimeRoot,
+    "api/node_modules/@schedule/database/dist/migration-sql.js",
+    "Database migration SQL safety helper",
+  );
+  await requireFile(
+    runtimeRoot,
     "api/node_modules/@schedule/database/drizzle/meta/_journal.json",
     "Migration journal",
   );
@@ -612,6 +617,11 @@ export async function buildDesktopRuntime(
     apiDeploymentDirectory,
     "node_modules/@schedule/database/dist/migration-ledger.js",
     "Database migration ledger helper",
+  );
+  await requireFile(
+    apiDeploymentDirectory,
+    "node_modules/@schedule/database/dist/migration-sql.js",
+    "Database migration SQL safety helper",
   );
   await requireFile(
     apiDeploymentDirectory,
