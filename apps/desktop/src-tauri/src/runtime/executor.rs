@@ -531,6 +531,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         for (key, value) in plan.environment {
             spec = spec.env(key, value);
         }
+        spec = spec.classify_postgres_startup_stderr();
         let started =
             match start_process_cancellable(spec, Arc::clone(&self.process_control), &|| {
                 cancellation.is_cancelled()
@@ -554,20 +555,27 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         let deadline = std::time::Instant::now() + DATABASE_READY_TIMEOUT;
         loop {
             Self::cancelled(cancellation)?;
-            let (exited, exit_code) = {
+            let (exited, exit_code, stderr_class) = {
                 let database = self
                     .database
                     .as_mut()
                     .ok_or_else(|| NativeExecutorError::new("desktop.executor_state_invalid"))?;
                 let exited = database.has_exited().map_err(process_error)?;
-                (exited, database.exit_code_u32())
+                let stderr_class = exited
+                    .then(|| database.postgres_startup_stderr_class())
+                    .flatten();
+                (exited, database.exit_code_u32(), stderr_class)
             };
             if exited {
-                match exit_code {
-                    Some(code) => {
+                match (exit_code, stderr_class) {
+                    (Some(1), Some(class)) => eprintln!(
+                        "SCHEDULE_DESKTOP_DATABASE_STARTUP=post_admission_exit:1:{}",
+                        class
+                    ),
+                    (Some(code), _) => {
                         eprintln!("SCHEDULE_DESKTOP_DATABASE_STARTUP=post_admission_exit:{code}")
                     }
-                    None => {
+                    (None, _) => {
                         eprintln!("SCHEDULE_DESKTOP_DATABASE_STARTUP=post_admission_exit:unknown")
                     }
                 }

@@ -172,7 +172,20 @@ test("classifies only bounded database startup sentinels", () => {
     databaseStartupDiagnostic("SCHEDULE_DESKTOP_DATABASE_STARTUP=guardian_admission_failed\r\n"),
   ).toBe("guardian_admission_failed");
   expect(
+    databaseStartupDiagnostic(
+      "private path\nSCHEDULE_DESKTOP_DATABASE_STARTUP=post_admission_exit:1:tcp_bind\n",
+    ),
+  ).toBe("post_admission_exit:1:tcp_bind");
+  expect(
     databaseStartupDiagnostic("SCHEDULE_DESKTOP_DATABASE_STARTUP=post_admission_exit:4294967296\n"),
+  ).toBeUndefined();
+  expect(
+    databaseStartupDiagnostic("SCHEDULE_DESKTOP_DATABASE_STARTUP=post_admission_exit:2:tcp_bind\n"),
+  ).toBeUndefined();
+  expect(
+    databaseStartupDiagnostic(
+      "SCHEDULE_DESKTOP_DATABASE_STARTUP=post_admission_exit:1:private-path\n",
+    ),
   ).toBeUndefined();
   expect(databaseStartupDiagnostic("private output only")).toBeUndefined();
 });

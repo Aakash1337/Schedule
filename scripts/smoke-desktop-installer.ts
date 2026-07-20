@@ -165,6 +165,12 @@ export function databaseStartupDiagnostic(stderr: unknown): string | undefined {
 function validatedDatabaseStartupState(value: unknown): string | undefined {
   if (value === "guardian_admission_failed") return value;
   if (typeof value !== "string") return undefined;
+  if (
+    /^post_admission_exit:1:(arguments|configuration|data_directory|control_file|lock_file|tcp_bind|process|resource|access|filesystem|unclassified)$/u.test(
+      value,
+    )
+  )
+    return value;
   const match = /^post_admission_exit:(unknown|\d{1,10})$/u.exec(value);
   if (!match) return undefined;
   if (match[1] === "unknown") return value;
