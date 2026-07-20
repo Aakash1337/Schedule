@@ -129,6 +129,33 @@ test("redacts native launch failures to an exit code", async () => {
   ).rejects.toThrow("Installed Schedule lifecycle smoke failed (exit code 37).");
 });
 
+test("reports only validated lifecycle state for a native startup failure", async () => {
+  const root = await installedLinuxFixture();
+  await expect(
+    smokeDesktopBundle(root, {
+      requireLaunch: true,
+      launch: async (_command, arguments_) => {
+        const dataRoot = arguments_[4]!;
+        const staging = path.join(dataRoot, "postgresql", ".schedule-initializing-v1");
+        await mkdir(path.join(dataRoot, "runtime"), { recursive: true });
+        await mkdir(staging, { recursive: true });
+        await writeFile(path.join(staging, "SCHEDULE_INITDB_COMPLETE_V1"), "schedule-initdb-v1\n");
+        await writeFile(path.join(staging, "SCHEDULE_BOOTSTRAPPED_V1"), "schedule-bootstrap-v1\n");
+        await writeFile(
+          path.join(dataRoot, "runtime", "journal.json"),
+          JSON.stringify({
+            schema_version: 1,
+            attempt: { id: 2, phase: "starting_database" },
+          }),
+        );
+        return 11;
+      },
+    }),
+  ).rejects.toThrow(
+    "Installed Schedule lifecycle smoke failed (exit code 11, attempt 2, phase starting_database, prior-success false, staging true, final false, initdb-marker true, bootstrap-marker true).",
+  );
+});
+
 test("redacts a cleanup failure without exposing its temporary root", async () => {
   const root = await installedLinuxFixture();
   let removedRoot = "";

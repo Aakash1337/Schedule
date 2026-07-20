@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { lstat, mkdtemp, readdir, rm } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -7,6 +7,18 @@ import { validateDesktopRuntime } from "./build-desktop-runtime.js";
 
 const execFile = promisify(execFileCallback);
 const NATIVE_SMOKE_TIMEOUT_MS = 450_000;
+const MAX_JOURNAL_BYTES = 64 * 1024;
+const JOURNAL_PHASES = new Set([
+  "initializing",
+  "starting_database",
+  "verifying_database",
+  "backing_up_database",
+  "migrating_database",
+  "starting_api",
+  "starting_worker",
+  "ready",
+  "stopping",
+]);
 
 type Launch = (
   executable: string,
@@ -26,6 +38,22 @@ export interface DesktopSmokeOptions {
 async function regularFile(file: string): Promise<boolean> {
   const entry = await lstat(file).catch(() => null);
   return entry?.isFile() === true && !entry.isSymbolicLink();
+}
+
+async function regularDirectory(directory: string): Promise<boolean> {
+  const entry = await lstat(directory).catch(() => null);
+  return entry?.isDirectory() === true && !entry.isSymbolicLink();
+}
+
+async function exactMarker(file: string, expected: string): Promise<boolean> {
+  const entry = await lstat(file).catch(() => null);
+  if (
+    entry?.isFile() !== true ||
+    entry.isSymbolicLink() ||
+    entry.size !== Buffer.byteLength(expected)
+  )
+    return false;
+  return (await readFile(file, "utf8").catch(() => "")) === expected;
 }
 
 async function installedExecutable(
@@ -84,6 +112,50 @@ async function defaultLaunch(
   }
 }
 
+async function lifecycleDiagnostic(dataRoot: string): Promise<string> {
+  const journal = path.join(dataRoot, "runtime", "journal.json");
+  const stat = await lstat(journal).catch(() => null);
+  if (stat?.isFile() !== true || stat.isSymbolicLink() || stat.size > MAX_JOURNAL_BYTES)
+    return "journal unavailable";
+  try {
+    const value = JSON.parse(await readFile(journal, "utf8")) as {
+      schema_version?: unknown;
+      attempt?: { id?: unknown; phase?: unknown };
+      prior_success?: unknown;
+    };
+    const attempt = value.attempt?.id;
+    const phase = value.attempt?.phase;
+    if (
+      value.schema_version !== 1 ||
+      typeof attempt !== "number" ||
+      !Number.isSafeInteger(attempt) ||
+      attempt < 1 ||
+      typeof phase !== "string" ||
+      !JOURNAL_PHASES.has(phase)
+    )
+      return "journal invalid";
+    const staging = path.join(dataRoot, "postgresql", ".schedule-initializing-v1");
+    const finalData = path.join(dataRoot, "postgresql", "data");
+    const [stagingPresent, finalPresent, initdbMarker, bootstrapMarker] = await Promise.all([
+      regularDirectory(staging),
+      regularDirectory(finalData),
+      exactMarker(path.join(staging, "SCHEDULE_INITDB_COMPLETE_V1"), "schedule-initdb-v1\n"),
+      exactMarker(path.join(staging, "SCHEDULE_BOOTSTRAPPED_V1"), "schedule-bootstrap-v1\n"),
+    ]);
+    return [
+      `attempt ${attempt}`,
+      `phase ${phase}`,
+      `prior-success ${value.prior_success != null}`,
+      `staging ${stagingPresent}`,
+      `final ${finalPresent}`,
+      `initdb-marker ${initdbMarker}`,
+      `bootstrap-marker ${bootstrapMarker}`,
+    ].join(", ");
+  } catch {
+    return "journal invalid";
+  }
+}
+
 async function launchNativeLifecycle(
   executable: string,
   runtime: string,
@@ -110,7 +182,10 @@ async function launchNativeLifecycle(
         windowsHide: true,
       });
       if (code !== 0) {
-        throw new Error(`Installed Schedule lifecycle smoke failed (exit code ${code}).`);
+        const diagnostic = code === 11 ? `, ${await lifecycleDiagnostic(dataRoot)}` : "";
+        throw new Error(
+          `Installed Schedule lifecycle smoke failed (exit code ${code}${diagnostic}).`,
+        );
       }
     }
   } catch (error: unknown) {
