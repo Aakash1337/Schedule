@@ -517,13 +517,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         }
         let bundle = self.require_bundle()?;
         let connection = self.admin_connection(self.config.postgres_names.database())?;
-        let startup_log = self.config.paths.logs.join("postgres-startup.log");
-        let plan = start_plan(
-            postgres_bin(bundle)?,
-            self.database_data()?,
-            &startup_log,
-            &connection,
-        );
+        let plan = start_plan(postgres_bin(bundle)?, self.database_data()?, &connection);
         ensure_program(&plan, &bundle.postgresql.postgres)?;
         let mut spec = ProcessSpec::new(
             ProcessRole::Database,
@@ -537,10 +531,18 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         for (key, value) in plan.environment {
             spec = spec.env(key, value);
         }
-        let started = start_process_cancellable(spec, Arc::clone(&self.process_control), &|| {
-            cancellation.is_cancelled()
-        })
-        .map_err(process_error)?;
+        let started =
+            match start_process_cancellable(spec, Arc::clone(&self.process_control), &|| {
+                cancellation.is_cancelled()
+            }) {
+                Ok(started) => started,
+                Err(error) => {
+                    if error.code() != "desktop.process_cancelled" {
+                        eprintln!("SCHEDULE_DESKTOP_DATABASE_STARTUP=guardian_admission_failed");
+                    }
+                    return Err(process_error(error));
+                }
+            };
         self.database = Some(started.process);
         Ok(())
     }
@@ -552,13 +554,23 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         let deadline = std::time::Instant::now() + DATABASE_READY_TIMEOUT;
         loop {
             Self::cancelled(cancellation)?;
-            let exited = self
-                .database
-                .as_mut()
-                .ok_or_else(|| NativeExecutorError::new("desktop.executor_state_invalid"))?
-                .has_exited()
-                .map_err(process_error)?;
+            let (exited, exit_code) = {
+                let database = self
+                    .database
+                    .as_mut()
+                    .ok_or_else(|| NativeExecutorError::new("desktop.executor_state_invalid"))?;
+                let exited = database.has_exited().map_err(process_error)?;
+                (exited, database.exit_code_u32())
+            };
             if exited {
+                match exit_code {
+                    Some(code) => {
+                        eprintln!("SCHEDULE_DESKTOP_DATABASE_STARTUP=post_admission_exit:{code}")
+                    }
+                    None => {
+                        eprintln!("SCHEDULE_DESKTOP_DATABASE_STARTUP=post_admission_exit:unknown")
+                    }
+                }
                 self.database.take();
                 return Err(NativeExecutorError::new("desktop.database_exited_early"));
             }

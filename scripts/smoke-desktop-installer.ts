@@ -24,7 +24,12 @@ type Launch = (
   executable: string,
   arguments_: readonly string[],
   options: Readonly<{ timeout: number; windowsHide: boolean }>,
-) => Promise<number>;
+) => Promise<number | NativeLaunchResult>;
+
+interface NativeLaunchResult {
+  readonly exitCode: number;
+  readonly databaseStart?: string;
+}
 
 export interface DesktopSmokeOptions {
   readonly requireLaunch?: boolean;
@@ -122,7 +127,7 @@ async function defaultLaunch(
   executable: string,
   arguments_: readonly string[],
   options: Readonly<{ timeout: number; windowsHide: boolean }>,
-): Promise<number> {
+): Promise<NativeLaunchResult> {
   try {
     await execFile(executable, arguments_, {
       shell: false,
@@ -130,14 +135,41 @@ async function defaultLaunch(
       windowsHide: options.windowsHide,
       maxBuffer: 1_024,
     });
-    return 0;
+    return { exitCode: 0 };
   } catch (error) {
     const code =
       typeof (error as { code?: unknown }).code === "number"
         ? (error as { code: number }).code
         : 124;
-    return Number.isSafeInteger(code) && code >= 0 ? code : 124;
+    const databaseStart = databaseStartupDiagnostic((error as { stderr?: unknown }).stderr);
+    return {
+      exitCode: Number.isSafeInteger(code) && code >= 0 ? code : 124,
+      ...(databaseStart ? { databaseStart } : {}),
+    };
   }
+}
+
+export function databaseStartupDiagnostic(stderr: unknown): string | undefined {
+  const contents =
+    typeof stderr === "string" ? stderr : Buffer.isBuffer(stderr) ? stderr.toString("utf8") : "";
+  if (Buffer.byteLength(contents) > MAX_DIAGNOSTIC_FILE_BYTES) return undefined;
+  const prefix = "SCHEDULE_DESKTOP_DATABASE_STARTUP=";
+  for (const line of contents.split(/\r?\n/u).reverse()) {
+    if (!line.startsWith(prefix)) continue;
+    const state = validatedDatabaseStartupState(line.slice(prefix.length));
+    if (state) return state;
+  }
+  return undefined;
+}
+
+function validatedDatabaseStartupState(value: unknown): string | undefined {
+  if (value === "guardian_admission_failed") return value;
+  if (typeof value !== "string") return undefined;
+  const match = /^post_admission_exit:(unknown|\d{1,10})$/u.exec(value);
+  if (!match) return undefined;
+  if (match[1] === "unknown") return value;
+  const code = Number(match[1]);
+  return Number.isSafeInteger(code) && code <= 0xffff_ffff ? value : undefined;
 }
 
 async function lifecycleDiagnostic(dataRoot: string): Promise<string> {
@@ -170,7 +202,6 @@ async function lifecycleDiagnostic(dataRoot: string): Promise<string> {
       initdbMarker,
       bootstrapMarker,
       postmasterOpts,
-      startupLog,
       collectorLog,
     ] = await Promise.all([
       regularDirectory(staging),
@@ -178,7 +209,6 @@ async function lifecycleDiagnostic(dataRoot: string): Promise<string> {
       exactMarker(path.join(staging, "SCHEDULE_INITDB_COMPLETE_V1"), "schedule-initdb-v1\n"),
       exactMarker(path.join(staging, "SCHEDULE_BOOTSTRAPPED_V1"), "schedule-bootstrap-v1\n"),
       regularFile(path.join(staging, "postmaster.opts")),
-      postgresLogState(path.join(dataRoot, "logs", "postgres-startup.log")),
       postgresLogState(path.join(dataRoot, "logs", "postgresql.log")),
     ]);
     return [
@@ -190,7 +220,6 @@ async function lifecycleDiagnostic(dataRoot: string): Promise<string> {
       `initdb-marker ${initdbMarker}`,
       `bootstrap-marker ${bootstrapMarker}`,
       `postmaster-opts ${postmasterOpts}`,
-      `postgres-startup-log ${startupLog}`,
       `postgres-log ${collectorLog}`,
     ].join(", ");
   } catch {
@@ -219,12 +248,20 @@ async function launchNativeLifecycle(
       dataRoot,
     ];
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const code = await launch(executable, arguments_, {
+      const result = await launch(executable, arguments_, {
         timeout: NATIVE_SMOKE_TIMEOUT_MS,
         windowsHide: true,
       });
+      const code = typeof result === "number" ? result : result.exitCode;
       if (code !== 0) {
-        const diagnostic = code === 11 ? `, ${await lifecycleDiagnostic(dataRoot)}` : "";
+        const databaseStart =
+          typeof result === "number"
+            ? undefined
+            : validatedDatabaseStartupState(result.databaseStart);
+        const diagnostic =
+          code === 11
+            ? `, ${await lifecycleDiagnostic(dataRoot)}${databaseStart ? `, database-start ${databaseStart}` : ""}`
+            : "";
         throw new Error(
           `Installed Schedule lifecycle smoke failed (exit code ${code}${diagnostic}).`,
         );

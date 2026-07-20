@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { createDesktopRuntimeFixture } from "./create-desktop-runtime-fixture.js";
-import { smokeDesktopBundle } from "./smoke-desktop-installer.js";
+import { databaseStartupDiagnostic, smokeDesktopBundle } from "./smoke-desktop-installer.js";
 
 const roots: string[] = [];
 
@@ -143,10 +143,6 @@ test("reports only validated lifecycle state for a native startup failure", asyn
       await writeFile(path.join(staging, "SCHEDULE_BOOTSTRAPPED_V1"), "schedule-bootstrap-v1\n");
       await writeFile(path.join(staging, "postmaster.opts"), "redacted fixture");
       await writeFile(
-        path.join(dataRoot, "logs", "postgres-startup.log"),
-        "database system is ready to accept connections\nFATAL: private startup diagnostic must not escape\n",
-      );
-      await writeFile(
         path.join(dataRoot, "logs", "postgresql.log"),
         "database system is ready to accept connections\nFATAL: private diagnostic must not escape\n",
       );
@@ -157,14 +153,28 @@ test("reports only validated lifecycle state for a native startup failure", asyn
           attempt: { id: 2, phase: "starting_database" },
         }),
       );
-      return 11;
+      return { exitCode: 11, databaseStart: "post_admission_exit:3221225781" };
     },
   });
   await expect(result).rejects.toThrow(
-    "Installed Schedule lifecycle smoke failed (exit code 11, attempt 2, phase starting_database, prior-success false, staging true, final false, initdb-marker true, bootstrap-marker true, postmaster-opts true, postgres-startup-log fatal, postgres-log fatal).",
+    "Installed Schedule lifecycle smoke failed (exit code 11, attempt 2, phase starting_database, prior-success false, staging true, final false, initdb-marker true, bootstrap-marker true, postmaster-opts true, postgres-log fatal, database-start post_admission_exit:3221225781).",
   );
-  await expect(result).rejects.not.toThrow("private startup diagnostic must not escape");
   await expect(result).rejects.not.toThrow("private diagnostic must not escape");
+});
+
+test("classifies only bounded database startup sentinels", () => {
+  expect(
+    databaseStartupDiagnostic(
+      "private output\nSCHEDULE_DESKTOP_DATABASE_STARTUP=post_admission_exit:3221225781\n",
+    ),
+  ).toBe("post_admission_exit:3221225781");
+  expect(
+    databaseStartupDiagnostic("SCHEDULE_DESKTOP_DATABASE_STARTUP=guardian_admission_failed\r\n"),
+  ).toBe("guardian_admission_failed");
+  expect(
+    databaseStartupDiagnostic("SCHEDULE_DESKTOP_DATABASE_STARTUP=post_admission_exit:4294967296\n"),
+  ).toBeUndefined();
+  expect(databaseStartupDiagnostic("private output only")).toBeUndefined();
 });
 
 test("redacts a cleanup failure without exposing its temporary root", async () => {

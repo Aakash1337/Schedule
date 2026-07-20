@@ -174,12 +174,7 @@ pub(crate) fn bootstrap_plan(
     )
 }
 
-pub(crate) fn start_plan(
-    bin: &Path,
-    data: &Path,
-    startup_log: &Path,
-    connection: &PgConnection,
-) -> PgCommand {
+pub(crate) fn start_plan(bin: &Path, data: &Path, connection: &PgConnection) -> PgCommand {
     let hba_file = data.join("pg_hba.conf");
     command(
         // Run the server directly so the desktop retains the real database
@@ -192,8 +187,6 @@ pub(crate) fn start_plan(
             "127.0.0.1".into(),
             "-p".into(),
             connection.port.to_string(),
-            "-r".into(),
-            display(startup_log),
             "-c".into(),
             format!("hba_file={}", display(&hba_file)),
             "-c".into(),
@@ -385,12 +378,7 @@ mod tests {
                 &connection,
                 Path::new("private/init-password"),
             ),
-            start_plan(
-                Path::new("bin"),
-                Path::new("data"),
-                Path::new("logs/postgres-startup.log"),
-                &connection,
-            ),
+            start_plan(Path::new("bin"), Path::new("data"), &connection),
             readiness_plan(Path::new("bin"), &connection),
             identity_plan(Path::new("bin"), &connection),
             backup_plan(Path::new("bin"), Path::new("backup.dump"), &connection),
@@ -410,12 +398,6 @@ mod tests {
         );
         assert!(plans[1].program.ends_with(executable("postgres")));
         assert!(plans[1].environment.is_empty());
-        assert!(
-            plans[1]
-                .arguments
-                .windows(2)
-                .any(|args| args == ["-r", "logs/postgres-startup.log"])
-        );
         assert!(plans[1].arguments.windows(2).any(|args| {
             args[0] == "-c"
                 && args[1].starts_with("hba_file=")

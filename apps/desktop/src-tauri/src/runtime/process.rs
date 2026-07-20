@@ -355,12 +355,17 @@ pub(crate) struct OwnedProcess {
     readers: Vec<JoinHandle<()>>,
     _guardian_channel: Arc<GuardianChannel>,
     exited: bool,
+    exit_code_u32: Option<u32>,
     ownership_released: bool,
 }
 
 impl OwnedProcess {
     pub(crate) fn identity(&self) -> ChildIdentity {
         self.identity
+    }
+
+    pub(crate) fn exit_code_u32(&self) -> Option<u32> {
+        self.exit_code_u32
     }
 
     pub(crate) fn has_exited(&mut self) -> Result<bool, ProcessError> {
@@ -371,9 +376,11 @@ impl OwnedProcess {
         if self.exited {
             // The guardian has already contained and reaped its payload tree before it exits.
             self.release_ownership();
-            self.child
+            let status = self
+                .child
                 .wait()
                 .map_err(|_| ProcessError::new("desktop.process_status_failed"))?;
+            self.exit_code_u32 = status.code().map(|code| code as u32);
             self.release_readers();
         }
         Ok(self.exited)
@@ -546,6 +553,7 @@ pub(super) fn start_process_cancellable(
         readers,
         _guardian_channel: guardian_channel,
         exited: false,
+        exit_code_u32: None,
         ownership_released: false,
     };
     let readiness = if spec.readiness.is_some() {
@@ -858,6 +866,7 @@ mod tests {
                 thread::sleep(Duration::from_secs(2));
             }
             Ok("sleep") => thread::sleep(Duration::from_secs(2)),
+            Ok("exit_37") => std::process::exit(37),
             Ok("await_shutdown") => {
                 let mut line = String::new();
                 if std::io::stdin().read_line(&mut line).is_err() || line != "shutdown\n" {
@@ -929,6 +938,18 @@ mod tests {
 
         assert_eq!(started.readiness.as_ref().unwrap().as_bytes(), b"burst");
         started.process.stop(Duration::ZERO).unwrap();
+    }
+
+    #[test]
+    fn retains_the_guardian_payload_exit_code() {
+        let spec = helper_spec(ProcessRole::Database, "exit_37", Duration::from_secs(2));
+        let mut started = start_process(spec, Arc::new(DirectChildControl)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !started.process.has_exited().unwrap() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(PROCESS_POLL_INTERVAL);
+        }
+        assert_eq!(started.process.exit_code_u32(), Some(37));
     }
 
     #[test]
