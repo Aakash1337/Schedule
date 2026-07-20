@@ -286,7 +286,7 @@ struct DecodedSpec {
 }
 
 impl DecodedSpec {
-    fn command(&self) -> Command {
+    fn command(&self) -> Result<Command, ()> {
         let mut command = Command::new(&self.program);
         command
             .args(&self.arguments)
@@ -300,7 +300,8 @@ impl DecodedSpec {
             })
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        command
+        platform::configure_payload_environment(&mut command)?;
+        Ok(command)
     }
 }
 
@@ -600,6 +601,10 @@ mod platform {
         Ok(())
     }
 
+    pub(super) fn configure_payload_environment(_command: &mut Command) -> Result<(), ()> {
+        Ok(())
+    }
+
     pub(super) fn control_cloexec() -> Result<(), ()> {
         // SAFETY: fd 0 is the inherited guardian control pipe. The guardian continues to use it,
         // while FD_CLOEXEC guarantees the payload cannot keep its liveness endpoint open.
@@ -619,7 +624,7 @@ mod platform {
         delay_test_ack(&spec);
         acknowledge_ready()?;
         await_commit(&mut input)?;
-        let mut command = spec.command();
+        let mut command = spec.command()?;
         let guardian_pid = unsafe { libc::getpid() };
         // Keep the payload in a distinct group inside the guardian's isolated session. This makes
         // graceful service termination precise; FORCE also walks adopted descendants on Linux.
@@ -764,7 +769,7 @@ mod platform {
 mod platform {
     use std::{
         mem::size_of,
-        os::windows::{io::AsRawHandle, process::CommandExt},
+        os::windows::{ffi::OsStringExt, io::AsRawHandle, process::CommandExt},
         ptr,
     };
 
@@ -783,6 +788,7 @@ mod platform {
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                 JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
             },
+            SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW},
             Threading::{
                 CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, GetCurrentProcess, OpenThread,
                 ResumeThread, THREAD_SUSPEND_RESUME,
@@ -794,6 +800,54 @@ mod platform {
 
     pub(super) fn prepare_guardian() -> Result<(), ()> {
         Ok(())
+    }
+
+    pub(super) fn configure_payload_environment(command: &mut Command) -> Result<(), ()> {
+        // PostgreSQL's Windows tools need these OS roots even when the payload otherwise
+        // runs with a deliberately empty, allowlisted environment.
+        for (key, value) in trusted_system_environment()? {
+            command.env(key, value);
+        }
+        Ok(())
+    }
+
+    pub(super) fn trusted_system_environment() -> Result<[(OsString, OsString); 3], ()> {
+        let windows =
+            system_directory(|buffer, length| unsafe { GetWindowsDirectoryW(buffer, length) })?;
+        let system =
+            system_directory(|buffer, length| unsafe { GetSystemDirectoryW(buffer, length) })?;
+        let comspec = system.join("cmd.exe");
+        if !comspec.is_file() {
+            return Err(());
+        }
+        Ok([
+            (OsString::from("SYSTEMROOT"), windows.as_os_str().to_owned()),
+            (OsString::from("WINDIR"), windows.as_os_str().to_owned()),
+            (OsString::from("COMSPEC"), comspec.into_os_string()),
+        ])
+    }
+
+    fn system_directory(get: impl Fn(*mut u16, u32) -> u32) -> Result<PathBuf, ()> {
+        const MAX_WINDOWS_PATH: usize = 32_768;
+        let mut buffer = vec![0_u16; 260];
+        loop {
+            let length = get(
+                buffer.as_mut_ptr(),
+                buffer.len().try_into().map_err(|_| ())?,
+            );
+            if length == 0 {
+                return Err(());
+            }
+            let length = length as usize;
+            if length < buffer.len() {
+                let path = PathBuf::from(OsString::from_wide(&buffer[..length]));
+                return path.is_absolute().then_some(path).ok_or(());
+            }
+            if length >= MAX_WINDOWS_PATH {
+                return Err(());
+            }
+            buffer.resize(length + 1, 0);
+        }
     }
 
     pub(super) fn control_cloexec() -> Result<(), ()> {
@@ -816,7 +870,7 @@ mod platform {
         if unsafe { AssignProcessToJobObject(job.0, GetCurrentProcess()) } == 0 {
             return Err(());
         }
-        let mut command = spec.command();
+        let mut command = spec.command()?;
         command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
         let mut child = command.spawn().map_err(|_| ())?;
         drop(command);
@@ -1161,6 +1215,26 @@ mod tests {
         assert!(child.wait().unwrap().code() != Some(0));
         thread::sleep(Duration::from_millis(500));
         assert!(!marker.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_payload_environment_uses_system_paths() {
+        let environment = platform::trusted_system_environment().unwrap();
+        let value = |key: &str| {
+            PathBuf::from(
+                environment
+                    .iter()
+                    .find(|(name, _)| name == key)
+                    .unwrap()
+                    .1
+                    .clone(),
+            )
+        };
+        assert!(value("SYSTEMROOT").is_absolute());
+        assert_eq!(value("WINDIR"), value("SYSTEMROOT"));
+        assert_eq!(value("COMSPEC").file_name(), Some(OsStr::new("cmd.exe")));
+        assert!(value("COMSPEC").is_file());
     }
 
     #[cfg(windows)]

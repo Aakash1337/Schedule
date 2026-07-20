@@ -221,7 +221,7 @@ jobs:
           $install = Join-Path $env:RUNNER_TEMP 'schedule-installed'
           $process = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$install" -Wait -NoNewWindow -PassThru
           if ($process.ExitCode -ne 0) { throw "NSIS installer exited with $($process.ExitCode)." }
-          if (-not (Test-Path -LiteralPath (Join-Path $install 'Schedule.exe') -PathType Leaf)) { throw 'NSIS install did not produce Schedule.exe.' }
+          if (-not (Test-Path -LiteralPath (Join-Path $install 'schedule-desktop.exe') -PathType Leaf)) { throw 'NSIS install did not produce schedule-desktop.exe.' }
           pnpm exec tsx scripts/smoke-desktop-installer.ts --require-launch --probe-executables $install
       - name: Collect release metadata
         shell: bash

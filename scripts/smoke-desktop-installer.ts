@@ -34,7 +34,7 @@ async function installedExecutable(
   target: "windows" | "linux",
 ): Promise<string> {
   if (target === "windows") {
-    const executable = path.join(root, "Schedule.exe");
+    const executable = path.join(root, "schedule-desktop.exe");
     if (!(await regularFile(executable)))
       throw new Error("Installed Schedule executable is missing.");
     return executable;
@@ -88,9 +88,12 @@ async function launchNativeLifecycle(
   executable: string,
   runtime: string,
   launch: Launch,
-  removeDataRoot: (root: string) => Promise<void>,
+  removeTemporaryRoot: (root: string) => Promise<void>,
 ): Promise<void> {
-  const dataRoot = await mkdtemp(path.join(os.tmpdir(), "schedule-installed-smoke-"));
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "schedule-installed-smoke-"));
+  // The native runtime must create this child itself so Windows can apply its
+  // protected, user-only ACL exactly as it does on a real first launch.
+  const dataRoot = path.join(temporaryRoot, "data");
   let failed = false;
   let failure: unknown;
   try {
@@ -115,7 +118,7 @@ async function launchNativeLifecycle(
     failure = error;
   }
   try {
-    await removeDataRoot(dataRoot);
+    await removeTemporaryRoot(temporaryRoot);
   } catch {
     if (!failed) {
       failed = true;

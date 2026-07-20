@@ -656,18 +656,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         {
             return Err(NativeExecutorError::new("desktop.backup_invalid"));
         }
-        let file = fs::File::open(&pending)
-            .map_err(|_| NativeExecutorError::new("desktop.backup_invalid"))?;
-        if file
-            .metadata()
-            .map_err(|_| NativeExecutorError::new("desktop.backup_invalid"))?
-            .len()
-            != metadata.len()
-        {
-            return Err(NativeExecutorError::new("desktop.backup_invalid"));
-        }
-        file.sync_all()
-            .map_err(|_| NativeExecutorError::new("desktop.backup_invalid"))?;
+        sync_backup_file(&pending, metadata.len())?;
         let verify = restore_verify_plan(postgres_bin(bundle)?, &pending);
         let catalog = self.run_pg(
             verify,
@@ -1340,6 +1329,26 @@ impl Drop for PendingFile {
     }
 }
 
+fn sync_backup_file(path: &Path, expected_len: u64) -> Result<(), NativeExecutorError> {
+    // FlushFileBuffers requires a write-capable handle on Windows even though
+    // pg_dump has already finished writing the archive.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|_| NativeExecutorError::new("desktop.backup_invalid"))?;
+    if file
+        .metadata()
+        .map_err(|_| NativeExecutorError::new("desktop.backup_invalid"))?
+        .len()
+        != expected_len
+    {
+        return Err(NativeExecutorError::new("desktop.backup_invalid"));
+    }
+    file.sync_all()
+        .map_err(|_| NativeExecutorError::new("desktop.backup_invalid"))
+}
+
 fn random_suffix() -> Result<String, NativeExecutorError> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes)
@@ -1809,6 +1818,23 @@ mod tests {
         assert_eq!(fs::read(&destination).unwrap(), b"complete-one");
         assert_eq!(fs::read(&second_source).unwrap(), b"complete-two");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn completed_backup_can_be_durably_synced() {
+        let root = std::env::temp_dir().join(format!(
+            "schedule-executor-backup-sync-{}-{}",
+            std::process::id(),
+            random_suffix().unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        let backup = root.join("backup.dump");
+        fs::write(&backup, b"complete-backup").unwrap();
+
+        sync_backup_file(&backup, 15).unwrap();
+
+        fs::remove_file(backup).unwrap();
+        fs::remove_dir(root).unwrap();
     }
 
     #[test]

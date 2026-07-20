@@ -97,6 +97,23 @@ test("runs the installed native lifecycle twice against one isolated data root",
     path.join(root, "usr", "lib", "schedule-desktop", "runtime"),
   ]);
   expect(launches[0]!.arguments_[4]).toBe(launches[1]!.arguments_[4]);
+  expect(path.basename(launches[0]!.arguments_[4]!)).toBe("data");
+});
+
+test("uses the Cargo binary name for an installed Windows executable", async () => {
+  if (process.platform !== "win32") return;
+  const root = await fixture();
+  const executable = path.join(root, "schedule-desktop.exe");
+  await writeFile(executable, "fixture executable");
+  const launches: string[] = [];
+  await smokeDesktopBundle(root, {
+    requireLaunch: true,
+    launch: async (command) => {
+      launches.push(command);
+      return 0;
+    },
+  });
+  expect(launches).toEqual([executable, executable]);
 });
 
 test("redacts native launch failures to an exit code", async () => {

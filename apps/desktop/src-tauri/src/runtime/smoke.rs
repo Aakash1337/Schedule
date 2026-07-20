@@ -2,7 +2,7 @@
 
 use std::{
     ffi::OsString,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
     sync::Arc,
     thread,
@@ -31,6 +31,11 @@ struct SmokeRoots {
     data_root: PathBuf,
 }
 
+struct DataDirectory {
+    path: PathBuf,
+    identity: PathBuf,
+}
+
 /// Returns whether this invocation was consumed. A malformed smoke invocation
 /// is deliberately not allowed to fall through into the GUI.
 pub(crate) fn run_if_requested() -> bool {
@@ -51,13 +56,13 @@ fn parse_roots(args: &[OsString]) -> Result<SmokeRoots, ()> {
         return Err(());
     }
     let runtime_root = canonical_directory(PathBuf::from(&args[3]))?;
-    let data_root = canonical_directory(PathBuf::from(&args[5]))?;
-    if overlaps(&runtime_root, &data_root) {
+    let data_root = validated_data_directory(PathBuf::from(&args[5]))?;
+    if overlaps(&runtime_root, &data_root.identity) {
         return Err(());
     }
     Ok(SmokeRoots {
         runtime_root,
-        data_root,
+        data_root: data_root.path,
     })
 }
 
@@ -66,6 +71,29 @@ fn canonical_directory(path: PathBuf) -> Result<PathBuf, ()> {
         return Err(());
     }
     fs::canonicalize(path).map_err(|_| ())
+}
+
+fn validated_data_directory(path: PathBuf) -> Result<DataDirectory, ()> {
+    if !path.is_absolute() {
+        return Err(());
+    }
+    let identity = match fs::symlink_metadata(&path) {
+        Ok(_) => canonical_directory(path.clone())?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let name = path.file_name().ok_or(())?.to_owned();
+            let parent = canonical_directory(path.parent().ok_or(())?.to_owned())?;
+            let candidate = parent.join(name);
+            match fs::symlink_metadata(&candidate) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => candidate,
+                _ => return Err(()),
+            }
+        }
+        Err(_) => return Err(()),
+    };
+    // Keep the caller's ordinary absolute spelling for runtime storage. On
+    // Windows, fs::canonicalize adds a verbatim prefix that cannot be walked
+    // component-by-component by the private-directory trust checks.
+    Ok(DataDirectory { path, identity })
 }
 
 fn regular_directory(path: &Path) -> bool {
@@ -209,7 +237,25 @@ mod tests {
             OsString::from("--data-root"),
             roots.data.clone().into_os_string(),
         ]);
-        assert!(parsed.is_ok());
+        assert_eq!(parsed.unwrap().data_root, roots.data);
+    }
+
+    #[test]
+    fn absent_data_root_below_an_existing_parent_is_accepted() {
+        let roots = roots();
+        let data = roots.base.join("fresh-data");
+        let parsed = parse_roots(&[
+            OsString::from("schedule"),
+            OsString::from(SENTINEL),
+            OsString::from("--runtime-root"),
+            roots.runtime.clone().into_os_string(),
+            OsString::from("--data-root"),
+            data.clone().into_os_string(),
+        ])
+        .unwrap();
+
+        assert!(!data.exists());
+        assert_eq!(parsed.data_root, data);
     }
 
     #[test]
