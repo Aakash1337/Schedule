@@ -52,11 +52,11 @@ per-user data location, validate the existing database, publish a verified pre-m
 apply only an ordered forward migration, and fail closed instead of creating an empty replacement.
 A newer or divergent migration ledger must be rejected without mutation.
 
-The current desktop runtime already retains its data outside installed program files, backs up
-before a detected migration, and refuses to silently reinitialize an existing installation. Full
-release-grade update evidence still requires live-ledger-based upgrade/downgrade admission and
-populated installed N-1 to N tests on Windows and Linux; those limitations are recorded in
-[EVALUATION.md](./EVALUATION.md) rather than being presented as completed guarantees.
+The current desktop runtime retains its data outside installed program files, uses the live
+migration ledger for upgrade and downgrade admission, backs up before a detected migration, and
+refuses to silently reinitialize an existing installation. Full release-grade update evidence still
+requires populated installed N-1 to N tests on Windows and Linux; that limitation is recorded in
+[EVALUATION.md](./EVALUATION.md) rather than being presented as a completed guarantee.
 
 ## Data that moves
 
