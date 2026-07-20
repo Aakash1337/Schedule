@@ -41,6 +41,7 @@ pub(crate) struct CommandSpec {
     timeout: Duration,
     max_stdout_bytes: usize,
     max_stderr_bytes: usize,
+    database_payload: bool,
 }
 
 impl CommandSpec {
@@ -57,6 +58,7 @@ impl CommandSpec {
             timeout,
             max_stdout_bytes: 64 * 1024,
             max_stderr_bytes: 64 * 1024,
+            database_payload: false,
         }
     }
 
@@ -73,6 +75,11 @@ impl CommandSpec {
     pub(crate) fn output_bounds(mut self, stdout: usize, stderr: usize) -> Self {
         self.max_stdout_bytes = stdout;
         self.max_stderr_bytes = stderr;
+        self
+    }
+
+    pub(crate) fn database_payload(mut self) -> Self {
+        self.database_payload = true;
         self
     }
 
@@ -110,6 +117,7 @@ impl CommandSpec {
             self.arguments.clone(),
             self.environment.clone(),
             false,
+            self.database_payload,
         )
     }
 }
@@ -543,6 +551,21 @@ mod tests {
         .arg("--exact")
         .arg("--nocapture")
         .env(MODE, mode)
+    }
+
+    #[test]
+    fn database_payload_restriction_requires_explicit_opt_in() {
+        assert!(
+            !helper("success", Duration::from_secs(1))
+                .launch_spec()
+                .is_database_payload()
+        );
+        assert!(
+            helper("success", Duration::from_secs(1))
+                .database_payload()
+                .launch_spec()
+                .is_database_payload()
+        );
     }
 
     #[test]

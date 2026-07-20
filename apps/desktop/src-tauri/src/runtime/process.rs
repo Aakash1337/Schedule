@@ -343,6 +343,7 @@ impl ProcessSpec {
             self.arguments.clone(),
             self.environment.clone(),
             self.desktop_shutdown_stdin,
+            self.role == ProcessRole::Database,
         )
     }
 }

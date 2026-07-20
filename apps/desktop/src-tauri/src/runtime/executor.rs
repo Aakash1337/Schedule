@@ -992,6 +992,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
     ) -> Result<CommandOutput, NativeExecutorError> {
         ensure_program(&plan, expected_program)?;
         let mut spec = CommandSpec::new(plan.program, &self.require_bundle()?.root, timeout)
+            .database_payload()
             .output_bounds(output_bound, output_bound);
         for argument in plan.arguments {
             spec = spec.arg(argument);
