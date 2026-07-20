@@ -325,10 +325,15 @@ function sqlStatements(source: string): readonly SqlStatement[] {
       continue;
     }
     if (character === "'") {
+      const prefix = source[index - 1];
+      const beforePrefix = source[index - 2];
+      const escapeBackslashes =
+        (prefix === "E" || prefix === "e") &&
+        (beforePrefix === undefined || !/[A-Za-z0-9_$]/u.test(beforePrefix));
       index += 1;
       let closed = false;
       while (index < source.length) {
-        if (source[index] === "\\") {
+        if (escapeBackslashes && source[index] === "\\") {
           index += 2;
         } else if (source[index] === "'" && source[index + 1] === "'") {
           index += 2;

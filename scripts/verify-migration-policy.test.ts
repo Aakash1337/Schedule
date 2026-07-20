@@ -239,6 +239,21 @@ describe("migration policy", () => {
     ).not.toThrow();
   });
 
+  it("distinguishes standard strings from PostgreSQL escape strings", async () => {
+    const { root, base } = await fixture();
+    await append(
+      root,
+      "0001_next",
+      String.raw`SELECT 'C:\';
+SELECT E'it\'s; DELETE FROM ignored';
+-- schedule-migration-review: destructive-data-change
+-- schedule-migration-reason: obsolete rows are intentionally removed
+DELETE FROM things;
+`,
+    );
+    expect(() => verifyMigrationPolicy({ repositoryRoot: root, base })).not.toThrow();
+  });
+
   it("requires review for dollar-quoted procedural SQL and does not split inside its body", async () => {
     const body =
       "DO $body$ BEGIN RAISE NOTICE '--> statement-breakpoint DROP TABLE'; END $body$;\n";
