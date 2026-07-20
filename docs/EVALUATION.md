@@ -548,6 +548,12 @@ The audit deliberately leaves these visible instead of turning them into false g
 
 - historical migration verification covers fresh-to-head, populated `0003` plan-state backfills,
   and the populated `0011` weekday-array upgrade, not every prior release boundary;
+- desktop lifecycle smoke repeats one build against one data root; it does not yet install a
+  populated N-1 release, install N over it, compare every durable content/sequence signal, and prove
+  that reinstalling N-1 fails closed without mutation on Windows and Linux;
+- desktop migration admission currently compares a hand-maintained schema token in the runtime
+  journal instead of treating the complete live migration ledger as the authoritative exact,
+  valid-prefix, ahead, or divergent compatibility decision;
 - the populated-upgrade repair preserves migration `0004`'s canonical timestamp but changes its SQL
   hash; databases migrated before the repair retain the legacy hash, while recovery compatibility
   deliberately uses the ordered timestamp ledger;
@@ -561,7 +567,9 @@ The audit deliberately leaves these visible instead of turning them into false g
   PostgreSQL. Typed archive values never become restore SQL, opened-frame validation precedes one
   bounded temporary copy, and framing is OS-neutral and unit-tested with Windows/Linux producer
   metadata. CI does not yet hand a physical artifact from a Windows producer to a Linux consumer.
-  Checksums are not signatures, so archive custody remains part of this trust boundary;
+  Checksums are not signatures, old archive-version golden fixtures are not yet retained, and a
+  version-1 archive must currently be imported with its matching release before a normal upgrade, so
+  archive custody and matching-release availability remain part of this trust boundary;
 - worker process-kill recovery covers crashes before a side effect and after an idempotent side
   effect but before acknowledgement; future external consumers must still enforce event-ID
   idempotency at their own durability boundary;

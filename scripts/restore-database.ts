@@ -174,7 +174,15 @@ export function disposableRecoveryDatabaseName(
   return Object.fromEntries(disposablePlanEntries(plan))[role] as string;
 }
 
-export async function runPsql(databaseName: string, statement: string): Promise<string> {
+interface PsqlExecutionOptions {
+  readonly quiet?: boolean;
+}
+
+export async function runPsql(
+  databaseName: string,
+  statement: string,
+  options: PsqlExecutionOptions = {},
+): Promise<string> {
   quoteIdentifier(databaseName);
   return runComposeCommand([
     "exec",
@@ -189,6 +197,7 @@ export async function runPsql(databaseName: string, statement: string): Promise<
     "--set=ON_ERROR_STOP=1",
     "--tuples-only",
     "--no-align",
+    ...(options.quiet ? ["--quiet"] : []),
     "--command",
     statement,
   ]);

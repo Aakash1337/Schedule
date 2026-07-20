@@ -303,6 +303,15 @@ async function produceArchive(archivePath: string): Promise<void> {
     await initializeDisposableRecoveryActiveDatabase(sourcePlan);
     await runPsql(sourcePlan.activeDatabase, portableFixtureSql);
     const expectedSignals = await portableDatabaseSignals(sourcePlan.activeDatabase);
+    await runPsql(
+      "postgres",
+      `ALTER DATABASE ${JSON.stringify(sourcePlan.activeDatabase)} SET TIME ZONE 'Pacific/Chatham';`,
+    );
+    assert.deepEqual(
+      await portableDatabaseSignals(sourcePlan.activeDatabase),
+      expectedSignals,
+      "portable signals must not depend on the database session time zone",
+    );
     const result = await exportPortableScheduleData(archivePath, sourcePlan.activeDatabase);
     assert.equal(result.manifest.producer.platform, platform());
     assert.deepEqual(result.manifest.data.contentSignals, expectedSignals.contentSignals);

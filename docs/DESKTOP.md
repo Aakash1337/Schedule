@@ -167,10 +167,19 @@ and does not protect against administrators, root, or malware already running as
 
 ## Data lifecycle and recovery
 
-First launch initializes a staged private database cluster, applies migrations, validates the
-result, and promotes it atomically. Later upgrades create a verified pre-migration backup before
-changing user data. An interrupted or incompatible upgrade will fail closed into a recovery screen;
-the application will not silently discard or recreate an existing database.
+First launch initializes and atomically promotes a staged private database cluster, then applies
+migrations and validates it before serving user traffic. No user data exists during that initial
+promotion. Later upgrades create a verified pre-migration backup before changing user data. An
+interrupted or incompatible upgrade will fail closed into a recovery screen; the application will
+not silently discard or recreate an existing database.
+
+The application identifier and its `data` child are a storage compatibility boundary: a future
+release must not rename either without an explicit copy, validation, and atomic-switch migration.
+Before automatic desktop upgrade compatibility is considered complete, startup must use the full
+live migration ledger—not only a hand-maintained schema token—to distinguish an exact database, a
+valid upgrade prefix, a newer database, and a divergent history. Release acceptance must also prove
+a populated installed N-1 to N upgrade and a fail-closed downgrade on both supported operating
+systems. These remaining evidence gaps are tracked in [EVALUATION.md](./EVALUATION.md).
 
 Database major upgrades require the old bundled runtime to export the data and a staged new runtime
 to restore and validate it. A new PostgreSQL major version must never be started directly against an

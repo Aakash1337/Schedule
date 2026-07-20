@@ -19,6 +19,7 @@ describe("portable database identity and safety", () => {
     expect(source).not.toMatch(/\bpg_restore\b/);
     expect(source).toContain("pg_catalog.jsonb_array_elements($1::pg_catalog.jsonb)");
     expect(source).toContain("session_replication_role = replica");
+    expect(source).toContain("SET LOCAL TIME ZONE 'UTC'");
   });
 });
 

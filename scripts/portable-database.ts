@@ -507,6 +507,17 @@ function parseSignalRows(
   return Object.fromEntries(keys.map((key) => [key, result[key] as string]));
 }
 
+function canonicalSignalTransaction(query: string): string {
+  return `BEGIN;
+    SET LOCAL TIME ZONE 'UTC';
+    SET LOCAL DateStyle = 'ISO, YMD';
+    SET LOCAL IntervalStyle = 'postgres';
+    SET LOCAL bytea_output = 'hex';
+    SET LOCAL extra_float_digits = 3;
+    ${query};
+    COMMIT;`;
+}
+
 export async function portableDatabaseSignals(
   databaseName: string,
 ): Promise<PortableDatabaseSignals> {
@@ -520,7 +531,7 @@ export async function portableDatabaseSignals(
     })
     .join("\nUNION ALL\n");
   const contentSignals = parseSignalRows(
-    await runPsql(databaseName, contentQuery),
+    await runPsql(databaseName, canonicalSignalTransaction(contentQuery), { quiet: true }),
     portableDataPolicyV1.includedTables,
     /^\d+:[0-9a-f]{32}$/,
     "portable content signal",
@@ -533,7 +544,7 @@ export async function portableDatabaseSignals(
     })
     .join("\nUNION ALL\n");
   const sequenceSignals = parseSignalRows(
-    await runPsql(databaseName, sequenceQuery),
+    await runPsql(databaseName, canonicalSignalTransaction(sequenceQuery), { quiet: true }),
     portableDataPolicyV1.sequences,
     /^-?\d+:(?:true|false)$/,
     "portable sequence signal",

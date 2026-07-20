@@ -43,6 +43,21 @@ is rejected as incompatible, import it using the matching Schedule source releas
 that restored installation normally. Raw PostgreSQL cluster directories are never portable and must
 not be copied between operating systems or PostgreSQL major versions.
 
+## Application updates and data preservation
+
+A portable archive is a transfer and recovery bridge, not a shortcut around database migrations.
+For an older archive, first run its matching Schedule release, import and verify it there, take a
+normal recovery backup, and then update the application. Normal desktop updates must keep the stable
+per-user data location, validate the existing database, publish a verified pre-migration backup,
+apply only an ordered forward migration, and fail closed instead of creating an empty replacement.
+A newer or divergent migration ledger must be rejected without mutation.
+
+The current desktop runtime already retains its data outside installed program files, backs up
+before a detected migration, and refuses to silently reinitialize an existing installation. Full
+release-grade update evidence still requires live-ledger-based upgrade/downgrade admission and
+populated installed N-1 to N tests on Windows and Linux; those limitations are recorded in
+[EVALUATION.md](./EVALUATION.md) rather than being presented as completed guarantees.
+
 ## Data that moves
 
 The policy is exhaustive: every current Schedule table is classified as portable or local-only, and
