@@ -55,13 +55,14 @@ fn parse_roots(args: &[OsString]) -> Result<SmokeRoots, ()> {
     {
         return Err(());
     }
-    let runtime_root = canonical_directory(PathBuf::from(&args[3]))?;
+    let runtime_path = PathBuf::from(&args[3]);
+    let runtime_root = canonical_directory(runtime_path.clone())?;
     let data_root = validated_data_directory(PathBuf::from(&args[5]))?;
     if overlaps(&runtime_root, &data_root.identity) {
         return Err(());
     }
     Ok(SmokeRoots {
-        runtime_root,
+        runtime_root: runtime_path,
         data_root: data_root.path,
     })
 }
@@ -238,10 +239,7 @@ mod tests {
             roots.data.clone().into_os_string(),
         ]);
         let parsed = parsed.unwrap();
-        assert_eq!(
-            parsed.runtime_root,
-            fs::canonicalize(&roots.runtime).unwrap()
-        );
+        assert_eq!(parsed.runtime_root, roots.runtime);
         assert_eq!(parsed.data_root, roots.data);
     }
 
