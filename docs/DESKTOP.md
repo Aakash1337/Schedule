@@ -252,6 +252,12 @@ the embedded manifest anchor, startup, orderly shutdown, and restart path withou
 arbitrary GUI/webview process proves readiness. Each invocation is shell-free, hidden on Windows, bounded
 to 450 seconds, and reports only a numeric exit code on failure.
 
+After the Windows lifecycle smoke, CI writes a unique marker under the real per-user data directory,
+silently runs the NSIS uninstaller, requires the installed executable to be removed, and verifies that
+the marker is unchanged. This makes preservation of `%LOCALAPPDATA%\com.aakash.schedule\data` an
+enforced NSIS uninstall contract rather than an installer assumption. The check does not claim the same
+behavior for MSI or Linux package-manager removal.
+
 Runtime assembly performs no downloads. Release automation must supply production API/worker
 deployment trees, pinned Node and PostgreSQL 17 directories, their exact versions and tree hashes,
 and a target OS/architecture. The emitted `SCHEDULE_DESKTOP_RUNTIME_MANIFEST_SHA256` value must be

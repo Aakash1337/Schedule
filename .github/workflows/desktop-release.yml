@@ -223,6 +223,28 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "NSIS installer exited with $($process.ExitCode)." }
           if (-not (Test-Path -LiteralPath (Join-Path $install 'schedule-desktop.exe') -PathType Leaf)) { throw 'NSIS install did not produce schedule-desktop.exe.' }
           pnpm exec tsx scripts/smoke-desktop-installer.ts --require-launch --probe-executables $install
+      - name: Verify Windows uninstall preserves user data
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $install = Join-Path $env:RUNNER_TEMP 'schedule-installed'
+          $application = Join-Path $install 'schedule-desktop.exe'
+          $uninstaller = Join-Path $install 'uninstall.exe'
+          if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) { throw 'NSIS install did not produce uninstall.exe.' }
+          $data = Join-Path $env:LOCALAPPDATA 'com.aakash.schedule\data'
+          [System.IO.Directory]::CreateDirectory($data) | Out-Null
+          $marker = Join-Path $data ("uninstall-retention-$([Guid]::NewGuid().ToString('N')).marker")
+          $expected = 'schedule-uninstall-retention-v1'
+          try {
+            [System.IO.File]::WriteAllText($marker, $expected, [System.Text.UTF8Encoding]::new($false))
+            $process = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -NoNewWindow -PassThru
+            if ($process.ExitCode -ne 0) { throw "NSIS uninstaller exited with $($process.ExitCode)." }
+            if (Test-Path -LiteralPath $application -PathType Leaf) { throw 'NSIS uninstall retained schedule-desktop.exe.' }
+            if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { throw 'NSIS uninstall removed Schedule user data.' }
+            if ([System.IO.File]::ReadAllText($marker) -cne $expected) { throw 'NSIS uninstall changed Schedule user data.' }
+          } finally {
+            Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+          }
       - name: Collect release metadata
         shell: bash
         run: |
