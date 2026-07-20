@@ -237,7 +237,7 @@ jobs:
           $expected = 'schedule-uninstall-retention-v1'
           try {
             [System.IO.File]::WriteAllText($marker, $expected, [System.Text.UTF8Encoding]::new($false))
-            $process = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -NoNewWindow -PassThru
+            $process = Start-Process -FilePath $uninstaller -ArgumentList '/S', "_?=$install" -Wait -NoNewWindow -PassThru
             if ($process.ExitCode -ne 0) { throw "NSIS uninstaller exited with $($process.ExitCode)." }
             if (Test-Path -LiteralPath $application -PathType Leaf) { throw 'NSIS uninstall retained schedule-desktop.exe.' }
             if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { throw 'NSIS uninstall removed Schedule user data.' }
