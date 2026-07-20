@@ -631,8 +631,9 @@ when testing against a disposable PostgreSQL instance.
 GitHub CI keeps static checks and PostgreSQL integration checks in separate jobs. The integration job
 starts a fresh PostgreSQL 17 Compose project, applies every migration, and runs the planner, local
 product API, integration gateway, outbox lease/fencing, outbound webhook, plan-state and
-weekday-migration upgrades, complete archive round-trip, and recovery state-machine verifiers.
-Diagnostics are captured on failure, and the job always removes the disposable database volume.
+weekday-migration upgrades, complete recovery-archive round-trip, portable migration, and recovery
+state-machine verifiers. Diagnostics are captured on failure, and the job always removes the
+disposable database volume.
 
 Migration `0012` adds weekday range, uniqueness, and exclusion/preference overlap constraints. It
 removes out-of-range legacy values, deduplicates in first-occurrence order, and resolves overlaps in
@@ -653,8 +654,12 @@ These scripts intentionally target the current Compose service, database, and ro
 - database: `schedule`
 - role: `schedule`
 
-Custom-format PostgreSQL archives are recovery artifacts, not portable user exports. A stable,
-versioned JSON or CSV import/export format remains deferred.
+`pnpm db:backup` custom-format archives remain same-environment recovery artifacts. The separate
+versioned `.schedule` format supports explicit portable export/import across Windows and Linux with
+an exact current-schema compatibility check, staged validation, replacement, and retained rollback.
+It migrates durable product and AI/behavior history while excluding identities, credentials, secrets,
+delivery queues, and hosted synchronization journals. See
+[PORTABLE_MIGRATION.md](./PORTABLE_MIGRATION.md) for commands, normalization, and custody limits.
 
 Do not reuse the Compose credentials or these destructive local commands for a hosted environment.
 A hosted release needs provider-managed backup retention and restore drills, separate runtime and

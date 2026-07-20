@@ -77,6 +77,8 @@ jobs:
         run: pnpm verify:hermes-adapter
       - name: Verify complete backup and restore path
         run: pnpm verify:backup-restore
+      - name: Verify portable export and import against PostgreSQL
+        run: pnpm verify:portable-migration
       - name: Verify restore, promotion, rollback, and cleanup state machine
         run: pnpm verify:recovery-state-machine
       - name: PostgreSQL diagnostics

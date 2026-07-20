@@ -654,6 +654,10 @@ async function runRepositoryCommand(
   });
 }
 
+export async function migrateScheduleDatabase(databaseName: string): Promise<void> {
+  await runRepositoryCommand(["db:migrate"], "Schedule database migration", databaseName);
+}
+
 async function collectRecoveryError(
   errors: Error[],
   label: string,
@@ -903,6 +907,20 @@ async function promoteStagingDatabase(
       { cause: originalError },
     );
   }
+}
+
+export async function promoteScheduleStagingDatabase(
+  stagingDatabase: string,
+  previousDatabase: string,
+  activeDatabase = composeDatabaseName,
+): Promise<void> {
+  for (const databaseName of [activeDatabase, stagingDatabase, previousDatabase]) {
+    quoteIdentifier(databaseName);
+  }
+  await promoteStagingDatabase(
+    { activeDatabase, stagingDatabase, previousDatabase },
+    postgresRecoveryOperations,
+  );
 }
 
 export async function promoteDisposableRecoveryStaging(

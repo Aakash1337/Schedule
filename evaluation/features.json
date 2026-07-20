@@ -40,6 +40,7 @@
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
     "notification-migrations": { "command": "pnpm verify:database", "ci": true },
     "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
+    "portable-migration": { "command": "pnpm verify:portable-migration", "ci": true },
     "recovery-state": {
       "command": "pnpm verify:recovery-state-machine",
       "ci": true
@@ -1030,6 +1031,63 @@
           "command": "backup-restore",
           "anchors": [
             "Backup/restore verification passed valid round-trip, immutable snapshot, adversarial rejection"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "portable-data-migration",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/PORTABLE_MIGRATION.md",
+        "anchor": "## Data that moves"
+      },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/database/src/portable-data.test.ts",
+          "command": "unit",
+          "anchors": [
+            "classifies every Schedule table exactly once",
+            "keeps AI analysis and long-term adaptation history portable",
+            "never exports credentials, sessions, delivery queues, or hosted sync journals"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/portable-archive.test.ts",
+          "command": "unit",
+          "anchors": [
+            "round-trips a %s-produced archive without OS assumptions",
+            "rejects corruption before exposing database bytes",
+            "rejects truncation, symlinks, and accidental overwrite"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/portable-payload.test.ts",
+          "command": "unit",
+          "anchors": [
+            "round-trips every table as non-executable typed values",
+            "rejects reordered tables, malformed rows, and trailing records"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/portable-database.test.ts",
+          "command": "unit",
+          "anchors": [
+            "treats archive content only as typed data instead of restore SQL",
+            "requires explicit replacement confirmation for import"
+          ]
+        },
+        {
+          "level": "drill",
+          "file": "scripts/verify-portable-migration.ts",
+          "command": "portable-migration",
+          "anchors": [
+            "Portable migration verification passed every durable table, AI/behavior history, exclusions, normalization, replacement, and rollback."
           ]
         }
       ]

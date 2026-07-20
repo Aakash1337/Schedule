@@ -176,6 +176,12 @@ Database major upgrades require the old bundled runtime to export the data and a
 to restore and validate it. A new PostgreSQL major version must never be started directly against an
 older data directory.
 
+The repository CLI now provides a versioned logical `.schedule` archive for moving every classified
+durable product row—including stored AI proposals and long-term behavior feedback—between matching
+Schedule schemas on Windows and Linux. It excludes environment identities, credentials, secrets,
+delivery queues, and hosted sync journals; see [PORTABLE_MIGRATION.md](./PORTABLE_MIGRATION.md).
+One-click desktop controls for this archive are still pending native lifecycle integration.
+
 ## Web hosting and continuity
 
 The existing web application remains valuable for a future hosted product, including a Cloudflare,

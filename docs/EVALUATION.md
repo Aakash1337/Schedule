@@ -60,6 +60,7 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:notification-migrations`    | Upgrade populated reminder/delivery state through migration 0027            | Yes, disposable only            |
 | `pnpm verify:local-model-advisor`        | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
 | `pnpm verify:backup-restore`             | Verify archive/schema/content/sequence fidelity                             | Yes                             |
+| `pnpm verify:portable-migration`         | Verify durable migration, exclusions, replacement, and rollback             | Yes, disposable only            |
 | `pnpm verify:recovery-state-machine`     | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
 | `pnpm verify:web-e2e`                    | Exercise the built browser, API, migrations, and PostgreSQL planning loop   | Own disposable Compose database |
 | `pnpm eval:full`                         | Run feature/coverage, local integration, recovery, and Chromium web gates   | Yes, with the recovery sentinel |
@@ -555,6 +556,12 @@ The audit deliberately leaves these visible instead of turning them into false g
 - backup rejection covers empty, plain-SQL, truncated, schema-only, and migration-ledger-filtered
   archives plus caller-path replacement; it does not authenticate a structurally complete foreign
   Schedule archive, so backup custody remains part of the recovery trust boundary;
+- portable migration covers every classified durable table, stored AI proposals, all four long-term
+  feedback streams, secret/transient exclusions, normalization, replacement, and rollback on real
+  PostgreSQL. Typed archive values never become restore SQL, opened-frame validation precedes one
+  bounded temporary copy, and framing is OS-neutral and unit-tested with Windows/Linux producer
+  metadata. CI does not yet hand a physical artifact from a Windows producer to a Linux consumer.
+  Checksums are not signatures, so archive custody remains part of this trust boundary;
 - worker process-kill recovery covers crashes before a side effect and after an idempotent side
   effect but before acknowledgement; future external consumers must still enforce event-ID
   idempotency at their own durability boundary;

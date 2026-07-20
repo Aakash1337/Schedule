@@ -22,7 +22,10 @@ Durable product and engineering specifications live here so the repository root 
   entry, reminder management, browser verification, and interaction contracts.
 - [Desktop application](./DESKTOP.md): native Windows/Linux runtime architecture, lifecycle,
   security, recovery, packaging status, and the future hosted-continuity boundary.
-- [Local operations](./OPERATIONS.md): verified backup, staged restore, automated recovery state-machine checks, and database maintenance.
+- [Portable data migration](./PORTABLE_MIGRATION.md): versioned Windows/Linux export and import,
+  durable AI/history coverage, exclusions, replacement, rollback, and custody limits.
+- [Local operations](./OPERATIONS.md): verified backup, staged restore, portable migration, automated
+  recovery state-machine checks, and database maintenance.
 - [Hosted deployment](./DEPLOYMENT.md): provider-neutral topology, the lean Railway adapter,
   release ordering, secrets, health checks, backups, rollback, and staging acceptance.
 - [Worker observability](./OBSERVABILITY.md): loopback health, fixed-cardinality metrics, privacy
