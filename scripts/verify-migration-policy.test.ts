@@ -217,6 +217,28 @@ describe("migration policy", () => {
     expect(() => verifyMigrationPolicy({ repositoryRoot: root, base })).not.toThrow();
   });
 
+  it("requires review immediately before each semicolon-separated destructive statement", async () => {
+    const misplaced = await fixture();
+    await append(
+      misplaced.root,
+      "0001_next",
+      "-- schedule-migration-review: destructive-data-change\n-- schedule-migration-reason: this comment approves only the select\nSELECT '; DELETE FROM ignored'; DELETE FROM things;\n",
+    );
+    expect(() =>
+      verifyMigrationPolicy({ repositoryRoot: misplaced.root, base: misplaced.base }),
+    ).toThrow(/schedule-migration-review/u);
+
+    const reviewed = await fixture();
+    await append(
+      reviewed.root,
+      "0001_next",
+      "SELECT '; DELETE FROM ignored'; -- schedule-migration-review: destructive-data-change\n-- schedule-migration-reason: obsolete rows are intentionally removed\nDELETE FROM things;\n",
+    );
+    expect(() =>
+      verifyMigrationPolicy({ repositoryRoot: reviewed.root, base: reviewed.base }),
+    ).not.toThrow();
+  });
+
   it("requires review for dollar-quoted procedural SQL and does not split inside its body", async () => {
     const body =
       "DO $body$ BEGIN RAISE NOTICE '--> statement-breakpoint DROP TABLE'; END $body$;\n";

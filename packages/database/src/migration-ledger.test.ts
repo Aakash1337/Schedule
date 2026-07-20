@@ -86,15 +86,44 @@ async function withMetadataFixture(
 }
 
 describe("migration ledger compatibility", () => {
-  it("loads the committed manifest and pins the historical 0004 exception", async () => {
+  it("loads the committed manifest and pins every historical compatibility hash", async () => {
     const loaded = await loadMigrationManifest(migrationsFolder);
     expect(loaded.entries).toHaveLength(42);
-    expect(loaded.entries[4]).toEqual({
-      tag: "0004_public_cerise",
-      createdAt: 1_783_834_818_322,
-      sha256: "4c15b8cd344fe8ad9fad3b5da537e1b4f2cdd925e510afd76ee2712ded6089d0",
-      compatibleSha256: ["6ab84e9bb63326595061b24584e8fe58f3cf23ba1e6d6786f3777a7347a646f6"],
-    });
+    expect(loaded.entries.filter((entry) => entry.compatibleSha256.length > 0)).toEqual([
+      {
+        tag: "0004_public_cerise",
+        createdAt: 1_783_834_818_322,
+        sha256: "4c15b8cd344fe8ad9fad3b5da537e1b4f2cdd925e510afd76ee2712ded6089d0",
+        compatibleSha256: ["6ab84e9bb63326595061b24584e8fe58f3cf23ba1e6d6786f3777a7347a646f6"],
+      },
+      {
+        tag: "0024_fast_thundra",
+        createdAt: 1_784_019_892_248,
+        sha256: "04238c973db454296aed93ba5cb2e86ec6005ffea3611873fb1074364f353f19",
+        compatibleSha256: ["26f049d219f3962d7298fd4acca87bc0b8ceeeb680bc7df1b65056eb572b38c5"],
+      },
+      {
+        tag: "0031_daffy_bloodstrike",
+        createdAt: 1_784_070_583_475,
+        sha256: "2d4efadaf90e08aa8279c03794cf6e0fc9905ac4a5d741ff49b625dc26b03cf8",
+        compatibleSha256: ["34e68d0a3907c79ecbc3f97949c493800d688e84998657d440f155bfa089b8c1"],
+      },
+      {
+        tag: "0032_harsh_purifiers",
+        createdAt: 1_784_079_639_528,
+        sha256: "a66ebeec4f40bed507fb5bd456b7d8e6a26924f8c169f9b01af19795d7154079",
+        compatibleSha256: ["4b9982a0deb4d00e68b7871ea4c84b2b28c6bdfcf257f8717ec0025c8de5e1e9"],
+      },
+      {
+        tag: "0041_hosted_work_item_sync",
+        createdAt: 1_784_349_976_452,
+        sha256: "70129ffa219c0d9c9fbda5d107fe43b12f0af609b93070e5b769af62cec046ba",
+        compatibleSha256: [
+          "40064a598eab70d10c7a0090d29f2793417621d39029d7d7b799403d515abd9f",
+          "b4c65f84c69c294c5f481b1c36f7906af625016a9fd1300cad6cf7f0a9b885ca",
+        ],
+      },
+    ]);
   });
 
   it("recognizes exact current and exact historical-compatible histories", () => {

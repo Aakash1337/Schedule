@@ -561,9 +561,9 @@ The audit deliberately leaves these visible instead of turning them into false g
   authoritative exact, valid-prefix, ahead, or divergent compatibility decision. The database-wide
   migration lock and installed runtime execute-path still need the populated cross-release evidence
   described above before release-to-release update compatibility is considered complete;
-- the populated-upgrade repair preserves migration `0004`'s canonical timestamp but changes its SQL
-  hash; databases migrated before the repair retain the one exact legacy hash accepted at that
-  position, while every other timestamp/hash pair must match the immutable manifest;
+- a complete reachable-history audit found six previously journaled SQL variants across migrations
+  `0004`, `0024`, `0031`, `0032`, and `0041`; only those exact hashes at their canonical positions
+  are accepted, while every other timestamp/hash pair must match the immutable manifest;
 - PostgreSQL recovery verifies the successful swap/rollback path, while compensation fault injection
   is currently operation-level rather than process-kill testing;
 - backup rejection covers empty, plain-SQL, truncated, schema-only, and migration-ledger-filtered

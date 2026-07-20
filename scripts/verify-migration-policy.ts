@@ -42,6 +42,16 @@ const destructiveReview =
   /^\s*--\s*schedule-migration-review:\s*destructive-data-change\s*\r?\n\s*--\s*schedule-migration-reason:\s*\S[^\r\n]*\r?\n/iu;
 const bootstrapCompatibleHashes = new Map<string, readonly string[]>([
   ["0004_public_cerise", ["6ab84e9bb63326595061b24584e8fe58f3cf23ba1e6d6786f3777a7347a646f6"]],
+  ["0024_fast_thundra", ["26f049d219f3962d7298fd4acca87bc0b8ceeeb680bc7df1b65056eb572b38c5"]],
+  ["0031_daffy_bloodstrike", ["34e68d0a3907c79ecbc3f97949c493800d688e84998657d440f155bfa089b8c1"]],
+  ["0032_harsh_purifiers", ["4b9982a0deb4d00e68b7871ea4c84b2b28c6bdfcf257f8717ec0025c8de5e1e9"]],
+  [
+    "0041_hosted_work_item_sync",
+    [
+      "40064a598eab70d10c7a0090d29f2793417621d39029d7d7b799403d515abd9f",
+      "b4c65f84c69c294c5f481b1c36f7906af625016a9fd1300cad6cf7f0a9b885ca",
+    ],
+  ],
 ]);
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -364,6 +374,12 @@ function sqlStatements(source: string): readonly SqlStatement[] {
         index = end + delimiter.length;
         continue;
       }
+    }
+    if (character === ";") {
+      finish(index);
+      index += 1;
+      statementStart = index;
+      continue;
     }
     searchable += character;
     index += 1;
