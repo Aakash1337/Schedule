@@ -554,7 +554,8 @@ The adaptive planner complements, rather than replaces:
   provider transport remains deferred
 - Search, filters, saved views, and bulk editing
 - Notes, links, and attachments
-- Import, export, backup, and restore
+- Portable import/export and verified local backup/restore are implemented at the repository CLI;
+  one-click desktop controls and hosted import remain targets
 - Activity history and audit trail
 - Multiple workspaces, with collaboration considered later
 
@@ -710,10 +711,12 @@ plan mutation. The advisor remains optional and subordinate to the deterministic
 
 ### Phase 5 — Hosting and synchronization
 
-The local MVP now includes verified logical backups and staged restore commands. Its automated
-disposable recovery drill exercises archive creation, staged restore, promotion, rollback, and exact
-cleanup without touching the real local database. Phase 5 still covers provider-managed retention,
-point-in-time recovery, hosted restore drills, and the operational controls required for hosting.
+The local MVP now includes verified logical recovery backups, staged restore commands, and a
+versioned portable `.schedule` export/import path for matching schemas. Its automated disposable
+drills cover recovery archive creation, portable AI/history migration, exclusions, staged restore,
+promotion, rollback, and exact cleanup without touching the real local database. Phase 5 still covers
+provider-managed retention, point-in-time recovery, hosted restore/import drills, and the operational
+controls required for hosting.
 
 - Implemented foundation: workspace-bound machine credentials and a confirmed, idempotent inbound
   automation API with Today and credential-scoped work-item discovery; this is not hosted end-user

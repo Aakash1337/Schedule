@@ -145,6 +145,47 @@ describe("restore archive snapshots", () => {
       expect(operation).not.toHaveBeenCalled();
     });
   });
+
+  it("enforces a caller size limit before copying an archive", async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const sourcePath = path.join(directory, "source.dump");
+      await writeFile(sourcePath, "12345");
+      const operation = vi.fn(async () => undefined);
+
+      await expect(
+        withPreparedRestoreArchive(sourcePath, operation, { maximumSourceSizeBytes: 4 }),
+      ).rejects.toThrow(/4-byte safety limit/);
+      expect(operation).not.toHaveBeenCalled();
+
+      await expect(
+        withPreparedRestoreArchive(
+          sourcePath,
+          async ({ sizeBytes }) => {
+            expect(sizeBytes).toBe(5);
+          },
+          { maximumSourceSizeBytes: 5 },
+        ),
+      ).resolves.toBeUndefined();
+    });
+  });
+
+  it("runs format-specific validation on the opened source before snapshot work", async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const sourcePath = path.join(directory, "source.dump");
+      await writeFile(sourcePath, "invalid format");
+      const validationFailure = new Error("unsupported archive frame");
+      const operation = vi.fn(async () => undefined);
+      const validateOpenedSource = vi.fn(async () => {
+        throw validationFailure;
+      });
+
+      await expect(
+        withPreparedRestoreArchive(sourcePath, operation, { validateOpenedSource }),
+      ).rejects.toBe(validationFailure);
+      expect(validateOpenedSource).toHaveBeenCalledOnce();
+      expect(operation).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("Schedule archive catalogs", () => {

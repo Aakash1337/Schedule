@@ -286,8 +286,8 @@ invalidation. It does not prove delivery to a WhatsApp account or phone.
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh
 PostgreSQL 17 Compose project. It also verifies a complete archive round trip, the real disposable
-restore/promote/rollback/cleanup state machine, and the ten live Chromium product flows in a
-separate disposable database.
+portable export/import of durable AI and behavior history, the restore/promote/rollback/cleanup state
+machine, and the ten live Chromium product flows in a separate disposable database.
 
 ## Local data protection
 
@@ -303,6 +303,23 @@ Backups default to `~/.schedule/backups`, outside the repository. Restoring repl
 previous database remains available for explicit rollback until a separately confirmed cleanup. The
 same mechanics are exercised automatically against nonce-bound disposable databases in CI. See the
 [operations guide](./docs/OPERATIONS.md) before using `pnpm db:restore`.
+
+### Portable migration
+
+Move durable Schedule data between matching installations—including Windows to Linux—with a
+versioned `.schedule` archive:
+
+```powershell
+pnpm data:export -- --output E:\ScheduleTransfer\my-schedule.schedule
+pnpm data:import -- E:\ScheduleTransfer\my-schedule.schedule --confirm=replace-schedule
+```
+
+The import is staged and verified before it replaces the local database, and the previous database
+is retained for rollback. Tasks, plans, activity, reminder definitions, stored AI proposals, and
+long-term behavior feedback migrate; identities, sessions, credentials, secrets, delivery queues,
+and hosted sync journals do not. The archive is checksummed but not encrypted or signed. Use the
+matching Schedule schema release, keep the file private, and reconnect integrations after import.
+See the [portable migration guide](./docs/PORTABLE_MIGRATION.md) for the full contract.
 
 ## Deployment boundary
 

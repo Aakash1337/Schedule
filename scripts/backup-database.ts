@@ -388,6 +388,7 @@ async function copyOpenedArchive(
   source: FileHandle,
   destination: FileHandle,
   initialState: BigIntStats,
+  maximumSourceSizeBytes?: number,
 ): Promise<number> {
   if (initialState.size > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error("Restore archive is too large to snapshot safely.");
@@ -400,6 +401,9 @@ async function copyOpenedArchive(
     const { bytesRead } = await source.read(buffer, 0, requested, sourceOffset);
     if (bytesRead === 0) {
       throw new Error("Restore archive changed while its private snapshot was being created.");
+    }
+    if (maximumSourceSizeBytes !== undefined && sourceOffset + bytesRead > maximumSourceSizeBytes) {
+      throw new Error(`Restore archive exceeds the ${maximumSourceSizeBytes}-byte safety limit.`);
     }
     let written = 0;
     while (written < bytesRead) {
@@ -430,23 +434,39 @@ async function copyOpenedArchive(
   return sizeBytes;
 }
 
-async function prepareRestoreArchive(backupPath: string): Promise<{
+export interface RestoreArchivePreparationOptions {
+  readonly maximumSourceSizeBytes?: number;
+  readonly validateOpenedSource?: (source: FileHandle, metadata: BigIntStats) => Promise<void>;
+}
+
+async function prepareRestoreArchive(
+  backupPath: string,
+  options: RestoreArchivePreparationOptions,
+): Promise<{
   readonly archive: PreparedRestoreArchive;
   readonly cleanup: () => Promise<void>;
 }> {
+  const maximumSourceSizeBytes = options.maximumSourceSizeBytes;
+  if (
+    maximumSourceSizeBytes !== undefined &&
+    (!Number.isSafeInteger(maximumSourceSizeBytes) || maximumSourceSizeBytes < 1)
+  ) {
+    throw new Error("Restore archive safety limit must be a positive safe integer.");
+  }
   const sourcePath = path.resolve(backupPath);
   const pathMetadata = await lstat(sourcePath, { bigint: true });
   if (pathMetadata.isSymbolicLink() || !pathMetadata.isFile() || pathMetadata.size === 0n) {
     throw new Error(`Restore archive must be a non-empty, non-symlink regular file: ${sourcePath}`);
   }
+  if (maximumSourceSizeBytes !== undefined && pathMetadata.size > BigInt(maximumSourceSizeBytes)) {
+    throw new Error(`Restore archive exceeds the ${maximumSourceSizeBytes}-byte safety limit.`);
+  }
 
-  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), "schedule-restore-archive-"));
-  const snapshotPath = path.join(temporaryDirectory, "archive.dump");
+  let temporaryDirectory: string | undefined;
   let source: FileHandle | undefined;
   let destination: FileHandle | undefined;
 
   try {
-    await chmod(temporaryDirectory, 0o700);
     const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
     source = await open(sourcePath, constants.O_RDONLY | noFollow);
     const openedMetadata = await source.stat({ bigint: true });
@@ -461,8 +481,17 @@ async function prepareRestoreArchive(backupPath: string): Promise<{
     ) {
       throw new Error(`Restore archive path changed before it could be snapshotted: ${sourcePath}`);
     }
+    await options.validateOpenedSource?.(source, openedMetadata);
+    temporaryDirectory = await mkdtemp(path.join(tmpdir(), "schedule-restore-archive-"));
+    await chmod(temporaryDirectory, 0o700);
+    const snapshotPath = path.join(temporaryDirectory, "archive.dump");
     destination = await open(snapshotPath, "wx", 0o600);
-    const sizeBytes = await copyOpenedArchive(source, destination, openedMetadata);
+    const sizeBytes = await copyOpenedArchive(
+      source,
+      destination,
+      openedMetadata,
+      maximumSourceSizeBytes,
+    );
     await destination.close();
     destination = undefined;
     await source.close();
@@ -472,14 +501,16 @@ async function prepareRestoreArchive(backupPath: string): Promise<{
     return {
       archive: { sourcePath, snapshotPath, sizeBytes },
       cleanup: () => {
-        cleanupPromise ??= rm(temporaryDirectory, { recursive: true, force: true });
+        cleanupPromise ??= rm(temporaryDirectory as string, { recursive: true, force: true });
         return cleanupPromise;
       },
     };
   } catch (error) {
     await Promise.allSettled([source?.close(), destination?.close()]);
     try {
-      await rm(temporaryDirectory, { recursive: true, force: true });
+      if (temporaryDirectory !== undefined) {
+        await rm(temporaryDirectory, { recursive: true, force: true });
+      }
     } catch (cleanupError) {
       throw new AggregateError(
         [error, cleanupError],
@@ -494,8 +525,9 @@ async function prepareRestoreArchive(backupPath: string): Promise<{
 export async function withPreparedRestoreArchive<Result>(
   backupPath: string,
   operation: (archive: PreparedRestoreArchive) => Promise<Result>,
+  options: RestoreArchivePreparationOptions = {},
 ): Promise<Result> {
-  const prepared = await prepareRestoreArchive(backupPath);
+  const prepared = await prepareRestoreArchive(backupPath, options);
   let operationCompleted = false;
   let operationResult: Result | undefined;
   let operationError: unknown;

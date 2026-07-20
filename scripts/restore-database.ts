@@ -174,7 +174,15 @@ export function disposableRecoveryDatabaseName(
   return Object.fromEntries(disposablePlanEntries(plan))[role] as string;
 }
 
-export async function runPsql(databaseName: string, statement: string): Promise<string> {
+interface PsqlExecutionOptions {
+  readonly quiet?: boolean;
+}
+
+export async function runPsql(
+  databaseName: string,
+  statement: string,
+  options: PsqlExecutionOptions = {},
+): Promise<string> {
   quoteIdentifier(databaseName);
   return runComposeCommand([
     "exec",
@@ -189,6 +197,7 @@ export async function runPsql(databaseName: string, statement: string): Promise<
     "--set=ON_ERROR_STOP=1",
     "--tuples-only",
     "--no-align",
+    ...(options.quiet ? ["--quiet"] : []),
     "--command",
     statement,
   ]);
@@ -654,6 +663,10 @@ async function runRepositoryCommand(
   });
 }
 
+export async function migrateScheduleDatabase(databaseName: string): Promise<void> {
+  await runRepositoryCommand(["db:migrate"], "Schedule database migration", databaseName);
+}
+
 async function collectRecoveryError(
   errors: Error[],
   label: string,
@@ -903,6 +916,20 @@ async function promoteStagingDatabase(
       { cause: originalError },
     );
   }
+}
+
+export async function promoteScheduleStagingDatabase(
+  stagingDatabase: string,
+  previousDatabase: string,
+  activeDatabase = composeDatabaseName,
+): Promise<void> {
+  for (const databaseName of [activeDatabase, stagingDatabase, previousDatabase]) {
+    quoteIdentifier(databaseName);
+  }
+  await promoteStagingDatabase(
+    { activeDatabase, stagingDatabase, previousDatabase },
+    postgresRecoveryOperations,
+  );
 }
 
 export async function promoteDisposableRecoveryStaging(

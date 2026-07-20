@@ -4,6 +4,7 @@ export * from "./hosted-login-transaction.js";
 export * from "./hosted-work-item-sync.js";
 export * from "./integration-maintenance.js";
 export * from "./outbox.js";
+export * from "./portable-data.js";
 export * from "./repositories.js";
 export * from "./schema.js";
 export * from "./webhooks.js";
