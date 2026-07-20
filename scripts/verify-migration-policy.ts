@@ -415,9 +415,14 @@ function assertReviewedDestructiveSql(tag: string, source: string): void {
 export function parseMigrationPolicyArguments(arguments_: readonly string[]): {
   readonly base: string;
 } {
-  if (arguments_.length === 0) return { base: "HEAD^" };
-  if (arguments_.length === 2 && arguments_[0] === "--base" && arguments_[1] !== undefined) {
-    return { base: arguments_[1] };
+  const argumentsWithoutPnpmSeparator = arguments_[0] === "--" ? arguments_.slice(1) : arguments_;
+  if (argumentsWithoutPnpmSeparator.length === 0) return { base: "HEAD^" };
+  if (
+    argumentsWithoutPnpmSeparator.length === 2 &&
+    argumentsWithoutPnpmSeparator[0] === "--base" &&
+    argumentsWithoutPnpmSeparator[1] !== undefined
+  ) {
+    return { base: argumentsWithoutPnpmSeparator[1] };
   }
   throw new Error("Usage: pnpm verify:migration-policy [-- --base <base-commit>]");
 }

@@ -348,6 +348,9 @@ describe("migration policy CLI", () => {
   it("uses the first parent locally and accepts only an explicit base option", () => {
     expect(parseMigrationPolicyArguments([])).toEqual({ base: "HEAD^" });
     expect(parseMigrationPolicyArguments(["--base", "abc123"])).toEqual({ base: "abc123" });
+    expect(parseMigrationPolicyArguments(["--", "--base", "abc123"])).toEqual({
+      base: "abc123",
+    });
     expect(() => parseMigrationPolicyArguments(["--base"])).toThrow(/Usage/u);
   });
 });
