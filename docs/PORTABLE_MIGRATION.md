@@ -55,8 +55,10 @@ A newer or divergent migration ledger must be rejected without mutation.
 The current desktop runtime retains its data outside installed program files, uses the live
 migration ledger for upgrade and downgrade admission, backs up before a detected migration, and
 refuses to silently reinitialize an existing installation. Full release-grade update evidence still
-requires populated installed N-1 to N tests on Windows and Linux; that limitation is recorded in
-[EVALUATION.md](./EVALUATION.md) rather than being presented as a completed guarantee.
+requires a populated installed N-1-to-N test matrix on Windows and Linux: populate every durable
+table in N-1, install and verify N against the same data root, then prove N-1 refuses the upgraded
+database without mutation. That limitation is recorded in [EVALUATION.md](./EVALUATION.md) rather
+than being presented as a completed guarantee.
 
 ## Data that moves
 

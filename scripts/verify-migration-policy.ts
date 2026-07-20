@@ -290,6 +290,10 @@ function destructiveOperation(statement: MigrationSqlStatement): string | undefi
           "TYPE",
           "DOMAIN",
           "SEQUENCE",
+          "VIEW",
+          "FUNCTION",
+          "PROCEDURE",
+          "ROUTINE",
           "EXTENSION",
           "OWNED",
         ]
