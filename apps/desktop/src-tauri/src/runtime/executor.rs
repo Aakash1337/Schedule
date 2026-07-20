@@ -45,6 +45,8 @@ const WORKER_READY_PREFIX: &[u8] = b"SCHEDULE_DESKTOP_WORKER_READY_V1 ";
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(45);
 const DATABASE_READY_TIMEOUT: Duration = Duration::from_secs(45);
 const DATABASE_READY_RETRY: Duration = Duration::from_millis(100);
+const DATABASE_PROMOTION_RETRY_TIMEOUT: Duration = Duration::from_secs(3);
+const DATABASE_PROMOTION_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const DATABASE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const DATABASE_BACKUP_TIMEOUT: Duration = Duration::from_secs(300);
 const MIGRATION_TIMEOUT: Duration = Duration::from_secs(300);
@@ -445,8 +447,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
             if final_data.exists() {
                 return Ok(EffectOutcome::Incompatible(Incompatibility::DatabaseFormat));
             }
-            fs::rename(self.database_data()?, &final_data)
-                .map_err(|_| NativeExecutorError::new("desktop.database_promote_failed"))?;
+            promote_database_directory(self.database_data()?, &final_data, cancellation)?;
             sync_directory(
                 final_data
                     .parent()
@@ -1292,6 +1293,63 @@ fn reset_incomplete_cluster(path: &Path) -> Result<(), NativeExecutorError> {
     )
 }
 
+fn promote_database_directory(
+    source: &Path,
+    destination: &Path,
+    cancellation: &Cancellation,
+) -> Result<(), NativeExecutorError> {
+    promote_database_directory_with(source, destination, cancellation, |source, destination| {
+        fs::rename(source, destination)
+    })
+}
+
+fn promote_database_directory_with(
+    source: &Path,
+    destination: &Path,
+    cancellation: &Cancellation,
+    mut rename: impl FnMut(&Path, &Path) -> io::Result<()>,
+) -> Result<(), NativeExecutorError> {
+    let deadline = std::time::Instant::now() + DATABASE_PROMOTION_RETRY_TIMEOUT;
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(NativeExecutorError::new("desktop.operation_cancelled"));
+        }
+        match rename(source, destination) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if transient_database_promotion_error(&error)
+                    && promotion_source_is_directory(source)
+                    && promotion_destination_is_absent(destination)
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(DATABASE_PROMOTION_RETRY_INTERVAL);
+            }
+            Err(_) => {
+                return Err(NativeExecutorError::new("desktop.database_promote_failed"));
+            }
+        }
+    }
+}
+
+fn promotion_source_is_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.is_dir() && !super::integrity::is_link_or_reparse(&metadata))
+}
+
+fn promotion_destination_is_absent(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+}
+
+#[cfg(windows)]
+fn transient_database_promotion_error(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5 | 32 | 33))
+}
+
+#[cfg(not(windows))]
+fn transient_database_promotion_error(_error: &io::Error) -> bool {
+    false
+}
+
 fn validate_removable_tree(path: &Path, entries: &mut usize) -> Result<(), NativeExecutorError> {
     *entries = entries.saturating_add(1);
     if *entries > 200_000 {
@@ -1644,6 +1702,134 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code(), "desktop.operation_cancelled");
         assert!(executor.operations().calls.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn database_promotion_retries_transient_windows_failures() {
+        for code in [5, 32, 33] {
+            let root = std::env::temp_dir().join(format!(
+                "schedule-promotion-retry-{code}-{}-{}",
+                std::process::id(),
+                random_suffix().unwrap()
+            ));
+            let source = root.join("source");
+            let destination = root.join("destination");
+            fs::create_dir_all(&source).unwrap();
+            let mut attempts = 0;
+
+            promote_database_directory_with(
+                &source,
+                &destination,
+                &Cancellation::default(),
+                |source, destination| {
+                    attempts += 1;
+                    if attempts < 3 {
+                        Err(io::Error::from_raw_os_error(code))
+                    } else {
+                        fs::rename(source, destination)
+                    }
+                },
+            )
+            .unwrap();
+
+            assert_eq!(attempts, 3);
+            assert!(!source.exists());
+            assert!(destination.is_dir());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn database_promotion_observes_cancellation_between_retries() {
+        let root = std::env::temp_dir().join(format!(
+            "schedule-promotion-cancel-{}-{}",
+            std::process::id(),
+            random_suffix().unwrap()
+        ));
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        let cancellation = Cancellation::default();
+        let mut attempts = 0;
+
+        let error =
+            promote_database_directory_with(&source, &destination, &cancellation, |_, _| {
+                attempts += 1;
+                cancellation.cancel();
+                Err(io::Error::from_raw_os_error(32))
+            })
+            .unwrap_err();
+
+        assert_eq!(error.code(), "desktop.operation_cancelled");
+        assert_eq!(attempts, 1);
+        assert!(source.is_dir());
+        assert!(!destination.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn database_promotion_does_not_retry_nontransient_failures() {
+        let root = std::env::temp_dir().join(format!(
+            "schedule-promotion-nontransient-{}-{}",
+            std::process::id(),
+            random_suffix().unwrap()
+        ));
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        let mut attempts = 0;
+
+        let error = promote_database_directory_with(
+            &source,
+            &destination,
+            &Cancellation::default(),
+            |_, _| {
+                attempts += 1;
+                Err(io::Error::new(io::ErrorKind::InvalidInput, "test"))
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), "desktop.database_promote_failed");
+        assert_eq!(attempts, 1);
+        assert!(source.is_dir());
+        assert!(!destination.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn database_promotion_fails_closed_if_the_destination_appears() {
+        let root = std::env::temp_dir().join(format!(
+            "schedule-promotion-collision-{}-{}",
+            std::process::id(),
+            random_suffix().unwrap()
+        ));
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        let mut attempts = 0;
+
+        let error = promote_database_directory_with(
+            &source,
+            &destination,
+            &Cancellation::default(),
+            |_, destination| {
+                attempts += 1;
+                fs::create_dir(destination).unwrap();
+                Err(io::Error::from_raw_os_error(32))
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), "desktop.database_promote_failed");
+        assert_eq!(attempts, 1);
+        assert!(source.is_dir());
+        assert!(destination.is_dir());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -134,9 +134,11 @@ PostgreSQL remains the local store because the implemented planner and delivery 
 PostgreSQL transactions, locks, JSON/array types, triggers, and migration behavior. Replacing it with
 SQLite would be a separate correctness-sensitive storage port rather than a packaging shortcut.
 
-Expected mutable locations are `%LOCALAPPDATA%\\Schedule` on Windows and
-`${XDG_DATA_HOME:-~/.local/share}/schedule` on Linux. Exact subdirectories and the recovery journal
-are derived beneath that root by the supervisor path contract.
+The private service data lives in the dedicated `data` child of Tauri's per-user local app-data
+directory: `%LOCALAPPDATA%\\com.aakash.schedule\\data` on Windows and
+`${XDG_DATA_HOME:-~/.local/share}/com.aakash.schedule/data` on Linux. Keeping it separate from the
+WebView profile lets the supervisor create and verify its own private root. Exact subdirectories and
+the recovery journal are derived beneath that root by the supervisor path contract.
 
 ## Security boundary
 

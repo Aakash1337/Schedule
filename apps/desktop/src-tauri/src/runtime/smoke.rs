@@ -237,7 +237,12 @@ mod tests {
             OsString::from("--data-root"),
             roots.data.clone().into_os_string(),
         ]);
-        assert_eq!(parsed.unwrap().data_root, roots.data);
+        let parsed = parsed.unwrap();
+        assert_eq!(
+            parsed.runtime_root,
+            fs::canonicalize(&roots.runtime).unwrap()
+        );
+        assert_eq!(parsed.data_root, roots.data);
     }
 
     #[test]

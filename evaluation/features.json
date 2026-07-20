@@ -4499,7 +4499,7 @@
             "desktop_shutdown_pipe_delivers_one_line_through_platform_control",
             "platform_control_stops_the_owned_descendant_tree",
             "post_attach_setup_failure_force_stops_and_releases_platform_ownership",
-            "windows_job_assigns_before_readiness_and_stops_the_child"
+            "windows_no_console_payload_without_stdin_escalates_through_job"
           ]
         },
         {

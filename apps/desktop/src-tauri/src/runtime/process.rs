@@ -1208,9 +1208,10 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_job_assigns_before_readiness_and_stops_the_child() {
+    fn windows_no_console_payload_without_stdin_escalates_through_job() {
         let spec = helper_spec(ProcessRole::Api, "ready", Duration::from_secs(2))
             .readiness(ReadinessSpec::stdout_prefix(READY_PREFIX, 512, 256));
+        assert!(!spec.desktop_shutdown_stdin);
         let mut started = start_process(spec, platform_process_control()).unwrap();
         assert!(started.readiness.is_some());
         started.process.stop(Duration::ZERO).unwrap();

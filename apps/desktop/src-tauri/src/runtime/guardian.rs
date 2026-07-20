@@ -778,7 +778,7 @@ mod platform {
             CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
         },
         System::{
-            Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent, GetStdHandle, STD_INPUT_HANDLE},
+            Console::{GetStdHandle, STD_INPUT_HANDLE},
             Diagnostics::ToolHelp::{
                 CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First,
                 Thread32Next,
@@ -790,8 +790,8 @@ mod platform {
             },
             SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW},
             Threading::{
-                CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, GetCurrentProcess, OpenThread,
-                ResumeThread, THREAD_SUSPEND_RESUME,
+                CREATE_NO_WINDOW, CREATE_SUSPENDED, GetCurrentProcess, OpenThread, ResumeThread,
+                THREAD_SUSPEND_RESUME,
             },
         },
     };
@@ -871,7 +871,7 @@ mod platform {
             return Err(());
         }
         let mut command = spec.command()?;
-        command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
+        command.creation_flags(payload_creation_flags());
         let mut child = command.spawn().map_err(|_| ())?;
         drop(command);
         let process = child.as_raw_handle() as HANDLE;
@@ -926,8 +926,6 @@ mod platform {
                     if let Some(mut stdin) = payload_stdin.take() {
                         let _ = stdin.write_all(b"shutdown\n");
                         let _ = stdin.flush();
-                    } else {
-                        let _ = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
                     }
                 }
                 Ok(ControlEvent::Force) | Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -938,6 +936,10 @@ mod platform {
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
         }
+    }
+
+    pub(super) const fn payload_creation_flags() -> u32 {
+        CREATE_SUSPENDED | CREATE_NO_WINDOW
     }
 
     fn create_job() -> Result<OwnedHandle, ()> {
@@ -1235,6 +1237,16 @@ mod tests {
         assert_eq!(value("WINDIR"), value("SYSTEMROOT"));
         assert_eq!(value("COMSPEC").file_name(), Some(OsStr::new("cmd.exe")));
         assert!(value("COMSPEC").is_file());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_payloads_never_open_console_windows() {
+        assert_ne!(
+            platform::payload_creation_flags()
+                & windows_sys::Win32::System::Threading::CREATE_NO_WINDOW,
+            0
+        );
     }
 
     #[cfg(windows)]
