@@ -539,17 +539,28 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         Ok(())
     }
 
-    fn await_database(&self, cancellation: &Cancellation) -> Result<(), NativeExecutorError> {
-        let bundle = self.require_bundle()?;
+    fn await_database(&mut self, cancellation: &Cancellation) -> Result<(), NativeExecutorError> {
+        let postgres_bin = postgres_bin(self.require_bundle()?)?.to_owned();
+        let pg_isready = self.require_bundle()?.postgresql.pg_isready.clone();
         let connection = self.admin_connection("postgres")?;
         let deadline = std::time::Instant::now() + DATABASE_READY_TIMEOUT;
         loop {
             Self::cancelled(cancellation)?;
-            let plan = readiness_plan(postgres_bin(bundle)?, &connection);
+            let exited = self
+                .database
+                .as_mut()
+                .ok_or_else(|| NativeExecutorError::new("desktop.executor_state_invalid"))?
+                .has_exited()
+                .map_err(process_error)?;
+            if exited {
+                self.database.take();
+                return Err(NativeExecutorError::new("desktop.database_exited_early"));
+            }
+            let plan = readiness_plan(&postgres_bin, &connection);
             if self
                 .run_pg(
                     plan,
-                    &bundle.postgresql.pg_isready,
+                    &pg_isready,
                     Duration::from_secs(6),
                     4096,
                     Some(cancellation),

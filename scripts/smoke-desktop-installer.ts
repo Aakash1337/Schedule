@@ -7,7 +7,7 @@ import { validateDesktopRuntime } from "./build-desktop-runtime.js";
 
 const execFile = promisify(execFileCallback);
 const NATIVE_SMOKE_TIMEOUT_MS = 450_000;
-const MAX_JOURNAL_BYTES = 64 * 1024;
+const MAX_DIAGNOSTIC_FILE_BYTES = 64 * 1024;
 const JOURNAL_PHASES = new Set([
   "initializing",
   "starting_database",
@@ -54,6 +54,35 @@ async function exactMarker(file: string, expected: string): Promise<boolean> {
   )
     return false;
   return (await readFile(file, "utf8").catch(() => "")) === expected;
+}
+
+async function postgresLogState(dataRoot: string): Promise<string> {
+  const log = path.join(dataRoot, "logs", "postgresql.log");
+  const entry = await lstat(log).catch(() => null);
+  if (entry?.isFile() !== true || entry.isSymbolicLink() || entry.size > MAX_DIAGNOSTIC_FILE_BYTES)
+    return "missing";
+  const contents = await readFile(log, "utf8").catch(() => "");
+  const markers: ReadonlyArray<readonly [string, readonly string[]]> = [
+    ["ready", ["database system is ready to accept connections"]],
+    ["bind", ["could not bind IPv4 address", "could not create any TCP/IP sockets"]],
+    [
+      "access",
+      [
+        "Permission denied",
+        "Access is denied",
+        "could not open file",
+        "could not create lock file",
+        "could not open configuration file",
+      ],
+    ],
+    ["fatal", ["FATAL:", "PANIC:"]],
+  ];
+  let latest = { index: -1, state: contents.trim() === "" ? "missing" : "other" };
+  for (const [state, phrases] of markers) {
+    const index = Math.max(...phrases.map((phrase) => contents.lastIndexOf(phrase)));
+    if (index > latest.index) latest = { index, state };
+  }
+  return latest.state;
 }
 
 async function installedExecutable(
@@ -115,7 +144,7 @@ async function defaultLaunch(
 async function lifecycleDiagnostic(dataRoot: string): Promise<string> {
   const journal = path.join(dataRoot, "runtime", "journal.json");
   const stat = await lstat(journal).catch(() => null);
-  if (stat?.isFile() !== true || stat.isSymbolicLink() || stat.size > MAX_JOURNAL_BYTES)
+  if (stat?.isFile() !== true || stat.isSymbolicLink() || stat.size > MAX_DIAGNOSTIC_FILE_BYTES)
     return "journal unavailable";
   try {
     const value = JSON.parse(await readFile(journal, "utf8")) as {
@@ -136,12 +165,15 @@ async function lifecycleDiagnostic(dataRoot: string): Promise<string> {
       return "journal invalid";
     const staging = path.join(dataRoot, "postgresql", ".schedule-initializing-v1");
     const finalData = path.join(dataRoot, "postgresql", "data");
-    const [stagingPresent, finalPresent, initdbMarker, bootstrapMarker] = await Promise.all([
-      regularDirectory(staging),
-      regularDirectory(finalData),
-      exactMarker(path.join(staging, "SCHEDULE_INITDB_COMPLETE_V1"), "schedule-initdb-v1\n"),
-      exactMarker(path.join(staging, "SCHEDULE_BOOTSTRAPPED_V1"), "schedule-bootstrap-v1\n"),
-    ]);
+    const [stagingPresent, finalPresent, initdbMarker, bootstrapMarker, postmasterOpts, log] =
+      await Promise.all([
+        regularDirectory(staging),
+        regularDirectory(finalData),
+        exactMarker(path.join(staging, "SCHEDULE_INITDB_COMPLETE_V1"), "schedule-initdb-v1\n"),
+        exactMarker(path.join(staging, "SCHEDULE_BOOTSTRAPPED_V1"), "schedule-bootstrap-v1\n"),
+        regularFile(path.join(staging, "postmaster.opts")),
+        postgresLogState(dataRoot),
+      ]);
     return [
       `attempt ${attempt}`,
       `phase ${phase}`,
@@ -150,6 +182,8 @@ async function lifecycleDiagnostic(dataRoot: string): Promise<string> {
       `final ${finalPresent}`,
       `initdb-marker ${initdbMarker}`,
       `bootstrap-marker ${bootstrapMarker}`,
+      `postmaster-opts ${postmasterOpts}`,
+      `postgres-log ${log}`,
     ].join(", ");
   } catch {
     return "journal invalid";
