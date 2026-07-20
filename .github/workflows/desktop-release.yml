@@ -194,7 +194,7 @@ jobs:
         shell: bash
         run: |
           mkdir "$RUNNER_TEMP/runtime"
-          tar -xzf "$RUNNER_TEMP/runtime-artifact/runtime-${{ matrix.target }}-x64.tar.gz" -C "$RUNNER_TEMP/runtime"
+          tar --force-local -xzf "$RUNNER_TEMP/runtime-artifact/runtime-${{ matrix.target }}-x64.tar.gz" -C "$RUNNER_TEMP/runtime"
           pnpm desktop:build -- --runtime "$RUNNER_TEMP/runtime"
           pnpm exec tsx scripts/verify-desktop-package-artifact.ts
       - name: Smoke installed Linux package contents
