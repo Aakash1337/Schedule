@@ -1,5 +1,6 @@
 export const DESKTOP_PORTABLE_MODULES = [
   "desktop-portable.js",
+  "portable-import.js",
   "portable-export.js",
   "portable-archive.js",
   "portable-payload.js",

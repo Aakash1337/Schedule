@@ -52,6 +52,53 @@ async fn portable_export(
     }
 }
 
+#[tauri::command]
+async fn portable_import_select(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, std::sync::Arc<runtime::tauri_adapter::DesktopRuntimeAdapter>>,
+) -> Result<runtime::PortableImportSelectResult, ()> {
+    let runtime = runtime.inner().clone();
+    if let Err(result) = runtime.begin_portable_import_select() {
+        return Ok(result);
+    }
+    let runtime_for_task = runtime.clone();
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let source = app
+            .dialog()
+            .file()
+            .add_filter("Schedule portable archive", &["schedule"])
+            .blocking_pick_file()
+            .and_then(|file| file.into_path().ok());
+        runtime_for_task.finish_portable_import_select(source)
+    });
+    match task.await {
+        Ok(result) => Ok(result),
+        Err(_) => {
+            runtime.abandon_portable_import();
+            Ok(runtime::PortableImportSelectResult::Unavailable)
+        }
+    }
+}
+
+#[tauri::command]
+async fn portable_import_confirm(
+    token: String,
+    runtime: tauri::State<'_, std::sync::Arc<runtime::tauri_adapter::DesktopRuntimeAdapter>>,
+) -> Result<runtime::PortableImportResult, ()> {
+    let runtime = runtime.inner().clone();
+    let runtime_for_task = runtime.clone();
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        runtime_for_task.confirm_portable_import(token)
+    });
+    match task.await {
+        Ok(result) => Ok(result),
+        Err(_) => {
+            runtime.abandon_portable_import();
+            Ok(runtime::PortableImportResult::Unavailable)
+        }
+    }
+}
+
 fn is_allowed_navigation(url: &Url, allow_development_origin: bool) -> bool {
     if !url.username().is_empty() || url.password().is_some() {
         return false;
@@ -139,6 +186,8 @@ fn main() {
             runtime_status,
             runtime_retry,
             portable_export,
+            portable_import_select,
+            portable_import_confirm,
             bridge::api_request
         ])
         .build(tauri::generate_context!())

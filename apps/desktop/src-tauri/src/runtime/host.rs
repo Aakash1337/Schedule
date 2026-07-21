@@ -17,7 +17,10 @@ use std::{
 
 use super::{
     coordinator::{CancellationHandle, Coordinator, EffectExecutor},
-    portable::PortableExportResult,
+    portable::{
+        PortableExportResult, PortableImportInspectResult, PortableImportRequest,
+        PortableImportResult,
+    },
     state::Phase,
 };
 
@@ -72,6 +75,14 @@ enum Command {
     PortableExport {
         destination: std::path::PathBuf,
         reply: mpsc::Sender<PortableExportResult>,
+    },
+    PortableImportInspect {
+        source: std::path::PathBuf,
+        reply: mpsc::Sender<PortableImportInspectResult>,
+    },
+    PortableImport {
+        request: PortableImportRequest,
+        reply: mpsc::Sender<PortableImportResult>,
     },
 }
 
@@ -142,6 +153,7 @@ pub struct RuntimeHost {
     admission: Arc<Mutex<()>>,
     lifecycle_command_in_flight: Arc<AtomicBool>,
     portable_export_in_flight: Arc<AtomicBool>,
+    portable_import_in_flight: Arc<AtomicBool>,
     status: Arc<RwLock<RuntimeStatus>>,
     shutdown_requested: Arc<AtomicBool>,
     completion: RuntimeCompletion,
@@ -162,10 +174,12 @@ impl RuntimeHost {
         let admission = Arc::new(Mutex::new(()));
         let lifecycle_command_in_flight = Arc::new(AtomicBool::new(false));
         let portable_export_in_flight = Arc::new(AtomicBool::new(false));
+        let portable_import_in_flight = Arc::new(AtomicBool::new(false));
         let worker_status = status.clone();
         let worker_completion = completion.clone();
         let worker_lifecycle_command = lifecycle_command_in_flight.clone();
         let worker_portable_export = portable_export_in_flight.clone();
+        let worker_portable_import = portable_import_in_flight.clone();
         let worker = thread::spawn(move || {
             let outcome = catch_unwind(AssertUnwindSafe(|| {
                 let mut coordinator = coordinator;
@@ -175,10 +189,13 @@ impl RuntimeHost {
                     &worker_status,
                     &worker_lifecycle_command,
                     &worker_portable_export,
+                    &worker_portable_import,
                 )
             }))
             .unwrap_or(ShutdownOutcome::WorkerFailed);
             worker_lifecycle_command.store(false, Ordering::Release);
+            worker_portable_export.store(false, Ordering::Release);
+            worker_portable_import.store(false, Ordering::Release);
             worker_completion.complete(outcome);
         });
         Self {
@@ -187,6 +204,7 @@ impl RuntimeHost {
             admission,
             lifecycle_command_in_flight,
             portable_export_in_flight,
+            portable_import_in_flight,
             status,
             shutdown_requested: Arc::new(AtomicBool::new(false)),
             completion,
@@ -253,6 +271,9 @@ impl RuntimeHost {
         if self.lifecycle_command_in_flight.load(Ordering::Acquire) {
             return Err(HostError::Busy);
         }
+        if self.portable_import_in_flight.load(Ordering::Acquire) {
+            return Err(HostError::Busy);
+        }
         if self
             .portable_export_in_flight
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -275,6 +296,66 @@ impl RuntimeHost {
         Ok(receiver)
     }
 
+    pub fn portable_import_inspect(
+        &self,
+        source: std::path::PathBuf,
+    ) -> Result<mpsc::Receiver<PortableImportInspectResult>, HostError> {
+        let _admission = self.admission.lock().expect("runtime admission poisoned");
+        self.admit_portable_import()?;
+        self.cancellation.pre_arm();
+        let (reply, receiver) = mpsc::channel();
+        if self
+            .commands
+            .send(Command::PortableImportInspect { source, reply })
+            .is_err()
+        {
+            self.cancellation.clear_pre_arm();
+            self.portable_import_in_flight
+                .store(false, Ordering::Release);
+            return Err(HostError::Unavailable);
+        }
+        Ok(receiver)
+    }
+
+    pub fn portable_import(
+        &self,
+        request: PortableImportRequest,
+    ) -> Result<mpsc::Receiver<PortableImportResult>, HostError> {
+        let _admission = self.admission.lock().expect("runtime admission poisoned");
+        self.admit_portable_import()?;
+        self.cancellation.pre_arm();
+        let (reply, receiver) = mpsc::channel();
+        if self
+            .commands
+            .send(Command::PortableImport { request, reply })
+            .is_err()
+        {
+            self.cancellation.clear_pre_arm();
+            self.portable_import_in_flight
+                .store(false, Ordering::Release);
+            return Err(HostError::Unavailable);
+        }
+        Ok(receiver)
+    }
+
+    fn admit_portable_import(&self) -> Result<(), HostError> {
+        if self.shutdown_requested.load(Ordering::Acquire) {
+            return Err(HostError::ShuttingDown);
+        }
+        if self.status().state != RuntimeState::Ready {
+            return Err(HostError::Unavailable);
+        }
+        if self.lifecycle_command_in_flight.load(Ordering::Acquire)
+            || self.portable_export_in_flight.load(Ordering::Acquire)
+        {
+            return Err(HostError::Busy);
+        }
+        self.portable_import_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| HostError::Busy)
+    }
+
     /// Intended for non-UI process exit. UI callbacks should use `shutdown`
     /// and observe `RuntimeCompletion` rather than blocking.
     pub fn join(mut self) -> ShutdownOutcome {
@@ -291,7 +372,9 @@ impl RuntimeHost {
         if self.shutdown_requested.load(Ordering::Acquire) {
             return Err(HostError::ShuttingDown);
         }
-        if self.portable_export_in_flight.load(Ordering::Acquire) {
+        if self.portable_export_in_flight.load(Ordering::Acquire)
+            || self.portable_import_in_flight.load(Ordering::Acquire)
+        {
             return Err(HostError::Busy);
         }
         if self
@@ -336,8 +419,10 @@ fn run_worker<E: EffectExecutor>(
     status: &RwLock<RuntimeStatus>,
     lifecycle_command_in_flight: &AtomicBool,
     portable_export_in_flight: &AtomicBool,
+    portable_import_in_flight: &AtomicBool,
 ) -> ShutdownOutcome {
     while let Ok(command) = receiver.recv() {
+        let mut publish_from_lifecycle = true;
         match command {
             Command::Start => {
                 publish(
@@ -380,8 +465,32 @@ fn run_worker<E: EffectExecutor>(
                 portable_export_in_flight.store(false, Ordering::Release);
                 let _ = reply.send(result);
             }
+            Command::PortableImportInspect { source, reply } => {
+                let result = coordinator.portable_import_inspect(source);
+                portable_import_in_flight.store(false, Ordering::Release);
+                let _ = reply.send(result);
+            }
+            Command::PortableImport { request, reply } => {
+                let result = coordinator.portable_import(request);
+                if matches!(
+                    result,
+                    PortableImportResult::ImportedRestartRequired
+                        | PortableImportResult::RecoveryRequired
+                ) {
+                    publish(
+                        status,
+                        RuntimeState::RecoverableFailure,
+                        coordinator.lifecycle().generation(),
+                    );
+                    publish_from_lifecycle = false;
+                }
+                portable_import_in_flight.store(false, Ordering::Release);
+                let _ = reply.send(result);
+            }
         }
-        publish_lifecycle(status, coordinator);
+        if publish_from_lifecycle {
+            publish_lifecycle(status, coordinator);
+        }
     }
     ShutdownOutcome::Incomplete
 }
@@ -544,6 +653,7 @@ mod tests {
             admission: Arc::new(Mutex::new(())),
             lifecycle_command_in_flight: Arc::new(AtomicBool::new(false)),
             portable_export_in_flight: Arc::new(AtomicBool::new(false)),
+            portable_import_in_flight: Arc::new(AtomicBool::new(false)),
             status: Arc::new(RwLock::new(RuntimeStatus {
                 state: RuntimeState::Ready,
                 generation: 1,
@@ -763,6 +873,7 @@ mod tests {
                 &host.status,
                 &host.lifecycle_command_in_flight,
                 &host.portable_export_in_flight,
+                &host.portable_import_in_flight,
             ),
             ShutdownOutcome::Clean
         );
