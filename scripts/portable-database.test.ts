@@ -19,7 +19,10 @@ describe("portable database identity and safety", () => {
   });
 
   it("treats archive content only as typed data instead of restore SQL", async () => {
-    const source = await readFile(new URL("./portable-database.ts", import.meta.url), "utf8");
+    const source = await readFile(
+      new URL("../packages/database/src/portable-export.ts", import.meta.url),
+      "utf8",
+    );
     expect(source).not.toMatch(/\bpg_restore\b/);
     expect(source).toContain("pg_catalog.jsonb_array_elements($1::pg_catalog.jsonb)");
     expect(source).toContain("session_replication_role = replica");

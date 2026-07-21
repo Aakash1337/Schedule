@@ -132,6 +132,38 @@
   box-shadow: 0 0 0 3px var(--success-soft);
 }
 
+.portable-export {
+  margin-top: 14px;
+}
+
+.portable-export .button {
+  width: 100%;
+  justify-content: center;
+}
+
+.portable-export-note,
+.portable-export-message {
+  margin: 7px 1px 0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.portable-export-note {
+  color: var(--ink-faint);
+}
+
+.portable-export-message--status {
+  color: var(--success);
+}
+
+.portable-export-message--error {
+  color: var(--danger);
+}
+
+.portable-export-mobile {
+  display: none;
+}
+
 .content-shell {
   min-width: 0;
   padding: 40px clamp(24px, 4vw, 64px) 72px;
@@ -3608,6 +3640,17 @@
     width: auto;
     max-width: 46vw;
     min-height: 44px;
+  }
+
+  .portable-export-mobile {
+    display: block;
+    margin-bottom: 22px;
+  }
+
+  .portable-export-mobile .portable-export {
+    margin-top: 0;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--line);
   }
 
   .content-shell {

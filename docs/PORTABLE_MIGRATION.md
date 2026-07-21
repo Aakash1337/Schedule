@@ -4,13 +4,37 @@ Schedule can move durable local product data between independent installations w
 `.schedule` archive. The archive carries a typed, data-only logical payload, so it can move between
 Windows and Linux without copying a PostgreSQL data directory or depending on filesystem layout.
 
-This is currently a repository CLI workflow backed by the local Docker Compose PostgreSQL service.
-Native one-click desktop export/import is a separate integration step; desktop-to-cloud live sync
-also remains a future capability.
+The installed desktop application can create an archive through its native **Export archive** control:
+it opens the operating-system save dialog, never exposes the local database credentials to the
+renderer, and verifies the archive before publishing it. The CLI remains available for repository
+and recovery workflows. Native desktop import and desktop-to-cloud live sync remain future
+capabilities.
 
 ## Export
 
-Run the same Schedule release that owns the source database, then create the archive:
+In the desktop app, use **Export archive** and choose a new `.schedule` filename. The destination must
+not already exist; cancellation leaves the local data unchanged. The export helper reads the live
+database consistently, restores the typed payload into an isolated migrated verification database,
+compares the normalized result, and only then publishes the archive.
+
+Desktop verification databases carry an exact versioned ownership marker bound to the embedded
+PostgreSQL cluster and database name. Cleanup revalidates that marker, the database owner, and
+non-template status immediately before deletion; stale unmarked or changed databases are never
+reclaimed. During the creating export, Schedule also retains the newly created database OID before
+initializing its marker, so a marker-write failure can clean only that exact same-run database.
+
+Publication never replaces an existing file. Filesystems without hard-link support use an exclusive,
+verified copy fallback. It durably records an exact intention before creating the destination, writes
+incomplete markers, and commits the real archive header last. POSIX publication also syncs directory
+entries before reporting success. A crash can leave a fresh incomplete file, so Schedule preserves it
+while it may still belong to an active export. After 24 hours, a later attempt can reclaim only exact
+marker-owned partials and private export staging artifacts; valid archives and unmarked files are
+preserved. If interruption occurs before the final file receives its exact incomplete marker,
+Schedule deliberately preserves that unmarked file even when an intention exists. Choose a new
+filename for an immediate retry, or delete the partial only after confirming no export is running.
+
+For repository or recovery use, run the same Schedule release that owns the source database and
+create the archive with the CLI:
 
 ```powershell
 pnpm infra:up
@@ -25,7 +49,8 @@ and verifies the resulting schema, rows, sequences, exclusions, and foreign keys
 ## Import on another operating system
 
 Install the matching Schedule schema release on the destination. Copy the `.schedule` file through
-your normal private transfer method, start PostgreSQL, and import it explicitly:
+your normal private transfer method, start PostgreSQL, and import it explicitly. Native desktop
+import is not yet available, so this CLI workflow is the continuity path for now:
 
 ```bash
 pnpm infra:up

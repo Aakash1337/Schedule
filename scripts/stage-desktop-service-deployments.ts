@@ -6,6 +6,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { loadMigrationManifest } from "../packages/database/src/migration-ledger.js";
 import { hashTree } from "./build-desktop-runtime.js";
+import { DESKTOP_PORTABLE_MODULES } from "./desktop-portable-modules.js";
 
 export interface DeployCommand {
   (
@@ -158,6 +159,16 @@ async function requireFile(root: string, relative: string, label: string): Promi
   }
 }
 
+async function requireDesktopPortableModules(root: string): Promise<void> {
+  for (const file of DESKTOP_PORTABLE_MODULES) {
+    await requireFile(
+      root,
+      `node_modules/@schedule/database/dist/${file}`,
+      `Database desktop portable export module ${file}`,
+    );
+  }
+}
+
 async function validateDeclaredDependencies(
   root: string,
   packageDirectory: string,
@@ -227,6 +238,7 @@ async function validateApiDeployment(root: string): Promise<void> {
     "node_modules/@schedule/database/dist/migration-sql.js",
     "Database migration SQL safety helper",
   );
+  await requireDesktopPortableModules(root);
   const journal = path.join(
     root,
     "node_modules",

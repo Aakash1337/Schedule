@@ -1,22 +1,23 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
   createDatabase,
+  exportVerifiedPortableDatabase,
   portableDataPolicyV1,
+  readPortableMigrationIdentity,
+  shouldRemovePortableExportResult,
   type PortableDataTableV1,
 } from "../packages/database/src/index.js";
 import {
   assertComposeDatabaseReady,
   composeDatabaseName,
-  composeDatabaseService,
   composeDatabaseUser,
   createTimestamp,
   repositoryRoot,
-  runComposeCommand,
 } from "./backup-database.js";
 import {
   assertScheduleDatabase,
@@ -29,19 +30,13 @@ import {
   quoteIdentifier,
   runPsql,
 } from "./restore-database.js";
-import {
-  currentProducerPlatform,
-  type PortableArchiveManifestV1,
-  withPreparedPortableArchive,
-  writePortableArchive,
-} from "./portable-archive.js";
+import { type PortableArchiveManifestV1, withPreparedPortableArchive } from "./portable-archive.js";
 import {
   type PortableColumnDescriptor,
   type PortableColumnMap,
   type PortablePayloadExpectations,
   type PortableTextValue,
   readPortablePayload,
-  writePortablePayload,
 } from "./portable-payload.js";
 
 const replaceConfirmation = "replace-schedule";
@@ -75,10 +70,6 @@ export interface PortableImportOptions {
   readonly previousDatabase?: string;
 }
 
-export function shouldRemovePortableExportResult(operationError: unknown): boolean {
-  return operationError !== undefined;
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -96,56 +87,9 @@ export function defaultPortableArchivePath(): string {
 }
 
 export async function readMigrationIdentity(): Promise<MigrationIdentity> {
-  const migrationDirectory = path.join(repositoryRoot, "packages", "database", "drizzle");
-  const journal = JSON.parse(
-    await readFile(path.join(migrationDirectory, "meta", "_journal.json"), "utf8"),
-  ) as {
-    entries?: {
-      idx?: unknown;
-      version?: unknown;
-      when?: unknown;
-      tag?: unknown;
-      breakpoints?: unknown;
-    }[];
-  };
-  if (!Array.isArray(journal.entries) || journal.entries.length === 0) {
-    throw new Error("Drizzle migration journal is missing or empty.");
-  }
-
-  const hash = createHash("sha256");
-  hash.update("schedule-portable-migrations-v1\0", "utf8");
-  let latestTag = "";
-  for (const [position, entry] of journal.entries.entries()) {
-    if (
-      entry.idx !== position ||
-      typeof entry.version !== "string" ||
-      typeof entry.when !== "number" ||
-      !Number.isSafeInteger(entry.when) ||
-      typeof entry.tag !== "string" ||
-      !/^\d{4}_[a-z0-9_-]+$/.test(entry.tag) ||
-      typeof entry.breakpoints !== "boolean"
-    ) {
-      throw new Error(`Drizzle migration journal entry ${position} is invalid.`);
-    }
-    const sql = (await readFile(path.join(migrationDirectory, `${entry.tag}.sql`), "utf8")).replace(
-      /\r\n?/g,
-      "\n",
-    );
-    const metadata = JSON.stringify([
-      entry.idx,
-      entry.version,
-      entry.when,
-      entry.tag,
-      entry.breakpoints,
-      Buffer.byteLength(sql, "utf8"),
-    ]);
-    hash.update(metadata, "utf8");
-    hash.update("\0", "utf8");
-    hash.update(sql, "utf8");
-    hash.update("\0", "utf8");
-    latestTag = entry.tag;
-  }
-  return { count: journal.entries.length, latestTag, fingerprint: hash.digest("hex") };
+  return readPortableMigrationIdentity(
+    path.join(repositoryRoot, "packages", "database", "drizzle"),
+  );
 }
 
 interface PortableCatalogColumnRow {
@@ -273,108 +217,6 @@ async function readPortableCatalogForDatabase(
   });
   try {
     return await readPortableColumnCatalog(connection.sql);
-  } finally {
-    await connection.close();
-  }
-}
-
-async function createPortablePayloadFromDatabase(
-  payloadPath: string,
-  databaseName: string,
-): Promise<{
-  readonly catalog: PortableColumnCatalog;
-  readonly expectations: PortablePayloadExpectations;
-}> {
-  quoteIdentifier(databaseName);
-  const connection = createDatabase(databaseUrlFor(databaseName), 1, {
-    applicationName: "schedule-portable-export",
-  });
-  try {
-    const catalog = await readPortableColumnCatalog(connection.sql);
-    const written = await connection.sql.begin(
-      "isolation level repeatable read read only",
-      async (transaction) => {
-        await transaction.unsafe("SET LOCAL TIME ZONE 'UTC'");
-        await transaction.unsafe("SET LOCAL DateStyle = 'ISO, YMD'");
-        await transaction.unsafe("SET LOCAL IntervalStyle = 'postgres'");
-        await transaction.unsafe("SET LOCAL bytea_output = 'hex'");
-        await transaction.unsafe("SET LOCAL extra_float_digits = 3");
-
-        const rows = (
-          table: PortableDataTableV1,
-          columns: readonly PortableColumnDescriptor[],
-        ): AsyncIterable<readonly PortableTextValue[]> => ({
-          async *[Symbol.asyncIterator]() {
-            const expression = `pg_catalog.jsonb_build_array(${columns
-              .map(({ name }) => `${quoteIdentifier(name)}::text`)
-              .join(", ")})::text`;
-            const query = transaction.unsafe<{ readonly portable_row: string }[]>(`
-            SELECT portable_row
-            FROM (
-              SELECT ${expression} AS portable_row
-              FROM public.${quoteIdentifier(table)}
-            ) AS portable_rows
-            ORDER BY portable_row;
-          `);
-            for await (const batch of query.cursor(128)) {
-              for (const row of batch) {
-                if (typeof row.portable_row !== "string") {
-                  throw new Error(`Portable table ${table} produced an invalid row.`);
-                }
-                const parsed: unknown = JSON.parse(row.portable_row);
-                if (
-                  !Array.isArray(parsed) ||
-                  parsed.length !== columns.length ||
-                  parsed.some((value) => value !== null && typeof value !== "string")
-                ) {
-                  throw new Error(`Portable table ${table} produced an invalid typed-text row.`);
-                }
-                yield parsed as PortableTextValue[];
-              }
-            }
-          },
-        });
-
-        return writePortablePayload(payloadPath, {
-          columns: catalog.columns,
-          rows,
-          sequenceSignals: async () => {
-            const signals: Record<string, string> = {};
-            for (const sequence of portableDataPolicyV1.sequences) {
-              const result = await transaction.unsafe<
-                { readonly last_value: string; readonly is_called: boolean }[]
-              >(
-                `SELECT last_value::text AS last_value, is_called FROM public.${quoteIdentifier(sequence)}`,
-              );
-              const state = result[0];
-              if (
-                result.length !== 1 ||
-                state === undefined ||
-                !/^-?\d+$/.test(state.last_value) ||
-                typeof state.is_called !== "boolean"
-              ) {
-                throw new Error(`Portable sequence ${sequence} state is invalid.`);
-              }
-              signals[sequence] = `${state.last_value}:${state.is_called ? "true" : "false"}`;
-            }
-            return signals;
-          },
-        });
-      },
-    );
-    return {
-      catalog,
-      expectations: {
-        columns: catalog.columns,
-        contentSignals: Object.fromEntries(
-          portableDataPolicyV1.includedTables.map((table) => [
-            table,
-            `${written.rowCounts[table] ?? -1}:${"0".repeat(32)}`,
-          ]),
-        ),
-        sequenceSignals: written.sequenceSignals,
-      },
-    };
   } finally {
     await connection.close();
   }
@@ -757,14 +599,6 @@ async function currentApplicationVersion(): Promise<string> {
   return packageJson.version;
 }
 
-async function postgresVersion(): Promise<string> {
-  const version = (
-    await runComposeCommand(["exec", "-T", composeDatabaseService, "pg_dump", "--version"])
-  ).trim();
-  if (version === "" || version.length > 160) throw new Error("Could not read PostgreSQL version.");
-  return version;
-}
-
 async function prepareVerifiedPortableDatabase(
   payloadPath: string,
   databaseName: string,
@@ -792,78 +626,23 @@ export async function exportPortableScheduleData(
   quoteIdentifier(databaseName);
   await assertComposeDatabaseReady(databaseName);
   await assertScheduleDatabase(databaseName, { requireCurrentMigrations: true });
-  const schemaSignal = await portableSchemaSignal(databaseName);
-  const migration = await readMigrationIdentity();
-  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), "schedule-portable-export-"));
-  const payloadPath = path.join(temporaryDirectory, "portable-data.ndjson");
-  const verificationDatabase = generatedDatabaseName("schedule_verify_");
-  let verificationIdentity: number | null = null;
-  let result: PortableExportResult | undefined;
-  let operationError: unknown;
-
-  try {
-    const source = await createPortablePayloadFromDatabase(payloadPath, databaseName);
-    await readPortablePayload(payloadPath, source.expectations);
-    const signals = await prepareVerifiedPortableDatabase(
-      payloadPath,
-      verificationDatabase,
-      schemaSignal,
-      source.expectations,
-      (identity) => {
-        verificationIdentity = identity;
-      },
-    );
-    for (const sequence of portableDataPolicyV1.sequences) {
-      if (signals.sequenceSignals[sequence] !== source.expectations.sequenceSignals[sequence]) {
-        throw new Error(`Portable sequence ${sequence} changed during export verification.`);
-      }
-    }
-    const written = await writePortableArchive(outputPath, payloadPath, {
-      producer: {
-        applicationVersion: await currentApplicationVersion(),
-        ...currentProducerPlatform(),
-        postgresVersion: await postgresVersion(),
-      },
-      compatibility: {
-        policyRevision: 1,
-        schemaSignal,
-        migrationCount: migration.count,
-        latestMigrationTag: migration.latestTag,
-        migrationFingerprint: migration.fingerprint,
-      },
-      data: signals,
-    });
-    result = written;
-  } catch (error) {
-    operationError = error;
-  }
-
-  const cleanupErrors: unknown[] = [];
-  if (verificationIdentity !== null) {
-    try {
-      await cleanupGeneratedRecoveryDatabase(verificationDatabase);
-    } catch (error) {
-      cleanupErrors.push(error);
-    }
-  }
-  try {
-    await rm(temporaryDirectory, { recursive: true, force: true });
-  } catch (error) {
-    cleanupErrors.push(error);
-  }
-  if (operationError !== undefined || cleanupErrors.length > 0) {
-    if (result !== undefined && shouldRemovePortableExportResult(operationError)) {
-      await rm(result.path, { force: true });
-    }
-    const errors =
-      operationError === undefined ? cleanupErrors : [operationError, ...cleanupErrors];
-    throw errors.length === 1
-      ? errors[0]
-      : new AggregateError(errors, "Portable export failed and cleanup was incomplete.");
-  }
-  if (result === undefined) throw new Error("Portable export produced no archive.");
-  return result;
+  return exportVerifiedPortableDatabase({
+    outputPath,
+    sourceDatabaseUrl: databaseUrlFor(databaseName),
+    migrationsFolder: path.join(repositoryRoot, "packages", "database", "drizzle"),
+    applicationVersion: await currentApplicationVersion(),
+    createVerificationDatabase: async (verificationDatabase, _databaseUrl, onCreated) => {
+      await createEmptyDatabase(verificationDatabase);
+      onCreated();
+    },
+    migrateVerificationDatabase: async (verificationDatabase) => {
+      await migrateScheduleDatabase(verificationDatabase);
+    },
+    dropVerificationDatabase: cleanupGeneratedRecoveryDatabase,
+  });
 }
+
+export { shouldRemovePortableExportResult };
 
 function assertCompatibleManifest(
   manifest: PortableArchiveManifestV1,

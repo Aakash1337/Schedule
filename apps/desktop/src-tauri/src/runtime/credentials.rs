@@ -154,6 +154,19 @@ impl PgRolePasswords {
             port,
         )
     }
+
+    pub(crate) fn cluster_admin_database_url(
+        &self,
+        names: &PgNames,
+        port: u16,
+    ) -> Result<DatabaseUrl, CredentialError> {
+        database_url(
+            "postgres",
+            names.cluster_admin(),
+            self.cluster_admin_password.expose(),
+            port,
+        )
+    }
 }
 
 struct StoredSecret(SecretString);

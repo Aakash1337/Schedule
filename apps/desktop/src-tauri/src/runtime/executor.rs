@@ -29,6 +29,7 @@ use super::{
     lock::RuntimeLock,
     manifest::RuntimeManifestExpectations,
     paths::RuntimePaths,
+    portable::{PortableExportResult, parse_portable_output, validate_destination},
     postgres::{
         PgCommand, PgConnection, backup_plan, bootstrap_plan, fast_stop_plan, identity_plan,
         initdb_plan, parse_identity, pg_hba_conf, postgresql_conf, readiness_plan,
@@ -49,6 +50,7 @@ const DATABASE_READY_RETRY: Duration = Duration::from_millis(100);
 const DATABASE_PROMOTION_RETRY_TIMEOUT: Duration = Duration::from_secs(3);
 const DATABASE_PROMOTION_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const DATABASE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+const PORTABLE_EXPORT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const DATABASE_BACKUP_TIMEOUT: Duration = Duration::from_secs(300);
 const MIGRATION_TIMEOUT: Duration = Duration::from_secs(300);
 const GRACEFUL_PROCESS_STOP: Duration = Duration::from_secs(15);
@@ -164,6 +166,9 @@ pub(crate) trait NativeOperations {
     fn configure_bridge(&mut self, generation: u64) -> Result<(), NativeExecutorError>;
     fn clear_bridge(&mut self, generation: u64) -> Result<(), NativeExecutorError>;
     fn cancel(&mut self, generation: u64);
+    fn portable_export(&mut self, _: PathBuf, _: &Cancellation) -> PortableExportResult {
+        PortableExportResult::Unavailable
+    }
 }
 
 pub(crate) struct NativeEffectExecutor<O> {
@@ -202,6 +207,14 @@ impl<O: NativeOperations> EffectExecutor for NativeEffectExecutor<O> {
 
     fn cancel(&mut self, generation: u64) {
         self.operations.cancel(generation);
+    }
+
+    fn portable_export(
+        &mut self,
+        destination: PathBuf,
+        cancellation: &Cancellation,
+    ) -> PortableExportResult {
+        self.operations.portable_export(destination, cancellation)
     }
 }
 
@@ -272,6 +285,61 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         (!cancellation.is_cancelled())
             .then_some(())
             .ok_or_else(|| NativeExecutorError::new("desktop.operation_cancelled"))
+    }
+
+    fn run_portable_export(
+        &mut self,
+        destination: PathBuf,
+        cancellation: &Cancellation,
+    ) -> PortableExportResult {
+        let destination = match validate_destination(&destination) {
+            Ok(value) => value,
+            Err(code) => return PortableExportResult::Failed { code },
+        };
+        let result = (|| {
+            Self::cancelled(cancellation)?;
+            let bundle = self.require_bundle()?;
+            let passwords = self.require_passwords()?;
+            let port = self.database_port()?;
+            let owner = passwords
+                .owner_database_url(&self.config.postgres_names, port)
+                .map_err(credential_error)?;
+            let admin = passwords
+                .cluster_admin_database_url(&self.config.postgres_names, port)
+                .map_err(credential_error)?;
+            let spec = CommandSpec::new(&bundle.node, &bundle.root, PORTABLE_EXPORT_TIMEOUT)
+                .arg(&bundle.portable_export)
+                .arg("export")
+                .arg(destination.into_os_string())
+                .env("NODE_ENV", "production")
+                .env("DATABASE_URL", owner.expose())
+                .env("SCHEDULE_ADMIN_DATABASE_URL", admin.expose())
+                .env("SCHEDULE_NODE_EXECUTABLE", bundle.node.as_os_str())
+                .env(
+                    "SCHEDULE_MIGRATION_ENTRYPOINT",
+                    bundle.migration.as_os_str(),
+                )
+                .env("SCHEDULE_APPLICATION_VERSION", &self.config.runtime_version)
+                .output_bounds(512, 16 * 1024)
+                .database_payload();
+            let output = run_command_cancellable(spec, Arc::clone(&self.process_control), &|| {
+                cancellation.is_cancelled()
+            })
+            .map_err(command_error)?;
+            parse_portable_output(output.stdout()).map_err(NativeExecutorError::new)
+        })();
+        match result {
+            Ok(size_bytes) => PortableExportResult::Created { size_bytes },
+            Err(error)
+                if matches!(
+                    error.code(),
+                    "desktop.operation_cancelled" | "desktop.command_cancelled"
+                ) =>
+            {
+                PortableExportResult::Unavailable
+            }
+            Err(error) => PortableExportResult::Failed { code: error.code() },
+        }
     }
 
     fn acquire_lock(&mut self) -> Result<EffectOutcome, NativeExecutorError> {
@@ -1079,6 +1147,14 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
 }
 
 impl<B: ApiBridgeControl> NativeOperations for SystemOperations<B> {
+    fn portable_export(
+        &mut self,
+        destination: PathBuf,
+        cancellation: &Cancellation,
+    ) -> PortableExportResult {
+        self.run_portable_export(destination, cancellation)
+    }
+
     fn execute(
         &mut self,
         effect: Effect,
@@ -2212,7 +2288,8 @@ mod tests {
                 worker: executable.clone(),
                 postgresql: programs,
                 migration: executable.clone(),
-                migration_manifest: executable,
+                migration_manifest: executable.clone(),
+                portable_export: executable,
             }),
             credential_store: None,
             passwords: None,

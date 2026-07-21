@@ -4,7 +4,13 @@ import { platform, tmpdir } from "node:os";
 import path from "node:path";
 
 import { portableDataPolicyV1 } from "../packages/database/src/portable-data.js";
-import { assertComposeDatabaseReady } from "./backup-database.js";
+import {
+  desktopVerificationClusterToken,
+  desktopVerificationDatabaseName,
+  desktopVerificationDatabaseOwnershipMarker,
+  exportDesktopPortableScheduleData,
+} from "../packages/database/src/desktop-portable.js";
+import { assertComposeDatabaseReady, repositoryRoot } from "./backup-database.js";
 import { withPreparedPortableArchive } from "./portable-archive.js";
 import {
   exportPortableScheduleData,
@@ -329,6 +335,7 @@ async function assertPortableSequenceCoverage(databaseName: string): Promise<voi
 
 async function produceArchive(archivePath: string): Promise<void> {
   const sourcePlan = createDisposableRecoveryPlan();
+  const verificationFixtures: string[] = [];
   let failure: unknown;
   try {
     await initializeDisposableRecoveryActiveDatabase(sourcePlan);
@@ -344,12 +351,89 @@ async function produceArchive(archivePath: string): Promise<void> {
       expectedSignals,
       "portable signals must not depend on the database session time zone",
     );
-    const result = await exportPortableScheduleData(archivePath, sourcePlan.activeDatabase);
-    assert.equal(result.manifest.producer.platform, platform());
-    assert.deepEqual(result.manifest.data.contentSignals, expectedSignals.contentSignals);
-    assert.deepEqual(result.manifest.data.sequenceSignals, expectedSignals.sequenceSignals);
+    const rejectedArchive = `${archivePath}.schema-drift`;
+    try {
+      await runPsql(
+        sourcePlan.activeDatabase,
+        `ALTER TABLE public.workspaces ENABLE ROW LEVEL SECURITY;
+         ALTER TABLE public.workspaces FORCE ROW LEVEL SECURITY;
+         CREATE POLICY portable_verifier_drift ON public.workspaces USING (true);`,
+      );
+      await assert.rejects(
+        exportPortableScheduleData(rejectedArchive, sourcePlan.activeDatabase),
+        /schema does not exactly match/i,
+        "portable export must reject RLS and row-policy schema drift",
+      );
+    } finally {
+      await runPsql(
+        sourcePlan.activeDatabase,
+        `DROP POLICY IF EXISTS portable_verifier_drift ON public.workspaces;
+         ALTER TABLE public.workspaces NO FORCE ROW LEVEL SECURITY;
+         ALTER TABLE public.workspaces DISABLE ROW LEVEL SECURITY;`,
+      );
+      await rm(rejectedArchive, { force: true });
+    }
+    const systemIdentifier = (
+      await runPsql(
+        "postgres",
+        "SELECT system_identifier::text FROM pg_catalog.pg_control_system();",
+        { quiet: true },
+      )
+    ).trim();
+    const clusterToken = desktopVerificationClusterToken(systemIdentifier);
+    const nowSeconds = Math.floor(Date.now() / 1_000);
+    const markedStale = desktopVerificationDatabaseName(clusterToken, nowSeconds - 30_000);
+    const unmarkedStale = desktopVerificationDatabaseName(clusterToken, nowSeconds - 29_000);
+    verificationFixtures.push(markedStale, unmarkedStale);
+    await runPsql("postgres", `CREATE DATABASE ${quoteIdentifier(markedStale)};`);
+    await runPsql(
+      "postgres",
+      `COMMENT ON DATABASE ${quoteIdentifier(markedStale)} IS '${desktopVerificationDatabaseOwnershipMarker(systemIdentifier, markedStale)}';`,
+    );
+    await runPsql("postgres", `CREATE DATABASE ${quoteIdentifier(unmarkedStale)};`);
+
+    const databaseUrl = new URL(
+      process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule",
+    );
+    databaseUrl.pathname = `/${sourcePlan.activeDatabase}`;
+    const adminDatabaseUrl = new URL(databaseUrl);
+    adminDatabaseUrl.pathname = "/postgres";
+    const result = await exportDesktopPortableScheduleData(archivePath, {
+      databaseUrl: databaseUrl.toString(),
+      adminDatabaseUrl: adminDatabaseUrl.toString(),
+      nodeExecutable: process.execPath,
+      migrationEntrypoint: path.join(repositoryRoot, "packages/database/dist/migrate.js"),
+      applicationVersion: "portable-verification",
+    });
+    assert.ok(result.sizeBytes > 0);
+    assert.equal(await databaseExists(markedStale), false, "marked stale verifier was not reaped");
+    assert.equal(await databaseExists(unmarkedStale), true, "unmarked database was reaped");
+    const manifest = await withPreparedPortableArchive(
+      archivePath,
+      async ({ manifest }) => manifest,
+    );
+    assert.equal(manifest.producer.platform, platform());
+    assert.deepEqual(manifest.data.contentSignals, expectedSignals.contentSignals);
+    assert.deepEqual(manifest.data.sequenceSignals, expectedSignals.sequenceSignals);
   } catch (error) {
     failure = error;
+  }
+  for (const databaseName of verificationFixtures) {
+    try {
+      if (await databaseExists(databaseName)) {
+        await runPsql(
+          "postgres",
+          `SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity
+           WHERE datname = '${databaseName}' AND pid <> pg_catalog.pg_backend_pid();`,
+        );
+        await runPsql("postgres", `DROP DATABASE ${quoteIdentifier(databaseName)};`);
+      }
+    } catch (error) {
+      failure =
+        failure === undefined
+          ? error
+          : new AggregateError([failure, error], "Portable verifier fixture cleanup failed.");
+    }
   }
   const cleanupFailures = await cleanupPlan(sourcePlan);
   if (failure !== undefined || cleanupFailures.length > 0) {

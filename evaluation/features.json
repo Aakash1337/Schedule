@@ -1118,7 +1118,14 @@
           "anchors": [
             "round-trips a %s-produced archive without OS assumptions",
             "rejects corruption before exposing database bytes",
-            "rejects truncation, symlinks, and accidental overwrite"
+            "rejects truncation, symlinks, and accidental overwrite",
+            "falls back to a validated exclusive copy when hard links are unsupported",
+            "reclaims a stale owned partial fallback before retry but preserves fresh and completed paths",
+            "preserves an unmarked creation-gap file and clears only its stale intention",
+            "clears a stale exact intention beside a valid archive without replacing the archive",
+            "rejects a hard-link source substitution without deleting the substituted leaf",
+            "preserves both names when the published destination is substituted before finalize",
+            "bounds sibling-temp scavenging and preserves fresh, unmarked, malformed, and linked entries"
           ]
         },
         {
@@ -1146,6 +1153,47 @@
           "anchors": [
             "Portable migration verification passed every durable table, AI/behavior history, exclusions, normalization, replacement, and rollback."
           ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/desktop-portable.test.ts",
+          "command": "unit",
+          "anchors": [
+            "accepts only an absolute new schedule destination",
+            "runs packaged migrate.js with no mode argument and a minimal child environment",
+            "wires the production entrypoint to lifecycle, migration, and export dependencies",
+            "selects only exact marked stale database identities",
+            "preserves stale identity mismatches before termination and the name-only drop",
+            "uses the same OID guard for a remembered same-run database",
+            "cleans the captured OID after an injected %s failure",
+            "does not register name-only ownership when the immediate OID read fails",
+            "reclaims at most the oldest eight exact marked databases per invocation",
+            "emits an exact success record and redacts all failure details"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/portable-export.test.ts",
+          "command": "unit",
+          "anchors": [
+            "runs verification before publication and cleanup after publication",
+            "cleans allocations when source preparation fails",
+            "attempts global cleanup when verification allocation fails before returning",
+            "scavenges only stale, flat, v1-owned export directories",
+            "bounds export-directory scavenging even when a larger count is requested"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/desktop/src/portable-export.test.ts",
+          "command": "unit",
+          "anchors": ["invokes the portable export command without arguments"]
+        },
+        {
+          "level": "unit",
+          "file": "scripts/build-desktop-runtime.test.ts",
+          "command": "desktop-foundation",
+          "anchors": ["requires a regular, non-symlink deployed desktop portable export helper"]
         }
       ]
     },

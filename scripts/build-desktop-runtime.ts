@@ -16,6 +16,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { loadMigrationManifest } from "../packages/database/src/migration-ledger.js";
+import { DESKTOP_PORTABLE_MODULES } from "./desktop-portable-modules.js";
 
 const MANIFEST_NAME = "runtime-manifest.json";
 const SBOM_NAME = "runtime-sbom.json";
@@ -327,6 +328,16 @@ async function requireDirectory(root: string, relative: string, label: string): 
   }
 }
 
+async function requireDesktopPortableModules(root: string, prefix = ""): Promise<void> {
+  for (const file of DESKTOP_PORTABLE_MODULES) {
+    await requireFile(
+      root,
+      `${prefix}node_modules/@schedule/database/dist/${file}`,
+      `Database desktop portable export module ${file}`,
+    );
+  }
+}
+
 async function requirePgcrypto(
   root: string,
   target: DesktopRuntimeBuildOptions["target"],
@@ -425,6 +436,7 @@ export async function validateDesktopRuntime(root: string): Promise<DesktopRunti
     "api/node_modules/@schedule/database/dist/migration-sql.js",
     "Database migration SQL safety helper",
   );
+  await requireDesktopPortableModules(runtimeRoot, "api/");
   await requireFile(
     runtimeRoot,
     "api/node_modules/@schedule/database/drizzle/meta/_journal.json",
@@ -623,6 +635,7 @@ export async function buildDesktopRuntime(
     "node_modules/@schedule/database/dist/migration-sql.js",
     "Database migration SQL safety helper",
   );
+  await requireDesktopPortableModules(apiDeploymentDirectory);
   await requireFile(
     apiDeploymentDirectory,
     "node_modules/@schedule/database/drizzle/meta/_journal.json",

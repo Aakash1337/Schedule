@@ -89,6 +89,13 @@ pub trait EffectExecutor {
     fn configure_bridge(&mut self, generation: u64) -> Result<(), Self::Error>;
     fn clear_bridge(&mut self, generation: u64) -> Result<(), Self::Error>;
     fn cancel(&mut self, generation: u64);
+    fn portable_export(
+        &mut self,
+        _: std::path::PathBuf,
+        _: &Cancellation,
+    ) -> crate::runtime::portable::PortableExportResult {
+        crate::runtime::portable::PortableExportResult::Unavailable
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -160,6 +167,20 @@ impl<E: EffectExecutor> Coordinator<E> {
 
     pub fn cancellation_handle(&self) -> CancellationHandle {
         self.cancellation_handle.clone()
+    }
+
+    pub fn portable_export(
+        &mut self,
+        destination: std::path::PathBuf,
+    ) -> crate::runtime::portable::PortableExportResult {
+        if !matches!(self.lifecycle.phase(), Phase::Ready) {
+            self.cancellation_handle.clear_pre_arm();
+            return crate::runtime::portable::PortableExportResult::Unavailable;
+        }
+        let cancellation = self.cancellation_handle.activate();
+        let result = self.executor.portable_export(destination, &cancellation);
+        self.cancellation_handle.clear_active();
+        result
     }
 
     pub fn start(&mut self) -> Result<(), CoordinatorError<E::Error>> {
@@ -586,6 +607,20 @@ mod tests {
                 "worker"
             ]
         );
+    }
+
+    #[test]
+    fn unavailable_portable_export_clears_its_pre_armed_cancellation() {
+        let mut coordinator = Coordinator::new(Fake::default());
+        let cancellation = coordinator.cancellation_handle();
+        cancellation.pre_arm();
+        assert!(cancellation.cancel());
+
+        assert_eq!(
+            coordinator.portable_export(std::path::PathBuf::from("ignored.schedule")),
+            crate::runtime::portable::PortableExportResult::Unavailable
+        );
+        assert!(!cancellation.cancel());
     }
 
     #[test]

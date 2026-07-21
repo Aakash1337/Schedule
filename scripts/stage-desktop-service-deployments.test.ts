@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { DESKTOP_PORTABLE_MODULES } from "./desktop-portable-modules.js";
 import {
   stageDesktopServiceDeployments,
   type DeployCommand,
@@ -75,6 +76,16 @@ async function fixture(mutate?: RawMutation): Promise<{
       await writeFile(
         path.join(database, "dist", "migration-sql.js"),
         "export const stagedMigrationSqlFixture = true;",
+      );
+      await Promise.all(
+        DESKTOP_PORTABLE_MODULES.map((file) =>
+          writeFile(
+            path.join(database, "dist", file),
+            file === "desktop-portable.js"
+              ? "export const stagedDesktopPortableFixture = true;"
+              : "export const stagedPortableModuleFixture = true;",
+          ),
+        ),
       );
       await writeFile(
         path.join(database, "package.json"),
@@ -195,6 +206,17 @@ describe("stageDesktopServiceDeployments", () => {
         ).href
       ),
     ).resolves.toMatchObject({ stagedMigrationFixture: true });
+    expect(
+      await readFile(
+        path.join(result.apiDeploymentDirectory, databaseRelative, "dist", "desktop-portable.js"),
+        "utf8",
+      ),
+    ).toContain("stagedDesktopPortableFixture");
+    const stagedHelper = await lstat(
+      path.join(result.apiDeploymentDirectory, databaseRelative, "dist", "desktop-portable.js"),
+    );
+    expect(stagedHelper.isFile()).toBe(true);
+    expect(stagedHelper.isSymbolicLink()).toBe(false);
   });
 
   it("requests a hoisted deploy so materialized workspace dependencies stay resolvable", async () => {
@@ -266,6 +288,22 @@ describe("stageDesktopServiceDeployments", () => {
             await unlink(path.join(destination, databaseRelative, "dist", "migration-sql.js"));
         },
         "Database migration SQL safety helper",
+      ],
+      [
+        "missing desktop portable export helper",
+        async (destination, api) => {
+          if (api)
+            await unlink(path.join(destination, databaseRelative, "dist", "desktop-portable.js"));
+        },
+        "Database desktop portable export module desktop-portable.js",
+      ],
+      [
+        "missing portable export module closure file",
+        async (destination, api) => {
+          if (api)
+            await unlink(path.join(destination, databaseRelative, "dist", "portable-export.js"));
+        },
+        "Database desktop portable export module portable-export.js",
       ],
       [
         "missing materialized workspace dependency",
