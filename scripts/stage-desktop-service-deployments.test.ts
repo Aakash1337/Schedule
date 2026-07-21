@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { DESKTOP_PORTABLE_MODULES } from "./desktop-portable-modules.js";
 import {
   stageDesktopServiceDeployments,
   type DeployCommand,
@@ -76,21 +77,14 @@ async function fixture(mutate?: RawMutation): Promise<{
         path.join(database, "dist", "migration-sql.js"),
         "export const stagedMigrationSqlFixture = true;",
       );
-      await writeFile(
-        path.join(database, "dist", "desktop-portable.js"),
-        "export const stagedDesktopPortableFixture = true;",
-      );
       await Promise.all(
-        [
-          "portable-export.js",
-          "portable-archive.js",
-          "portable-payload.js",
-          "portable-file.js",
-          "backup-database.js",
-          "portable-data.js",
-          "database.js",
-        ].map((file) =>
-          writeFile(path.join(database, "dist", file), `export const ${file} = true;`),
+        DESKTOP_PORTABLE_MODULES.map((file) =>
+          writeFile(
+            path.join(database, "dist", file),
+            file === "desktop-portable.js"
+              ? "export const stagedDesktopPortableFixture = true;"
+              : "export const stagedPortableModuleFixture = true;",
+          ),
         ),
       );
       await writeFile(

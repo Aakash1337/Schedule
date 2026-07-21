@@ -3,6 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { buildDesktopRuntime, hashTree } from "./build-desktop-runtime.js";
+import { DESKTOP_PORTABLE_MODULES } from "./desktop-portable-modules.js";
 
 async function write(root: string, relative: string, value: string): Promise<void> {
   const file = path.join(root, ...relative.split("/"));
@@ -35,20 +36,9 @@ export async function createDesktopRuntimeFixture(outputDirectory: string): Prom
       "node_modules/@schedule/database/dist/migration-sql.js",
       "fixture migration SQL safety",
     ),
-    write(
-      api,
-      "node_modules/@schedule/database/dist/desktop-portable.js",
-      "fixture desktop portable export helper",
+    ...DESKTOP_PORTABLE_MODULES.map((file) =>
+      write(api, `node_modules/@schedule/database/dist/${file}`, `fixture ${file}`),
     ),
-    ...[
-      "portable-export.js",
-      "portable-archive.js",
-      "portable-payload.js",
-      "portable-file.js",
-      "backup-database.js",
-      "portable-data.js",
-      "database.js",
-    ].map((file) => write(api, `node_modules/@schedule/database/dist/${file}`, `fixture ${file}`)),
     write(
       api,
       "node_modules/@schedule/database/drizzle/meta/_journal.json",

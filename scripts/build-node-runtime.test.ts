@@ -9,6 +9,7 @@ import {
   type DesktopRuntimeBuildOptions,
 } from "./build-desktop-runtime.js";
 import { buildNodeRuntime, parseNodeRuntimeArguments } from "./build-node-runtime.js";
+import { DESKTOP_PORTABLE_MODULES } from "./desktop-portable-modules.js";
 
 const directories: string[] = [];
 const repository = path.resolve(import.meta.dirname, "..");
@@ -160,16 +161,7 @@ async function desktopAssemblerFixture(
       path.join(api, "node_modules", "@schedule", "database", "dist", "migration-sql.js"),
       "migration SQL safety",
     ),
-    ...[
-      "desktop-portable.js",
-      "portable-export.js",
-      "portable-archive.js",
-      "portable-payload.js",
-      "portable-file.js",
-      "backup-database.js",
-      "portable-data.js",
-      "database.js",
-    ].map((file) =>
+    ...DESKTOP_PORTABLE_MODULES.map((file) =>
       writeFile(
         path.join(api, "node_modules", "@schedule", "database", "dist", file),
         `desktop portable export module ${file}`,

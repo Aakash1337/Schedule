@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildDesktopRuntime, hashTree } from "./build-desktop-runtime.js";
+import { DESKTOP_PORTABLE_MODULES } from "./desktop-portable-modules.js";
 import { packageDesktopRelease, parseDesktopReleaseArguments } from "./package-desktop-release.js";
 
 const temporaryDirectories: string[] = [];
@@ -40,19 +41,7 @@ async function fixture(): Promise<{ repository: string; runtime: string }> {
       path.join(api, "node_modules/@schedule/database/dist/migration-sql.js"),
       "migration SQL safety",
     ),
-    writeFile(
-      path.join(api, "node_modules/@schedule/database/dist/desktop-portable.js"),
-      "desktop portable export helper",
-    ),
-    ...[
-      "portable-export.js",
-      "portable-archive.js",
-      "portable-payload.js",
-      "portable-file.js",
-      "backup-database.js",
-      "portable-data.js",
-      "database.js",
-    ].map((file) =>
+    ...DESKTOP_PORTABLE_MODULES.map((file) =>
       writeFile(
         path.join(api, "node_modules/@schedule/database/dist", file),
         `desktop portable export module ${file}`,

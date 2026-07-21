@@ -6,17 +6,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { loadMigrationManifest } from "../packages/database/src/migration-ledger.js";
 import { hashTree } from "./build-desktop-runtime.js";
-
-const DESKTOP_PORTABLE_MODULES = [
-  "desktop-portable.js",
-  "portable-export.js",
-  "portable-archive.js",
-  "portable-payload.js",
-  "portable-file.js",
-  "backup-database.js",
-  "portable-data.js",
-  "database.js",
-] as const;
+import { DESKTOP_PORTABLE_MODULES } from "./desktop-portable-modules.js";
 
 export interface DeployCommand {
   (

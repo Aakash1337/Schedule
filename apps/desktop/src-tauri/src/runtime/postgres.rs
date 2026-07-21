@@ -122,7 +122,7 @@ pub(crate) fn pg_hba_conf(
         return Err(PgError("invalid PostgreSQL access rule"));
     }
     Ok(format!(
-        "# Managed by Schedule. Do not add network rules.\nlocal all all reject\nhost postgres {cluster_admin} 127.0.0.1/32 scram-sha-256\nhost all {cluster_admin} 127.0.0.1/32 scram-sha-256\nhost {database} {owner} 127.0.0.1/32 scram-sha-256\nhost {database} {runtime} 127.0.0.1/32 scram-sha-256\nhost all all ::1/128 reject\nhost all all 0.0.0.0/0 reject\nhost all all ::0/0 reject\n"
+        "# Managed by Schedule. Do not add network rules.\nlocal all all reject\nhost all {cluster_admin} 127.0.0.1/32 scram-sha-256\nhost {database} {owner} 127.0.0.1/32 scram-sha-256\nhost {database} {runtime} 127.0.0.1/32 scram-sha-256\nhost all all ::1/128 reject\nhost all all 0.0.0.0/0 reject\nhost all all ::0/0 reject\n"
     ))
 }
 
@@ -363,6 +363,8 @@ mod tests {
             assert!(hba.contains(role));
         }
         assert!(hba.contains("local all all reject"));
+        assert!(hba.contains("host all schedule_cluster_admin 127.0.0.1/32 scram-sha-256"));
+        assert!(!hba.contains("host postgres schedule_cluster_admin"));
         assert!(!hba.contains(" trust"));
         assert!(PgConnection::new(54_321, "Schedule", "schedule_app", "private/pgpass").is_err());
         assert!(pg_hba_conf("Admin", "owner", "runtime", "schedule").is_err());

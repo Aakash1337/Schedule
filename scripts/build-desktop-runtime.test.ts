@@ -9,6 +9,7 @@ import {
   hashTree,
   type DesktopRuntimeBuildOptions,
 } from "./build-desktop-runtime.js";
+import { DESKTOP_PORTABLE_MODULES } from "./desktop-portable-modules.js";
 
 const temporaryDirectories: string[] = [];
 const executable = process.platform === "win32" ? ".exe" : "";
@@ -59,19 +60,7 @@ async function fixture(): Promise<{
       path.join(api, "node_modules", "@schedule", "database", "dist", "migration-sql.js"),
       "migration SQL safety",
     ),
-    writeFile(
-      path.join(api, "node_modules", "@schedule", "database", "dist", "desktop-portable.js"),
-      "desktop portable export helper",
-    ),
-    ...[
-      "portable-export.js",
-      "portable-archive.js",
-      "portable-payload.js",
-      "portable-file.js",
-      "backup-database.js",
-      "portable-data.js",
-      "database.js",
-    ].map((file) =>
+    ...DESKTOP_PORTABLE_MODULES.map((file) =>
       writeFile(
         path.join(api, "node_modules", "@schedule", "database", "dist", file),
         `desktop portable export module ${file}`,
@@ -208,7 +197,7 @@ describe("buildDesktopRuntime", () => {
         ),
         "utf8",
       ),
-    ).toBe("desktop portable export helper");
+    ).toBe("desktop portable export module desktop-portable.js");
     expect(manifest.components.find((component) => component.name === "api")?.sha256).toBe(
       await hashTree(path.join(options.outputDirectory, "api")),
     );
