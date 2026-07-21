@@ -16,6 +16,8 @@ export interface MigrationManifestEntry {
   readonly createdAt: number;
   readonly sha256: string;
   readonly compatibleSha256: readonly string[];
+  /** Deterministic CRLF form of the canonical SQL for databases created on Windows. */
+  readonly crlfSha256?: string;
 }
 
 export interface MigrationManifest {
@@ -47,6 +49,20 @@ function object(value: unknown): value is Record<string, unknown> {
 
 function digest(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function portableSqlDigests(sql: Buffer): { readonly lf: string; readonly crlf?: string } {
+  const source = sql.toString("utf8");
+  if (!Buffer.from(source, "utf8").equals(sql)) {
+    throw new Error("Migration SQL is not valid UTF-8.");
+  }
+  const lfSource = source.replaceAll("\r\n", "\n");
+  if (lfSource.includes("\r")) {
+    throw new Error("Migration SQL contains an invalid line ending.");
+  }
+  const lf = digest(Buffer.from(lfSource, "utf8"));
+  const crlf = digest(Buffer.from(lfSource.replaceAll("\n", "\r\n"), "utf8"));
+  return { lf, ...(crlf === lf ? {} : { crlf }) };
 }
 
 async function boundedJson(file: string): Promise<unknown> {
@@ -123,15 +139,21 @@ export async function loadMigrationManifest(migrationsFolder: string): Promise<M
     tags.add(value.tag);
     for (const hash of accepted) acceptedHashes.add(hash);
     const sql = await readFile(path.join(migrationsFolder, `${value.tag}.sql`));
-    if (digest(sql) !== value.sha256) {
+    const sqlDigests = portableSqlDigests(sql);
+    if (sqlDigests.lf !== value.sha256) {
       throw new Error("Migration SQL does not match the immutable manifest.");
     }
+    if (sqlDigests.crlf !== undefined && acceptedHashes.has(sqlDigests.crlf)) {
+      throw new Error("Migration manifest contains duplicate hashes.");
+    }
+    if (sqlDigests.crlf !== undefined) acceptedHashes.add(sqlDigests.crlf);
     previousCreatedAt = value.createdAt;
     entries.push({
       tag: value.tag,
       createdAt: value.createdAt,
       sha256: value.sha256,
       compatibleSha256: [...value.compatibleSha256] as string[],
+      ...(sqlDigests.crlf === undefined ? {} : { crlfSha256: sqlDigests.crlf }),
     });
   }
   return { schemaVersion: 1, entries };
@@ -165,7 +187,9 @@ export function classifyMigrationLedger(
     if (
       id <= previousId ||
       row.createdAt !== String(expected.createdAt) ||
-      (row.hash !== expected.sha256 && !expected.compatibleSha256.includes(row.hash))
+      (row.hash !== expected.sha256 &&
+        row.hash !== expected.crlfSha256 &&
+        !expected.compatibleSha256.includes(row.hash))
     ) {
       return "divergent";
     }

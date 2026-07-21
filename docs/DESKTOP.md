@@ -182,7 +182,10 @@ Startup loads the immutable ordered migration manifest and reads the live Drizzl
 database starts without migration. A valid older prefix is backed up before forward migration, then
 must reach the exact expected ledger. A newer, divergent, altered-hash, or data-bearing ledger-less
 database fails closed without being reset. The journal's former schema token remains audit metadata
-only and is not an admission authority. Release acceptance must still prove a populated installed
+only and is not an admission authority. Canonical LF and deterministic CRLF migration hashes are
+treated as the same cross-platform SQL; no other byte variation is admitted. Historical schema
+repairs add or replace catalog objects without truncating or deleting retained product data. Release
+acceptance must still prove a populated installed
 N-1 to N upgrade and fail-closed downgrade on both supported operating systems; that remaining
 evidence gap is tracked in [EVALUATION.md](./EVALUATION.md).
 

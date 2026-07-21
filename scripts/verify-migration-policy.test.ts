@@ -195,8 +195,14 @@ describe("migration policy", () => {
       "DROP PROCEDURE public.rebuild_summary();\n",
       "DROP ROUTINE public.refresh_or_rebuild_summary();\n",
       "DROP DOMAIN customer_code CASCADE;\n",
+      "ALTER TABLE things DROP obsolete;\n",
+      "ALTER TABLE things DROP CONSTRAINT things_value_check;\n",
+      "ALTER TABLE things ALTER CONSTRAINT things_parent_fk DEFERRABLE;\n",
       "ALTER TABLE things ALTER COLUMN id DROP IDENTITY;\n",
       "ALTER TABLE things ALTER COLUMN id RESTART WITH 1;\n",
+      "ALTER TABLE things ALTER value TYPE text;\n",
+      "ALTER TABLE things RENAME value TO old_value;\n",
+      "ALTER TABLE things RENAME TO old_things;\n",
       "SELECT pg_catalog.setval('public.things_id_seq'::regclass, 1, false);\n",
       `SELECT pg_catalog."setval"('public.things_id_seq'::regclass, 1, false);\n`,
       "UPDATE things SET value = NULL;\n",
@@ -209,14 +215,14 @@ describe("migration policy", () => {
         /schedule-migration-review/u,
       );
     }
-  }, 30_000);
+  }, 45_000);
 
   it("accepts reviewed destructive SQL and ignores trigger words in literals and comments", async () => {
     const { root, base } = await fixture();
     await append(
       root,
       "0001_next",
-      "-- DELETE FROM is only documentation\nINSERT INTO things VALUES ('DROP TABLE');--> statement-breakpoint\n-- schedule-migration-review: destructive-data-change\n-- schedule-migration-reason: obsolete test data is intentionally removed\nDELETE FROM things;\n",
+      "ALTER TABLE things ADD COLUMN added text;--> statement-breakpoint\n-- DELETE FROM is only documentation\nINSERT INTO things VALUES ('DROP TABLE');--> statement-breakpoint\n-- schedule-migration-review: destructive-data-change\n-- schedule-migration-reason: obsolete test data is intentionally removed\nDELETE FROM things;\n",
     );
     expect(() => verifyMigrationPolicy({ repositoryRoot: root, base })).not.toThrow();
   });

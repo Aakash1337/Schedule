@@ -548,8 +548,9 @@ windows remain the replay contract.
 
 The audit deliberately leaves these visible instead of turning them into false green checks:
 
-- historical migration verification covers fresh-to-head, populated `0003` plan-state backfills,
-  and the populated `0011` weekday-array upgrade, not every prior release boundary;
+- historical migration verification executes every known previously journaled SQL variant through
+  the production migrator, checks its exact hash, preserves seeded rows, and proves the `0031` and
+  `0041` catalog repairs. This is source-history coverage, not yet a packaged N-1 release boundary;
 - CI now rejects rewrites of released Drizzle journal entries, SQL, and compatibility-manifest
   entries (including accepted legacy hashes), and requires an explicit rationale for recognized
   destructive or procedural SQL in a newly appended migration; it remains a lexical policy gate,
@@ -562,8 +563,9 @@ The audit deliberately leaves these visible instead of turning them into false g
   migration lock and installed runtime execute-path still need the populated cross-release evidence
   described above before release-to-release update compatibility is considered complete;
 - a complete reachable-history audit found six previously journaled SQL variants across migrations
-  `0004`, `0024`, `0031`, `0032`, and `0041`; only those exact hashes at their canonical positions
-  are accepted, while every other timestamp/hash pair must match the immutable manifest;
+  `0004`, `0024`, `0031`, `0032`, and `0041`; only those exact LF hashes, their deterministic CRLF
+  equivalents, and the canonical LF/CRLF pair at each position are accepted. Every other
+  timestamp/hash pair must match the immutable manifest;
 - PostgreSQL recovery verifies the successful swap/rollback path, while compensation fault injection
   is currently operation-level rather than process-kill testing;
 - backup rejection covers empty, plain-SQL, truncated, schema-only, and migration-ledger-filtered

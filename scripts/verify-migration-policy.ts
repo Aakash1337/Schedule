@@ -42,15 +42,41 @@ const sha256 = /^[a-f0-9]{64}$/u;
 const destructiveReview =
   /^\s*--\s*schedule-migration-review:\s*destructive-data-change\s*\r?\n\s*--\s*schedule-migration-reason:\s*\S[^\r\n]*\r?\n/iu;
 const bootstrapCompatibleHashes = new Map<string, readonly string[]>([
-  ["0004_public_cerise", ["6ab84e9bb63326595061b24584e8fe58f3cf23ba1e6d6786f3777a7347a646f6"]],
-  ["0024_fast_thundra", ["26f049d219f3962d7298fd4acca87bc0b8ceeeb680bc7df1b65056eb572b38c5"]],
-  ["0031_daffy_bloodstrike", ["34e68d0a3907c79ecbc3f97949c493800d688e84998657d440f155bfa089b8c1"]],
-  ["0032_harsh_purifiers", ["4b9982a0deb4d00e68b7871ea4c84b2b28c6bdfcf257f8717ec0025c8de5e1e9"]],
+  [
+    "0004_public_cerise",
+    [
+      "6ab84e9bb63326595061b24584e8fe58f3cf23ba1e6d6786f3777a7347a646f6",
+      "690349d1c4e55355661e7acb5ffc1a79b92d3503548d7ef289bbef9367047170",
+    ],
+  ],
+  [
+    "0024_fast_thundra",
+    [
+      "26f049d219f3962d7298fd4acca87bc0b8ceeeb680bc7df1b65056eb572b38c5",
+      "fe5ca493d9ed22bb35395029a713441db2792bcbf8ca0f6e4638a0c37a614d6d",
+    ],
+  ],
+  [
+    "0031_daffy_bloodstrike",
+    [
+      "34e68d0a3907c79ecbc3f97949c493800d688e84998657d440f155bfa089b8c1",
+      "1ce33357c59ca26bd28f93e4ab902bc705279de9b05198f4cbf8e8b3cfc4ae88",
+    ],
+  ],
+  [
+    "0032_harsh_purifiers",
+    [
+      "4b9982a0deb4d00e68b7871ea4c84b2b28c6bdfcf257f8717ec0025c8de5e1e9",
+      "849a6143a47c4e606c51cbb1ad583ebc44e5fd37e08a0472e78f433f86d9501a",
+    ],
+  ],
   [
     "0041_hosted_work_item_sync",
     [
       "40064a598eab70d10c7a0090d29f2793417621d39029d7d7b799403d515abd9f",
+      "5c4d70031606bfe9eeeb776d7c2085fc6759e9ebff1960674f22fef9efb82e3e",
       "b4c65f84c69c294c5f481b1c36f7906af625016a9fd1300cad6cf7f0a9b885ca",
+      "f2890f9d40b00d52f373654ad31df9fdc99af9c0147264ac807fd0ee401148ce",
     ],
   ],
 ]);
@@ -315,33 +341,9 @@ function destructiveOperation(statement: MigrationSqlStatement): string | undefi
     ],
     [
       postgresPattern(
-        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*${keyword("DROP")}\\s+${keyword("COLUMN")}`,
+        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*(?:${keyword("DROP")}|${keyword("ALTER")}|${keyword("RENAME")})`,
       ),
-      "ALTER TABLE DROP COLUMN",
-    ],
-    [
-      postgresPattern(
-        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*${keyword("DROP")}\\s+${keyword("IDENTITY")}`,
-      ),
-      "ALTER TABLE DROP IDENTITY",
-    ],
-    [
-      postgresPattern(
-        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*${keyword("ALTER")}\\s+${keyword("COLUMN")}[\\s\\S]*${keyword("RESTART")}`,
-      ),
-      "ALTER TABLE identity RESTART",
-    ],
-    [
-      postgresPattern(
-        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*${keyword("ALTER")}\\s+${keyword("COLUMN")}[\\s\\S]*${keyword("TYPE")}`,
-      ),
-      "ALTER TABLE ALTER COLUMN TYPE",
-    ],
-    [
-      postgresPattern(
-        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*${keyword("RENAME")}\\s+${keyword("COLUMN")}`,
-      ),
-      "ALTER TABLE RENAME COLUMN",
+      "ALTER TABLE destructive or compatibility-changing operation",
     ],
   ];
   return rules.find(([pattern]) => pattern.test(sql))?.[1];

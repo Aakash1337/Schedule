@@ -74,7 +74,7 @@ try {
       return (
         expected === undefined ||
         migration.folderMillis !== expected.createdAt ||
-        migration.hash !== expected.sha256
+        (migration.hash !== expected.sha256 && migration.hash !== expected.crlfSha256)
       );
     })
   ) {
