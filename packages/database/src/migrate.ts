@@ -1,23 +1,70 @@
-import "dotenv/config";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { config as loadEnvironment, type DotenvConfigOptions } from "dotenv";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 
 import { createDatabase } from "./database.js";
 import { inspectMigrationLedger, loadMigrationManifest } from "./migration-ledger.js";
 import { controlsMigrationTransaction, migrationSqlStatements } from "./migration-sql.js";
 
-const databaseUrl =
-  process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule";
 const migrationsFolder = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../drizzle");
 const statusMode = process.argv.slice(2).length === 1 && process.argv[2] === "--status";
+
+function loadMigrationEnvironment(): void {
+  // Status mode owns stdout as a one-line wire protocol, even with dotenv override mode enabled.
+  const quietKey = "DOTENV_CONFIG_QUIET";
+  const debugKey = "DOTENV_CONFIG_DEBUG";
+  process.env[quietKey] = "true";
+  process.env[debugKey] = "false";
+  const protectedEnvironment = new Proxy(process.env, {
+    set(target, property, value) {
+      const normalized = typeof property === "string" ? property.toUpperCase() : property;
+      if (normalized === quietKey || normalized === debugKey) return true;
+      return Reflect.set(target, property, value);
+    },
+  });
+  const configuredPath = process.env.DOTENV_CONFIG_PATH;
+  const environmentPath =
+    configuredPath === undefined || configuredPath === "" ? undefined : configuredPath;
+  const configuredKey = process.env.DOTENV_CONFIG_DOTENV_KEY;
+  const dotenvKey =
+    configuredKey === undefined || configuredKey === "" ? process.env.DOTENV_KEY : configuredKey;
+  if (dotenvKey !== undefined && dotenvKey !== "") {
+    const vault =
+      environmentPath === undefined
+        ? path.resolve(process.cwd(), ".env.vault")
+        : environmentPath.endsWith(".vault")
+          ? environmentPath
+          : `${environmentPath}.vault`;
+    if (!existsSync(vault)) throw new Error("Encrypted migration environment is unavailable.");
+  }
+  const override = process.env.DOTENV_CONFIG_OVERRIDE;
+  const environmentOptions: DotenvConfigOptions = {
+    quiet: true,
+    debug: false,
+    processEnv: protectedEnvironment,
+    ...(environmentPath === undefined ? {} : { path: environmentPath }),
+    ...(process.env.DOTENV_CONFIG_ENCODING === undefined
+      ? {}
+      : { encoding: process.env.DOTENV_CONFIG_ENCODING }),
+    ...(override === undefined
+      ? {}
+      : { override: !["false", "0", "no", "off", ""].includes(override.toLowerCase()) }),
+    ...(configuredKey === undefined ? {} : { DOTENV_KEY: configuredKey }),
+  };
+  loadEnvironment(environmentOptions);
+}
 
 function requireReleasedMigrationLock(value: boolean | undefined): void {
   if (value !== true) throw new Error("Migration lock ownership was lost.");
 }
 
 try {
+  loadMigrationEnvironment();
+  const databaseUrl =
+    process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule";
   const manifest = await loadMigrationManifest(migrationsFolder);
   const migrations = readMigrationFiles({ migrationsFolder });
   if (

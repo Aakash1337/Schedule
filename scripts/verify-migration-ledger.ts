@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,6 +21,7 @@ const disposableName = /^schedule_ledger_verify_[a-f0-9]{32}$/u;
 const statusLine = "SCHEDULE_MIGRATION_STATUS_V1 exact\n";
 const divergentStatusLine = "SCHEDULE_MIGRATION_STATUS_V1 divergent\n";
 const migrationFailure = "Database migration compatibility check failed.\n";
+const missingVaultKey = `dotenv://:key_${"a".repeat(64)}@dotenvx.com/vault/.env.vault?environment=test`;
 
 export type CommandResult = {
   readonly code: number | null;
@@ -129,12 +131,39 @@ export async function runProcess(
   });
 }
 
-async function runMigrator(databaseUrl: string, status = false): Promise<CommandResult> {
-  return await runProcess(process.execPath, [migrateEntryPoint, ...(status ? ["--status"] : [])], {
+async function runMigrator(
+  databaseUrl: string,
+  status = false,
+  environmentFile?: string,
+  dotenvKey?: string,
+): Promise<CommandResult> {
+  const environment: NodeJS.ProcessEnv = {
     ...process.env,
+    DOTENV_CONFIG_QUIET: "false",
+    DOTENV_CONFIG_DEBUG: "true",
     DATABASE_URL: databaseUrl,
     NODE_ENV: "test",
-  });
+  };
+  if (environmentFile !== undefined) {
+    environment.DOTENV_CONFIG_PATH = environmentFile;
+    environment.DOTENV_CONFIG_OVERRIDE = "true";
+    delete environment.DATABASE_URL;
+  }
+  if (dotenvKey !== undefined) environment.DOTENV_CONFIG_DOTENV_KEY = dotenvKey;
+  return await runProcess(
+    process.execPath,
+    [migrateEntryPoint, ...(status ? ["--status"] : [])],
+    environment,
+  );
+}
+
+async function writeMigrationEnvironment(file: string, databaseUrl: string): Promise<void> {
+  if (/\r|\n/u.test(databaseUrl)) throw new Error("Migration environment URL is invalid.");
+  await writeFile(
+    file,
+    `DATABASE_URL=${databaseUrl}\ndotenv_config_quiet=false\nDoTeNv_CoNfIg_DeBuG=true\n`,
+    { encoding: "utf8", flag: "wx", mode: 0o600 },
+  );
 }
 
 function quotedDatabase(name: string): string {
@@ -286,6 +315,9 @@ async function forgedLedgerSnapshot(connection: DatabaseConnection): Promise<{
 export async function verifyMigrationLedger(sourceDatabaseUrl: string): Promise<void> {
   await access(migrateEntryPoint);
   const manifest = await loadMigrationManifest(migrationsFolder);
+  const environmentDirectory = await mkdtemp(path.join(os.tmpdir(), "schedule-ledger-env-"));
+  const exactEnvironment = path.join(environmentDirectory, "exact.env");
+  const divergentEnvironment = path.join(environmentDirectory, "divergent.env");
   const nonce = randomUUID().replaceAll("-", "");
   const cleanName = disposableDatabaseName(nonce);
   const sessionMutationName = disposableDatabaseName(randomUUID().replaceAll("-", ""));
@@ -323,6 +355,9 @@ export async function verifyMigrationLedger(sourceDatabaseUrl: string): Promise<
     assertNormalMigration(second, 0);
     await assertCanonicalLedger(clean, manifest.entries.length);
     assertExactStatus(await runMigrator(cleanUrl, true), statusLine);
+    await writeMigrationEnvironment(exactEnvironment, cleanUrl);
+    assertExactStatus(await runMigrator(cleanUrl, true, exactEnvironment), statusLine);
+    assertNormalMigration(await runMigrator(cleanUrl, true, exactEnvironment, missingVaultKey), 1);
 
     await createDisposable(admin, sessionMutationName);
     sessionMutationCreated = true;
@@ -365,6 +400,11 @@ export async function verifyMigrationLedger(sourceDatabaseUrl: string): Promise<
       retainedRows: 1,
     });
     assertExactStatus(await runMigrator(forgedLedgerUrl, true), divergentStatusLine);
+    await writeMigrationEnvironment(divergentEnvironment, forgedLedgerUrl);
+    assertExactStatus(
+      await runMigrator(forgedLedgerUrl, true, divergentEnvironment),
+      divergentStatusLine,
+    );
     assertNormalMigration(await runMigrator(forgedLedgerUrl), 1);
     assert.deepEqual(
       await forgedLedgerSnapshot(forgedLedger),
@@ -388,7 +428,11 @@ export async function verifyMigrationLedger(sourceDatabaseUrl: string): Promise<
     if (forgedLedgerCreated) {
       await dropDisposable(admin, forgedLedgerName).catch(() => undefined);
     }
-    await admin.close();
+    try {
+      await admin.close();
+    } finally {
+      await rm(environmentDirectory, { recursive: true, force: true });
+    }
   }
 }
 

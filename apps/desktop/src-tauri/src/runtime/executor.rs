@@ -729,6 +729,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         let spec = CommandSpec::new(&bundle.node, &bundle.root, MIGRATION_TIMEOUT)
             .arg(&bundle.migration)
             .env("NODE_ENV", "production")
+            .env("DOTENV_CONFIG_QUIET", "true")
             .env("DATABASE_URL", url.expose())
             .output_bounds(64 * 1024, 64 * 1024);
         let outcome =
@@ -767,6 +768,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
             .arg(&bundle.migration)
             .arg("--status")
             .env("NODE_ENV", "production")
+            .env("DOTENV_CONFIG_QUIET", "true")
             .env("DATABASE_URL", url.expose())
             .output_bounds(256, 256);
         let output = run_command_cancellable(spec, Arc::clone(&self.process_control), &|| {
