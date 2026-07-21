@@ -541,6 +541,13 @@ describe("Schedule portable archive", () => {
         archiveTemporaryOwnerMarker,
         true,
       );
+
+      await expect(scavengePortableArchiveTemporaryFiles(output, Date.now(), 1)).resolves.toBe(1);
+      const remainingOwned = await Promise.all(
+        [first, second].map(({ temporary }) => pathExists(temporary)),
+      );
+      expect(remainingOwned.filter((exists) => !exists)).toHaveLength(1);
+
       const fresh = await artifact(
         "00000000-0000-4000-8000-000000000003",
         archiveTemporaryOwnerMarker,
@@ -562,11 +569,6 @@ describe("Schedule portable archive", () => {
         process.platform === "win32" ? "junction" : "dir",
       );
 
-      await expect(scavengePortableArchiveTemporaryFiles(output, Date.now(), 1)).resolves.toBe(1);
-      const remainingOwned = await Promise.all(
-        [first, second].map(({ temporary }) => pathExists(temporary)),
-      );
-      expect(remainingOwned.filter((exists) => !exists)).toHaveLength(1);
       for (const preserved of [fresh, unmarked, malformed]) {
         await expect(readFile(preserved.temporary)).resolves.toBeDefined();
       }
