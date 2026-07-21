@@ -327,7 +327,7 @@ function destructiveOperation(statement: MigrationSqlStatement): string | undefi
     ],
     [
       postgresPattern(
-        `${keyword("ALTER")}\\s+${keyword("TYPE")}[\\s\\S]*(?:${keyword("RENAME")}|${keyword("SET")}\\s+${keyword("SCHEMA")})`,
+        `${keyword("ALTER")}\\s+${keyword("TYPE")}[\\s\\S]*(?:${keyword("RENAME")}|${keyword("SET")}\\s+${keyword("SCHEMA")}|${keyword("DROP")}\\s+${keyword("ATTRIBUTE")}|${keyword("ALTER")}\\s+${keyword("ATTRIBUTE")})`,
       ),
       "ALTER TYPE compatibility-changing operation",
     ],
@@ -343,9 +343,9 @@ function destructiveOperation(statement: MigrationSqlStatement): string | undefi
     ],
     [
       postgresPattern(
-        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*(?:${keyword("DROP")}|${keyword("ALTER")}|${keyword("RENAME")}|${keyword("DISABLE")}|${keyword("ENABLE")}|${keyword("DETACH")}|(?:${keyword("NO")}\\s+)?${keyword("INHERIT")}|(?:${keyword("NO")}\\s+)?${keyword("FORCE")}\\s+${keyword("ROW")}\\s+${keyword("LEVEL")}\\s+${keyword("SECURITY")}|${keyword("SET")}\\s+(?:${keyword("SCHEMA")}|${keyword("TABLESPACE")}|${keyword("ACCESS")}\\s+${keyword("METHOD")}|${keyword("LOGGED")}|${keyword("UNLOGGED")}))`,
+        `${keyword("ALTER")}\\s+(?:${keyword("TABLE")}|${keyword("FOREIGN")}\\s+${keyword("TABLE")})[\\s\\S]*(?:${keyword("DROP")}|${keyword("ALTER")}|${keyword("RENAME")}|${keyword("DISABLE")}|${keyword("ENABLE")}|${keyword("DETACH")}|(?:${keyword("NO")}\\s+)?${keyword("INHERIT")}|(?:${keyword("NO")}\\s+)?${keyword("FORCE")}\\s+${keyword("ROW")}\\s+${keyword("LEVEL")}\\s+${keyword("SECURITY")}|${keyword("SET")}\\s+(?:${keyword("SCHEMA")}|${keyword("TABLESPACE")}|${keyword("ACCESS")}\\s+${keyword("METHOD")}|${keyword("LOGGED")}|${keyword("UNLOGGED")}))`,
       ),
-      "ALTER TABLE destructive or compatibility-changing operation",
+      "ALTER TABLE or FOREIGN TABLE destructive or compatibility-changing operation",
     ],
   ];
   return rules.find(([pattern]) => pattern.test(sql))?.[1];
