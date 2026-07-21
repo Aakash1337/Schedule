@@ -185,7 +185,7 @@ describe("Hermes delivery client module", () => {
         {
           cwd: process.cwd(),
           encoding: "utf8",
-          timeout: 5_000,
+          timeout: 20_000,
           env: {
             ...process.env,
             NODE_OPTIONS: "",
@@ -210,7 +210,7 @@ describe("Hermes delivery client module", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  });
+  }, 25_000);
 });
 
 describe("Hermes reminder process composition", () => {

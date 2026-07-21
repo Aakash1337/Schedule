@@ -4,11 +4,12 @@ Schedule can move durable local product data between independent installations w
 `.schedule` archive. The archive carries a typed, data-only logical payload, so it can move between
 Windows and Linux without copying a PostgreSQL data directory or depending on filesystem layout.
 
-The installed desktop application can create an archive through its native **Export archive** control:
-it opens the operating-system save dialog, never exposes the local database credentials to the
-renderer, and verifies the archive before publishing it. The CLI remains available for repository
-and recovery workflows. Native desktop import and desktop-to-cloud live sync remain future
-capabilities.
+The installed desktop application can create and restore archives through its native **Export
+archive** and **Import archive** controls. Operating-system file dialogs and all database credentials
+stay outside the renderer. Export verifies an archive before publishing it; import shows a redacted
+preview and requires a separate destructive confirmation before replacing local data. The CLI
+remains available for repository and recovery workflows. Desktop-to-cloud live sync remains a
+future capability.
 
 ## Export
 
@@ -48,9 +49,25 @@ and verifies the resulting schema, rows, sequences, exclusions, and foreign keys
 
 ## Import on another operating system
 
-Install the matching Schedule schema release on the destination. Copy the `.schedule` file through
-your normal private transfer method, start PostgreSQL, and import it explicitly. Native desktop
-import is not yet available, so this CLI workflow is the continuity path for now:
+Install the matching Schedule release on the destination and copy the `.schedule` file through your
+normal private transfer method. In the desktop application, choose **Import archive**, review the
+archive ID, export time, Schedule version, schema version, and size, then choose **Replace local data
+and restart**. The confirmation is bound to both the inspected archive ID and the exact archive-byte
+SHA-256, so replacing the file between inspection and confirmation is rejected before any database
+mutation.
+
+Import stops the local API and worker while keeping the private PostgreSQL service available. It
+restores into a migrated staging database, verifies the restored data, and records each promotion
+boundary in a durable journal before replacing the active database. A committed import keeps at
+most one identity-checked previous database for recovery. Schedule reconciles an interrupted
+promotion immediately and again during the next startup before accepting the database.
+
+If the application reports that the archive was imported but services need a restart, restart
+Schedule and do not import the archive again. If it reports that recovery is required, restart
+Schedule so the journal can complete or roll back the interrupted promotion; again, do not re-run
+the import.
+
+For repository or recovery use, the equivalent explicit CLI workflow is:
 
 ```bash
 pnpm infra:up
@@ -58,10 +75,9 @@ pnpm db:migrate
 pnpm data:import -- /private/path/my-schedule.schedule --confirm=replace-schedule
 ```
 
-Import is intentionally replacement, not merge. Schedule restores into a new migrated staging
-database, validates it, and only then promotes it to `schedule`. The former active database is kept
-under the name printed by the command so it remains available for inspected rollback. Take an
-ordinary recovery backup before later cleanup or upgrades.
+Import is intentionally replacement, not merge. The former active database is retained only through
+the bounded, identity-checked recovery policy. Take an ordinary recovery backup before later cleanup
+or upgrades.
 
 Version 1 requires an exact portable schema and ordered migration fingerprint match. If an archive
 is rejected as incompatible, import it using the matching Schedule source release and then upgrade
@@ -136,7 +152,9 @@ place. Invalid sparse files therefore cannot trigger an unbounded temporary copy
 ## Verification
 
 Unit tests enforce the exhaustive table policy, strict archive framing, corruption and truncation
-rejection, symlink and overwrite refusal, exact dump catalog, and explicit replacement confirmation.
+rejection, symlink and overwrite refusal, exact dump catalog, archive-ID- and exact-byte-bound
+confirmation, durable journal transitions, every promotion crash seam, bounded recovery topology,
+and explicit replacement confirmation.
 The real PostgreSQL drill creates fixtures in every portable table, including AI proposals and all
 four long-term feedback streams, exports them, imports them into an independent database, proves
 secret and transient tables are empty, verifies normalization and exact content signals, replaces an
@@ -144,6 +162,15 @@ existing database, and exercises rollback:
 
 ```powershell
 pnpm verify:portable-migration
+```
+
+A separate desktop-helper drill terminates the import process before staging allocation, after
+unmarked staging creation, after marker publication, at prepared state, each committed
+database-promotion mutation, and the final receipt. It then proves exact rollback or completion,
+bounded previous-database retention, and journal cleanup:
+
+```powershell
+pnpm verify:desktop-portable-import
 ```
 
 The archive framing and migration fingerprint are OS-neutral and unit-tested with Windows and Linux

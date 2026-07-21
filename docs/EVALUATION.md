@@ -61,6 +61,7 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:local-model-advisor`        | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
 | `pnpm verify:backup-restore`             | Verify archive/schema/content/sequence fidelity                             | Yes                             |
 | `pnpm verify:portable-migration`         | Verify durable migration, exclusions, replacement, and rollback             | Yes, disposable only            |
+| `pnpm verify:desktop-portable-import`    | Process-kill desktop import and recover every committed database transition | Yes, disposable only            |
 | `pnpm verify:migration-policy`           | Reject rewritten history, manifest aliases, and unreviewed risky SQL        | No                              |
 | `pnpm verify:migration-ledger`           | Prove serialized migration and fail-closed live-ledger admission            | Yes, disposable only            |
 | `pnpm verify:recovery-state-machine`     | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
@@ -100,7 +101,7 @@ provider-monitoring, backup-restore, or broad-sync claim.
 
 ## Current scorecard
 
-The package and script runners currently execute 144 test files and 2,432 runtime test cases. Three
+The package and script runners currently execute 166 test files and 2,670 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -109,11 +110,11 @@ an independent product feature.
 
 | Metric                                                                 | Current gate |
 | ---------------------------------------------------------------------- | -----------: |
-| Implemented features with CI-registered evidence                       |      62 / 62 |
-| Critical implemented features with CI-registered integration or drills |      42 / 42 |
+| Implemented features with CI-registered evidence                       |      65 / 65 |
+| Critical implemented features with CI-registered integration or drills |      45 / 45 |
 | Partial features with an explicit limitation                           |        5 / 5 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          375 |
+| CI-registered evidence items                                           |          394 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics
@@ -577,13 +578,23 @@ The audit deliberately leaves these visible instead of turning them into false g
   bounded temporary copy, and framing is OS-neutral and unit-tested with Windows/Linux producer
   metadata. The native desktop exporter is unit-tested for its no-argument renderer command,
   destination admission, strict helper result protocol, serialized invocation, helper packaging,
-  cleanup ordering, OID-bound verification-database ownership and marker-fault cleanup, bounded crash-artifact reclamation,
+  cleanup ordering, OID-bound verification-database ownership and marker-fault cleanup, bounded
+  crash-artifact reclamation,
   durable publication intentions, file-identity swaps, and POSIX namespace-sync routing. Node does
   not expose a cross-platform handle-relative no-replace publication primitive, so a hostile process
   running as the same OS user could still race the final path-based operation after its identity
   checks. Windows also exposes no directory `fsync` through Node, and power-loss behavior is not yet
-  fault-injected. CI does not yet hand a physical artifact from a Windows producer to a Linux
-  consumer, and native desktop import is not implemented. Checksums are not signatures, old
+  fault-injected. Native desktop import is unit-tested for its path-free renderer selection,
+  opaque archive-ID- and exact-byte-bound confirmation, strict helper protocols, serialized
+  lifecycle, durable
+  journal transitions, exact topology reconciliation at every promotion crash seam, bounded
+  identity-checked retention, and committed-but-restart-failed UI state. A separate real PostgreSQL
+  verifier terminates the desktop import helper before staging allocation, after unmarked creation,
+  after marker publication, at prepared state, every independently committed promotion mutation,
+  and the committed receipt boundary, then checks exact recovery,
+  retained-database bounds, and journal cleanup. It runs the source helper rather than an installed
+  desktop artifact. CI does not yet hand a physical artifact from a Windows producer to a Linux
+  consumer. Checksums are not signatures, old
   archive-version golden fixtures are not yet retained, and a version-1 archive must currently be
   imported with its matching release before a normal upgrade, so archive custody and matching-release
   availability remain part of this trust boundary;

@@ -193,21 +193,26 @@ Database major upgrades require the old bundled runtime to export the data and a
 to restore and validate it. A new PostgreSQL major version must never be started directly against an
 older data directory.
 
-The desktop application now provides a native **Export archive** control for creating a versioned
-logical `.schedule` archive. Rust opens the operating-system save dialog and invokes a verified,
-bundled helper without giving the renderer database credentials or a filesystem capability. The
-helper verifies a consistent typed-data export in an isolated migrated database before it publishes
-the new archive. It moves every classified durable product row—including stored AI proposals and
-long-term behavior feedback—between matching Schedule schemas on Windows and Linux, while excluding
-environment identities, credentials, secrets, delivery queues, and hosted sync journals. See
-[PORTABLE_MIGRATION.md](./PORTABLE_MIGRATION.md) for custody and CLI-import instructions.
-Verification-database cleanup requires an exact cluster-bound ownership marker, and interrupted
-archive staging is reclaimed only through bounded, stale, marker-verified cleanup. The no-replace
-copy fallback durably records its intention before destination creation, validates exact file
-identities throughout publication, and syncs POSIX directory entries at namespace commits.
+The desktop application provides native **Export archive** and **Import archive** controls for a
+versioned logical `.schedule` archive. Rust opens the operating-system dialogs and invokes the
+verified bundled helper without giving the renderer database credentials or a filesystem capability.
+Export verifies consistent typed data in an isolated migrated database before publication. Import
+shows only bounded manifest metadata, binds its opaque confirmation token to the inspected archive
+ID and exact-byte SHA-256, and requires a second destructive action before replacing local data.
 
-Native desktop import, automatic device sync, and a physical Windows-to-Linux handoff acceptance
-test remain pending. Export is a user-directed private file operation, not cloud synchronization.
+Import quiesces the API and worker, restores and validates a migrated staging database, then promotes
+it through a durable phase journal. Startup reconciliation uses exact database OIDs, owners, and
+cluster-bound markers to either restore the old active database or finish the committed new one;
+name-only candidates are never deleted, stale staging cleanup is bounded, and at most one previous
+database is retained. A committed import whose services fail to restart is reported distinctly so
+the user restarts the application instead of importing twice. See
+[PORTABLE_MIGRATION.md](./PORTABLE_MIGRATION.md) for custody, recovery states, and CLI instructions.
+
+The archive moves every classified durable product row—including stored AI proposals and long-term
+behavior feedback—between matching Schedule schemas on Windows and Linux, while excluding environment
+identities, credentials, secrets, delivery queues, and hosted sync journals. Automatic device sync
+and a physical Windows-to-Linux handoff acceptance test remain pending. Portable files are
+user-directed private transfers, not cloud synchronization.
 
 ## Web hosting and continuity
 

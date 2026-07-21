@@ -8,7 +8,15 @@ import {
   Plus,
   Repeat2,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 
 import { api, ApiError } from "./api";
 import { Button, ErrorNotice, PageSkeleton } from "./components/ui";
@@ -26,8 +34,39 @@ export type PortableExportResult =
   | { readonly result: "cancelled" | "busy" | "unavailable" }
   | { readonly result: "failed"; readonly code: string };
 
+export interface PortableImportPreview {
+  readonly archiveId: string;
+  readonly exportedAt: string;
+  readonly applicationVersion: string;
+  readonly schemaVersion: number;
+  readonly sizeBytes: number;
+}
+
+export type PortableImportSelectionResult =
+  | {
+      readonly result: "selected";
+      readonly token: string;
+      readonly preview: PortableImportPreview;
+    }
+  | { readonly result: "cancelled" | "busy" | "unavailable" }
+  | { readonly result: "failed"; readonly code: string };
+
+export type PortableImportResult =
+  | {
+      readonly result:
+        | "imported"
+        | "imported_restart_required"
+        | "recovery_required"
+        | "cancelled"
+        | "busy"
+        | "unavailable";
+    }
+  | { readonly result: "failed"; readonly code: string };
+
 export interface DesktopActions {
   readonly exportArchive: () => Promise<PortableExportResult>;
+  readonly selectImportArchive?: () => Promise<PortableImportSelectionResult>;
+  readonly confirmImportArchive?: (token: string) => Promise<PortableImportResult>;
 }
 
 const navigation = [
@@ -56,11 +95,13 @@ function WorkspaceSetup({
   error,
   onCreate,
   onRetry,
+  portableImport,
 }: {
   readonly busy: boolean;
   readonly error: string | null;
   readonly onCreate: (name: string) => Promise<void>;
   readonly onRetry: () => void;
+  readonly portableImport?: ReactNode;
 }) {
   const [name, setName] = useState("Personal");
 
@@ -106,6 +147,7 @@ function WorkspaceSetup({
           Create workspace
         </Button>
       </form>
+      {portableImport}
       <p className="onboarding-footnote">No account, cloud service, or AI model is required.</p>
     </main>
   );
@@ -154,6 +196,82 @@ function PortableExportControl({
   );
 }
 
+function PortableImportControl({
+  importing,
+  locked,
+  preview,
+  message,
+  onSelect,
+  onCancel,
+  onConfirm,
+}: {
+  readonly importing: boolean;
+  readonly locked: boolean;
+  readonly preview: PortableImportPreview | null;
+  readonly message: { readonly tone: "status" | "error"; readonly text: string } | null;
+  readonly onSelect: () => void;
+  readonly onCancel: () => void;
+  readonly onConfirm: () => void;
+}) {
+  return (
+    <section className="portable-export" aria-label="Portable archive import">
+      {locked ? (
+        <p className="portable-export-note">Portable import is locked until Schedule restarts.</p>
+      ) : preview === null ? (
+        <>
+          <Button type="button" variant="quiet" busy={importing} onClick={onSelect}>
+            Import archive
+          </Button>
+          <p className="portable-export-note">Import replaces this device&apos;s local data.</p>
+        </>
+      ) : (
+        <section aria-label="Confirm archive import">
+          <p className="portable-export-note">
+            Review the selected archive before replacing local data.
+          </p>
+          <dl className="portable-import-preview">
+            <div>
+              <dt>Archive</dt>
+              <dd>{preview.archiveId}</dd>
+            </div>
+            <div>
+              <dt>Exported</dt>
+              <dd>{preview.exportedAt}</dd>
+            </div>
+            <div>
+              <dt>Schedule version</dt>
+              <dd>{preview.applicationVersion}</dd>
+            </div>
+            <div>
+              <dt>Data schema</dt>
+              <dd>{preview.schemaVersion}</dd>
+            </div>
+            <div>
+              <dt>Archive size</dt>
+              <dd>{archiveSize(preview.sizeBytes)}</dd>
+            </div>
+          </dl>
+          <Button type="button" variant="primary" busy={importing} onClick={onConfirm}>
+            Replace local data and restart
+          </Button>
+          <Button type="button" variant="quiet" disabled={importing} onClick={onCancel}>
+            Cancel import
+          </Button>
+        </section>
+      )}
+      {message === null ? null : (
+        <p
+          className={`portable-export-message portable-export-message--${message.tone}`}
+          role={message.tone === "error" ? "alert" : "status"}
+          aria-live="polite"
+        >
+          {message.text}
+        </p>
+      )}
+    </section>
+  );
+}
+
 export function App({ desktopActions }: { readonly desktopActions?: DesktopActions }) {
   const contentRef = useRef<HTMLElement>(null);
   const previousSectionRef = useRef<AppSection | null>(null);
@@ -173,6 +291,20 @@ export function App({ desktopActions }: { readonly desktopActions?: DesktopActio
     readonly tone: "status" | "error";
     readonly text: string;
   } | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importLocked, setImportLocked] = useState(false);
+  const [importMessage, setImportMessage] = useState<{
+    readonly tone: "status" | "error";
+    readonly text: string;
+  } | null>(null);
+  const [importSelection, setImportSelection] = useState<{
+    readonly token: string;
+    readonly preview: PortableImportPreview;
+  } | null>(null);
+
+  const canImport =
+    desktopActions?.selectImportArchive !== undefined &&
+    desktopActions.confirmImportArchive !== undefined;
 
   const loadWorkspaces = useCallback(async () => {
     setLoading(true);
@@ -183,6 +315,8 @@ export function App({ desktopActions }: { readonly desktopActions?: DesktopActio
       const stored = localStorage.getItem(SELECTED_WORKSPACE_KEY);
       const selected = result.items.find((workspace) => workspace.id === stored) ?? result.items[0];
       setSelectedWorkspaceId(selected?.id ?? null);
+      if (selected === undefined) localStorage.removeItem(SELECTED_WORKSPACE_KEY);
+      else localStorage.setItem(SELECTED_WORKSPACE_KEY, selected.id);
     } catch (error) {
       setLoadError(errorMessage(error));
     } finally {
@@ -290,6 +424,133 @@ export function App({ desktopActions }: { readonly desktopActions?: DesktopActio
     }
   }
 
+  async function selectImportArchive() {
+    if (desktopActions?.selectImportArchive === undefined || importing || importLocked) return;
+    setImporting(true);
+    setImportMessage(null);
+    try {
+      const result = await desktopActions.selectImportArchive();
+      switch (result.result) {
+        case "selected":
+          setImportSelection({ token: result.token, preview: result.preview });
+          break;
+        case "cancelled":
+          setImportMessage({ tone: "status", text: "Import cancelled." });
+          break;
+        case "busy":
+          setImportMessage({
+            tone: "status",
+            text: "Another portable operation is already in progress.",
+          });
+          break;
+        case "unavailable":
+          setImportMessage({
+            tone: "error",
+            text: "Portable import is unavailable in this version of Schedule.",
+          });
+          break;
+        case "failed":
+          setImportMessage({
+            tone: "error",
+            text: "Schedule could not inspect the archive. Try again.",
+          });
+          break;
+      }
+    } catch {
+      setImportMessage({
+        tone: "error",
+        text: "Schedule could not inspect the archive. Try again.",
+      });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function confirmImportArchive() {
+    if (desktopActions?.confirmImportArchive === undefined || importSelection === null || importing)
+      return;
+    setImporting(true);
+    setImportMessage(null);
+    try {
+      const result = await desktopActions.confirmImportArchive(importSelection.token);
+      switch (result.result) {
+        case "imported":
+          setImportSelection(null);
+          setImportMessage({ tone: "status", text: "Archive imported. Local services restarted." });
+          setWorkspaces([]);
+          setSelectedWorkspaceId(null);
+          await loadWorkspaces();
+          break;
+        case "imported_restart_required":
+          setImportSelection(null);
+          setImportLocked(true);
+          setImportMessage({
+            tone: "error",
+            text: "Archive imported. Restart Schedule to finish starting local services. Do not import it again.",
+          });
+          break;
+        case "recovery_required":
+          setImportSelection(null);
+          setImportLocked(true);
+          setImportMessage({
+            tone: "error",
+            text: "Import was interrupted. Restart Schedule to recover local data safely. Do not import again.",
+          });
+          break;
+        case "cancelled":
+          setImportSelection(null);
+          setImportMessage({ tone: "status", text: "Import cancelled." });
+          break;
+        case "busy":
+          setImportMessage({
+            tone: "status",
+            text: "Another portable operation is already in progress.",
+          });
+          break;
+        case "unavailable":
+          setImportSelection(null);
+          setImportMessage({
+            tone: "error",
+            text: "Portable import is unavailable in this version of Schedule.",
+          });
+          break;
+        case "failed":
+          setImportSelection(null);
+          setImportMessage({
+            tone: "error",
+            text: "Schedule could not import the archive. Try again.",
+          });
+          break;
+      }
+    } catch {
+      setImportSelection(null);
+      setImportMessage({
+        tone: "error",
+        text: "Schedule could not import the archive. Try again.",
+      });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  function renderPortableImportControl() {
+    if (!canImport) return null;
+    return (
+      <PortableImportControl
+        importing={importing}
+        locked={importLocked}
+        preview={importSelection?.preview ?? null}
+        message={importMessage}
+        onSelect={() => void selectImportArchive()}
+        onCancel={() => {
+          setImportSelection(null);
+          setImportMessage({ tone: "status", text: "Import cancelled." });
+        }}
+        onConfirm={() => void confirmImportArchive()}
+      />
+    );
+  }
+
   if (loading) {
     return (
       <main className="loading-shell">
@@ -309,6 +570,7 @@ export function App({ desktopActions }: { readonly desktopActions?: DesktopActio
         error={loadError}
         onCreate={createWorkspace}
         onRetry={() => void loadWorkspaces()}
+        portableImport={renderPortableImportControl()}
       />
     );
   }
@@ -397,11 +659,14 @@ export function App({ desktopActions }: { readonly desktopActions?: DesktopActio
           Local workspace
         </div>
         {desktopActions === undefined ? null : (
-          <PortableExportControl
-            exporting={exporting}
-            message={exportMessage}
-            onExport={() => void exportArchive()}
-          />
+          <>
+            <PortableExportControl
+              exporting={exporting}
+              message={exportMessage}
+              onExport={() => void exportArchive()}
+            />
+            {renderPortableImportControl()}
+          </>
         )}
       </aside>
 
@@ -436,6 +701,7 @@ export function App({ desktopActions }: { readonly desktopActions?: DesktopActio
               message={exportMessage}
               onExport={() => void exportArchive()}
             />
+            {renderPortableImportControl()}
           </div>
         )}
         {loadError === null ? null : (

@@ -6,6 +6,7 @@ export * from "./integration-maintenance.js";
 export * from "./outbox.js";
 export * from "./portable-data.js";
 export * from "./portable-export.js";
+export * from "./portable-import.js";
 export * from "./repositories.js";
 export * from "./schema.js";
 export * from "./webhooks.js";

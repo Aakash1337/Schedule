@@ -12,7 +12,7 @@ mod lock;
 mod manifest;
 mod paths;
 mod portable;
-pub(crate) use portable::PortableExportResult;
+pub(crate) use portable::{PortableExportResult, PortableImportResult, PortableImportSelectResult};
 mod postgres;
 mod process;
 pub(crate) mod smoke;

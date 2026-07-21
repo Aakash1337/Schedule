@@ -23,6 +23,7 @@ use super::{
 
 const FINAL_SHUTDOWN_WAIT: Duration = Duration::from_secs(20);
 const NORMAL_CLOSE_WAIT: Duration = Duration::from_secs(120);
+const PORTABLE_IMPORT_TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
 const RUNTIME_DATA_DIRECTORY: &str = "data";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -79,6 +80,15 @@ enum RuntimeOwner {
     SetupFailure,
 }
 
+struct PendingPortableImport {
+    token: String,
+    source: PathBuf,
+    archive_id: String,
+    archive_sha256: String,
+    generation: u64,
+    expires_at: Instant,
+}
+
 /// The process-wide Tauri state. It owns the only runtime host and never exposes
 /// executor failures, paths, credentials, or child process details to the UI.
 pub(crate) struct DesktopRuntimeAdapter {
@@ -87,6 +97,8 @@ pub(crate) struct DesktopRuntimeAdapter {
     close_exit_scheduled: AtomicBool,
     final_exit_wait_started: AtomicBool,
     portable_export_in_flight: AtomicBool,
+    portable_import_in_flight: AtomicBool,
+    pending_portable_import: Mutex<Option<PendingPortableImport>>,
 }
 
 impl DesktopRuntimeAdapter {
@@ -111,6 +123,8 @@ impl DesktopRuntimeAdapter {
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
             portable_export_in_flight: AtomicBool::new(false),
+            portable_import_in_flight: AtomicBool::new(false),
+            pending_portable_import: Mutex::new(None),
         }
     }
 
@@ -153,6 +167,9 @@ impl DesktopRuntimeAdapter {
         };
         if !ready {
             return Err(crate::runtime::PortableExportResult::Unavailable);
+        }
+        if self.portable_import_in_flight.load(Ordering::Acquire) {
+            return Err(crate::runtime::PortableExportResult::Busy);
         }
         self.portable_export_in_flight
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -197,6 +214,180 @@ impl DesktopRuntimeAdapter {
         result
     }
 
+    pub(crate) fn begin_portable_import_select(
+        &self,
+    ) -> Result<(), crate::runtime::portable::PortableImportSelectResult> {
+        let ready = match &*self.owner.lock().expect("runtime adapter poisoned") {
+            RuntimeOwner::Running(host) => {
+                host.status().state == RuntimeState::Ready
+                    && host.completion().outcome() != Some(ShutdownOutcome::WorkerFailed)
+            }
+            RuntimeOwner::SetupFailure => false,
+        };
+        if !ready {
+            return Err(crate::runtime::portable::PortableImportSelectResult::Unavailable);
+        }
+        if self.portable_export_in_flight.load(Ordering::Acquire) {
+            return Err(crate::runtime::portable::PortableImportSelectResult::Busy);
+        }
+        self.portable_import_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| crate::runtime::portable::PortableImportSelectResult::Busy)?;
+        *self
+            .pending_portable_import
+            .lock()
+            .expect("portable import state poisoned") = None;
+        Ok(())
+    }
+
+    pub(crate) fn abandon_portable_import(&self) {
+        self.portable_import_in_flight
+            .store(false, Ordering::Release);
+    }
+
+    pub(crate) fn finish_portable_import_select(
+        &self,
+        source: Option<PathBuf>,
+    ) -> crate::runtime::portable::PortableImportSelectResult {
+        let result = match source {
+            None => crate::runtime::portable::PortableImportSelectResult::Cancelled,
+            Some(source) => {
+                let (host, generation) =
+                    match &*self.owner.lock().expect("runtime adapter poisoned") {
+                        RuntimeOwner::SetupFailure => (None, 0),
+                        RuntimeOwner::Running(host) => {
+                            (Some(Arc::clone(host)), host.status().generation)
+                        }
+                    };
+                match host {
+                    None => crate::runtime::portable::PortableImportSelectResult::Unavailable,
+                    Some(host) => match host.portable_import_inspect(source.clone()) {
+                        Ok(receiver) => match receiver.recv() {
+                            Ok(
+                                crate::runtime::portable::PortableImportInspectResult::Inspected(
+                                    preview,
+                                ),
+                            ) => match portable_import_token() {
+                                Ok(token) => {
+                                    *self
+                                        .pending_portable_import
+                                        .lock()
+                                        .expect("portable import state poisoned") =
+                                        Some(PendingPortableImport {
+                                            token: token.clone(),
+                                            source,
+                                            archive_id: preview.archive_id.clone(),
+                                            archive_sha256: preview.archive_sha256.clone(),
+                                            generation,
+                                            expires_at: Instant::now() + PORTABLE_IMPORT_TOKEN_TTL,
+                                        });
+                                    crate::runtime::portable::PortableImportSelectResult::Selected {
+                                        token,
+                                        preview,
+                                    }
+                                }
+                                Err(code) => {
+                                    crate::runtime::portable::PortableImportSelectResult::Failed {
+                                        code,
+                                    }
+                                }
+                            },
+                            Ok(crate::runtime::portable::PortableImportInspectResult::Failed {
+                                code,
+                            }) => crate::runtime::portable::PortableImportSelectResult::Failed {
+                                code,
+                            },
+                            Ok(
+                                crate::runtime::portable::PortableImportInspectResult::Unavailable,
+                            )
+                            | Err(_) => {
+                                crate::runtime::portable::PortableImportSelectResult::Unavailable
+                            }
+                        },
+                        Err(HostError::Busy) => {
+                            crate::runtime::portable::PortableImportSelectResult::Busy
+                        }
+                        Err(HostError::Unavailable | HostError::ShuttingDown) => {
+                            crate::runtime::portable::PortableImportSelectResult::Unavailable
+                        }
+                    },
+                }
+            }
+        };
+        self.portable_import_in_flight
+            .store(false, Ordering::Release);
+        result
+    }
+
+    pub(crate) fn confirm_portable_import(
+        &self,
+        token: String,
+    ) -> crate::runtime::portable::PortableImportResult {
+        if self.portable_export_in_flight.load(Ordering::Acquire)
+            || self
+                .portable_import_in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return crate::runtime::portable::PortableImportResult::Busy;
+        }
+        let result = (|| {
+            let (host, generation) = match &*self.owner.lock().expect("runtime adapter poisoned") {
+                RuntimeOwner::SetupFailure => {
+                    return crate::runtime::portable::PortableImportResult::Unavailable;
+                }
+                RuntimeOwner::Running(host) => (Arc::clone(host), host.status().generation),
+            };
+            if host.status().state != RuntimeState::Ready {
+                return crate::runtime::portable::PortableImportResult::Unavailable;
+            }
+            let request = {
+                let pending = self
+                    .pending_portable_import
+                    .lock()
+                    .expect("portable import state poisoned");
+                let valid = pending.as_ref().is_some_and(|pending| {
+                    pending.token == token
+                        && pending.generation == generation
+                        && Instant::now() <= pending.expires_at
+                });
+                if !valid {
+                    return crate::runtime::portable::PortableImportResult::Failed {
+                        code: "desktop.portable_import_token_invalid",
+                    };
+                }
+                let pending = pending.as_ref().expect("portable import token was checked");
+                crate::runtime::portable::PortableImportRequest {
+                    source: pending.source.clone(),
+                    expected_archive_id: pending.archive_id.clone(),
+                    expected_archive_sha256: pending.archive_sha256.clone(),
+                }
+            };
+            match host.portable_import(request) {
+                Ok(receiver) => {
+                    *self
+                        .pending_portable_import
+                        .lock()
+                        .expect("portable import state poisoned") = None;
+                    receiver
+                        .recv()
+                        .unwrap_or(crate::runtime::portable::PortableImportResult::Unavailable)
+                }
+                Err(HostError::Busy) => crate::runtime::portable::PortableImportResult::Busy,
+                Err(HostError::Unavailable | HostError::ShuttingDown) => {
+                    *self
+                        .pending_portable_import
+                        .lock()
+                        .expect("portable import state poisoned") = None;
+                    crate::runtime::portable::PortableImportResult::Unavailable
+                }
+            }
+        })();
+        self.portable_import_in_flight
+            .store(false, Ordering::Release);
+        result
+    }
+
     /// Safe from close and exit callbacks: it only queues shutdown work.
     pub(crate) fn request_shutdown(&self) -> Option<RuntimeCompletion> {
         match &*self.owner.lock().expect("runtime adapter poisoned") {
@@ -235,6 +426,17 @@ impl DesktopRuntimeAdapter {
             let _ = containment.seal_and_force_stop_all(limit);
         }
     }
+}
+
+fn portable_import_token() -> Result<String, &'static str> {
+    let mut bytes = [0_u8; 24];
+    getrandom::fill(&mut bytes).map_err(|_| "desktop.portable_import_token_unavailable")?;
+    let mut token = String::with_capacity(bytes.len() * 2);
+    use std::fmt::Write as _;
+    for byte in bytes {
+        write!(token, "{byte:02x}").map_err(|_| "desktop.portable_import_token_unavailable")?;
+    }
+    Ok(token)
 }
 
 pub(super) fn shutdown_and_contain(
@@ -309,6 +511,11 @@ mod tests {
     struct BlockingExecutor {
         entered: mpsc::Sender<()>,
         release: mpsc::Receiver<()>,
+    }
+
+    struct ImportExecutor {
+        requests: Arc<Mutex<Vec<crate::runtime::portable::PortableImportRequest>>>,
+        export_gate: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
     }
 
     #[derive(Default)]
@@ -397,6 +604,72 @@ mod tests {
         fn cancel(&mut self, _: u64) {}
     }
 
+    impl EffectExecutor for ImportExecutor {
+        type Error = ();
+
+        fn execute(
+            &mut self,
+            effect: Effect,
+            _: &Cancellation,
+        ) -> Result<EffectOutcome, Self::Error> {
+            Ok(if matches!(effect, Effect::VerifyDatabase { .. }) {
+                EffectOutcome::DatabaseVerified {
+                    needs_migration: false,
+                }
+            } else {
+                EffectOutcome::Completed
+            })
+        }
+
+        fn configure_bridge(&mut self, _: u64) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn clear_bridge(&mut self, _: u64) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn cancel(&mut self, _: u64) {}
+
+        fn portable_export(
+            &mut self,
+            _: PathBuf,
+            _: &Cancellation,
+        ) -> crate::runtime::portable::PortableExportResult {
+            if let Some((entered, release)) = &self.export_gate {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
+            }
+            crate::runtime::portable::PortableExportResult::Cancelled
+        }
+
+        fn portable_import_inspect(
+            &mut self,
+            _: PathBuf,
+            _: &Cancellation,
+        ) -> crate::runtime::portable::PortableImportInspectResult {
+            crate::runtime::portable::PortableImportInspectResult::Inspected(
+                crate::runtime::portable::PortableImportPreview {
+                    archive_id: "archive-bound-to-preview".to_owned(),
+                    archive_sha256: "a".repeat(64),
+                    exported_at: "2026-07-21T00:00:00.000Z".to_owned(),
+                    application_version: "0.1.0".to_owned(),
+                    schema_version: 12,
+                    size_bytes: 42,
+                },
+            )
+        }
+
+        fn portable_import(
+            &mut self,
+            request: crate::runtime::portable::PortableImportRequest,
+            _: &Cancellation,
+        ) -> crate::runtime::portable::PortableImportResult {
+            self.requests.lock().unwrap().push(request);
+            crate::runtime::portable::PortableImportResult::Imported
+        }
+    }
+
     fn adapter_with(host: RuntimeHost) -> DesktopRuntimeAdapter {
         DesktopRuntimeAdapter {
             owner: Mutex::new(RuntimeOwner::Running(Arc::new(host))),
@@ -404,6 +677,8 @@ mod tests {
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
             portable_export_in_flight: AtomicBool::new(false),
+            portable_import_in_flight: AtomicBool::new(false),
+            pending_portable_import: Mutex::new(None),
         }
     }
 
@@ -415,6 +690,8 @@ mod tests {
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
             portable_export_in_flight: AtomicBool::new(false),
+            portable_import_in_flight: AtomicBool::new(false),
+            pending_portable_import: Mutex::new(None),
         };
         assert_eq!(adapter.status(), DesktopRuntimeStatus::setup_failure());
         assert_eq!(adapter.retry(), RuntimeRetryResult::Unavailable);
@@ -501,6 +778,158 @@ mod tests {
     }
 
     #[test]
+    fn portable_import_confirmation_is_one_shot_and_bound_to_the_preview() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let host = RuntimeHost::spawn(ImportExecutor {
+            requests: Arc::clone(&requests),
+            export_gate: None,
+        });
+        let adapter = adapter_with(host);
+        let host = match &*adapter.owner.lock().unwrap() {
+            RuntimeOwner::Running(host) => Arc::clone(host),
+            RuntimeOwner::SetupFailure => unreachable!(),
+        };
+        host.auto_start().unwrap();
+        for _ in 0..100 {
+            if host.status().state == RuntimeState::Ready {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(host.status().state, RuntimeState::Ready);
+
+        assert_eq!(adapter.begin_portable_import_select(), Ok(()));
+        assert_eq!(
+            adapter.begin_portable_export(),
+            Err(crate::runtime::PortableExportResult::Busy)
+        );
+        let source = PathBuf::from("C:\\private\\approved.schedule");
+        let token = match adapter.finish_portable_import_select(Some(source.clone())) {
+            crate::runtime::portable::PortableImportSelectResult::Selected { token, preview } => {
+                assert_eq!(preview.archive_id, "archive-bound-to-preview");
+                assert_eq!(token.len(), 48);
+                token
+            }
+            result => panic!("unexpected selection result: {result:?}"),
+        };
+
+        assert_eq!(
+            adapter.confirm_portable_import("wrong-token".to_owned()),
+            crate::runtime::portable::PortableImportResult::Failed {
+                code: "desktop.portable_import_token_invalid"
+            }
+        );
+        {
+            let mut pending = adapter.pending_portable_import.lock().unwrap();
+            pending.as_mut().unwrap().expires_at = Instant::now() - Duration::from_secs(1);
+        }
+        assert_eq!(
+            adapter.confirm_portable_import(token.clone()),
+            crate::runtime::portable::PortableImportResult::Failed {
+                code: "desktop.portable_import_token_invalid"
+            }
+        );
+        {
+            let mut pending = adapter.pending_portable_import.lock().unwrap();
+            let pending = pending.as_mut().unwrap();
+            pending.expires_at = Instant::now() + PORTABLE_IMPORT_TOKEN_TTL;
+            pending.generation += 1;
+        }
+        assert_eq!(
+            adapter.confirm_portable_import(token.clone()),
+            crate::runtime::portable::PortableImportResult::Failed {
+                code: "desktop.portable_import_token_invalid"
+            }
+        );
+        adapter
+            .pending_portable_import
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .generation = host.status().generation;
+        assert_eq!(
+            adapter.confirm_portable_import(token.clone()),
+            crate::runtime::portable::PortableImportResult::Imported
+        );
+        assert_eq!(
+            requests.lock().unwrap().as_slice(),
+            [crate::runtime::portable::PortableImportRequest {
+                source,
+                expected_archive_id: "archive-bound-to-preview".to_owned(),
+                expected_archive_sha256: "a".repeat(64),
+            }]
+        );
+        assert_eq!(
+            adapter.confirm_portable_import(token),
+            crate::runtime::portable::PortableImportResult::Failed {
+                code: "desktop.portable_import_token_invalid"
+            }
+        );
+        host.shutdown().unwrap().wait();
+    }
+
+    #[test]
+    fn busy_import_confirmation_preserves_the_approved_token_for_retry() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (export_entered, entered) = mpsc::channel();
+        let (release, export_release) = mpsc::channel();
+        let host = RuntimeHost::spawn(ImportExecutor {
+            requests: Arc::clone(&requests),
+            export_gate: Some((export_entered, export_release)),
+        });
+        let adapter = adapter_with(host);
+        let host = match &*adapter.owner.lock().unwrap() {
+            RuntimeOwner::Running(host) => Arc::clone(host),
+            RuntimeOwner::SetupFailure => unreachable!(),
+        };
+        host.auto_start().unwrap();
+        for _ in 0..100 {
+            if host.status().state == RuntimeState::Ready {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(adapter.begin_portable_import_select(), Ok(()));
+        let token = match adapter
+            .finish_portable_import_select(Some(PathBuf::from("C:\\private\\approved.schedule")))
+        {
+            crate::runtime::portable::PortableImportSelectResult::Selected { token, .. } => token,
+            result => panic!("unexpected selection result: {result:?}"),
+        };
+        let export = host
+            .portable_export(PathBuf::from("ignored.schedule"))
+            .unwrap();
+        entered.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        assert_eq!(
+            adapter.confirm_portable_import(token.clone()),
+            crate::runtime::portable::PortableImportResult::Busy
+        );
+        assert_eq!(
+            adapter
+                .pending_portable_import
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|pending| pending.token.as_str()),
+            Some(token.as_str())
+        );
+
+        release.send(()).unwrap();
+        assert_eq!(
+            export.recv_timeout(Duration::from_secs(1)).unwrap(),
+            crate::runtime::portable::PortableExportResult::Cancelled
+        );
+        assert_eq!(
+            adapter.confirm_portable_import(token),
+            crate::runtime::portable::PortableImportResult::Imported
+        );
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        host.shutdown().unwrap().wait();
+    }
+
+    #[test]
     fn retry_result_carries_the_generation_observed_before_admission() {
         assert_eq!(
             serde_json::to_value(RuntimeRetryResult::Accepted { generation: 7 }).unwrap(),
@@ -531,6 +960,8 @@ mod tests {
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
             portable_export_in_flight: AtomicBool::new(false),
+            portable_import_in_flight: AtomicBool::new(false),
+            pending_portable_import: Mutex::new(None),
         };
         assert!(matches!(adapter.begin_close(), Some(None)));
         assert!(adapter.begin_close().is_none());
@@ -552,6 +983,8 @@ mod tests {
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
             portable_export_in_flight: AtomicBool::new(false),
+            portable_import_in_flight: AtomicBool::new(false),
+            pending_portable_import: Mutex::new(None),
         };
         let started = Instant::now();
         adapter.bounded_shutdown(Duration::from_millis(1));
@@ -597,6 +1030,8 @@ mod tests {
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
             portable_export_in_flight: AtomicBool::new(false),
+            portable_import_in_flight: AtomicBool::new(false),
+            pending_portable_import: Mutex::new(None),
         };
 
         adapter.bounded_shutdown(Duration::from_millis(1));
@@ -617,6 +1052,8 @@ mod tests {
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
             portable_export_in_flight: AtomicBool::new(false),
+            portable_import_in_flight: AtomicBool::new(false),
+            pending_portable_import: Mutex::new(None),
         };
 
         let started = Instant::now();

@@ -1,4 +1,15 @@
-import { access, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -8,6 +19,7 @@ import {
   expectedScheduleTables,
   parseArchiveCatalog,
   repositoryRoot,
+  scavengePreparedRestoreArchives,
   withPreparedRestoreArchive,
 } from "./backup-database.js";
 
@@ -86,6 +98,36 @@ async function inTemporaryDirectory<Result>(
 }
 
 describe("restore archive snapshots", () => {
+  it("scavenges only stale flat snapshots with the exact ownership marker", async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const owned = path.join(directory, "schedule-restore-archive-abcdef");
+      const fresh = path.join(directory, "schedule-restore-archive-ghijkl");
+      const unmarked = path.join(directory, "schedule-restore-archive-mnopqr");
+      for (const candidate of [owned, fresh, unmarked]) {
+        await mkdir(candidate);
+        await writeFile(path.join(candidate, "archive.dump"), "snapshot");
+      }
+      await writeFile(
+        path.join(owned, ".schedule-restore-snapshot-v1"),
+        "schedule:restore-snapshot:v1\n",
+      );
+      await writeFile(
+        path.join(fresh, ".schedule-restore-snapshot-v1"),
+        "schedule:restore-snapshot:v1\n",
+      );
+      await writeFile(path.join(unmarked, ".schedule-restore-snapshot-v1"), "not-owned\n");
+      const now = Date.now();
+      const stale = new Date(now - 25 * 60 * 60 * 1_000);
+      await utimes(owned, stale, stale);
+      await utimes(unmarked, stale, stale);
+
+      await expect(scavengePreparedRestoreArchives(directory, now)).resolves.toBe(1);
+      await expect(access(owned)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(fresh)).resolves.toBeUndefined();
+      await expect(access(unmarked)).resolves.toBeUndefined();
+    });
+  });
+
   it("uses immutable private bytes and removes the snapshot after success", async () => {
     await inTemporaryDirectory(async (directory) => {
       const sourcePath = path.join(directory, "source.dump");
@@ -97,6 +139,9 @@ describe("restore archive snapshots", () => {
           snapshotPath = archive.snapshotPath;
           expect(archive.sourcePath).toBe(path.resolve(sourcePath));
           expect(archive.sizeBytes).toBe(Buffer.byteLength("original archive bytes"));
+          expect(archive.sha256).toBe(
+            createHash("sha256").update("original archive bytes").digest("hex"),
+          );
           await writeFile(sourcePath, "replacement bytes");
           expect(await readFile(archive.snapshotPath, "utf8")).toBe("original archive bytes");
           if (process.platform !== "win32") {

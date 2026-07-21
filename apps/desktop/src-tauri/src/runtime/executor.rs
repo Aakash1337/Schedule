@@ -29,7 +29,12 @@ use super::{
     lock::RuntimeLock,
     manifest::RuntimeManifestExpectations,
     paths::RuntimePaths,
-    portable::{PortableExportResult, parse_portable_output, validate_destination},
+    portable::{
+        PortableExportResult, PortableImportInspectResult, PortableImportRequest,
+        PortableImportResult, PortableRecoveryOutcome, parse_portable_import_output,
+        parse_portable_inspect_output, parse_portable_output, parse_portable_recovery_output,
+        validate_destination, validate_source,
+    },
     postgres::{
         PgCommand, PgConnection, backup_plan, bootstrap_plan, fast_stop_plan, identity_plan,
         initdb_plan, parse_identity, pg_hba_conf, postgresql_conf, readiness_plan,
@@ -51,6 +56,7 @@ const DATABASE_PROMOTION_RETRY_TIMEOUT: Duration = Duration::from_secs(3);
 const DATABASE_PROMOTION_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const DATABASE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const PORTABLE_EXPORT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const PORTABLE_IMPORT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const DATABASE_BACKUP_TIMEOUT: Duration = Duration::from_secs(300);
 const MIGRATION_TIMEOUT: Duration = Duration::from_secs(300);
 const GRACEFUL_PROCESS_STOP: Duration = Duration::from_secs(15);
@@ -130,6 +136,8 @@ impl NativeExecutorConfig {
             && self.paths.credentials_store == private.join("postgresql-credentials.v1.json")
             && self.paths.temporary_secrets_root == private.join("temp")
             && self.paths.journal == runtime.join("journal.json")
+            && self.paths.portable_import_journal
+                == runtime.join("portable-import-journal.v1.json")
             && self.paths.singleton_lock == runtime.join("singleton.lock");
         if !self.paths.data_root.is_absolute()
             || !self.resource_root.is_absolute()
@@ -168,6 +176,20 @@ pub(crate) trait NativeOperations {
     fn cancel(&mut self, generation: u64);
     fn portable_export(&mut self, _: PathBuf, _: &Cancellation) -> PortableExportResult {
         PortableExportResult::Unavailable
+    }
+    fn portable_import_inspect(
+        &mut self,
+        _: PathBuf,
+        _: &Cancellation,
+    ) -> PortableImportInspectResult {
+        PortableImportInspectResult::Unavailable
+    }
+    fn portable_import(
+        &mut self,
+        _: PortableImportRequest,
+        _: &Cancellation,
+    ) -> PortableImportResult {
+        PortableImportResult::Unavailable
     }
 }
 
@@ -215,6 +237,23 @@ impl<O: NativeOperations> EffectExecutor for NativeEffectExecutor<O> {
         cancellation: &Cancellation,
     ) -> PortableExportResult {
         self.operations.portable_export(destination, cancellation)
+    }
+
+    fn portable_import_inspect(
+        &mut self,
+        source: PathBuf,
+        cancellation: &Cancellation,
+    ) -> PortableImportInspectResult {
+        self.operations
+            .portable_import_inspect(source, cancellation)
+    }
+
+    fn portable_import(
+        &mut self,
+        request: PortableImportRequest,
+        cancellation: &Cancellation,
+    ) -> PortableImportResult {
+        self.operations.portable_import(request, cancellation)
     }
 }
 
@@ -340,6 +379,241 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
             }
             Err(error) => PortableExportResult::Failed { code: error.code() },
         }
+    }
+
+    fn run_portable_import_inspect(
+        &mut self,
+        source: PathBuf,
+        cancellation: &Cancellation,
+    ) -> PortableImportInspectResult {
+        let source = match validate_source(&source) {
+            Ok(value) => value,
+            Err(code) => return PortableImportInspectResult::Failed { code },
+        };
+        let result = (|| {
+            Self::cancelled(cancellation)?;
+            let bundle = self.require_bundle()?;
+            let spec = CommandSpec::new(&bundle.node, &bundle.root, PORTABLE_IMPORT_TIMEOUT)
+                .arg(&bundle.portable_export)
+                .arg("inspect")
+                .arg(source.into_os_string())
+                .env("NODE_ENV", "production")
+                .env("SCHEDULE_NODE_EXECUTABLE", bundle.node.as_os_str())
+                .env(
+                    "SCHEDULE_MIGRATION_ENTRYPOINT",
+                    bundle.migration.as_os_str(),
+                )
+                .env("SCHEDULE_APPLICATION_VERSION", &self.config.runtime_version)
+                .output_bounds(4096, 16 * 1024)
+                .database_payload();
+            let output = run_command_cancellable(spec, Arc::clone(&self.process_control), &|| {
+                cancellation.is_cancelled()
+            })
+            .map_err(command_error)?;
+            parse_portable_inspect_output(output.stdout()).map_err(NativeExecutorError::new)
+        })();
+        match result {
+            Ok(preview) => PortableImportInspectResult::Inspected(preview),
+            Err(error)
+                if matches!(
+                    error.code(),
+                    "desktop.operation_cancelled" | "desktop.command_cancelled"
+                ) =>
+            {
+                PortableImportInspectResult::Unavailable
+            }
+            Err(error) => PortableImportInspectResult::Failed { code: error.code() },
+        }
+    }
+
+    fn recover_portable_import(
+        &mut self,
+        cancellation: &Cancellation,
+    ) -> Result<PortableRecoveryOutcome, NativeExecutorError> {
+        Self::cancelled(cancellation)?;
+        if !portable_import_recovery_pending(&self.config.paths.portable_import_journal)? {
+            return Ok(PortableRecoveryOutcome {
+                recovered: false,
+                committed: false,
+            });
+        }
+        let bundle = self.require_bundle()?;
+        let passwords = self.require_passwords()?;
+        let port = self.database_port()?;
+        let owner = passwords
+            .owner_database_url(&self.config.postgres_names, port)
+            .map_err(credential_error)?;
+        let admin = passwords
+            .cluster_admin_database_url(&self.config.postgres_names, port)
+            .map_err(credential_error)?;
+        let spec = CommandSpec::new(&bundle.node, &bundle.root, PORTABLE_IMPORT_TIMEOUT)
+            .arg(&bundle.portable_export)
+            .arg("recover")
+            .env("NODE_ENV", "production")
+            .env("DATABASE_URL", owner.expose())
+            .env("SCHEDULE_ADMIN_DATABASE_URL", admin.expose())
+            .env("SCHEDULE_NODE_EXECUTABLE", bundle.node.as_os_str())
+            .env(
+                "SCHEDULE_MIGRATION_ENTRYPOINT",
+                bundle.migration.as_os_str(),
+            )
+            .env("SCHEDULE_APPLICATION_VERSION", &self.config.runtime_version)
+            .env(
+                "SCHEDULE_PORTABLE_IMPORT_JOURNAL",
+                self.config.paths.portable_import_journal.as_os_str(),
+            )
+            .env(
+                "SCHEDULE_DATABASE_NAME",
+                self.config.postgres_names.database(),
+            )
+            .env(
+                "SCHEDULE_CLUSTER_ADMIN_ROLE",
+                self.config.postgres_names.cluster_admin(),
+            )
+            .env("SCHEDULE_OWNER_ROLE", self.config.postgres_names.owner())
+            .env(
+                "SCHEDULE_RUNTIME_ROLE",
+                self.config.postgres_names.runtime(),
+            )
+            .output_bounds(512, 16 * 1024)
+            .database_payload();
+        let output = run_command_cancellable(spec, Arc::clone(&self.process_control), &|| {
+            cancellation.is_cancelled()
+        })
+        .map_err(command_error)?;
+        parse_portable_recovery_output(output.stdout()).map_err(NativeExecutorError::new)
+    }
+
+    fn run_portable_import(
+        &mut self,
+        request: PortableImportRequest,
+        cancellation: &Cancellation,
+    ) -> PortableImportResult {
+        let source = match validate_source(&request.source) {
+            Ok(value) => value,
+            Err(code) => return PortableImportResult::Failed { code },
+        };
+        let spec = match (|| {
+            Self::cancelled(cancellation)?;
+            let bundle = self.require_bundle()?;
+            let passwords = self.require_passwords()?;
+            let port = self.database_port()?;
+            let owner = passwords
+                .owner_database_url(&self.config.postgres_names, port)
+                .map_err(credential_error)?;
+            let admin = passwords
+                .cluster_admin_database_url(&self.config.postgres_names, port)
+                .map_err(credential_error)?;
+            Ok::<_, NativeExecutorError>(
+                CommandSpec::new(&bundle.node, &bundle.root, PORTABLE_IMPORT_TIMEOUT)
+                    .arg(&bundle.portable_export)
+                    .arg("import")
+                    .arg(source.into_os_string())
+                    .env("NODE_ENV", "production")
+                    .env("DATABASE_URL", owner.expose())
+                    .env("SCHEDULE_ADMIN_DATABASE_URL", admin.expose())
+                    .env("SCHEDULE_NODE_EXECUTABLE", bundle.node.as_os_str())
+                    .env(
+                        "SCHEDULE_MIGRATION_ENTRYPOINT",
+                        bundle.migration.as_os_str(),
+                    )
+                    .env("SCHEDULE_APPLICATION_VERSION", &self.config.runtime_version)
+                    .env("SCHEDULE_EXPECTED_ARCHIVE_ID", request.expected_archive_id)
+                    .env(
+                        "SCHEDULE_EXPECTED_ARCHIVE_SHA256",
+                        request.expected_archive_sha256,
+                    )
+                    .env(
+                        "SCHEDULE_PORTABLE_IMPORT_JOURNAL",
+                        self.config.paths.portable_import_journal.as_os_str(),
+                    )
+                    .env(
+                        "SCHEDULE_DATABASE_NAME",
+                        self.config.postgres_names.database(),
+                    )
+                    .env(
+                        "SCHEDULE_CLUSTER_ADMIN_ROLE",
+                        self.config.postgres_names.cluster_admin(),
+                    )
+                    .env("SCHEDULE_OWNER_ROLE", self.config.postgres_names.owner())
+                    .env(
+                        "SCHEDULE_RUNTIME_ROLE",
+                        self.config.postgres_names.runtime(),
+                    )
+                    .output_bounds(512, 16 * 1024)
+                    .database_payload(),
+            )
+        })() {
+            Ok(spec) => spec,
+            Err(error) => return PortableImportResult::Failed { code: error.code() },
+        };
+
+        if self.clear_bridge_target().is_err() {
+            return PortableImportResult::RecoveryRequired;
+        }
+        if let Err(error) = Self::stop_process(&mut self.worker) {
+            return if self.configure_bridge_target().is_ok() {
+                PortableImportResult::Failed { code: error.code() }
+            } else {
+                PortableImportResult::RecoveryRequired
+            };
+        }
+        if let Err(error) = Self::stop_process(&mut self.api) {
+            let fresh = Cancellation::default();
+            return if self.start_worker(&fresh).is_ok() && self.configure_bridge_target().is_ok() {
+                PortableImportResult::Failed { code: error.code() }
+            } else {
+                PortableImportResult::RecoveryRequired
+            };
+        }
+        self.api_target = None;
+
+        let imported = run_command_cancellable(spec, Arc::clone(&self.process_control), &|| {
+            cancellation.is_cancelled()
+        })
+        .map_err(command_error)
+        .and_then(|output| {
+            parse_portable_import_output(output.stdout()).map_err(NativeExecutorError::new)
+        });
+
+        if cancellation.is_cancelled() {
+            return PortableImportResult::Unavailable;
+        }
+
+        let recovery = match self.recover_portable_import(&Cancellation::default()) {
+            Ok(outcome) => outcome,
+            Err(_) => return PortableImportResult::RecoveryRequired,
+        };
+        let committed = imported.is_ok() || recovery.committed;
+        if self.restart_application_services().is_err() {
+            return if committed {
+                PortableImportResult::ImportedRestartRequired
+            } else {
+                PortableImportResult::RecoveryRequired
+            };
+        }
+        match imported {
+            Ok(()) => PortableImportResult::Imported,
+            Err(_) if committed => PortableImportResult::Imported,
+            Err(error) => PortableImportResult::Failed { code: error.code() },
+        }
+    }
+
+    fn restart_application_services(&mut self) -> Result<(), NativeExecutorError> {
+        let fresh = Cancellation::default();
+        self.start_api(&fresh)?;
+        if let Err(error) = self.configure_bridge_target() {
+            let _ = Self::stop_process(&mut self.api);
+            self.api_target = None;
+            return Err(error);
+        }
+        if let Err(error) = self.start_worker(&fresh) {
+            let _ = self.clear_bridge_target();
+            let _ = Self::stop_process(&mut self.api);
+            self.api_target = None;
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn acquire_lock(&mut self) -> Result<EffectOutcome, NativeExecutorError> {
@@ -694,6 +968,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         cancellation: &Cancellation,
     ) -> Result<EffectOutcome, NativeExecutorError> {
         self.set_journal_phase(JournalPhase::VerifyingDatabase)?;
+        self.recover_portable_import(cancellation)?;
         let bundle = self.require_bundle()?;
         let connection = self.admin_connection(self.config.postgres_names.database())?;
         let plan = identity_plan(postgres_bin(bundle)?, &connection);
@@ -1146,6 +1421,14 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
     }
 }
 
+fn portable_import_recovery_pending(path: &Path) -> Result<bool, NativeExecutorError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(NativeExecutorError::new("desktop.database_recovery_failed")),
+    }
+}
+
 impl<B: ApiBridgeControl> NativeOperations for SystemOperations<B> {
     fn portable_export(
         &mut self,
@@ -1153,6 +1436,22 @@ impl<B: ApiBridgeControl> NativeOperations for SystemOperations<B> {
         cancellation: &Cancellation,
     ) -> PortableExportResult {
         self.run_portable_export(destination, cancellation)
+    }
+
+    fn portable_import_inspect(
+        &mut self,
+        source: PathBuf,
+        cancellation: &Cancellation,
+    ) -> PortableImportInspectResult {
+        self.run_portable_import_inspect(source, cancellation)
+    }
+
+    fn portable_import(
+        &mut self,
+        request: PortableImportRequest,
+        cancellation: &Cancellation,
+    ) -> PortableImportResult {
+        self.run_portable_import(request, cancellation)
     }
 
     fn execute(
@@ -1927,6 +2226,23 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code(), "desktop.operation_cancelled");
         assert!(executor.operations().calls.is_empty());
+    }
+
+    #[test]
+    fn portable_recovery_helper_runs_only_for_an_existing_journal_entry() {
+        let root = std::env::temp_dir().join(format!(
+            "schedule-portable-recovery-admission-{}-{}",
+            std::process::id(),
+            random_suffix().unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        let journal = root.join("portable-import-journal.v1.json");
+
+        assert!(!portable_import_recovery_pending(&journal).unwrap());
+        fs::write(&journal, b"invalid but present\n").unwrap();
+        assert!(portable_import_recovery_pending(&journal).unwrap());
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]

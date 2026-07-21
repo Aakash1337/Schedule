@@ -1,11 +1,15 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 import {
+  classifyDesktopImportRecoveryTopology,
   createGuardedDesktopVerificationDatabase,
   desktopMigrationInvocation,
+  desktopPortableInspectSuccessPrefix,
+  desktopPortableImportSuccessPrefix,
+  desktopPortableRecoverySuccessPrefix,
   desktopPortableSuccessPrefix,
   desktopVerificationClusterToken,
   desktopVerificationDatabaseName,
@@ -13,13 +17,21 @@ import {
   dropGuardedDesktopVerificationDatabase,
   exportDesktopPortableScheduleData,
   parseDesktopPortableExport,
+  parseDesktopPortableCommand,
+  readDesktopImportJournal,
   readDesktopPortableEnvironment,
   reclaimStaleDesktopVerificationDatabases,
+  recoverDesktopPortableImport,
   runDesktopPortableCli,
+  scavengeDesktopImportJournalTemporaries,
   selectStaleDesktopVerificationDatabases,
+  writeDesktopImportJournal,
+  type DesktopImportJournalV1,
   type DesktopPortableEnvironment,
+  type DesktopPortableRecoveryEnvironment,
   type DesktopVerificationDatabaseIdentity,
 } from "./desktop-portable.js";
+import { portablePromotionOperations } from "./portable-import.js";
 
 describe("desktop portable helper boundary", () => {
   it("accepts only an absolute new schedule destination", () => {
@@ -27,6 +39,63 @@ describe("desktop portable helper boundary", () => {
     expect(parseDesktopPortableExport(["export", destination])).toBe(destination);
     expect(() => parseDesktopPortableExport(["export", "data.schedule"])).toThrow(/invalid/);
   });
+  it("admits only absolute schedule sources for inspection and import", () => {
+    const source = path.join(path.parse(process.cwd()).root, "exports", "data.schedule");
+    expect(parseDesktopPortableCommand(["inspect", source])).toEqual({ kind: "inspect", source });
+    expect(parseDesktopPortableCommand(["import", source])).toEqual({ kind: "import", source });
+    expect(parseDesktopPortableCommand(["recover"])).toEqual({ kind: "recover" });
+    expect(() => parseDesktopPortableCommand(["import", "data.schedule"])).toThrow(/invalid/);
+  });
+  it("treats a missing import journal as a database-free recovery no-op", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "schedule-import-no-journal-test-"));
+    const environment: DesktopPortableRecoveryEnvironment = {
+      databaseUrl: "postgres://owner:secret@127.0.0.1:1/schedule",
+      adminDatabaseUrl: "postgres://admin:secret@127.0.0.1:1/postgres",
+      nodeExecutable: path.join(directory, "node"),
+      migrationEntrypoint: path.join(directory, "migrate.js"),
+      applicationVersion: "1.2.3",
+      databaseName: "schedule",
+      clusterAdminRole: "schedule_admin",
+      ownerRole: "schedule_owner",
+      runtimeRole: "schedule_runtime",
+      importJournalPath: path.join(directory, "portable-import-journal.v1.json"),
+    };
+    try {
+      await expect(recoverDesktopPortableImport(environment)).resolves.toEqual({
+        recovered: false,
+        state: "no-journal",
+        previousRetained: false,
+        committed: false,
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it.runIf(process.platform === "win32")(
+    "accepts the same Windows journal directory through alternate path casing",
+    async () => {
+      const directory = await mkdtemp(path.join(tmpdir(), "Schedule-Import-Case-Test-"));
+      const alternateCaseDirectory = directory.toUpperCase();
+      try {
+        await expect(
+          recoverDesktopPortableImport({
+            databaseUrl: "postgres://owner:secret@127.0.0.1:1/schedule",
+            adminDatabaseUrl: "postgres://admin:secret@127.0.0.1:1/postgres",
+            nodeExecutable: path.join(alternateCaseDirectory, "node"),
+            migrationEntrypoint: path.join(alternateCaseDirectory, "migrate.js"),
+            applicationVersion: "1.2.3",
+            databaseName: "schedule",
+            clusterAdminRole: "schedule_admin",
+            ownerRole: "schedule_owner",
+            runtimeRole: "schedule_runtime",
+            importJournalPath: path.join(alternateCaseDirectory, "portable-import-journal.v1.json"),
+          }),
+        ).resolves.toMatchObject({ state: "no-journal" });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
   it("requires every packaged runtime input", () => {
     expect(() => readDesktopPortableEnvironment({ DATABASE_URL: "postgres://x/y" })).toThrow(
       /invalid/,
@@ -39,6 +108,10 @@ describe("desktop portable helper boundary", () => {
       nodeExecutable: "C:\\runtime\\node.exe",
       migrationEntrypoint: "C:\\runtime\\database\\dist\\migrate.js",
       applicationVersion: "1.2.3",
+      databaseName: "schedule",
+      clusterAdminRole: "schedule_admin",
+      ownerRole: "schedule_owner",
+      runtimeRole: "schedule_runtime",
     };
     const invocation = desktopMigrationInvocation(
       environment,
@@ -64,6 +137,10 @@ describe("desktop portable helper boundary", () => {
       nodeExecutable: "C:\\runtime\\node.exe",
       migrationEntrypoint: "C:\\runtime\\database\\dist\\migrate.js",
       applicationVersion: "1.2.3",
+      databaseName: "schedule",
+      clusterAdminRole: "schedule_admin",
+      ownerRole: "schedule_owner",
+      runtimeRole: "schedule_runtime",
     };
     try {
       const result = await exportDesktopPortableScheduleData(destination, environment, {
@@ -446,6 +523,10 @@ describe("desktop portable helper boundary", () => {
       SCHEDULE_NODE_EXECUTABLE: path.join(root, "runtime", "node"),
       SCHEDULE_MIGRATION_ENTRYPOINT: path.join(root, "runtime", "database", "dist", "migrate.js"),
       SCHEDULE_APPLICATION_VERSION: "1.2.3",
+      SCHEDULE_DATABASE_NAME: "schedule",
+      SCHEDULE_CLUSTER_ADMIN_ROLE: "schedule_admin",
+      SCHEDULE_OWNER_ROLE: "schedule_owner",
+      SCHEDULE_RUNTIME_ROLE: "schedule_runtime",
     };
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -471,5 +552,191 @@ describe("desktop portable helper boundary", () => {
     ).resolves.toBe(false);
     expect(stdout).toEqual([]);
     expect(stderr).toEqual(["Schedule portable export failed.\n"]);
+  });
+
+  it("emits an import completion record only after its runtime adapter succeeds", async () => {
+    const root = path.parse(process.cwd()).root;
+    const source = path.join(root, "exports", "data.schedule");
+    const environment = {
+      DATABASE_URL: "postgres://source@localhost/schedule",
+      SCHEDULE_ADMIN_DATABASE_URL: "postgres://admin@localhost/postgres",
+      SCHEDULE_NODE_EXECUTABLE: path.join(root, "runtime", "node"),
+      SCHEDULE_MIGRATION_ENTRYPOINT: path.join(root, "runtime", "database", "dist", "migrate.js"),
+      SCHEDULE_APPLICATION_VERSION: "1.2.3",
+      SCHEDULE_DATABASE_NAME: "schedule",
+      SCHEDULE_CLUSTER_ADMIN_ROLE: "schedule_admin",
+      SCHEDULE_OWNER_ROLE: "schedule_owner",
+      SCHEDULE_RUNTIME_ROLE: "schedule_runtime",
+      SCHEDULE_EXPECTED_ARCHIVE_ID: "01234567-89ab-4cde-8fab-0123456789ab",
+      SCHEDULE_EXPECTED_ARCHIVE_SHA256: "a".repeat(64),
+      SCHEDULE_PORTABLE_IMPORT_JOURNAL: path.join(root, "runtime", "import-journal.json"),
+    };
+    const stdout: string[] = [];
+    await expect(
+      runDesktopPortableCli(["import", source], environment, {
+        stdout: (value) => stdout.push(value),
+        stderr: () => undefined,
+        importSchedule: async (actualSource) => {
+          expect(actualSource).toBe(source);
+          return {
+            archiveId: "01234567-89ab-4cde-8fab-0123456789ab",
+            committed: true,
+          };
+        },
+      }),
+    ).resolves.toBe(true);
+    expect(stdout).toEqual([`${desktopPortableImportSuccessPrefix}{"previousRetained":true}\n`]);
+  });
+
+  it("emits a bounded inspection record without exposing the selected path", async () => {
+    const root = path.parse(process.cwd()).root;
+    const source = path.join(root, "private", "selected.schedule");
+    const stdout: string[] = [];
+    await expect(
+      runDesktopPortableCli(
+        ["inspect", source],
+        {},
+        {
+          stdout: (value) => stdout.push(value),
+          stderr: () => undefined,
+          inspectSchedule: async () => ({
+            archiveId: "01234567-89ab-4cde-8fab-0123456789ab",
+            archiveSha256: "a".repeat(64),
+            exportedAt: "2026-07-21T00:00:00.000Z",
+            applicationVersion: "1.2.3",
+            schemaVersion: 42,
+            sizeBytes: 123,
+          }),
+        },
+      ),
+    ).resolves.toBe(true);
+    expect(stdout).toEqual([
+      `${desktopPortableInspectSuccessPrefix}{"archiveId":"01234567-89ab-4cde-8fab-0123456789ab","archiveSha256":"${"a".repeat(64)}","exportedAt":"2026-07-21T00:00:00.000Z","applicationVersion":"1.2.3","schemaVersion":42,"sizeBytes":123}\n`,
+    ]);
+    expect(stdout.join("")).not.toContain(source);
+  });
+
+  it("writes and replaces a bounded secret-free versioned journal", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "schedule-import-journal-test-"));
+    const journalPath = path.join(directory, "import-journal.json");
+    const journal: DesktopImportJournalV1 = {
+      format: "schedule.desktop-portable-import-journal",
+      version: 1,
+      archiveId: "01234567-89ab-4cde-8fab-0123456789ab",
+      clusterSystemIdentifier: "1234567890123456789",
+      phase: "prepared",
+      active: { name: "schedule", oid: 100, owner: "schedule_owner" },
+      staging: {
+        name: `schedule_restore_${"a".repeat(32)}`,
+        oid: 101,
+        owner: "schedule_owner",
+      },
+      previous: {
+        name: `schedule_previous_${"b".repeat(32)}`,
+        oid: 100,
+        owner: "schedule_owner",
+      },
+    };
+    try {
+      const allocation: DesktopImportJournalV1 = {
+        ...journal,
+        phase: "allocating-staging",
+        staging: { ...journal.staging, oid: 0 },
+      };
+      await writeDesktopImportJournal(journalPath, allocation, true);
+      expect(await readDesktopImportJournal(journalPath)).toEqual(allocation);
+      await writeDesktopImportJournal(journalPath, journal);
+      expect(await readDesktopImportJournal(journalPath)).toEqual(journal);
+      await writeDesktopImportJournal(journalPath, { ...journal, phase: "committed" });
+      expect((await readDesktopImportJournal(journalPath))?.phase).toBe("committed");
+      expect(await readFile(journalPath, "utf8")).not.toMatch(/postgres|password|secret/i);
+
+      const staleTemporary = path.join(directory, `.import-journal.json.${"a".repeat(24)}.tmp`);
+      const malformedTemporary = path.join(directory, `.import-journal.json.${"b".repeat(24)}.tmp`);
+      await writeFile(staleTemporary, `${JSON.stringify(allocation)}\n`);
+      await writeFile(malformedTemporary, "not a journal\n");
+      const now = Date.now();
+      const stale = new Date(now - 25 * 60 * 60 * 1_000);
+      await utimes(staleTemporary, stale, stale);
+      await utimes(malformedTemporary, stale, stale);
+      await expect(scavengeDesktopImportJournalTemporaries(journalPath, now)).resolves.toBe(1);
+      await expect(access(staleTemporary)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(malformedTemporary)).resolves.toBeUndefined();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(
+    portablePromotionOperations.flatMap((operation) => [
+      `before-${operation}`,
+      `after-operation:${operation}`,
+      `after-${operation}`,
+    ]),
+  )("reconciles the exact catalog topology at the %s crash boundary", (faultPoint) => {
+    const operationName = faultPoint.replace(/^before-|^after-operation:|^after-/, "");
+    const operationIndex = portablePromotionOperations.indexOf(
+      operationName as (typeof portablePromotionOperations)[number],
+    );
+    const completed = operationIndex + (faultPoint.startsWith("before-") ? 0 : 1);
+    const topology =
+      completed > portablePromotionOperations.indexOf("promote-staging")
+        ? ({ active: "new", staging: "missing", previous: "old" } as const)
+        : completed > portablePromotionOperations.indexOf("rename-active")
+          ? ({ active: "missing", staging: "new", previous: "old" } as const)
+          : ({ active: "old", staging: "new", previous: "missing" } as const);
+    expect(classifyDesktopImportRecoveryTopology(topology)).toBe(
+      topology.active === "new" ? "finish-new" : "restore-old",
+    );
+  });
+
+  it.each([
+    ["prepared", { active: "old", staging: "new", previous: "missing" }, "restore-old"],
+    ["committed", { active: "new", staging: "missing", previous: "old" }, "finish-new"],
+  ] as const)("reconciles the %s journal boundary", (_phase, topology, expected) => {
+    expect(classifyDesktopImportRecoveryTopology(topology)).toBe(expected);
+  });
+
+  it("rejects a recovery topology containing any unbound database identity", () => {
+    expect(() =>
+      classifyDesktopImportRecoveryTopology({
+        active: "other",
+        staging: "new",
+        previous: "missing",
+      }),
+    ).toThrow(/recovery failed/);
+  });
+
+  it("emits the exact bounded recovery protocol without requiring an archive identity", async () => {
+    const root = path.parse(process.cwd()).root;
+    const environment = {
+      DATABASE_URL: "postgres://source@localhost/schedule",
+      SCHEDULE_ADMIN_DATABASE_URL: "postgres://admin@localhost/postgres",
+      SCHEDULE_NODE_EXECUTABLE: path.join(root, "runtime", "node"),
+      SCHEDULE_MIGRATION_ENTRYPOINT: path.join(root, "runtime", "database", "dist", "migrate.js"),
+      SCHEDULE_APPLICATION_VERSION: "1.2.3",
+      SCHEDULE_DATABASE_NAME: "schedule",
+      SCHEDULE_CLUSTER_ADMIN_ROLE: "schedule_admin",
+      SCHEDULE_OWNER_ROLE: "schedule_owner",
+      SCHEDULE_RUNTIME_ROLE: "schedule_runtime",
+      SCHEDULE_PORTABLE_IMPORT_JOURNAL: path.join(root, "runtime", "import-journal.json"),
+    };
+    const stdout: string[] = [];
+    await expect(
+      runDesktopPortableCli(["recover"], environment, {
+        stdout: (value) => stdout.push(value),
+        stderr: () => undefined,
+        recoverImport: async () => ({
+          recovered: true,
+          state: "committed-new-active",
+          archiveId: "01234567-89ab-4cde-8fab-0123456789ab",
+          previousRetained: true,
+          committed: true,
+        }),
+      }),
+    ).resolves.toBe(true);
+    expect(stdout).toEqual([
+      `${desktopPortableRecoverySuccessPrefix}{"recovered":true,"committed":true}\n`,
+    ]);
   });
 });

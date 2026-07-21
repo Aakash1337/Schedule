@@ -96,6 +96,20 @@ pub trait EffectExecutor {
     ) -> crate::runtime::portable::PortableExportResult {
         crate::runtime::portable::PortableExportResult::Unavailable
     }
+    fn portable_import_inspect(
+        &mut self,
+        _: std::path::PathBuf,
+        _: &Cancellation,
+    ) -> crate::runtime::portable::PortableImportInspectResult {
+        crate::runtime::portable::PortableImportInspectResult::Unavailable
+    }
+    fn portable_import(
+        &mut self,
+        _: crate::runtime::portable::PortableImportRequest,
+        _: &Cancellation,
+    ) -> crate::runtime::portable::PortableImportResult {
+        crate::runtime::portable::PortableImportResult::Unavailable
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -183,12 +197,54 @@ impl<E: EffectExecutor> Coordinator<E> {
         result
     }
 
+    pub fn portable_import_inspect(
+        &mut self,
+        source: std::path::PathBuf,
+    ) -> crate::runtime::portable::PortableImportInspectResult {
+        if !matches!(self.lifecycle.phase(), Phase::Ready) {
+            self.cancellation_handle.clear_pre_arm();
+            return crate::runtime::portable::PortableImportInspectResult::Unavailable;
+        }
+        let cancellation = self.cancellation_handle.activate();
+        let result = self.executor.portable_import_inspect(source, &cancellation);
+        self.cancellation_handle.clear_active();
+        result
+    }
+
+    pub fn portable_import(
+        &mut self,
+        request: crate::runtime::portable::PortableImportRequest,
+    ) -> crate::runtime::portable::PortableImportResult {
+        if !matches!(self.lifecycle.phase(), Phase::Ready) {
+            self.cancellation_handle.clear_pre_arm();
+            return crate::runtime::portable::PortableImportResult::Unavailable;
+        }
+        let cancellation = self.cancellation_handle.activate();
+        let result = self.executor.portable_import(request, &cancellation);
+        self.cancellation_handle.clear_active();
+        if matches!(
+            result,
+            crate::runtime::portable::PortableImportResult::ImportedRestartRequired
+                | crate::runtime::portable::PortableImportResult::RecoveryRequired
+        ) {
+            let _ = self.apply(Event::Failed {
+                generation: self.lifecycle.generation(),
+                failure: Failure::Database,
+            });
+        }
+        result
+    }
+
     pub fn start(&mut self) -> Result<(), CoordinatorError<E::Error>> {
         self.begin(Event::Start)
     }
 
     pub fn retry(&mut self) -> Result<(), CoordinatorError<E::Error>> {
-        self.begin(Event::Retry)
+        if matches!(self.lifecycle.phase(), Phase::CleaningUp(_)) {
+            self.retry_cleanup()
+        } else {
+            self.begin(Event::Retry)
+        }
     }
 
     pub fn stop(&mut self) -> Result<(), CoordinatorError<E::Error>> {
@@ -859,11 +915,7 @@ mod tests {
             coordinator.start(),
             Err(CoordinatorError::Rejected(_))
         ));
-        assert!(matches!(
-            coordinator.retry(),
-            Err(CoordinatorError::Rejected(_))
-        ));
-        coordinator.stop().unwrap();
+        coordinator.retry().unwrap();
         assert_eq!(coordinator.lifecycle().phase(), &Phase::Idle);
     }
 

@@ -20,6 +20,7 @@ pub(crate) struct RuntimePaths {
     pub(crate) credentials_store: PathBuf,
     pub(crate) temporary_secrets_root: PathBuf,
     pub(crate) journal: PathBuf,
+    pub(crate) portable_import_journal: PathBuf,
     pub(crate) singleton_lock: PathBuf,
 }
 
@@ -59,6 +60,7 @@ impl RuntimePaths {
             credentials_store: private_root.join("postgresql-credentials.v1.json"),
             temporary_secrets_root: private_root.join("temp"),
             journal: runtime_root.join("journal.json"),
+            portable_import_journal: runtime_root.join("portable-import-journal.v1.json"),
             singleton_lock: runtime_root.join("singleton.lock"),
             data_root,
             private_root,
@@ -127,6 +129,10 @@ mod tests {
         assert_eq!(
             paths.journal,
             PathBuf::from("user-data/runtime/journal.json")
+        );
+        assert_eq!(
+            paths.portable_import_journal,
+            PathBuf::from("user-data/runtime/portable-import-journal.v1.json")
         );
         assert_eq!(
             paths.singleton_lock,

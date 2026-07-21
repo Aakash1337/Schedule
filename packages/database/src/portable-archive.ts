@@ -96,6 +96,7 @@ export interface PreparedPortableArchive {
   readonly payloadPath: string;
   readonly manifest: PortableArchiveManifestV1;
   readonly sizeBytes: number;
+  readonly archiveSha256: string;
 }
 
 type LinkOperation = (existingPath: string, newPath: string) => Promise<void>;
@@ -1536,6 +1537,7 @@ async function extractPortableArchive(
   sourcePath: string,
   snapshotPath: string,
   snapshotSize: number,
+  archiveSha256: string,
 ): Promise<PreparedPortableArchive> {
   const source = await open(snapshotPath, "r+");
   try {
@@ -1557,7 +1559,13 @@ async function extractPortableArchive(
     }
     await source.truncate(payloadLength);
     await source.sync();
-    return { sourcePath, payloadPath: snapshotPath, manifest, sizeBytes: snapshotSize };
+    return {
+      sourcePath,
+      payloadPath: snapshotPath,
+      manifest,
+      sizeBytes: snapshotSize,
+      archiveSha256,
+    };
   } finally {
     await source.close();
   }
@@ -1574,8 +1582,8 @@ export async function withPreparedPortableArchive<Result>(
 ): Promise<Result> {
   return withPreparedRestoreArchive(
     archivePath,
-    async ({ sourcePath, snapshotPath, sizeBytes }) => {
-      const archive = await extractPortableArchive(sourcePath, snapshotPath, sizeBytes);
+    async ({ sourcePath, snapshotPath, sizeBytes, sha256 }) => {
+      const archive = await extractPortableArchive(sourcePath, snapshotPath, sizeBytes, sha256);
       return operation(archive);
     },
     {

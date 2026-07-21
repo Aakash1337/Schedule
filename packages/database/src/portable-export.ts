@@ -361,7 +361,7 @@ interface PortableCatalogColumnRow {
   readonly generated_kind: string;
 }
 
-interface PortableColumnCatalog {
+export interface PortableColumnCatalog {
   readonly columns: PortableColumnMap;
   readonly casts: Readonly<Record<PortableDataTableV1, readonly string[]>>;
 }
@@ -443,7 +443,9 @@ function portableCastSql(column: PortableCatalogColumnRow): string {
   throw new Error(`Portable column type is not supported: ${column.data_type}`);
 }
 
-async function readPortableColumnCatalog(sql: PortableQuerySql): Promise<PortableColumnCatalog> {
+export async function readPortableColumnCatalog(
+  sql: PortableQuerySql,
+): Promise<PortableColumnCatalog> {
   const tableValues = portableDataPolicyV1.includedTables.map((table) => `('${table}')`).join(", ");
   const rows = await sql.unsafe<PortableCatalogColumnRow[]>(`
     WITH selected_tables(name) AS (VALUES ${tableValues})
@@ -517,7 +519,9 @@ function normalizedRowExpression(table: string): string {
   }
 }
 
-async function readSignals(sql: PortableQuerySql): Promise<PortableDatabaseSignals> {
+export async function readPortableDatabaseSignals(
+  sql: PortableQuerySql,
+): Promise<PortableDatabaseSignals> {
   const contentSignals: Record<string, string> = {};
   for (const table of portableDataPolicyV1.includedTables) {
     const [row] = await sql.unsafe<{ signal: string }[]>(`
@@ -608,7 +612,7 @@ async function schemaSignatures(sql: PortableQuerySql): Promise<readonly string[
   return rows.map(({ signature }) => signature);
 }
 
-async function schemaSignal(sql: PortableQuerySql): Promise<string> {
+export async function portableDatabaseSchemaSignal(sql: PortableQuerySql): Promise<string> {
   return createHash("sha256")
     .update((await schemaSignatures(sql)).join("\n"), "utf8")
     .digest("hex");
@@ -758,9 +762,9 @@ async function prepareSource(
         await assertExactLedger(transaction as unknown as Sql, migrationsFolder);
         await assertExactSchemaNamespaces(transaction as unknown as Sql);
         const catalog = await readPortableColumnCatalog(transaction);
-        const sourceSchemaSignal = await schemaSignal(transaction);
+        const sourceSchemaSignal = await portableDatabaseSchemaSignal(transaction);
         const admissionSchemaSignal = await fullSchemaSignal(transaction);
-        const capturedSignals = await readSignals(transaction);
+        const capturedSignals = await readPortableDatabaseSignals(transaction);
         const written = await writePortablePayload(payloadPath, {
           columns: catalog.columns,
           rows: (table, columns): AsyncIterable<readonly PortableTextValue[]> => ({
@@ -810,7 +814,7 @@ async function prepareSource(
   }
 }
 
-async function restorePayload(
+export async function restorePortablePayload(
   databaseUrl: string,
   payloadPath: string,
   expected: PortablePayloadExpectations,
@@ -916,7 +920,7 @@ function foreignKeyAuditSql(): string {
     END $portable_fk_audit$`;
 }
 
-async function normalizeAndVerify(sql: Sql): Promise<void> {
+export async function normalizeAndVerifyPortableDatabase(sql: Sql): Promise<void> {
   await sql.begin(async (transaction) => {
     await transaction.unsafe("SET LOCAL session_replication_role = replica");
     await transaction.unsafe(
@@ -962,7 +966,7 @@ async function normalizeAndVerify(sql: Sql): Promise<void> {
   if (failures.length > 0) throw new Error("Portable database normalization failed.");
 }
 
-function assertSignalsMatch(
+export function assertPortableDatabaseSignalsMatch(
   actual: PortableDatabaseSignals,
   expected: PortablePayloadExpectations,
 ): void {
@@ -1048,28 +1052,28 @@ export async function exportVerifiedPortableDatabase(
             "Portable source schema does not exactly match the packaged migration schema.",
           );
         }
-        if ((await schemaSignal(connection.sql)) !== source.schemaSignal) {
+        if ((await portableDatabaseSchemaSignal(connection.sql)) !== source.schemaSignal) {
           throw new Error("Portable verification schema does not match the source schema.");
         }
       } finally {
         await connection.close();
       }
-      await restorePayload(verificationUrl, payloadPath, source.expectations);
+      await restorePortablePayload(verificationUrl, payloadPath, source.expectations);
       const verification = createDatabase(verificationUrl, 1, {
         statementTimeoutMs: 120_000,
         applicationName: "schedule-portable-verification-audit",
       });
       try {
-        await normalizeAndVerify(verification.sql);
+        await normalizeAndVerifyPortableDatabase(verification.sql);
         await assertExactLedger(verification.sql, options.migrationsFolder);
         const signals = await verification.sql.begin(
           "isolation level repeatable read read only",
           async (transaction) => {
             await applyPortableCanonicalSessionSettings(transaction);
-            return readSignals(transaction);
+            return readPortableDatabaseSignals(transaction);
           },
         );
-        assertSignalsMatch(signals, source.expectations);
+        assertPortableDatabaseSignalsMatch(signals, source.expectations);
         return { signals, created: true };
       } finally {
         await verification.close();

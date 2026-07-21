@@ -1,6 +1,19 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
-import { chmod, lstat, mkdtemp, open, mkdir, rm, stat, type FileHandle } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdtemp,
+  open,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+  type FileHandle,
+} from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
@@ -91,6 +104,63 @@ export interface PreparedRestoreArchive {
   readonly sourcePath: string;
   readonly snapshotPath: string;
   readonly sizeBytes: number;
+  readonly sha256: string;
+}
+
+const restoreSnapshotPrefix = "schedule-restore-archive-";
+const restoreSnapshotMarker = ".schedule-restore-snapshot-v1";
+const restoreSnapshotMarkerContents = "schedule:restore-snapshot:v1\n";
+const restoreSnapshotStaleMs = 24 * 60 * 60 * 1_000;
+const restoreSnapshotScavengeLimit = 16;
+
+/** Removes only stale, flat snapshots carrying Schedule's exact ownership marker. */
+export async function scavengePreparedRestoreArchives(
+  root = tmpdir(),
+  now = Date.now(),
+): Promise<number> {
+  const entries = await readdir(root, { withFileTypes: true });
+  let inspected = 0;
+  let removed = 0;
+  for (const entry of entries) {
+    if (inspected >= restoreSnapshotScavengeLimit * 8 || removed >= restoreSnapshotScavengeLimit) {
+      break;
+    }
+    if (
+      !entry.isDirectory() ||
+      !entry.name.startsWith(restoreSnapshotPrefix) ||
+      !/^[A-Za-z0-9_-]{6,32}$/.test(entry.name.slice(restoreSnapshotPrefix.length))
+    ) {
+      continue;
+    }
+    inspected += 1;
+    const directory = path.join(root, entry.name);
+    const before = await lstat(directory, { bigint: true }).catch(() => null);
+    if (
+      before === null ||
+      before.isSymbolicLink() ||
+      !before.isDirectory() ||
+      Number(before.mtimeMs) > now - restoreSnapshotStaleMs
+    ) {
+      continue;
+    }
+    const children = await readdir(directory, { withFileTypes: true }).catch(() => []);
+    if (
+      children.length !== 2 ||
+      !children.every(
+        (child) =>
+          child.isFile() && (child.name === restoreSnapshotMarker || child.name === "archive.dump"),
+      ) ||
+      (await readFile(path.join(directory, restoreSnapshotMarker), "utf8").catch(() => "")) !==
+        restoreSnapshotMarkerContents
+    ) {
+      continue;
+    }
+    const current = await lstat(directory, { bigint: true }).catch(() => null);
+    if (current === null || current.dev !== before.dev || current.ino !== before.ino) continue;
+    await rm(directory, { recursive: true });
+    removed += 1;
+  }
+  return removed;
 }
 
 function errorMessage(error: unknown): string {
@@ -395,12 +465,13 @@ async function copyOpenedArchive(
   destination: FileHandle,
   initialState: BigIntStats,
   maximumSourceSizeBytes?: number,
-): Promise<number> {
+): Promise<{ readonly sizeBytes: number; readonly sha256: string }> {
   if (initialState.size > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error("Restore archive is too large to snapshot safely.");
   }
   const sizeBytes = Number(initialState.size);
   const buffer = Buffer.allocUnsafe(Math.min(sizeBytes, 1024 * 1024));
+  const hash = createHash("sha256");
   let sourceOffset = 0;
   while (sourceOffset < sizeBytes) {
     const requested = Math.min(buffer.length, sizeBytes - sourceOffset);
@@ -424,6 +495,7 @@ async function copyOpenedArchive(
       }
       written += bytesWritten;
     }
+    hash.update(buffer.subarray(0, bytesRead));
     sourceOffset += bytesRead;
   }
   const finalState = await source.stat({ bigint: true });
@@ -437,7 +509,7 @@ async function copyOpenedArchive(
     throw new Error("Restore archive changed while its private snapshot was being created.");
   }
   await destination.sync();
-  return sizeBytes;
+  return { sizeBytes, sha256: hash.digest("hex") };
 }
 
 export interface RestoreArchivePreparationOptions {
@@ -488,11 +560,17 @@ async function prepareRestoreArchive(
       throw new Error(`Restore archive path changed before it could be snapshotted: ${sourcePath}`);
     }
     await options.validateOpenedSource?.(source, openedMetadata);
-    temporaryDirectory = await mkdtemp(path.join(tmpdir(), "schedule-restore-archive-"));
+    await scavengePreparedRestoreArchives();
+    temporaryDirectory = await mkdtemp(path.join(tmpdir(), restoreSnapshotPrefix));
     await chmod(temporaryDirectory, 0o700);
+    await writeFile(
+      path.join(temporaryDirectory, restoreSnapshotMarker),
+      restoreSnapshotMarkerContents,
+      { flag: "wx", mode: 0o600 },
+    );
     const snapshotPath = path.join(temporaryDirectory, "archive.dump");
     destination = await open(snapshotPath, "wx", 0o600);
-    const sizeBytes = await copyOpenedArchive(
+    const { sizeBytes, sha256 } = await copyOpenedArchive(
       source,
       destination,
       openedMetadata,
@@ -505,7 +583,7 @@ async function prepareRestoreArchive(
 
     let cleanupPromise: Promise<void> | undefined;
     return {
-      archive: { sourcePath, snapshotPath, sizeBytes },
+      archive: { sourcePath, snapshotPath, sizeBytes, sha256 },
       cleanup: () => {
         cleanupPromise ??= rm(temporaryDirectory as string, { recursive: true, force: true });
         return cleanupPromise;

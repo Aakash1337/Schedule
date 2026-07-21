@@ -471,6 +471,7 @@ async function consumeArchive(archivePath: string): Promise<void> {
       activeDatabase: targetPlan.activeDatabase,
       previousDatabase: targetPlan.previousDatabase,
       archiveId: archiveManifest.archiveId,
+      committed: true,
     });
     assert.notEqual(await databaseIdentity(targetPlan.activeDatabase), originalIdentity);
     assert.equal(await databaseIdentity(targetPlan.previousDatabase), originalIdentity);

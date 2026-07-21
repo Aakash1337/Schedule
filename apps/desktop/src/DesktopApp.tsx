@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import { App, type PortableExportResult } from "../../web/src/App.js";
+import {
+  App,
+  type PortableExportResult,
+  type PortableImportResult,
+  type PortableImportSelectionResult,
+} from "../../web/src/App.js";
 import {
   initialStartupState,
   isBusyStartupPhase,
@@ -31,6 +36,14 @@ const runtimeStatusTimeoutMs = 5_000;
 
 export function requestPortableExport(): Promise<PortableExportResult> {
   return invoke<PortableExportResult>("portable_export");
+}
+
+export function requestPortableImportSelection(): Promise<PortableImportSelectionResult> {
+  return invoke<PortableImportSelectionResult>("portable_import_select");
+}
+
+export function confirmPortableImport(token: string): Promise<PortableImportResult> {
+  return invoke<PortableImportResult>("portable_import_confirm", { token });
 }
 
 export function runtimeStatusAction(status: RuntimeStatus): StartupAction {
@@ -221,7 +234,13 @@ export function DesktopApp() {
   }, [inspectRuntime]);
 
   return state.phase === "ready" ? (
-    <App desktopActions={{ exportArchive: requestPortableExport }} />
+    <App
+      desktopActions={{
+        exportArchive: requestPortableExport,
+        selectImportArchive: requestPortableImportSelection,
+        confirmImportArchive: confirmPortableImport,
+      }}
+    />
   ) : (
     <StartupGate state={state} onRetry={retry} />
   );

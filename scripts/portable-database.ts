@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import {
   createDatabase,
   exportVerifiedPortableDatabase,
+  importPortableScheduleData as importPortableScheduleDataCore,
   portableDataPolicyV1,
   readPortableMigrationIdentity,
   shouldRemovePortableExportResult,
@@ -30,7 +31,7 @@ import {
   quoteIdentifier,
   runPsql,
 } from "./restore-database.js";
-import { type PortableArchiveManifestV1, withPreparedPortableArchive } from "./portable-archive.js";
+import { type PortableArchiveManifestV1 } from "./portable-archive.js";
 import {
   type PortableColumnDescriptor,
   type PortableColumnMap,
@@ -644,24 +645,6 @@ export async function exportPortableScheduleData(
 
 export { shouldRemovePortableExportResult };
 
-function assertCompatibleManifest(
-  manifest: PortableArchiveManifestV1,
-  schemaSignal: string,
-  migration: MigrationIdentity,
-): void {
-  const compatibility = manifest.compatibility;
-  if (
-    compatibility.schemaSignal !== schemaSignal ||
-    compatibility.migrationCount !== migration.count ||
-    compatibility.latestMigrationTag !== migration.latestTag ||
-    compatibility.migrationFingerprint !== migration.fingerprint
-  ) {
-    throw new Error(
-      "Portable archive was produced by an incompatible Schedule schema. Import it with the matching Schedule release, then upgrade normally.",
-    );
-  }
-}
-
 export async function importPortableScheduleData(
   archivePath: string,
   options: PortableImportOptions = {},
@@ -669,47 +652,47 @@ export async function importPortableScheduleData(
   const activeDatabase = options.activeDatabase ?? composeDatabaseName;
   const stagingDatabase = options.stagingDatabase ?? generatedDatabaseName("schedule_restore_");
   const previousDatabase = options.previousDatabase ?? generatedDatabaseName("schedule_previous_");
-  for (const databaseName of [activeDatabase, stagingDatabase, previousDatabase]) {
-    quoteIdentifier(databaseName);
-  }
-  if (new Set([activeDatabase, stagingDatabase, previousDatabase]).size !== 3) {
-    throw new Error("Portable import database roles must use distinct identifiers.");
-  }
-  await assertComposeDatabaseReady(activeDatabase);
-  await assertScheduleDatabase(activeDatabase, { requireCurrentMigrations: true });
-  const schemaSignal = await portableSchemaSignal(activeDatabase);
-  const migration = await readMigrationIdentity();
-
-  return withPreparedPortableArchive(archivePath, async ({ payloadPath, manifest }) => {
-    assertCompatibleManifest(manifest, schemaSignal, migration);
-    const activeCatalog = await readPortableCatalogForDatabase(activeDatabase);
-    await readPortablePayload(payloadPath, { ...manifest.data, columns: activeCatalog.columns });
-    let stagingIdentity: number | null = null;
-    try {
-      const signals = await prepareVerifiedPortableDatabase(
+  return importPortableScheduleDataCore(
+    { archivePath, activeDatabase, stagingDatabase, previousDatabase },
+    {
+      assertDatabaseName: quoteIdentifier,
+      assertActiveDatabase: async (databaseName) => {
+        await assertComposeDatabaseReady(databaseName);
+        await assertScheduleDatabase(databaseName, { requireCurrentMigrations: true });
+      },
+      schemaSignal: portableSchemaSignal,
+      migrationIdentity: readMigrationIdentity,
+      columnCatalog: async (databaseName) =>
+        (await readPortableCatalogForDatabase(databaseName)).columns,
+      prepareStagingDatabase: async (
         payloadPath,
-        stagingDatabase,
+        databaseName,
         schemaSignal,
-        { ...manifest.data, columns: activeCatalog.columns },
-        (identity) => {
-          stagingIdentity = identity;
-        },
-      );
-      assertSignalsMatch(signals, manifest.data);
-      await promoteScheduleStagingDatabase(stagingDatabase, previousDatabase, activeDatabase);
-    } catch (error) {
-      if (stagingIdentity === null) stagingIdentity = await databaseIdentity(stagingDatabase);
-      if (stagingIdentity !== null) {
-        await cleanupOwnedRestoreStagingAfterFailure(error, stagingDatabase, stagingIdentity);
-      }
-      throw error;
-    }
-    return {
-      activeDatabase,
-      previousDatabase,
-      archiveId: manifest.archiveId,
-    };
-  });
+        expectedData,
+        onCreated,
+      ) => {
+        await prepareVerifiedPortableDatabase(
+          payloadPath,
+          databaseName,
+          schemaSignal,
+          expectedData,
+          onCreated,
+        );
+      },
+      signalsMatch: async (databaseName, expected) => {
+        const signals = await portableDatabaseSignals(databaseName);
+        try {
+          assertSignalsMatch(signals, expected);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      promoteStagingDatabase: promoteScheduleStagingDatabase,
+      databaseIdentity,
+      cleanupStagingAfterFailure: cleanupOwnedRestoreStagingAfterFailure,
+    },
+  );
 }
 
 type Command =

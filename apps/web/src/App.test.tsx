@@ -3,7 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "./api";
-import { App, type PortableExportResult } from "./App";
+import {
+  App,
+  type PortableExportResult,
+  type PortableImportPreview,
+  type PortableImportResult,
+  type PortableImportSelectionResult,
+} from "./App";
 import type { Workspace } from "./types";
 
 const apiMocks = vi.hoisted(() => ({
@@ -48,6 +54,33 @@ async function exportArchiveButton(): Promise<HTMLButtonElement> {
 
 async function exportMessage(message: string): Promise<HTMLElement> {
   return (await screen.findAllByText(message, { exact: true }))[0]!;
+}
+
+async function importArchiveButton(): Promise<HTMLButtonElement> {
+  return (await screen.findAllByRole<HTMLButtonElement>("button", { name: "Import archive" }))[0]!;
+}
+
+const importPreview: PortableImportPreview = {
+  archiveId: "archive-2026-07-20",
+  exportedAt: "2026-07-20T09:30:00Z",
+  applicationVersion: "0.1.0",
+  schemaVersion: 7,
+  sizeBytes: 1_572_864,
+};
+
+function importActions(
+  selection: PortableImportSelectionResult = {
+    result: "selected",
+    token: "opaque-import-token",
+    preview: importPreview,
+  },
+  confirmation: PortableImportResult = { result: "imported" },
+) {
+  return {
+    exportArchive: vi.fn().mockResolvedValue({ result: "cancelled" }),
+    selectImportArchive: vi.fn().mockResolvedValue(selection),
+    confirmImportArchive: vi.fn().mockResolvedValue(confirmation),
+  };
 }
 
 const originalScrollIntoView = Object.getOwnPropertyDescriptor(
@@ -202,6 +235,7 @@ describe("local application shell", () => {
 
     await screen.findByRole("heading", { name: "Today" });
     expect(screen.queryByRole("button", { name: "Export archive" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Import archive" })).toBeNull();
   });
 
   it("exports a portable archive and announces its size", async () => {
@@ -311,5 +345,163 @@ describe("local application shell", () => {
       ),
     ).toHaveAttribute("role", "alert");
     expect(screen.queryByText("destination_exists")).toBeNull();
+  });
+
+  it("offers portable import during desktop workspace onboarding", async () => {
+    const user = userEvent.setup();
+    const actions = importActions();
+    apiMocks.listWorkspaces.mockResolvedValue(page([]));
+
+    render(<App desktopActions={actions} />);
+
+    expect(await screen.findByRole("heading", { name: "Give your days a shape." })).toBeVisible();
+    await user.click(await importArchiveButton());
+
+    expect(actions.selectImportArchive).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("region", { name: "Confirm archive import" })).toBeVisible();
+    expect(screen.getByText(importPreview.archiveId)).toBeVisible();
+    expect(screen.queryByText("opaque-import-token")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Replace local data and restart" }));
+
+    expect(actions.confirmImportArchive).toHaveBeenCalledWith("opaque-import-token");
+    expect(await exportMessage("Archive imported. Local services restarted.")).toHaveAttribute(
+      "role",
+      "status",
+    );
+  });
+
+  it("requires a redacted preview and explicit confirmation before importing", async () => {
+    const user = userEvent.setup();
+    const actions = importActions();
+    const importedWorkspace = { ...studioWorkspace, name: "Imported workspace" };
+    apiMocks.listWorkspaces
+      .mockResolvedValueOnce(page([personalWorkspace]))
+      .mockResolvedValueOnce(page([importedWorkspace]));
+
+    render(<App desktopActions={actions} />);
+
+    await user.click(await importArchiveButton());
+
+    expect(actions.selectImportArchive).toHaveBeenCalledTimes(1);
+    expect(await screen.findAllByRole("region", { name: "Confirm archive import" })).toHaveLength(
+      2,
+    );
+    expect(screen.getAllByText(importPreview.archiveId)).toHaveLength(2);
+    expect(screen.getAllByText("1.5 MB")).toHaveLength(2);
+    expect(screen.queryByText("opaque-import-token")).toBeNull();
+    expect(actions.confirmImportArchive).not.toHaveBeenCalled();
+
+    const confirmation = (
+      await screen.findAllByRole("button", {
+        name: "Replace local data and restart",
+      })
+    )[0]!;
+    await user.click(confirmation);
+
+    expect(actions.confirmImportArchive).toHaveBeenCalledWith("opaque-import-token");
+    expect(await exportMessage("Archive imported. Local services restarted.")).toHaveAttribute(
+      "role",
+      "status",
+    );
+    expect(await screen.findAllByText("Imported workspace")).toHaveLength(2);
+    expect(localStorage.getItem("schedule.selectedWorkspace")).toBe(importedWorkspace.id);
+    expect(apiMocks.listWorkspaces).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels a selected archive without invoking the destructive native action", async () => {
+    const user = userEvent.setup();
+    const actions = importActions();
+    apiMocks.listWorkspaces.mockResolvedValue(page([personalWorkspace]));
+
+    render(<App desktopActions={actions} />);
+
+    await user.click(await importArchiveButton());
+    const cancel = (await screen.findAllByRole("button", { name: "Cancel import" }))[0]!;
+    await user.click(cancel);
+
+    expect(actions.confirmImportArchive).not.toHaveBeenCalled();
+    expect(await exportMessage("Import cancelled.")).toHaveAttribute("role", "status");
+    expect(await importArchiveButton()).toBeEnabled();
+  });
+
+  it.each([
+    {
+      name: "busy selection",
+      selection: { result: "busy" } as PortableImportSelectionResult,
+      message: "Another portable operation is already in progress.",
+      role: "status" as const,
+    },
+    {
+      name: "unavailable selection",
+      selection: { result: "unavailable" } as PortableImportSelectionResult,
+      message: "Portable import is unavailable in this version of Schedule.",
+      role: "alert" as const,
+    },
+    {
+      name: "failed selection",
+      selection: { result: "failed", code: "archive.invalid" } as PortableImportSelectionResult,
+      message: "Schedule could not inspect the archive. Try again.",
+      role: "alert" as const,
+    },
+  ])("announces $name without exposing native details", async ({ selection, message, role }) => {
+    const user = userEvent.setup();
+    const actions = importActions(selection);
+    apiMocks.listWorkspaces.mockResolvedValue(page([personalWorkspace]));
+
+    render(<App desktopActions={actions} />);
+    await user.click(await importArchiveButton());
+
+    expect(await exportMessage(message)).toHaveAttribute("role", role);
+    expect(screen.queryByText("archive.invalid")).toBeNull();
+  });
+
+  it("keeps the import selection while a confirmation is busy", async () => {
+    const user = userEvent.setup();
+    const actions = importActions(undefined, { result: "busy" });
+    apiMocks.listWorkspaces.mockResolvedValue(page([personalWorkspace]));
+
+    render(<App desktopActions={actions} />);
+    await user.click(await importArchiveButton());
+    await user.click(
+      (await screen.findAllByRole("button", { name: "Replace local data and restart" }))[0]!,
+    );
+
+    expect(
+      await exportMessage("Another portable operation is already in progress."),
+    ).toHaveAttribute("role", "status");
+    expect(screen.getAllByRole("button", { name: "Replace local data and restart" })).toHaveLength(
+      2,
+    );
+  });
+
+  it.each([
+    {
+      result: "imported_restart_required" as const,
+      message:
+        "Archive imported. Restart Schedule to finish starting local services. Do not import it again.",
+    },
+    {
+      result: "recovery_required" as const,
+      message:
+        "Import was interrupted. Restart Schedule to recover local data safely. Do not import again.",
+    },
+  ])("does not invite a destructive retry for $result", async ({ result, message }) => {
+    const user = userEvent.setup();
+    const actions = importActions(undefined, { result });
+    apiMocks.listWorkspaces.mockResolvedValue(page([personalWorkspace]));
+
+    render(<App desktopActions={actions} />);
+    await user.click(await importArchiveButton());
+    await user.click(
+      (await screen.findAllByRole("button", { name: "Replace local data and restart" }))[0]!,
+    );
+
+    expect(await exportMessage(message)).toHaveAttribute("role", "alert");
+    expect(screen.queryByRole("button", { name: "Replace local data and restart" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Import archive" })).toBeNull();
+    expect(screen.getAllByText("Portable import is locked until Schedule restarts.")).toHaveLength(
+      2,
+    );
   });
 });

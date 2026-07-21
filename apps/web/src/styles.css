@@ -152,6 +152,28 @@
   color: var(--ink-faint);
 }
 
+.portable-import-preview {
+  display: grid;
+  gap: 5px;
+  margin: 9px 0;
+  font-size: 0.72rem;
+}
+
+.portable-import-preview > div {
+  display: grid;
+  grid-template-columns: minmax(66px, auto) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.portable-import-preview dt {
+  color: var(--ink-faint);
+}
+
+.portable-import-preview dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .portable-export-message--status {
   color: var(--success);
 }

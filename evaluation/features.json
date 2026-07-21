@@ -41,6 +41,10 @@
     "notification-migrations": { "command": "pnpm verify:database", "ci": true },
     "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
     "portable-migration": { "command": "pnpm verify:portable-migration", "ci": true },
+    "desktop-portable-import": {
+      "command": "pnpm verify:desktop-portable-import",
+      "ci": true
+    },
     "migration-policy": {
       "command": "pnpm verify:migration-policy -- --base \"${{ github.event.pull_request.base.sha || github.event.before }}\"",
       "ci": true
@@ -1155,6 +1159,12 @@
           ]
         },
         {
+          "level": "drill",
+          "file": "scripts/verify-desktop-portable-import.ts",
+          "command": "desktop-portable-import",
+          "anchors": ["Desktop portable import crash-recovery verification passed."]
+        },
+        {
           "level": "unit",
           "file": "packages/database/src/desktop-portable.test.ts",
           "command": "unit",
@@ -1168,7 +1178,23 @@
             "cleans the captured OID after an injected %s failure",
             "does not register name-only ownership when the immediate OID read fails",
             "reclaims at most the oldest eight exact marked databases per invocation",
-            "emits an exact success record and redacts all failure details"
+            "emits an exact success record and redacts all failure details",
+            "emits an import completion record only after its runtime adapter succeeds",
+            "emits a bounded inspection record without exposing the selected path",
+            "writes and replaces a bounded secret-free versioned journal",
+            "rejects a recovery topology containing any unbound database identity",
+            "emits the exact bounded recovery protocol without requiring an archive identity"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/portable-import.test.ts",
+          "command": "unit",
+          "anchors": [
+            "binds import to the archive identity confirmed by the desktop",
+            "rejects replaced bytes with the same archive ID before database mutation",
+            "journals every independently committed promotion operation before and after it",
+            "has a deterministic crash seam at %s"
           ]
         },
         {
@@ -1187,7 +1213,22 @@
           "level": "unit",
           "file": "apps/desktop/src/portable-export.test.ts",
           "command": "unit",
-          "anchors": ["invokes the portable export command without arguments"]
+          "anchors": [
+            "invokes the portable export command without arguments",
+            "selects an import archive without supplying a path",
+            "confirms an import with the opaque selection token only"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/App.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "leaves the web shell unchanged when no desktop actions are provided",
+            "requires a redacted preview and explicit confirmation before importing",
+            "cancels a selected archive without invoking the destructive native action",
+            "keeps the import selection while a confirmation is busy"
+          ]
         },
         {
           "level": "unit",
