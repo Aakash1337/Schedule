@@ -320,11 +320,16 @@ function destructiveOperation(statement: MigrationSqlStatement): string | undefi
           "FUNCTION",
           "PROCEDURE",
           "ROUTINE",
+          "TRIGGER",
+          "POLICY",
+          "RULE",
           "EXTENSION",
           "OWNED",
         ]
           .map(keyword)
-          .join("|")}|${keyword("MATERIALIZED")}\\s+${keyword("VIEW")})`,
+          .join(
+            "|",
+          )}|${keyword("MATERIALIZED")}\\s+${keyword("VIEW")}|${keyword("EVENT")}\\s+${keyword("TRIGGER")})`,
       ),
       "DROP data-bearing or compatibility-critical objects",
     ],
@@ -345,7 +350,13 @@ function destructiveOperation(statement: MigrationSqlStatement): string | undefi
     ],
     [
       postgresPattern(
-        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*(?:${keyword("DROP")}|${keyword("ALTER")}|${keyword("RENAME")})`,
+        `${keyword("ALTER")}\\s+(?:${keyword("TRIGGER")}|${keyword("POLICY")}|${keyword("RULE")}|${keyword("EVENT")}\\s+${keyword("TRIGGER")})`,
+      ),
+      "ALTER compatibility-critical enforcement object",
+    ],
+    [
+      postgresPattern(
+        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*(?:${keyword("DROP")}|${keyword("ALTER")}|${keyword("RENAME")}|${keyword("DISABLE")})`,
       ),
       "ALTER TABLE destructive or compatibility-changing operation",
     ],

@@ -30,7 +30,8 @@ before each destructive statement:
 
 The gate requires this acknowledgement for data-rewriting `UPDATE`, `MERGE`, `DELETE FROM`, and
 `TRUNCATE` statements; sequence resets; dropping data-bearing or compatibility-critical objects;
-and dropping, changing the type of, or renaming a column. Dollar-quoted or procedural SQL also
+altering triggers, policies, or rules; and table changes that drop or rename columns or objects,
+change column types, or disable enforcement mechanisms. Dollar-quoted or procedural SQL also
 requires the acknowledgement because a lexical gate cannot prove dynamic SQL is harmless.
 Unicode-escaped quoted identifiers are forbidden because they can hide protected operations. Exact Drizzle
 `--> statement-breakpoint` markers are raw boundaries before lexical analysis, matching the runtime
