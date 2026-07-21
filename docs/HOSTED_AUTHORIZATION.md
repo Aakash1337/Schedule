@@ -158,6 +158,9 @@ Malformed, missing, wrong-binding, expired, and replayed presentations all retur
 Concurrent valid presentations therefore have exactly one winner. Corrupt or wrongly bound
 ciphertext fails before consumption and rolls back. Cleanup deletes only expired rows, ordered by
 expiry and UUID, with `FOR UPDATE SKIP LOCKED` and a caller limit of at most 1,000.
+The production worker can run that bounded cleanup every minute through
+`HOSTED_LOGIN_TRANSACTION_CLEANUP_MODE=enabled`; cycles never overlap within a process, remain safe
+across replicas, use the database clock, and publish aggregate-only logs and metrics.
 
 Successful consumption returns a short-lived in-process continuation containing the exact provider
 and redirect bindings, `expectedNonce`, and recovered PKCE verifier. The callback consumes this

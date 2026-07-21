@@ -14,6 +14,10 @@ import {
   runHostedSyncCleanupWorker,
 } from "./hosted-sync-cleanup.js";
 import {
+  createHostedLoginTransactionCleanupDependencies,
+  runHostedLoginTransactionCleanupWorker,
+} from "./hosted-login-transaction-cleanup.js";
+import {
   createNotificationMaterializationDependencies,
   runNotificationMaterializationWorker,
 } from "./notification-materializer.js";
@@ -64,11 +68,12 @@ const deploymentHealthDatabase =
         statementTimeoutMs: 5_000,
         applicationName: "schedule-worker-deployment-health",
       });
-const hostedSyncCleanupDatabase =
-  config.HOSTED_WORK_ITEM_SYNC_CLEANUP_MODE === "enabled"
+const hostedMaintenanceDatabase =
+  config.HOSTED_WORK_ITEM_SYNC_CLEANUP_MODE === "enabled" ||
+  config.HOSTED_LOGIN_TRANSACTION_CLEANUP_MODE === "enabled"
     ? createDatabase(config.DATABASE_URL, 1, {
         statementTimeoutMs: 2_000,
-        applicationName: "schedule-worker-hosted-sync-cleanup",
+        applicationName: "schedule-worker-hosted-maintenance",
       })
     : null;
 const dispatcher = new OutboxDispatcher(
@@ -144,10 +149,20 @@ if (config.NOTIFICATION_MATERIALIZATION_MODE === "enabled") {
   );
 }
 
-if (hostedSyncCleanupDatabase !== null) {
-  const dependencies = createHostedSyncCleanupDependencies(hostedSyncCleanupDatabase);
+if (hostedMaintenanceDatabase !== null && config.HOSTED_WORK_ITEM_SYNC_CLEANUP_MODE === "enabled") {
+  const dependencies = createHostedSyncCleanupDependencies(hostedMaintenanceDatabase);
   services.push((signal) =>
     runHostedSyncCleanupWorker(config, dependencies, signal, undefined, telemetry),
+  );
+}
+
+if (
+  hostedMaintenanceDatabase !== null &&
+  config.HOSTED_LOGIN_TRANSACTION_CLEANUP_MODE === "enabled"
+) {
+  const dependencies = createHostedLoginTransactionCleanupDependencies(hostedMaintenanceDatabase);
+  services.push((signal) =>
+    runHostedLoginTransactionCleanupWorker(config, dependencies, signal, undefined, telemetry),
   );
 }
 
@@ -182,7 +197,7 @@ await runWorkerRuntime({
       database.close(),
       ...(observabilityDatabase === null ? [] : [observabilityDatabase.close()]),
       ...(deploymentHealthDatabase === null ? [] : [deploymentHealthDatabase.close()]),
-      ...(hostedSyncCleanupDatabase === null ? [] : [hostedSyncCleanupDatabase.close()]),
+      ...(hostedMaintenanceDatabase === null ? [] : [hostedMaintenanceDatabase.close()]),
     ]);
     const failure = results.find(
       (result): result is PromiseRejectedResult => result.status === "rejected",

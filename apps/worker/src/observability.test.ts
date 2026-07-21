@@ -108,6 +108,11 @@ describe("worker telemetry", () => {
       limitReached: false,
       aborted: false,
     });
+    telemetry.recordHostedLoginTransactionCleanupCycle({
+      deletedTransactions: 42,
+      failed: false,
+      aborted: false,
+    });
 
     const snapshot = telemetry.snapshot();
     expect(snapshot).toMatchObject({
@@ -131,6 +136,10 @@ describe("worker telemetry", () => {
       hostedSyncCleanupDeletedChanges: 275,
       hostedSyncCleanupLastCompletedTimestampSeconds: 1_784_059_205,
       hostedSyncCleanupLastSuccessfulTimestampSeconds: 1_784_059_205,
+      hostedLoginTransactionCleanupCycles: 1,
+      hostedLoginTransactionCleanupDeletedTransactions: 42,
+      hostedLoginTransactionCleanupLastCompletedTimestampSeconds: 1_784_059_205,
+      hostedLoginTransactionCleanupLastSuccessfulTimestampSeconds: 1_784_059_205,
     });
     expect(Object.isFrozen(snapshot)).toBe(true);
   });
@@ -168,6 +177,18 @@ describe("worker telemetry", () => {
     expect(telemetry.snapshot()).toMatchObject({
       hostedSyncCleanupContention: 1,
       hostedSyncCleanupLastSuccessfulTimestampSeconds: 0,
+    });
+
+    telemetry.recordHostedLoginTransactionCleanupCycle({
+      deletedTransactions: 0,
+      failed: true,
+      aborted: true,
+    });
+    expect(telemetry.snapshot()).toMatchObject({
+      hostedLoginTransactionCleanupCycles: 1,
+      hostedLoginTransactionCleanupFailures: 1,
+      hostedLoginTransactionCleanupAborted: 1,
+      hostedLoginTransactionCleanupLastSuccessfulTimestampSeconds: 0,
     });
 
     telemetry.recordHostedSyncCleanupCycle({
@@ -238,6 +259,9 @@ describe("Prometheus rendering", () => {
     expect(output).toContain("# TYPE schedule_notification_delivery_attempt_records gauge");
     expect(output).toContain("schedule_notification_delivery_attempt_records 11");
     expect(output).toContain("# TYPE schedule_hosted_sync_cleanup_cycles_total counter");
+    expect(output).toContain(
+      "# TYPE schedule_hosted_login_transaction_cleanup_cycles_total counter",
+    );
     expect(output).not.toContain("{");
     expect(output).not.toContain("workspaceId");
     expect(output.endsWith("\n")).toBe(true);

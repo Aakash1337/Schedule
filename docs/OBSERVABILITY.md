@@ -122,6 +122,19 @@ database transaction holding every eligible row, shutdown interruption, or exhau
 Metrics and logs contain aggregate counts only; they do not expose workspace IDs, cursors, or database
 errors.
 
+### Hosted login transaction cleanup
+
+- `schedule_hosted_login_transaction_cleanup_cycles_total`
+- `schedule_hosted_login_transaction_cleanup_failures_total`
+- `schedule_hosted_login_transaction_cleanup_deleted_transactions_total`
+- `schedule_hosted_login_transaction_cleanup_aborted_total`
+- `schedule_hosted_login_transaction_cleanup_last_completed_timestamp_seconds`
+- `schedule_hosted_login_transaction_cleanup_last_successful_timestamp_seconds`
+
+The success timestamp advances only after a failure-free cycle that was not interrupted by shutdown.
+Logs and metrics contain only aggregate deletion counts and fixed failure classes; they never retain
+state, browser-binding, nonce, PKCE, provider, or database error material.
+
 ### Provider-neutral reminder delivery
 
 - `schedule_notification_intents_ready`
@@ -162,6 +175,9 @@ These are starting operational thresholds, not hard-coded product policy:
 7. When hosted sync cleanup is enabled, warn on any failure, sustained contention, or cap exhaustion
    and when the last success is older than the greater of three configured intervals or three hours.
    Suppress the freshness alert until the first cycle has had time to finish.
+8. When hosted login transaction cleanup is enabled, warn on any failure and when the last success is
+   older than the greater of three configured intervals or five minutes. Investigate sustained table
+   growth even when cycles succeed.
 
 Alert on rates and sustained age, not on ordinary nonzero work queues. Expected unconfigured
 workspace skips are diagnostic only.
