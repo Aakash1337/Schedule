@@ -340,6 +340,10 @@ function destructiveOperation(statement: MigrationSqlStatement): string | undefi
       "ALTER SEQUENCE RESTART",
     ],
     [
+      postgresPattern(`${keyword("ALTER")}\\s+${keyword("TYPE")}[\\s\\S]*${keyword("RENAME")}`),
+      "ALTER TYPE compatibility-changing rename",
+    ],
+    [
       postgresPattern(
         `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*(?:${keyword("DROP")}|${keyword("ALTER")}|${keyword("RENAME")})`,
       ),

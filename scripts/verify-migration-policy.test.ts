@@ -187,6 +187,8 @@ describe("migration policy", () => {
       "DELETE FROM things;\n",
       "DROP SEQUENCE public.things_id_seq;\n",
       "ALTER SEQUENCE public.things_id_seq RESTART WITH 1;\n",
+      "ALTER TYPE work_item_status RENAME VALUE 'done' TO 'complete';\n",
+      "ALTER TYPE work_item_status RENAME TO legacy_work_item_status;\n",
       "DROP EXTENSION IF EXISTS example CASCADE;\n",
       "DROP OWNED BY obsolete_role CASCADE;\n",
       "DROP MATERIALIZED VIEW historical_summary;\n",
