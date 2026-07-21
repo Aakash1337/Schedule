@@ -431,6 +431,12 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         cancellation: &Cancellation,
     ) -> Result<PortableRecoveryOutcome, NativeExecutorError> {
         Self::cancelled(cancellation)?;
+        if !portable_import_recovery_pending(&self.config.paths.portable_import_journal)? {
+            return Ok(PortableRecoveryOutcome {
+                recovered: false,
+                committed: false,
+            });
+        }
         let bundle = self.require_bundle()?;
         let passwords = self.require_passwords()?;
         let port = self.database_port()?;
@@ -1415,6 +1421,14 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
     }
 }
 
+fn portable_import_recovery_pending(path: &Path) -> Result<bool, NativeExecutorError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(NativeExecutorError::new("desktop.database_recovery_failed")),
+    }
+}
+
 impl<B: ApiBridgeControl> NativeOperations for SystemOperations<B> {
     fn portable_export(
         &mut self,
@@ -2212,6 +2226,23 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code(), "desktop.operation_cancelled");
         assert!(executor.operations().calls.is_empty());
+    }
+
+    #[test]
+    fn portable_recovery_helper_runs_only_for_an_existing_journal_entry() {
+        let root = std::env::temp_dir().join(format!(
+            "schedule-portable-recovery-admission-{}-{}",
+            std::process::id(),
+            random_suffix().unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        let journal = root.join("portable-import-journal.v1.json");
+
+        assert!(!portable_import_recovery_pending(&journal).unwrap());
+        fs::write(&journal, b"invalid but present\n").unwrap();
+        assert!(portable_import_recovery_pending(&journal).unwrap());
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]

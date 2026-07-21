@@ -71,6 +71,31 @@ describe("desktop portable helper boundary", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+  it.runIf(process.platform === "win32")(
+    "accepts the same Windows journal directory through alternate path casing",
+    async () => {
+      const directory = await mkdtemp(path.join(tmpdir(), "Schedule-Import-Case-Test-"));
+      const alternateCaseDirectory = directory.toUpperCase();
+      try {
+        await expect(
+          recoverDesktopPortableImport({
+            databaseUrl: "postgres://owner:secret@127.0.0.1:1/schedule",
+            adminDatabaseUrl: "postgres://admin:secret@127.0.0.1:1/postgres",
+            nodeExecutable: path.join(alternateCaseDirectory, "node"),
+            migrationEntrypoint: path.join(alternateCaseDirectory, "migrate.js"),
+            applicationVersion: "1.2.3",
+            databaseName: "schedule",
+            clusterAdminRole: "schedule_admin",
+            ownerRole: "schedule_owner",
+            runtimeRole: "schedule_runtime",
+            importJournalPath: path.join(alternateCaseDirectory, "portable-import-journal.v1.json"),
+          }),
+        ).resolves.toMatchObject({ state: "no-journal" });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
   it("requires every packaged runtime input", () => {
     expect(() => readDesktopPortableEnvironment({ DATABASE_URL: "postgres://x/y" })).toThrow(
       /invalid/,

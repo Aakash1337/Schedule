@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { access, chmod, lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -31,6 +32,7 @@ import {
 const crashExitCode = 97;
 const childTimeoutMs = 120_000;
 const childStderrLimitBytes = 4 * 1024;
+const moduleRequire = createRequire(import.meta.url);
 const sourceWorkspaceId = "10000000-0000-0000-0000-000000000101";
 const destinationWorkspaceId = "10000000-0000-0000-0000-000000000102";
 const sourceWorkspaceName = "desktop portable source";
@@ -118,7 +120,7 @@ async function readChildConfiguration(configurationPath: string): Promise<ChildC
 }
 
 async function runFaultChild(configurationPath: string, fault: FaultPoint): Promise<void> {
-  const cli = path.join(repositoryRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const cli = moduleRequire.resolve("tsx/cli");
   const script = path.resolve(process.argv[1] ?? "");
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, [cli, script, "--child", configurationPath, fault], {
@@ -127,10 +129,11 @@ async function runFaultChild(configurationPath: string, fault: FaultPoint): Prom
       stdio: ["ignore", "ignore", "pipe"],
       env: { ...process.env, NODE_ENV: "production" },
     });
-    let stderrBytes = 0;
+    let stderr = Buffer.alloc(0);
     let timedOut = false;
     child.stderr?.on("data", (chunk: Buffer) => {
-      stderrBytes = Math.min(childStderrLimitBytes, stderrBytes + chunk.length);
+      const remaining = childStderrLimitBytes - stderr.length;
+      if (remaining > 0) stderr = Buffer.concat([stderr, chunk.subarray(0, remaining)]);
     });
     const timer = setTimeout(() => {
       timedOut = true;
@@ -149,19 +152,29 @@ async function runFaultChild(configurationPath: string, fault: FaultPoint): Prom
           () => "unstarted\n",
         );
         const stage = progress === "before-import\n" ? "import" : "startup";
+        const diagnostic = childDiagnostic(stderr);
         reject(
           new Error(
-            `desktop portable verifier child timed out during ${stage} at ${fault} (${stderrBytes === 0 ? "no diagnostic" : "bounded diagnostic captured"})`,
+            `desktop portable verifier child timed out during ${stage} at ${fault}: ${diagnostic}`,
           ),
         );
-      } else
+      } else {
+        const diagnostic = childDiagnostic(stderr);
         reject(
-          new Error(
-            `desktop portable verifier child did not crash at ${fault} (${stderrBytes === 0 ? "no diagnostic" : "bounded diagnostic captured"})`,
-          ),
+          new Error(`desktop portable verifier child did not crash at ${fault}: ${diagnostic}`),
         );
+      }
     });
   });
+}
+
+function childDiagnostic(stderr: Buffer): string {
+  const value = stderr
+    .toString("utf8")
+    .trim()
+    .replaceAll(tmpdir(), "<temporary>")
+    .replace(/postgres(?:ql)?:\/\/[^@\s]+@/giu, "postgres://<redacted>@");
+  return value || "no diagnostic";
 }
 
 async function runChild(configurationPath: string, fault: FaultPoint): Promise<void> {

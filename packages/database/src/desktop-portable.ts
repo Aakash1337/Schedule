@@ -995,13 +995,12 @@ async function assertJournalParent(journalPath: string): Promise<string> {
   const parent = path.dirname(journalPath);
   const entry = await lstat(parent).catch(() => null);
   const canonical = await realpath(parent).catch(() => null);
-  if (
-    entry === null ||
-    !entry.isDirectory() ||
-    entry.isSymbolicLink() ||
-    canonical === null ||
-    path.resolve(canonical) !== path.resolve(parent)
-  ) {
+  const sameCanonicalPath =
+    canonical !== null &&
+    (process.platform === "win32"
+      ? path.relative(path.resolve(canonical), path.resolve(parent)) === ""
+      : path.resolve(canonical) === path.resolve(parent));
+  if (entry === null || !entry.isDirectory() || entry.isSymbolicLink() || !sameCanonicalPath) {
     throw new Error("desktop portable import recovery failed");
   }
   return parent;
