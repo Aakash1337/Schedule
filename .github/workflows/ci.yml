@@ -59,6 +59,9 @@ jobs:
       SCHEDULE_RECOVERY_STATE_MACHINE_SENTINEL: schedule-disposable-recovery-state-machine-v1
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: pnpm/action-setup@v6
         with:
           version: 11.7.0
