@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   lstat,
   mkdir,
@@ -68,6 +69,14 @@ async function fixture(mutate?: RawMutation): Promise<{
         'import "dotenv/config"; export const stagedMigrationFixture = true;',
       );
       await writeFile(
+        path.join(database, "dist", "migration-ledger.js"),
+        "export const stagedMigrationLedgerFixture = true;",
+      );
+      await writeFile(
+        path.join(database, "dist", "migration-sql.js"),
+        "export const stagedMigrationSqlFixture = true;",
+      );
+      await writeFile(
         path.join(database, "package.json"),
         JSON.stringify({ name: "@schedule/database", dependencies: { dotenv: "1.0.0" } }),
       );
@@ -83,9 +92,28 @@ async function fixture(mutate?: RawMutation): Promise<{
       await writeFile(path.join(destination, "node_modules", "dotenv", "config.js"), "");
       await writeFile(
         path.join(database, "drizzle", "meta", "_journal.json"),
-        JSON.stringify({ entries: [{ tag: "0000_initial" }] }),
+        JSON.stringify({
+          version: "7",
+          dialect: "postgresql",
+          entries: [{ idx: 0, version: "7", when: 1, tag: "0000_initial", breakpoints: true }],
+        }),
       );
-      await writeFile(path.join(database, "drizzle", "0000_initial.sql"), "select 1;");
+      const migration = "select 1;";
+      await writeFile(path.join(database, "drizzle", "0000_initial.sql"), migration);
+      await writeFile(
+        path.join(database, "drizzle", "meta", "_migration_manifest.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          entries: [
+            {
+              tag: "0000_initial",
+              createdAt: 1,
+              sha256: createHash("sha256").update(migration).digest("hex"),
+              compatibleSha256: [],
+            },
+          ],
+        }),
+      );
     } else {
       const config = path.join(destination, "node_modules", "@schedule", "config");
       await mkdir(config, { recursive: true });
@@ -224,6 +252,22 @@ describe("stageDesktopServiceDeployments", () => {
         "Database migration entrypoint",
       ],
       [
+        "missing migration ledger helper",
+        async (destination, api) => {
+          if (api)
+            await unlink(path.join(destination, databaseRelative, "dist", "migration-ledger.js"));
+        },
+        "Database migration ledger helper",
+      ],
+      [
+        "missing migration SQL safety helper",
+        async (destination, api) => {
+          if (api)
+            await unlink(path.join(destination, databaseRelative, "dist", "migration-sql.js"));
+        },
+        "Database migration SQL safety helper",
+      ],
+      [
         "missing materialized workspace dependency",
         async (destination, api) => {
           if (api) await unlink(path.join(destination, "node_modules", "dotenv", "package.json"));
@@ -252,12 +296,39 @@ describe("stageDesktopServiceDeployments", () => {
         "Migration journal",
       ],
       [
+        "missing immutable migration manifest",
+        async (destination, api) => {
+          if (api)
+            await unlink(
+              path.join(
+                destination,
+                databaseRelative,
+                "drizzle",
+                "meta",
+                "_migration_manifest.json",
+              ),
+            );
+        },
+        "Immutable migration manifest",
+      ],
+      [
         "missing journaled SQL",
         async (destination, api) => {
           if (api)
             await unlink(path.join(destination, databaseRelative, "drizzle", "0000_initial.sql"));
         },
         "Journaled SQL migration",
+      ],
+      [
+        "stale immutable migration manifest",
+        async (destination, api) => {
+          if (api)
+            await writeFile(
+              path.join(destination, databaseRelative, "drizzle", "0000_initial.sql"),
+              "select 2;",
+            );
+        },
+        "immutable manifest",
       ],
       [
         "malformed journal",
@@ -277,14 +348,26 @@ describe("stageDesktopServiceDeployments", () => {
           await writeFile(path.join(root, "outside.sql"), "outside");
           await writeFile(
             path.join(destination, databaseRelative, "drizzle", "meta", "_journal.json"),
-            JSON.stringify({ entries: [{ tag: "../../../../../../outside" }] }),
+            JSON.stringify({
+              version: "7",
+              dialect: "postgresql",
+              entries: [
+                {
+                  idx: 0,
+                  version: "7",
+                  when: 1,
+                  tag: "../../../../../../outside",
+                  breakpoints: true,
+                },
+              ],
+            }),
           );
         },
         "invalid migration tag",
       ],
     ];
     for (const [, mutate, message] of cases) await expectFailure(mutate, message);
-  });
+  }, 20_000);
 
   it("rejects nonportable and case-colliding paths where the host can create them", async () => {
     if (process.platform === "win32") return;

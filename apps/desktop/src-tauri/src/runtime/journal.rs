@@ -56,6 +56,8 @@ pub struct Attempt {
     pub started_at_unix_seconds: u64,
     pub phase: JournalPhase,
     pub runtime_version: String,
+    /// Backward-compatible v1 key. New writers store the immutable migration-manifest digest;
+    /// startup compatibility is always decided from the live database ledger, never this value.
     pub database_schema_version: String,
 }
 
@@ -63,6 +65,7 @@ pub struct Attempt {
 #[serde(deny_unknown_fields)]
 pub struct SuccessfulRuntime {
     pub runtime_version: String,
+    /// Audit provenance only; never a migration decision authority.
     pub database_schema_version: String,
     pub completed_at_unix_seconds: u64,
 }

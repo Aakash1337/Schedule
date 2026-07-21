@@ -13,7 +13,6 @@ use super::{
 };
 
 pub(crate) const RUNTIME_VERSION: &str = "runtime-1";
-const DATABASE_SCHEMA_VERSION: &str = "schema-1";
 const STAGING_NONCE: &str = "desktop-launch";
 
 pub(super) fn build_host(
@@ -35,7 +34,6 @@ pub(super) fn build_host(
             paths,
             resource_root,
             runtime_version: RUNTIME_VERSION.into(),
-            database_schema_version: DATABASE_SCHEMA_VERSION.into(),
             manifest_sha256: manifest_sha256.into(),
             manifest_expectations: RuntimeManifestExpectations::default(),
             postgres_names,

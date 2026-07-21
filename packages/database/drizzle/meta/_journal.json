@@ -295,6 +295,13 @@
       "when": 1784349976452,
       "tag": "0041_hosted_work_item_sync",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1784596200000,
+      "tag": "0042_reconcile_historical_schema",
+      "breakpoints": true
     }
   ]
 }

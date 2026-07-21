@@ -13,6 +13,8 @@ use super::integrity::is_link_or_reparse;
 use super::manifest::{RuntimeComponentName, RuntimeLaunchPath, RuntimeManifest, RuntimeOs};
 
 const MIGRATION_ENTRYPOINT: &str = "api/node_modules/@schedule/database/dist/migrate.js";
+const MIGRATION_MANIFEST: &str =
+    "api/node_modules/@schedule/database/drizzle/meta/_migration_manifest.json";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PostgreSqlPrograms {
@@ -33,6 +35,7 @@ pub(crate) struct RuntimeBundle {
     pub(crate) worker: PathBuf,
     pub(crate) postgresql: PostgreSqlPrograms,
     pub(crate) migration: PathBuf,
+    pub(crate) migration_manifest: PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -102,6 +105,7 @@ pub(super) fn resolve_verified_runtime_bundle(
             pg_ctl: bin("pg_ctl")?,
         },
         migration: resolve_regular(root, MIGRATION_ENTRYPOINT)?,
+        migration_manifest: resolve_regular(root, MIGRATION_MANIFEST)?,
     })
 }
 
@@ -278,6 +282,7 @@ mod tests {
             format!("postgresql/bin/pg_restore{suffix}"),
             format!("postgresql/bin/pg_ctl{suffix}"),
             MIGRATION_ENTRYPOINT.into(),
+            MIGRATION_MANIFEST.into(),
         ] {
             fixture.write(&path);
         }
@@ -303,6 +308,7 @@ mod tests {
                 bundle.postgresql.pg_restore,
                 bundle.postgresql.pg_ctl,
                 bundle.migration,
+                bundle.migration_manifest,
             ] {
                 assert!(path.is_absolute());
                 assert!(path.starts_with(&bundle.root));

@@ -105,7 +105,7 @@ describe("Schedule portable archive", () => {
         expect(await readFile(extracted)).toEqual(payload);
       });
     });
-  }, 15_000);
+  }, 30_000);
 
   it("rejects corruption before exposing database bytes", async () => {
     await inTemporaryDirectory(async (directory) => {

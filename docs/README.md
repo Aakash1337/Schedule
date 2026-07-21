@@ -24,6 +24,8 @@ Durable product and engineering specifications live here so the repository root 
   security, recovery, packaging status, and the future hosted-continuity boundary.
 - [Portable data migration](./PORTABLE_MIGRATION.md): versioned Windows/Linux export and import,
   durable AI/history coverage, exclusions, replacement, rollback, and custody limits.
+- [Database migration policy](./MIGRATION_POLICY.md): append-only SQL/journal/manifest history,
+  destructive-change review, and the pinned historical ledger compatibility exception.
 - [Local operations](./OPERATIONS.md): verified backup, staged restore, portable migration, automated
   recovery state-machine checks, and database maintenance.
 - [Hosted deployment](./DEPLOYMENT.md): provider-neutral topology, the lean Railway adapter,

@@ -14,6 +14,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::{
     bundle::RuntimeBundle,
@@ -58,6 +59,8 @@ const BOOTSTRAP_MARKER_CONTENTS: &[u8] = b"schedule-bootstrap-v1\n";
 const INITDB_MARKER: &str = "SCHEDULE_INITDB_COMPLETE_V1";
 const INITDB_MARKER_CONTENTS: &[u8] = b"schedule-initdb-v1\n";
 const INITIALIZING_DIRECTORY: &str = ".schedule-initializing-v1";
+const MAX_MIGRATION_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MIGRATION_STATUS_PREFIX: &str = "SCHEDULE_MIGRATION_STATUS_V1 ";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NativeExecutorError {
@@ -103,7 +106,6 @@ pub(crate) struct NativeExecutorConfig {
     pub(crate) paths: RuntimePaths,
     pub(crate) resource_root: PathBuf,
     pub(crate) runtime_version: String,
-    pub(crate) database_schema_version: String,
     pub(crate) manifest_sha256: String,
     pub(crate) manifest_expectations: RuntimeManifestExpectations,
     pub(crate) postgres_names: PgNames,
@@ -131,7 +133,6 @@ impl NativeExecutorConfig {
             || !self.resource_root.is_absolute()
             || !paths_match
             || !safe_version(&self.runtime_version)
-            || !safe_version(&self.database_schema_version)
             || self.manifest_sha256.len() != 64
             || !self
                 .manifest_sha256
@@ -304,12 +305,13 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         scavenge_stale_launch_secrets(&self.config.paths.temporary_secrets_root)
             .map_err(credential_error)?;
 
+        let migration_target = migration_manifest_digest(&bundle.migration_manifest)?;
         let selected = load_or_create_startup_journal(
             &self.config.paths.journal,
             generation,
             unix_seconds()?,
             &self.config.runtime_version,
-            &self.config.database_schema_version,
+            &migration_target,
         )?;
         self.interrupted_migration = selected.interrupted_migration;
         self.had_prior_success = selected.had_prior_success;
@@ -643,14 +645,17 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
             return Ok(EffectOutcome::Incompatible(Incompatibility::Migration));
         }
 
-        let prior_matches = self.journal.as_ref().is_some_and(|value| {
-            value.prior_success.as_ref().is_some_and(|prior| {
-                prior.database_schema_version == self.config.database_schema_version
-            })
-        });
-        Ok(EffectOutcome::DatabaseVerified {
-            needs_migration: !prior_matches,
-        })
+        match self.migration_status(cancellation)? {
+            MigrationLedgerStatus::Exact => Ok(EffectOutcome::DatabaseVerified {
+                needs_migration: false,
+            }),
+            MigrationLedgerStatus::Prefix => Ok(EffectOutcome::DatabaseVerified {
+                needs_migration: true,
+            }),
+            MigrationLedgerStatus::Ahead | MigrationLedgerStatus::Divergent => {
+                Ok(EffectOutcome::Incompatible(Incompatibility::Migration))
+            }
+        }
     }
 
     fn backup_database(
@@ -724,6 +729,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         let spec = CommandSpec::new(&bundle.node, &bundle.root, MIGRATION_TIMEOUT)
             .arg(&bundle.migration)
             .env("NODE_ENV", "production")
+            .env("DOTENV_CONFIG_QUIET", "true")
             .env("DATABASE_URL", url.expose())
             .output_bounds(64 * 1024, 64 * 1024);
         let outcome =
@@ -736,10 +742,40 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
                 }
                 Err(error) => Err(command_error(error)),
             }?;
+        let outcome = if outcome == EffectOutcome::Completed
+            && self.migration_status(cancellation)? != MigrationLedgerStatus::Exact
+        {
+            EffectOutcome::Incompatible(Incompatibility::Migration)
+        } else {
+            outcome
+        };
         if outcome == EffectOutcome::Completed {
             self.cleanup_launch_secrets()?;
         }
         Ok(outcome)
+    }
+
+    fn migration_status(
+        &self,
+        cancellation: &Cancellation,
+    ) -> Result<MigrationLedgerStatus, NativeExecutorError> {
+        let bundle = self.require_bundle()?;
+        let password = self.require_passwords()?;
+        let url = password
+            .owner_database_url(&self.config.postgres_names, self.database_port()?)
+            .map_err(credential_error)?;
+        let spec = CommandSpec::new(&bundle.node, &bundle.root, DATABASE_COMMAND_TIMEOUT)
+            .arg(&bundle.migration)
+            .arg("--status")
+            .env("NODE_ENV", "production")
+            .env("DOTENV_CONFIG_QUIET", "true")
+            .env("DATABASE_URL", url.expose())
+            .output_bounds(256, 256);
+        let output = run_command_cancellable(spec, Arc::clone(&self.process_control), &|| {
+            cancellation.is_cancelled()
+        })
+        .map_err(command_error)?;
+        parse_migration_status(output.stdout())
     }
 
     fn start_api(
@@ -1097,6 +1133,45 @@ enum ClusterState {
     IncompatibleFormat,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MigrationLedgerStatus {
+    Exact,
+    Prefix,
+    Ahead,
+    Divergent,
+}
+
+fn parse_migration_status(bytes: &[u8]) -> Result<MigrationLedgerStatus, NativeExecutorError> {
+    let value = std::str::from_utf8(bytes)
+        .map_err(|_| NativeExecutorError::new("desktop.migration_status_invalid"))?;
+    let line = value
+        .strip_suffix('\n')
+        .and_then(|value| value.strip_suffix('\r').or(Some(value)))
+        .ok_or_else(|| NativeExecutorError::new("desktop.migration_status_invalid"))?;
+    match line.strip_prefix(MIGRATION_STATUS_PREFIX) {
+        Some("exact") => Ok(MigrationLedgerStatus::Exact),
+        Some("prefix") => Ok(MigrationLedgerStatus::Prefix),
+        Some("ahead") => Ok(MigrationLedgerStatus::Ahead),
+        Some("divergent") => Ok(MigrationLedgerStatus::Divergent),
+        _ => Err(NativeExecutorError::new("desktop.migration_status_invalid")),
+    }
+}
+
+fn migration_manifest_digest(path: &Path) -> Result<String, NativeExecutorError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| NativeExecutorError::new("desktop.runtime_integrity_failed"))?;
+    if super::integrity::is_link_or_reparse(&metadata)
+        || !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_MIGRATION_MANIFEST_BYTES
+    {
+        return Err(NativeExecutorError::new("desktop.runtime_integrity_failed"));
+    }
+    let bytes =
+        fs::read(path).map_err(|_| NativeExecutorError::new("desktop.runtime_integrity_failed"))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
 struct SelectedStartupJournal {
     journal: LifecycleJournal,
     interrupted_migration: bool,
@@ -1109,7 +1184,7 @@ fn load_or_create_startup_journal(
     generation: u64,
     started_at: u64,
     runtime_version: &str,
-    database_schema_version: &str,
+    migration_target_hash: &str,
 ) -> Result<SelectedStartupJournal, NativeExecutorError> {
     let prior =
         journal::load(path).map_err(|_| NativeExecutorError::new("desktop.journal_load_failed"))?;
@@ -1118,7 +1193,7 @@ fn load_or_create_startup_journal(
         generation,
         started_at,
         runtime_version,
-        database_schema_version,
+        migration_target_hash,
     )?;
     if selected.store {
         journal::store(path, &selected.journal)
@@ -1132,7 +1207,7 @@ fn select_startup_journal(
     generation: u64,
     started_at: u64,
     runtime_version: &str,
-    database_schema_version: &str,
+    migration_target_hash: &str,
 ) -> Result<SelectedStartupJournal, NativeExecutorError> {
     let interrupted_migration = prior.as_ref().is_some_and(|value| {
         matches!(
@@ -1159,7 +1234,7 @@ fn select_startup_journal(
         generation,
         started_at,
         runtime_version.to_owned(),
-        database_schema_version.to_owned(),
+        migration_target_hash.to_owned(),
         prior_success,
     )
     .map_err(|_| NativeExecutorError::new("desktop.journal_invalid"))?;
@@ -1638,6 +1713,42 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn parses_only_the_bounded_secret_free_migration_status_protocol() {
+        for (wire, expected) in [
+            (
+                b"SCHEDULE_MIGRATION_STATUS_V1 exact\n".as_slice(),
+                MigrationLedgerStatus::Exact,
+            ),
+            (
+                b"SCHEDULE_MIGRATION_STATUS_V1 prefix\r\n".as_slice(),
+                MigrationLedgerStatus::Prefix,
+            ),
+            (
+                b"SCHEDULE_MIGRATION_STATUS_V1 ahead\n".as_slice(),
+                MigrationLedgerStatus::Ahead,
+            ),
+            (
+                b"SCHEDULE_MIGRATION_STATUS_V1 divergent\n".as_slice(),
+                MigrationLedgerStatus::Divergent,
+            ),
+        ] {
+            assert_eq!(parse_migration_status(wire).unwrap(), expected);
+        }
+        for invalid in [
+            b"SCHEDULE_MIGRATION_STATUS_V1 exact".as_slice(),
+            b"SCHEDULE_MIGRATION_STATUS_V1 exact\nextra\n".as_slice(),
+            b"SCHEDULE_MIGRATION_STATUS_V1 unknown\n".as_slice(),
+            b"postgresql://private:secret@localhost/schedule\n".as_slice(),
+            &[0xff, b'\n'],
+        ] {
+            assert_eq!(
+                parse_migration_status(invalid).unwrap_err().code(),
+                "desktop.migration_status_invalid"
+            );
+        }
+    }
+
     #[derive(Default)]
     struct FakeOperations {
         calls: Vec<&'static str>,
@@ -2100,7 +2211,8 @@ mod tests {
                 api: executable.clone(),
                 worker: executable.clone(),
                 postgresql: programs,
-                migration: executable,
+                migration: executable.clone(),
+                migration_manifest: executable,
             }),
             credential_store: None,
             passwords: None,
@@ -2155,7 +2267,6 @@ mod tests {
             paths: RuntimePaths::new(&data, "runtime-1", "launch-1").unwrap(),
             resource_root: data.join("resources"),
             runtime_version: "runtime-1".into(),
-            database_schema_version: "schema-1".into(),
             manifest_sha256: "a".repeat(64),
             manifest_expectations: RuntimeManifestExpectations::default(),
             postgres_names: PgNames::new(

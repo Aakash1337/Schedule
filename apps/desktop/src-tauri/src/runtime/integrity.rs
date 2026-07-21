@@ -386,6 +386,10 @@ mod tests {
                 "api/node_modules/@schedule/database/dist/migrate.js",
                 "migrate",
             ),
+            (
+                "api/node_modules/@schedule/database/drizzle/meta/_migration_manifest.json",
+                "migration manifest",
+            ),
             (MANIFEST_FILE, "manifest"),
             ("runtime-licenses.json", "licenses"),
             ("runtime-sbom.json", "sbom"),

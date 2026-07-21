@@ -41,6 +41,11 @@
     "notification-migrations": { "command": "pnpm verify:database", "ci": true },
     "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
     "portable-migration": { "command": "pnpm verify:portable-migration", "ci": true },
+    "migration-policy": {
+      "command": "pnpm verify:migration-policy -- --base \"${{ github.event.pull_request.base.sha || github.event.before }}\"",
+      "ci": true
+    },
+    "migration-ledger": { "command": "pnpm verify:migration-ledger", "ci": true },
     "recovery-state": {
       "command": "pnpm verify:recovery-state-machine",
       "ci": true
@@ -1007,6 +1012,58 @@
           "file": "scripts/verify-weekday-migrations.ts",
           "command": "weekday-migrations",
           "anchors": ["Weekday migration upgrade verification passed"]
+        }
+      ]
+    },
+    {
+      "id": "database-migration-history-policy",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": { "file": "docs/MIGRATION_POLICY.md", "anchor": "# Database migration policy" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "scripts/verify-migration-policy.test.ts",
+          "command": "unit",
+          "anchors": [
+            "rejects a historical migration rewrite",
+            "requires an explicit reason for destructive new SQL"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": ".github/workflows/ci.yml",
+          "command": "migration-policy",
+          "anchors": ["Enforce immutable migration history and destructive-change review"]
+        }
+      ]
+    },
+    {
+      "id": "database-update-admission",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": { "file": "docs/DESKTOP.md", "anchor": "## Data lifecycle and recovery" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/database/src/migration-ledger.test.ts",
+          "command": "unit",
+          "anchors": [
+            "recognizes exact current and exact historical-compatible histories",
+            "rejects missing ledgers over user relations and every overlapping divergence"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/desktop/src-tauri/src/runtime/tauri_adapter.rs",
+          "command": "desktop-foundation",
+          "anchors": ["storage_abi_is_stable_for_windows_and_linux"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-migration-ledger.ts",
+          "command": "migration-ledger",
+          "anchors": ["Migration ledger verification passed."]
         }
       ]
     },

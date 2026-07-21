@@ -173,13 +173,21 @@ promotion. Later upgrades create a verified pre-migration backup before changing
 interrupted or incompatible upgrade will fail closed into a recovery screen; the application will
 not silently discard or recreate an existing database.
 
-The application identifier and its `data` child are a storage compatibility boundary: a future
-release must not rename either without an explicit copy, validation, and atomic-switch migration.
-Before automatic desktop upgrade compatibility is considered complete, startup must use the full
-live migration ledger—not only a hand-maintained schema token—to distinguish an exact database, a
-valid upgrade prefix, a newer database, and a divergent history. Release acceptance must also prove
-a populated installed N-1 to N upgrade and a fail-closed downgrade on both supported operating
-systems. These remaining evidence gaps are tracked in [EVALUATION.md](./EVALUATION.md).
+The application identifier and its `data` child are a tested storage compatibility boundary: a
+future release must not rename either without an explicit copy, validation, and atomic-switch
+migration. The cross-platform native test pins `com.aakash.schedule` and `data` so an accidental
+rename fails CI instead of making an existing database appear missing.
+
+Startup loads the immutable ordered migration manifest and reads the live Drizzle ledger. An exact
+database starts without migration. A valid older prefix is backed up before forward migration, then
+must reach the exact expected ledger. A newer, divergent, altered-hash, or data-bearing ledger-less
+database fails closed without being reset. The journal's former schema token remains audit metadata
+only and is not an admission authority. Canonical LF and deterministic CRLF migration hashes are
+treated as the same cross-platform SQL; no other byte variation is admitted. Historical schema
+repairs add or replace catalog objects without truncating or deleting retained product data. Release
+acceptance must still prove a populated installed
+N-1 to N upgrade and fail-closed downgrade on both supported operating systems; that remaining
+evidence gap is tracked in [EVALUATION.md](./EVALUATION.md).
 
 Database major upgrades require the old bundled runtime to export the data and a staged new runtime
 to restore and validate it. A new PostgreSQL major version must never be started directly against an

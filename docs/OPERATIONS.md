@@ -28,6 +28,33 @@ managed backups, point-in-time recovery, encryption, and access controls in a ho
 
 ## Backup before migration
 
+Before changing a schema, follow the [database migration policy](./MIGRATION_POLICY.md): historical
+migrations are immutable, new migrations are append-only, and destructive data changes require both
+an explicit rationale and a populated upgrade verifier.
+
+Every application release carries an immutable ordered migration manifest. Migration startup reads
+the live Drizzle ledger before writing:
+
+- an exact ledger is a no-op;
+- a valid older prefix may migrate forward;
+- a newer, divergent, altered-hash, or data-bearing ledger-less database is rejected;
+- concurrent migration commands serialize on one PostgreSQL advisory lock and recheck compatibility
+  while holding it.
+
+The desktop supervisor adds a verified pre-migration backup before invoking the forward migration
+and requires an exact post-migration ledger before serving traffic. It never creates an empty
+replacement after prior successful use. Do not attempt to open an updated data directory with an
+older Schedule release; the downgrade fence is intentional. The desktop identifier
+`com.aakash.schedule` and its `data` child are storage ABI values and require an explicit
+copy/validate/atomic-switch migration if they ever change.
+
+With disposable Compose PostgreSQL running and packages built, `pnpm verify:migration-ledger`
+launches two migration processes against one nonce-bound empty database and requires one exact
+ledger. It then proves a retained table in a non-public user schema makes ledger-less admission
+divergent and that a normal migration attempt leaves that database unchanged. The verifier never
+targets the configured database itself; it creates and removes only strict
+`schedule_ledger_verify_<nonce>` databases.
+
 Always back up an existing database **before** applying pending migrations or upgrading code:
 
 ```powershell

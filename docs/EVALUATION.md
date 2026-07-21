@@ -61,6 +61,8 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:local-model-advisor`        | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
 | `pnpm verify:backup-restore`             | Verify archive/schema/content/sequence fidelity                             | Yes                             |
 | `pnpm verify:portable-migration`         | Verify durable migration, exclusions, replacement, and rollback             | Yes, disposable only            |
+| `pnpm verify:migration-policy`           | Reject rewritten history, manifest aliases, and unreviewed risky SQL        | No                              |
+| `pnpm verify:migration-ledger`           | Prove serialized migration and fail-closed live-ledger admission            | Yes, disposable only            |
 | `pnpm verify:recovery-state-machine`     | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
 | `pnpm verify:web-e2e`                    | Exercise the built browser, API, migrations, and PostgreSQL planning loop   | Own disposable Compose database |
 | `pnpm eval:full`                         | Run feature/coverage, local integration, recovery, and Chromium web gates   | Yes, with the recovery sentinel |
@@ -546,17 +548,24 @@ windows remain the replay contract.
 
 The audit deliberately leaves these visible instead of turning them into false green checks:
 
-- historical migration verification covers fresh-to-head, populated `0003` plan-state backfills,
-  and the populated `0011` weekday-array upgrade, not every prior release boundary;
+- historical migration verification executes every known previously journaled SQL variant through
+  the production migrator, checks its exact hash, preserves seeded rows, and proves the `0031` and
+  `0041` catalog repairs. This is source-history coverage, not yet a packaged N-1 release boundary;
+- CI now rejects rewrites of released Drizzle journal entries, SQL, and compatibility-manifest
+  entries (including accepted legacy hashes), and requires an explicit rationale for recognized
+  destructive or procedural SQL in a newly appended migration; it remains a lexical policy gate,
+  so every data-rewriting migration still needs a populated PostgreSQL upgrade drill;
 - desktop lifecycle smoke repeats one build against one data root; it does not yet install a
   populated N-1 release, install N over it, compare every durable content/sequence signal, and prove
   that reinstalling N-1 fails closed without mutation on Windows and Linux;
-- desktop migration admission currently compares a hand-maintained schema token in the runtime
-  journal instead of treating the complete live migration ledger as the authoritative exact,
-  valid-prefix, ahead, or divergent compatibility decision;
-- the populated-upgrade repair preserves migration `0004`'s canonical timestamp but changes its SQL
-  hash; databases migrated before the repair retain the legacy hash, while recovery compatibility
-  deliberately uses the ordered timestamp ledger;
+- desktop and command-line migration admission now treat the immutable complete live ledger as the
+  authoritative exact, valid-prefix, ahead, or divergent compatibility decision. The database-wide
+  migration lock and installed runtime execute-path still need the populated cross-release evidence
+  described above before release-to-release update compatibility is considered complete;
+- a complete reachable-history audit found six previously journaled SQL variants across migrations
+  `0004`, `0024`, `0031`, `0032`, and `0041`; only those exact LF hashes, their deterministic CRLF
+  equivalents, and the canonical LF/CRLF pair at each position are accepted. Every other
+  timestamp/hash pair must match the immutable manifest;
 - PostgreSQL recovery verifies the successful swap/rollback path, while compensation fault injection
   is currently operation-level rather than process-kill testing;
 - backup rejection covers empty, plain-SQL, truncated, schema-only, and migration-ledger-filtered

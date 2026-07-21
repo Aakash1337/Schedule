@@ -4,6 +4,7 @@ import { copyFile, lstat, mkdir, readdir, readFile, realpath, rm } from "node:fs
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { loadMigrationManifest } from "../packages/database/src/migration-ledger.js";
 import { hashTree } from "./build-desktop-runtime.js";
 
 export interface DeployCommand {
@@ -216,6 +217,16 @@ async function validateApiDeployment(root: string): Promise<void> {
     "node_modules/@schedule/database/dist/migrate.js",
     "Database migration entrypoint",
   );
+  await requireFile(
+    root,
+    "node_modules/@schedule/database/dist/migration-ledger.js",
+    "Database migration ledger helper",
+  );
+  await requireFile(
+    root,
+    "node_modules/@schedule/database/dist/migration-sql.js",
+    "Database migration SQL safety helper",
+  );
   const journal = path.join(
     root,
     "node_modules",
@@ -259,6 +270,12 @@ async function validateApiDeployment(root: string): Promise<void> {
       "Journaled SQL migration",
     );
   }
+  await requireFile(
+    root,
+    "node_modules/@schedule/database/drizzle/meta/_migration_manifest.json",
+    "Immutable migration manifest",
+  );
+  await loadMigrationManifest(path.dirname(path.dirname(journal)));
   await validateWorkspaceDependencyClosure(root);
 }
 
