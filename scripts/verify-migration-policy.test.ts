@@ -125,7 +125,7 @@ describe("migration policy", () => {
     await append(
       root,
       "0001_plan-source-guard",
-      "INSERT INTO things VALUES (2);\nDROP INDEX IF EXISTS things_idx;\n",
+      "INSERT INTO things VALUES (2);\nCREATE INDEX IF NOT EXISTS things_idx ON things (id);\n",
     );
     expect(() => verifyMigrationPolicy({ repositoryRoot: root, base })).not.toThrow();
   });
@@ -186,9 +186,11 @@ describe("migration policy", () => {
     const cases = [
       "DELETE FROM things;\n",
       "DROP SEQUENCE public.things_id_seq;\n",
+      "DROP INDEX activity_events_single_reversal_idx;\n",
       "ALTER SEQUENCE public.things_id_seq RESTART WITH 1;\n",
       "ALTER TYPE work_item_status RENAME VALUE 'done' TO 'complete';\n",
       "ALTER TYPE work_item_status RENAME TO legacy_work_item_status;\n",
+      "ALTER TYPE public.work_item_status SET SCHEMA legacy;\n",
       "DROP EXTENSION IF EXISTS example CASCADE;\n",
       "DROP OWNED BY obsolete_role CASCADE;\n",
       "DROP MATERIALIZED VIEW historical_summary;\n",
@@ -204,12 +206,14 @@ describe("migration policy", () => {
       "ALTER TRIGGER activity_events_prevent_mutation ON activity_events RENAME TO old_guard;\n",
       "ALTER POLICY workspace_isolation ON workspaces USING (true);\n",
       "ALTER EVENT TRIGGER migration_ddl_guard DISABLE;\n",
+      "CREATE OR REPLACE TRIGGER activity_events_prevent_mutation BEFORE UPDATE ON activity_events FOR EACH ROW EXECUTE FUNCTION prevent_activity_event_mutation();\n",
       "ALTER TABLE things DROP obsolete;\n",
       "ALTER TABLE things DROP CONSTRAINT things_value_check;\n",
       "ALTER TABLE things ALTER CONSTRAINT things_parent_fk DEFERRABLE;\n",
       "ALTER TABLE things ALTER COLUMN id DROP IDENTITY;\n",
       "ALTER TABLE things ALTER COLUMN id RESTART WITH 1;\n",
       "ALTER TABLE activity_events DISABLE TRIGGER activity_events_prevent_mutation;\n",
+      "ALTER TABLE activity_events ENABLE REPLICA TRIGGER activity_events_prevent_mutation;\n",
       "ALTER TABLE things ALTER value TYPE text;\n",
       "ALTER TABLE things RENAME value TO old_value;\n",
       "ALTER TABLE things RENAME TO old_things;\n",

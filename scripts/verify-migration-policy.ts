@@ -316,6 +316,7 @@ function destructiveOperation(statement: MigrationSqlStatement): string | undefi
           "TYPE",
           "DOMAIN",
           "SEQUENCE",
+          "INDEX",
           "VIEW",
           "FUNCTION",
           "PROCEDURE",
@@ -337,6 +338,12 @@ function destructiveOperation(statement: MigrationSqlStatement): string | undefi
     [postgresPattern(`${keyword("DELETE")}\\s+${keyword("FROM")}`), "DELETE FROM"],
     [postgresPattern(keyword("UPDATE")), "UPDATE"],
     [postgresPattern(keyword("MERGE")), "MERGE"],
+    [
+      postgresPattern(
+        `${keyword("CREATE")}\\s+${keyword("OR")}\\s+${keyword("REPLACE")}\\s+(?:${keyword("TRIGGER")}|${keyword("RULE")})`,
+      ),
+      "CREATE OR REPLACE enforcement object",
+    ],
     [postgresPattern(`(?:${keyword("SETVAL")}|"setval")\\s*\\(`), "sequence SETVAL"],
     [
       postgresPattern(
@@ -345,8 +352,10 @@ function destructiveOperation(statement: MigrationSqlStatement): string | undefi
       "ALTER SEQUENCE RESTART",
     ],
     [
-      postgresPattern(`${keyword("ALTER")}\\s+${keyword("TYPE")}[\\s\\S]*${keyword("RENAME")}`),
-      "ALTER TYPE compatibility-changing rename",
+      postgresPattern(
+        `${keyword("ALTER")}\\s+${keyword("TYPE")}[\\s\\S]*(?:${keyword("RENAME")}|${keyword("SET")}\\s+${keyword("SCHEMA")})`,
+      ),
+      "ALTER TYPE compatibility-changing operation",
     ],
     [
       postgresPattern(
@@ -356,7 +365,7 @@ function destructiveOperation(statement: MigrationSqlStatement): string | undefi
     ],
     [
       postgresPattern(
-        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*(?:${keyword("DROP")}|${keyword("ALTER")}|${keyword("RENAME")}|${keyword("DISABLE")})`,
+        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*(?:${keyword("DROP")}|${keyword("ALTER")}|${keyword("RENAME")}|${keyword("DISABLE")}|${keyword("ENABLE")})`,
       ),
       "ALTER TABLE destructive or compatibility-changing operation",
     ],
