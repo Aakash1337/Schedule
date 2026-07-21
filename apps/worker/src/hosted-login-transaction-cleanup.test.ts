@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { DatabaseConnection } from "@schedule/database";
+
 import {
+  createHostedLoginTransactionCleanupDependencies,
   runHostedLoginTransactionCleanupCycle,
   runHostedLoginTransactionCleanupWorker,
   type HostedLoginTransactionCleanupDependencies,
@@ -20,6 +23,26 @@ function harness(prune: HostedLoginTransactionCleanupDependencies["prune"]) {
 }
 
 describe("hosted login transaction cleanup", () => {
+  it("wires cleanup to the supplied maintenance database", async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce([{ value: new Date("2026-01-01T00:00:00.000Z") }])
+      .mockResolvedValueOnce([{ id: "expired-login" }]);
+    const transaction = vi.fn(
+      async (operation: (database: { execute: typeof execute }) => Promise<unknown>) =>
+        operation({ execute }),
+    );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+
+    await expect(
+      createHostedLoginTransactionCleanupDependencies(connection).prune(3),
+    ).resolves.toBe(1);
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "read committed",
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
   it("does no work while disabled and records an enabled cycle interrupted before it starts", async () => {
     const prune = vi.fn();
     const { dependencies, logger, telemetry } = harness(prune);
