@@ -29,6 +29,16 @@ const POSTGRESQL_TOOLS = [
   "postgres",
   "psql",
 ] as const;
+const DESKTOP_PORTABLE_MODULES = [
+  "desktop-portable.js",
+  "portable-export.js",
+  "portable-archive.js",
+  "portable-payload.js",
+  "portable-file.js",
+  "backup-database.js",
+  "portable-data.js",
+  "database.js",
+] as const;
 function executableSuffix(target: DesktopRuntimeBuildOptions["target"]): string {
   return target.os === "windows" ? ".exe" : "";
 }
@@ -327,6 +337,16 @@ async function requireDirectory(root: string, relative: string, label: string): 
   }
 }
 
+async function requireDesktopPortableModules(root: string, prefix = ""): Promise<void> {
+  for (const file of DESKTOP_PORTABLE_MODULES) {
+    await requireFile(
+      root,
+      `${prefix}node_modules/@schedule/database/dist/${file}`,
+      `Database desktop portable export module ${file}`,
+    );
+  }
+}
+
 async function requirePgcrypto(
   root: string,
   target: DesktopRuntimeBuildOptions["target"],
@@ -425,6 +445,7 @@ export async function validateDesktopRuntime(root: string): Promise<DesktopRunti
     "api/node_modules/@schedule/database/dist/migration-sql.js",
     "Database migration SQL safety helper",
   );
+  await requireDesktopPortableModules(runtimeRoot, "api/");
   await requireFile(
     runtimeRoot,
     "api/node_modules/@schedule/database/drizzle/meta/_journal.json",
@@ -623,6 +644,7 @@ export async function buildDesktopRuntime(
     "node_modules/@schedule/database/dist/migration-sql.js",
     "Database migration SQL safety helper",
   );
+  await requireDesktopPortableModules(apiDeploymentDirectory);
   await requireFile(
     apiDeploymentDirectory,
     "node_modules/@schedule/database/drizzle/meta/_journal.json",

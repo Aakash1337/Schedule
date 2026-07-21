@@ -60,6 +60,24 @@ async function fixture(): Promise<{
       "migration SQL safety",
     ),
     writeFile(
+      path.join(api, "node_modules", "@schedule", "database", "dist", "desktop-portable.js"),
+      "desktop portable export helper",
+    ),
+    ...[
+      "portable-export.js",
+      "portable-archive.js",
+      "portable-payload.js",
+      "portable-file.js",
+      "backup-database.js",
+      "portable-data.js",
+      "database.js",
+    ].map((file) =>
+      writeFile(
+        path.join(api, "node_modules", "@schedule", "database", "dist", file),
+        `desktop portable export module ${file}`,
+      ),
+    ),
+    writeFile(
       path.join(api, "node_modules", "@schedule", "database", "drizzle", "meta", "_journal.json"),
       JSON.stringify({
         version: "7",
@@ -177,6 +195,23 @@ describe("buildDesktopRuntime", () => {
     ]);
     expect(manifest.artifacts.licensesSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(manifest.artifacts.sbomSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(
+      await readFile(
+        path.join(
+          options.outputDirectory,
+          "api",
+          "node_modules",
+          "@schedule",
+          "database",
+          "dist",
+          "desktop-portable.js",
+        ),
+        "utf8",
+      ),
+    ).toBe("desktop portable export helper");
+    expect(manifest.components.find((component) => component.name === "api")?.sha256).toBe(
+      await hashTree(path.join(options.outputDirectory, "api")),
+    );
   });
 
   it("orders notice paths by code units rather than the builder locale", () => {
@@ -274,6 +309,49 @@ describe("buildDesktopRuntime", () => {
     );
     await expect(buildDesktopRuntime({ ...options, sources: await pins(options) })).rejects.toThrow(
       "Database migration SQL safety helper is required",
+    );
+  });
+
+  it("requires a regular, non-symlink deployed desktop portable export helper", async () => {
+    const { options } = await fixture();
+    const helper = path.join(
+      options.apiDeploymentDirectory,
+      "node_modules",
+      "@schedule",
+      "database",
+      "dist",
+      "desktop-portable.js",
+    );
+    await rm(helper);
+    await expect(buildDesktopRuntime({ ...options, sources: await pins(options) })).rejects.toThrow(
+      "Database desktop portable export module desktop-portable.js is required",
+    );
+    await mkdir(helper);
+    await expect(buildDesktopRuntime({ ...options, sources: await pins(options) })).rejects.toThrow(
+      "Database desktop portable export module desktop-portable.js is required",
+    );
+    await rm(helper, { recursive: true });
+    const sourcePins = await pins(options);
+    await symlink(path.join(options.apiDeploymentDirectory, "dist", "server.js"), helper);
+    await expect(buildDesktopRuntime({ ...options, sources: sourcePins })).rejects.toThrow(
+      "Symlinks are not allowed",
+    );
+  });
+
+  it("requires the compiled portable export module closure", async () => {
+    const { options } = await fixture();
+    await rm(
+      path.join(
+        options.apiDeploymentDirectory,
+        "node_modules",
+        "@schedule",
+        "database",
+        "dist",
+        "portable-export.js",
+      ),
+    );
+    await expect(buildDesktopRuntime({ ...options, sources: await pins(options) })).rejects.toThrow(
+      "Database desktop portable export module portable-export.js is required",
     );
   });
 

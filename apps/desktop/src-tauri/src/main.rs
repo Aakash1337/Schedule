@@ -7,6 +7,7 @@ use tauri::{
     Manager, RunEvent, Url, WebviewUrl, WindowEvent,
     webview::{NewWindowResponse, WebviewWindowBuilder},
 };
+use tauri_plugin_dialog::DialogExt;
 
 #[tauri::command]
 fn runtime_status(
@@ -20,6 +21,35 @@ fn runtime_retry(
     runtime: tauri::State<'_, std::sync::Arc<runtime::tauri_adapter::DesktopRuntimeAdapter>>,
 ) -> runtime::tauri_adapter::RuntimeRetryResult {
     runtime.retry()
+}
+
+#[tauri::command]
+async fn portable_export(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, std::sync::Arc<runtime::tauri_adapter::DesktopRuntimeAdapter>>,
+) -> Result<runtime::PortableExportResult, ()> {
+    let runtime = runtime.inner().clone();
+    if let Err(result) = runtime.begin_portable_export() {
+        return Ok(result);
+    }
+    let runtime_for_task = runtime.clone();
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let destination = app
+            .dialog()
+            .file()
+            .set_file_name("schedule-portable.schedule")
+            .add_filter("Schedule portable export", &["schedule"])
+            .blocking_save_file()
+            .and_then(|file| file.into_path().ok());
+        runtime_for_task.finish_portable_export(destination)
+    });
+    match task.await {
+        Ok(result) => Ok(result),
+        Err(_) => {
+            runtime.abandon_portable_export();
+            Ok(runtime::PortableExportResult::Unavailable)
+        }
+    }
 }
 
 fn is_allowed_navigation(url: &Url, allow_development_origin: bool) -> bool {
@@ -84,6 +114,7 @@ fn main() {
             .expect("Schedule desktop API bridge failed to initialize"),
     );
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(api_forwarder.clone())
         .setup(|app| {
             let runtime = runtime::tauri_adapter::DesktopRuntimeAdapter::setup(
@@ -107,6 +138,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             runtime_status,
             runtime_retry,
+            portable_export,
             bridge::api_request
         ])
         .build(tauri::generate_context!())

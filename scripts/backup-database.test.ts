@@ -189,6 +189,18 @@ describe("restore archive snapshots", () => {
 });
 
 describe("Schedule archive catalogs", () => {
+  it("derives the repository root from the wrapper instead of the caller's working directory", async () => {
+    await inTemporaryDirectory(async (directory) => {
+      const originalWorkingDirectory = process.cwd();
+      try {
+        process.chdir(directory);
+        expect(repositoryRoot).toBe(path.resolve(import.meta.dirname, ".."));
+      } finally {
+        process.chdir(originalWorkingDirectory);
+      }
+    });
+  });
+
   it("keeps the current database allowlist aligned with the latest migration snapshot", async () => {
     const journal = JSON.parse(
       await readFile(

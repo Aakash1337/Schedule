@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import { App } from "../../web/src/App.js";
+import { App, type PortableExportResult } from "../../web/src/App.js";
 import {
   initialStartupState,
   isBusyStartupPhase,
@@ -28,6 +28,10 @@ interface RuntimeInspection {
 
 const runtimeStatusPollMs = 250;
 const runtimeStatusTimeoutMs = 5_000;
+
+export function requestPortableExport(): Promise<PortableExportResult> {
+  return invoke<PortableExportResult>("portable_export");
+}
 
 export function runtimeStatusAction(status: RuntimeStatus): StartupAction {
   switch (status.phase) {
@@ -216,5 +220,9 @@ export function DesktopApp() {
       });
   }, [inspectRuntime]);
 
-  return state.phase === "ready" ? <App /> : <StartupGate state={state} onRetry={retry} />;
+  return state.phase === "ready" ? (
+    <App desktopActions={{ exportArchive: requestPortableExport }} />
+  ) : (
+    <StartupGate state={state} onRetry={retry} />
+  );
 }

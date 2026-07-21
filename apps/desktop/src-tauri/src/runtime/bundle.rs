@@ -15,6 +15,8 @@ use super::manifest::{RuntimeComponentName, RuntimeLaunchPath, RuntimeManifest, 
 const MIGRATION_ENTRYPOINT: &str = "api/node_modules/@schedule/database/dist/migrate.js";
 const MIGRATION_MANIFEST: &str =
     "api/node_modules/@schedule/database/drizzle/meta/_migration_manifest.json";
+const PORTABLE_EXPORT_ENTRYPOINT: &str =
+    "api/node_modules/@schedule/database/dist/desktop-portable.js";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PostgreSqlPrograms {
@@ -36,6 +38,7 @@ pub(crate) struct RuntimeBundle {
     pub(crate) postgresql: PostgreSqlPrograms,
     pub(crate) migration: PathBuf,
     pub(crate) migration_manifest: PathBuf,
+    pub(crate) portable_export: PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -106,6 +109,7 @@ pub(super) fn resolve_verified_runtime_bundle(
         },
         migration: resolve_regular(root, MIGRATION_ENTRYPOINT)?,
         migration_manifest: resolve_regular(root, MIGRATION_MANIFEST)?,
+        portable_export: resolve_regular(root, PORTABLE_EXPORT_ENTRYPOINT)?,
     })
 }
 
@@ -283,6 +287,7 @@ mod tests {
             format!("postgresql/bin/pg_ctl{suffix}"),
             MIGRATION_ENTRYPOINT.into(),
             MIGRATION_MANIFEST.into(),
+            PORTABLE_EXPORT_ENTRYPOINT.into(),
         ] {
             fixture.write(&path);
         }
@@ -309,6 +314,7 @@ mod tests {
                 bundle.postgresql.pg_ctl,
                 bundle.migration,
                 bundle.migration_manifest,
+                bundle.portable_export,
             ] {
                 assert!(path.is_absolute());
                 assert!(path.starts_with(&bundle.root));

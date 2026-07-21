@@ -387,6 +387,10 @@ mod tests {
                 "migrate",
             ),
             (
+                "api/node_modules/@schedule/database/dist/desktop-portable.js",
+                "portable",
+            ),
+            (
                 "api/node_modules/@schedule/database/drizzle/meta/_migration_manifest.json",
                 "migration manifest",
             ),

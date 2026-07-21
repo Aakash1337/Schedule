@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "./api";
-import { App } from "./App";
+import { App, type PortableExportResult } from "./App";
 import type { Workspace } from "./types";
 
 const apiMocks = vi.hoisted(() => ({
@@ -41,6 +41,15 @@ const studioWorkspace: Workspace = {
 };
 
 const page = <Item,>(items: readonly Item[]) => ({ items, page: { limit: 20, offset: 0 } });
+
+async function exportArchiveButton(): Promise<HTMLButtonElement> {
+  return (await screen.findAllByRole<HTMLButtonElement>("button", { name: "Export archive" }))[0]!;
+}
+
+async function exportMessage(message: string): Promise<HTMLElement> {
+  return (await screen.findAllByText(message, { exact: true }))[0]!;
+}
+
 const originalScrollIntoView = Object.getOwnPropertyDescriptor(
   HTMLElement.prototype,
   "scrollIntoView",
@@ -184,5 +193,123 @@ describe("local application shell", () => {
       expect(screen.queryByText("The local database is unavailable.")).not.toBeInTheDocument(),
     );
     expect(screen.getByRole("button", { name: "Create workspace" })).toBeEnabled();
+  });
+
+  it("leaves the web shell unchanged when no desktop actions are provided", async () => {
+    apiMocks.listWorkspaces.mockResolvedValue(page([personalWorkspace]));
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Today" });
+    expect(screen.queryByRole("button", { name: "Export archive" })).toBeNull();
+  });
+
+  it("exports a portable archive and announces its size", async () => {
+    const user = userEvent.setup();
+    const exportArchive = vi.fn().mockResolvedValue({ result: "created", sizeBytes: 1_572_864 });
+    apiMocks.listWorkspaces.mockResolvedValue(page([personalWorkspace]));
+
+    render(<App desktopActions={{ exportArchive }} />);
+
+    await user.click(await exportArchiveButton());
+
+    expect(exportArchive).toHaveBeenCalledTimes(1);
+    expect(await exportMessage("Archive exported (1.5 MB).")).toHaveAttribute("role", "status");
+  });
+
+  it("announces a cancelled portable export", async () => {
+    const user = userEvent.setup();
+    const exportArchive = vi.fn().mockResolvedValue({ result: "cancelled" });
+    apiMocks.listWorkspaces.mockResolvedValue(page([personalWorkspace]));
+
+    render(<App desktopActions={{ exportArchive }} />);
+
+    await user.click(await exportArchiveButton());
+
+    expect(await exportMessage("Export cancelled.")).toHaveAttribute("role", "status");
+  });
+
+  it.each([
+    {
+      name: "busy export",
+      exportArchive: () => Promise.resolve<PortableExportResult>({ result: "busy" }),
+      role: "status" as const,
+      message: "An export is already in progress.",
+    },
+    {
+      name: "unavailable export",
+      exportArchive: () => Promise.resolve<PortableExportResult>({ result: "unavailable" }),
+      role: "alert" as const,
+      message: "Portable export is unavailable in this version of Schedule.",
+    },
+    {
+      name: "generic failed export",
+      exportArchive: () =>
+        Promise.resolve<PortableExportResult>({ result: "failed", code: "desktop.export_failed" }),
+      role: "alert" as const,
+      message: "Schedule could not export the archive. Try again.",
+    },
+    {
+      name: "rejected export command",
+      exportArchive: () => Promise.reject(new Error("native bridge unavailable")),
+      role: "alert" as const,
+      message: "Schedule could not export the archive. Try again.",
+    },
+  ])(
+    "announces a $name without exposing native details",
+    async ({ exportArchive, role, message }) => {
+      const user = userEvent.setup();
+      apiMocks.listWorkspaces.mockResolvedValue(page([personalWorkspace]));
+
+      render(<App desktopActions={{ exportArchive }} />);
+
+      await user.click(await exportArchiveButton());
+
+      expect(await exportMessage(message)).toHaveAttribute("role", role);
+      expect(screen.queryByText("desktop.export_failed")).toBeNull();
+      expect(screen.queryByText("native bridge unavailable")).toBeNull();
+    },
+  );
+
+  it("does not start a second export while the first is running", async () => {
+    const user = userEvent.setup();
+    let finishExport!: (result: { result: "cancelled" }) => void;
+    const exportArchive = vi.fn(
+      () =>
+        new Promise<{ result: "cancelled" }>((resolve) => {
+          finishExport = resolve;
+        }),
+    );
+    apiMocks.listWorkspaces.mockResolvedValue(page([personalWorkspace]));
+
+    render(<App desktopActions={{ exportArchive }} />);
+
+    const action = await exportArchiveButton();
+    await user.click(action);
+    expect(action).toBeDisabled();
+    await user.click(action);
+    expect(exportArchive).toHaveBeenCalledTimes(1);
+
+    finishExport({ result: "cancelled" });
+    expect(await exportMessage("Export cancelled.")).toHaveAttribute("role", "status");
+  });
+
+  it("explains when an archive destination already exists without exposing the native error code", async () => {
+    const user = userEvent.setup();
+    const exportArchive = vi
+      .fn()
+      .mockResolvedValue({ result: "failed", code: "destination_exists" });
+    apiMocks.listWorkspaces.mockResolvedValue(page([personalWorkspace]));
+
+    render(<App desktopActions={{ exportArchive }} />);
+
+    await user.click(await exportArchiveButton());
+
+    expect(
+      await exportMessage(
+        "An archive with that name already exists. Choose another name, then try again.",
+      ),
+    ).toHaveAttribute("role", "alert");
+    expect(screen.queryByText("destination_exists")).toBeNull();
   });
 });

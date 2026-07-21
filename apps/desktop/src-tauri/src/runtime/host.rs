@@ -17,6 +17,7 @@ use std::{
 
 use super::{
     coordinator::{CancellationHandle, Coordinator, EffectExecutor},
+    portable::PortableExportResult,
     state::Phase,
 };
 
@@ -68,6 +69,10 @@ enum Command {
     Retry,
     Stop,
     Shutdown,
+    PortableExport {
+        destination: std::path::PathBuf,
+        reply: mpsc::Sender<PortableExportResult>,
+    },
 }
 
 /// A completion seam: UI callbacks can retain this instead of waiting on the
@@ -136,6 +141,7 @@ pub struct RuntimeHost {
     cancellation: CancellationHandle,
     admission: Arc<Mutex<()>>,
     lifecycle_command_in_flight: Arc<AtomicBool>,
+    portable_export_in_flight: Arc<AtomicBool>,
     status: Arc<RwLock<RuntimeStatus>>,
     shutdown_requested: Arc<AtomicBool>,
     completion: RuntimeCompletion,
@@ -155,9 +161,11 @@ impl RuntimeHost {
         let cancellation = coordinator.cancellation_handle();
         let admission = Arc::new(Mutex::new(()));
         let lifecycle_command_in_flight = Arc::new(AtomicBool::new(false));
+        let portable_export_in_flight = Arc::new(AtomicBool::new(false));
         let worker_status = status.clone();
         let worker_completion = completion.clone();
         let worker_lifecycle_command = lifecycle_command_in_flight.clone();
+        let worker_portable_export = portable_export_in_flight.clone();
         let worker = thread::spawn(move || {
             let outcome = catch_unwind(AssertUnwindSafe(|| {
                 let mut coordinator = coordinator;
@@ -166,6 +174,7 @@ impl RuntimeHost {
                     receiver,
                     &worker_status,
                     &worker_lifecycle_command,
+                    &worker_portable_export,
                 )
             }))
             .unwrap_or(ShutdownOutcome::WorkerFailed);
@@ -177,6 +186,7 @@ impl RuntimeHost {
             cancellation,
             admission,
             lifecycle_command_in_flight,
+            portable_export_in_flight,
             status,
             shutdown_requested: Arc::new(AtomicBool::new(false)),
             completion,
@@ -229,6 +239,42 @@ impl RuntimeHost {
         self.completion.clone()
     }
 
+    pub fn portable_export(
+        &self,
+        destination: std::path::PathBuf,
+    ) -> Result<mpsc::Receiver<PortableExportResult>, HostError> {
+        let _admission = self.admission.lock().expect("runtime admission poisoned");
+        if self.shutdown_requested.load(Ordering::Acquire) {
+            return Err(HostError::ShuttingDown);
+        }
+        if self.status().state != RuntimeState::Ready {
+            return Err(HostError::Unavailable);
+        }
+        if self.lifecycle_command_in_flight.load(Ordering::Acquire) {
+            return Err(HostError::Busy);
+        }
+        if self
+            .portable_export_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(HostError::Busy);
+        }
+        self.cancellation.pre_arm();
+        let (reply, receiver) = mpsc::channel();
+        if self
+            .commands
+            .send(Command::PortableExport { destination, reply })
+            .is_err()
+        {
+            self.cancellation.clear_pre_arm();
+            self.portable_export_in_flight
+                .store(false, Ordering::Release);
+            return Err(HostError::Unavailable);
+        }
+        Ok(receiver)
+    }
+
     /// Intended for non-UI process exit. UI callbacks should use `shutdown`
     /// and observe `RuntimeCompletion` rather than blocking.
     pub fn join(mut self) -> ShutdownOutcome {
@@ -244,6 +290,9 @@ impl RuntimeHost {
         let _admission = self.admission.lock().expect("runtime admission poisoned");
         if self.shutdown_requested.load(Ordering::Acquire) {
             return Err(HostError::ShuttingDown);
+        }
+        if self.portable_export_in_flight.load(Ordering::Acquire) {
+            return Err(HostError::Busy);
         }
         if self
             .lifecycle_command_in_flight
@@ -286,6 +335,7 @@ fn run_worker<E: EffectExecutor>(
     receiver: mpsc::Receiver<Command>,
     status: &RwLock<RuntimeStatus>,
     lifecycle_command_in_flight: &AtomicBool,
+    portable_export_in_flight: &AtomicBool,
 ) -> ShutdownOutcome {
     while let Ok(command) = receiver.recv() {
         match command {
@@ -324,6 +374,11 @@ fn run_worker<E: EffectExecutor>(
                 let outcome = shutdown_coordinator(coordinator);
                 publish_lifecycle(status, coordinator);
                 return outcome;
+            }
+            Command::PortableExport { destination, reply } => {
+                let result = coordinator.portable_export(destination);
+                portable_export_in_flight.store(false, Ordering::Release);
+                let _ = reply.send(result);
             }
         }
         publish_lifecycle(status, coordinator);
@@ -390,6 +445,7 @@ mod tests {
         fail_first_lock: bool,
         panic_lock: bool,
         cleanup_failures: usize,
+        portable_export_cancellations: Arc<Mutex<Vec<bool>>>,
     }
 
     impl EffectExecutor for Fake {
@@ -454,6 +510,18 @@ mod tests {
         fn cancel(&mut self, _: u64) {
             self.calls.lock().unwrap().push("cancel");
         }
+
+        fn portable_export(
+            &mut self,
+            _: std::path::PathBuf,
+            cancellation: &Cancellation,
+        ) -> PortableExportResult {
+            self.portable_export_cancellations
+                .lock()
+                .unwrap()
+                .push(cancellation.is_cancelled());
+            PortableExportResult::Unavailable
+        }
     }
 
     fn wait_for(host: &RuntimeHost, expected: RuntimeState) {
@@ -464,6 +532,26 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         panic!("timed out waiting for {expected:?}: {:?}", host.status());
+    }
+
+    fn ready_host_without_worker(
+        commands: mpsc::Sender<Command>,
+        cancellation: CancellationHandle,
+    ) -> RuntimeHost {
+        RuntimeHost {
+            commands,
+            cancellation,
+            admission: Arc::new(Mutex::new(())),
+            lifecycle_command_in_flight: Arc::new(AtomicBool::new(false)),
+            portable_export_in_flight: Arc::new(AtomicBool::new(false)),
+            status: Arc::new(RwLock::new(RuntimeStatus {
+                state: RuntimeState::Ready,
+                generation: 1,
+            })),
+            shutdown_requested: Arc::new(AtomicBool::new(false)),
+            completion: RuntimeCompletion::default(),
+            worker: None,
+        }
     }
 
     #[test]
@@ -584,6 +672,120 @@ mod tests {
     fn completion_deadline_returns_without_polling() {
         let completion = RuntimeCompletion::default();
         assert_eq!(completion.wait_until(Instant::now()), None);
+    }
+
+    #[test]
+    fn shutdown_cancels_an_in_flight_portable_export_and_keeps_one_reply() {
+        struct ExportBlocker {
+            entered: mpsc::Sender<()>,
+        }
+        impl EffectExecutor for ExportBlocker {
+            type Error = ();
+            fn execute(&mut self, effect: Effect, _: &Cancellation) -> Result<EffectOutcome, ()> {
+                Ok(if matches!(effect, Effect::VerifyDatabase { .. }) {
+                    EffectOutcome::DatabaseVerified {
+                        needs_migration: false,
+                    }
+                } else {
+                    EffectOutcome::Completed
+                })
+            }
+            fn configure_bridge(&mut self, _: u64) -> Result<(), ()> {
+                Ok(())
+            }
+            fn clear_bridge(&mut self, _: u64) -> Result<(), ()> {
+                Ok(())
+            }
+            fn cancel(&mut self, _: u64) {}
+            fn portable_export(
+                &mut self,
+                _: std::path::PathBuf,
+                cancellation: &Cancellation,
+            ) -> PortableExportResult {
+                self.entered.send(()).unwrap();
+                while !cancellation.is_cancelled() {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                PortableExportResult::Unavailable
+            }
+        }
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let host = RuntimeHost::spawn(ExportBlocker {
+            entered: entered_tx,
+        });
+        host.auto_start().unwrap();
+        wait_for(&host, RuntimeState::Ready);
+        let reply = host
+            .portable_export(std::path::PathBuf::from("C:\\export.schedule"))
+            .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let completion = host.shutdown().unwrap();
+        assert_eq!(
+            reply.recv_timeout(Duration::from_secs(1)).unwrap(),
+            PortableExportResult::Unavailable
+        );
+        assert_eq!(completion.wait(), ShutdownOutcome::Clean);
+    }
+
+    #[test]
+    fn shutdown_after_export_enqueue_cancels_before_export_activation() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let mut coordinator = Coordinator::new(Fake {
+            portable_export_cancellations: observed.clone(),
+            ..Default::default()
+        });
+        coordinator.start().unwrap();
+        let cancellation = coordinator.cancellation_handle();
+        let (commands, receiver) = mpsc::channel();
+        let host = ready_host_without_worker(commands, cancellation.clone());
+
+        host.lifecycle_command_in_flight
+            .store(true, Ordering::Release);
+        assert!(matches!(
+            host.portable_export(std::path::PathBuf::from("C:\\busy.schedule")),
+            Err(HostError::Busy)
+        ));
+        assert!(!cancellation.cancel());
+        host.lifecycle_command_in_flight
+            .store(false, Ordering::Release);
+
+        let reply = host
+            .portable_export(std::path::PathBuf::from("C:\\export.schedule"))
+            .unwrap();
+        assert!(host.portable_export_in_flight.load(Ordering::Acquire));
+        assert_eq!(host.start(), Err(HostError::Busy));
+        host.shutdown().unwrap();
+
+        assert_eq!(
+            run_worker(
+                &mut coordinator,
+                receiver,
+                &host.status,
+                &host.lifecycle_command_in_flight,
+                &host.portable_export_in_flight,
+            ),
+            ShutdownOutcome::Clean
+        );
+        assert_eq!(reply.recv().unwrap(), PortableExportResult::Unavailable);
+        assert_eq!(reply.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+        assert_eq!(*observed.lock().unwrap(), [true]);
+        assert!(!host.portable_export_in_flight.load(Ordering::Acquire));
+        assert!(!cancellation.cancel());
+    }
+
+    #[test]
+    fn failed_export_enqueue_clears_cancellation_and_admission() {
+        let cancellation = CancellationHandle::default();
+        let (commands, receiver) = mpsc::channel();
+        drop(receiver);
+        let host = ready_host_without_worker(commands, cancellation.clone());
+
+        assert!(matches!(
+            host.portable_export(std::path::PathBuf::from("C:\\export.schedule")),
+            Err(HostError::Unavailable)
+        ));
+        assert!(!host.portable_export_in_flight.load(Ordering::Acquire));
+        assert!(!cancellation.cancel());
     }
 
     #[test]

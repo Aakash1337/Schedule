@@ -575,10 +575,18 @@ The audit deliberately leaves these visible instead of turning them into false g
   feedback streams, secret/transient exclusions, normalization, replacement, and rollback on real
   PostgreSQL. Typed archive values never become restore SQL, opened-frame validation precedes one
   bounded temporary copy, and framing is OS-neutral and unit-tested with Windows/Linux producer
-  metadata. CI does not yet hand a physical artifact from a Windows producer to a Linux consumer.
-  Checksums are not signatures, old archive-version golden fixtures are not yet retained, and a
-  version-1 archive must currently be imported with its matching release before a normal upgrade, so
-  archive custody and matching-release availability remain part of this trust boundary;
+  metadata. The native desktop exporter is unit-tested for its no-argument renderer command,
+  destination admission, strict helper result protocol, serialized invocation, helper packaging,
+  cleanup ordering, OID-bound verification-database ownership and marker-fault cleanup, bounded crash-artifact reclamation,
+  durable publication intentions, file-identity swaps, and POSIX namespace-sync routing. Node does
+  not expose a cross-platform handle-relative no-replace publication primitive, so a hostile process
+  running as the same OS user could still race the final path-based operation after its identity
+  checks. Windows also exposes no directory `fsync` through Node, and power-loss behavior is not yet
+  fault-injected. CI does not yet hand a physical artifact from a Windows producer to a Linux
+  consumer, and native desktop import is not implemented. Checksums are not signatures, old
+  archive-version golden fixtures are not yet retained, and a version-1 archive must currently be
+  imported with its matching release before a normal upgrade, so archive custody and matching-release
+  availability remain part of this trust boundary;
 - worker process-kill recovery covers crashes before a side effect and after an idempotent side
   effect but before acknowledgement; future external consumers must still enforce event-ID
   idempotency at their own durability boundary;

@@ -41,6 +41,24 @@ async function fixture(): Promise<{ repository: string; runtime: string }> {
       "migration SQL safety",
     ),
     writeFile(
+      path.join(api, "node_modules/@schedule/database/dist/desktop-portable.js"),
+      "desktop portable export helper",
+    ),
+    ...[
+      "portable-export.js",
+      "portable-archive.js",
+      "portable-payload.js",
+      "portable-file.js",
+      "backup-database.js",
+      "portable-data.js",
+      "database.js",
+    ].map((file) =>
+      writeFile(
+        path.join(api, "node_modules/@schedule/database/dist", file),
+        `desktop portable export module ${file}`,
+      ),
+    ),
+    writeFile(
       path.join(api, "node_modules/@schedule/database/drizzle/meta/_journal.json"),
       JSON.stringify({
         version: "7",

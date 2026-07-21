@@ -86,6 +86,7 @@ pub(crate) struct DesktopRuntimeAdapter {
     containment: Option<Arc<dyn ProcessGroupControl>>,
     close_exit_scheduled: AtomicBool,
     final_exit_wait_started: AtomicBool,
+    portable_export_in_flight: AtomicBool,
 }
 
 impl DesktopRuntimeAdapter {
@@ -109,6 +110,7 @@ impl DesktopRuntimeAdapter {
             containment,
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
+            portable_export_in_flight: AtomicBool::new(false),
         }
     }
 
@@ -139,6 +141,60 @@ impl DesktopRuntimeAdapter {
             }
             RuntimeOwner::SetupFailure => RuntimeRetryResult::Unavailable,
         }
+    }
+
+    pub(crate) fn begin_portable_export(&self) -> Result<(), crate::runtime::PortableExportResult> {
+        let ready = match &*self.owner.lock().expect("runtime adapter poisoned") {
+            RuntimeOwner::Running(host) => {
+                host.status().state == RuntimeState::Ready
+                    && host.completion().outcome() != Some(ShutdownOutcome::WorkerFailed)
+            }
+            RuntimeOwner::SetupFailure => false,
+        };
+        if !ready {
+            return Err(crate::runtime::PortableExportResult::Unavailable);
+        }
+        self.portable_export_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| crate::runtime::PortableExportResult::Busy)
+    }
+
+    pub(crate) fn abandon_portable_export(&self) {
+        self.portable_export_in_flight
+            .store(false, Ordering::Release);
+    }
+
+    pub(crate) fn finish_portable_export(
+        &self,
+        destination: Option<PathBuf>,
+    ) -> crate::runtime::portable::PortableExportResult {
+        let result = match destination {
+            None => crate::runtime::portable::PortableExportResult::Cancelled,
+            Some(destination) => {
+                let host = match &*self.owner.lock().expect("runtime adapter poisoned") {
+                    RuntimeOwner::SetupFailure => None,
+                    RuntimeOwner::Running(host) => Some(Arc::clone(host)),
+                };
+                match host {
+                    None => crate::runtime::portable::PortableExportResult::Unavailable,
+                    Some(host) => match host.portable_export(destination) {
+                        Ok(receiver) => receiver
+                            .recv()
+                            .unwrap_or(crate::runtime::portable::PortableExportResult::Unavailable),
+                        Err(HostError::Busy) => {
+                            crate::runtime::portable::PortableExportResult::Busy
+                        }
+                        Err(HostError::Unavailable | HostError::ShuttingDown) => {
+                            crate::runtime::portable::PortableExportResult::Unavailable
+                        }
+                    },
+                }
+            }
+        };
+        self.portable_export_in_flight
+            .store(false, Ordering::Release);
+        result
     }
 
     /// Safe from close and exit callbacks: it only queues shutdown work.
@@ -347,6 +403,7 @@ mod tests {
             containment: None,
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
+            portable_export_in_flight: AtomicBool::new(false),
         }
     }
 
@@ -357,6 +414,7 @@ mod tests {
             containment: None,
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
+            portable_export_in_flight: AtomicBool::new(false),
         };
         assert_eq!(adapter.status(), DesktopRuntimeStatus::setup_failure());
         assert_eq!(adapter.retry(), RuntimeRetryResult::Unavailable);
@@ -409,6 +467,40 @@ mod tests {
     }
 
     #[test]
+    fn portable_export_rejects_non_ready_and_releases_its_gate_after_cancel() {
+        let host = RuntimeHost::spawn(FakeExecutor);
+        let adapter = adapter_with(host);
+        assert_eq!(
+            adapter.begin_portable_export(),
+            Err(crate::runtime::PortableExportResult::Unavailable)
+        );
+        let host = match &*adapter.owner.lock().unwrap() {
+            RuntimeOwner::Running(host) => Arc::clone(host),
+            RuntimeOwner::SetupFailure => unreachable!(),
+        };
+        host.auto_start().unwrap();
+        for _ in 0..100 {
+            if host.status().state == RuntimeState::Ready {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(host.status().state, RuntimeState::Ready);
+        assert_eq!(adapter.begin_portable_export(), Ok(()));
+        assert_eq!(
+            adapter.begin_portable_export(),
+            Err(crate::runtime::PortableExportResult::Busy)
+        );
+        assert_eq!(
+            adapter.finish_portable_export(None),
+            crate::runtime::PortableExportResult::Cancelled
+        );
+        assert_eq!(adapter.begin_portable_export(), Ok(()));
+        adapter.abandon_portable_export();
+        host.shutdown().unwrap().wait();
+    }
+
+    #[test]
     fn retry_result_carries_the_generation_observed_before_admission() {
         assert_eq!(
             serde_json::to_value(RuntimeRetryResult::Accepted { generation: 7 }).unwrap(),
@@ -438,6 +530,7 @@ mod tests {
             containment: None,
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
+            portable_export_in_flight: AtomicBool::new(false),
         };
         assert!(matches!(adapter.begin_close(), Some(None)));
         assert!(adapter.begin_close().is_none());
@@ -458,6 +551,7 @@ mod tests {
             containment: None,
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
+            portable_export_in_flight: AtomicBool::new(false),
         };
         let started = Instant::now();
         adapter.bounded_shutdown(Duration::from_millis(1));
@@ -502,6 +596,7 @@ mod tests {
             containment: Some(containment.clone()),
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
+            portable_export_in_flight: AtomicBool::new(false),
         };
 
         adapter.bounded_shutdown(Duration::from_millis(1));
@@ -521,6 +616,7 @@ mod tests {
             containment: Some(Arc::clone(&containment)),
             close_exit_scheduled: AtomicBool::new(false),
             final_exit_wait_started: AtomicBool::new(false),
+            portable_export_in_flight: AtomicBool::new(false),
         };
 
         let started = Instant::now();

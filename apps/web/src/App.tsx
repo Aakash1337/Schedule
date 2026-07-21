@@ -21,6 +21,15 @@ import { WorkView } from "./views/WorkView";
 
 const SELECTED_WORKSPACE_KEY = "schedule.selectedWorkspace";
 
+export type PortableExportResult =
+  | { readonly result: "created"; readonly sizeBytes: number }
+  | { readonly result: "cancelled" | "busy" | "unavailable" }
+  | { readonly result: "failed"; readonly code: string };
+
+export interface DesktopActions {
+  readonly exportArchive: () => Promise<PortableExportResult>;
+}
+
 const navigation = [
   { id: "today", label: "Today", icon: CheckCircle2 },
   { id: "work", label: "Work", icon: Columns3 },
@@ -102,7 +111,50 @@ function WorkspaceSetup({
   );
 }
 
-export function App() {
+function exportFailureMessage(code: string): string {
+  if (code === "destination_exists" || code.endsWith("destination_exists")) {
+    return "An archive with that name already exists. Choose another name, then try again.";
+  }
+  return "Schedule could not export the archive. Try again.";
+}
+
+function archiveSize(sizeBytes: number): string {
+  if (sizeBytes < 1_024) return `${sizeBytes} bytes`;
+  if (sizeBytes < 1_024 * 1_024) return `${(sizeBytes / 1_024).toFixed(1)} KB`;
+  return `${(sizeBytes / (1_024 * 1_024)).toFixed(1)} MB`;
+}
+
+function PortableExportControl({
+  exporting,
+  message,
+  onExport,
+}: {
+  readonly exporting: boolean;
+  readonly message: { readonly tone: "status" | "error"; readonly text: string } | null;
+  readonly onExport: () => void;
+}) {
+  return (
+    <section className="portable-export" aria-label="Portable archive export">
+      <Button type="button" variant="quiet" busy={exporting} onClick={onExport}>
+        Export archive
+      </Button>
+      <p className="portable-export-note">
+        Archives contain private data and are not encrypted or signed.
+      </p>
+      {message === null ? null : (
+        <p
+          className={`portable-export-message portable-export-message--${message.tone}`}
+          role={message.tone === "error" ? "alert" : "status"}
+          aria-live="polite"
+        >
+          {message.text}
+        </p>
+      )}
+    </section>
+  );
+}
+
+export function App({ desktopActions }: { readonly desktopActions?: DesktopActions }) {
   const contentRef = useRef<HTMLElement>(null);
   const previousSectionRef = useRef<AppSection | null>(null);
   const previousWorkspaceIdRef = useRef<string | null>(null);
@@ -116,6 +168,11 @@ export function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showWorkspaceCreator, setShowWorkspaceCreator] = useState(false);
   const [newWorkspaceName, setNewWorkspaceName] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [exportMessage, setExportMessage] = useState<{
+    readonly tone: "status" | "error";
+    readonly text: string;
+  } | null>(null);
 
   const loadWorkspaces = useCallback(async () => {
     setLoading(true);
@@ -191,6 +248,45 @@ export function App() {
       setLoadError(errorMessage(error));
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function exportArchive() {
+    if (desktopActions === undefined || exporting) return;
+    setExporting(true);
+    setExportMessage(null);
+    try {
+      const result = await desktopActions.exportArchive();
+      switch (result.result) {
+        case "created":
+          setExportMessage({
+            tone: "status",
+            text: `Archive exported (${archiveSize(result.sizeBytes)}).`,
+          });
+          break;
+        case "cancelled":
+          setExportMessage({ tone: "status", text: "Export cancelled." });
+          break;
+        case "busy":
+          setExportMessage({ tone: "status", text: "An export is already in progress." });
+          break;
+        case "unavailable":
+          setExportMessage({
+            tone: "error",
+            text: "Portable export is unavailable in this version of Schedule.",
+          });
+          break;
+        case "failed":
+          setExportMessage({ tone: "error", text: exportFailureMessage(result.code) });
+          break;
+      }
+    } catch {
+      setExportMessage({
+        tone: "error",
+        text: "Schedule could not export the archive. Try again.",
+      });
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -300,6 +396,13 @@ export function App() {
           <span aria-hidden="true" />
           Local workspace
         </div>
+        {desktopActions === undefined ? null : (
+          <PortableExportControl
+            exporting={exporting}
+            message={exportMessage}
+            onExport={() => void exportArchive()}
+          />
+        )}
       </aside>
 
       <header className="mobile-header">
@@ -326,6 +429,15 @@ export function App() {
         tabIndex={-1}
         aria-label={`${navigation.find((item) => item.id === section)?.label ?? section} view`}
       >
+        {desktopActions === undefined ? null : (
+          <div className="portable-export-mobile">
+            <PortableExportControl
+              exporting={exporting}
+              message={exportMessage}
+              onExport={() => void exportArchive()}
+            />
+          </div>
+        )}
         {loadError === null ? null : (
           <ErrorNotice message={loadError} onDismiss={() => setLoadError(null)} />
         )}

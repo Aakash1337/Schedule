@@ -122,7 +122,7 @@ pub(crate) fn pg_hba_conf(
         return Err(PgError("invalid PostgreSQL access rule"));
     }
     Ok(format!(
-        "# Managed by Schedule. Do not add network rules.\nlocal all all reject\nhost postgres {cluster_admin} 127.0.0.1/32 scram-sha-256\nhost {database} {cluster_admin} 127.0.0.1/32 scram-sha-256\nhost {database} {owner} 127.0.0.1/32 scram-sha-256\nhost {database} {runtime} 127.0.0.1/32 scram-sha-256\nhost all all ::1/128 reject\nhost all all 0.0.0.0/0 reject\nhost all all ::0/0 reject\n"
+        "# Managed by Schedule. Do not add network rules.\nlocal all all reject\nhost postgres {cluster_admin} 127.0.0.1/32 scram-sha-256\nhost all {cluster_admin} 127.0.0.1/32 scram-sha-256\nhost {database} {owner} 127.0.0.1/32 scram-sha-256\nhost {database} {runtime} 127.0.0.1/32 scram-sha-256\nhost all all ::1/128 reject\nhost all all 0.0.0.0/0 reject\nhost all all ::0/0 reject\n"
     ))
 }
 

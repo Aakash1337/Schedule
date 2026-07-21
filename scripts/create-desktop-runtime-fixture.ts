@@ -37,6 +37,20 @@ export async function createDesktopRuntimeFixture(outputDirectory: string): Prom
     ),
     write(
       api,
+      "node_modules/@schedule/database/dist/desktop-portable.js",
+      "fixture desktop portable export helper",
+    ),
+    ...[
+      "portable-export.js",
+      "portable-archive.js",
+      "portable-payload.js",
+      "portable-file.js",
+      "backup-database.js",
+      "portable-data.js",
+      "database.js",
+    ].map((file) => write(api, `node_modules/@schedule/database/dist/${file}`, `fixture ${file}`)),
+    write(
+      api,
       "node_modules/@schedule/database/drizzle/meta/_journal.json",
       JSON.stringify({
         version: "7",

@@ -193,11 +193,21 @@ Database major upgrades require the old bundled runtime to export the data and a
 to restore and validate it. A new PostgreSQL major version must never be started directly against an
 older data directory.
 
-The repository CLI now provides a versioned logical `.schedule` archive for moving every classified
-durable product row—including stored AI proposals and long-term behavior feedback—between matching
-Schedule schemas on Windows and Linux. It excludes environment identities, credentials, secrets,
-delivery queues, and hosted sync journals; see [PORTABLE_MIGRATION.md](./PORTABLE_MIGRATION.md).
-One-click desktop controls for this archive are still pending native lifecycle integration.
+The desktop application now provides a native **Export archive** control for creating a versioned
+logical `.schedule` archive. Rust opens the operating-system save dialog and invokes a verified,
+bundled helper without giving the renderer database credentials or a filesystem capability. The
+helper verifies a consistent typed-data export in an isolated migrated database before it publishes
+the new archive. It moves every classified durable product row—including stored AI proposals and
+long-term behavior feedback—between matching Schedule schemas on Windows and Linux, while excluding
+environment identities, credentials, secrets, delivery queues, and hosted sync journals. See
+[PORTABLE_MIGRATION.md](./PORTABLE_MIGRATION.md) for custody and CLI-import instructions.
+Verification-database cleanup requires an exact cluster-bound ownership marker, and interrupted
+archive staging is reclaimed only through bounded, stale, marker-verified cleanup. The no-replace
+copy fallback durably records its intention before destination creation, validates exact file
+identities throughout publication, and syncs POSIX directory entries at namespace commits.
+
+Native desktop import, automatic device sync, and a physical Windows-to-Linux handoff acceptance
+test remain pending. Export is a user-directed private file operation, not cloud synchronization.
 
 ## Web hosting and continuity
 

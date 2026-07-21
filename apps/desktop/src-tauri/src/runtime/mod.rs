@@ -11,6 +11,8 @@ mod journal;
 mod lock;
 mod manifest;
 mod paths;
+mod portable;
+pub(crate) use portable::PortableExportResult;
 mod postgres;
 mod process;
 pub(crate) mod smoke;
