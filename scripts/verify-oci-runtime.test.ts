@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isClosedRouteBody,
   parseContainerExitCode,
   parseMigrationCount,
   parsePublishedApiPort,
@@ -11,6 +12,23 @@ import {
 } from "./verify-oci-runtime.js";
 
 describe("OCI runtime smoke guards", () => {
+  it("accepts only the bounded fixed route-closure envelope", () => {
+    const closed = {
+      error: { code: "route.not_found", message: "Route not found." },
+      requestId: "req-1",
+    };
+    expect(isClosedRouteBody(closed)).toBe(true);
+    expect(isClosedRouteBody({ ...closed, requestId: "" })).toBe(false);
+    expect(isClosedRouteBody({ ...closed, requestId: "x".repeat(129) })).toBe(false);
+    expect(isClosedRouteBody({ ...closed, query: "code=private" })).toBe(false);
+    expect(
+      isClosedRouteBody({
+        ...closed,
+        error: { code: "route.not_found", message: "Route GET:/private?code=secret not found" },
+      }),
+    ).toBe(false);
+  });
+
   it("creates a unique bounded Compose project name", () => {
     expect(runtimeSmokeProjectName({}, 42, 1_000)).toBe("schedule-runtime-smoke-42-rs");
   });

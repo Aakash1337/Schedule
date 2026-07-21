@@ -292,19 +292,39 @@ function expectedMigrationCount(): number {
 async function requireJson(
   url: string,
   expectedStatus: number,
-  expectedBody: Readonly<Record<string, unknown>>,
+  expectedBody: Readonly<Record<string, unknown>> | ((body: unknown) => boolean),
 ): Promise<void> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5_000);
   try {
     const response = await fetch(url, { redirect: "error", signal: controller.signal });
     const body = (await response.json()) as unknown;
-    if (response.status !== expectedStatus || !isDeepStrictEqual(body, expectedBody)) {
+    const matches =
+      typeof expectedBody === "function"
+        ? expectedBody(body)
+        : isDeepStrictEqual(body, expectedBody);
+    if (response.status !== expectedStatus || !matches) {
       throw new Error(`Unexpected bounded response from ${new URL(url).pathname}.`);
     }
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export function isClosedRouteBody(body: unknown): boolean {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
+  const candidate = body as Record<string, unknown>;
+  const error = candidate.error;
+  return (
+    Object.keys(candidate).sort().join(",") === "error,requestId" &&
+    typeof candidate.requestId === "string" &&
+    candidate.requestId.length >= 1 &&
+    candidate.requestId.length <= 128 &&
+    typeof error === "object" &&
+    error !== null &&
+    !Array.isArray(error) &&
+    isDeepStrictEqual(error, { code: "route.not_found", message: "Route not found." })
+  );
 }
 
 async function waitForJson(
@@ -656,21 +676,9 @@ export async function verifyOciRuntime(): Promise<void> {
     const apiBaseUrl = `http://127.0.0.1:${apiPort}`;
     await requireJson(`${apiBaseUrl}/health/live`, 200, { status: "alive" });
     await requireJson(`${apiBaseUrl}/health/ready`, 200, { status: "ready" });
-    await requireJson(`${apiBaseUrl}/v1/workspaces`, 404, {
-      message: "Route GET:/v1/workspaces not found",
-      error: "Not Found",
-      statusCode: 404,
-    });
-    await requireJson(`${apiBaseUrl}/v1/routines`, 404, {
-      message: "Route GET:/v1/routines not found",
-      error: "Not Found",
-      statusCode: 404,
-    });
-    await requireJson(`${apiBaseUrl}/v1/integrations/today`, 404, {
-      message: "Route GET:/v1/integrations/today not found",
-      error: "Not Found",
-      statusCode: 404,
-    });
+    await requireJson(`${apiBaseUrl}/v1/workspaces`, 404, isClosedRouteBody);
+    await requireJson(`${apiBaseUrl}/v1/routines`, 404, isClosedRouteBody);
+    await requireJson(`${apiBaseUrl}/v1/integrations/today`, 404, isClosedRouteBody);
     await requireJson(`${apiBaseUrl}/v1/system/info`, 200, {
       service: "schedule-api",
       version: "0.1.0",
