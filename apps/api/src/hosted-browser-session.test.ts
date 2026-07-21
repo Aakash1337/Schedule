@@ -73,10 +73,13 @@ describe("dormant hosted browser-session transport", () => {
         ]),
       ),
     ).toBeNull();
-    expect(serializeHostedLoginBindingCookie(LOGIN_BINDING)).toBe(
-      `${HOSTED_LOGIN_BINDING_COOKIE_NAME}=${LOGIN_BINDING}; Path=/; Secure; HttpOnly; SameSite=Lax`,
+    expect(serializeHostedLoginBindingCookie(LOGIN_BINDING, 300)).toBe(
+      `${HOSTED_LOGIN_BINDING_COOKIE_NAME}=${LOGIN_BINDING}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=300`,
     );
-    expect(() => serializeHostedLoginBindingCookie("malformed")).toThrow(
+    expect(() => serializeHostedLoginBindingCookie("malformed", 300)).toThrow(
+      "hosted login binding is malformed",
+    );
+    expect(() => serializeHostedLoginBindingCookie(LOGIN_BINDING, 59)).toThrow(
       "hosted login binding is malformed",
     );
     expect(clearHostedLoginBindingCookie()).toBe(

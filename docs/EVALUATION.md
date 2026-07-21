@@ -101,7 +101,7 @@ provider-monitoring, backup-restore, or broad-sync claim.
 
 ## Current scorecard
 
-The package and script runners currently execute 166 test files and 2,670 runtime test cases. Three
+The package and script runners currently execute 167 test files and 2,685 runtime test cases. Three
 additional Playwright specifications contain ten live Chromium integration scenarios. Parameterized
 state matrices expand into many cases, so this number must not be compared as though every case were
 an independent product feature.
@@ -114,7 +114,7 @@ an independent product feature.
 | Critical implemented features with CI-registered integration or drills |      45 / 45 |
 | Partial features with an explicit limitation                           |        5 / 5 |
 | Deferred features explicitly tracked as not passing                    |        0 / 0 |
-| CI-registered evidence items                                           |          394 |
+| CI-registered evidence items                                           |          395 |
 | Missing or stale evidence anchors                                      |            0 |
 
 ### Coverage diagnostics

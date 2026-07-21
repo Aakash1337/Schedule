@@ -192,9 +192,16 @@ export function clearHostedSessionCookie(): string {
   return `${HOSTED_SESSION_COOKIE_NAME}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0; Expires=${EXPIRED_COOKIE_DATE}`;
 }
 
-export function serializeHostedLoginBindingCookie(binding: string): string {
-  if (!TOKEN_PATTERN.test(binding)) throw new TypeError("The hosted login binding is malformed.");
-  return `${HOSTED_LOGIN_BINDING_COOKIE_NAME}=${binding}; Path=/; Secure; HttpOnly; SameSite=Lax`;
+export function serializeHostedLoginBindingCookie(binding: string, maxAgeSeconds: number): string {
+  if (
+    !TOKEN_PATTERN.test(binding) ||
+    !Number.isInteger(maxAgeSeconds) ||
+    maxAgeSeconds < 60 ||
+    maxAgeSeconds > 900
+  ) {
+    throw new TypeError("The hosted login binding is malformed.");
+  }
+  return `${HOSTED_LOGIN_BINDING_COOKIE_NAME}=${binding}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${String(maxAgeSeconds)}`;
 }
 
 export function clearHostedLoginBindingCookie(): string {

@@ -42,7 +42,7 @@ test("operator-assisted hosted staging smoke", async ({ browser, request }) => {
   try {
     await expectExactJson(page.request, "/v1/auth/session", { authenticated: false });
     await page.goto("/hosted.html");
-    const signIn = page.getByRole("link", { name: "Sign in", exact: true });
+    const signIn = page.getByRole("button", { name: "Sign in", exact: true });
     await expect(signIn).toBeVisible();
 
     highLevel("Complete the normal OIDC sign-in in the opened Chromium window.");
@@ -86,7 +86,7 @@ test("operator-assisted hosted staging smoke", async ({ browser, request }) => {
     await expect(row).toContainText("Done");
 
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
-    await expect(page.getByRole("link", { name: "Sign in", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeVisible();
     await expectExactJson(page.request, "/v1/auth/session", { authenticated: false });
   } finally {
     await context.close();

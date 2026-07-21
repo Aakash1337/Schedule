@@ -41,7 +41,11 @@ import { loadHostedWebShell, type HostedWebShellLoader } from "./hosted-web-shel
 
 type HostedRuntimeConfig = Pick<
   ApiConfig,
-  "HOSTED_API_MODE" | "HOSTED_OIDC_PREFLIGHT" | "HOSTED_RATE_LIMIT_PER_MINUTE"
+  | "HOSTED_API_MODE"
+  | "HOSTED_OIDC_PREFLIGHT"
+  | "HOSTED_RATE_LIMIT_PER_MINUTE"
+  | "HOSTED_AUTH_STARTS_PER_MINUTE"
+  | "HOSTED_AUTH_MAX_CONCURRENT_CALLBACKS"
 >;
 
 const hostedWorkItemSyncCursorDomain = "schedule:hosted-work-item-sync:v1";
@@ -215,6 +219,10 @@ async function hostedApiOptions(
     },
     webShell,
     requestsPerMinute: config.HOSTED_RATE_LIMIT_PER_MINUTE,
+    authTrafficLimits: {
+      loginStartsPerMinute: config.HOSTED_AUTH_STARTS_PER_MINUTE,
+      maxConcurrentCallbacks: config.HOSTED_AUTH_MAX_CONCURRENT_CALLBACKS,
+    },
   };
 }
 

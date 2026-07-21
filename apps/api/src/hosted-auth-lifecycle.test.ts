@@ -28,6 +28,7 @@ import {
   HOSTED_LOGIN_BINDING_COOKIE_NAME,
   HOSTED_SESSION_COOKIE_NAME,
 } from "./hosted-browser-session.js";
+import type { HostedAuthTrafficGuard } from "./hosted-auth-ingress.js";
 
 const ORIGIN = "https://hosted.schedule.test";
 const ISSUER = "https://issuer.schedule.test/tenant";
@@ -181,9 +182,19 @@ function createDependencies() {
   };
 }
 
-async function createApp(dependencies: HostedAuthLifecycleDependencies): Promise<FastifyInstance> {
+function permissiveTrafficGuard(): HostedAuthTrafficGuard {
+  return {
+    admitLoginStart: () => ({ allowed: true }),
+    enterCallback: () => () => undefined,
+  };
+}
+
+async function createApp(
+  dependencies: HostedAuthLifecycleDependencies,
+  trafficGuard: HostedAuthTrafficGuard = permissiveTrafficGuard(),
+): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
-  await registerHostedAuthLifecycle(app, dependencies);
+  await registerHostedAuthLifecycle(app, dependencies, trafficGuard);
   apps.push(app);
   return app;
 }
@@ -199,11 +210,24 @@ describe("dormant hosted OIDC authentication lifecycle", () => {
     const app = Fastify({ logger: false });
     apps.push(app);
     await expect(
-      registerHostedAuthLifecycle(app, {
-        ...fixture.dependencies,
-        loginPolicy: { ...fixture.dependencies.loginPolicy, ...override },
-      }),
+      registerHostedAuthLifecycle(
+        app,
+        {
+          ...fixture.dependencies,
+          loginPolicy: { ...fixture.dependencies.loginPolicy, ...override },
+        },
+        permissiveTrafficGuard(),
+      ),
     ).rejects.toThrow("hosted OIDC login policy is invalid");
+  });
+
+  it("requires same-origin double-submit proof before starting login", async () => {
+    const fixture = createDependencies();
+    const app = await createApp(fixture.dependencies);
+
+    expect((await app.inject({ method: "GET", url: HOSTED_LOGIN_ROUTE })).statusCode).toBe(404);
+    expect((await app.inject({ method: "POST", url: HOSTED_LOGIN_ROUTE })).statusCode).toBe(403);
+    expect(fixture.startLogin).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -251,17 +275,18 @@ describe("dormant hosted OIDC authentication lifecycle", () => {
     expect(setCookieHeaders(response)).toHaveLength(1);
   });
 
-  it("starts one exact transaction and redirects with one hardened browser binding", async () => {
+  it("starts one exact transaction and returns one hardened browser binding", async () => {
     const fixture = createDependencies();
     const response = await (
       await createApp(fixture.dependencies)
     ).inject({
-      method: "GET",
+      method: "POST",
       url: HOSTED_LOGIN_ROUTE,
+      headers: csrfHeaders(),
     });
 
-    expect(response.statusCode).toBe(303);
-    expect(response.headers.location).toBe(AUTHORIZATION_URL);
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ authorizationUrl: AUTHORIZATION_URL });
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.headers["referrer-policy"]).toBe("no-referrer");
     expect(fixture.startLogin).toHaveBeenCalledWith({
@@ -273,8 +298,28 @@ describe("dormant hosted OIDC authentication lifecycle", () => {
     });
     expect(fixture.buildAuthorization).toHaveBeenCalledWith(ISSUED_TRANSACTION);
     expect(setCookieHeaders(response)).toEqual([
-      `${LOGIN_COOKIE}; Path=/; Secure; HttpOnly; SameSite=Lax`,
+      `${LOGIN_COOKIE}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=300`,
     ]);
+  });
+
+  it("rate limits login starts before creating persistent transactions", async () => {
+    const fixture = createDependencies();
+    const trafficGuard: HostedAuthTrafficGuard = {
+      admitLoginStart: () => ({ allowed: false, retryAfterSeconds: 17 }),
+      enterCallback: () => () => undefined,
+    };
+    const response = await (
+      await createApp(fixture.dependencies, trafficGuard)
+    ).inject({
+      method: "POST",
+      url: HOSTED_LOGIN_ROUTE,
+      headers: csrfHeaders(),
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(response.headers["retry-after"]).toBe("17");
+    expect(fixture.startLogin).not.toHaveBeenCalled();
+    expect(setCookieHeaders(response)).toHaveLength(0);
   });
 
   it("rejects login query input before creating a transaction", async () => {
@@ -282,8 +327,9 @@ describe("dormant hosted OIDC authentication lifecycle", () => {
     const response = await (
       await createApp(fixture.dependencies)
     ).inject({
-      method: "GET",
+      method: "POST",
       url: `${HOSTED_LOGIN_ROUTE}?returnTo=https://evil.test`,
+      headers: csrfHeaders(),
     });
 
     expect(response.statusCode).toBe(401);
@@ -307,8 +353,9 @@ describe("dormant hosted OIDC authentication lifecycle", () => {
       const response = await (
         await createApp(fixture.dependencies)
       ).inject({
-        method: "GET",
+        method: "POST",
         url: HOSTED_LOGIN_ROUTE,
+        headers: csrfHeaders(),
       });
 
       expect(response.statusCode).toBe(503);
@@ -317,10 +364,34 @@ describe("dormant hosted OIDC authentication lifecycle", () => {
     },
   );
 
+  it("preserves callback retry state when callback capacity is saturated", async () => {
+    const fixture = createDependencies();
+    const trafficGuard: HostedAuthTrafficGuard = {
+      admitLoginStart: () => ({ allowed: true }),
+      enterCallback: () => null,
+    };
+    const response = await (
+      await createApp(fixture.dependencies, trafficGuard)
+    ).inject({
+      method: "GET",
+      url: CALLBACK_URL,
+      headers: { cookie: LOGIN_COOKIE },
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(response.headers["retry-after"]).toBe("1");
+    expect(fixture.consumeLogin).not.toHaveBeenCalled();
+    expect(setCookieHeaders(response)).toHaveLength(0);
+  });
+
   it("consumes, exchanges, verifies, provisions, and redirects exactly once", async () => {
     const fixture = createDependencies();
+    const releaseCallback = vi.fn();
     const response = await (
-      await createApp(fixture.dependencies)
+      await createApp(fixture.dependencies, {
+        admitLoginStart: () => ({ allowed: true }),
+        enterCallback: () => releaseCallback,
+      })
     ).inject({
       method: "GET",
       url: CALLBACK_URL,
@@ -348,6 +419,7 @@ describe("dormant hosted OIDC authentication lifecycle", () => {
     });
     expect(fixture.provisionIdentity).toHaveBeenCalledWith(VERIFIED_IDENTITY);
     expect(fixture.issueSession).toHaveBeenCalledWith({ userId: USER_ID, ...SESSION_POLICY });
+    expect(releaseCallback).toHaveBeenCalledOnce();
     const cookies = setCookieHeaders(response);
     expect(cookies).toHaveLength(3);
     expect(cookies[0]).toBe(`${SESSION_COOKIE}; Path=/; Secure; HttpOnly; SameSite=Lax`);

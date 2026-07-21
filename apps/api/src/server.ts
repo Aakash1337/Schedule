@@ -9,6 +9,7 @@ import {
 } from "@schedule/database";
 
 import { prepareHostedApiApp } from "./hosted-api-runtime.js";
+import { hostedRequestLogProtection } from "./hosted-auth-ingress.js";
 import {
   clearDesktopApiTokenEnvironment,
   desktopApiReadyLine,
@@ -22,6 +23,7 @@ import { createNaturalLanguagePromptHasher } from "./natural-language-runtime.js
 import { createProductServices } from "./product-services.js";
 
 const config = loadApiConfig();
+const hostedLogProtection = config.HOSTED_API_MODE === "oidc" ? hostedRequestLogProtection() : {};
 clearDesktopApiTokenEnvironment(process.env);
 const database = createDatabase(config.DATABASE_URL);
 const unitOfWork = new PostgresUnitOfWork(database);
@@ -73,9 +75,10 @@ const { app, composition: hostedOidcComposition } = await prepareHostedApiApp(co
     config.NODE_ENV === "development"
       ? {
           level: config.LOG_LEVEL,
+          ...hostedLogProtection,
           transport: { target: "pino-pretty", options: { colorize: true } },
         }
-      : { level: config.LOG_LEVEL },
+      : { level: config.LOG_LEVEL, ...hostedLogProtection },
   readinessCheck: () => healthCheckDatabase(database),
   ...(config.PRODUCT_API_MODE !== "disabled"
     ? {

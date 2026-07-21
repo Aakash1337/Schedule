@@ -21,7 +21,9 @@ Daily Plan Fit projection for local agents without exposing its evidence key or 
   set, and `PRODUCT_API_MODE=disabled`. Enabled startup completes provider discovery before listening,
   installs the four browser lifecycle routes, principal-bound workspace list/create, and the
   membership-authorized hosted work-item and Today slice,
-  applies `HOSTED_RATE_LIMIT_PER_MINUTE`, and reports `hostedEndpointsEnabled: true`. Partial,
+  applies exact public Host/HTTPS ingress validation, `HOSTED_RATE_LIMIT_PER_MINUTE`, aggregate
+  login-start admission, and callback concurrency admission, and reports
+  `hostedEndpointsEnabled: true`. Partial,
   malformed, mixed-case, and unknown non-empty `HOSTED_*` values fail startup without disclosure.
 - Hosted mode is still a narrow API slice, not a complete public product. First login creates one
   default workspace and active membership atomically;

@@ -466,10 +466,7 @@ test("keeps capture unavailable before sign-in", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Capture work without losing your place." }),
   ).toBeVisible();
-  await expect(page.getByRole("link", { name: "Sign in" })).toHaveAttribute(
-    "href",
-    "/v1/auth/login",
-  );
+  await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Work item" })).toHaveCount(0);
 });
 

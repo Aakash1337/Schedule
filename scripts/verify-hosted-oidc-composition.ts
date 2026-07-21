@@ -276,14 +276,29 @@ try {
   const prepared = await prepareHostedApiApp(
     config,
     database,
-    { logger: false },
+    { logger: false, trustProxy: "127.0.0.1" },
     (options) => createDormantHostedOidcComposition({ ...options, transport }),
     async () => hostedWebShell,
   );
   app = prepared.app;
   await app.ready();
+  const ingressHeaders = {
+    host: new URL(origin).host,
+    "x-forwarded-host": new URL(origin).host,
+    "x-forwarded-proto": "https",
+  };
+  const inject = (input: {
+    readonly method: "GET" | "POST" | "PATCH";
+    readonly url: string;
+    readonly headers?: Readonly<Record<string, string>>;
+    readonly payload?: object;
+  }) =>
+    prepared.app.inject({
+      ...input,
+      headers: { ...ingressHeaders, ...input.headers },
+    });
 
-  const systemInfo = await app.inject({ method: "GET", url: "/v1/system/info" });
+  const systemInfo = await inject({ method: "GET", url: "/v1/system/info" });
   assert.deepEqual(systemInfo.json(), {
     service: "schedule-api",
     version: "0.1.0",
@@ -292,18 +307,33 @@ try {
     integrationEndpointsEnabled: false,
     hostedEndpointsEnabled: true,
   });
-  assert.equal((await app.inject({ method: "GET", url: "/v1/workspaces" })).statusCode, 404);
-  const shell = await app.inject({ method: "GET", url: "/" });
+  assert.equal((await inject({ method: "GET", url: "/v1/workspaces" })).statusCode, 404);
+  const shell = await inject({ method: "GET", url: "/" });
   assert.equal(shell.statusCode, 200);
   assert.equal(shell.headers["cache-control"], "no-store");
   assert.match(shell.headers["content-security-policy"] ?? "", /default-src 'none'/u);
-  const shellAsset = await app.inject({ method: "GET", url: "/assets/hosted-test.js" });
+  const shellAsset = await inject({ method: "GET", url: "/assets/hosted-test.js" });
   assert.equal(shellAsset.statusCode, 200);
   assert.equal(shellAsset.headers["cache-control"], "public, max-age=31536000, immutable");
 
-  const login = await app.inject({ method: "GET", url: HOSTED_LOGIN_ROUTE });
-  assert.equal(login.statusCode, 303);
-  const authorization = new URL(login.headers.location ?? "");
+  const anonymousSession = await inject({ method: "GET", url: HOSTED_SESSION_ROUTE });
+  const loginCsrfCookie = setCookieHeaders(anonymousSession.headers["set-cookie"]).find((value) =>
+    value.startsWith(`${HOSTED_CSRF_COOKIE_NAME}=`),
+  );
+  assert.ok(loginCsrfCookie);
+  const loginCsrfToken = cookiePair(loginCsrfCookie).split("=", 2)[1];
+  assert.match(loginCsrfToken ?? "", /^[A-Za-z0-9_-]{43}$/u);
+  const login = await inject({
+    method: "POST",
+    url: HOSTED_LOGIN_ROUTE,
+    headers: {
+      origin,
+      cookie: cookiePair(loginCsrfCookie),
+      [HOSTED_CSRF_HEADER_NAME]: loginCsrfToken!,
+    },
+  });
+  assert.equal(login.statusCode, 200);
+  const authorization = new URL(login.json<{ authorizationUrl: string }>().authorizationUrl);
   assert.equal(`${authorization.origin}${authorization.pathname}`, authorizationEndpoint);
   assert.equal(authorization.searchParams.get("client_id"), clientId);
   assert.equal(authorization.searchParams.get("redirect_uri"), redirectUri);
@@ -318,7 +348,7 @@ try {
   const loginCookie = setCookieHeaders(login.headers["set-cookie"])[0];
   assert.ok(loginCookie);
 
-  const callback = await app.inject({
+  const callback = await inject({
     method: "GET",
     url: `${HOSTED_CALLBACK_ROUTE}?code=verified-code&state=${state}`,
     headers: { cookie: cookiePair(loginCookie) },
@@ -335,7 +365,7 @@ try {
   assert.ok(sessionCookie);
   assert.ok(csrfCookie);
 
-  const workspaceList = await app.inject({
+  const workspaceList = await inject({
     method: "GET",
     url: HOSTED_WORKSPACE_LIST_ROUTE,
     headers: { cookie: cookiePair(sessionCookie) },
@@ -384,7 +414,7 @@ try {
     },
   );
 
-  const replay = await app.inject({
+  const replay = await inject({
     method: "GET",
     url: `${HOSTED_CALLBACK_ROUTE}?code=verified-code&state=${state}`,
     headers: { cookie: cookiePair(loginCookie) },
@@ -392,7 +422,7 @@ try {
   assert.equal(replay.statusCode, 401);
   assert.equal(requestCounts.token, 1);
 
-  const authenticated = await app.inject({
+  const authenticated = await inject({
     method: "GET",
     url: HOSTED_SESSION_ROUTE,
     headers: { cookie: cookiePair(sessionCookie) },
@@ -402,7 +432,7 @@ try {
 
   const csrfToken = cookiePair(csrfCookie).split("=", 2)[1];
   assert.match(csrfToken ?? "", /^[A-Za-z0-9_-]{43}$/u);
-  const createdWorkspace = await app.inject({
+  const createdWorkspace = await inject({
     method: "POST",
     url: HOSTED_WORKSPACE_LIST_ROUTE,
     headers: {
@@ -432,7 +462,7 @@ try {
   );
   assert.equal(createdWorkspaceBody.createdAt, createdWorkspaceBody.updatedAt);
 
-  const refreshedWorkspaceList = await app.inject({
+  const refreshedWorkspaceList = await inject({
     method: "GET",
     url: HOSTED_WORKSPACE_LIST_ROUTE,
     headers: { cookie: cookiePair(sessionCookie) },
@@ -449,7 +479,7 @@ try {
     ],
   );
 
-  const createdWorkItem = await app.inject({
+  const createdWorkItem = await inject({
     method: "POST",
     url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items`,
     headers: {
@@ -481,7 +511,7 @@ try {
     dueOn: "2026-07-20",
     planningDurationMinutes: 75,
   });
-  const listedWorkItems = await app.inject({
+  const listedWorkItems = await inject({
     method: "GET",
     url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items`,
     headers: { cookie: cookiePair(sessionCookie) },
@@ -527,7 +557,7 @@ try {
     dueOn: "2026-07-20",
     planningDurationMinutes: 75,
   });
-  const listedToday = await app.inject({
+  const listedToday = await inject({
     method: "GET",
     url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/today?date=2026-07-16`,
     headers: { cookie: cookiePair(sessionCookie) },
@@ -541,7 +571,7 @@ try {
     items: [],
     totalMinutes: 0,
   });
-  const completedWorkItem = await app.inject({
+  const completedWorkItem = await inject({
     method: "PATCH",
     url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items/${createdWorkItemBody.id}`,
     headers: {
@@ -552,7 +582,7 @@ try {
     payload: { expectedVersion: createdWorkItemBody.version, status: "done" },
   });
   assert.equal(completedWorkItem.statusCode, 204, completedWorkItem.body);
-  const plannedWorkItem = await app.inject({
+  const plannedWorkItem = await inject({
     method: "POST",
     url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items`,
     headers: {
@@ -586,7 +616,7 @@ try {
     targetTaskCount: 1,
   };
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const generation: Awaited<ReturnType<typeof prepared.app.inject>> = await app.inject({
+    const generation: Awaited<ReturnType<typeof prepared.app.inject>> = await inject({
       method: "POST",
       url: generationRoute,
       headers: generationHeaders,
@@ -596,7 +626,7 @@ try {
     assert.equal(generation.body, "");
     assert.equal(generation.headers["cache-control"], "no-store");
   }
-  const conflictingGeneration = await app.inject({
+  const conflictingGeneration = await inject({
     method: "POST",
     url: generationRoute,
     headers: generationHeaders,
@@ -607,7 +637,7 @@ try {
     conflictingGeneration.json<{ error: { code: string } }>().error.code,
     "planning.revision_conflict",
   );
-  const plannedToday = await app.inject({
+  const plannedToday = await inject({
     method: "GET",
     url: generationRoute,
     headers: { cookie: cookiePair(sessionCookie) },
@@ -650,7 +680,7 @@ try {
     occurredAt: "2026-07-16T09:30:00.000Z",
   };
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const completionResponse: Awaited<ReturnType<typeof prepared.app.inject>> = await app.inject({
+    const completionResponse: Awaited<ReturnType<typeof prepared.app.inject>> = await inject({
       method: "POST",
       url: activityRoute,
       headers: activityHeaders,
@@ -660,7 +690,7 @@ try {
     assert.equal(completionResponse.body, "");
     assert.equal(completionResponse.headers["cache-control"], "no-store");
   }
-  const staleToday = await app.inject({
+  const staleToday = await inject({
     method: "POST",
     url: activityRoute,
     headers: { ...activityHeaders, "idempotency-key": "hosted-oidc-today-stale" },
@@ -668,7 +698,7 @@ try {
   });
   assert.equal(staleToday.statusCode, 409, staleToday.body);
   assert.equal(staleToday.json<{ error: { code: string } }>().error.code, "planning.head_conflict");
-  const completedTodayRead = await app.inject({
+  const completedTodayRead = await inject({
     method: "GET",
     url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/today?date=2026-07-16`,
     headers: { cookie: cookiePair(sessionCookie) },
@@ -687,7 +717,7 @@ try {
     ],
     totalMinutes: 45,
   });
-  const emptyBacklog = await app.inject({
+  const emptyBacklog = await inject({
     method: "GET",
     url: `/v1/hosted/workspaces/${createdWorkspaceBody.id}/work-items`,
     headers: { cookie: cookiePair(sessionCookie) },
@@ -734,7 +764,7 @@ try {
     ":workspaceId",
     createdWorkspaceBody.id,
   );
-  const fullSnapshot = await app.inject({
+  const fullSnapshot = await inject({
     method: "GET",
     url: snapshotRoute,
     headers: { cookie: cookiePair(sessionCookie) },
@@ -758,21 +788,21 @@ try {
   assert.doesNotMatch(fullSnapshot.body, /workspaceId|userId|sessionId|membership|issuer|subject/u);
 
   for (const [offset, expectedItem] of expectedSnapshotItems.entries()) {
-    const page: Awaited<ReturnType<typeof prepared.app.inject>> = await app.inject({
+    const page: Awaited<ReturnType<typeof prepared.app.inject>> = await inject({
       method: "GET",
       url: `${snapshotRoute}?limit=1&offset=${String(offset)}`,
       headers: { cookie: cookiePair(sessionCookie) },
     });
     assert.deepEqual(page.json(), { items: [expectedItem], limit: 1, offset });
   }
-  const maximumSnapshotPage = await app.inject({
+  const maximumSnapshotPage = await inject({
     method: "GET",
     url: `${snapshotRoute}?limit=200&offset=1000000`,
     headers: { cookie: cookiePair(sessionCookie) },
   });
   assert.deepEqual(maximumSnapshotPage.json(), { items: [], limit: 200, offset: 1_000_000 });
   for (const query of ["limit=0", "limit=201", "offset=1000001", "limit=01"]) {
-    const invalidPage: Awaited<ReturnType<typeof prepared.app.inject>> = await app.inject({
+    const invalidPage: Awaited<ReturnType<typeof prepared.app.inject>> = await inject({
       method: "GET",
       url: `${snapshotRoute}?${query}`,
       headers: { cookie: cookiePair(sessionCookie) },
@@ -891,7 +921,7 @@ try {
     where user_id = ${hostedAccount.userId}
       and workspace_id = ${discoveredWorkspaceId}
   `;
-  const deniedSnapshot = await app.inject({
+  const deniedSnapshot = await inject({
     method: "GET",
     url: HOSTED_WORK_ITEM_SNAPSHOT_ROUTE.replace(":workspaceId", discoveredWorkspaceId),
     headers: { cookie: cookiePair(sessionCookie) },
@@ -915,7 +945,7 @@ try {
     cookie: `${cookiePair(sessionCookie)}; ${cookiePair(csrfCookie)}`,
     [HOSTED_CSRF_HEADER_NAME]: csrfToken!,
   };
-  const fitWorkspaceResponse = await app.inject({
+  const fitWorkspaceResponse = await inject({
     method: "POST",
     url: HOSTED_WORKSPACE_LIST_ROUTE,
     headers: verifiedMutationHeaders,
@@ -926,7 +956,7 @@ try {
 
   for (const [dateIndex, date] of ["2026-07-13", "2026-07-14", "2026-07-15"].entries()) {
     for (let itemIndex = 0; itemIndex < 4; itemIndex += 1) {
-      const createdFitWork: Awaited<ReturnType<typeof prepared.app.inject>> = await app.inject({
+      const createdFitWork: Awaited<ReturnType<typeof prepared.app.inject>> = await inject({
         method: "POST",
         url: `/v1/hosted/workspaces/${fitWorkspaceId}/work-items`,
         headers: verifiedMutationHeaders,
@@ -939,27 +969,26 @@ try {
       });
       assert.equal(createdFitWork.statusCode, 201, createdFitWork.body);
     }
-    const historicalPlanResponse: Awaited<ReturnType<typeof prepared.app.inject>> =
-      await app.inject({
-        method: "POST",
-        url: `/v1/hosted/workspaces/${fitWorkspaceId}/today?date=${date}`,
-        headers: {
-          ...verifiedMutationHeaders,
-          "idempotency-key": `hosted-fit-plan-${String(dateIndex + 1)}`,
+    const historicalPlanResponse: Awaited<ReturnType<typeof prepared.app.inject>> = await inject({
+      method: "POST",
+      url: `/v1/hosted/workspaces/${fitWorkspaceId}/today?date=${date}`,
+      headers: {
+        ...verifiedMutationHeaders,
+        "idempotency-key": `hosted-fit-plan-${String(dateIndex + 1)}`,
+      },
+      payload: {
+        timeZone: "UTC",
+        window: {
+          startsAt: `${date}T08:00:00.000Z`,
+          endsAt: `${date}T12:30:00.000Z`,
         },
-        payload: {
-          timeZone: "UTC",
-          window: {
-            startsAt: `${date}T08:00:00.000Z`,
-            endsAt: `${date}T12:30:00.000Z`,
-          },
-          targetMinutes: 180,
-          targetTaskCount: 4,
-          planFitInsightKey: null,
-        },
-      });
+        targetMinutes: 180,
+        targetTaskCount: 4,
+        planFitInsightKey: null,
+      },
+    });
     assert.equal(historicalPlanResponse.statusCode, 204, historicalPlanResponse.body);
-    const historicalPlanRead: Awaited<ReturnType<typeof prepared.app.inject>> = await app.inject({
+    const historicalPlanRead: Awaited<ReturnType<typeof prepared.app.inject>> = await inject({
       method: "GET",
       url: `/v1/hosted/workspaces/${fitWorkspaceId}/today?date=${date}`,
       headers: { cookie: cookiePair(sessionCookie) },
@@ -971,7 +1000,7 @@ try {
     }>();
     assert.equal(historicalPlan.items.length, 4);
     for (const [itemIndex, item] of historicalPlan.items.entries()) {
-      const activity: Awaited<ReturnType<typeof prepared.app.inject>> = await app.inject({
+      const activity: Awaited<ReturnType<typeof prepared.app.inject>> = await inject({
         method: "POST",
         url: `${HOSTED_TODAY_ACTIVITY_ROUTE.replace(":workspaceId", fitWorkspaceId).replace(":itemId", item.id)}?date=${date}`,
         headers: {
@@ -990,7 +1019,7 @@ try {
   }
 
   const fitInsightRoute = `${HOSTED_DAILY_PLAN_FIT_INSIGHT_ROUTE.replace(":workspaceId", fitWorkspaceId)}?forDate=2026-07-16`;
-  const fitInsightResponse = await app.inject({
+  const fitInsightResponse = await inject({
     method: "GET",
     url: fitInsightRoute,
     headers: { cookie: cookiePair(sessionCookie) },
@@ -1037,7 +1066,7 @@ try {
     fitWorkspaceId,
   );
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const dismissalResponse: { statusCode: number; body: string } = await app.inject({
+    const dismissalResponse: { statusCode: number; body: string } = await inject({
       method: "POST",
       url: fitDismissalRoute,
       headers: { ...verifiedMutationHeaders, "idempotency-key": "hosted-fit-dismiss" },
@@ -1045,7 +1074,7 @@ try {
     });
     assert.equal(dismissalResponse.statusCode, 204, dismissalResponse.body);
   }
-  const dismissedInsight = await app.inject({
+  const dismissedInsight = await inject({
     method: "GET",
     url: fitInsightRoute,
     headers: { cookie: cookiePair(sessionCookie) },
@@ -1058,7 +1087,7 @@ try {
     fitWorkspaceId,
   );
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const resetResponse: { statusCode: number; body: string } = await app.inject({
+    const resetResponse: { statusCode: number; body: string } = await inject({
       method: "POST",
       url: fitResetRoute,
       headers: { ...verifiedMutationHeaders, "idempotency-key": "hosted-fit-reset" },
@@ -1066,7 +1095,7 @@ try {
     });
     assert.equal(resetResponse.statusCode, 204, resetResponse.body);
   }
-  const restoredInsight = await app.inject({
+  const restoredInsight = await inject({
     method: "GET",
     url: fitInsightRoute,
     headers: { cookie: cookiePair(sessionCookie) },
@@ -1074,7 +1103,7 @@ try {
   assert.equal(restoredInsight.statusCode, 200, restoredInsight.body);
   assert.equal(restoredInsight.json<{ disposition: string }>().disposition, "available");
 
-  const staleDismissal = await app.inject({
+  const staleDismissal = await inject({
     method: "POST",
     url: fitDismissalRoute,
     headers: { ...verifiedMutationHeaders, "idempotency-key": "hosted-fit-stale" },
@@ -1112,7 +1141,7 @@ try {
     planFitInsightKey: fitInsight.insightKey,
   };
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const usedFitGeneration: Awaited<ReturnType<typeof prepared.app.inject>> = await app.inject({
+    const usedFitGeneration: Awaited<ReturnType<typeof prepared.app.inject>> = await inject({
       method: "POST",
       url: fitGenerationRoute,
       headers: fitGenerationHeaders,
@@ -1152,7 +1181,7 @@ try {
     receipts: 1,
     plans: 1,
   });
-  const fitEffectiveness = await app.inject({
+  const fitEffectiveness = await inject({
     method: "GET",
     url: HOSTED_DAILY_PLAN_FIT_EFFECTIVENESS_ROUTE.replace(":workspaceId", fitWorkspaceId),
     headers: { cookie: cookiePair(sessionCookie) },
@@ -1174,7 +1203,7 @@ try {
   });
   assert.doesNotMatch(fitEffectiveness.body, /appliedTarget|usageId|forDate/u);
 
-  const deniedLogout = await app.inject({
+  const deniedLogout = await inject({
     method: "POST",
     url: HOSTED_LOGOUT_ROUTE,
     headers: {
@@ -1186,7 +1215,7 @@ try {
   assert.equal(deniedLogout.statusCode, 403);
   const mismatchedCsrfToken = "A".repeat(43);
   assert.notEqual(mismatchedCsrfToken, csrfToken);
-  const deniedCsrf = await app.inject({
+  const deniedCsrf = await inject({
     method: "POST",
     url: HOSTED_LOGOUT_ROUTE,
     headers: {
@@ -1196,14 +1225,14 @@ try {
     },
   });
   assert.equal(deniedCsrf.statusCode, 403);
-  const stillAuthenticated = await app.inject({
+  const stillAuthenticated = await inject({
     method: "GET",
     url: HOSTED_SESSION_ROUTE,
     headers: { cookie: cookiePair(sessionCookie) },
   });
   assert.deepEqual(stillAuthenticated.json(), { authenticated: true });
 
-  const logout = await app.inject({
+  const logout = await inject({
     method: "POST",
     url: HOSTED_LOGOUT_ROUTE,
     headers: {
@@ -1214,7 +1243,7 @@ try {
   });
   assert.equal(logout.statusCode, 204);
 
-  const signedOut = await app.inject({
+  const signedOut = await inject({
     method: "GET",
     url: HOSTED_SESSION_ROUTE,
     headers: { cookie: cookiePair(sessionCookie) },

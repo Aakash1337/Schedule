@@ -273,17 +273,27 @@ export function installIpRateLimit(
   let requestCount = 0;
   app.addHook("onRequest", async (request, reply) => {
     const now = Date.now();
-    const current = buckets.get(request.ip);
+    let current = buckets.get(request.ip);
+    if (current === undefined && buckets.size >= maxTrackedClients) {
+      let earliestReset = now + 60_000;
+      for (const [address, candidate] of buckets) {
+        if (now - candidate.startedAt >= 60_000) {
+          buckets.delete(address);
+        } else {
+          earliestReset = Math.min(earliestReset, candidate.startedAt + 60_000);
+        }
+      }
+      if (buckets.size >= maxTrackedClients) {
+        reply.header("retry-after", String(Math.max(1, Math.ceil((earliestReset - now) / 1_000))));
+        throw new RequestThrottledError();
+      }
+      current = buckets.get(request.ip);
+    }
+
     const bucket =
       current === undefined || now - current.startedAt >= 60_000
         ? { startedAt: now, count: 0 }
         : current;
-
-    if (current === undefined && buckets.size >= maxTrackedClients) {
-      const leastRecentlyUsedAddress = buckets.keys().next().value as string | undefined;
-      if (leastRecentlyUsedAddress !== undefined) buckets.delete(leastRecentlyUsedAddress);
-    }
-
     bucket.count += 1;
     buckets.delete(request.ip);
     buckets.set(request.ip, bucket);

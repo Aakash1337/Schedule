@@ -9,6 +9,28 @@ afterEach(() => {
 });
 
 describe("hosted web API client", () => {
+  it("starts sign-in with same-origin CSRF proof", async () => {
+    const token = "s".repeat(43);
+    const authorizationUrl = "https://identity.schedule.test/authorize?state=opaque";
+    vi.spyOn(document, "cookie", "get").mockReturnValue(`__Host-schedule_csrf=${token}`);
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ authorizationUrl }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(hostedApi.startSignIn()).resolves.toEqual({ authorizationUrl });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/auth/login",
+      expect.objectContaining({ method: "POST", credentials: "same-origin" }),
+    );
+    const [, options] = fetchMock.mock.calls[0]!;
+    expect(new Headers(options?.headers).get("x-schedule-csrf")).toBe(token);
+  });
+
   it("uses only the same-origin session and bounded hosted read routes", async () => {
     const fetchMock = vi
       .fn()

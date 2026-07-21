@@ -13,6 +13,7 @@ import {
 
 const apiMocks = vi.hoisted(() => ({
   session: vi.fn(),
+  startSignIn: vi.fn(),
   listWorkspaces: vi.fn(),
   createWorkspace: vi.fn(),
   bootstrapWorkItemSync: vi.fn(),
@@ -132,14 +133,17 @@ afterEach(() => {
 
 describe("hosted capture shell", () => {
   it("offers provider sign-in without exposing product controls", async () => {
+    const user = userEvent.setup();
     apiMocks.session.mockResolvedValue({ authenticated: false });
+    apiMocks.startSignIn.mockReturnValue(new Promise(() => undefined));
 
     render(<HostedApp />);
 
     expect(
       await screen.findByRole("heading", { name: "Capture work without losing your place." }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/v1/auth/login");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(apiMocks.startSignIn).toHaveBeenCalledOnce();
     expect(screen.queryByRole("textbox", { name: "Work item" })).not.toBeInTheDocument();
   });
 

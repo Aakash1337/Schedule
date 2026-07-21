@@ -857,6 +857,32 @@ export function HostedApp() {
     void submitPlanFitFeedback(intent);
   }
 
+  async function signIn() {
+    setBusy(true);
+    setError(null);
+    try {
+      const { authorizationUrl } = await hostedApi.startSignIn();
+      const target = new URL(authorizationUrl);
+      if (
+        target.protocol !== "https:" ||
+        target.username !== "" ||
+        target.password !== "" ||
+        target.hash !== ""
+      ) {
+        throw new HostedApiError(
+          503,
+          "hosted.authorization_unavailable",
+          "Schedule could not start sign-in.",
+        );
+      }
+      window.location.assign(target.href);
+    } catch (signInError) {
+      setError(publicError(signInError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function logout() {
     setBusy(true);
     setError(null);
@@ -898,9 +924,15 @@ export function HostedApp() {
           Sign in to add one item to your backlog. Your identity provider handles authentication.
         </p>
         {error === null ? null : <ErrorNotice message={error} />}
-        <a className="button button-primary hosted-sign-in-button" href={hostedApi.signInPath}>
+        <Button
+          type="button"
+          variant="primary"
+          className="hosted-sign-in-button"
+          busy={busy}
+          onClick={() => void signIn()}
+        >
           Sign in
-        </a>
+        </Button>
       </main>
     );
   }

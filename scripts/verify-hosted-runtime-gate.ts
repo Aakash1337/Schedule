@@ -192,7 +192,7 @@ try {
   };
   for (const request of [
     { method: "GET", route: "/v1/auth/session" },
-    { method: "GET", route: "/v1/auth/login" },
+    { method: "POST", route: "/v1/auth/login", body: {} },
     {
       method: "GET",
       route: `/v1/auth/callback?code=unreachable-code&state=${"S".repeat(43)}`,
