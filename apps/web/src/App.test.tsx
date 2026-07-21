@@ -347,6 +347,30 @@ describe("local application shell", () => {
     expect(screen.queryByText("destination_exists")).toBeNull();
   });
 
+  it("offers portable import during desktop workspace onboarding", async () => {
+    const user = userEvent.setup();
+    const actions = importActions();
+    apiMocks.listWorkspaces.mockResolvedValue(page([]));
+
+    render(<App desktopActions={actions} />);
+
+    expect(await screen.findByRole("heading", { name: "Give your days a shape." })).toBeVisible();
+    await user.click(await importArchiveButton());
+
+    expect(actions.selectImportArchive).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("region", { name: "Confirm archive import" })).toBeVisible();
+    expect(screen.getByText(importPreview.archiveId)).toBeVisible();
+    expect(screen.queryByText("opaque-import-token")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Replace local data and restart" }));
+
+    expect(actions.confirmImportArchive).toHaveBeenCalledWith("opaque-import-token");
+    expect(await exportMessage("Archive imported. Local services restarted.")).toHaveAttribute(
+      "role",
+      "status",
+    );
+  });
+
   it("requires a redacted preview and explicit confirmation before importing", async () => {
     const user = userEvent.setup();
     const actions = importActions();

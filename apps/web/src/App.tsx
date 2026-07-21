@@ -8,7 +8,15 @@ import {
   Plus,
   Repeat2,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 
 import { api, ApiError } from "./api";
 import { Button, ErrorNotice, PageSkeleton } from "./components/ui";
@@ -87,11 +95,13 @@ function WorkspaceSetup({
   error,
   onCreate,
   onRetry,
+  portableImport,
 }: {
   readonly busy: boolean;
   readonly error: string | null;
   readonly onCreate: (name: string) => Promise<void>;
   readonly onRetry: () => void;
+  readonly portableImport?: ReactNode;
 }) {
   const [name, setName] = useState("Personal");
 
@@ -137,6 +147,7 @@ function WorkspaceSetup({
           Create workspace
         </Button>
       </form>
+      {portableImport}
       <p className="onboarding-footnote">No account, cloud service, or AI model is required.</p>
     </main>
   );
@@ -522,6 +533,24 @@ export function App({ desktopActions }: { readonly desktopActions?: DesktopActio
     }
   }
 
+  function renderPortableImportControl() {
+    if (!canImport) return null;
+    return (
+      <PortableImportControl
+        importing={importing}
+        locked={importLocked}
+        preview={importSelection?.preview ?? null}
+        message={importMessage}
+        onSelect={() => void selectImportArchive()}
+        onCancel={() => {
+          setImportSelection(null);
+          setImportMessage({ tone: "status", text: "Import cancelled." });
+        }}
+        onConfirm={() => void confirmImportArchive()}
+      />
+    );
+  }
+
   if (loading) {
     return (
       <main className="loading-shell">
@@ -541,6 +570,7 @@ export function App({ desktopActions }: { readonly desktopActions?: DesktopActio
         error={loadError}
         onCreate={createWorkspace}
         onRetry={() => void loadWorkspaces()}
+        portableImport={renderPortableImportControl()}
       />
     );
   }
@@ -635,20 +665,7 @@ export function App({ desktopActions }: { readonly desktopActions?: DesktopActio
               message={exportMessage}
               onExport={() => void exportArchive()}
             />
-            {canImport ? (
-              <PortableImportControl
-                importing={importing}
-                locked={importLocked}
-                preview={importSelection?.preview ?? null}
-                message={importMessage}
-                onSelect={() => void selectImportArchive()}
-                onCancel={() => {
-                  setImportSelection(null);
-                  setImportMessage({ tone: "status", text: "Import cancelled." });
-                }}
-                onConfirm={() => void confirmImportArchive()}
-              />
-            ) : null}
+            {renderPortableImportControl()}
           </>
         )}
       </aside>
@@ -684,20 +701,7 @@ export function App({ desktopActions }: { readonly desktopActions?: DesktopActio
               message={exportMessage}
               onExport={() => void exportArchive()}
             />
-            {canImport ? (
-              <PortableImportControl
-                importing={importing}
-                locked={importLocked}
-                preview={importSelection?.preview ?? null}
-                message={importMessage}
-                onSelect={() => void selectImportArchive()}
-                onCancel={() => {
-                  setImportSelection(null);
-                  setImportMessage({ tone: "status", text: "Import cancelled." });
-                }}
-                onConfirm={() => void confirmImportArchive()}
-              />
-            ) : null}
+            {renderPortableImportControl()}
           </div>
         )}
         {loadError === null ? null : (
