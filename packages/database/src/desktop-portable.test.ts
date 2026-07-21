@@ -21,12 +21,14 @@ import {
   readDesktopImportJournal,
   readDesktopPortableEnvironment,
   reclaimStaleDesktopVerificationDatabases,
+  recoverDesktopPortableImport,
   runDesktopPortableCli,
   scavengeDesktopImportJournalTemporaries,
   selectStaleDesktopVerificationDatabases,
   writeDesktopImportJournal,
   type DesktopImportJournalV1,
   type DesktopPortableEnvironment,
+  type DesktopPortableRecoveryEnvironment,
   type DesktopVerificationDatabaseIdentity,
 } from "./desktop-portable.js";
 import { portablePromotionOperations } from "./portable-import.js";
@@ -43,6 +45,31 @@ describe("desktop portable helper boundary", () => {
     expect(parseDesktopPortableCommand(["import", source])).toEqual({ kind: "import", source });
     expect(parseDesktopPortableCommand(["recover"])).toEqual({ kind: "recover" });
     expect(() => parseDesktopPortableCommand(["import", "data.schedule"])).toThrow(/invalid/);
+  });
+  it("treats a missing import journal as a database-free recovery no-op", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "schedule-import-no-journal-test-"));
+    const environment: DesktopPortableRecoveryEnvironment = {
+      databaseUrl: "postgres://owner:secret@127.0.0.1:1/schedule",
+      adminDatabaseUrl: "postgres://admin:secret@127.0.0.1:1/postgres",
+      nodeExecutable: path.join(directory, "node"),
+      migrationEntrypoint: path.join(directory, "migrate.js"),
+      applicationVersion: "1.2.3",
+      databaseName: "schedule",
+      clusterAdminRole: "schedule_admin",
+      ownerRole: "schedule_owner",
+      runtimeRole: "schedule_runtime",
+      importJournalPath: path.join(directory, "portable-import-journal.v1.json"),
+    };
+    try {
+      await expect(recoverDesktopPortableImport(environment)).resolves.toEqual({
+        recovered: false,
+        state: "no-journal",
+        previousRetained: false,
+        committed: false,
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
   it("requires every packaged runtime input", () => {
     expect(() => readDesktopPortableEnvironment({ DATABASE_URL: "postgres://x/y" })).toThrow(

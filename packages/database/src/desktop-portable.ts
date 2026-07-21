@@ -1768,16 +1768,12 @@ export async function recoverDesktopPortableImport(
   await scavengeDesktopImportJournalTemporaries(environment.importJournalPath);
   const journal = await readDesktopImportJournal(environment.importJournalPath);
   if (journal === null) {
-    assertPrivateEmbeddedCluster(environment.databaseUrl, environment.adminDatabaseUrl);
-    const previousRetained = await reclaimMarkedImportDatabases(
-      environment,
-      await embeddedClusterSystemIdentifier(environment),
-      true,
-    );
+    // A real import reclaims marked leftovers before allocating staging. Keep ordinary startup
+    // independent of a second database client when there is no durable recovery work.
     return {
       recovered: false,
       state: "no-journal",
-      previousRetained,
+      previousRetained: false,
       committed: false,
     };
   }
