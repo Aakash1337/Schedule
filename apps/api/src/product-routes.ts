@@ -270,21 +270,25 @@ export function installIpRateLimit(
   maxTrackedClients = 4_096,
 ): void {
   const buckets = new Map<string, { startedAt: number; count: number }>();
+  let nextExpirationAt = Number.POSITIVE_INFINITY;
   let requestCount = 0;
   app.addHook("onRequest", async (request, reply) => {
     const now = Date.now();
     let current = buckets.get(request.ip);
     if (current === undefined && buckets.size >= maxTrackedClients) {
-      let earliestReset = now + 60_000;
-      for (const [address, candidate] of buckets) {
-        if (now - candidate.startedAt >= 60_000) {
-          buckets.delete(address);
-        } else {
-          earliestReset = Math.min(earliestReset, candidate.startedAt + 60_000);
+      if (now >= nextExpirationAt) {
+        nextExpirationAt = Number.POSITIVE_INFINITY;
+        for (const [address, candidate] of buckets) {
+          if (now - candidate.startedAt >= 60_000) {
+            buckets.delete(address);
+          } else {
+            nextExpirationAt = Math.min(nextExpirationAt, candidate.startedAt + 60_000);
+          }
         }
       }
       if (buckets.size >= maxTrackedClients) {
-        reply.header("retry-after", String(Math.max(1, Math.ceil((earliestReset - now) / 1_000))));
+        const retryAt = Number.isFinite(nextExpirationAt) ? nextExpirationAt : now + 60_000;
+        reply.header("retry-after", String(Math.max(1, Math.ceil((retryAt - now) / 1_000))));
         throw new RequestThrottledError();
       }
       current = buckets.get(request.ip);
@@ -294,6 +298,9 @@ export function installIpRateLimit(
       current === undefined || now - current.startedAt >= 60_000
         ? { startedAt: now, count: 0 }
         : current;
+    if (bucket !== current) {
+      nextExpirationAt = Math.min(nextExpirationAt, bucket.startedAt + 60_000);
+    }
     bucket.count += 1;
     buckets.delete(request.ip);
     buckets.set(request.ip, bucket);

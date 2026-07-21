@@ -374,6 +374,37 @@ describe("API infrastructure", () => {
     expect((await probeFrom("192.0.2.1")).statusCode).toBe(429);
   });
 
+  it("reclaims expired rate-limit clients at the tracked earliest expiry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-21T12:00:00.000Z"));
+    const boundedApp = Fastify({ logger: false });
+    apps.push(boundedApp);
+    installErrorHandler(boundedApp);
+    installIpRateLimit(boundedApp, 1, 2);
+    boundedApp.get("/probe", async () => ({ ok: true }));
+    const probeFrom = (remoteAddress: string) =>
+      boundedApp.inject({ method: "GET", url: "/probe", remoteAddress });
+
+    try {
+      expect((await probeFrom("192.0.2.1")).statusCode).toBe(200);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect((await probeFrom("192.0.2.2")).statusCode).toBe(200);
+      await vi.advanceTimersByTimeAsync(29_000);
+      const beforeExpiry = await probeFrom("192.0.2.3");
+      expect(beforeExpiry.statusCode).toBe(429);
+      expect(beforeExpiry.headers["retry-after"]).toBe("1");
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect((await probeFrom("192.0.2.3")).statusCode).toBe(200);
+      expect((await probeFrom("192.0.2.2")).statusCode).toBe(429);
+      const stillFull = await probeFrom("192.0.2.4");
+      expect(stillFull.statusCode).toBe(429);
+      expect(stillFull.headers["retry-after"]).toBe("30");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("requires the Rust-held credential and an originless request in desktop mode", async () => {
     const token = Buffer.alloc(32, 5).toString("base64url");
     const authenticator = createDesktopProductAuthenticator(
