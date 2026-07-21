@@ -6,7 +6,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createDatabase, type DatabaseConnection } from "../packages/database/src/index.js";
-import { loadMigrationManifest } from "../packages/database/src/migration-ledger.js";
+import {
+  loadMigrationManifest,
+  type MigrationManifest,
+} from "../packages/database/src/migration-ledger.js";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const migrateEntryPoint = path.join(repositoryRoot, "packages/database/dist/migrate.js");
@@ -246,13 +249,49 @@ async function retainedSnapshot(connection: DatabaseConnection): Promise<{
   return snapshot;
 }
 
+function forgedLedgerSql(manifest: MigrationManifest): string {
+  const rows = manifest.entries
+    .map((entry, index) => `(${index + 1}, '${entry.sha256}', ${entry.createdAt})`)
+    .join(", ");
+  return `
+    create schema drizzle;
+    create view drizzle.__drizzle_migrations as
+      select id::bigint as id, hash::text as hash, created_at::bigint as created_at
+      from (values ${rows}) ledger(id, hash, created_at);
+    create schema retained;
+    create table retained.keep (id integer primary key, note text not null);
+    insert into retained.keep values (1, 'preserve');
+  `;
+}
+
+async function forgedLedgerSnapshot(connection: DatabaseConnection): Promise<{
+  readonly kind: string | null;
+  readonly ledgerRows: number;
+  readonly retainedRows: number;
+}> {
+  const [snapshot] = await connection.sql<
+    { kind: string | null; ledgerRows: number; retainedRows: number }[]
+  >`
+    select
+      (select c.relkind::text from pg_catalog.pg_class c join pg_catalog.pg_namespace n
+        on n.oid = c.relnamespace
+        where n.nspname = 'drizzle' and c.relname = '__drizzle_migrations') as kind,
+      (select count(*)::integer from drizzle.__drizzle_migrations) as "ledgerRows",
+      (select count(*)::integer from retained.keep) as "retainedRows"
+  `;
+  if (snapshot === undefined) throw new Error("Forged-ledger snapshot failed.");
+  return snapshot;
+}
+
 export async function verifyMigrationLedger(sourceDatabaseUrl: string): Promise<void> {
   await access(migrateEntryPoint);
+  const manifest = await loadMigrationManifest(migrationsFolder);
   const nonce = randomUUID().replaceAll("-", "");
   const cleanName = disposableDatabaseName(nonce);
   const sessionMutationName = disposableDatabaseName(randomUUID().replaceAll("-", ""));
   const persistentMutationName = disposableDatabaseName(randomUUID().replaceAll("-", ""));
   const retainedName = disposableDatabaseName(randomUUID().replaceAll("-", ""));
+  const forgedLedgerName = disposableDatabaseName(randomUUID().replaceAll("-", ""));
   const admin = createDatabase(databaseUrlFor(sourceDatabaseUrl, "postgres"), 1, {
     applicationName: "schedule-migration-ledger-verifier",
   });
@@ -260,10 +299,12 @@ export async function verifyMigrationLedger(sourceDatabaseUrl: string): Promise<
   let sessionMutation: DatabaseConnection | undefined;
   let persistentMutation: DatabaseConnection | undefined;
   let retained: DatabaseConnection | undefined;
+  let forgedLedger: DatabaseConnection | undefined;
   let cleanCreated = false;
   let sessionMutationCreated = false;
   let persistentMutationCreated = false;
   let retainedCreated = false;
+  let forgedLedgerCreated = false;
   try {
     await createDisposable(admin, cleanName);
     cleanCreated = true;
@@ -280,7 +321,6 @@ export async function verifyMigrationLedger(sourceDatabaseUrl: string): Promise<
     const [first, second] = await Promise.all([runMigrator(cleanUrl), runMigrator(cleanUrl)]);
     assertNormalMigration(first, 0);
     assertNormalMigration(second, 0);
-    const manifest = await loadMigrationManifest(migrationsFolder);
     await assertCanonicalLedger(clean, manifest.entries.length);
     assertExactStatus(await runMigrator(cleanUrl, true), statusLine);
 
@@ -312,11 +352,31 @@ export async function verifyMigrationLedger(sourceDatabaseUrl: string): Promise<
     assertExactStatus(await runMigrator(retainedUrl, true), divergentStatusLine);
     assertNormalMigration(await runMigrator(retainedUrl), 1);
     assert.deepEqual(await retainedSnapshot(retained), before, "divergent database was mutated");
+
+    await createDisposable(admin, forgedLedgerName);
+    forgedLedgerCreated = true;
+    const forgedLedgerUrl = databaseUrlFor(sourceDatabaseUrl, forgedLedgerName);
+    forgedLedger = createDatabase(forgedLedgerUrl, 1);
+    await forgedLedger.sql.unsafe(forgedLedgerSql(manifest));
+    const forgedBefore = await forgedLedgerSnapshot(forgedLedger);
+    assert.deepEqual(forgedBefore, {
+      kind: "v",
+      ledgerRows: manifest.entries.length,
+      retainedRows: 1,
+    });
+    assertExactStatus(await runMigrator(forgedLedgerUrl, true), divergentStatusLine);
+    assertNormalMigration(await runMigrator(forgedLedgerUrl), 1);
+    assert.deepEqual(
+      await forgedLedgerSnapshot(forgedLedger),
+      forgedBefore,
+      "non-table migration ledger was mutated",
+    );
   } finally {
     await close(clean);
     await close(sessionMutation);
     await close(persistentMutation);
     await close(retained);
+    await close(forgedLedger);
     if (cleanCreated) await dropDisposable(admin, cleanName).catch(() => undefined);
     if (sessionMutationCreated) {
       await dropDisposable(admin, sessionMutationName).catch(() => undefined);
@@ -325,6 +385,9 @@ export async function verifyMigrationLedger(sourceDatabaseUrl: string): Promise<
       await dropDisposable(admin, persistentMutationName).catch(() => undefined);
     }
     if (retainedCreated) await dropDisposable(admin, retainedName).catch(() => undefined);
+    if (forgedLedgerCreated) {
+      await dropDisposable(admin, forgedLedgerName).catch(() => undefined);
+    }
     await admin.close();
   }
 }

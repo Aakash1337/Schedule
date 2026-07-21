@@ -5,9 +5,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+import type { Sql } from "postgres";
 
 import {
   classifyMigrationLedger,
+  inspectMigrationLedger,
   loadMigrationManifest,
   type MigrationLedgerSnapshot,
   type MigrationManifest,
@@ -189,6 +191,40 @@ describe("migration ledger compatibility", () => {
         ]),
       ),
     ).toBe("ahead");
+  });
+
+  it("rejects every non-table ledger kind without reading attacker-controlled rows", async () => {
+    for (const ledgerKind of ["v", "m", "f", "p", "S", "i"]) {
+      let calls = 0;
+      const sql = (async () => {
+        calls += 1;
+        if (calls !== 1) throw new Error("non-table ledger rows must not be read");
+        return [{ ledgerKind, hasUserRelations: true }];
+      }) as unknown as Sql;
+
+      await expect(inspectMigrationLedger(sql, manifest)).resolves.toBe("divergent");
+      expect(calls).toBe(1);
+    }
+  });
+
+  it("reads rows only after proving the ledger is an ordinary table", async () => {
+    let missingCalls = 0;
+    const missing = (async () => {
+      missingCalls += 1;
+      return [{ ledgerKind: null, hasUserRelations: false }];
+    }) as unknown as Sql;
+    await expect(inspectMigrationLedger(missing, manifest)).resolves.toBe("prefix");
+    expect(missingCalls).toBe(1);
+
+    let tableCalls = 0;
+    const table = (async () => {
+      tableCalls += 1;
+      return tableCalls === 1
+        ? [{ ledgerKind: "r", hasUserRelations: true }]
+        : [{ id: "1", createdAt: "10", hash: primary }];
+    }) as unknown as Sql;
+    await expect(inspectMigrationLedger(table, manifest)).resolves.toBe("prefix");
+    expect(tableCalls).toBe(2);
   });
 
   it("requires the exact Drizzle journal header", async () => {

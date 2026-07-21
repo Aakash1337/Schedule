@@ -181,8 +181,12 @@ export async function inspectMigrationLedger(
   sql: Sql,
   manifest: MigrationManifest,
 ): Promise<MigrationLedgerStatus> {
-  const [probe] = await sql<{ ledger: string | null; hasUserRelations: boolean }[]>`select
-      to_regclass('drizzle.__drizzle_migrations')::text as ledger,
+  const [probe] = await sql<{ ledgerKind: string | null; hasUserRelations: boolean }[]>`select
+      (select c.relkind::text
+        from pg_catalog.pg_class c
+        join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'drizzle'
+          and c.relname = '__drizzle_migrations') as "ledgerKind",
       exists (
         select 1
         from pg_catalog.pg_class c
@@ -220,13 +224,14 @@ export async function inspectMigrationLedger(
           )
       ) as "hasUserRelations"`;
   if (probe === undefined) throw new Error("Migration ledger probe failed.");
-  if (probe.ledger === null) {
+  if (probe.ledgerKind === null) {
     return classifyMigrationLedger(manifest, {
       exists: false,
       hasUserRelations: probe.hasUserRelations,
       rows: [],
     });
   }
+  if (probe.ledgerKind !== "r") return "divergent";
   const rows = await sql<MigrationLedgerRow[]>`
     select migrations.id::text as id, migrations.created_at::text as "createdAt", migrations.hash
     from drizzle.__drizzle_migrations migrations
