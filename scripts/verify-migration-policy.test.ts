@@ -125,7 +125,7 @@ describe("migration policy", () => {
     await append(
       root,
       "0001_plan-source-guard",
-      "INSERT INTO things VALUES (2);\nCREATE INDEX IF NOT EXISTS things_idx ON things (id);\n",
+      "INSERT INTO things VALUES (2);\nCREATE INDEX IF NOT EXISTS things_idx ON things (id);\nALTER TABLE things ADD COLUMN added text;\nALTER TABLE things VALIDATE CONSTRAINT things_valid;\n",
     );
     expect(() => verifyMigrationPolicy({ repositoryRoot: root, base })).not.toThrow();
   });
@@ -202,7 +202,10 @@ describe("migration policy", () => {
       "DROP POLICY workspace_isolation ON workspaces;\n",
       "DROP RULE immutable_activity_events ON activity_events;\n",
       "DROP EVENT TRIGGER migration_ddl_guard;\n",
+      "DROP FOREIGN TABLE external_items;\n",
       "DROP DOMAIN customer_code CASCADE;\n",
+      "ALTER DOMAIN customer_code DROP CONSTRAINT valid_customer_code;\n",
+      "ALTER DOMAIN customer_code DROP NOT NULL;\n",
       "ALTER TRIGGER activity_events_prevent_mutation ON activity_events RENAME TO old_guard;\n",
       "ALTER POLICY workspace_isolation ON workspaces USING (true);\n",
       "ALTER EVENT TRIGGER migration_ddl_guard DISABLE;\n",
@@ -214,6 +217,12 @@ describe("migration policy", () => {
       "ALTER TABLE things ALTER COLUMN id RESTART WITH 1;\n",
       "ALTER TABLE activity_events DISABLE TRIGGER activity_events_prevent_mutation;\n",
       "ALTER TABLE activity_events ENABLE REPLICA TRIGGER activity_events_prevent_mutation;\n",
+      "ALTER TABLE work_items DETACH PARTITION work_items_archive;\n",
+      "ALTER TABLE inherited_items INHERIT parent_items;\n",
+      "ALTER TABLE inherited_items NO INHERIT parent_items;\n",
+      "ALTER TABLE protected_items FORCE ROW LEVEL SECURITY;\n",
+      "ALTER TABLE protected_items NO FORCE ROW LEVEL SECURITY;\n",
+      "ALTER TABLE things SET SCHEMA legacy;\n",
       "ALTER TABLE things ALTER value TYPE text;\n",
       "ALTER TABLE things RENAME value TO old_value;\n",
       "ALTER TABLE things RENAME TO old_things;\n",

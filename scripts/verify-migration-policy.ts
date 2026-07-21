@@ -307,33 +307,7 @@ function destructiveOperation(statement: MigrationSqlStatement): string | undefi
     return "procedural SQL";
   }
   const rules: readonly [RegExp, string][] = [
-    [
-      postgresPattern(
-        `${keyword("DROP")}\\s+(?:${[
-          "TABLE",
-          "SCHEMA",
-          "DATABASE",
-          "TYPE",
-          "DOMAIN",
-          "SEQUENCE",
-          "INDEX",
-          "VIEW",
-          "FUNCTION",
-          "PROCEDURE",
-          "ROUTINE",
-          "TRIGGER",
-          "POLICY",
-          "RULE",
-          "EXTENSION",
-          "OWNED",
-        ]
-          .map(keyword)
-          .join(
-            "|",
-          )}|${keyword("MATERIALIZED")}\\s+${keyword("VIEW")}|${keyword("EVENT")}\\s+${keyword("TRIGGER")})`,
-      ),
-      "DROP data-bearing or compatibility-critical objects",
-    ],
+    [postgresPattern(`^${keyword("DROP")}\\s+`), "DROP database object"],
     [postgresPattern(`${keyword("TRUNCATE")}(?:\\s+${keyword("TABLE")})?`), "TRUNCATE"],
     [postgresPattern(`${keyword("DELETE")}\\s+${keyword("FROM")}`), "DELETE FROM"],
     [postgresPattern(keyword("UPDATE")), "UPDATE"],
@@ -358,6 +332,10 @@ function destructiveOperation(statement: MigrationSqlStatement): string | undefi
       "ALTER TYPE compatibility-changing operation",
     ],
     [
+      postgresPattern(`^${keyword("ALTER")}\\s+${keyword("DOMAIN")}\\s+`),
+      "ALTER DOMAIN compatibility-changing operation",
+    ],
+    [
       postgresPattern(
         `${keyword("ALTER")}\\s+(?:${keyword("TRIGGER")}|${keyword("POLICY")}|${keyword("RULE")}|${keyword("EVENT")}\\s+${keyword("TRIGGER")})`,
       ),
@@ -365,7 +343,7 @@ function destructiveOperation(statement: MigrationSqlStatement): string | undefi
     ],
     [
       postgresPattern(
-        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*(?:${keyword("DROP")}|${keyword("ALTER")}|${keyword("RENAME")}|${keyword("DISABLE")}|${keyword("ENABLE")})`,
+        `${keyword("ALTER")}\\s+${keyword("TABLE")}[\\s\\S]*(?:${keyword("DROP")}|${keyword("ALTER")}|${keyword("RENAME")}|${keyword("DISABLE")}|${keyword("ENABLE")}|${keyword("DETACH")}|(?:${keyword("NO")}\\s+)?${keyword("INHERIT")}|(?:${keyword("NO")}\\s+)?${keyword("FORCE")}\\s+${keyword("ROW")}\\s+${keyword("LEVEL")}\\s+${keyword("SECURITY")}|${keyword("SET")}\\s+(?:${keyword("SCHEMA")}|${keyword("TABLESPACE")}|${keyword("ACCESS")}\\s+${keyword("METHOD")}|${keyword("LOGGED")}|${keyword("UNLOGGED")}))`,
       ),
       "ALTER TABLE destructive or compatibility-changing operation",
     ],

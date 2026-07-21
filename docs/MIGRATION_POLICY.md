@@ -29,9 +29,9 @@ before each destructive statement:
 ```
 
 The gate requires this acknowledgement for data-rewriting `UPDATE`, `MERGE`, `DELETE FROM`, and
-`TRUNCATE` statements; sequence resets; dropping data-bearing or compatibility-critical objects,
-including indexes; replacing or altering triggers, policies, or rules; compatibility-changing type
-operations; and table changes that drop or rename columns or objects, change column types, or change
+`TRUNCATE` statements; sequence resets; every top-level `DROP` command; replacing or altering
+triggers, policies, or rules; domain changes and compatibility-changing type operations; and table
+changes that drop, detach, move, or rename columns or objects, change column types, inheritance, or
 enforcement modes. Dollar-quoted or procedural SQL also
 requires the acknowledgement because a lexical gate cannot prove dynamic SQL is harmless.
 Unicode-escaped quoted identifiers are forbidden because they can hide protected operations. Exact Drizzle
