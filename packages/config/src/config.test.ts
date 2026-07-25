@@ -29,6 +29,8 @@ describe("runtime configuration", () => {
     expect(config.DESKTOP_API_TOKEN_DIGEST).toBeUndefined();
     expect(config.HOSTED_API_MODE).toBe("disabled");
     expect(config.HOSTED_RATE_LIMIT_PER_MINUTE).toBe(120);
+    expect(config.HOSTED_AUTH_STARTS_PER_MINUTE).toBe(30);
+    expect(config.HOSTED_AUTH_MAX_CONCURRENT_CALLBACKS).toBe(4);
     expect(config.HOSTED_OIDC_REGISTRATION).toBeUndefined();
     expect(config.HOSTED_OIDC_PREFLIGHT_MODE).toBe("disabled");
     expect(config.HOSTED_OIDC_PREFLIGHT).toBeUndefined();
@@ -745,5 +747,22 @@ describe("runtime configuration", () => {
     ).toBe(1_000);
     expect(() => loadApiConfig({ PRODUCT_RATE_LIMIT_PER_MINUTE: "0" })).toThrow();
     expect(() => loadApiConfig({ PRODUCT_RATE_LIMIT_PER_MINUTE: "10001" })).toThrow();
+  });
+
+  it("coerces bounded hosted authentication traffic controls", () => {
+    const config = loadApiConfig({
+      HOSTED_AUTH_STARTS_PER_MINUTE: "45",
+      HOSTED_AUTH_MAX_CONCURRENT_CALLBACKS: "6",
+    });
+    expect(config.HOSTED_AUTH_STARTS_PER_MINUTE).toBe(45);
+    expect(config.HOSTED_AUTH_MAX_CONCURRENT_CALLBACKS).toBe(6);
+    for (const environment of [
+      { HOSTED_AUTH_STARTS_PER_MINUTE: "0" },
+      { HOSTED_AUTH_STARTS_PER_MINUTE: "1001" },
+      { HOSTED_AUTH_MAX_CONCURRENT_CALLBACKS: "0" },
+      { HOSTED_AUTH_MAX_CONCURRENT_CALLBACKS: "33" },
+    ]) {
+      expect(() => loadApiConfig(environment)).toThrow();
+    }
   });
 });

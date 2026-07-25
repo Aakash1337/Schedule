@@ -10,6 +10,7 @@ import { MAX_EXTERNAL_IDENTITY_KEY_BYTES } from "@schedule/domain";
 import type { FastifyInstance, FastifyReply, FastifyRequest, onSendHookHandler } from "fastify";
 
 import type { HostedRequestAuthenticator, HostedRequestCsrfGuard } from "./hosted-auth-boundary.js";
+import type { HostedAuthTrafficGuard } from "./hosted-auth-ingress.js";
 import {
   clearHostedCsrfCookie,
   clearHostedLoginBindingCookie,
@@ -109,7 +110,7 @@ export interface HostedAuthLifecycleDependencies {
 
 function publicFailure(
   request: FastifyRequest,
-  status: 401 | 403 | 503,
+  status: 401 | 403 | 429 | 503,
 ): {
   readonly error: { readonly code: string; readonly message: string };
   readonly requestId: string;
@@ -123,6 +124,12 @@ function publicFailure(
   if (status === 403) {
     return {
       error: { code: "hosted.csrf_failed", message: "Request verification failed." },
+      requestId: request.id,
+    };
+  }
+  if (status === 429) {
+    return {
+      error: { code: "hosted.rate_limit_exceeded", message: "Too many requests." },
       requestId: request.id,
     };
   }
@@ -282,6 +289,7 @@ function setAuthenticationCookies(reply: FastifyReply, sessionCookie: string): v
 export async function registerHostedAuthLifecycle(
   app: FastifyInstance,
   dependencies: HostedAuthLifecycleDependencies,
+  trafficGuard: HostedAuthTrafficGuard,
 ): Promise<void> {
   const sessionPolicy = Object.freeze({ ...dependencies.sessionPolicy });
   const loginPolicy = snapshotLoginPolicy(dependencies.loginPolicy);
@@ -317,10 +325,15 @@ export async function registerHostedAuthLifecycle(
       }
     });
 
-    hostedAuth.get(HOSTED_LOGIN_ROUTE, async (request, reply) => {
+    hostedAuth.post(HOSTED_LOGIN_ROUTE, { onRequest: verifyCsrf }, async (request, reply) => {
       reply.header("referrer-policy", "no-referrer");
       if (request.raw.url !== HOSTED_LOGIN_ROUTE) {
         return reply.code(401).send(publicFailure(request, 401));
+      }
+      const admission = trafficGuard.admitLoginStart();
+      if (!admission.allowed) {
+        reply.header("retry-after", String(admission.retryAfterSeconds));
+        return reply.code(429).send(publicFailure(request, 429));
       }
       try {
         const transaction = await dependencies.loginTransactionStarter.execute({
@@ -332,9 +345,14 @@ export async function registerHostedAuthLifecycle(
         });
         const authorization = dependencies.authorizationRequestBuilder.build(transaction);
         const redirect = authorizationRedirect(authorization.url);
-        if (redirect === null) throw new TypeError("The hosted authorization redirect is invalid.");
-        reply.header("set-cookie", serializeHostedLoginBindingCookie(transaction.browserBinding));
-        return reply.code(303).redirect(redirect);
+        if (redirect === null) {
+          throw new TypeError("The hosted authorization redirect is invalid.");
+        }
+        reply.header(
+          "set-cookie",
+          serializeHostedLoginBindingCookie(transaction.browserBinding, loginPolicy.ttlSeconds),
+        );
+        return { authorizationUrl: redirect };
       } catch {
         request.log.error("hosted OIDC authorization start failed internally");
         return reply.code(503).send(publicFailure(request, 503));
@@ -343,12 +361,18 @@ export async function registerHostedAuthLifecycle(
 
     hostedAuth.get(HOSTED_CALLBACK_ROUTE, async (request, reply) => {
       reply.header("referrer-policy", "no-referrer");
-      reply.header("set-cookie", clearHostedLoginBindingCookie());
       const credentials = callbackCredentials(request);
       const browserBinding = hostedLoginBindingFromRequest(request);
       if (credentials === null || browserBinding === null) {
+        reply.header("set-cookie", clearHostedLoginBindingCookie());
         return reply.code(401).send(publicFailure(request, 401));
       }
+      const releaseCallback = trafficGuard.enterCallback();
+      if (releaseCallback === null) {
+        reply.header("retry-after", "1");
+        return reply.code(429).send(publicFailure(request, 429));
+      }
+      reply.header("set-cookie", clearHostedLoginBindingCookie());
 
       try {
         const transaction = await dependencies.loginTransactionConsumer.execute({
@@ -410,6 +434,8 @@ export async function registerHostedAuthLifecycle(
       } catch {
         request.log.error("hosted OIDC callback failed internally");
         return reply.code(503).send(publicFailure(request, 503));
+      } finally {
+        releaseCallback();
       }
     });
 

@@ -24,6 +24,7 @@ import {
   registerHostedAuthLifecycle,
   type HostedAuthLifecycleDependencies,
 } from "./hosted-auth-lifecycle.js";
+import { HostedAuthIngressGuard, type HostedAuthTrafficLimits } from "./hosted-auth-ingress.js";
 import {
   registerHostedWorkItemBoundary,
   type HostedWorkItemServices,
@@ -45,6 +46,7 @@ export interface HostedApiOptions {
   readonly today: HostedTodayServices;
   readonly webShell?: HostedWebShell;
   readonly requestsPerMinute: number;
+  readonly authTrafficLimits: HostedAuthTrafficLimits;
 }
 
 export interface BuildAppOptions {
@@ -130,6 +132,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     origin: false,
   });
   installErrorHandler(app);
+  app.setNotFoundHandler((request, reply) =>
+    reply.code(404).send({
+      error: { code: "route.not_found", message: "Route not found." },
+      requestId: request.id,
+    }),
+  );
 
   app.get("/health/live", async () => ({ status: "alive" }));
 
@@ -209,27 +217,32 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   }
 
   if (options.hostedApi !== undefined) {
-    if (options.hostedApi.webShell !== undefined) {
-      await registerHostedWebShell(app, options.hostedApi.webShell);
-    }
-    await app.register(async (hostedApp) => {
-      installIpRateLimit(hostedApp, options.hostedApi!.requestsPerMinute);
-      await registerHostedAuthLifecycle(hostedApp, options.hostedApi!.auth);
-      await registerHostedWorkspaceRoutes(
-        hostedApp,
-        options.hostedApi!.boundary,
-        options.hostedApi!.workspaces,
-      );
-      await registerHostedWorkItemBoundary(
-        hostedApp,
-        options.hostedApi!.boundary,
-        options.hostedApi!.workItems,
-      );
-      await registerHostedTodayBoundary(
-        hostedApp,
-        options.hostedApi!.boundary,
-        options.hostedApi!.today,
-      );
+    const hostedApi = options.hostedApi;
+    const ingress = new HostedAuthIngressGuard(
+      hostedApi.auth.loginPolicy.hostedOrigin,
+      hostedApi.authTrafficLimits,
+    );
+    await app.register(async (hostedSurface) => {
+      hostedSurface.addHook("onRequest", async (request, reply) => {
+        if (ingress.accepts(request)) return;
+        return reply.code(421).send({
+          error: {
+            code: "hosted.ingress_rejected",
+            message: "The request was not accepted by the hosted ingress.",
+          },
+          requestId: request.id,
+        });
+      });
+      if (hostedApi.webShell !== undefined) {
+        await registerHostedWebShell(hostedSurface, hostedApi.webShell);
+      }
+      await hostedSurface.register(async (hostedApp) => {
+        installIpRateLimit(hostedApp, hostedApi.requestsPerMinute);
+        await registerHostedAuthLifecycle(hostedApp, hostedApi.auth, ingress);
+        await registerHostedWorkspaceRoutes(hostedApp, hostedApi.boundary, hostedApi.workspaces);
+        await registerHostedWorkItemBoundary(hostedApp, hostedApi.boundary, hostedApi.workItems);
+        await registerHostedTodayBoundary(hostedApp, hostedApi.boundary, hostedApi.today);
+      });
     });
   }
 

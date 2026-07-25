@@ -3527,7 +3527,10 @@
           "file": "apps/api/src/hosted-auth-lifecycle.test.ts",
           "command": "unit",
           "anchors": [
-            "starts one exact transaction and redirects with one hardened browser binding",
+            "requires same-origin double-submit proof before starting login",
+            "starts one exact transaction and returns one hardened browser binding",
+            "rate limits login starts before creating persistent transactions",
+            "preserves callback retry state when callback capacity is saturated",
             "consumes, exchanges, verifies, provisions, and redirects exactly once",
             "rejects %s before consuming the transaction",
             "maps a deterministic %s rejection to one generic 401 without session issuance",
@@ -3783,13 +3786,28 @@
           "command": "unit",
           "anchors": [
             "reports an %s session without exposing identity",
-            "starts one exact transaction and redirects with one hardened browser binding",
+            "requires same-origin double-submit proof before starting login",
+            "starts one exact transaction and returns one hardened browser binding",
+            "rate limits login starts before creating persistent transactions",
+            "preserves callback retry state when callback capacity is saturated",
             "consumes, exchanges, verifies, provisions, and redirects exactly once",
             "rejects %s before consuming the transaction",
             "maps a deterministic %s rejection to one generic 401 without session issuance",
             "rejects a provisioned identity with a mismatched %s",
             "revokes the exact presented session and clears both browser cookies",
             "redacts an internal %s callback failure and clears the binding"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/hosted-auth-ingress.test.ts",
+          "command": "unit",
+          "anchors": [
+            "accepts only the exact HTTPS public boundary",
+            "accepts forwarded HTTPS only through a trusted proxy",
+            "bounds aggregate login starts in constant space and resets the window",
+            "bounds concurrent callbacks and makes release idempotent",
+            "keeps request paths but excludes OIDC query credentials from logs"
           ]
         },
         {

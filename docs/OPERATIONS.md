@@ -553,14 +553,19 @@ manager and set `HOSTED_OIDC_PREFLIGHT_MODE=enabled`:
   UTF-8 bytes;
 - `HOSTED_LOGIN_PKCE_PRIMARY_KEY_ID` and one to sixteen comma-delimited
   `key-id:base64url-32-byte-key` entries in `HOSTED_LOGIN_PKCE_KEYS`.
+- `HOSTED_AUTH_STARTS_PER_MINUTE` and `HOSTED_AUTH_MAX_CONCURRENT_CALLBACKS` sized for one API
+  replica; the conservative defaults are 30 starts per minute and four concurrent callbacks.
 
 Startup parses and freezes the complete set, performs one bounded provider discovery, constructs the
 dependency graph, and only then builds the API app. Failure exits before listening through a stable
 redacted error. Disabled mode logs only the preflight result and keeps routes closed. OIDC mode
 registers login, callback, session, logout, active workspace discovery, the narrow hosted
-work-item/Today surface, and work-item sync v1, reports the capability, and throttles the hosted surface with
-`HOSTED_RATE_LIMIT_PER_MINUTE`. Source tracking is bounded to 4,096 least-recently used client
-addresses per API process.
+work-item/Today surface, and work-item sync v1, reports the capability, and throttles the hosted
+API with `HOSTED_RATE_LIMIT_PER_MINUTE`. Source tracking is bounded to 4,096 client addresses per
+API process and rejects new sources until a tracked window expires rather than evicting active
+history. Login starts also have a constant-space aggregate limit and callbacks have fail-fast
+concurrency admission. These controls are per replica; keep a fleet-wide edge limit in front of
+every public deployment.
 
 Migration `0041` leaves its global work-item capture capability disabled. On a never-enrolled database,
 local and explicit disabled API modes leave it off and do not accumulate the full-upsert change journal.
@@ -569,7 +574,7 @@ it to the listener; activation failure closes startup. Each trigger mutation sha
 lock, so pre-enrollment writes remain at cursor zero without history and later writes begin at cursor
 one. Enrollment cannot be reversed by switching modes.
 
-Do not enable OIDC mode until TLS ingress, trusted proxy ranges, secret injection, migrations, and
+Do not enable OIDC mode until TLS ingress, exact trusted proxy ranges, secret injection, migrations, and
 database backups are in place. First login atomically creates one `My Schedule` workspace and active
 membership. The current slice can discover active memberships but has no hosted workspace
 administration, broad product API, or shipped offline/bidirectional sync client. The same-origin shell

@@ -37,6 +37,9 @@ API_HOST=::
 DATABASE_URL=${{Postgres.DATABASE_URL}}
 PRODUCT_API_MODE=disabled
 HOSTED_API_MODE=oidc
+HOSTED_RATE_LIMIT_PER_MINUTE=120
+HOSTED_AUTH_STARTS_PER_MINUTE=30
+HOSTED_AUTH_MAX_CONCURRENT_CALLBACKS=4
 HOSTED_PUBLIC_ORIGIN=https://schedule.example.com
 HOSTED_OIDC_ISSUER=https://identity.example.com/tenant
 HOSTED_OIDC_CLIENT_ID=schedule-browser
@@ -54,9 +57,14 @@ no additional sync secret. Every API replica must receive the same value. Rotati
 signs out browser sessions and forces sync consumers to authenticate and bootstrap again.
 
 Do not set `API_PORT`; the API uses `API_PORT` when explicitly supplied and otherwise honors the
-platform `PORT`. Keep `API_TRUSTED_PROXIES` empty unless the provider publishes exact ingress
-addresses or CIDRs that have been verified. An empty list is safer than trusting all forwarded
-headers, although source throttling may then aggregate at the ingress proxy.
+platform `PORT`. The hosted surface rejects any request whose effective protocol and host do not
+exactly match `HOSTED_PUBLIC_ORIGIN`. When the platform terminates TLS, set `API_TRUSTED_PROXIES`
+only to its verified ingress addresses or CIDRs; never use a catch-all. If the provider cannot offer
+a stable, auditable trust boundary, keep hosted mode disabled or choose an ingress that can. Health
+checks remain reachable without the public hosted Host.
+
+The two auth-specific limits are per API replica. Keep a fleet-wide edge limit for login starts and
+callbacks as well; increasing replica count multiplies the in-process ceilings.
 
 Worker variables:
 

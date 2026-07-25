@@ -207,84 +207,112 @@ describe("API infrastructure", () => {
         ]),
       },
       requestsPerMinute: 2,
+      authTrafficLimits: { loginStartsPerMinute: 30, maxConcurrentCallbacks: 4 },
     } as unknown as HostedApiOptions;
-    const app = await buildApp({ hostedApi });
+    const app = await buildApp({ hostedApi, trustProxy: "127.0.0.1" });
     apps.push(app);
+    const ingressHeaders = {
+      host: "hosted.schedule.test",
+      "x-forwarded-host": "hosted.schedule.test",
+      "x-forwarded-proto": "https",
+    };
+    const injectHosted = (target: typeof app, input: Parameters<typeof app.inject>[0]) =>
+      target.inject({
+        ...input,
+        headers: { ...ingressHeaders, ...input.headers },
+      });
 
     const systemInfo = await app.inject({ method: "GET", url: "/v1/system/info" });
     expect(systemInfo.json()).toMatchObject({ hostedEndpointsEnabled: true });
-    const session = await app.inject({ method: "GET", url: "/v1/auth/session" });
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/",
+          headers: {
+            host: "alternate.schedule.test",
+            "x-forwarded-proto": "https",
+          },
+        })
+      ).statusCode,
+    ).toBe(421);
+    const session = await injectHosted(app, { method: "GET", url: "/v1/auth/session" });
     expect(session.statusCode).toBe(200);
     expect(session.json()).toEqual({ authenticated: false });
     expect(session.headers["cache-control"]).toBe("no-store");
     expect(session.headers["set-cookie"]).toContain("__Host-schedule_csrf=");
 
-    expect((await app.inject({ method: "GET", url: "/v1/auth/session" })).statusCode).toBe(200);
-    const throttled = await app.inject({ method: "GET", url: "/v1/auth/session" });
+    expect((await injectHosted(app, { method: "GET", url: "/v1/auth/session" })).statusCode).toBe(
+      200,
+    );
+    const throttled = await injectHosted(app, { method: "GET", url: "/v1/auth/session" });
     expect(throttled.statusCode).toBe(429);
     expect(throttled.headers["retry-after"]).toBeDefined();
-    const shell = await app.inject({ method: "GET", url: "/" });
+    const shell = await injectHosted(app, { method: "GET", url: "/" });
     expect(shell.statusCode).toBe(200);
     expect(shell.headers["content-security-policy"]).toContain("default-src 'none'");
-    expect((await app.inject({ method: "GET", url: "/assets/hosted.js" })).statusCode).toBe(200);
-    expect((await app.inject({ method: "GET", url: "/favicon.svg" })).statusCode).toBe(200);
+    expect((await injectHosted(app, { method: "GET", url: "/assets/hosted.js" })).statusCode).toBe(
+      200,
+    );
+    expect((await injectHosted(app, { method: "GET", url: "/favicon.svg" })).statusCode).toBe(200);
     expect((await app.inject({ method: "GET", url: "/health/live" })).statusCode).toBe(200);
 
     const protectedApp = await buildApp({
       hostedApi: { ...hostedApi, requestsPerMinute: 120 },
+      trustProxy: "127.0.0.1",
     });
     apps.push(protectedApp);
-    const protectedMutation = await protectedApp.inject({
+    const protectedMutation = await injectHosted(protectedApp, {
       method: "POST",
       url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items",
       payload: { title: "Protected hosted work" },
     });
     expect(protectedMutation.statusCode).toBe(401);
     expect(hostedApi.workItems.createWorkItem).not.toHaveBeenCalled();
-    const protectedWorkList = await protectedApp.inject({
+    const protectedWorkList = await injectHosted(protectedApp, {
       method: "GET",
       url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items",
     });
     expect(protectedWorkList.statusCode).toBe(401);
     expect(hostedApi.workItems.listWorkItems).not.toHaveBeenCalled();
-    const protectedWorkSnapshot = await protectedApp.inject({
+    const protectedWorkSnapshot = await injectHosted(protectedApp, {
       method: "GET",
       url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items/snapshot",
     });
     expect(protectedWorkSnapshot.statusCode).toBe(401);
     expect(hostedApi.workItems.listWorkItemSnapshot).not.toHaveBeenCalled();
-    const protectedSyncBootstrap = await protectedApp.inject({
+    const protectedSyncBootstrap = await injectHosted(protectedApp, {
       method: "GET",
       url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items/sync/bootstrap",
     });
     expect(protectedSyncBootstrap.statusCode).toBe(401);
     expect(hostedApi.workItems.bootstrapWorkItemSync).not.toHaveBeenCalled();
-    const protectedSyncChanges = await protectedApp.inject({
+    const protectedSyncChanges = await injectHosted(protectedApp, {
       method: "GET",
       url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items/sync/changes?cursor=invalid",
     });
     expect(protectedSyncChanges.statusCode).toBe(401);
     expect(hostedApi.workItems.listWorkItemSyncChanges).not.toHaveBeenCalled();
-    const protectedWorkUpdate = await protectedApp.inject({
+    const protectedWorkUpdate = await injectHosted(protectedApp, {
       method: "PATCH",
       url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/work-items/00000000-0000-4000-8000-000000000002",
       payload: { expectedVersion: 1, status: "done" },
     });
     expect(protectedWorkUpdate.statusCode).toBe(401);
     expect(hostedApi.workItems.updateWorkItemStatus).not.toHaveBeenCalled();
-    const protectedToday = await protectedApp.inject({
+    const protectedToday = await injectHosted(protectedApp, {
       method: "GET",
       url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/today?date=2026-07-16",
     });
     expect(protectedToday.statusCode).toBe(401);
     expect(hostedApi.today.getToday).not.toHaveBeenCalled();
-    const protectedPlanFit = await protectedApp.inject({
+    const protectedPlanFit = await injectHosted(protectedApp, {
       method: "GET",
       url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/daily-plan-fit-insight?forDate=2026-07-16",
     });
     expect(protectedPlanFit.statusCode).toBe(401);
     expect(hostedApi.today.getDailyPlanFitInsight).not.toHaveBeenCalled();
-    const protectedPlanFitEffectiveness = await protectedApp.inject({
+    const protectedPlanFitEffectiveness = await injectHosted(protectedApp, {
       method: "GET",
       url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/daily-plan-fit-insight/effectiveness",
     });
@@ -294,7 +322,7 @@ describe("API infrastructure", () => {
       ["dismissals", hostedApi.today.dismissDailyPlanFitInsight],
       ["dismissal-resets", hostedApi.today.resetDailyPlanFitInsightDismissal],
     ] as const) {
-      const response = await protectedApp.inject({
+      const response = await injectHosted(protectedApp, {
         method: "POST",
         url: `/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/daily-plan-fit-insight/${suffix}`,
         headers: { "idempotency-key": `protected-${suffix}` },
@@ -303,7 +331,7 @@ describe("API infrastructure", () => {
       expect(response.statusCode).toBe(401);
       expect(service).not.toHaveBeenCalled();
     }
-    const protectedTodayActivity = await protectedApp.inject({
+    const protectedTodayActivity = await injectHosted(protectedApp, {
       method: "POST",
       url: "/v1/hosted/workspaces/00000000-0000-4000-8000-000000000001/today/00000000-0000-4000-8000-000000000002/activity-events?date=2026-07-16",
       headers: { "idempotency-key": "protected-today-action" },
@@ -316,13 +344,13 @@ describe("API infrastructure", () => {
     });
     expect(protectedTodayActivity.statusCode).toBe(401);
     expect(hostedApi.today.recordActivity).not.toHaveBeenCalled();
-    const protectedWorkspaceList = await protectedApp.inject({
+    const protectedWorkspaceList = await injectHosted(protectedApp, {
       method: "GET",
       url: "/v1/hosted/workspaces",
     });
     expect(protectedWorkspaceList.statusCode).toBe(401);
     expect(hostedApi.workspaces.listWorkspaces).not.toHaveBeenCalled();
-    const protectedWorkspaceCreate = await protectedApp.inject({
+    const protectedWorkspaceCreate = await injectHosted(protectedApp, {
       method: "POST",
       url: "/v1/hosted/workspaces",
       payload: { name: "Protected workspace" },
@@ -342,8 +370,39 @@ describe("API infrastructure", () => {
     expect((await probeFrom("192.0.2.1")).statusCode).toBe(200);
     expect((await probeFrom("192.0.2.1")).statusCode).toBe(429);
     expect((await probeFrom("192.0.2.2")).statusCode).toBe(200);
-    expect((await probeFrom("192.0.2.3")).statusCode).toBe(200);
-    expect((await probeFrom("192.0.2.1")).statusCode).toBe(200);
+    expect((await probeFrom("192.0.2.3")).statusCode).toBe(429);
+    expect((await probeFrom("192.0.2.1")).statusCode).toBe(429);
+  });
+
+  it("reclaims expired rate-limit clients at the tracked earliest expiry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-21T12:00:00.000Z"));
+    const boundedApp = Fastify({ logger: false });
+    apps.push(boundedApp);
+    installErrorHandler(boundedApp);
+    installIpRateLimit(boundedApp, 1, 2);
+    boundedApp.get("/probe", async () => ({ ok: true }));
+    const probeFrom = (remoteAddress: string) =>
+      boundedApp.inject({ method: "GET", url: "/probe", remoteAddress });
+
+    try {
+      expect((await probeFrom("192.0.2.1")).statusCode).toBe(200);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect((await probeFrom("192.0.2.2")).statusCode).toBe(200);
+      await vi.advanceTimersByTimeAsync(29_000);
+      const beforeExpiry = await probeFrom("192.0.2.3");
+      expect(beforeExpiry.statusCode).toBe(429);
+      expect(beforeExpiry.headers["retry-after"]).toBe("1");
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect((await probeFrom("192.0.2.3")).statusCode).toBe(200);
+      expect((await probeFrom("192.0.2.2")).statusCode).toBe(429);
+      const stillFull = await probeFrom("192.0.2.4");
+      expect(stillFull.statusCode).toBe(429);
+      expect(stillFull.headers["retry-after"]).toBe("30");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("requires the Rust-held credential and an originless request in desktop mode", async () => {

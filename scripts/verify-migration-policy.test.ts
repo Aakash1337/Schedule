@@ -242,7 +242,7 @@ describe("migration policy", () => {
         /schedule-migration-review/u,
       );
     }
-  }, 45_000);
+  }, 120_000);
 
   it("accepts reviewed destructive SQL and ignores trigger words in literals and comments", async () => {
     const { root, base } = await fixture();

@@ -20,9 +20,12 @@ value are rejected without echoing a variable name or value that may contain cre
 
 Preflight alone does not expose routes. OIDC mode additionally requires the complete preflight,
 forces `PRODUCT_API_MODE=disabled`, installs the hosted surface only after successful discovery, and
-reports `hostedEndpointsEnabled: true`. `HOSTED_RATE_LIMIT_PER_MINUTE` bounds the complete hosted
-route group per resolved client address. The in-process bucket map is capped at 4,096 least-recently
-used addresses so source churn cannot grow memory without bound. Disabled mode keeps capability
+reports `hostedEndpointsEnabled: true`. `HOSTED_RATE_LIMIT_PER_MINUTE` bounds the hosted API group
+per resolved client address. The in-process bucket map is capped at 4,096 addresses and fails
+closed for new sources while all tracked windows remain active, so source churn cannot reset active
+limits or grow memory without bound. `HOSTED_AUTH_STARTS_PER_MINUTE` adds one constant-space
+aggregate transaction-start ceiling per replica, and `HOSTED_AUTH_MAX_CONCURRENT_CALLBACKS` bounds
+the expensive callback pipeline. Disabled mode keeps capability
 reporting false and every hosted route absent even when operators stage and validate the provider
 graph. It does not change the database sync capability, so a never-enrolled database remains off and
 writes no full-upsert journal. OIDC startup assembles the app, irreversibly enables database-wide
@@ -55,6 +58,12 @@ membership enumeration oracle. Invalid Origin or CSRF proof receives one generic
 authentication or authorization. Internal adapter failures and inconsistent contexts are logged
 but redacted behind one `503`. Every response crossing this seam receives `Cache-Control: no-store`.
 
+The outer hosted surface also requires the exact configured public `Host` and verified HTTPS
+protocol before serving the shell, immutable assets, authentication routes, or hosted API. Fastify
+honors forwarded host/protocol only from the explicit `API_TRUSTED_PROXIES` allowlist. Health and
+system endpoints remain outside this public-origin boundary. Production request logging preserves
+the path but removes query strings and browser credentials.
+
 ## Browser transport contract
 
 `HostedBrowserSessionAuthenticator` accepts only one bounded raw `Cookie` header and exactly one
@@ -70,6 +79,9 @@ The session serializer emits `Path=/; Secure; HttpOnly; SameSite=Lax` and no `Do
 `Max-Age`: PostgreSQL remains authoritative for sliding idle and fixed absolute expiry, so a stale
 client timestamp cannot terminate a legitimately refreshed session. The clear helper uses the same
 scope plus both `Max-Age=0` and a past `Expires` value.
+
+The login-binding cookie uses the same hardened scope and a `Max-Age` exactly equal to the bounded
+server-side login-transaction lifetime.
 
 `HostedBrowserCsrfGuard` requires an exact, canonical HTTPS Origin on every method other than `GET`,
 `HEAD`, and `OPTIONS`. It compares one `__Host-schedule_csrf` cookie with one `X-Schedule-CSRF`
@@ -87,10 +99,12 @@ runtime gate succeeds. Direct registrar tests exercise four routes:
 - `GET /v1/auth/session` resolves only the hardened session cookie, returns exactly
   `{ "authenticated": true | false }`, and emits a fresh CSRF cookie even when there is no active
   session. It never returns a user, provider, workspace, or session identifier.
-- `GET /v1/auth/login` accepts no query input. It creates one fixed-policy transaction, builds the
-  authorization URL from that exact result, emits the opaque browser binding only in the hardened
-  `__Host-schedule_login` cookie, and returns a `303` provider redirect with `no-store` and
-  `no-referrer` response policy.
+- `POST /v1/auth/login` requires exact-origin double-submit CSRF proof and accepts no query input.
+  After aggregate admission it creates one fixed-policy transaction, builds the authorization URL
+  from that exact result, emits the opaque browser binding only in the hardened
+  `__Host-schedule_login` cookie, and returns `{ "authorizationUrl": "https://..." }` with
+  `no-store` and `no-referrer` response policy. The same-origin shell then performs the browser
+  navigation.
 - `GET /v1/auth/callback` accepts exactly one bounded visible-ASCII `code`, one 256-bit `state`, and
   exactly one valid browser-binding cookie. It ignores unknown successful-response extensions as
   OAuth requires; when the provider supplies RFC 9207 `iss`, it accepts one bounded value and binds
@@ -100,6 +114,8 @@ runtime gate succeeds. Direct registrar tests exercise four routes:
   identity provision atomically creates one `My Schedule` workspace and active membership; a replay
   creates neither again. Success clears the login binding, emits hardened session and fresh CSRF
   cookies, and returns a `303` only to the consumed bounded local path under the fixed hosted origin.
+  Callback admission happens before clearing or consuming retry state. Saturation returns `429`
+  with `Retry-After` and preserves the binding cookie; every admitted path releases its permit.
 - `POST /v1/auth/logout` applies the same CSRF check first, parses the canonical session token once,
   requests `signed_out` revocation when possible, and clears both host cookies. Missing, malformed,
   unknown, already-revoked, and successful sessions all produce the same empty `204`; an internal
@@ -108,7 +124,7 @@ runtime gate succeeds. Direct registrar tests exercise four routes:
 All lifecycle responses receive `Cache-Control: no-store`. Login and callback redirects additionally
 receive `Referrer-Policy: no-referrer`. Malformed, missing, duplicate, provider-rejected, replayed,
 or wrong-browser callback credentials and disabled users share one generic `401`; CSRF denial is one
-generic `403`; verifier, persistence, session, and
+generic `403`; bounded auth saturation is one generic `429`; verifier, persistence, session, and
 contract failures are logged without private values and returned as one generic `503`. A consumed
 transaction is never reopened and exchange is never retried. Email, display name, or other claims
 can never substitute for the exact provider identity returned by the nonce-bound verifier.

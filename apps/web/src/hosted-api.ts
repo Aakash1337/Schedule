@@ -190,8 +190,12 @@ async function request<Result>(
 }
 
 export const hostedApi = {
-  signInPath: "/v1/auth/login",
   session: () => request<{ readonly authenticated: boolean }>("/v1/auth/session"),
+  startSignIn: () =>
+    request<{ readonly authorizationUrl: string }>("/v1/auth/login", {
+      method: "POST",
+      csrf: true,
+    }),
   listWorkspaces: () => request<HostedWorkspacePage>("/v1/hosted/workspaces?limit=20&offset=0"),
   createWorkspace: (name: string) =>
     request<HostedWorkspace>("/v1/hosted/workspaces", {
