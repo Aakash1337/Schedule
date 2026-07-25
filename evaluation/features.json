@@ -3139,7 +3139,8 @@
       },
       "limitations": [
         "The transaction services are reachable only through complete HOSTED_API_MODE=oidc configuration; disabled mode retains route closure.",
-        "A hosted deployment must source the HMAC pepper and AES-GCM key ring from a secret manager. Rotation remains restart-based."
+        "A hosted deployment must source the HMAC pepper and AES-GCM key ring from a secret manager. Rotation remains restart-based.",
+        "Periodic cleanup is disabled by default; every hosted deployment must explicitly enable the bounded worker mode."
       ],
       "evidence": [
         {
@@ -3194,6 +3195,38 @@
           "file": "apps/api/src/app.test.ts",
           "command": "unit",
           "anchors": ["keeps the dormant hosted identity foundation unreachable over HTTP"]
+        },
+        {
+          "level": "unit",
+          "file": "packages/config/src/config.test.ts",
+          "command": "unit",
+          "anchors": ["coerces bounded hosted login transaction cleanup controls"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/hosted-login-transaction-cleanup.test.ts",
+          "command": "unit",
+          "anchors": [
+            "does no work while disabled and records an enabled cycle interrupted before it starts",
+            "runs one bounded batch and emits aggregate-only evidence",
+            "redacts failures and rejects an invalid repository count",
+            "waits for the configured interval and retries a failed cycle",
+            "finishes an in-flight batch and then stops during shutdown"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/index.test.ts",
+          "command": "unit",
+          "anchors": ["shares one bounded maintenance database with hosted login cleanup"]
+        },
+        {
+          "level": "unit",
+          "file": "apps/worker/src/observability.test.ts",
+          "command": "unit",
+          "anchors": [
+            "records fixed-cardinality counters and failure-free materialization timestamps"
+          ]
         },
         {
           "level": "integration",
@@ -3570,7 +3603,7 @@
       },
       "limitations": [
         "The production server passes the factory output to buildApp only in explicit OIDC mode; disabled preflight retains it without route exposure.",
-        "Provider discovery occurs once during async construction and freezes the complete provider snapshot. A future reload must replace the whole dependency graph; periodic expired-login pruning remains a separate operations responsibility."
+        "Provider discovery occurs once during async construction and freezes the complete provider snapshot. A future reload must replace the whole dependency graph; the separate cleanup worker remains explicitly enabled per hosted deployment."
       ],
       "evidence": [
         {

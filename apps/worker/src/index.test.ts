@@ -20,6 +20,9 @@ const mocks = vi.hoisted(() => ({
     HOSTED_WORK_ITEM_SYNC_CLEANUP_RETENTION_DAYS: 90,
     HOSTED_WORK_ITEM_SYNC_CLEANUP_BATCH_SIZE: 250,
     HOSTED_WORK_ITEM_SYNC_CLEANUP_MAX_BATCHES: 20,
+    HOSTED_LOGIN_TRANSACTION_CLEANUP_MODE: "disabled" as "disabled" | "enabled",
+    HOSTED_LOGIN_TRANSACTION_CLEANUP_INTERVAL_MS: 60_000,
+    HOSTED_LOGIN_TRANSACTION_CLEANUP_BATCH_SIZE: 1_000,
     WEBHOOK_DELIVERY_MODE: "disabled",
     WEBHOOK_MASTER_KEYS_BY_ID: new Map(),
     WEBHOOK_CONNECT_TIMEOUT_MS: 1_000,
@@ -31,7 +34,7 @@ const mocks = vi.hoisted(() => ({
   database: { close: vi.fn(async () => undefined) },
   observabilityDatabase: { close: vi.fn(async () => undefined) },
   deploymentHealthDatabase: { close: vi.fn(async () => undefined) },
-  hostedSyncCleanupDatabase: { close: vi.fn(async () => undefined) },
+  hostedMaintenanceDatabase: { close: vi.fn(async () => undefined) },
   createDatabase: vi.fn(
     (
       _databaseUrl: string,
@@ -42,8 +45,8 @@ const mocks = vi.hoisted(() => ({
         ? mocks.database
         : options?.applicationName === "schedule-worker-deployment-health"
           ? mocks.deploymentHealthDatabase
-          : options?.applicationName === "schedule-worker-hosted-sync-cleanup"
-            ? mocks.hostedSyncCleanupDatabase
+          : options?.applicationName === "schedule-worker-hosted-maintenance"
+            ? mocks.hostedMaintenanceDatabase
             : mocks.observabilityDatabase,
   ),
   loadWebhookDispatchRecord: vi.fn(),
@@ -57,6 +60,11 @@ const mocks = vi.hoisted(() => ({
   hostedSyncCleanupDependencies: {},
   createHostedSyncCleanupDependencies: vi.fn(() => mocks.hostedSyncCleanupDependencies),
   runHostedSyncCleanupWorker: vi.fn(async () => undefined),
+  hostedLoginTransactionCleanupDependencies: {},
+  createHostedLoginTransactionCleanupDependencies: vi.fn(
+    () => mocks.hostedLoginTransactionCleanupDependencies,
+  ),
+  runHostedLoginTransactionCleanupWorker: vi.fn(async () => undefined),
   telemetry: {},
   WorkerTelemetry: vi.fn(function () {
     return mocks.telemetry;
@@ -102,6 +110,11 @@ vi.mock("./hosted-sync-cleanup.js", () => ({
   createHostedSyncCleanupDependencies: mocks.createHostedSyncCleanupDependencies,
   runHostedSyncCleanupWorker: mocks.runHostedSyncCleanupWorker,
 }));
+vi.mock("./hosted-login-transaction-cleanup.js", () => ({
+  createHostedLoginTransactionCleanupDependencies:
+    mocks.createHostedLoginTransactionCleanupDependencies,
+  runHostedLoginTransactionCleanupWorker: mocks.runHostedLoginTransactionCleanupWorker,
+}));
 vi.mock("./observability.js", () => ({
   WorkerTelemetry: mocks.WorkerTelemetry,
   runWorkerDeploymentHealthServer: mocks.runWorkerDeploymentHealthServer,
@@ -126,6 +139,7 @@ describe("worker entrypoint", () => {
     mocks.config.WEBHOOK_DELIVERY_MODE = "disabled";
     mocks.config.NOTIFICATION_MATERIALIZATION_MODE = "disabled";
     mocks.config.HOSTED_WORK_ITEM_SYNC_CLEANUP_MODE = "disabled";
+    mocks.config.HOSTED_LOGIN_TRANSACTION_CLEANUP_MODE = "disabled";
     mocks.config.WORKER_OBSERVABILITY_MODE = "disabled";
     mocks.config.WORKER_DEPLOYMENT_HEALTH_MODE = "disabled";
     mocks.config.PORT = undefined;
@@ -150,11 +164,13 @@ describe("worker entrypoint", () => {
     });
     expect(mocks.database.close).toHaveBeenCalledTimes(1);
     expect(mocks.createDatabase).toHaveBeenCalledTimes(1);
-    expect(mocks.hostedSyncCleanupDatabase.close).not.toHaveBeenCalled();
+    expect(mocks.hostedMaintenanceDatabase.close).not.toHaveBeenCalled();
     expect(mocks.createNotificationMaterializationDependencies).not.toHaveBeenCalled();
     expect(mocks.runNotificationMaterializationWorker).not.toHaveBeenCalled();
     expect(mocks.createHostedSyncCleanupDependencies).not.toHaveBeenCalled();
     expect(mocks.runHostedSyncCleanupWorker).not.toHaveBeenCalled();
+    expect(mocks.createHostedLoginTransactionCleanupDependencies).not.toHaveBeenCalled();
+    expect(mocks.runHostedLoginTransactionCleanupWorker).not.toHaveBeenCalled();
     expect(mocks.runWorkerObservabilityServer).not.toHaveBeenCalled();
     expect(mocks.runWorkerDeploymentHealthServer).not.toHaveBeenCalled();
   });
@@ -202,10 +218,10 @@ describe("worker entrypoint", () => {
 
     expect(mocks.createDatabase).toHaveBeenCalledWith("postgres://unused", 1, {
       statementTimeoutMs: 2_000,
-      applicationName: "schedule-worker-hosted-sync-cleanup",
+      applicationName: "schedule-worker-hosted-maintenance",
     });
     expect(mocks.createHostedSyncCleanupDependencies).toHaveBeenCalledWith(
-      mocks.hostedSyncCleanupDatabase,
+      mocks.hostedMaintenanceDatabase,
     );
     expect(mocks.runHostedSyncCleanupWorker).toHaveBeenCalledWith(
       mocks.config,
@@ -215,7 +231,28 @@ describe("worker entrypoint", () => {
       mocks.telemetry,
     );
     expect(mocks.runWorkerServices.mock.calls[0]?.[0]).toHaveLength(2);
-    expect(mocks.hostedSyncCleanupDatabase.close).toHaveBeenCalledTimes(1);
+    expect(mocks.hostedMaintenanceDatabase.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares one bounded maintenance database with hosted login cleanup", async () => {
+    mocks.config.HOSTED_WORK_ITEM_SYNC_CLEANUP_MODE = "enabled";
+    mocks.config.HOSTED_LOGIN_TRANSACTION_CLEANUP_MODE = "enabled";
+
+    await import("./index.js");
+
+    expect(mocks.createDatabase).toHaveBeenCalledTimes(2);
+    expect(mocks.createHostedLoginTransactionCleanupDependencies).toHaveBeenCalledWith(
+      mocks.hostedMaintenanceDatabase,
+    );
+    expect(mocks.runHostedLoginTransactionCleanupWorker).toHaveBeenCalledWith(
+      mocks.config,
+      mocks.hostedLoginTransactionCleanupDependencies,
+      expect.any(AbortSignal),
+      undefined,
+      mocks.telemetry,
+    );
+    expect(mocks.runWorkerServices.mock.calls[0]?.[0]).toHaveLength(3);
+    expect(mocks.hostedMaintenanceDatabase.close).toHaveBeenCalledTimes(1);
   });
 
   it("starts loopback observability only when explicitly enabled", async () => {

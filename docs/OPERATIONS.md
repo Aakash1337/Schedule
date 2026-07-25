@@ -606,7 +606,7 @@ HOSTED_WORK_ITEM_SYNC_CLEANUP_BATCH_SIZE=250
 HOSTED_WORK_ITEM_SYNC_CLEANUP_MAX_BATCHES=20
 ```
 
-The worker uses a dedicated one-connection pool, a two-second per-statement timeout, sequential
+The worker uses a shared hosted-maintenance one-connection pool, a two-second per-statement timeout, sequential
 non-overlapping batches, and aggregate-only logs and metrics. Failures retry on the next interval and
 do not change readiness. The explicit fallback uses the same private PostgreSQL database:
 
@@ -628,6 +628,26 @@ ahead of the restored workspace head. Monitor that status plus cleanup freshness
 exhaustion, and log-table growth. Keep manual cleanup separate from migrations, backups, and
 request-serving processes, and see
 [HOSTED_SYNC.md](./HOSTED_SYNC.md) for protocol and recovery semantics.
+
+## Hosted login transaction cleanup
+
+Hosted OIDC starts persist short-lived coordination rows even when the browser never returns. Enable
+the worker cleanup in every hosted environment:
+
+```dotenv
+HOSTED_LOGIN_TRANSACTION_CLEANUP_MODE=enabled
+HOSTED_LOGIN_TRANSACTION_CLEANUP_INTERVAL_MS=60000
+HOSTED_LOGIN_TRANSACTION_CLEANUP_BATCH_SIZE=1000
+```
+
+Each single-flight cycle deletes at most one expiry-ordered batch using the database clock and
+`FOR UPDATE SKIP LOCKED`. The 10,000–3,600,000 millisecond interval and 1–1,000 row batch are
+configuration-bounded. Multiple worker replicas may run safely; they skip rows another transaction
+has locked. The hosted-maintenance pool has one connection and a two-second statement timeout, and
+is shared with hosted sync retention when both jobs are enabled. Failures are redacted, counted, and
+retried on the next interval without changing worker readiness. Monitor cleanup failure and
+last-success metrics; sustained row growth means the batch/interval cannot keep up with admitted
+login starts.
 
 ## Routine verification
 

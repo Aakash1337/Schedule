@@ -9,6 +9,7 @@ import {
 
 import type { NotificationMaterializationCycleSummary } from "./notification-materializer.js";
 import type { HostedSyncCleanupCycleSummary } from "./hosted-sync-cleanup.js";
+import type { HostedLoginTransactionCleanupCycleSummary } from "./hosted-login-transaction-cleanup.js";
 
 const LOOPBACK_HOST = "127.0.0.1";
 const PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
@@ -33,6 +34,12 @@ export interface NotificationMaterializationTelemetry {
 
 export interface HostedSyncCleanupTelemetry {
   recordHostedSyncCleanupCycle(summary: HostedSyncCleanupCycleSummary): void;
+}
+
+export interface HostedLoginTransactionCleanupTelemetry {
+  recordHostedLoginTransactionCleanupCycle(
+    summary: HostedLoginTransactionCleanupCycleSummary,
+  ): void;
 }
 
 export interface WorkerTelemetrySnapshot {
@@ -65,6 +72,12 @@ export interface WorkerTelemetrySnapshot {
   readonly hostedSyncCleanupAborted: number;
   readonly hostedSyncCleanupLastCompletedTimestampSeconds: number;
   readonly hostedSyncCleanupLastSuccessfulTimestampSeconds: number;
+  readonly hostedLoginTransactionCleanupCycles: number;
+  readonly hostedLoginTransactionCleanupFailures: number;
+  readonly hostedLoginTransactionCleanupDeletedTransactions: number;
+  readonly hostedLoginTransactionCleanupAborted: number;
+  readonly hostedLoginTransactionCleanupLastCompletedTimestampSeconds: number;
+  readonly hostedLoginTransactionCleanupLastSuccessfulTimestampSeconds: number;
 }
 
 type MutableTelemetryState = {
@@ -87,7 +100,11 @@ function addSaturated(current: number, increment = 1): number {
 }
 
 export class WorkerTelemetry
-  implements OutboxWorkerTelemetry, NotificationMaterializationTelemetry, HostedSyncCleanupTelemetry
+  implements
+    OutboxWorkerTelemetry,
+    NotificationMaterializationTelemetry,
+    HostedSyncCleanupTelemetry,
+    HostedLoginTransactionCleanupTelemetry
 {
   readonly #clock: TelemetryClock;
   readonly #startedAtMs: number;
@@ -120,6 +137,12 @@ export class WorkerTelemetry
     hostedSyncCleanupAborted: 0,
     hostedSyncCleanupLastCompletedTimestampSeconds: 0,
     hostedSyncCleanupLastSuccessfulTimestampSeconds: 0,
+    hostedLoginTransactionCleanupCycles: 0,
+    hostedLoginTransactionCleanupFailures: 0,
+    hostedLoginTransactionCleanupDeletedTransactions: 0,
+    hostedLoginTransactionCleanupAborted: 0,
+    hostedLoginTransactionCleanupLastCompletedTimestampSeconds: 0,
+    hostedLoginTransactionCleanupLastSuccessfulTimestampSeconds: 0,
   };
 
   constructor(clock: TelemetryClock = () => new Date()) {
@@ -236,6 +259,33 @@ export class WorkerTelemetry
     this.#state.hostedSyncCleanupLastCompletedTimestampSeconds = completedAtSeconds;
     if (!summary.failed && !summary.contended && !summary.limitReached && !summary.aborted) {
       this.#state.hostedSyncCleanupLastSuccessfulTimestampSeconds = completedAtSeconds;
+    }
+  }
+
+  recordHostedLoginTransactionCleanupCycle(
+    summary: HostedLoginTransactionCleanupCycleSummary,
+  ): void {
+    const completedAtSeconds = Math.floor(validClockInstant(this.#clock).getTime() / 1_000);
+    this.#state.hostedLoginTransactionCleanupCycles = addSaturated(
+      this.#state.hostedLoginTransactionCleanupCycles,
+    );
+    this.#state.hostedLoginTransactionCleanupDeletedTransactions = addSaturated(
+      this.#state.hostedLoginTransactionCleanupDeletedTransactions,
+      summary.deletedTransactions,
+    );
+    if (summary.failed) {
+      this.#state.hostedLoginTransactionCleanupFailures = addSaturated(
+        this.#state.hostedLoginTransactionCleanupFailures,
+      );
+    }
+    if (summary.aborted) {
+      this.#state.hostedLoginTransactionCleanupAborted = addSaturated(
+        this.#state.hostedLoginTransactionCleanupAborted,
+      );
+    }
+    this.#state.hostedLoginTransactionCleanupLastCompletedTimestampSeconds = completedAtSeconds;
+    if (!summary.failed && !summary.aborted) {
+      this.#state.hostedLoginTransactionCleanupLastSuccessfulTimestampSeconds = completedAtSeconds;
     }
   }
 
@@ -570,6 +620,42 @@ export function renderWorkerMetrics(
       "Unix timestamp of the last complete hosted sync retention cycle.",
       "gauge",
       telemetry.hostedSyncCleanupLastSuccessfulTimestampSeconds,
+    ),
+    metric(
+      "schedule_hosted_login_transaction_cleanup_cycles_total",
+      "Hosted login transaction cleanup cycles.",
+      "counter",
+      telemetry.hostedLoginTransactionCleanupCycles,
+    ),
+    metric(
+      "schedule_hosted_login_transaction_cleanup_failures_total",
+      "Failed hosted login transaction cleanup cycles.",
+      "counter",
+      telemetry.hostedLoginTransactionCleanupFailures,
+    ),
+    metric(
+      "schedule_hosted_login_transaction_cleanup_deleted_transactions_total",
+      "Expired hosted login transactions deleted by cleanup.",
+      "counter",
+      telemetry.hostedLoginTransactionCleanupDeletedTransactions,
+    ),
+    metric(
+      "schedule_hosted_login_transaction_cleanup_aborted_total",
+      "Hosted login transaction cleanup cycles interrupted by shutdown.",
+      "counter",
+      telemetry.hostedLoginTransactionCleanupAborted,
+    ),
+    metric(
+      "schedule_hosted_login_transaction_cleanup_last_completed_timestamp_seconds",
+      "Unix timestamp of the last completed hosted login transaction cleanup cycle.",
+      "gauge",
+      telemetry.hostedLoginTransactionCleanupLastCompletedTimestampSeconds,
+    ),
+    metric(
+      "schedule_hosted_login_transaction_cleanup_last_successful_timestamp_seconds",
+      "Unix timestamp of the last successful hosted login transaction cleanup cycle.",
+      "gauge",
+      telemetry.hostedLoginTransactionCleanupLastSuccessfulTimestampSeconds,
     ),
     metric(
       "schedule_outbox_ready",
