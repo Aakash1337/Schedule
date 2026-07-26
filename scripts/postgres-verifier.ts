@@ -30,6 +30,12 @@ export interface PsqlOptions {
   readonly quiet?: boolean;
 }
 
+interface NativeCommandOptions {
+  readonly input?: string;
+  readonly timeoutMs?: number;
+  readonly terminationGraceMs?: number;
+}
+
 function databaseNameIsSafe(databaseName: string): boolean {
   return /^[a-z_][a-z0-9_]{0,62}$/.test(databaseName);
 }
@@ -163,10 +169,7 @@ export async function runNativeVerifierCommand(
   executable: string,
   args: readonly string[],
   native: NativePostgresVerifier,
-  timing: {
-    readonly timeoutMs?: number;
-    readonly terminationGraceMs?: number;
-  } = {},
+  options: NativeCommandOptions = {},
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const stdout: Buffer[] = [];
@@ -203,12 +206,17 @@ export async function runNativeVerifierCommand(
       env: nativeChildEnvironment(native),
       shell: false,
       windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
+    child.stdin?.once("error", () => {
+      // The command's exit status and bounded diagnostics remain authoritative.
+    });
+    child.stdin?.end(options.input);
     timers.command = setTimeout(() => {
       timedOut = true;
       child.kill();
       timers.termination = setTimeout(() => {
+        child.stdin?.destroy();
         child.stdout?.destroy();
         child.stderr?.destroy();
         try {
@@ -223,9 +231,9 @@ export async function runNativeVerifierCommand(
             `Native PostgreSQL verifier command timed out${output === "" ? "." : `: ${output}`}`,
           ),
         );
-      }, timing.terminationGraceMs ?? commandTerminationGraceMs);
+      }, options.terminationGraceMs ?? commandTerminationGraceMs);
       timers.termination.unref?.();
-    }, timing.timeoutMs ?? commandTimeoutMs);
+    }, options.timeoutMs ?? commandTimeoutMs);
     timers.command.unref?.();
     child.stdout?.on("data", (chunk: Buffer) => add(stdout, chunk));
     child.stderr?.on("data", (chunk: Buffer) => add(stderr, chunk));
@@ -289,10 +297,10 @@ export async function runVerifierPsql(
       "--tuples-only",
       "--no-align",
       ...(options.quiet ? ["--quiet"] : []),
-      "--command",
-      statement,
+      "--file=-",
     ],
     native,
+    { input: statement },
   );
 }
 

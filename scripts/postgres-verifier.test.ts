@@ -135,8 +135,26 @@ describe("native PostgreSQL verifier configuration", () => {
         process.execPath,
         ["--eval", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"],
         nativeConfiguration(),
-        { timeoutMs: 100, terminationGraceMs: 100 },
+        {
+          input: "buffered portable verifier input\n".repeat(4_096),
+          timeoutMs: 100,
+          terminationGraceMs: 100,
+        },
       ),
     ).rejects.toThrow(/timed out/);
+  });
+
+  it("streams large native command input without putting it on the command line", async () => {
+    const input = "portable-signal\n".repeat(4_096);
+    const output = await runNativeVerifierCommand(
+      process.execPath,
+      [
+        "--eval",
+        "process.stdin.setEncoding('utf8'); let value = ''; process.stdin.on('data', (chunk) => value += chunk); process.stdin.on('end', () => process.stdout.write(String(value.length)));",
+      ],
+      nativeConfiguration(),
+      { input },
+    );
+    expect(output).toBe(String(input.length));
   });
 });
