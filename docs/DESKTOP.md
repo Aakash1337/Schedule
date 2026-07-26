@@ -173,6 +173,26 @@ promotion. Later upgrades create a verified pre-migration backup before changing
 interrupted or incompatible upgrade will fail closed into a recovery screen; the application will
 not silently discard or recreate an existing database.
 
+If an update was interrupted after its verified automatic backup was durably recorded, the
+incompatible-data screen can offer **Restore automatic backup**. It is deliberately a two-step
+action: the first click opens an OS-native replacement warning and only the native
+**Restore backup** confirmation starts recovery. The renderer cannot choose a file or supply
+database credentials, and native admission
+independently requires the exact unfinished migration journal and its valid backup receipt. A
+legacy interrupted journal without a receipt remains fail-closed; Schedule does not guess at a
+“latest” backup or scan the filesystem for one.
+
+The receipt binds one private pre-update dump to the migration attempt, expected migration manifest
+digest, exact filename, byte count, and SHA-256. Recovery copies only that bound file to a private
+snapshot and re-verifies its identity before use. The bundled helper restores it into a fresh
+identity-marked staging database, migrates a valid older ledger only forward, and requires the
+exact current ledger before promotion. Its durable, identity- and OID-bound promotion journal either
+completes the replacement or returns to the former active database; the former active database is
+retained within the existing bounded policy. Any missing receipt, changed bytes, invalid ledger,
+helper/protocol error, or uncertain promotion leaves the journal and data in place and keeps startup
+fail-closed. Recovery stops the private PostgreSQL service before recording the restored state, then
+restarts through normal admission; it never clears the journal merely because recovery was requested.
+
 The application identifier and its `data` child are a tested storage compatibility boundary: a
 future release must not rename either without an explicit copy, validation, and atomic-switch
 migration. The cross-platform native test pins `com.aakash.schedule` and `data` so an accidental

@@ -554,8 +554,9 @@ The adaptive planner complements, rather than replaces:
   provider transport remains deferred
 - Search, filters, saved views, and bulk editing
 - Notes, links, and attachments
-- Portable import/export and verified local backup/restore are implemented at the repository CLI;
-  one-click desktop controls and hosted import remain targets
+- Portable import/export and verified local backup/restore are implemented. The desktop provides
+  native archive controls and a two-step, receipt-bound automatic pre-update backup recovery path;
+  hosted import remains a target
 - Activity history and audit trail
 - Multiple workspaces, with collaboration considered later
 
@@ -711,12 +712,15 @@ plan mutation. The advisor remains optional and subordinate to the deterministic
 
 ### Phase 5 — Hosting and synchronization
 
-The local MVP now includes verified logical recovery backups, staged restore commands, and a
-versioned portable `.schedule` export/import path for matching schemas. Its automated disposable
-drills cover recovery archive creation, portable AI/history migration, exclusions, staged restore,
-promotion, rollback, and exact cleanup without touching the real local database. Phase 5 still covers
-provider-managed retention, point-in-time recovery, hosted restore/import drills, and the operational
-controls required for hosting.
+The local MVP now includes verified logical recovery backups, staged restore commands, a two-step
+desktop automatic-backup recovery path for journal-bound interrupted updates, and a versioned
+portable `.schedule` export/import path for matching schemas. Its automated disposable drills cover
+recovery archive creation, portable AI/history migration, exclusions, staged restore, promotion,
+rollback, and exact cleanup without touching the real local database. The desktop update path still
+needs a populated installed N-1-to-N and downgrade matrix on Windows and Linux; portable golden
+archives from old releases and a physical cross-OS handoff drill also remain outstanding. Phase 5
+still covers provider-managed retention, point-in-time recovery, hosted restore/import drills, and
+the operational controls required for hosting.
 
 - Implemented foundation: workspace-bound machine credentials and a confirmed, idempotent inbound
   automation API with Today and credential-scoped work-item discovery; this is not hosted end-user

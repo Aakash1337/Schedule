@@ -34,39 +34,40 @@ drill job results establish whether that evidence actually passed in a particula
 
 ## Commands
 
-| Command                                  | Purpose                                                                     | Requires PostgreSQL             |
-| ---------------------------------------- | --------------------------------------------------------------------------- | ------------------------------- |
-| `pnpm eval:features`                     | Validate feature-to-evidence traceability                                   | No                              |
-| `pnpm eval:planner`                      | Run deterministic planner quality scenarios                                 | No                              |
-| `pnpm test:coverage`                     | Run every unit/component test and enforce coverage floors                   | No                              |
-| `pnpm verify:oidc-token-exchange`        | Verify the one-shot OIDC code/token boundary and verifier handoff           | No                              |
-| `pnpm verify:oidc-direct-https`          | Verify DNS-pinned, proxy-free direct OIDC HTTPS egress                      | No                              |
-| `pnpm verify:hosted-oidc-lifecycle`      | Verify OIDC start/callback composition and hardened browser binding         | No                              |
-| `pnpm verify:hosted-oidc-composition`    | Verify the concrete hosted OIDC dependency graph                            | No                              |
-| `pnpm verify:hosted-oidc-composition-db` | Drive login, authorized work/Today, Plan Fit feedback, and explicit use     | Yes, disposable only            |
-| `pnpm verify:hosted-runtime-preflight`   | Verify secret parsing, startup construction, cleanup, and route gating      | No                              |
-| `pnpm verify:hosted-work-item-sync`      | Verify gated capture, staged bootstrap, pinned delta, retention, and 410    | Yes, disposable only            |
-| `pnpm verify:hosted-health`              | Probe public liveness and readiness through strict anonymous HTTPS          | External deployed origin        |
-| `pnpm verify:hosted-staging`             | Operator-assisted real-OIDC staging launch gate; never CI                   | External staging, manually      |
-| `pnpm eval`                              | Validate traceability and run the covered test suite                        | No                              |
-| `pnpm verify:database`                   | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
-| `pnpm verify:integration-gateway`        | Verify authenticated reads/commands, including bounded Plan Fit guidance    | Yes, disposable only            |
-| `pnpm verify:hermes-adapter`             | Verify the strict Python plugin boundary and reminder lifecycle             | Yes, disposable only            |
-| `pnpm verify:natural-language-proposals` | Verify private three-command review and exactly-once confirmation           | Yes                             |
-| `pnpm verify:webhook-delivery`           | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback     | Yes, disposable only            |
-| `pnpm verify:notification-core`          | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
-| `pnpm verify:notification-materializer`  | Verify bounded automatic ticks, replay, skips, and delivery separation      | Yes, disposable only            |
-| `pnpm verify:notification-delivery`      | Verify fenced claims/receipts, retries, redrive, expiry, and invalidation   | Yes, disposable only            |
-| `pnpm verify:notification-migrations`    | Upgrade populated reminder/delivery state through migration 0044            | Yes, disposable only            |
-| `pnpm verify:local-model-advisor`        | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
-| `pnpm verify:backup-restore`             | Verify archive/schema/content/sequence fidelity                             | Yes                             |
-| `pnpm verify:portable-migration`         | Verify durable migration, exclusions, replacement, and rollback             | Yes, disposable only            |
-| `pnpm verify:desktop-portable-import`    | Process-kill desktop import and recover every committed database transition | Yes, disposable only            |
-| `pnpm verify:migration-policy`           | Reject rewritten history, manifest aliases, and unreviewed risky SQL        | No                              |
-| `pnpm verify:migration-ledger`           | Prove serialized migration and fail-closed live-ledger admission            | Yes, disposable only            |
-| `pnpm verify:recovery-state-machine`     | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
-| `pnpm verify:web-e2e`                    | Exercise the built browser, API, migrations, and PostgreSQL planning loop   | Own disposable Compose database |
-| `pnpm eval:full`                         | Run feature/coverage, local integration, recovery, and Chromium web gates   | Yes, with the recovery sentinel |
+| Command                                         | Purpose                                                                     | Requires PostgreSQL             |
+| ----------------------------------------------- | --------------------------------------------------------------------------- | ------------------------------- |
+| `pnpm eval:features`                            | Validate feature-to-evidence traceability                                   | No                              |
+| `pnpm eval:planner`                             | Run deterministic planner quality scenarios                                 | No                              |
+| `pnpm test:coverage`                            | Run every unit/component test and enforce coverage floors                   | No                              |
+| `pnpm verify:oidc-token-exchange`               | Verify the one-shot OIDC code/token boundary and verifier handoff           | No                              |
+| `pnpm verify:oidc-direct-https`                 | Verify DNS-pinned, proxy-free direct OIDC HTTPS egress                      | No                              |
+| `pnpm verify:hosted-oidc-lifecycle`             | Verify OIDC start/callback composition and hardened browser binding         | No                              |
+| `pnpm verify:hosted-oidc-composition`           | Verify the concrete hosted OIDC dependency graph                            | No                              |
+| `pnpm verify:hosted-oidc-composition-db`        | Drive login, authorized work/Today, Plan Fit feedback, and explicit use     | Yes, disposable only            |
+| `pnpm verify:hosted-runtime-preflight`          | Verify secret parsing, startup construction, cleanup, and route gating      | No                              |
+| `pnpm verify:hosted-work-item-sync`             | Verify gated capture, staged bootstrap, pinned delta, retention, and 410    | Yes, disposable only            |
+| `pnpm verify:hosted-health`                     | Probe public liveness and readiness through strict anonymous HTTPS          | External deployed origin        |
+| `pnpm verify:hosted-staging`                    | Operator-assisted real-OIDC staging launch gate; never CI                   | External staging, manually      |
+| `pnpm eval`                                     | Validate traceability and run the covered test suite                        | No                              |
+| `pnpm verify:database`                          | Exercise planner, APIs, outbox, webhooks, and migrations on PostgreSQL      | Yes                             |
+| `pnpm verify:integration-gateway`               | Verify authenticated reads/commands, including bounded Plan Fit guidance    | Yes, disposable only            |
+| `pnpm verify:hermes-adapter`                    | Verify the strict Python plugin boundary and reminder lifecycle             | Yes, disposable only            |
+| `pnpm verify:natural-language-proposals`        | Verify private three-command review and exactly-once confirmation           | Yes                             |
+| `pnpm verify:webhook-delivery`                  | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback     | Yes, disposable only            |
+| `pnpm verify:notification-core`                 | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
+| `pnpm verify:notification-materializer`         | Verify bounded automatic ticks, replay, skips, and delivery separation      | Yes, disposable only            |
+| `pnpm verify:notification-delivery`             | Verify fenced claims/receipts, retries, redrive, expiry, and invalidation   | Yes, disposable only            |
+| `pnpm verify:notification-migrations`           | Upgrade populated reminder/delivery state through migration 0044            | Yes, disposable only            |
+| `pnpm verify:local-model-advisor`               | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
+| `pnpm verify:backup-restore`                    | Verify archive/schema/content/sequence fidelity                             | Yes                             |
+| `pnpm verify:portable-migration`                | Verify durable migration, exclusions, replacement, and rollback             | Yes, disposable only            |
+| `pnpm verify:desktop-portable-import`           | Process-kill desktop import and recover every committed database transition | Yes, disposable only            |
+| `pnpm verify:desktop-migration-backup-recovery` | Verify receipt-bound pre-update backup restore and staged promotion         | Yes, disposable only            |
+| `pnpm verify:migration-policy`                  | Reject rewritten history, manifest aliases, and unreviewed risky SQL        | No                              |
+| `pnpm verify:migration-ledger`                  | Prove serialized migration and fail-closed live-ledger admission            | Yes, disposable only            |
+| `pnpm verify:recovery-state-machine`            | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
+| `pnpm verify:web-e2e`                           | Exercise the built browser, API, migrations, and PostgreSQL planning loop   | Own disposable Compose database |
+| `pnpm eval:full`                                | Run feature/coverage, local integration, recovery, and Chromium web gates   | Yes, with the recovery sentinel |
 
 The destructive recovery command requires the explicit environment guards documented in
 [`OPERATIONS.md`](./OPERATIONS.md). CI supplies those guards only inside its disposable Compose
@@ -556,9 +557,13 @@ The audit deliberately leaves these visible instead of turning them into false g
   entries (including accepted legacy hashes), and requires an explicit rationale for recognized
   destructive or procedural SQL in a newly appended migration; it remains a lexical policy gate,
   so every data-rewriting migration still needs a populated PostgreSQL upgrade drill;
-- desktop lifecycle smoke repeats one build against one data root; it does not yet install a
-  populated N-1 release, install N over it, compare every durable content/sequence signal, and prove
-  that reinstalling N-1 fails closed without mutation on Windows and Linux;
+- desktop lifecycle and unit coverage now exercise receipt-bound automatic recovery of an interrupted
+  update: a valid journal receipt is required, the private dump snapshot is rehashed, a fresh staging
+  database is restored/migrated/validated, and the identity-bound promotion path retains the former
+  database. This is not yet a process-kill or installed-release drill. In particular, desktop
+  lifecycle smoke does not install a populated N-1 release, install N over it, compare every durable
+  content/sequence signal, and prove that reinstalling N-1 fails closed without mutation on Windows
+  and Linux;
 - desktop and command-line migration admission now treat the immutable complete live ledger as the
   authoritative exact, valid-prefix, ahead, or divergent compatibility decision. The database-wide
   migration lock and installed runtime execute-path still need the populated cross-release evidence
@@ -567,8 +572,9 @@ The audit deliberately leaves these visible instead of turning them into false g
   `0004`, `0024`, `0031`, `0032`, and `0041`; only those exact LF hashes, their deterministic CRLF
   equivalents, and the canonical LF/CRLF pair at each position are accepted. Every other
   timestamp/hash pair must match the immutable manifest;
-- PostgreSQL recovery verifies the successful swap/rollback path, while compensation fault injection
-  is currently operation-level rather than process-kill testing;
+- PostgreSQL recovery verifies successful swap/rollback paths, including the reusable promotion
+  journal used by automatic desktop backup recovery, while compensation fault injection for the
+  automatic-backup path is currently unit/operation-level rather than process-kill testing;
 - backup rejection covers empty, plain-SQL, truncated, schema-only, and migration-ledger-filtered
   archives plus caller-path replacement; it does not authenticate a structurally complete foreign
   Schedule archive, so backup custody remains part of the recovery trust boundary;

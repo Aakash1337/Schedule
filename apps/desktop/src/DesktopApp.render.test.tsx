@@ -59,6 +59,146 @@ describe("DesktopApp runtime gate", () => {
     expect(screen.queryByRole("main", { name: "Shared Schedule application" })).toBeNull();
   });
 
+  it("only offers verified automatic-backup recovery for incompatible data", async () => {
+    invokeMock.mockResolvedValue({
+      phase: "incompatible_data",
+      message: "An update was interrupted",
+      generation: 1,
+      automaticBackupRecovery: true,
+    });
+
+    render(<DesktopApp />);
+
+    expect(await screen.findByRole("button", { name: "Restore automatic backup" })).not.toBeNull();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("submits native-confirmed automatic-backup recovery once, then re-inspects", async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        phase: "incompatible_data",
+        message: "An update was interrupted",
+        generation: 4,
+        automaticBackupRecovery: true,
+      })
+      .mockResolvedValueOnce({ result: "accepted", generation: 4 })
+      .mockResolvedValueOnce({ phase: "ready", message: "Ready", generation: 5 });
+
+    render(<DesktopApp />);
+
+    const restore = await screen.findByRole<HTMLButtonElement>("button", {
+      name: "Restore automatic backup",
+    });
+    await act(async () => {
+      restore.click();
+      restore.click();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("main", { name: "Shared Schedule application" })).not.toBeNull();
+    });
+    expect(
+      invokeMock.mock.calls.filter(([command]) => command === "runtime_restore_automatic_backup"),
+    ).toHaveLength(1);
+  });
+
+  it("returns to the recovery action after native confirmation is cancelled", async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        phase: "incompatible_data",
+        message: "An update was interrupted",
+        generation: 1,
+        automaticBackupRecovery: true,
+      })
+      .mockResolvedValueOnce({ result: "cancelled" })
+      .mockResolvedValueOnce({
+        phase: "incompatible_data",
+        message: "An update was interrupted",
+        generation: 1,
+        automaticBackupRecovery: true,
+      });
+
+    render(<DesktopApp />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Restore automatic backup" }));
+    expect(await screen.findByRole("button", { name: "Restore automatic backup" })).not.toBeNull();
+    expect(
+      invokeMock.mock.calls.filter(([command]) => command === "runtime_restore_automatic_backup"),
+    ).toHaveLength(1);
+    expect(screen.queryByText("Automatic recovery could not start.")).toBeNull();
+  });
+
+  it("explains an unavailable recovery command and restores the safe action", async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        phase: "incompatible_data",
+        message: "An update was interrupted",
+        generation: 2,
+        automaticBackupRecovery: true,
+      })
+      .mockResolvedValueOnce({ result: "unavailable" })
+      .mockResolvedValueOnce({
+        phase: "incompatible_data",
+        message: "An update was interrupted",
+        generation: 2,
+        automaticBackupRecovery: true,
+      });
+
+    render(<DesktopApp />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Restore automatic backup" }));
+
+    expect(
+      await screen.findByText(
+        "Automatic recovery is no longer available. Reopen Schedule or restore a backup manually.",
+      ),
+    ).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Restore automatic backup" })).not.toBeNull();
+    expect(
+      invokeMock.mock.calls.filter(([command]) => command === "runtime_restore_automatic_backup"),
+    ).toHaveLength(1);
+  });
+
+  it("returns to recovery after an accepted attempt remains incompatible", async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        phase: "incompatible_data",
+        message: "An update was interrupted",
+        generation: 3,
+        automaticBackupRecovery: true,
+      })
+      .mockResolvedValueOnce({ result: "accepted", generation: 3 })
+      .mockResolvedValueOnce({
+        phase: "incompatible_data",
+        message: "Automatic recovery did not complete",
+        generation: 3,
+        automaticBackupRecovery: true,
+      });
+
+    render(<DesktopApp />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Restore automatic backup" }));
+
+    expect(await screen.findByText("Automatic recovery did not complete")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Restore automatic backup" })).not.toBeNull();
+    expect(screen.queryByText("Restoring the automatic backup…")).toBeNull();
+  });
+
+  it("keeps recovery unavailable for other startup failures", async () => {
+    invokeMock.mockResolvedValue({
+      phase: "recoverable_failure",
+      message: "Startup failed",
+      generation: 1,
+      automaticBackupRecovery: true,
+    });
+
+    render(<DesktopApp />);
+
+    await screen.findByRole("button", { name: "Retry startup" });
+    expect(screen.queryByRole("button", { name: "Restore automatic backup" })).toBeNull();
+  });
+
   it("re-inspects after retry and mounts the shared App only when the runtime is ready", async () => {
     invokeMock
       .mockResolvedValueOnce({

@@ -7,7 +7,7 @@ use tauri::{
     Manager, RunEvent, Url, WebviewUrl, WindowEvent,
     webview::{NewWindowResponse, WebviewWindowBuilder},
 };
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 #[tauri::command]
 fn runtime_status(
@@ -21,6 +21,45 @@ fn runtime_retry(
     runtime: tauri::State<'_, std::sync::Arc<runtime::tauri_adapter::DesktopRuntimeAdapter>>,
 ) -> runtime::tauri_adapter::RuntimeRetryResult {
     runtime.retry()
+}
+
+#[tauri::command]
+async fn runtime_restore_automatic_backup(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, std::sync::Arc<runtime::tauri_adapter::DesktopRuntimeAdapter>>,
+) -> Result<runtime::tauri_adapter::RuntimeRetryResult, ()> {
+    let runtime = runtime.inner().clone();
+    if let Err(result) = runtime.begin_automatic_backup_recovery_confirmation() {
+        return Ok(result);
+    }
+    let dialog_app = app.clone();
+    let confirmed = tauri::async_runtime::spawn_blocking(move || {
+        let dialog = dialog_app
+            .dialog()
+            .message(
+                "Restore the verified pre-update backup? This replaces current local data. \
+                 Changes made after that backup may be lost.",
+            )
+            .title("Restore verified backup")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Restore backup".into(),
+                "Cancel".into(),
+            ));
+        if let Some(window) = dialog_app.get_webview_window("main") {
+            dialog.parent(&window).blocking_show()
+        } else {
+            dialog.blocking_show()
+        }
+    })
+    .await;
+    Ok(match confirmed {
+        Ok(confirmed) => runtime.finish_automatic_backup_recovery_confirmation(confirmed),
+        Err(_) => {
+            runtime.abandon_automatic_backup_recovery_confirmation();
+            runtime::tauri_adapter::RuntimeRetryResult::Unavailable
+        }
+    })
 }
 
 #[tauri::command]
@@ -185,6 +224,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             runtime_status,
             runtime_retry,
+            runtime_restore_automatic_backup,
             portable_export,
             portable_import_select,
             portable_import_confirm,

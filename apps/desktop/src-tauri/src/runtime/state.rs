@@ -146,7 +146,15 @@ impl Lifecycle {
     pub fn transition(&self, event: Event) -> Result<Transition, Rejection> {
         match event {
             Event::Start if self.phase == Phase::Idle => self.begin(),
-            Event::Retry if matches!(self.phase, Phase::RecoverableFailure(_)) => self.begin(),
+            Event::Retry
+                if matches!(
+                    self.phase,
+                    Phase::RecoverableFailure(_)
+                        | Phase::IncompatibleData(Incompatibility::Migration)
+                ) =>
+            {
+                self.begin()
+            }
             Event::StopRequested => self.stop(),
             Event::LockAcquired { generation } => self.advance(
                 generation,

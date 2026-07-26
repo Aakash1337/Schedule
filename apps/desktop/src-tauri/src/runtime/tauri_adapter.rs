@@ -32,6 +32,7 @@ pub(crate) struct DesktopRuntimeStatus {
     phase: &'static str,
     message: &'static str,
     generation: u64,
+    automatic_backup_recovery: bool,
 }
 
 impl DesktopRuntimeStatus {
@@ -40,6 +41,7 @@ impl DesktopRuntimeStatus {
             phase: "fatal_failure",
             message: "Schedule could not initialize its local runtime. Restart or reinstall Schedule.",
             generation: 0,
+            automatic_backup_recovery: false,
         }
     }
 
@@ -63,6 +65,7 @@ impl DesktopRuntimeStatus {
             phase,
             message,
             generation: status.generation,
+            automatic_backup_recovery: status.automatic_backup_recovery,
         }
     }
 }
@@ -72,6 +75,7 @@ impl DesktopRuntimeStatus {
 pub(crate) enum RuntimeRetryResult {
     Accepted { generation: u64 },
     Busy { generation: u64 },
+    Cancelled,
     Unavailable,
 }
 
@@ -98,6 +102,7 @@ pub(crate) struct DesktopRuntimeAdapter {
     final_exit_wait_started: AtomicBool,
     portable_export_in_flight: AtomicBool,
     portable_import_in_flight: AtomicBool,
+    automatic_backup_recovery_confirmation_in_flight: AtomicBool,
     pending_portable_import: Mutex<Option<PendingPortableImport>>,
 }
 
@@ -124,6 +129,7 @@ impl DesktopRuntimeAdapter {
             final_exit_wait_started: AtomicBool::new(false),
             portable_export_in_flight: AtomicBool::new(false),
             portable_import_in_flight: AtomicBool::new(false),
+            automatic_backup_recovery_confirmation_in_flight: AtomicBool::new(false),
             pending_portable_import: Mutex::new(None),
         }
     }
@@ -155,6 +161,57 @@ impl DesktopRuntimeAdapter {
             }
             RuntimeOwner::SetupFailure => RuntimeRetryResult::Unavailable,
         }
+    }
+
+    pub(crate) fn restore_automatic_backup(&self) -> RuntimeRetryResult {
+        let mut owner = self.owner.lock().expect("runtime adapter poisoned");
+        match &mut *owner {
+            RuntimeOwner::Running(host) => {
+                let generation = host.status().generation;
+                match host.restore_automatic_backup() {
+                    Ok(()) => RuntimeRetryResult::Accepted { generation },
+                    Err(HostError::Busy) => RuntimeRetryResult::Busy { generation },
+                    Err(HostError::Unavailable | HostError::ShuttingDown) => {
+                        RuntimeRetryResult::Unavailable
+                    }
+                }
+            }
+            RuntimeOwner::SetupFailure => RuntimeRetryResult::Unavailable,
+        }
+    }
+
+    pub(crate) fn begin_automatic_backup_recovery_confirmation(
+        &self,
+    ) -> Result<(), RuntimeRetryResult> {
+        if !self.status().automatic_backup_recovery {
+            return Err(RuntimeRetryResult::Unavailable);
+        }
+        self.automatic_backup_recovery_confirmation_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| {
+                let generation = self.status().generation;
+                RuntimeRetryResult::Busy { generation }
+            })
+    }
+
+    pub(crate) fn finish_automatic_backup_recovery_confirmation(
+        &self,
+        confirmed: bool,
+    ) -> RuntimeRetryResult {
+        let result = if confirmed {
+            self.restore_automatic_backup()
+        } else {
+            RuntimeRetryResult::Cancelled
+        };
+        self.automatic_backup_recovery_confirmation_in_flight
+            .store(false, Ordering::Release);
+        result
+    }
+
+    pub(crate) fn abandon_automatic_backup_recovery_confirmation(&self) {
+        self.automatic_backup_recovery_confirmation_in_flight
+            .store(false, Ordering::Release);
     }
 
     pub(crate) fn begin_portable_export(&self) -> Result<(), crate::runtime::PortableExportResult> {
@@ -502,11 +559,13 @@ mod tests {
     use super::*;
     use crate::runtime::{
         coordinator::{Cancellation, EffectExecutor, EffectOutcome},
-        state::Effect,
+        recovery::AutomaticBackupRecoveryResult,
+        state::{Effect, Incompatibility},
     };
 
     #[derive(Default)]
     struct FakeExecutor;
+    struct RecoveryExecutor;
 
     struct BlockingExecutor {
         entered: mpsc::Sender<()>,
@@ -604,6 +663,39 @@ mod tests {
         fn cancel(&mut self, _: u64) {}
     }
 
+    impl EffectExecutor for RecoveryExecutor {
+        type Error = ();
+
+        fn execute(
+            &mut self,
+            effect: Effect,
+            _: &Cancellation,
+        ) -> Result<EffectOutcome, Self::Error> {
+            Ok(if matches!(effect, Effect::VerifyDatabase { .. }) {
+                EffectOutcome::Incompatible(Incompatibility::Migration)
+            } else {
+                EffectOutcome::Completed
+            })
+        }
+        fn configure_bridge(&mut self, _: u64) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn clear_bridge(&mut self, _: u64) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn cancel(&mut self, _: u64) {}
+        fn automatic_backup_recovery_available(&self) -> bool {
+            true
+        }
+        fn restore_automatic_backup(
+            &mut self,
+            _: u64,
+            _: &Cancellation,
+        ) -> AutomaticBackupRecoveryResult {
+            AutomaticBackupRecoveryResult::Unavailable
+        }
+    }
+
     impl EffectExecutor for ImportExecutor {
         type Error = ();
 
@@ -678,6 +770,7 @@ mod tests {
             final_exit_wait_started: AtomicBool::new(false),
             portable_export_in_flight: AtomicBool::new(false),
             portable_import_in_flight: AtomicBool::new(false),
+            automatic_backup_recovery_confirmation_in_flight: AtomicBool::new(false),
             pending_portable_import: Mutex::new(None),
         }
     }
@@ -691,10 +784,15 @@ mod tests {
             final_exit_wait_started: AtomicBool::new(false),
             portable_export_in_flight: AtomicBool::new(false),
             portable_import_in_flight: AtomicBool::new(false),
+            automatic_backup_recovery_confirmation_in_flight: AtomicBool::new(false),
             pending_portable_import: Mutex::new(None),
         };
         assert_eq!(adapter.status(), DesktopRuntimeStatus::setup_failure());
         assert_eq!(adapter.retry(), RuntimeRetryResult::Unavailable);
+        assert_eq!(
+            adapter.restore_automatic_backup(),
+            RuntimeRetryResult::Unavailable
+        );
     }
 
     #[test]
@@ -726,10 +824,18 @@ mod tests {
             let status = DesktopRuntimeStatus::from_host(RuntimeStatus {
                 state,
                 generation: 7,
+                automatic_backup_recovery: false,
             });
             assert!(ACCEPTED.contains(&status.phase), "{state:?}");
             assert_eq!(status.generation, 7);
+            assert!(!status.automatic_backup_recovery);
         }
+        let recovery = DesktopRuntimeStatus::from_host(RuntimeStatus {
+            state: RuntimeState::IncompatibleData,
+            generation: 8,
+            automatic_backup_recovery: true,
+        });
+        assert!(recovery.automatic_backup_recovery);
     }
 
     #[test]
@@ -740,6 +846,41 @@ mod tests {
             RuntimeRetryResult::Accepted { generation: 0 }
         );
         assert_eq!(adapter.retry(), RuntimeRetryResult::Busy { generation: 0 });
+        adapter.request_shutdown().unwrap().wait();
+    }
+
+    #[test]
+    fn native_recovery_confirmation_is_single_flight_and_cancellable() {
+        let adapter = adapter_with(RuntimeHost::spawn(RecoveryExecutor));
+        let host = match &*adapter.owner.lock().unwrap() {
+            RuntimeOwner::Running(host) => Arc::clone(host),
+            RuntimeOwner::SetupFailure => unreachable!(),
+        };
+        host.start().unwrap();
+        for _ in 0..100 {
+            if adapter.status().automatic_backup_recovery {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(adapter.status().automatic_backup_recovery);
+        assert_eq!(
+            adapter.begin_automatic_backup_recovery_confirmation(),
+            Ok(())
+        );
+        assert_eq!(
+            adapter.begin_automatic_backup_recovery_confirmation(),
+            Err(RuntimeRetryResult::Busy { generation: 1 })
+        );
+        assert_eq!(
+            adapter.finish_automatic_backup_recovery_confirmation(false),
+            RuntimeRetryResult::Cancelled
+        );
+        assert_eq!(
+            adapter.begin_automatic_backup_recovery_confirmation(),
+            Ok(())
+        );
+        adapter.abandon_automatic_backup_recovery_confirmation();
         adapter.request_shutdown().unwrap().wait();
     }
 
@@ -939,6 +1080,10 @@ mod tests {
             serde_json::to_value(RuntimeRetryResult::Unavailable).unwrap(),
             serde_json::json!({ "result": "unavailable" })
         );
+        assert_eq!(
+            serde_json::to_value(RuntimeRetryResult::Cancelled).unwrap(),
+            serde_json::json!({ "result": "cancelled" })
+        );
     }
 
     #[test]
@@ -961,6 +1106,7 @@ mod tests {
             final_exit_wait_started: AtomicBool::new(false),
             portable_export_in_flight: AtomicBool::new(false),
             portable_import_in_flight: AtomicBool::new(false),
+            automatic_backup_recovery_confirmation_in_flight: AtomicBool::new(false),
             pending_portable_import: Mutex::new(None),
         };
         assert!(matches!(adapter.begin_close(), Some(None)));
@@ -984,6 +1130,7 @@ mod tests {
             final_exit_wait_started: AtomicBool::new(false),
             portable_export_in_flight: AtomicBool::new(false),
             portable_import_in_flight: AtomicBool::new(false),
+            automatic_backup_recovery_confirmation_in_flight: AtomicBool::new(false),
             pending_portable_import: Mutex::new(None),
         };
         let started = Instant::now();
@@ -1031,6 +1178,7 @@ mod tests {
             final_exit_wait_started: AtomicBool::new(false),
             portable_export_in_flight: AtomicBool::new(false),
             portable_import_in_flight: AtomicBool::new(false),
+            automatic_backup_recovery_confirmation_in_flight: AtomicBool::new(false),
             pending_portable_import: Mutex::new(None),
         };
 
@@ -1053,6 +1201,7 @@ mod tests {
             final_exit_wait_started: AtomicBool::new(false),
             portable_export_in_flight: AtomicBool::new(false),
             portable_import_in_flight: AtomicBool::new(false),
+            automatic_backup_recovery_confirmation_in_flight: AtomicBool::new(false),
             pending_portable_import: Mutex::new(None),
         };
 

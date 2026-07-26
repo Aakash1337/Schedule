@@ -103,10 +103,11 @@ struct PortableImportPayload {
     previous_retained: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PortableRecoveryOutcome {
     pub(crate) recovered: bool,
     pub(crate) committed: bool,
+    pub(crate) archive_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -114,6 +115,7 @@ pub(crate) struct PortableRecoveryOutcome {
 struct PortableRecoveryPayload {
     recovered: bool,
     committed: bool,
+    archive_id: Option<String>,
 }
 const MAX_PORTABLE_EXPORT_BYTES: u64 = 513 * 1024 * 1024;
 const MAX_PORTABLE_PROTOCOL_BYTES: usize = 4096;
@@ -293,12 +295,19 @@ pub(crate) fn parse_portable_recovery_output(
     const ERROR: &str = "desktop.portable_recovery_protocol_invalid";
     let payload = exact_protocol_payload(stdout, PORTABLE_RECOVERY_PREFIX, ERROR)?;
     let parsed = serde_json::from_str::<PortableRecoveryPayload>(payload).map_err(|_| ERROR)?;
-    if parsed.committed && !parsed.recovered {
+    if (parsed.committed && !parsed.recovered)
+        || parsed.recovered != parsed.archive_id.is_some()
+        || parsed
+            .archive_id
+            .as_ref()
+            .is_some_and(|archive_id| archive_id.is_empty() || archive_id.len() > 128)
+    {
         return Err(ERROR);
     }
     Ok(PortableRecoveryOutcome {
         recovered: parsed.recovered,
         committed: parsed.committed,
+        archive_id: parsed.archive_id,
     })
 }
 
@@ -388,11 +397,22 @@ mod tests {
         );
         assert_eq!(
             parse_portable_recovery_output(
-                b"SCHEDULE_PORTABLE_RECOVERY_V1 {\"recovered\":true,\"committed\":false}\n"
+                b"SCHEDULE_PORTABLE_RECOVERY_V1 {\"recovered\":true,\"committed\":false,\"archiveId\":\"archive-1\"}\n"
             ),
             Ok(PortableRecoveryOutcome {
                 recovered: true,
                 committed: false,
+                archive_id: Some("archive-1".to_owned()),
+            })
+        );
+        assert_eq!(
+            parse_portable_recovery_output(
+                b"SCHEDULE_PORTABLE_RECOVERY_V1 {\"recovered\":false,\"committed\":false,\"archiveId\":null}\n"
+            ),
+            Ok(PortableRecoveryOutcome {
+                recovered: false,
+                committed: false,
+                archive_id: None,
             })
         );
         for bad in [
@@ -410,7 +430,19 @@ mod tests {
         );
         assert!(
             parse_portable_recovery_output(
-                b"SCHEDULE_PORTABLE_RECOVERY_V1 {\"recovered\":false,\"committed\":true}"
+                b"SCHEDULE_PORTABLE_RECOVERY_V1 {\"recovered\":false,\"committed\":true,\"archiveId\":null}"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_portable_recovery_output(
+                b"SCHEDULE_PORTABLE_RECOVERY_V1 {\"recovered\":true,\"committed\":true,\"archiveId\":null}\n"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_portable_recovery_output(
+                b"SCHEDULE_PORTABLE_RECOVERY_V1 {\"recovered\":false,\"committed\":false,\"archiveId\":\"archive-1\"}\n"
             )
             .is_err()
         );

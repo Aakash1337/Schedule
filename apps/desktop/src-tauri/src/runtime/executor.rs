@@ -6,7 +6,7 @@
 
 use std::{
     fmt, fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
     sync::Arc,
@@ -25,7 +25,9 @@ use super::{
         prepare_private_child, prepare_private_root, scavenge_stale_launch_secrets,
     },
     integrity::load_and_verify_runtime_bundle,
-    journal::{self, JournalPhase, LifecycleJournal, RecoveryDecision},
+    journal::{
+        self, JournalPhase, LifecycleJournal, MigrationBackup, RecoveryDecision, valid_recovery_id,
+    },
     lock::RuntimeLock,
     manifest::RuntimeManifestExpectations,
     paths::RuntimePaths,
@@ -44,6 +46,7 @@ use super::{
         OwnedProcess, ProcessGroupControl, ProcessRole, ProcessSpec, ReadinessSpec,
         platform_process_control, start_process_cancellable,
     },
+    recovery::{AutomaticBackupRecoveryResult, parse_automatic_backup_recovery_output},
     state::{Effect, Incompatibility},
 };
 
@@ -191,6 +194,16 @@ pub(crate) trait NativeOperations {
     ) -> PortableImportResult {
         PortableImportResult::Unavailable
     }
+    fn automatic_backup_recovery_available(&self) -> bool {
+        false
+    }
+    fn restore_automatic_backup(
+        &mut self,
+        _: u64,
+        _: &Cancellation,
+    ) -> AutomaticBackupRecoveryResult {
+        AutomaticBackupRecoveryResult::Unavailable
+    }
 }
 
 pub(crate) struct NativeEffectExecutor<O> {
@@ -255,6 +268,19 @@ impl<O: NativeOperations> EffectExecutor for NativeEffectExecutor<O> {
     ) -> PortableImportResult {
         self.operations.portable_import(request, cancellation)
     }
+
+    fn automatic_backup_recovery_available(&self) -> bool {
+        self.operations.automatic_backup_recovery_available()
+    }
+
+    fn restore_automatic_backup(
+        &mut self,
+        generation: u64,
+        cancellation: &Cancellation,
+    ) -> AutomaticBackupRecoveryResult {
+        self.operations
+            .restore_automatic_backup(generation, cancellation)
+    }
 }
 
 struct LaunchSecrets {
@@ -281,6 +307,7 @@ pub(crate) struct SystemOperations<B: ApiBridgeControl> {
     launch_secrets: Option<LaunchSecrets>,
     journal: Option<LifecycleJournal>,
     interrupted_migration: bool,
+    recovered_promotion_committed: bool,
     had_prior_success: bool,
     database_port: Option<u16>,
     database_data: Option<PathBuf>,
@@ -309,6 +336,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
             launch_secrets: None,
             journal: None,
             interrupted_migration: false,
+            recovered_promotion_committed: false,
             had_prior_success: false,
             database_port: None,
             database_data: None,
@@ -435,6 +463,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
             return Ok(PortableRecoveryOutcome {
                 recovered: false,
                 committed: false,
+                archive_id: None,
             });
         }
         let bundle = self.require_bundle()?;
@@ -599,6 +628,176 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         }
     }
 
+    fn run_automatic_backup_recovery(
+        &mut self,
+        generation: u64,
+        cancellation: &Cancellation,
+    ) -> AutomaticBackupRecoveryResult {
+        if !self.automatic_backup_recovery_available() {
+            return AutomaticBackupRecoveryResult::Unavailable;
+        }
+        let result = (|| {
+            Self::cancelled(cancellation)?;
+            self.acquire_lock()?;
+            self.validate_runtime(generation)?;
+            if !self.automatic_backup_recovery_available() {
+                return Err(NativeExecutorError::new(
+                    "desktop.backup_recovery_unavailable",
+                ));
+            }
+            if self.start_database(cancellation)? != EffectOutcome::Completed {
+                return Err(NativeExecutorError::new(
+                    "desktop.backup_recovery_database_invalid",
+                ));
+            }
+
+            // A prior recovery may have crashed during the identity-journaled
+            // database promotion. Reconcile that topology before deciding
+            // whether another restore is necessary.
+            let promotion = self.recover_portable_import(cancellation)?;
+            self.recovered_promotion_committed |=
+                self.recovered_promotion_matches_backup(&promotion);
+            if !self.recovered_promotion_committed {
+                self.restore_bound_backup(cancellation)?;
+            }
+            if self.migration_status(cancellation)? != MigrationLedgerStatus::Exact {
+                return Err(NativeExecutorError::new(
+                    "desktop.backup_recovery_validation_failed",
+                ));
+            }
+
+            // Do not clear the durable recovery gate while PostgreSQL may still
+            // be running. A crash before this point simply re-enters recovery.
+            self.stop_database()?;
+            let mut restored_journal = self
+                .journal
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| NativeExecutorError::new("desktop.executor_state_invalid"))?;
+            restored_journal.mark_backup_restored();
+            journal::store(&self.config.paths.journal, &restored_journal)
+                .map_err(|_| NativeExecutorError::new("desktop.journal_store_failed"))?;
+            self.journal = Some(restored_journal);
+            self.interrupted_migration = false;
+            self.recovered_promotion_committed = false;
+            // The restore is committed once the stopped, exact database and
+            // non-recovery journal are durable. Cleanup is retried by the
+            // ordinary startup lifecycle if releasing private launch material
+            // cannot complete immediately.
+            let _ = self.release();
+            Ok::<(), NativeExecutorError>(())
+        })();
+
+        if result.is_err() {
+            let _ = self.stop_database();
+            let _ = self.release();
+        }
+        match result {
+            Ok(()) => AutomaticBackupRecoveryResult::Restored,
+            Err(error)
+                if matches!(
+                    error.code(),
+                    "desktop.operation_cancelled" | "desktop.command_cancelled"
+                ) =>
+            {
+                AutomaticBackupRecoveryResult::Unavailable
+            }
+            Err(error) => AutomaticBackupRecoveryResult::Failed { code: error.code() },
+        }
+    }
+
+    fn restore_bound_backup(
+        &mut self,
+        cancellation: &Cancellation,
+    ) -> Result<(), NativeExecutorError> {
+        let receipt = self
+            .journal
+            .as_ref()
+            .and_then(|journal| journal.attempt.migration_backup.clone())
+            .ok_or_else(|| NativeExecutorError::new("desktop.backup_recovery_unavailable"))?;
+        let bundle = self.require_bundle()?;
+        let source = self.config.paths.backups.join(&receipt.file_name);
+        let snapshot = self
+            .config
+            .paths
+            .temporary_secrets_root
+            .join(format!("migration-recovery-{}.dump", receipt.recovery_id));
+        let mut cleanup = PendingFile(Some(snapshot.clone()));
+        snapshot_verified_backup(&source, &snapshot, &receipt)?;
+
+        let catalog = self.run_pg(
+            restore_verify_plan(postgres_bin(bundle)?, &snapshot),
+            &bundle.postgresql.pg_restore,
+            DATABASE_BACKUP_TIMEOUT,
+            1024 * 1024,
+            Some(cancellation),
+        )?;
+        if catalog.stdout().is_empty() {
+            return Err(NativeExecutorError::new("desktop.backup_recovery_invalid"));
+        }
+
+        let passwords = self.require_passwords()?;
+        let port = self.database_port()?;
+        let owner = passwords
+            .owner_database_url(&self.config.postgres_names, port)
+            .map_err(credential_error)?;
+        let admin = passwords
+            .cluster_admin_database_url(&self.config.postgres_names, port)
+            .map_err(credential_error)?;
+        let spec = CommandSpec::new(&bundle.node, &bundle.root, PORTABLE_IMPORT_TIMEOUT)
+            .arg(&bundle.portable_export)
+            .arg("restore-backup")
+            .arg(snapshot.as_os_str())
+            .env("NODE_ENV", "production")
+            .env("DATABASE_URL", owner.expose())
+            .env("SCHEDULE_ADMIN_DATABASE_URL", admin.expose())
+            .env("SCHEDULE_NODE_EXECUTABLE", bundle.node.as_os_str())
+            .env(
+                "SCHEDULE_MIGRATION_ENTRYPOINT",
+                bundle.migration.as_os_str(),
+            )
+            .env("SCHEDULE_APPLICATION_VERSION", &self.config.runtime_version)
+            .env("SCHEDULE_EXPECTED_ARCHIVE_ID", &receipt.recovery_id)
+            .env("SCHEDULE_EXPECTED_ARCHIVE_SHA256", &receipt.sha256)
+            .env(
+                "SCHEDULE_EXPECTED_BACKUP_BYTES",
+                receipt.size_bytes.to_string(),
+            )
+            .env(
+                "SCHEDULE_PG_RESTORE_EXECUTABLE",
+                bundle.postgresql.pg_restore.as_os_str(),
+            )
+            .env(
+                "SCHEDULE_PORTABLE_IMPORT_JOURNAL",
+                self.config.paths.portable_import_journal.as_os_str(),
+            )
+            .env(
+                "SCHEDULE_DATABASE_NAME",
+                self.config.postgres_names.database(),
+            )
+            .env(
+                "SCHEDULE_CLUSTER_ADMIN_ROLE",
+                self.config.postgres_names.cluster_admin(),
+            )
+            .env("SCHEDULE_OWNER_ROLE", self.config.postgres_names.owner())
+            .env(
+                "SCHEDULE_RUNTIME_ROLE",
+                self.config.postgres_names.runtime(),
+            )
+            .output_bounds(512, 16 * 1024)
+            .database_payload();
+        let output = run_command_cancellable(spec, Arc::clone(&self.process_control), &|| {
+            cancellation.is_cancelled()
+        })
+        .map_err(command_error)?;
+        parse_automatic_backup_recovery_output(output.stdout())
+            .map_err(NativeExecutorError::new)?;
+        fs::remove_file(&snapshot)
+            .map_err(|_| NativeExecutorError::new("desktop.backup_recovery_cleanup_failed"))?;
+        cleanup.0 = None;
+        Ok(())
+    }
+
     fn restart_application_services(&mut self) -> Result<(), NativeExecutorError> {
         let fresh = Cancellation::default();
         self.start_api(&fresh)?;
@@ -646,6 +845,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         let store = PgCredentialStore::prepare(&self.config.paths).map_err(credential_error)?;
         scavenge_stale_launch_secrets(&self.config.paths.temporary_secrets_root)
             .map_err(credential_error)?;
+        scavenge_stale_recovery_snapshots(&self.config.paths.temporary_secrets_root)?;
 
         let migration_target = migration_manifest_digest(&bundle.migration_manifest)?;
         let selected = load_or_create_startup_journal(
@@ -656,6 +856,9 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
             &migration_target,
         )?;
         self.interrupted_migration = selected.interrupted_migration;
+        if !self.interrupted_migration {
+            self.recovered_promotion_committed = false;
+        }
         self.had_prior_success = selected.had_prior_success;
         let next = selected.journal;
         self.bundle = Some(bundle);
@@ -968,7 +1171,11 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         cancellation: &Cancellation,
     ) -> Result<EffectOutcome, NativeExecutorError> {
         self.set_journal_phase(JournalPhase::VerifyingDatabase)?;
-        self.recover_portable_import(cancellation)?;
+        let promotion = self.recover_portable_import(cancellation)?;
+        if self.interrupted_migration {
+            self.recovered_promotion_committed |=
+                self.recovered_promotion_matches_backup(&promotion);
+        }
         let bundle = self.require_bundle()?;
         let connection = self.admin_connection(self.config.postgres_names.database())?;
         let plan = identity_plan(postgres_bin(bundle)?, &connection);
@@ -1056,6 +1263,30 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         }
         publish_backup(&pending, &published)?;
         cleanup.0 = None;
+        let receipt = MigrationBackup {
+            recovery_id: recovery_id()?,
+            attempt_id: generation,
+            file_name: published
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| NativeExecutorError::new("desktop.backup_invalid"))?
+                .to_owned(),
+            size_bytes: metadata.len(),
+            sha256: sha256_file(&published, metadata.len(), "desktop.backup_invalid")?,
+            migration_manifest_digest: self
+                .journal
+                .as_ref()
+                .ok_or_else(|| NativeExecutorError::new("desktop.executor_state_invalid"))?
+                .attempt
+                .database_schema_version
+                .clone(),
+        };
+        self.journal
+            .as_mut()
+            .ok_or_else(|| NativeExecutorError::new("desktop.executor_state_invalid"))?
+            .record_migration_backup(receipt)
+            .map_err(|_| NativeExecutorError::new("desktop.journal_invalid"))?;
+        self.store_journal()?;
         Ok(EffectOutcome::Completed)
     }
 
@@ -1391,6 +1622,17 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
             .ok_or_else(|| NativeExecutorError::new("desktop.executor_state_invalid"))
     }
 
+    fn recovered_promotion_matches_backup(&self, outcome: &PortableRecoveryOutcome) -> bool {
+        outcome.committed
+            && self
+                .journal
+                .as_ref()
+                .and_then(|journal| journal.attempt.migration_backup.as_ref())
+                .is_some_and(|backup| {
+                    outcome.archive_id.as_deref() == Some(backup.recovery_id.as_str())
+                })
+    }
+
     fn require_bundle(&self) -> Result<&RuntimeBundle, NativeExecutorError> {
         self.bundle
             .as_ref()
@@ -1430,6 +1672,22 @@ fn portable_import_recovery_pending(path: &Path) -> Result<bool, NativeExecutorE
 }
 
 impl<B: ApiBridgeControl> NativeOperations for SystemOperations<B> {
+    fn automatic_backup_recovery_available(&self) -> bool {
+        self.interrupted_migration
+            && self
+                .journal
+                .as_ref()
+                .is_some_and(LifecycleJournal::automatic_backup_recovery_available)
+    }
+
+    fn restore_automatic_backup(
+        &mut self,
+        generation: u64,
+        cancellation: &Cancellation,
+    ) -> AutomaticBackupRecoveryResult {
+        self.run_automatic_backup_recovery(generation, cancellation)
+    }
+
     fn portable_export(
         &mut self,
         destination: PathBuf,
@@ -1895,11 +2153,205 @@ fn sync_backup_file(path: &Path, expected_len: u64) -> Result<(), NativeExecutor
         .map_err(|_| NativeExecutorError::new("desktop.backup_invalid"))
 }
 
+fn sha256_file(
+    path: &Path,
+    expected_len: u64,
+    code: &'static str,
+) -> Result<String, NativeExecutorError> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| NativeExecutorError::new(code))?;
+    if super::integrity::is_link_or_reparse(&metadata)
+        || !metadata.is_file()
+        || metadata.len() != expected_len
+        || expected_len == 0
+    {
+        return Err(NativeExecutorError::new(code));
+    }
+    let mut file = fs::File::open(path).map_err(|_| NativeExecutorError::new(code))?;
+    let opened = file
+        .metadata()
+        .map_err(|_| NativeExecutorError::new(code))?;
+    if !opened.is_file() || opened.len() != expected_len {
+        return Err(NativeExecutorError::new(code));
+    }
+    let mut digest = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| NativeExecutorError::new(code))?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(read as u64)
+            .ok_or_else(|| NativeExecutorError::new(code))?;
+        if total > expected_len {
+            return Err(NativeExecutorError::new(code));
+        }
+        digest.update(&buffer[..read]);
+    }
+    if total != expected_len
+        || file
+            .metadata()
+            .map_err(|_| NativeExecutorError::new(code))?
+            .len()
+            != expected_len
+    {
+        return Err(NativeExecutorError::new(code));
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn snapshot_verified_backup(
+    source: &Path,
+    destination: &Path,
+    receipt: &MigrationBackup,
+) -> Result<(), NativeExecutorError> {
+    const CODE: &str = "desktop.backup_recovery_invalid";
+    if destination.parent().is_none() || source.file_name() != Some(receipt.file_name.as_ref()) {
+        return Err(NativeExecutorError::new(CODE));
+    }
+    match fs::symlink_metadata(destination) {
+        Ok(metadata) if !super::integrity::is_link_or_reparse(&metadata) && metadata.is_file() => {
+            fs::remove_file(destination).map_err(|_| NativeExecutorError::new(CODE))?;
+        }
+        Ok(_) => return Err(NativeExecutorError::new(CODE)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err(NativeExecutorError::new(CODE)),
+    }
+    let source_metadata =
+        fs::symlink_metadata(source).map_err(|_| NativeExecutorError::new(CODE))?;
+    if super::integrity::is_link_or_reparse(&source_metadata)
+        || !source_metadata.is_file()
+        || source_metadata.len() != receipt.size_bytes
+    {
+        return Err(NativeExecutorError::new(CODE));
+    }
+    let mut input = fs::File::open(source).map_err(|_| NativeExecutorError::new(CODE))?;
+    if input
+        .metadata()
+        .map_err(|_| NativeExecutorError::new(CODE))?
+        .len()
+        != receipt.size_bytes
+    {
+        return Err(NativeExecutorError::new(CODE));
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut output = options
+        .open(destination)
+        .map_err(|_| NativeExecutorError::new(CODE))?;
+    let mut digest = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let read = input
+            .read(&mut buffer)
+            .map_err(|_| NativeExecutorError::new(CODE))?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(read as u64)
+            .ok_or_else(|| NativeExecutorError::new(CODE))?;
+        if total > receipt.size_bytes {
+            return Err(NativeExecutorError::new(CODE));
+        }
+        digest.update(&buffer[..read]);
+        output
+            .write_all(&buffer[..read])
+            .map_err(|_| NativeExecutorError::new(CODE))?;
+    }
+    output
+        .sync_all()
+        .map_err(|_| NativeExecutorError::new(CODE))?;
+    let actual_sha256 = format!("{:x}", digest.finalize());
+    if total != receipt.size_bytes
+        || actual_sha256 != receipt.sha256
+        || input
+            .metadata()
+            .map_err(|_| NativeExecutorError::new(CODE))?
+            .len()
+            != receipt.size_bytes
+    {
+        return Err(NativeExecutorError::new(CODE));
+    }
+    Ok(())
+}
+
+fn scavenge_stale_recovery_snapshots(parent: &Path) -> Result<usize, NativeExecutorError> {
+    const MAX_TEMP_ENTRIES: usize = 1024;
+    const MAX_RECOVERY_SNAPSHOTS: usize = 16;
+    const PREFIX: &str = "migration-recovery-";
+    const SUFFIX: &str = ".dump";
+    const CODE: &str = "desktop.backup_recovery_cleanup_failed";
+
+    let mut snapshots = Vec::new();
+    for (index, entry) in fs::read_dir(parent)
+        .map_err(|_| NativeExecutorError::new(CODE))?
+        .enumerate()
+    {
+        if index == MAX_TEMP_ENTRIES {
+            return Err(NativeExecutorError::new(CODE));
+        }
+        let entry = entry.map_err(|_| NativeExecutorError::new(CODE))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(recovery_id) = name
+            .strip_prefix(PREFIX)
+            .and_then(|value| value.strip_suffix(SUFFIX))
+        else {
+            continue;
+        };
+        if !valid_recovery_id(recovery_id) || snapshots.len() == MAX_RECOVERY_SNAPSHOTS {
+            return Err(NativeExecutorError::new(CODE));
+        }
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|_| NativeExecutorError::new(CODE))?;
+        if super::integrity::is_link_or_reparse(&metadata) || !metadata.is_file() {
+            return Err(NativeExecutorError::new(CODE));
+        }
+        snapshots.push(path);
+    }
+    let count = snapshots.len();
+    for snapshot in snapshots {
+        fs::remove_file(snapshot).map_err(|_| NativeExecutorError::new(CODE))?;
+    }
+    if count > 0 {
+        sync_directory(parent)?;
+    }
+    Ok(count)
+}
+
 fn random_suffix() -> Result<String, NativeExecutorError> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes)
         .map_err(|_| NativeExecutorError::new("desktop.random_unavailable"))?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn recovery_id() -> Result<String, NativeExecutorError> {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|_| NativeExecutorError::new("desktop.random_unavailable"))?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    ))
 }
 
 #[cfg(unix)]
@@ -2428,6 +2880,29 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_backup_retries_without_authorizing_a_restore() {
+        let root = std::env::temp_dir().join(format!(
+            "schedule-executor-journal-backup-retry-{}-{}",
+            std::process::id(),
+            random_suffix().unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("lifecycle.json");
+        let mut interrupted =
+            LifecycleJournal::new(1, 10, "runtime-old".into(), "a".repeat(64), None).unwrap();
+        interrupted.set_phase(JournalPhase::BackingUpDatabase);
+        journal::store(&path, &interrupted).unwrap();
+
+        let selected =
+            load_or_create_startup_journal(&path, 2, 30, "runtime-new", &"b".repeat(64)).unwrap();
+        assert!(!selected.interrupted_migration);
+        assert!(selected.store);
+        assert_eq!(selected.journal.attempt.id, 2);
+        assert!(selected.journal.attempt.migration_backup.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn missing_database_after_success_or_migration_never_becomes_a_new_install() {
         assert!(missing_database_requires_recovery(
             ClusterState::New,
@@ -2565,6 +3040,77 @@ mod tests {
     }
 
     #[test]
+    fn recovery_snapshots_are_exact_private_copies_and_reject_changed_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "schedule-executor-backup-snapshot-{}-{}",
+            std::process::id(),
+            random_suffix().unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        let file_name = format!("attempt-7-{}.dump", "b".repeat(32));
+        let source = root.join(&file_name);
+        let destination = root.join("snapshot.dump");
+        fs::write(&source, b"verified-backup").unwrap();
+        let receipt = MigrationBackup {
+            recovery_id: "12345678-1234-4234-8234-1234567890ab".into(),
+            attempt_id: 7,
+            file_name,
+            size_bytes: 15,
+            sha256: format!("{:x}", Sha256::digest(b"verified-backup")),
+            migration_manifest_digest: "a".repeat(64),
+        };
+
+        snapshot_verified_backup(&source, &destination, &receipt).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"verified-backup");
+        fs::remove_file(&destination).unwrap();
+
+        fs::write(&source, b"changed-backup!").unwrap();
+        assert_eq!(
+            snapshot_verified_backup(&source, &destination, &receipt)
+                .unwrap_err()
+                .code(),
+            "desktop.backup_recovery_invalid"
+        );
+        fs::remove_file(&destination).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_scavenges_only_strict_stale_recovery_snapshots() {
+        let root = std::env::temp_dir().join(format!(
+            "schedule-executor-recovery-scavenge-{}-{}",
+            std::process::id(),
+            random_suffix().unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        let stale = root.join("migration-recovery-12345678-1234-4234-8234-1234567890ab.dump");
+        let unrelated = root.join("keep.dump");
+        fs::write(&stale, b"private snapshot").unwrap();
+        fs::write(&unrelated, b"unrelated").unwrap();
+
+        assert_eq!(scavenge_stale_recovery_snapshots(&root).unwrap(), 1);
+        assert!(!stale.exists());
+        assert_eq!(fs::read(&unrelated).unwrap(), b"unrelated");
+
+        fs::write(
+            root.join("migration-recovery-not-a-recovery-id.dump"),
+            b"invalid",
+        )
+        .unwrap();
+        assert!(scavenge_stale_recovery_snapshots(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_ids_are_lowercase_v4_uuids_accepted_by_the_journal() {
+        let id = recovery_id().unwrap();
+        assert_eq!(id.len(), 36);
+        assert_eq!(&id[14..15], "4");
+        assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
+        assert_eq!(id, id.to_ascii_lowercase());
+    }
+
+    #[test]
     fn failed_postgres_fast_stop_contains_the_process_and_requires_a_proving_retry() {
         let executable = std::env::current_exe().unwrap();
         let working_directory = std::env::current_dir().unwrap();
@@ -2612,6 +3158,7 @@ mod tests {
             launch_secrets: None,
             journal: None,
             interrupted_migration: false,
+            recovered_promotion_committed: false,
             had_prior_success: false,
             database_port: Some(54_321),
             database_data: Some(working_directory),

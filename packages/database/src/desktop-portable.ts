@@ -35,8 +35,10 @@ export const desktopPortableSuccessPrefix = "SCHEDULE_PORTABLE_EXPORT_V1 ";
 export const desktopPortableInspectSuccessPrefix = "SCHEDULE_PORTABLE_INSPECT_V1 ";
 export const desktopPortableImportSuccessPrefix = "SCHEDULE_PORTABLE_IMPORT_V1 ";
 export const desktopPortableRecoverySuccessPrefix = "SCHEDULE_PORTABLE_RECOVERY_V1 ";
+export const desktopMigrationBackupRestoreSuccessPrefix = "SCHEDULE_DESKTOP_BACKUP_RECOVERY_V1 ";
 const childOutputLimitBytes = 64 * 1024;
 const childTimeoutMs = 120_000;
+const migrationBackupRecoveryChildTimeoutMs = 29 * 60 * 1_000;
 const staleVerificationAgeSeconds = 6 * 60 * 60;
 const maximumStaleVerificationDatabases = 8;
 const verificationDatabasePattern = /^schedule_verify_([0-9a-f]{8})_([0-9a-z]{8})_([0-9a-f]{16})$/;
@@ -67,6 +69,15 @@ export interface DesktopPortableImportEnvironment extends DesktopPortableRecover
   readonly expectedArchiveSha256: string;
 }
 
+/**
+ * A recovery backup deliberately reuses the import identity and promotion journal.  The
+ * identity is supplied by the desktop lifecycle journal, never inferred from a filename.
+ */
+export interface DesktopMigrationBackupRestoreEnvironment extends DesktopPortableImportEnvironment {
+  readonly expectedBackupBytes: number;
+  readonly pgRestoreExecutable: string;
+}
+
 export function parseDesktopPortableExport(args: readonly string[]): string {
   if (
     args.length !== 2 ||
@@ -83,7 +94,8 @@ export type DesktopPortableCommand =
   | { readonly kind: "export"; readonly destination: string }
   | { readonly kind: "inspect"; readonly source: string }
   | { readonly kind: "import"; readonly source: string }
-  | { readonly kind: "recover" };
+  | { readonly kind: "recover" }
+  | { readonly kind: "restore-backup"; readonly source: string };
 
 function parseDesktopPortableSource(args: readonly string[], kind: "inspect" | "import"): string {
   if (
@@ -103,6 +115,14 @@ export function parseDesktopPortableCommand(args: readonly string[]): DesktopPor
   if (args[0] === "inspect")
     return { kind: "inspect", source: parseDesktopPortableSource(args, "inspect") };
   if (args.length === 1 && args[0] === "recover") return { kind: "recover" };
+  if (
+    args.length === 2 &&
+    args[0] === "restore-backup" &&
+    path.isAbsolute(args[1] ?? "") &&
+    path.extname(args[1] ?? "") === ".dump"
+  ) {
+    return { kind: "restore-backup", source: path.resolve(args[1]!) };
+  }
   return { kind: "import", source: parseDesktopPortableSource(args, "import") };
 }
 
@@ -248,6 +268,25 @@ export function readDesktopPortableImportEnvironment(
   };
 }
 
+export function readDesktopMigrationBackupRestoreEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+): DesktopMigrationBackupRestoreEnvironment {
+  const expectedBackupBytes = required(env, "SCHEDULE_EXPECTED_BACKUP_BYTES");
+  const pgRestoreExecutable = required(env, "SCHEDULE_PG_RESTORE_EXECUTABLE");
+  if (!/^\d{1,16}$/.test(expectedBackupBytes) || !path.isAbsolute(pgRestoreExecutable)) {
+    throw new Error("invalid desktop migration backup restore environment");
+  }
+  const parsedBytes = Number(expectedBackupBytes);
+  if (!Number.isSafeInteger(parsedBytes) || parsedBytes < 1) {
+    throw new Error("invalid desktop migration backup restore environment");
+  }
+  return {
+    ...readDesktopPortableImportEnvironment(env),
+    expectedBackupBytes: parsedBytes,
+    pgRestoreExecutable: path.resolve(pgRestoreExecutable),
+  };
+}
+
 export function desktopMigrationInvocation(
   environment: DesktopPortableExportEnvironment,
   verificationDatabaseUrl: string,
@@ -307,6 +346,49 @@ export async function runDesktopPortableChild(
       clearTimeout(timer);
       if (!failed && code === 0) resolve();
       else reject(new Error("desktop portable export failed"));
+    });
+  });
+}
+
+/** Runs a bounded child and returns only its bounded stdout for a one-line protocol. */
+async function runDesktopPortableChildOutput(
+  executable: string,
+  args: readonly string[],
+  env: Readonly<Record<string, string>>,
+): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn(executable, [...args], {
+      shell: false,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...env },
+    });
+    let outputBytes = 0;
+    let stdout = "";
+    let failed = false;
+    const fail = (): void => {
+      failed = true;
+      child.kill();
+    };
+    child.stdout?.on("data", (chunk: Buffer) => {
+      outputBytes += chunk.length;
+      if (outputBytes > childOutputLimitBytes) fail();
+      else stdout += chunk.toString("utf8");
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      outputBytes += chunk.length;
+      if (outputBytes > childOutputLimitBytes) fail();
+    });
+    const timer = setTimeout(fail, childTimeoutMs);
+    timer.unref?.();
+    child.once("error", () => {
+      clearTimeout(timer);
+      reject(new Error("desktop migration backup restore failed"));
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (!failed && code === 0) resolve(stdout);
+      else reject(new Error("desktop migration backup restore failed"));
     });
   });
 }
@@ -988,6 +1070,12 @@ async function syncDirectory(directory: string): Promise<void> {
   }
 }
 
+function sameCanonicalPath(left: string, right: string): boolean {
+  return process.platform === "win32"
+    ? path.relative(path.resolve(left), path.resolve(right)) === ""
+    : path.resolve(left) === path.resolve(right);
+}
+
 async function assertJournalParent(journalPath: string): Promise<string> {
   if (!path.isAbsolute(journalPath) || path.basename(journalPath).length < 1) {
     throw new Error("desktop portable import recovery failed");
@@ -995,12 +1083,8 @@ async function assertJournalParent(journalPath: string): Promise<string> {
   const parent = path.dirname(journalPath);
   const entry = await lstat(parent).catch(() => null);
   const canonical = await realpath(parent).catch(() => null);
-  const sameCanonicalPath =
-    canonical !== null &&
-    (process.platform === "win32"
-      ? path.relative(path.resolve(canonical), path.resolve(parent)) === ""
-      : path.resolve(canonical) === path.resolve(parent));
-  if (entry === null || !entry.isDirectory() || entry.isSymbolicLink() || !sameCanonicalPath) {
+  const sameParent = canonical !== null && sameCanonicalPath(canonical, parent);
+  if (entry === null || !entry.isDirectory() || entry.isSymbolicLink() || !sameParent) {
     throw new Error("desktop portable import recovery failed");
   }
   return parent;
@@ -2101,6 +2185,295 @@ export async function importDesktopPortableScheduleData(
   );
 }
 
+/** Admit an automatic backup only after an exact byte-count and digest snapshot. */
+export async function assertDesktopMigrationBackupSource(
+  source: string,
+  expectedBytes: number,
+  expectedSha256: string,
+): Promise<string> {
+  if (
+    !path.isAbsolute(source) ||
+    path.extname(source) !== ".dump" ||
+    !Number.isSafeInteger(expectedBytes) ||
+    expectedBytes < 1 ||
+    !/^[0-9a-f]{64}$/.test(expectedSha256)
+  ) {
+    throw new Error("invalid desktop migration backup source");
+  }
+  const resolved = path.resolve(source);
+  const before = await lstat(resolved, { bigint: true }).catch(() => null);
+  if (
+    before === null ||
+    !before.isFile() ||
+    before.isSymbolicLink() ||
+    before.nlink !== 1n ||
+    before.size !== BigInt(expectedBytes)
+  ) {
+    throw new Error("invalid desktop migration backup source");
+  }
+  const canonical = await realpath(resolved).catch(() => null);
+  if (canonical === null || !sameCanonicalPath(canonical, resolved)) {
+    throw new Error("invalid desktop migration backup source");
+  }
+  const handle = await open(resolved, "r").catch(() => null);
+  if (handle === null) throw new Error("invalid desktop migration backup source");
+  const digest = createHash("sha256");
+  let total = 0;
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (
+      !opened.isFile() ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino ||
+      opened.nlink !== 1n ||
+      opened.size !== before.size
+    ) {
+      throw new Error("invalid desktop migration backup source");
+    }
+    const buffer = Buffer.allocUnsafe(128 * 1024);
+    while (total < expectedBytes) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        0,
+        Math.min(buffer.length, expectedBytes - total),
+        total,
+      );
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      digest.update(buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    await handle.close();
+  }
+  const after = await lstat(resolved, { bigint: true }).catch(() => null);
+  if (
+    after === null ||
+    after.isSymbolicLink() ||
+    !after.isFile() ||
+    after.dev !== before.dev ||
+    after.ino !== before.ino ||
+    after.nlink !== 1n ||
+    after.size !== before.size ||
+    total !== expectedBytes ||
+    digest.digest("hex") !== expectedSha256
+  ) {
+    throw new Error("invalid desktop migration backup source");
+  }
+  return resolved;
+}
+
+function postgresChildEnvironment(
+  databaseUrl: string,
+  databaseName: string,
+): Readonly<Record<string, string>> {
+  const url = new URL(databaseUrl);
+  postgresIdentifier(databaseName);
+  const decode = (value: string): string => {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      throw new Error("invalid desktop migration backup restore environment");
+    }
+  };
+  const result: Record<string, string> = {
+    PGHOST: url.hostname,
+    PGPORT: url.port === "" ? "5432" : url.port,
+    PGDATABASE: databaseName,
+    PGUSER: decode(url.username),
+  };
+  if (url.password !== "") result.PGPASSWORD = decode(url.password);
+  const sslmode = url.searchParams.get("sslmode");
+  if (sslmode !== null) result.PGSSLMODE = sslmode;
+  return result;
+}
+
+function migrationStatusInvocation(
+  environment: DesktopPortableExportEnvironment,
+  databaseUrl: string,
+): {
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly env: Readonly<Record<string, string>>;
+} {
+  return {
+    executable: environment.nodeExecutable,
+    args: [environment.migrationEntrypoint, "--status"],
+    env: {
+      DATABASE_URL: databaseUrl,
+      DOTENV_CONFIG_QUIET: "true",
+      DOTENV_CONFIG_DEBUG: "false",
+    },
+  };
+}
+
+export function desktopMigrationBackupRestoreInvocation(
+  environment: DesktopMigrationBackupRestoreEnvironment,
+  stagingDatabase: string,
+  backupPath: string,
+): {
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly env: Readonly<Record<string, string>>;
+} {
+  postgresIdentifier(stagingDatabase);
+  if (!path.isAbsolute(backupPath) || path.extname(backupPath) !== ".dump") {
+    throw new Error("invalid desktop migration backup source");
+  }
+  return {
+    executable: environment.pgRestoreExecutable,
+    args: [
+      "--exit-on-error",
+      "--single-transaction",
+      "--no-owner",
+      "--no-privileges",
+      "--no-tablespaces",
+      "--dbname",
+      stagingDatabase,
+      backupPath,
+    ],
+    env: postgresChildEnvironment(environment.databaseUrl, stagingDatabase),
+  };
+}
+
+function parseMigrationStatus(value: string): "prefix" | "exact" {
+  const match = /^SCHEDULE_MIGRATION_STATUS_V1 (prefix|exact)\r?\n$/.exec(value);
+  if (match?.[1] === "prefix" || match?.[1] === "exact") return match[1];
+  throw new Error("desktop migration backup restore failed");
+}
+
+export async function restoreDesktopMigrationBackup(
+  source: string,
+  environment: DesktopMigrationBackupRestoreEnvironment = readDesktopMigrationBackupRestoreEnvironment(),
+  dependencies: {
+    readonly runChild?: typeof runDesktopPortableChild;
+    readonly runChildOutput?: (
+      executable: string,
+      args: readonly string[],
+      env: Readonly<Record<string, string>>,
+    ) => Promise<string>;
+    readonly fault?: (point: string) => void | Promise<void>;
+  } = {},
+): Promise<{ readonly previousDatabase: string; readonly previousRetained: true }> {
+  await scavengeDesktopImportJournalTemporaries(environment.importJournalPath);
+  if ((await readDesktopImportJournal(environment.importJournalPath)) !== null) {
+    const reconciliation = await recoverDesktopPortableImport(environment);
+    if (reconciliation.committed && reconciliation.archiveId === environment.expectedArchiveId) {
+      return { previousDatabase: "retained", previousRetained: true };
+    }
+  }
+  if ((await readDesktopImportJournal(environment.importJournalPath)) !== null) {
+    throw new Error("desktop migration backup recovery requires journal reconciliation");
+  }
+  const backupPath = await assertDesktopMigrationBackupSource(
+    source,
+    environment.expectedBackupBytes,
+    environment.expectedArchiveSha256,
+  );
+  await assertEmbeddedImportAdmission(environment);
+  const activeDatabase = environment.databaseName;
+  const stagingDatabase = generatedImportDatabaseName("schedule_restore_");
+  const previousDatabase = generatedImportDatabaseName("schedule_previous_");
+  const systemIdentifier = await embeddedClusterSystemIdentifier(environment);
+  await reclaimMarkedImportDatabases(environment, systemIdentifier);
+  const catalog = await readEmbeddedImportCatalog(environment, [
+    activeDatabase,
+    stagingDatabase,
+    previousDatabase,
+  ]);
+  const active = catalog.get(activeDatabase);
+  if (
+    active === undefined ||
+    active.owner !== environment.ownerRole ||
+    catalog.has(stagingDatabase) ||
+    catalog.has(previousDatabase)
+  ) {
+    throw new Error("desktop migration backup restore failed");
+  }
+  await writeDesktopImportJournal(
+    environment.importJournalPath,
+    {
+      format: importJournalFormat,
+      version: 1,
+      archiveId: environment.expectedArchiveId,
+      clusterSystemIdentifier: systemIdentifier,
+      phase: "allocating-staging",
+      active: { name: active.name, oid: active.oid, owner: active.owner },
+      staging: { name: stagingDatabase, oid: 0, owner: environment.ownerRole },
+      previous: { name: previousDatabase, oid: active.oid, owner: active.owner },
+    },
+    true,
+  );
+  await dependencies.fault?.("allocation-written");
+  await createEmbeddedImportDatabase(environment, stagingDatabase);
+  const stagingOid = await embeddedDatabaseIdentity(environment.adminDatabaseUrl, stagingDatabase);
+  if (stagingOid === null) throw new Error("desktop migration backup restore failed");
+  const stagingIdentity = { name: stagingDatabase, oid: stagingOid, owner: environment.ownerRole };
+  const stagingMarker = importOwnershipMarker(
+    systemIdentifier,
+    environment.expectedArchiveId,
+    "staging",
+    stagingIdentity,
+  );
+  await setEmbeddedDatabaseMarker(environment, stagingDatabase, stagingMarker);
+  const marked = (await readEmbeddedImportCatalog(environment, [stagingDatabase])).get(
+    stagingDatabase,
+  );
+  if (!sameImportIdentity(marked, stagingIdentity) || marked.marker !== stagingMarker) {
+    throw new Error("desktop migration backup restore failed");
+  }
+  await dependencies.fault?.("staging-marked");
+  // Hash and byte-count again immediately before passing the path to pg_restore.
+  const admittedBackup = await assertDesktopMigrationBackupSource(
+    backupPath,
+    environment.expectedBackupBytes,
+    environment.expectedArchiveSha256,
+  );
+  const runChild = dependencies.runChild ?? runDesktopPortableChild;
+  const restoreInvocation = desktopMigrationBackupRestoreInvocation(
+    environment,
+    stagingDatabase,
+    admittedBackup,
+  );
+  await runChild(
+    restoreInvocation.executable,
+    restoreInvocation.args,
+    restoreInvocation.env,
+    migrationBackupRecoveryChildTimeoutMs,
+  );
+  const stagingUrl = embeddedDatabaseUrl(environment.databaseUrl, stagingDatabase);
+  const runChildOutput = dependencies.runChildOutput ?? runDesktopPortableChildOutput;
+  const statusInvocation = migrationStatusInvocation(environment, stagingUrl);
+  let status = parseMigrationStatus(
+    await runChildOutput(statusInvocation.executable, statusInvocation.args, statusInvocation.env),
+  );
+  if (status === "prefix") {
+    const invocation = desktopMigrationInvocation(environment, stagingUrl);
+    await runChild(
+      invocation.executable,
+      invocation.args,
+      invocation.env,
+      migrationBackupRecoveryChildTimeoutMs,
+    );
+    status = parseMigrationStatus(
+      await runChildOutput(
+        statusInvocation.executable,
+        statusInvocation.args,
+        statusInvocation.env,
+      ),
+    );
+  }
+  if (status !== "exact") throw new Error("desktop migration backup restore failed");
+  await applyEmbeddedRuntimePrivileges(environment, stagingDatabase);
+  await promoteEmbeddedImportDatabase(
+    environment,
+    stagingDatabase,
+    previousDatabase,
+    activeDatabase,
+    dependencies.fault,
+  );
+  return { previousDatabase, previousRetained: true };
+}
+
 export interface DesktopPortableCliIo {
   readonly stdout: (value: string) => void;
   readonly stderr: (value: string) => void;
@@ -2111,6 +2484,11 @@ export interface DesktopPortableCliIo {
     source: string,
     environment: DesktopPortableImportEnvironment,
   ) => Promise<{ readonly archiveId: string; readonly committed: true }>;
+  /** Test seam; production restores only the lifecycle-bound automatic backup. */
+  readonly restoreBackup?: (
+    source: string,
+    environment: DesktopMigrationBackupRestoreEnvironment,
+  ) => Promise<{ readonly previousRetained: true }>;
   readonly recoverImport?: (
     environment: DesktopPortableRecoveryEnvironment,
   ) => Promise<DesktopPortableRecoveryResult>;
@@ -2153,6 +2531,17 @@ export async function runDesktopPortableCli(
       writeDesktopPortableProtocol(io.stdout, desktopPortableRecoverySuccessPrefix, {
         recovered: result.recovered,
         committed: result.committed,
+        archiveId: result.archiveId ?? null,
+      });
+      return true;
+    }
+    if (command.kind === "restore-backup") {
+      await (io.restoreBackup ?? restoreDesktopMigrationBackup)(
+        command.source,
+        readDesktopMigrationBackupRestoreEnvironment(environment),
+      );
+      writeDesktopPortableProtocol(io.stdout, desktopMigrationBackupRestoreSuccessPrefix, {
+        previousRetained: true,
       });
       return true;
     }

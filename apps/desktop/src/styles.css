@@ -91,9 +91,21 @@ body {
   background: oklch(0.41 0.16 292);
 }
 
+.startup-action:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .startup-action:focus-visible {
   outline: 3px solid oklch(0.72 0.13 292);
   outline-offset: 3px;
+}
+
+.startup-recovery-error {
+  max-width: 65ch;
+  margin: 1rem 0 0;
+  color: var(--danger);
+  line-height: 1.5;
 }
 
 @media (prefers-reduced-motion: no-preference) {

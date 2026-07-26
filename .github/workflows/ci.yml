@@ -91,6 +91,8 @@ jobs:
         run: pnpm verify:portable-migration
       - name: Verify desktop portable import crash recovery against PostgreSQL
         run: pnpm verify:desktop-portable-import
+      - name: Verify desktop migration-backup recovery against PostgreSQL
+        run: pnpm verify:desktop-migration-backup-recovery
       - name: Verify restore, promotion, rollback, and cleanup state machine
         run: pnpm verify:recovery-state-machine
       - name: PostgreSQL diagnostics

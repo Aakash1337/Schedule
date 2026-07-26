@@ -45,6 +45,10 @@
       "command": "pnpm verify:desktop-portable-import",
       "ci": true
     },
+    "desktop-migration-backup-recovery": {
+      "command": "pnpm verify:desktop-migration-backup-recovery",
+      "ci": true
+    },
     "migration-policy": {
       "command": "pnpm verify:migration-policy -- --base \"${{ github.event.pull_request.base.sha || github.event.before }}\"",
       "ci": true
@@ -1093,6 +1097,60 @@
           "anchors": [
             "Backup/restore verification passed valid round-trip, immutable snapshot, adversarial rejection"
           ]
+        }
+      ]
+    },
+    {
+      "id": "desktop-migration-backup-recovery",
+      "status": "implemented",
+      "risk": "critical",
+      "contract": {
+        "file": "docs/DESKTOP.md",
+        "anchor": "## Data lifecycle and recovery"
+      },
+      "limitations": [
+        "Recovery admits only a durable, attempt-bound pre-update backup receipt. It does not select arbitrary files, discover a latest backup, or recover legacy interrupted migration journals without a receipt. The new disposable drill is not yet a process-kill or installed N-1-to-N release drill."
+      ],
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "apps/desktop/src-tauri/src/runtime/journal.rs",
+          "command": "desktop-foundation",
+          "anchors": [
+            "only_a_committed_attempt_bound_backup_enables_automatic_recovery",
+            "migration_backup_receipts_are_strict_and_round_trip_durably"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/desktop/src-tauri/src/runtime/host.rs",
+          "command": "desktop-foundation",
+          "anchors": ["recovery_is_admitted_only_for_a_verified_migration_backup"]
+        },
+        {
+          "level": "unit",
+          "file": "packages/database/src/desktop-portable.test.ts",
+          "command": "unit",
+          "anchors": [
+            "accepts only an absolute dump path for automatic migration-backup recovery",
+            "emits the exact bounded automatic-backup recovery protocol only after promotion succeeds"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/desktop/src/DesktopApp.render.test.tsx",
+          "command": "desktop-foundation",
+          "anchors": [
+            "only offers verified automatic-backup recovery for incompatible data",
+            "submits native-confirmed automatic-backup recovery once, then re-inspects",
+            "returns to the recovery action after native confirmation is cancelled"
+          ]
+        },
+        {
+          "level": "drill",
+          "file": "scripts/verify-desktop-migration-backup-recovery.ts",
+          "command": "desktop-migration-backup-recovery",
+          "anchors": ["Desktop migration-backup recovery verification passed"]
         }
       ]
     },
