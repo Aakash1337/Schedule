@@ -345,6 +345,18 @@ async function assertRecovered(target: Target, fault: FaultPoint): Promise<void>
   const staging = databases.filter((name) => name.startsWith("schedule_restore_"));
   assert.equal(staging.length, 0, `staging database remained after ${fault}`);
   assert.equal(retained.length, committed ? 1 : 0, `unexpected previous databases after ${fault}`);
+  if (committed) {
+    const allowConnections = await runPsql(
+      "postgres",
+      `SELECT datallowconn::text FROM pg_catalog.pg_database WHERE datname = ${sqlString(retained[0] ?? "")};`,
+      { quiet: true },
+    );
+    assert.equal(
+      allowConnections.trim(),
+      "false",
+      `retained previous database accepted connections after ${fault}`,
+    );
+  }
   assert.ok(databases.includes(target.databaseName));
 }
 
