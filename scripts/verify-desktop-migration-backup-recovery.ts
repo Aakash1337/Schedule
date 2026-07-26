@@ -299,6 +299,7 @@ async function runFaultChild(
   index: number,
 ): Promise<void> {
   const markerPath = `/work/fault-${index}.txt`;
+  // The disposable marker crosses the root-owned container/host-user boundary in CI.
   const program = [
     'import { writeFileSync } from "node:fs";',
     'import { restoreDesktopMigrationBackup } from "/workspace/packages/database/dist/desktop-portable.js";',
@@ -307,7 +308,7 @@ async function runFaultChild(
     `await restoreDesktopMigrationBackup(${JSON.stringify(scenario.runnerBackupPath)}, undefined, {`,
     "  fault: async (point) => {",
     "    if (point !== fault) return;",
-    '    writeFileSync(marker, `${point}\\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });',
+    '    writeFileSync(marker, `${point}\\n`, { encoding: "utf8", flag: "wx", mode: 0o644 });',
     `    process.exit(${crashExitCode});`,
     "  },",
     "});",
