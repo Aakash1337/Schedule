@@ -689,8 +689,7 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
         })();
 
         if result.is_err() {
-            let _ = self.stop_database();
-            let _ = self.release();
+            self.cleanup_failed_automatic_backup_recovery();
         }
         match result {
             Ok(()) => AutomaticBackupRecoveryResult::Restored,
@@ -704,6 +703,14 @@ impl<B: ApiBridgeControl> SystemOperations<B> {
             }
             Err(error) => AutomaticBackupRecoveryResult::Failed { code: error.code() },
         }
+    }
+
+    fn cleanup_failed_automatic_backup_recovery(&mut self) {
+        // A failed PostgreSQL-aware stop retains a contained, exited handle so
+        // the next bounded attempt can prove it stopped before releasing the lock.
+        let _ = self.stop_database();
+        let _ = self.stop_database();
+        let _ = self.release();
     }
 
     fn restore_bound_backup(
@@ -3108,10 +3115,13 @@ mod tests {
         assert_eq!(&id[14..15], "4");
         assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
         assert_eq!(id, id.to_ascii_lowercase());
+        assert!(valid_recovery_id(&id));
     }
 
-    #[test]
-    fn failed_postgres_fast_stop_contains_the_process_and_requires_a_proving_retry() {
+    fn operations_with_running_database_and_failed_pg_ctl(
+        config: NativeExecutorConfig,
+        runtime_lock: Option<RuntimeLock>,
+    ) -> SystemOperations<FakeBridge> {
         let executable = std::env::current_exe().unwrap();
         let working_directory = std::env::current_dir().unwrap();
         let control: Arc<dyn ProcessGroupControl> = Arc::new(DirectChildControl);
@@ -3138,11 +3148,11 @@ mod tests {
             pg_restore: executable.clone(),
             pg_ctl: executable.clone(),
         };
-        let mut operations = SystemOperations {
-            config: executor_config(),
+        SystemOperations {
+            config,
             bridge: Arc::new(FakeBridge::default()),
             process_control: control,
-            runtime_lock: None,
+            runtime_lock,
             bundle: Some(RuntimeBundle {
                 root: working_directory.clone(),
                 node: executable.clone(),
@@ -3166,7 +3176,13 @@ mod tests {
             api: None,
             worker: None,
             api_target: None,
-        };
+        }
+    }
+
+    #[test]
+    fn failed_postgres_fast_stop_contains_the_process_and_requires_a_proving_retry() {
+        let mut operations =
+            operations_with_running_database_and_failed_pg_ctl(executor_config(), None);
 
         assert_eq!(
             operations.stop_database().unwrap_err().code(),
@@ -3175,6 +3191,28 @@ mod tests {
         assert!(operations.database.as_mut().unwrap().has_exited().unwrap());
         operations.stop_database().unwrap();
         assert!(operations.database.is_none());
+    }
+
+    #[test]
+    fn failed_recovery_cleanup_reaps_a_contained_database_before_releasing_its_lock() {
+        let root = std::env::temp_dir().join(format!(
+            "schedule-recovery-cleanup-{}",
+            random_suffix().unwrap()
+        ));
+        let mut config = executor_config();
+        config.paths = RuntimePaths::new(&root, "runtime-1", "launch-1").unwrap();
+        config.resource_root = root.join("resources");
+        let lock_path = config.paths.singleton_lock.clone();
+        let runtime_lock = RuntimeLock::acquire(&lock_path).unwrap();
+        let mut operations =
+            operations_with_running_database_and_failed_pg_ctl(config, Some(runtime_lock));
+
+        operations.cleanup_failed_automatic_backup_recovery();
+        assert!(operations.database.is_none());
+        assert!(operations.runtime_lock.is_none());
+        let reacquired = RuntimeLock::acquire(&lock_path).unwrap();
+        drop(reacquired);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

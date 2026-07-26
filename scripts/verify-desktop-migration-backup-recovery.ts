@@ -22,6 +22,8 @@ const backupWorkspaceName = "migration backup source";
 const postBackupWorkspaceName = "migration backup post-change";
 const sequence = "public.activity_events_ingested_sequence_seq";
 const backupSequenceValue = 700_001;
+const dockerCommandTimeoutMs = 15 * 60 * 1_000;
+const dockerTerminationGraceMs = 5_000;
 
 function postgresUrl(user: string, password: string, database: string, host = "127.0.0.1"): string {
   return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:5432/${database}`;
@@ -48,14 +50,45 @@ async function runDocker(args: readonly string[]): Promise<string> {
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
+    let settled = false;
+    let timedOut = false;
+    let escalation: ReturnType<typeof setTimeout> | undefined;
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+      escalation = setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // The explicit timeout result remains authoritative.
+        }
+        child.unref();
+        finish(new Error("Docker recovery verifier runner timed out."));
+      }, dockerTerminationGraceMs);
+      escalation.unref?.();
+    }, dockerCommandTimeoutMs);
+    deadline.unref?.();
+    const finish = (error?: Error, output?: string): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      if (escalation !== undefined) clearTimeout(escalation);
+      if (error !== undefined) reject(error);
+      else resolve(output ?? "");
+    };
     child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
-    child.once("error", reject);
+    child.once("error", (error) =>
+      finish(timedOut ? new Error("Docker recovery verifier runner timed out.") : error),
+    );
     child.once("close", (code) => {
-      if (code === 0) resolve(Buffer.concat(stdout).toString("utf8"));
+      if (timedOut) finish(new Error("Docker recovery verifier runner timed out."));
+      else if (code === 0) finish(undefined, Buffer.concat(stdout).toString("utf8"));
       else {
         const diagnostic = Buffer.concat(stderr).toString("utf8").trim();
-        reject(
+        finish(
           new Error(
             `Docker recovery verifier runner failed with exit code ${String(code)}${diagnostic === "" ? "." : `: ${diagnostic}`}`,
           ),

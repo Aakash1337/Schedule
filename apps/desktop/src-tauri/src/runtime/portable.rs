@@ -446,6 +446,22 @@ mod tests {
             )
             .is_err()
         );
+        assert!(
+            parse_portable_recovery_output(
+                b"SCHEDULE_PORTABLE_RECOVERY_V1 {\"recovered\":true,\"committed\":false,\"archiveId\":\"\"}\n"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_portable_recovery_output(
+                format!(
+                    "SCHEDULE_PORTABLE_RECOVERY_V1 {{\"recovered\":true,\"committed\":false,\"archiveId\":\"{}\"}}\n",
+                    "a".repeat(129)
+                )
+                .as_bytes()
+            )
+            .is_err()
+        );
     }
     #[test]
     fn rejects_relative_and_wrong_extension_destinations() {

@@ -160,7 +160,8 @@ describe("DesktopApp runtime gate", () => {
     ).toHaveLength(1);
   });
 
-  it("returns to recovery after an accepted attempt remains incompatible", async () => {
+  it("keeps polling when accepted recovery first observes its stale incompatible generation", async () => {
+    vi.useFakeTimers();
     invokeMock
       .mockResolvedValueOnce({
         phase: "incompatible_data",
@@ -171,18 +172,36 @@ describe("DesktopApp runtime gate", () => {
       .mockResolvedValueOnce({ result: "accepted", generation: 3 })
       .mockResolvedValueOnce({
         phase: "incompatible_data",
-        message: "Automatic recovery did not complete",
+        message: "An update was interrupted",
         generation: 3,
         automaticBackupRecovery: true,
-      });
+      })
+      .mockResolvedValueOnce({
+        phase: "starting_services",
+        message: "Restoring the automatic backup",
+        generation: 3,
+      })
+      .mockResolvedValueOnce({ phase: "ready", message: "Ready", generation: 4 });
 
     render(<DesktopApp />);
+    await act(async () => Promise.resolve());
+    await act(async () => {
+      screen.getByRole("button", { name: "Restore automatic backup" }).click();
+      await Promise.resolve();
+    });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Restore automatic backup" }));
-
-    expect(await screen.findByText("Automatic recovery did not complete")).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Restore automatic backup" })).not.toBeNull();
-    expect(screen.queryByText("Restoring the automatic backup…")).toBeNull();
+    expect(screen.getByText("Restoring the automatic backup…")).not.toBeNull();
+    expect(
+      screen.getByRole<HTMLButtonElement>("button", { name: "Restore automatic backup" }).disabled,
+    ).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    expect(screen.getByRole("status").textContent).toContain("Restoring the automatic backup");
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    expect(screen.getByRole("main", { name: "Shared Schedule application" })).not.toBeNull();
+    expect(
+      invokeMock.mock.calls.filter(([command]) => command === "runtime_restore_automatic_backup"),
+    ).toHaveLength(1);
   });
 
   it("keeps recovery unavailable for other startup failures", async () => {

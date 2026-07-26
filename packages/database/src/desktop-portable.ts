@@ -38,6 +38,7 @@ export const desktopPortableRecoverySuccessPrefix = "SCHEDULE_PORTABLE_RECOVERY_
 export const desktopMigrationBackupRestoreSuccessPrefix = "SCHEDULE_DESKTOP_BACKUP_RECOVERY_V1 ";
 const childOutputLimitBytes = 64 * 1024;
 const childTimeoutMs = 120_000;
+const childTerminationGraceMs = 1_000;
 const migrationBackupRecoveryChildTimeoutMs = 29 * 60 * 1_000;
 const staleVerificationAgeSeconds = 6 * 60 * 60;
 const maximumStaleVerificationDatabases = 8;
@@ -115,12 +116,14 @@ export function parseDesktopPortableCommand(args: readonly string[]): DesktopPor
   if (args[0] === "inspect")
     return { kind: "inspect", source: parseDesktopPortableSource(args, "inspect") };
   if (args.length === 1 && args[0] === "recover") return { kind: "recover" };
-  if (
-    args.length === 2 &&
-    args[0] === "restore-backup" &&
-    path.isAbsolute(args[1] ?? "") &&
-    path.extname(args[1] ?? "") === ".dump"
-  ) {
+  if (args[0] === "restore-backup") {
+    if (
+      args.length !== 2 ||
+      !path.isAbsolute(args[1] ?? "") ||
+      path.extname(args[1] ?? "") !== ".dump"
+    ) {
+      throw new Error("invalid desktop migration backup source");
+    }
     return { kind: "restore-backup", source: path.resolve(args[1]!) };
   }
   return { kind: "import", source: parseDesktopPortableSource(args, "import") };
@@ -314,48 +317,25 @@ export async function runDesktopPortableChild(
   env: Readonly<Record<string, string>>,
   timeoutMs = childTimeoutMs,
 ): Promise<void> {
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) {
-    throw new Error("invalid child timeout");
-  }
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(executable, [...args], {
-      shell: false,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...env },
-    });
-    let outputBytes = 0;
-    let failed = false;
-    const fail = (): void => {
-      failed = true;
-      child.kill();
-    };
-    const consume = (chunk: Buffer): void => {
-      outputBytes += chunk.length;
-      if (outputBytes > childOutputLimitBytes) fail();
-    };
-    child.stdout?.on("data", consume);
-    child.stderr?.on("data", consume);
-    const timer = setTimeout(fail, timeoutMs);
-    timer.unref?.();
-    child.once("error", () => {
-      clearTimeout(timer);
-      reject(new Error("desktop portable export failed"));
-    });
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      if (!failed && code === 0) resolve();
-      else reject(new Error("desktop portable export failed"));
-    });
-  });
+  await runBoundedDesktopPortableChild(
+    executable,
+    args,
+    env,
+    timeoutMs,
+    "desktop portable export failed",
+  );
 }
 
-/** Runs a bounded child and returns only its bounded stdout for a one-line protocol. */
-async function runDesktopPortableChildOutput(
+function runBoundedDesktopPortableChild(
   executable: string,
   args: readonly string[],
   env: Readonly<Record<string, string>>,
+  timeoutMs: number,
+  failureMessage: string,
 ): Promise<string> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) {
+    throw new Error("invalid child timeout");
+  }
   return new Promise<string>((resolve, reject) => {
     const child = spawn(executable, [...args], {
       shell: false,
@@ -366,31 +346,63 @@ async function runDesktopPortableChildOutput(
     let outputBytes = 0;
     let stdout = "";
     let failed = false;
-    const fail = (): void => {
-      failed = true;
-      child.kill();
+    let settled = false;
+    let termination: ReturnType<typeof setTimeout> | undefined;
+    const settle = (result?: string): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (termination !== undefined) clearTimeout(termination);
+      if (result === undefined) reject(new Error(failureMessage));
+      else resolve(result);
     };
-    child.stdout?.on("data", (chunk: Buffer) => {
+    const fail = (): void => {
+      if (failed || settled) return;
+      failed = true;
+      termination = setTimeout(() => settle(), childTerminationGraceMs);
+      termination.unref?.();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // Stream destruction plus the finite grace timer still bounds settlement.
+      }
+    };
+    const consume = (chunk: Buffer, capture: boolean): void => {
+      if (failed) return;
       outputBytes += chunk.length;
-      if (outputBytes > childOutputLimitBytes) fail();
-      else stdout += chunk.toString("utf8");
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      outputBytes += chunk.length;
-      if (outputBytes > childOutputLimitBytes) fail();
-    });
-    const timer = setTimeout(fail, childTimeoutMs);
-    timer.unref?.();
-    child.once("error", () => {
-      clearTimeout(timer);
-      reject(new Error("desktop migration backup restore failed"));
-    });
+      if (outputBytes > childOutputLimitBytes) {
+        fail();
+      } else if (capture) {
+        stdout += chunk.toString("utf8");
+      }
+    };
+    child.stdout?.on("data", (chunk: Buffer) => consume(chunk, true));
+    child.stderr?.on("data", (chunk: Buffer) => consume(chunk, false));
+    child.once("error", () => settle());
     child.once("close", (code) => {
-      clearTimeout(timer);
-      if (!failed && code === 0) resolve(stdout);
-      else reject(new Error("desktop migration backup restore failed"));
+      if (!failed && code === 0) settle(stdout);
+      else settle();
     });
+    const timeout = setTimeout(fail, timeoutMs);
+    timeout.unref?.();
   });
+}
+
+/** Runs a bounded child and returns only its bounded stdout for a one-line protocol. */
+async function runDesktopPortableChildOutput(
+  executable: string,
+  args: readonly string[],
+  env: Readonly<Record<string, string>>,
+): Promise<string> {
+  return runBoundedDesktopPortableChild(
+    executable,
+    args,
+    env,
+    childTimeoutMs,
+    "desktop migration backup restore failed",
+  );
 }
 
 export async function assertDesktopPortableExportTarget(destination: string): Promise<void> {
@@ -2276,6 +2288,7 @@ function postgresChildEnvironment(
     }
   };
   const result: Record<string, string> = {
+    PGCONNECT_TIMEOUT: "5",
     PGHOST: url.hostname,
     PGPORT: url.port === "" ? "5432" : url.port,
     PGDATABASE: databaseName,

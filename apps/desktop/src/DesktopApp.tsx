@@ -211,6 +211,7 @@ export function DesktopApp() {
   const retryInFlight = useRef(false);
   const retryGeneration = useRef<number | undefined>(undefined);
   const automaticBackupRecoveryInFlight = useRef(false);
+  const automaticBackupRecoveryGeneration = useRef<number | undefined>(undefined);
   const [automaticBackupRecoveryAvailable, setAutomaticBackupRecoveryAvailable] = useState(false);
   const [automaticBackupRecoveryBusy, setAutomaticBackupRecoveryBusy] = useState(false);
   const [automaticBackupRecoveryError, setAutomaticBackupRecoveryError] = useState<string | null>(
@@ -229,8 +230,15 @@ export function DesktopApp() {
         retryBaseline !== undefined &&
         inspection.action.type === "failed" &&
         inspection.generation === retryBaseline;
-      if (!staleRetryFailure) {
+      const recoveryBaseline = automaticBackupRecoveryGeneration.current;
+      const staleAutomaticBackupRecovery =
+        recoveryBaseline !== undefined &&
+        inspection.action.type === "incompatible" &&
+        inspection.automaticBackupRecovery === true &&
+        inspection.generation === recoveryBaseline;
+      if (!staleRetryFailure && !staleAutomaticBackupRecovery) {
         retryGeneration.current = undefined;
+        automaticBackupRecoveryGeneration.current = undefined;
         setAutomaticBackupRecoveryBusy(false);
         setAutomaticBackupRecoveryAvailable(inspection.automaticBackupRecovery === true);
         if (
@@ -244,6 +252,7 @@ export function DesktopApp() {
 
       if (
         staleRetryFailure ||
+        staleAutomaticBackupRecovery ||
         (inspection.action.type === "phase_changed" && isBusyStartupPhase(inspection.action.phase))
       ) {
         pollTimer.current = window.setTimeout(() => void inspectRuntime(), runtimeStatusPollMs);
@@ -294,10 +303,13 @@ export function DesktopApp() {
       .then((result) => {
         if (!mounted.current) return;
         if (result?.result === "accepted" || result?.result === "busy") {
+          automaticBackupRecoveryGeneration.current = result.generation;
           setAutomaticBackupRecoveryError(null);
         } else if (result?.result === "cancelled") {
+          automaticBackupRecoveryGeneration.current = undefined;
           setAutomaticBackupRecoveryBusy(false);
         } else {
+          automaticBackupRecoveryGeneration.current = undefined;
           setAutomaticBackupRecoveryBusy(false);
           setAutomaticBackupRecoveryError(
             result?.result === "unavailable"

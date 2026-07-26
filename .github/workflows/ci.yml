@@ -49,7 +49,7 @@ jobs:
   postgres-integration:
     name: PostgreSQL integration
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     env:
       CI: true
       COMPOSE_PROJECT_NAME: schedule-ci-${{ github.run_id }}-${{ github.run_attempt }}

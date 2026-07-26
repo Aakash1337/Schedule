@@ -194,6 +194,14 @@ bounded previous-database retention, and journal cleanup:
 pnpm verify:desktop-portable-import
 ```
 
+Interrupted desktop-update recovery has its own real PostgreSQL drill. It restores only the
+lifecycle-bound pre-migration dump, verifies the exact migration ledger and application data,
+promotes by the journaled database identity, and proves the previous database remains retained:
+
+```powershell
+pnpm verify:desktop-migration-backup-recovery
+```
+
 The archive framing and migration fingerprint are OS-neutral and unit-tested with Windows and Linux
 producer metadata. Current CI runs the full database drill on Linux; a physical Windows-producer to
 Linux-consumer artifact handoff is not yet a CI claim. Nor does the current repository retain golden
