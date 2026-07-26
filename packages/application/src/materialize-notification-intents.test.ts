@@ -218,6 +218,7 @@ function harness(options: HarnessOptions = {}) {
         .sort((left, right) => left.scheduledFor.getTime() - right.scheduledFor.getTime())
         .slice(offset, offset + limit),
     listDeliveryHistory: async () => [],
+    redriveDeadLetterDelivery: async () => ({ kind: "not_found" }),
     insertIntent: async (intent) => {
       const existing = intents.get(intent.occurrenceKey);
       if (existing !== undefined) return existing;

@@ -1089,9 +1089,13 @@ function DeliveryIcon({ status }: { readonly status: NotificationDeliveryHistory
 function ExecutionTab({
   deliveries,
   timeZone,
+  busyKey,
+  onRedrive,
 }: {
   readonly deliveries: readonly NotificationDeliveryHistoryItem[];
   readonly timeZone: string | undefined;
+  readonly busyKey: string | null;
+  readonly onRedrive: (deliveryId: string) => void;
 }) {
   const [visible, setVisible] = useState(50);
   useEffect(() => setVisible(50), [deliveries]);
@@ -1147,6 +1151,19 @@ function ExecutionTab({
                     <span>Failure: {delivery.lastFailureCode}</span>
                   )}
                 </div>
+                {delivery.status === "dead_letter" ? (
+                  <Button
+                    type="button"
+                    variant="quiet"
+                    busy={busyKey === `redrive-${delivery.deliveryId}`}
+                    disabled={busyKey !== null}
+                    onClick={() => onRedrive(delivery.deliveryId)}
+                    aria-label={`Retry delivery for ${delivery.title ?? kindLabel(delivery.kind)} (${delivery.deliveryId})`}
+                  >
+                    <RefreshCw size={16} aria-hidden="true" />
+                    Retry delivery
+                  </Button>
+                ) : null}
               </div>
             </article>
           );
@@ -1240,7 +1257,8 @@ export function RemindersView({ workspace }: WorkspaceViewProps) {
         return true;
       } catch (mutationError) {
         const conflict =
-          mutationError instanceof ApiError && mutationError.code.endsWith("version_conflict");
+          mutationError instanceof ApiError &&
+          (mutationError.code.endsWith("version_conflict") || mutationError.status === 409);
         if (conflict) await refresh();
         setError(errorMessage(mutationError));
         return false;
@@ -1290,6 +1308,14 @@ export function RemindersView({ workspace }: WorkspaceViewProps) {
       await refresh();
       setTab("planned");
       return `Planning refreshed: ${String(result.created.length)} created, ${String(result.existing.length)} already present, ${String(result.suppressed.length)} suppressed by policy.`;
+    });
+  }
+
+  async function redrive(deliveryId: string) {
+    await runMutation(`redrive-${deliveryId}`, async () => {
+      await api.redriveNotificationDelivery(workspace.id, deliveryId);
+      await refresh();
+      return "Delivery requeued and available to an adapter. No external send was performed.";
     });
   }
 
@@ -1403,7 +1429,12 @@ export function RemindersView({ workspace }: WorkspaceViewProps) {
           ) : null}
           {tab === "planned" ? <PlannedTab intents={intents} timeZone={profile?.timeZone} /> : null}
           {tab === "execution" ? (
-            <ExecutionTab deliveries={deliveries} timeZone={profile?.timeZone} />
+            <ExecutionTab
+              deliveries={deliveries}
+              timeZone={profile?.timeZone}
+              busyKey={busyKey}
+              onRedrive={(deliveryId) => void redrive(deliveryId)}
+            />
           ) : null}
         </div>
       )}

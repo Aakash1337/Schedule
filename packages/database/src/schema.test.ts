@@ -269,6 +269,7 @@ describe("database schema", () => {
     expect(notificationDeliveryRequestOperation.enumValues).toEqual(["claim", "receipt"]);
 
     const command = getTableConfig(notificationDeliveryCommands);
+    expect(command.columns.find((column) => column.name === "redrive_requested_at")).toBeDefined();
     expect(command.uniqueConstraints.map((constraint) => constraint.getName())).toEqual(
       expect.arrayContaining([
         "notification_delivery_commands_workspace_intent_uq",
@@ -278,6 +279,7 @@ describe("database schema", () => {
     expect(command.checks.map((constraint) => constraint.name)).toEqual(
       expect.arrayContaining([
         "notification_delivery_commands_state_valid",
+        "notification_delivery_commands_redrive_authorization_valid",
         "notification_delivery_commands_failure_code_valid",
         "notification_delivery_commands_timestamps_valid",
       ]),
@@ -325,6 +327,26 @@ describe("database schema", () => {
     expect(migration).toContain('CREATE TABLE "notification_delivery_attempts"');
     expect(migration).toContain('CREATE TABLE "notification_delivery_requests"');
     expect(migration).toContain('CREATE INDEX "notification_delivery_commands_recovery_idx"');
+  });
+
+  it("persists the one-use exhausted-attempt redrive authorization", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0043_typical_layla_miller.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain('ADD COLUMN "redrive_requested_at"');
+    expect(migration).toContain("notification_delivery_commands_redrive_authorization_valid");
+    expect(migration).not.toContain("source-deleted dead letters");
+  });
+
+  it("cuts off orphan dead letters in an append-only follow-up migration", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0044_orphan_dead_letter_cutoff.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain("source-deleted dead letters must be permanently ineligible");
+    expect(migration).toContain("command.\"status\" = 'dead_letter'");
+    expect(migration).toContain('intent."workspace_id" = command."workspace_id"');
   });
 
   it("constrains deterministic notification policy and immutable intent sources", () => {

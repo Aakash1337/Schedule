@@ -2726,8 +2726,7 @@
       "limitations": [
         "Schedule exposes fenced pull claims and bounded receipts and now includes a disabled-by-default runnable Hermes process that loads an operator-owned reconcile-before-send client module, but no live authenticated provider client or human/account binding.",
         "Periodic intent materialization, a shared PostgreSQL adapter dedupe store, fail-safe supervised polling, a loopback process health boundary, and adapter-side exact reconciliation semantics are implemented; provider-specific conclusive reconciliation remains operator-supplied.",
-        "Delivered dedupe tombstone cleanup is intentionally disabled until Schedule exposes an authoritative replay-retention watermark.",
-        "Dead-letter redrive is not implemented in this slice."
+        "Delivered dedupe tombstone cleanup is intentionally disabled until Schedule exposes an authoritative replay-retention watermark."
       ],
       "evidence": [
         {
@@ -2872,6 +2871,16 @@
         },
         {
           "level": "unit",
+          "file": "packages/application/src/redrive-notification-delivery.test.ts",
+          "command": "unit",
+          "anchors": [
+            "redrives the same provider-neutral delivery and atomically audits the database timestamp",
+            "reports explicit repository result",
+            "rejects malformed delivery identities before opening a transaction"
+          ]
+        },
+        {
+          "level": "unit",
           "file": "apps/api/src/integration-routes.test.ts",
           "command": "unit",
           "anchors": [
@@ -2882,11 +2891,31 @@
         },
         {
           "level": "unit",
+          "file": "apps/api/src/notification-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "redrives a dead-letter delivery with strict identifiers and returns safe history",
+            "propagates notification delivery redrive not-found and conflict errors"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/web/src/views/RemindersView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "only offers delivery retry for dead-letter commands",
+            "requeues a dead-letter delivery, refreshes history, and does not claim an external send",
+            "refreshes after a redrive conflict and reports the delivery error"
+          ]
+        },
+        {
+          "level": "unit",
           "file": "packages/database/src/schema.test.ts",
           "command": "unit",
           "anchors": [
             "fences provider-neutral notification delivery and exact request replay",
-            "migrates the least-privilege delivery scope and lifecycle tables"
+            "migrates the least-privilege delivery scope and lifecycle tables",
+            "persists the one-use exhausted-attempt redrive authorization"
           ]
         },
         {
@@ -2905,6 +2934,8 @@
             "notification-delivery-lease-recovery",
             "notification-delivery-invalidation-cutoff",
             "notification-delivery-null-claim-replay",
+            "notification-delivery-dead-letter-redrive",
+            "notification-delivery-redrive-authorization-one-use",
             "notification delivery verification passed"
           ]
         },

@@ -45,6 +45,7 @@ import {
   RecordActivityEvent,
   RecordPlanItemActivity,
   RecordRoutineSelectionPreferenceFeedback,
+  RedriveNotificationDelivery,
   RemoveWorkItemDependency,
   ResetDailyPlanFitInsightDismissal,
   ResetRoutineDurationInsightDismissal,
@@ -149,6 +150,7 @@ export function createProductServices(
   const listNotificationIntents = new ListNotificationIntents(unitOfWork);
   const listNotificationDeliveries = new ListNotificationDeliveries(unitOfWork);
   const materializeNotificationIntents = new MaterializeNotificationIntents(unitOfWork, clock);
+  const redriveNotificationDelivery = new RedriveNotificationDelivery(unitOfWork);
   const generateNaturalLanguageProposal =
     naturalLanguage === undefined
       ? null
@@ -239,6 +241,7 @@ export function createProductServices(
     listNotificationIntents: (query) => listNotificationIntents.execute(query),
     listNotificationDeliveries: (query) => listNotificationDeliveries.execute(query),
     materializeNotificationIntents: (command) => materializeNotificationIntents.execute(command),
+    redriveNotificationDelivery: (command) => redriveNotificationDelivery.execute(command),
     generateNaturalLanguageProposal: (command, signal) => {
       if (generateNaturalLanguageProposal === null) return naturalLanguageDisabled();
       return generateNaturalLanguageProposal.execute(command, signal);

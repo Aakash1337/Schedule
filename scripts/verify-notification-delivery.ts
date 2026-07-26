@@ -166,6 +166,7 @@ try {
   const primaryWorkspaceId = await createWorkspace("Notification delivery verification");
   const isolatedWorkspaceId = await createWorkspace("Notification delivery isolation");
   const revocationWorkspaceId = await createWorkspace("Notification delivery revocation race");
+  const lowerMaxWorkspaceId = await createWorkspace("Notification delivery lower max");
 
   const profile = await app.inject({
     method: "PUT",
@@ -305,6 +306,11 @@ try {
       url: "/v1/integrations/reminder-deliveries/receipt",
       headers: { ...authorization(token), "idempotency-key": idempotencyKey },
       payload: { version: VERSION, ...payload },
+    });
+  const redrive = async (workspaceId: string, deliveryId: string) =>
+    app!.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceId}/notification-deliveries/${deliveryId}/redrives`,
     });
   const wait = (milliseconds: number) =>
     new Promise<void>((resolve) => {
@@ -640,8 +646,35 @@ try {
   await createOneOff("Permanent failure");
   await materialize();
   const permanentClaim = await claim(deliveryCredential.token, "claim-permanent");
-  const permanentCommand = permanentClaim.envelope.data.command;
-  assert.ok(permanentCommand !== null);
+  const firstPermanentCommand = permanentClaim.envelope.data.command;
+  assert.ok(firstPermanentCommand !== null);
+  let permanentCommand = firstPermanentCommand;
+  for (let attempt = 1; attempt < 5; attempt += 1) {
+    assert.equal(permanentCommand.attempt, attempt);
+    const retry = await receipt(
+      deliveryCredential.token,
+      `receipt-permanent-retry-${String(attempt)}`,
+      {
+        deliveryId: permanentCommand.deliveryId,
+        claimToken: permanentCommand.claimToken,
+        outcome: "retryable_failure",
+        failureCode: "transport.retryable",
+        retryAfterSeconds: 0,
+      },
+    );
+    assert.equal(retry.statusCode, 200, retry.body);
+    assert.equal(retry.json<ReceiptEnvelope>().data.status, "retry_scheduled");
+    const nextClaim = await claim(
+      deliveryCredential.token,
+      `claim-permanent-${String(attempt + 1)}`,
+    );
+    const nextCommand = nextClaim.envelope.data.command;
+    assert.ok(nextCommand !== null);
+    assert.equal(nextCommand.deliveryId, firstPermanentCommand.deliveryId);
+    assert.equal(nextCommand.dedupeKey, firstPermanentCommand.dedupeKey);
+    permanentCommand = nextCommand;
+  }
+  assert.equal(permanentCommand.attempt, 5);
   const permanentReceipt = await receipt(deliveryCredential.token, "receipt-permanent", {
     deliveryId: permanentCommand.deliveryId,
     claimToken: permanentCommand.claimToken,
@@ -650,6 +683,248 @@ try {
   });
   assert.equal(permanentReceipt.statusCode, 200, permanentReceipt.body);
   assert.equal(permanentReceipt.json<ReceiptEnvelope>().data.status, "dead_lettered");
+
+  // EVIDENCE: notification-delivery-dead-letter-redrive
+  // Redrive changes only the existing terminal command. Its identity, cumulative attempts and
+  // immutable historic attempts survive; exactly one concurrent redrive wins and is audited.
+  const [beforeRedrive] = await activeConnection.sql<
+    {
+      id: string;
+      intent_id: string;
+      attempts: number;
+      last_failure_code: string | null;
+      attempt_rows: number;
+      completed_attempt_rows: number;
+    }[]
+  >`
+    select
+      command.id::text,
+      command.intent_id::text,
+      command.attempts,
+      command.last_failure_code,
+      (select count(*)::int from notification_delivery_attempts attempt
+       where attempt.workspace_id = command.workspace_id and attempt.delivery_id = command.id) as attempt_rows,
+      (select count(*)::int from notification_delivery_attempts attempt
+       where attempt.workspace_id = command.workspace_id and attempt.delivery_id = command.id
+         and attempt.outcome = 'permanent_failure') as completed_attempt_rows
+    from notification_delivery_commands command
+    where command.workspace_id = ${primaryWorkspaceId} and command.id = ${permanentCommand.deliveryId}
+  `;
+  assert.ok(beforeRedrive !== undefined);
+  assert.equal(beforeRedrive.attempts, 5);
+  assert.equal(beforeRedrive.last_failure_code, "transport.rejected");
+
+  const rejectedCrossTenantRedrive = await redrive(
+    isolatedWorkspaceId,
+    permanentCommand.deliveryId,
+  );
+  assert.equal(rejectedCrossTenantRedrive.statusCode, 404, rejectedCrossTenantRedrive.body);
+  assert.equal(
+    rejectedCrossTenantRedrive.json<ErrorEnvelope>().error.code,
+    "notification_delivery.command_not_found",
+  );
+
+  const concurrentRedrives = await Promise.all(
+    Array.from({ length: 2 }, () => redrive(primaryWorkspaceId, permanentCommand.deliveryId)),
+  );
+  assert.deepEqual(
+    concurrentRedrives.map((response) => response.statusCode).sort(),
+    [200, 409],
+    "only one dead-letter redrive may transition the existing command",
+  );
+  const redriveSuccess = concurrentRedrives.find((response) => response.statusCode === 200);
+  assert.ok(redriveSuccess !== undefined);
+  const redriven = redriveSuccess.json<{
+    readonly deliveryId: string;
+    readonly intentId: string;
+    readonly status: string;
+    readonly attempts: number;
+    readonly lastFailureCode: string | null;
+    readonly completedAt: string | null;
+  }>();
+  assert.equal(redriven.deliveryId, beforeRedrive.id);
+  assert.equal(redriven.intentId, beforeRedrive.intent_id);
+  assert.equal(redriven.status, "pending");
+  assert.equal(redriven.attempts, beforeRedrive.attempts);
+  assert.equal(redriven.lastFailureCode, beforeRedrive.last_failure_code);
+  assert.equal(redriven.completedAt, null);
+
+  const [redriveAudit] = await activeConnection.sql<
+    { count: number; occurred_at: string; updated_at: string }[]
+  >`
+    select
+      count(*)::int as count,
+      max(audit.occurred_at)::text as occurred_at,
+      max(command.updated_at)::text as updated_at
+    from notification_delivery_commands command
+    join audit_events audit
+      on audit.workspace_id = command.workspace_id
+     and audit.entity_id = command.id
+     and audit.action = 'notification_delivery.redriven'
+    where command.workspace_id = ${primaryWorkspaceId} and command.id = ${permanentCommand.deliveryId}
+    group by command.updated_at
+  `;
+  assert.ok(redriveAudit !== undefined);
+  assert.equal(redriveAudit.count, 1);
+  assert.equal(
+    new Date(redriveAudit.occurred_at).getTime(),
+    new Date(redriveAudit.updated_at).getTime(),
+    "redrive audit must share the persisted transition timestamp",
+  );
+
+  const redrivenClaim = await claim(deliveryCredential.token, "claim-redriven-dead-letter");
+  const redrivenCommand = redrivenClaim.envelope.data.command;
+  assert.ok(redrivenCommand !== null);
+  assert.equal(redrivenCommand.deliveryId, permanentCommand.deliveryId);
+  assert.equal(redrivenCommand.intentId, permanentCommand.intentId);
+  assert.equal(redrivenCommand.dedupeKey, permanentCommand.dedupeKey);
+  assert.equal(redrivenCommand.attempt, beforeRedrive.attempts + 1);
+  const [consumedRedriveAuthorization] = await activeConnection.sql<
+    { redrive_requested_at: string | null }[]
+  >`
+    select redrive_requested_at::text
+    from notification_delivery_commands
+    where workspace_id = ${primaryWorkspaceId} and id = ${permanentCommand.deliveryId}
+  `;
+  assert.ok(consumedRedriveAuthorization !== undefined);
+  assert.equal(consumedRedriveAuthorization.redrive_requested_at, null);
+  const redrivenReceipt = await receipt(deliveryCredential.token, "receipt-redriven-dead-letter", {
+    deliveryId: redrivenCommand.deliveryId,
+    claimToken: redrivenCommand.claimToken,
+    outcome: "permanent_failure",
+    failureCode: "transport.rejected_again",
+  });
+  assert.equal(redrivenReceipt.statusCode, 200, redrivenReceipt.body);
+  assert.equal(redrivenReceipt.json<ReceiptEnvelope>().data.status, "dead_lettered");
+  const [afterRedrive] = await activeConnection.sql<
+    { attempts: number; attempt_rows: number; old_attempt_rows: number }[]
+  >`
+    select
+      command.attempts,
+      (select count(*)::int from notification_delivery_attempts attempt
+       where attempt.workspace_id = command.workspace_id and attempt.delivery_id = command.id) as attempt_rows,
+      (select count(*)::int from notification_delivery_attempts attempt
+       where attempt.workspace_id = command.workspace_id and attempt.delivery_id = command.id
+         and attempt.outcome = 'permanent_failure' and attempt.failure_code = 'transport.rejected') as old_attempt_rows
+    from notification_delivery_commands command
+    where command.workspace_id = ${primaryWorkspaceId} and command.id = ${permanentCommand.deliveryId}
+  `;
+  assert.ok(afterRedrive !== undefined);
+  assert.equal(afterRedrive.attempts, beforeRedrive.attempts + 1);
+  assert.equal(afterRedrive.attempt_rows, beforeRedrive.attempt_rows + 1);
+  assert.equal(afterRedrive.old_attempt_rows, beforeRedrive.completed_attempt_rows);
+
+  // EVIDENCE: notification-delivery-redrive-authorization-one-use
+  // A pending command at a stricter adapter's max is not a redrive merely because it is pending.
+  // Only the durable authorization written by dead_letter -> pending can permit that extra claim.
+  const lowerMaxDeliveryId = randomUUID();
+  await activeConnection.sql`
+    insert into notification_delivery_commands (
+      id, workspace_id, intent_id, occurrence_key, kind, target_type, title_snapshot,
+      scheduled_for, local_date, priority, status, attempts, available_at,
+      created_at, updated_at
+    ) values (
+      ${lowerMaxDeliveryId}::uuid, ${lowerMaxWorkspaceId}::uuid, ${randomUUID()}::uuid,
+      'lower-max-without-redrive', 'one_off', 'one_off', 'Lower max without redrive',
+      clock_timestamp(), current_date, 100, 'pending', 1, clock_timestamp(),
+      clock_timestamp(), clock_timestamp()
+    )
+  `;
+  const lowerMaxClaim = await integrationUnitOfWork.run((context) =>
+    context.notificationDeliveries.claimNext({
+      workspaceId: workspaceId(lowerMaxWorkspaceId),
+      credentialId: revocationCredential.id,
+      leaseDurationMilliseconds: 2_000,
+      maxAttempts: 1,
+    }),
+  );
+  assert.equal(lowerMaxClaim, null);
+  const [lowerMaxState] = await activeConnection.sql<
+    {
+      status: string;
+      attempts: number;
+      redrive_requested_at: string | null;
+      attempt_rows: number;
+    }[]
+  >`
+    select
+      command.status::text,
+      command.attempts,
+      command.redrive_requested_at::text,
+      (select count(*)::int from notification_delivery_attempts attempt
+       where attempt.workspace_id = command.workspace_id and attempt.delivery_id = command.id) as attempt_rows
+    from notification_delivery_commands command
+    where command.workspace_id = ${lowerMaxWorkspaceId} and command.id = ${lowerMaxDeliveryId}
+  `;
+  assert.deepEqual(lowerMaxState, {
+    status: "pending",
+    attempts: 1,
+    redrive_requested_at: null,
+    attempt_rows: 0,
+  });
+
+  // EVIDENCE: notification-delivery-source-invalidation-terminal-cutoff
+  // Cancelling a source invalidates its existing dead-letter command too. It stays the same
+  // delivery/audit record, but can neither be redriven nor selected for another provider call.
+  const terminalSourceReminder = await createOneOff("Invalidate dead letter source");
+  await materialize();
+  const terminalSourceClaim = await claim(deliveryCredential.token, "claim-terminal-source");
+  const terminalSourceCommand = terminalSourceClaim.envelope.data.command;
+  assert.ok(terminalSourceCommand !== null);
+  const terminalSourceFailure = await receipt(deliveryCredential.token, "receipt-terminal-source", {
+    deliveryId: terminalSourceCommand.deliveryId,
+    claimToken: terminalSourceCommand.claimToken,
+    outcome: "permanent_failure",
+    failureCode: "transport.source_terminal",
+  });
+  assert.equal(terminalSourceFailure.statusCode, 200, terminalSourceFailure.body);
+  assert.equal(terminalSourceFailure.json<ReceiptEnvelope>().data.status, "dead_lettered");
+  const [terminalSourceCancellation, terminalSourceRedrive] = await Promise.all([
+    app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${primaryWorkspaceId}/one-off-reminders/${terminalSourceReminder.id}/cancellations`,
+      payload: { expectedVersion: terminalSourceReminder.version },
+    }),
+    redrive(primaryWorkspaceId, terminalSourceCommand.deliveryId),
+  ]);
+  assert.equal(terminalSourceCancellation.statusCode, 200, terminalSourceCancellation.body);
+  assert.ok(
+    terminalSourceRedrive.statusCode === 200 || terminalSourceRedrive.statusCode === 409,
+    terminalSourceRedrive.body,
+  );
+  if (terminalSourceRedrive.statusCode === 409) {
+    assert.equal(
+      terminalSourceRedrive.json<ErrorEnvelope>().error.code,
+      "notification_delivery.redrive_conflict",
+    );
+  }
+  const terminalSourceClaimAfterCancellation = await claim(
+    deliveryCredential.token,
+    "claim-terminal-source-after-cancellation",
+  );
+  assert.equal(
+    terminalSourceClaimAfterCancellation.envelope.data.command,
+    null,
+    "a source-invalidated dead letter must never be claimed again",
+  );
+  const [terminalSourceState] = await activeConnection.sql<
+    { status: string; attempts: number; last_failure_code: string | null; attempt_rows: number }[]
+  >`
+    select
+      command.status::text,
+      command.attempts,
+      command.last_failure_code,
+      (select count(*)::int from notification_delivery_attempts attempt
+       where attempt.workspace_id = command.workspace_id and attempt.delivery_id = command.id) as attempt_rows
+    from notification_delivery_commands command
+    where command.workspace_id = ${primaryWorkspaceId} and command.id = ${terminalSourceCommand.deliveryId}
+  `;
+  assert.deepEqual(terminalSourceState, {
+    status: "invalidated",
+    attempts: 1,
+    last_failure_code: "transport.source_terminal",
+    attempt_rows: 1,
+  });
 
   // EVIDENCE: notification-delivery-null-claim-replay
   // An empty claim is a durable point-in-time result and cannot later lease a different command.
@@ -703,7 +978,7 @@ try {
   assert.ok(state !== undefined);
   assert.equal(state.delivered, 3);
   assert.equal(state.dead_letter, 1);
-  assert.equal(state.invalidated, 2);
+  assert.equal(state.invalidated, 3);
   assert.equal(state.lease_expired_attempts, 2);
   assert.equal(state.duplicate_occurrences, 0);
   assert.equal(state.raw_receipt_fields, 0);
@@ -723,12 +998,13 @@ try {
     readonly page: { readonly limit: number; readonly offset: number };
   }>();
   assert.deepEqual(history.page, { limit: 100, offset: 0 });
-  assert.equal(history.items.length, 6);
+  assert.equal(history.items.length, 7);
   assert.deepEqual(history.items.map((item) => item.status).sort(), [
     "dead_letter",
     "delivered",
     "delivered",
     "delivered",
+    "invalidated",
     "invalidated",
     "invalidated",
   ]);
@@ -816,9 +1092,9 @@ try {
     where workspace_id = ${primaryWorkspaceId}
   `;
   assert.ok(auditState !== undefined);
-  assert.equal(auditState.claim_audits, 8);
-  assert.equal(auditState.receipt_audits, 6);
-  assert.equal(auditState.request_count, 17);
+  assert.equal(auditState.claim_audits, 14);
+  assert.equal(auditState.receipt_audits, 12);
+  assert.equal(auditState.request_count, 30);
 } catch (error) {
   failure = error;
 } finally {

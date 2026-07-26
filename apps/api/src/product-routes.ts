@@ -50,6 +50,7 @@ import type {
   RecordActivityEventCommand,
   RecordPlanItemActivityCommand,
   RecordRoutineSelectionPreferenceFeedbackCommand,
+  RedriveNotificationDeliveryCommand,
   RegenerateDailyPlanCommand,
   PreviewDailyPlanAlternativesCommand,
   ReplacePlanItemCommand,
@@ -234,6 +235,9 @@ export interface ProductServices {
   materializeNotificationIntents(
     command: MaterializeNotificationIntentsCommand,
   ): Promise<MaterializeNotificationIntentsResult>;
+  redriveNotificationDelivery(
+    command: RedriveNotificationDeliveryCommand,
+  ): Promise<NotificationDeliveryHistoryItem>;
 }
 
 function isAbortError(error: unknown): boolean {
@@ -348,6 +352,7 @@ const workItemDependencyParams = z.strictObject({
 const scheduleBlockParams = z.strictObject({ workspaceId: uuid, scheduleBlockId: uuid });
 const notificationRuleParams = z.strictObject({ workspaceId: uuid, notificationRuleId: uuid });
 const oneOffReminderParams = z.strictObject({ workspaceId: uuid, oneOffReminderId: uuid });
+const notificationDeliveryParams = z.strictObject({ workspaceId: uuid, deliveryId: uuid });
 const planParams = z.strictObject({ workspaceId: uuid, date: localDateText });
 const planItemParams = z.strictObject({ workspaceId: uuid, date: localDateText, itemId: uuid });
 const planRoutineParams = z.strictObject({
@@ -1440,6 +1445,17 @@ export async function registerProductRoutes(
     });
     return { items, page: { limit: query.limit, offset: query.offset } };
   });
+
+  app.post(
+    "/v1/workspaces/:workspaceId/notification-deliveries/:deliveryId/redrives",
+    async (request) => {
+      const params = parseRequest(notificationDeliveryParams, request.params);
+      return services.redriveNotificationDelivery({
+        workspaceId: workspaceId(params.workspaceId),
+        deliveryId: params.deliveryId,
+      });
+    },
+  );
 
   app.post("/v1/workspaces/:workspaceId/notification-intents/materializations", async (request) => {
     const params = parseRequest(workspaceParams, request.params);

@@ -469,12 +469,13 @@ checks cross-tenant source/target, rule-kind, and duplicate-key rejection, prove
 and terminal activity invalidate the correct pending intents, proves target deletion cleanup, and
 confirms the outbox count is unchanged.
 `verify:notification-migrations` creates a nonce database, migrates it only through `0023`, seeds
-legacy data, applies each reminder migration in order, validates constraints and populated upgrades,
-and drops the database. `verify:notification-delivery` creates a separate nonce database and drives
+legacy data, applies each reminder migration through `0044` in order, validates constraints,
+populated upgrades, and the orphaned-dead-letter backfill, then drops the database.
+`verify:notification-delivery` creates a separate nonce database and drives
 the real authenticated Fastify routes through claim, exact replay, retry, expiry, recovery,
-invalidation, dead letter, receipt fencing, and a credential-revocation lock race. The migration and
-delivery verifiers also assert the partial expired-lease recovery index. These commands are also
-inside `verify:database`.
+invalidation, dead letter, explicit redrive, the source-invalidation cutoff, receipt fencing, and a
+credential-revocation lock race. The migration and delivery verifiers also assert the partial
+expired-lease recovery index. These commands are also inside `verify:database`.
 
 Automatic local materialization is disabled by default. Leave
 `NOTIFICATION_MATERIALIZATION_MODE=disabled` while policy is being provisioned. To enable it, set
@@ -501,8 +502,8 @@ Manual materialization remains available through the local product API. Use a wi
 31 days and inspect all three result groups: `created`, `existing`, and `suppressed`.
 Repeated or concurrent invocation is safe. Policy and target changes never rewrite an intent; they
 transactionally delete affected pending intents under the same workspace notification lock. Deleting
-a referenced daily plan, schedule block, or work item also invalidates its open delivery command and
-removes the source intent so it cannot later be claimed against a missing target.
+a referenced daily plan, schedule block, or work item also invalidates its not-delivered command and
+removes the source intent so it cannot later be claimed or redriven against a missing target.
 
 `verify:notification-materializer` creates and migrates a disposable database, runs two production
 cycles concurrently through independent pools, repeats a restart cycle, and proves exact-once
@@ -523,9 +524,12 @@ Operational adapters must persist dedupe IDs before causing external side effect
 after a provider accepts a message but before Schedule commits the receipt can cause the same
 delivery ID to be claimed with a new token. A second instance must share the same dedupe store.
 Repeated `claim` and `receipt` calls must use the original idempotency key only for exact replay; use
-a new key for the next poll or changed outcome. `dead_letter` is terminal in this slice and has no
-redrive command. Inspect it through database-safe operational metrics only; do not log provider or
-recipient data.
+a new key for the next poll or changed outcome. `dead_letter` stops automatic retries. While its
+source intent remains valid, an operator can select **Retry delivery** in Reminders > Execution to
+requeue that same command; redrive preserves its identity and attempt history and does not call a
+provider. Source, policy, or target invalidation makes the command permanently ineligible for
+redrive. Inspect delivery state through database-safe operational metrics only; do not log provider
+or recipient data.
 
 Source invalidation before claim prevents delivery. Invalidation after claim prevents reclaim, but
 cannot retract an already-running external side effect. A receipt before the original lease expires
@@ -534,9 +538,9 @@ the abandoned attempt as `lease_expired`. Treat this claim-commit interval as an
 not proof a message did or did not leave the adapter.
 
 Profile `enabled: false` is the policy kill switch. The versioned update invalidates existing pending
-intents and open commands and suppresses new candidate evaluation, but does not erase the profile,
-rules, or one-offs and cannot retract an in-flight provider side effect. External transport needs
-its own adapter-side kill switch when implemented. See
+intents and not-delivered commands and suppresses new candidate evaluation, but does not erase the
+profile, rules, or one-offs and cannot retract an in-flight provider side effect. External transport
+needs its own adapter-side kill switch when implemented. See
 [REMINDERS.md](./REMINDERS.md).
 
 ## Hosted OIDC preflight and activation

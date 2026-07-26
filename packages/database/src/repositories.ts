@@ -57,7 +57,9 @@ import type {
   NotificationRepository,
   NotificationDeliveryRepository,
   NotificationDeliveryHistoryItem,
+  NotificationDeliveryRedriveResult,
   NotificationDeliveryReceiptResult,
+  NotificationDeliveryStatus,
   NotificationDeliveryRequestRecord,
   NotificationDeliveryRequestRepository,
   NotificationDeliveryRequestReservationInput,
@@ -1682,12 +1684,13 @@ export class PostgresNotificationRepository implements NotificationRepository {
       .update(notificationDeliveryCommands)
       .set({
         status: "invalidated",
+        redriveRequestedAt: null,
         completedAt: sql`greatest(clock_timestamp(), ${notificationDeliveryCommands.createdAt}, ${notificationDeliveryCommands.updatedAt})`,
         updatedAt: sql`greatest(clock_timestamp(), ${notificationDeliveryCommands.createdAt}, ${notificationDeliveryCommands.updatedAt})`,
       })
       .where(
         and(
-          inArray(notificationDeliveryCommands.status, ["pending", "processing"]),
+          inArray(notificationDeliveryCommands.status, ["pending", "processing", "dead_letter"]),
           inArray(notificationDeliveryCommands.intentId, matchingIntentIds),
         ),
       );
@@ -1964,6 +1967,65 @@ export class PostgresNotificationRepository implements NotificationRepository {
     return rows.map(mapNotificationDeliveryHistory);
   }
 
+  async redriveDeadLetterDelivery(
+    workspace: WorkspaceId,
+    deliveryId: string,
+  ): Promise<NotificationDeliveryRedriveResult> {
+    const [command] = await this.database
+      .select()
+      .from(notificationDeliveryCommands)
+      .where(
+        and(
+          eq(notificationDeliveryCommands.workspaceId, workspace),
+          eq(notificationDeliveryCommands.id, deliveryId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (command === undefined) return { kind: "not_found" };
+    if (command.status !== "dead_letter") {
+      return { kind: "state_conflict", status: command.status as NotificationDeliveryStatus };
+    }
+    const [liveIntent] = await this.database
+      .select({ id: notificationIntents.id })
+      .from(notificationIntents)
+      .where(
+        and(
+          eq(notificationIntents.workspaceId, workspace),
+          eq(notificationIntents.id, command.intentId),
+        ),
+      )
+      .limit(1);
+    if (liveIntent === undefined) {
+      // Defense in depth for an orphan that predates the invalidation backfill migration.
+      return { kind: "state_conflict", status: "invalidated" };
+    }
+
+    const [redriven] = await this.database
+      .update(notificationDeliveryCommands)
+      .set({
+        status: "pending",
+        availableAt: sql`greatest(clock_timestamp(), ${notificationDeliveryCommands.createdAt}, ${notificationDeliveryCommands.updatedAt})`,
+        completedAt: null,
+        redriveRequestedAt: sql`greatest(clock_timestamp(), ${notificationDeliveryCommands.createdAt}, ${notificationDeliveryCommands.updatedAt})`,
+        currentClaimToken: null,
+        leaseExpiresAt: null,
+        updatedAt: sql`greatest(clock_timestamp(), ${notificationDeliveryCommands.createdAt}, ${notificationDeliveryCommands.updatedAt})`,
+      })
+      .where(
+        and(
+          eq(notificationDeliveryCommands.workspaceId, workspace),
+          eq(notificationDeliveryCommands.id, deliveryId),
+          eq(notificationDeliveryCommands.status, "dead_letter"),
+        ),
+      )
+      .returning();
+    if (redriven === undefined) {
+      return { kind: "state_conflict", status: "dead_letter" };
+    }
+    return { kind: "redriven", delivery: mapNotificationDeliveryHistory(redriven) };
+  }
+
   async insertIntent(intent: NotificationIntent): Promise<NotificationIntent> {
     const [deliveredOccurrence] = await this.database
       .select({ intentId: notificationDeliveryCommands.intentId })
@@ -2222,7 +2284,15 @@ class PostgresNotificationDeliveryRepository implements NotificationDeliveryRepo
           eq(notificationDeliveryCommands.workspaceId, input.workspaceId),
           eq(notificationDeliveryCommands.status, "pending"),
           lte(notificationDeliveryCommands.availableAt, coordinationNow),
-          lt(notificationDeliveryCommands.attempts, input.maxAttempts),
+          // Normal settlement and lease recovery dead-letter a command at the limit. Therefore a
+          // pending command at or above the limit can only be the result of an explicit redrive.
+          or(
+            lt(notificationDeliveryCommands.attempts, input.maxAttempts),
+            and(
+              gte(notificationDeliveryCommands.attempts, input.maxAttempts),
+              isNotNull(notificationDeliveryCommands.redriveRequestedAt),
+            ),
+          ),
         ),
       )
       .orderBy(
@@ -2307,6 +2377,7 @@ class PostgresNotificationDeliveryRepository implements NotificationDeliveryRepo
         currentClaimToken: claimToken,
         leaseExpiresAt,
         completedAt: null,
+        redriveRequestedAt: null,
         lastFailureCode: null,
         updatedAt: claimNow,
       })

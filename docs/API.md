@@ -165,6 +165,7 @@ hosted-account protocol.
 | `GET`    | `/v1/workspaces/{workspaceId}/notification-intents?from={instant}&to={instant}`                | List insert-only materialized intents                     |
 | `POST`   | `/v1/workspaces/{workspaceId}/notification-intents/materializations`                           | Materialize a bounded policy window                       |
 | `GET`    | `/v1/workspaces/{workspaceId}/notification-deliveries?from={instant}&to={instant}`             | List product-safe delivery execution history              |
+| `POST`   | `/v1/workspaces/{workspaceId}/notification-deliveries/{deliveryId}/redrives`                   | Redrive one dead-lettered delivery                        |
 | `GET`    | `/v1/integrations/schedule-blocks?from={instant}&to={instant}&limit={n}&offset={n}`            | Credential-scoped bounded calendar-block discovery        |
 | `POST`   | `/v1/integrations/reminder-deliveries/claim`                                                   | Claim one due reminder with `schedule:delivery`           |
 | `POST`   | `/v1/integrations/reminder-deliveries/receipt`                                                 | Record one fenced, bounded delivery outcome               |
@@ -326,6 +327,17 @@ the integration bearer-token boundary, the explicit `schedule:delivery` scope, J
 `Idempotency-Key`. Claim returns at most one privacy-bounded command; receipt accepts only a fenced
 `delivered`, `retryable_failure`, or `permanent_failure` outcome. See
 [INTEGRATIONS.md](./INTEGRATIONS.md#reminder-delivery) for the wire contract and adapter obligations.
+
+`POST .../notification-deliveries/{deliveryId}/redrives` is a local, audited control. It uses database
+time to move only a currently `dead_letter` command to `pending`; the delivery, intent, and dedupe
+IDs remain stable, the attempt history remains immutable, and the attempt count is cumulative and
+never reset. The transition records a durable, one-use redrive authorization that the next claim
+consumes atomically, so an exhausted command cannot become claimable merely because runtimes use
+different attempt limits. A missing workspace/delivery returns
+`notification_delivery.command_not_found`; a non-dead-lettered or concurrently changed command
+returns `notification_delivery.redrive_conflict`. The request performs no provider call and does not
+imply that a notification was sent. Source, policy, or target invalidation also invalidates a
+dead-letter command, preventing redrive of an obsolete snapshot.
 
 Routine updates require `expectedVersion`. Scalar fields are partial; if `tags`, `duration`, or `cadence` is supplied, that nested object is a complete replacement. A real change increments the routine version once. A semantic no-op returns the current routine without writing or incrementing its version. A stale version returns `409 routine.version_conflict`. The update takes the same per-routine advisory lock used by activity and duration-insight commands, then reloads and saves under read committed so a manual edit cannot race an approval, dismissal, reset, or evidence append. This generic `PATCH` is still the manual editing path; it does not assert that a duration-insight suggestion is current.
 

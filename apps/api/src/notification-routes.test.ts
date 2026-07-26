@@ -2,6 +2,7 @@ import {
   cancelOneOffReminder,
   createNotificationProfile,
   createNotificationRule,
+  DomainError,
   createOneOffReminder,
   notificationIntentId,
   notificationRuleId,
@@ -138,6 +139,23 @@ function harness() {
       created: [intent],
       existing: [],
       suppressed: [],
+    }),
+    redriveNotificationDelivery: async (command) => ({
+      deliveryId: command.deliveryId,
+      intentId: intentUuid,
+      kind: "daily_digest",
+      targetType: "workspace",
+      title: null,
+      scheduledFor: new Date("2026-07-14T13:00:00.000Z"),
+      localDate: "2026-07-14",
+      priority: 50,
+      status: "pending",
+      attempts: 5,
+      availableAt: fixedNow,
+      completedAt: null,
+      lastFailureCode: "transport.rejected",
+      createdAt: new Date("2026-07-14T13:00:00.000Z"),
+      updatedAt: fixedNow,
     }),
   } as unknown as ProductServices;
   return { services };
@@ -329,5 +347,93 @@ describe("notification product routes", () => {
       payload: { expectedVersion: 1 },
     });
     expect(emptyReminderPatch.statusCode).toBe(400);
+  });
+
+  it("redrives a dead-letter delivery with strict identifiers and returns safe history", async () => {
+    const calls: unknown[] = [];
+    const test = harness();
+    test.services.redriveNotificationDelivery = async (command) => {
+      calls.push(command);
+      return {
+        deliveryId: command.deliveryId,
+        intentId: intentUuid,
+        kind: "daily_digest",
+        targetType: "workspace",
+        title: null,
+        scheduledFor: new Date("2026-07-14T13:00:00.000Z"),
+        localDate: "2026-07-14",
+        priority: 50,
+        status: "pending",
+        attempts: 5,
+        availableAt: fixedNow,
+        completedAt: null,
+        lastFailureCode: "transport.rejected",
+        createdAt: new Date("2026-07-14T13:00:00.000Z"),
+        updatedAt: fixedNow,
+      };
+    };
+    const app = await buildApp({
+      productServices: test.services,
+      productApiAccess: { mode: "local_unauthenticated" },
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/notification-deliveries/${deliveryUuid}/redrives`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(calls).toEqual([{ workspaceId: workspaceUuid, deliveryId: deliveryUuid }]);
+    expect(response.json()).toMatchObject({
+      deliveryId: deliveryUuid,
+      intentId: intentUuid,
+      status: "pending",
+      attempts: 5,
+      lastFailureCode: "transport.rejected",
+    });
+    expect(response.body).not.toContain("claimToken");
+    expect(response.body).not.toContain("credential");
+
+    const malformed = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/not-a-uuid/notification-deliveries/${deliveryUuid}/redrives`,
+    });
+    expect(malformed.statusCode).toBe(400);
+    expect(malformed.json().error.code).toBe("request.validation_failed");
+  });
+
+  it("propagates notification delivery redrive not-found and conflict errors", async () => {
+    const test = harness();
+    let failure = new DomainError(
+      "notification_delivery.command_not_found",
+      "The delivery command does not exist.",
+    );
+    test.services.redriveNotificationDelivery = async () => {
+      throw failure;
+    };
+    const app = await buildApp({
+      productServices: test.services,
+      productApiAccess: { mode: "local_unauthenticated" },
+    });
+    apps.push(app);
+
+    const redrive = () =>
+      app.inject({
+        method: "POST",
+        url: `/v1/workspaces/${workspaceUuid}/notification-deliveries/${deliveryUuid}/redrives`,
+      });
+
+    const missing = await redrive();
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json().error.code).toBe("notification_delivery.command_not_found");
+
+    failure = new DomainError(
+      "notification_delivery.redrive_conflict",
+      "Only dead-letter deliveries can be redriven.",
+    );
+    const conflict = await redrive();
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json().error.code).toBe("notification_delivery.redrive_conflict");
   });
 });

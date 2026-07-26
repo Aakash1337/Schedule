@@ -115,6 +115,7 @@ describe("createProductServices", () => {
       "recordActivityEvent",
       "recordPlanItemActivity",
       "recordRoutineSelectionPreferenceFeedback",
+      "redriveNotificationDelivery",
       "regenerateDailyPlan",
       "removeWorkItemDependency",
       "replacePlanItem",

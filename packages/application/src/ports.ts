@@ -286,6 +286,14 @@ export interface NotificationRepository {
     limit: number,
     offset: number,
   ): Promise<readonly NotificationDeliveryHistoryItem[]>;
+  /**
+   * Moves the existing dead-letter command back to pending. The caller must hold the workspace
+   * notification lock. This never creates a command or changes delivery identity.
+   */
+  redriveDeadLetterDelivery(
+    workspaceId: WorkspaceId,
+    deliveryId: string,
+  ): Promise<NotificationDeliveryRedriveResult>;
   /** Inserts the immutable intent, or returns the existing natural-key winner. */
   insertIntent(intent: NotificationIntent): Promise<NotificationIntent>;
   /** Invalidates all not-yet-delivered intents after a workspace policy change. */
@@ -307,6 +315,15 @@ export interface NotificationRepository {
     targetType: Extract<NotificationTargetType, "daily_plan" | "schedule_block" | "work_item">,
   ): Promise<number>;
 }
+
+/** The explicit outcome of attempting to redrive one existing delivery command. */
+export type NotificationDeliveryRedriveResult =
+  | {
+      readonly kind: "redriven";
+      readonly delivery: NotificationDeliveryHistoryItem;
+    }
+  | { readonly kind: "not_found" }
+  | { readonly kind: "state_conflict"; readonly status: NotificationDeliveryStatus };
 
 /**
  * Product-safe delivery history. Claim fencing, leases, credentials, provider payloads, and

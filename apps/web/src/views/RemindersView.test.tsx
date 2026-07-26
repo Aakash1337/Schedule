@@ -24,6 +24,7 @@ const apiMocks = vi.hoisted(() => ({
   listNotificationRules: vi.fn(),
   listOneOffReminders: vi.fn(),
   materializeNotificationIntents: vi.fn(),
+  redriveNotificationDelivery: vi.fn(),
   updateNotificationRule: vi.fn(),
   updateOneOffReminder: vi.fn(),
 }));
@@ -143,6 +144,7 @@ beforeEach(() => {
     existing: [],
     suppressed: [],
   });
+  apiMocks.redriveNotificationDelivery.mockResolvedValue(undefined);
 });
 
 afterEach(() => cleanup());
@@ -253,6 +255,117 @@ describe("RemindersView", () => {
     expect(
       screen.getByText(/no credentials, recipients, provider payloads, or claim tokens/i),
     ).toBeInTheDocument();
+  });
+
+  it("only offers delivery retry for dead-letter commands", async () => {
+    const user = userEvent.setup();
+    apiMocks.listNotificationDeliveries.mockResolvedValue(
+      page([
+        { ...delivery, deliveryId: "delivery-dead-letter-1", status: "dead_letter" },
+        { ...delivery, deliveryId: "delivery-dead-letter-2", status: "dead_letter" },
+        delivery,
+      ]),
+    );
+    render(<RemindersView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await screen.findByRole("heading", { name: "Policy and quiet hours" });
+    await user.click(screen.getByRole("tab", { name: /Execution/ }));
+
+    expect(
+      screen.getByRole("button", {
+        name: "Retry delivery for Daily digest (delivery-dead-letter-1)",
+      }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", {
+        name: "Retry delivery for Daily digest (delivery-dead-letter-2)",
+      }),
+    ).toBeEnabled();
+    expect(screen.getAllByRole("button", { name: /Retry delivery for Daily digest/ })).toHaveLength(
+      2,
+    );
+  });
+
+  it("requeues a dead-letter delivery, refreshes history, and does not claim an external send", async () => {
+    const user = userEvent.setup();
+    const deadLetter = { ...delivery, status: "dead_letter" as const };
+    apiMocks.listNotificationDeliveries.mockResolvedValue(page([deadLetter]));
+    render(<RemindersView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await screen.findByRole("heading", { name: "Policy and quiet hours" });
+    await user.click(screen.getByRole("tab", { name: /Execution/ }));
+    await user.click(
+      screen.getByRole("button", {
+        name: "Retry delivery for Daily digest (delivery-digest)",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(apiMocks.redriveNotificationDelivery).toHaveBeenCalledWith(
+        workspace.id,
+        deadLetter.deliveryId,
+      ),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Delivery requeued and available to an adapter. No external send was performed.",
+    );
+    expect(apiMocks.getNotificationProfile).toHaveBeenCalledTimes(2);
+  });
+
+  it("disables delivery retry while another reminder mutation is in progress", async () => {
+    const user = userEvent.setup();
+    let releaseProfile: ((value: NotificationProfile) => void) | undefined;
+    apiMocks.listNotificationDeliveries.mockResolvedValue(
+      page([{ ...delivery, status: "dead_letter" }]),
+    );
+    apiMocks.configureNotificationProfile.mockReturnValue(
+      new Promise<NotificationProfile>((resolve) => {
+        releaseProfile = resolve;
+      }),
+    );
+    render(<RemindersView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await screen.findByRole("heading", { name: "Policy and quiet hours" });
+    await user.click(screen.getByRole("button", { name: "Save policy changes" }));
+    await user.click(screen.getByRole("tab", { name: /Execution/ }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: "Retry delivery for Daily digest (delivery-digest)",
+        }),
+      ).toBeDisabled(),
+    );
+    releaseProfile?.(profile);
+  });
+
+  it("refreshes after a redrive conflict and reports the delivery error", async () => {
+    const user = userEvent.setup();
+    apiMocks.listNotificationDeliveries.mockResolvedValue(
+      page([{ ...delivery, status: "dead_letter" }]),
+    );
+    apiMocks.redriveNotificationDelivery.mockRejectedValue(
+      new ApiError(
+        409,
+        "notification_delivery.redrive_conflict",
+        "This delivery is no longer eligible for retry.",
+        null,
+      ),
+    );
+    render(<RemindersView workspace={workspace} onNavigate={vi.fn()} />);
+
+    await screen.findByRole("heading", { name: "Policy and quiet hours" });
+    await user.click(screen.getByRole("tab", { name: /Execution/ }));
+    await user.click(
+      screen.getByRole("button", {
+        name: "Retry delivery for Daily digest (delivery-digest)",
+      }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This delivery is no longer eligible for retry.",
+    );
+    expect(apiMocks.getNotificationProfile).toHaveBeenCalledTimes(2);
   });
 
   it("reloads a concurrent version conflict before asking the user to retry", async () => {

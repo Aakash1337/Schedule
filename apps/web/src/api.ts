@@ -804,6 +804,15 @@ export const api = {
       signal,
     ),
 
+  redriveNotificationDelivery: (workspaceId: string, deliveryId: string) =>
+    request<NotificationDeliveryHistoryItem>(
+      workspacePath(
+        workspaceId,
+        `/notification-deliveries/${encodeURIComponent(deliveryId)}/redrives`,
+      ),
+      { method: "POST" },
+    ),
+
   getCurrentPlan: (workspaceId: string, date: string, signal?: AbortSignal) =>
     request<CurrentDailyPlan>(
       workspacePath(workspaceId, `/plans/${date}/current`),

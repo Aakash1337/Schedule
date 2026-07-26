@@ -225,6 +225,10 @@ as a manual materialization trigger. An operator may separately enable the local
 background-created intents can appear on the next refresh. The **Execution** tab reads a separate product route whose DTO
 omits claim fencing, leases, credentials, destinations, providers, channels, recipients, dedupe
 internals, and provider payloads. Both histories use bounded pages and an explicit load-more control.
+Dead-letter execution rows additionally expose a **Retry delivery** action. The action is offered
+only for a `dead_letter` command, posts the existing delivery ID to the redrive route, and refreshes
+authoritative history on success. Not-found and conflict responses remain visible and do not retry
+implicitly; the action changes Schedule state only and never calls a provider.
 The three tabs support Arrow Left/Right, Home, and End and use roving keyboard focus.
 
 Every reminder surface repeats the operational boundary: optional background intent planning is
