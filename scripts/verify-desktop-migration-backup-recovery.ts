@@ -397,6 +397,17 @@ async function assertRecovered(target: Target, ledger: string, fault: FaultPoint
     `recovery must retain exactly one prior database after ${fault}`,
   );
   assert.equal(staging.length, 0, `recovery must not leave staging after ${fault}`);
+  assert.equal(
+    (
+      await runPsql(
+        "postgres",
+        `SELECT datallowconn::text FROM pg_database WHERE datname = ${sqlString(previous[0]!)};`,
+        { quiet: true },
+      )
+    ).trim(),
+    "false",
+    `recovery must leave the retained prior database connection-locked after ${fault}`,
+  );
   await runPsql(
     "postgres",
     `ALTER DATABASE ${quoteIdentifier(previous[0]!)} WITH ALLOW_CONNECTIONS true;`,
@@ -424,17 +435,6 @@ async function assertRecovered(target: Target, ledger: string, fault: FaultPoint
     `${backupWorkspaceId}|${backupWorkspaceName}`,
     `${postBackupWorkspaceId}|${postBackupWorkspaceName}`,
   ]);
-  assert.equal(
-    (
-      await runPsql(
-        "postgres",
-        `SELECT datallowconn::text FROM pg_database WHERE datname = ${sqlString(previous[0]!)};`,
-        { quiet: true },
-      )
-    ).trim(),
-    "false",
-    "retained prior database must remain connection-locked",
-  );
   const runtime = createDatabase(
     postgresUrl(target.runtimeRole, target.runtimePassword, target.databaseName),
     1,
