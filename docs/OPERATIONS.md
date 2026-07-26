@@ -469,8 +469,9 @@ checks cross-tenant source/target, rule-kind, and duplicate-key rejection, prove
 and terminal activity invalidate the correct pending intents, proves target deletion cleanup, and
 confirms the outbox count is unchanged.
 `verify:notification-migrations` creates a nonce database, migrates it only through `0023`, seeds
-legacy data, applies each reminder migration in order, validates constraints and populated upgrades,
-and drops the database. `verify:notification-delivery` creates a separate nonce database and drives
+legacy data, applies each reminder migration through `0044` in order, validates constraints,
+populated upgrades, and the orphaned-dead-letter backfill, then drops the database.
+`verify:notification-delivery` creates a separate nonce database and drives
 the real authenticated Fastify routes through claim, exact replay, retry, expiry, recovery,
 invalidation, dead letter, receipt fencing, and a credential-revocation lock race. The migration and
 delivery verifiers also assert the partial expired-lease recovery index. These commands are also

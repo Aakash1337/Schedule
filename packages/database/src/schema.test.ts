@@ -336,6 +336,17 @@ describe("database schema", () => {
     );
     expect(migration).toContain('ADD COLUMN "redrive_requested_at"');
     expect(migration).toContain("notification_delivery_commands_redrive_authorization_valid");
+    expect(migration).not.toContain("source-deleted dead letters");
+  });
+
+  it("cuts off orphan dead letters in an append-only follow-up migration", () => {
+    const migration = readFileSync(
+      new URL("../drizzle/0044_orphan_dead_letter_cutoff.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain("source-deleted dead letters must be permanently ineligible");
+    expect(migration).toContain("command.\"status\" = 'dead_letter'");
+    expect(migration).toContain('intent."workspace_id" = command."workspace_id"');
   });
 
   it("constrains deterministic notification policy and immutable intent sources", () => {

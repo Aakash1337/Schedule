@@ -57,7 +57,7 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:notification-core`          | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
 | `pnpm verify:notification-materializer`  | Verify bounded automatic ticks, replay, skips, and delivery separation      | Yes, disposable only            |
 | `pnpm verify:notification-delivery`      | Verify fenced claims/receipts, retries, redrive, expiry, and invalidation   | Yes, disposable only            |
-| `pnpm verify:notification-migrations`    | Upgrade populated reminder/delivery state through migration 0027            | Yes, disposable only            |
+| `pnpm verify:notification-migrations`    | Upgrade populated reminder/delivery state through migration 0044            | Yes, disposable only            |
 | `pnpm verify:local-model-advisor`        | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
 | `pnpm verify:backup-restore`             | Verify archive/schema/content/sequence fidelity                             | Yes                             |
 | `pnpm verify:portable-migration`         | Verify durable migration, exclusions, replacement, and rollback             | Yes, disposable only            |

@@ -260,15 +260,30 @@ describe("RemindersView", () => {
   it("only offers delivery retry for dead-letter commands", async () => {
     const user = userEvent.setup();
     apiMocks.listNotificationDeliveries.mockResolvedValue(
-      page([{ ...delivery, deliveryId: "delivery-dead-letter", status: "dead_letter" }, delivery]),
+      page([
+        { ...delivery, deliveryId: "delivery-dead-letter-1", status: "dead_letter" },
+        { ...delivery, deliveryId: "delivery-dead-letter-2", status: "dead_letter" },
+        delivery,
+      ]),
     );
     render(<RemindersView workspace={workspace} onNavigate={vi.fn()} />);
 
     await screen.findByRole("heading", { name: "Policy and quiet hours" });
     await user.click(screen.getByRole("tab", { name: /Execution/ }));
 
-    expect(screen.getByRole("button", { name: "Retry delivery" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Retry delivery" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", {
+        name: "Retry delivery for Daily digest (delivery-dead-letter-1)",
+      }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", {
+        name: "Retry delivery for Daily digest (delivery-dead-letter-2)",
+      }),
+    ).toBeEnabled();
+    expect(screen.getAllByRole("button", { name: /Retry delivery for Daily digest/ })).toHaveLength(
+      2,
+    );
   });
 
   it("requeues a dead-letter delivery, refreshes history, and does not claim an external send", async () => {
@@ -279,7 +294,11 @@ describe("RemindersView", () => {
 
     await screen.findByRole("heading", { name: "Policy and quiet hours" });
     await user.click(screen.getByRole("tab", { name: /Execution/ }));
-    await user.click(screen.getByRole("button", { name: "Retry delivery" }));
+    await user.click(
+      screen.getByRole("button", {
+        name: "Retry delivery for Daily digest (delivery-digest)",
+      }),
+    );
 
     await waitFor(() =>
       expect(apiMocks.redriveNotificationDelivery).toHaveBeenCalledWith(
@@ -311,7 +330,11 @@ describe("RemindersView", () => {
     await user.click(screen.getByRole("tab", { name: /Execution/ }));
 
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Retry delivery" })).toBeDisabled(),
+      expect(
+        screen.getByRole("button", {
+          name: "Retry delivery for Daily digest (delivery-digest)",
+        }),
+      ).toBeDisabled(),
     );
     releaseProfile?.(profile);
   });
@@ -333,7 +356,11 @@ describe("RemindersView", () => {
 
     await screen.findByRole("heading", { name: "Policy and quiet hours" });
     await user.click(screen.getByRole("tab", { name: /Execution/ }));
-    await user.click(screen.getByRole("button", { name: "Retry delivery" }));
+    await user.click(
+      screen.getByRole("button", {
+        name: "Retry delivery for Daily digest (delivery-digest)",
+      }),
+    );
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "This delivery is no longer eligible for retry.",

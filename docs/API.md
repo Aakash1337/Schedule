@@ -336,7 +336,8 @@ consumes atomically, so an exhausted command cannot become claimable merely beca
 different attempt limits. A missing workspace/delivery returns
 `notification_delivery.command_not_found`; a non-dead-lettered or concurrently changed command
 returns `notification_delivery.redrive_conflict`. The request performs no provider call and does not
-imply that a notification was sent.
+imply that a notification was sent. Source, policy, or target invalidation also invalidates a
+dead-letter command, preventing redrive of an obsolete snapshot.
 
 Routine updates require `expectedVersion`. Scalar fields are partial; if `tags`, `duration`, or `cadence` is supplied, that nested object is a complete replacement. A real change increments the routine version once. A semantic no-op returns the current routine without writing or incrementing its version. A stale version returns `409 routine.version_conflict`. The update takes the same per-routine advisory lock used by activity and duration-insight commands, then reloads and saves under read committed so a manual edit cannot race an approval, dismissal, reset, or evidence append. This generic `PATCH` is still the manual editing path; it does not assert that a duration-insight suggestion is current.
 

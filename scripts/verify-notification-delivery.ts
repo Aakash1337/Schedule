@@ -863,6 +863,69 @@ try {
     attempt_rows: 0,
   });
 
+  // EVIDENCE: notification-delivery-source-invalidation-terminal-cutoff
+  // Cancelling a source invalidates its existing dead-letter command too. It stays the same
+  // delivery/audit record, but can neither be redriven nor selected for another provider call.
+  const terminalSourceReminder = await createOneOff("Invalidate dead letter source");
+  await materialize();
+  const terminalSourceClaim = await claim(deliveryCredential.token, "claim-terminal-source");
+  const terminalSourceCommand = terminalSourceClaim.envelope.data.command;
+  assert.ok(terminalSourceCommand !== null);
+  const terminalSourceFailure = await receipt(deliveryCredential.token, "receipt-terminal-source", {
+    deliveryId: terminalSourceCommand.deliveryId,
+    claimToken: terminalSourceCommand.claimToken,
+    outcome: "permanent_failure",
+    failureCode: "transport.source_terminal",
+  });
+  assert.equal(terminalSourceFailure.statusCode, 200, terminalSourceFailure.body);
+  assert.equal(terminalSourceFailure.json<ReceiptEnvelope>().data.status, "dead_lettered");
+  const [terminalSourceCancellation, terminalSourceRedrive] = await Promise.all([
+    app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${primaryWorkspaceId}/one-off-reminders/${terminalSourceReminder.id}/cancellations`,
+      payload: { expectedVersion: terminalSourceReminder.version },
+    }),
+    redrive(primaryWorkspaceId, terminalSourceCommand.deliveryId),
+  ]);
+  assert.equal(terminalSourceCancellation.statusCode, 200, terminalSourceCancellation.body);
+  assert.ok(
+    terminalSourceRedrive.statusCode === 200 || terminalSourceRedrive.statusCode === 409,
+    terminalSourceRedrive.body,
+  );
+  if (terminalSourceRedrive.statusCode === 409) {
+    assert.equal(
+      terminalSourceRedrive.json<ErrorEnvelope>().error.code,
+      "notification_delivery.redrive_conflict",
+    );
+  }
+  const terminalSourceClaimAfterCancellation = await claim(
+    deliveryCredential.token,
+    "claim-terminal-source-after-cancellation",
+  );
+  assert.equal(
+    terminalSourceClaimAfterCancellation.envelope.data.command,
+    null,
+    "a source-invalidated dead letter must never be claimed again",
+  );
+  const [terminalSourceState] = await activeConnection.sql<
+    { status: string; attempts: number; last_failure_code: string | null; attempt_rows: number }[]
+  >`
+    select
+      command.status::text,
+      command.attempts,
+      command.last_failure_code,
+      (select count(*)::int from notification_delivery_attempts attempt
+       where attempt.workspace_id = command.workspace_id and attempt.delivery_id = command.id) as attempt_rows
+    from notification_delivery_commands command
+    where command.workspace_id = ${primaryWorkspaceId} and command.id = ${terminalSourceCommand.deliveryId}
+  `;
+  assert.deepEqual(terminalSourceState, {
+    status: "invalidated",
+    attempts: 1,
+    last_failure_code: "transport.source_terminal",
+    attempt_rows: 1,
+  });
+
   // EVIDENCE: notification-delivery-null-claim-replay
   // An empty claim is a durable point-in-time result and cannot later lease a different command.
   const emptyClaim = await claim(deliveryCredential.token, "claim-empty");
@@ -915,7 +978,7 @@ try {
   assert.ok(state !== undefined);
   assert.equal(state.delivered, 3);
   assert.equal(state.dead_letter, 1);
-  assert.equal(state.invalidated, 2);
+  assert.equal(state.invalidated, 3);
   assert.equal(state.lease_expired_attempts, 2);
   assert.equal(state.duplicate_occurrences, 0);
   assert.equal(state.raw_receipt_fields, 0);
@@ -935,12 +998,13 @@ try {
     readonly page: { readonly limit: number; readonly offset: number };
   }>();
   assert.deepEqual(history.page, { limit: 100, offset: 0 });
-  assert.equal(history.items.length, 6);
+  assert.equal(history.items.length, 7);
   assert.deepEqual(history.items.map((item) => item.status).sort(), [
     "dead_letter",
     "delivered",
     "delivered",
     "delivered",
+    "invalidated",
     "invalidated",
     "invalidated",
   ]);
@@ -1028,9 +1092,9 @@ try {
     where workspace_id = ${primaryWorkspaceId}
   `;
   assert.ok(auditState !== undefined);
-  assert.equal(auditState.claim_audits, 13);
-  assert.equal(auditState.receipt_audits, 11);
-  assert.equal(auditState.request_count, 27);
+  assert.equal(auditState.claim_audits, 14);
+  assert.equal(auditState.receipt_audits, 12);
+  assert.equal(auditState.request_count, 30);
 } catch (error) {
   failure = error;
 } finally {

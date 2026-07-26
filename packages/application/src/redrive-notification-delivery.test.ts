@@ -91,26 +91,27 @@ describe("RedriveNotificationDelivery", () => {
   });
 
   it.each([
-    [{ kind: "not_found" } as const, "notification_delivery.command_not_found"],
+    [{ kind: "not_found" } as const, "notification_delivery.command_not_found", undefined],
     [
       { kind: "state_conflict", status: "delivered" } as const,
       "notification_delivery.redrive_conflict",
+      "A delivery in delivered state cannot be redriven; only dead-letter deliveries can be redriven.",
     ],
-  ])("reports explicit repository result %o", async (result, code) => {
+  ])("reports explicit repository result %o", async (result, code, message) => {
     const test = harness(result);
-    await expectCode(
-      test.service.execute({ workspaceId: workspace.id, deliveryId: delivery.deliveryId }),
-      code,
-    );
+    const redrive = test.service.execute({
+      workspaceId: workspace.id,
+      deliveryId: delivery.deliveryId,
+    });
+    await expectCode(redrive, code);
+    if (message !== undefined) await expect(redrive).rejects.toMatchObject({ message });
     expect(test.audits).toEqual([]);
   });
 
   it("rejects malformed delivery identities before opening a transaction", async () => {
     const test = harness({ kind: "redriven", delivery });
     await expectCode(
-      Promise.resolve().then(() =>
-        test.service.execute({ workspaceId: workspace.id, deliveryId: "not-a-uuid" }),
-      ),
+      test.service.execute({ workspaceId: workspace.id, deliveryId: "not-a-uuid" }),
       "notification_delivery.delivery_id_invalid",
     );
     expect(test.redriveDeadLetterDelivery).not.toHaveBeenCalled();

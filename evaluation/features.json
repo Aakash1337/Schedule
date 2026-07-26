@@ -2914,7 +2914,8 @@
           "command": "unit",
           "anchors": [
             "fences provider-neutral notification delivery and exact request replay",
-            "migrates the least-privilege delivery scope and lifecycle tables"
+            "migrates the least-privilege delivery scope and lifecycle tables",
+            "persists the one-use exhausted-attempt redrive authorization"
           ]
         },
         {

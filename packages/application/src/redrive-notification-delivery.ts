@@ -24,7 +24,9 @@ function normalizeDeliveryId(value: unknown): string {
 export class RedriveNotificationDelivery {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
-  execute(command: RedriveNotificationDeliveryCommand): Promise<NotificationDeliveryHistoryItem> {
+  async execute(
+    command: RedriveNotificationDeliveryCommand,
+  ): Promise<NotificationDeliveryHistoryItem> {
     const deliveryId = normalizeDeliveryId(command.deliveryId);
     return this.unitOfWork.run(
       async ({ auditEvents, notifications }) => {
@@ -42,7 +44,7 @@ export class RedriveNotificationDelivery {
         if (result.kind === "state_conflict") {
           throw new DomainError(
             "notification_delivery.redrive_conflict",
-            "Only a dead-letter delivery command can be redriven.",
+            `A delivery in ${result.status} state cannot be redriven; only dead-letter deliveries can be redriven.`,
           );
         }
         await auditEvents.append({

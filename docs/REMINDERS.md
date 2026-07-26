@@ -133,15 +133,15 @@ instances for one workspace therefore require a shared deduplication store.
 Expired processing and invalidated leases are swept through a partial workspace/expiry index, so
 bounded recovery does not degrade into a full delivery-command scan.
 
-| Current state    | Accepted action                                     | Result                        |
-| ---------------- | --------------------------------------------------- | ----------------------------- |
-| due intent       | claim                                               | `processing`                  |
-| `processing`     | `delivered` receipt before lease expiry             | `delivered`                   |
-| `processing`     | retryable failure before the attempt limit          | delayed `pending`             |
-| `processing`     | permanent failure or retryable failure at the limit | `dead_letter`                 |
-| `dead_letter`    | explicit redrive                                    | `pending`                     |
-| `processing`     | lease expires                                       | same command may be reclaimed |
-| any open command | source/policy invalidation                          | `invalidated`                 |
+| Current state             | Accepted action                                     | Result                        |
+| ------------------------- | --------------------------------------------------- | ----------------------------- |
+| due intent                | claim                                               | `processing`                  |
+| `processing`              | `delivered` receipt before lease expiry             | `delivered`                   |
+| `processing`              | retryable failure before the attempt limit          | delayed `pending`             |
+| `processing`              | permanent failure or retryable failure at the limit | `dead_letter`                 |
+| `dead_letter`             | explicit redrive                                    | `pending`                     |
+| `processing`              | lease expires                                       | same command may be reclaimed |
+| any not-delivered command | source/policy invalidation                          | `invalidated`                 |
 
 Receipts accept only `delivered`, `retryable_failure`, or `permanent_failure`. Failures carry a
 lowercase machine code of at most 80 characters; retry hints are integers from 0 through 60 seconds.
@@ -150,8 +150,9 @@ claim token and arrive before its lease expires. Exact request replay is durable
 empty claims as well as successful receipts; reusing a key for a different operation or payload is a
 conflict.
 
-Source changes before claim prevent command creation. Source changes after claim mark the command
-invalidated and prevent it from being reclaimed, but Schedule cannot retract a side effect already
+Source or policy/target changes invalidate the associated command, including a dead-letter command,
+so obsolete snapshots cannot be redriven. Changes before claim prevent command creation. Changes
+after claim mark the command invalidated and prevent it from being reclaimed, but Schedule cannot retract a side effect already
 in flight outside its transaction. A receipt arriving before that claim's lease ends records the
 attempt outcome while the command remains `invalidated`; an abandoned invalidated attempt is closed
 as `lease_expired` after the lease. This claim-commit boundary is the documented unavoidable race.

@@ -1690,7 +1690,7 @@ export class PostgresNotificationRepository implements NotificationRepository {
       })
       .where(
         and(
-          inArray(notificationDeliveryCommands.status, ["pending", "processing"]),
+          inArray(notificationDeliveryCommands.status, ["pending", "processing", "dead_letter"]),
           inArray(notificationDeliveryCommands.intentId, matchingIntentIds),
         ),
       );
@@ -1985,6 +1985,20 @@ export class PostgresNotificationRepository implements NotificationRepository {
     if (command === undefined) return { kind: "not_found" };
     if (command.status !== "dead_letter") {
       return { kind: "state_conflict", status: command.status as NotificationDeliveryStatus };
+    }
+    const [liveIntent] = await this.database
+      .select({ id: notificationIntents.id })
+      .from(notificationIntents)
+      .where(
+        and(
+          eq(notificationIntents.workspaceId, workspace),
+          eq(notificationIntents.id, command.intentId),
+        ),
+      )
+      .limit(1);
+    if (liveIntent === undefined) {
+      // Defense in depth for an orphan that predates the invalidation backfill migration.
+      return { kind: "state_conflict", status: "invalidated" };
     }
 
     const [redriven] = await this.database

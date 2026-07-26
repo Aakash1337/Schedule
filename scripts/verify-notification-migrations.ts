@@ -589,8 +589,101 @@ try {
     "legacy credentials must survive the history index upgrade",
   );
 
+  const redriveAuthorizationMigration = entries.find((entry) => entry.idx === 43);
+  if (redriveAuthorizationMigration === undefined)
+    throw new Error("Notification redrive migration 0043 is missing.");
+  const orphanCutoffMigration = entries.find((entry) => entry.idx === 44);
+  if (orphanCutoffMigration === undefined)
+    throw new Error("Orphan dead-letter cutoff migration 0044 is missing.");
+  for (const migration of entries.filter(
+    (entry) =>
+      entry.idx > deliveryHistoryMigration.idx && entry.idx < redriveAuthorizationMigration.idx,
+  )) {
+    await applyMigration(verification, migration.tag);
+  }
+  // Model databases that already applied the pushed, authorization-only 0043 migration.
+  await applyMigration(verification, redriveAuthorizationMigration.tag);
+  const liveIntentId = randomUUID();
+  const orphanDeliveryId = randomUUID();
+  const liveDeliveryId = randomUUID();
+  const deliveredDeliveryId = randomUUID();
+  await verification.sql`
+    insert into notification_intents (
+      id, workspace_id, rule_id, rule_kind, kind, occurrence_key, target_type, scheduled_for,
+      local_date, priority, policy_snapshot, local_time_resolution
+    ) values (
+      ${liveIntentId}::uuid, ${legacyWorkspaceId}, ${rule.id}, 'daily_digest', 'daily_digest',
+      'migration-live-dead-letter', 'workspace', '2026-07-20T09:00:00.000Z', '2026-07-20',
+      50, '{"profileVersion":1,"ruleVersion":1}'::jsonb, 'exact'
+    )
+  `;
+  await verification.sql`
+    insert into notification_delivery_commands (
+      id, workspace_id, intent_id, occurrence_key, kind, target_type, scheduled_for, local_date,
+      priority, status, attempts, available_at, completed_at, last_failure_code, created_at, updated_at
+    ) values
+      (${orphanDeliveryId}::uuid, ${legacyWorkspaceId}, ${randomUUID()}::uuid, 'migration-orphan-dead-letter',
+       'daily_digest', 'workspace', '2026-07-20T09:00:00.000Z', '2026-07-20', 50, 'dead_letter', 3,
+       '2026-07-20T09:00:00.000Z', '2026-07-20T09:03:00.000Z', 'transport.orphan',
+       '2026-07-20T08:00:00.000Z', '2026-07-20T09:03:00.000Z'),
+      (${liveDeliveryId}::uuid, ${legacyWorkspaceId}, ${liveIntentId}::uuid, 'migration-live-dead-letter',
+       'daily_digest', 'workspace', '2026-07-20T09:00:00.000Z', '2026-07-20', 50, 'dead_letter', 2,
+       '2026-07-20T09:00:00.000Z', '2026-07-20T09:02:00.000Z', 'transport.live',
+       '2026-07-20T08:00:00.000Z', '2026-07-20T09:02:00.000Z'),
+      (${deliveredDeliveryId}::uuid, ${legacyWorkspaceId}, ${randomUUID()}::uuid, 'migration-orphan-delivered',
+       'daily_digest', 'workspace', '2026-07-20T09:00:00.000Z', '2026-07-20', 50, 'delivered', 1,
+       '2026-07-20T09:00:00.000Z', '2026-07-20T09:01:00.000Z', null,
+       '2026-07-20T08:00:00.000Z', '2026-07-20T09:01:00.000Z')
+  `;
+  const orphanAttemptId = randomUUID();
+  await verification.sql`
+    insert into notification_delivery_attempts (
+      id, workspace_id, delivery_id, credential_id, attempt_number, claimed_at, lease_expires_at,
+      outcome, failure_code, completed_at
+    ) values (
+      ${orphanAttemptId}::uuid, ${legacyWorkspaceId}, ${orphanDeliveryId}::uuid,
+      ${deliveryCredentialId}::uuid, 3, '2026-07-20T09:00:00.000Z', '2026-07-20T09:01:00.000Z',
+      'permanent_failure', 'transport.orphan', '2026-07-20T09:01:00.000Z'
+    )
+  `;
+  await applyMigration(verification, orphanCutoffMigration.tag);
+  const redriveBackfill = await verification.sql<
+    { id: string; status: string; attempts: number; failure: string | null; attempt_rows: number }[]
+  >`
+    select
+      command.id::text as id,
+      command.status::text as status,
+      command.attempts,
+      command.last_failure_code as failure,
+      (select count(*)::integer from notification_delivery_attempts attempt where attempt.delivery_id = command.id) as attempt_rows
+    from notification_delivery_commands command
+    where command.id in (${orphanDeliveryId}::uuid, ${liveDeliveryId}::uuid, ${deliveredDeliveryId}::uuid)
+    order by command.id
+  `;
+  assert.deepEqual(
+    [...redriveBackfill].sort((left, right) => left.id.localeCompare(right.id)),
+    [
+      {
+        id: orphanDeliveryId,
+        status: "invalidated",
+        attempts: 3,
+        failure: "transport.orphan",
+        attempt_rows: 1,
+      },
+      {
+        id: liveDeliveryId,
+        status: "dead_letter",
+        attempts: 2,
+        failure: "transport.live",
+        attempt_rows: 0,
+      },
+      { id: deliveredDeliveryId, status: "delivered", attempts: 1, failure: null, attempt_rows: 0 },
+    ].sort((left, right) => left.id.localeCompare(right.id)),
+    "0044 must invalidate only orphan dead letters without rewriting durable delivery history",
+  );
+
   console.log(
-    "Notification migration verification passed with populated policy and delivery upgrades through 0027, target indexes, legacy preservation, and exhaustive tenant constraints.",
+    "Notification migration verification passed with populated policy and delivery upgrades through 0044, target indexes, legacy preservation, orphaned-dead-letter backfill, and exhaustive tenant constraints.",
   );
 } finally {
   await verification?.close();

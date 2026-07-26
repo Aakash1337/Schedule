@@ -1158,6 +1158,7 @@ function ExecutionTab({
                     busy={busyKey === `redrive-${delivery.deliveryId}`}
                     disabled={busyKey !== null}
                     onClick={() => onRedrive(delivery.deliveryId)}
+                    aria-label={`Retry delivery for ${delivery.title ?? kindLabel(delivery.kind)} (${delivery.deliveryId})`}
                   >
                     <RefreshCw size={16} aria-hidden="true" />
                     Retry delivery
