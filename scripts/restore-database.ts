@@ -635,11 +635,20 @@ async function runRepositoryCommand(
     };
     const environment: NodeJS.ProcessEnv = {
       ...process.env,
-      DATABASE_URL: targetDatabaseUrl,
       NODE_ENV: "test",
       PRODUCT_API_MODE: "local_unauthenticated",
     };
-    delete environment.SCHEDULE_VERIFIER_DATABASE_URL;
+    for (const key of Object.keys(environment)) {
+      const normalized = key.toUpperCase();
+      if (
+        normalized.startsWith("PG") ||
+        normalized === "SCHEDULE_VERIFIER_POSTGRES_BIN" ||
+        normalized.endsWith("DATABASE_URL")
+      ) {
+        delete environment[key];
+      }
+    }
+    environment.DATABASE_URL = targetDatabaseUrl;
     const child = spawn(executable, commandArgs, {
       cwd: repositoryRoot,
       env: environment,
