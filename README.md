@@ -18,8 +18,9 @@ The opt-in hosted OIDC and workspace-authorization boundary is in
 work-item pull protocol is in [docs/HOSTED_SYNC.md](./docs/HOSTED_SYNC.md).
 The local model's explicit, review-before-write capture contract is documented in
 [docs/NATURAL_LANGUAGE.md](./docs/NATURAL_LANGUAGE.md).
-The native Windows/Linux shell and self-contained runtime plan are documented in
-[docs/DESKTOP.md](./docs/DESKTOP.md).
+The tested Windows x64 and Ubuntu 22.04 x64 desktop shell, self-contained runtime, and installer
+status are documented in [docs/DESKTOP.md](./docs/DESKTOP.md). Cross-environment data transfer is
+documented in [docs/PORTABLE_MIGRATION.md](./docs/PORTABLE_MIGRATION.md).
 
 Provider-neutral infrastructure for a customizable work-management and scheduling system.
 
@@ -33,8 +34,8 @@ This repository starts as a TypeScript modular monolith:
 - `packages/database`: PostgreSQL schema, migrations, and adapters.
 - `apps/api`: HTTP transport and health endpoints.
 - `apps/web`: local React interface for Today, routines, work, calendar blocks, and reminders.
-- `apps/desktop`: Tauri shell and startup lifecycle for the forthcoming self-contained Windows and
-  Linux distribution.
+- `apps/desktop`: Tauri shell, private runtime lifecycle, recovery controls, and CI-tested installer
+  packaging for Windows x64 and Ubuntu 22.04 x64.
 - `apps/worker`: database-backed outbox processing.
 
 Outbox delivery is at least once. Every handler that produces an external or otherwise durable side
@@ -134,13 +135,26 @@ local and CI Node.js major; run `nvm use` before installing dependencies when us
 
 The development PostgreSQL and API ports are published on host loopback only.
 
-The desktop foundation additionally requires a stable Rust toolchain. It is not an end-user release
-yet: `pnpm desktop:dev` opens the native shell, while `pnpm desktop:check` verifies the shell and
-startup state. See the [desktop guide](./docs/DESKTOP.md) for the runtime, packaging, and continuity
-roadmap.
+Desktop development additionally requires a stable Rust toolchain. Verified CI/test installers
+exist for Windows x64 and Ubuntu 22.04 x64, but they are not signed or published as a public release.
+`pnpm desktop:dev` opens the native shell, while `pnpm desktop:check` verifies the shell and startup
+state. See the [desktop guide](./docs/DESKTOP.md) for build, artifact-download, installation,
+packaging, recovery, and platform-support details.
+
+On Windows PowerShell:
 
 ```powershell
 Copy-Item .env.example .env
+pnpm install
+pnpm infra:up
+pnpm db:migrate
+pnpm dev
+```
+
+On Linux or another POSIX shell:
+
+```bash
+cp .env.example .env
 pnpm install
 pnpm infra:up
 pnpm db:migrate
@@ -285,9 +299,12 @@ invalidation. It does not prove delivery to a WhatsApp account or phone.
 
 GitHub CI runs the same PostgreSQL-backed planner, product API, isolated outbox lease/fencing, and
 populated legacy plan-state and weekday migration upgrades after applying every migration to a fresh
-PostgreSQL 17 Compose project. It also verifies a complete archive round trip, the real disposable
-portable export/import of durable AI and behavior history, the restore/promote/rollback/cleanup state
-machine, and the ten live Chromium product flows in a separate disposable database.
+PostgreSQL 17 Compose project. It also verifies a complete backup round trip, portable migration of
+durable AI and behavior history, desktop portable-import crash recovery, receipt-bound interrupted
+desktop-update recovery, and the restore/promote/rollback/cleanup state machine. Separate CI jobs
+hand one physical archive from native PostgreSQL on Windows to an independent Linux PostgreSQL
+consumer and prove import plus rollback; this is cross-OS archive evidence, not an installed
+release-update test. Browser CI separately runs the ten live Chromium product flows.
 
 ## Local data protection
 
@@ -308,6 +325,9 @@ same mechanics are exercised automatically against nonce-bound disposable databa
 
 Move durable Schedule data between matching installations—including Windows to Linux—with a
 versioned `.schedule` archive:
+
+The desktop application exposes native **Export archive** and **Import archive** controls. Repository
+and recovery workflows can use the equivalent CLI:
 
 ```powershell
 pnpm data:export -- --output E:\ScheduleTransfer\my-schedule.schedule

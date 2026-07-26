@@ -15,9 +15,21 @@ security boundary to a public network.
   Vite proxy's `localhost` or `127/8` authority remains accepted.
 - PostgreSQL remains the system of record; browser storage retains only the selected workspace.
 
-Run the complete local stack after migration:
+From the repository root, run the complete local stack on Windows PowerShell:
 
 ```powershell
+Copy-Item .env.example .env
+pnpm install
+pnpm infra:up
+pnpm db:migrate
+pnpm dev
+```
+
+On Linux or another POSIX shell:
+
+```bash
+cp .env.example .env
+pnpm install
 pnpm infra:up
 pnpm db:migrate
 pnpm dev

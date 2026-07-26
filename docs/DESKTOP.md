@@ -234,8 +234,10 @@ the user restarts the application instead of importing twice. See
 The archive moves every classified durable product row—including stored AI proposals and long-term
 behavior feedback—between matching Schedule schemas on Windows and Linux, while excluding environment
 identities, credentials, secrets, delivery queues, and hosted sync journals. Automatic device sync
-and a physical Windows-to-Linux handoff acceptance test remain pending. Portable files are
-user-directed private transfers, not cloud synchronization.
+remains pending. CI now transfers one physical archive from native PostgreSQL on Windows to an
+independent Linux PostgreSQL consumer and proves import plus rollback. That is archive handoff
+evidence, not an installed desktop release-update test. Portable files are user-directed private
+transfers, not cloud synchronization.
 
 ## Web hosting and continuity
 
