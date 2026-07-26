@@ -15,6 +15,7 @@ mod portable;
 pub(crate) use portable::{PortableExportResult, PortableImportResult, PortableImportSelectResult};
 mod postgres;
 mod process;
+mod recovery;
 pub(crate) mod smoke;
 mod state;
 pub(crate) mod tauri_adapter;

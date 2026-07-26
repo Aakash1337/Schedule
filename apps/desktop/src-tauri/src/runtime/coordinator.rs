@@ -8,6 +8,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+use super::recovery::AutomaticBackupRecoveryResult;
 use super::state::{Effect, Event, Failure, Incompatibility, Lifecycle, Phase, Rejection};
 
 #[derive(Clone, Debug, Default)]
@@ -109,6 +110,16 @@ pub trait EffectExecutor {
         _: &Cancellation,
     ) -> crate::runtime::portable::PortableImportResult {
         crate::runtime::portable::PortableImportResult::Unavailable
+    }
+    fn automatic_backup_recovery_available(&self) -> bool {
+        false
+    }
+    fn restore_automatic_backup(
+        &mut self,
+        _: u64,
+        _: &Cancellation,
+    ) -> AutomaticBackupRecoveryResult {
+        AutomaticBackupRecoveryResult::Unavailable
     }
 }
 
@@ -231,6 +242,32 @@ impl<E: EffectExecutor> Coordinator<E> {
                 generation: self.lifecycle.generation(),
                 failure: Failure::Database,
             });
+        }
+        result
+    }
+
+    pub fn automatic_backup_recovery_available(&self) -> bool {
+        matches!(
+            self.lifecycle.phase(),
+            Phase::IncompatibleData(Incompatibility::Migration)
+        ) && self.executor.automatic_backup_recovery_available()
+    }
+
+    pub fn restore_automatic_backup(&mut self) -> AutomaticBackupRecoveryResult {
+        if !self.automatic_backup_recovery_available() {
+            self.cancellation_handle.clear_pre_arm();
+            return AutomaticBackupRecoveryResult::Unavailable;
+        }
+        let generation = self.lifecycle.generation();
+        let cancellation = self.cancellation_handle.activate();
+        let result = self
+            .executor
+            .restore_automatic_backup(generation, &cancellation);
+        self.cancellation_handle.clear_active();
+        if result == AutomaticBackupRecoveryResult::Restored && self.begin(Event::Retry).is_err() {
+            return AutomaticBackupRecoveryResult::Failed {
+                code: "desktop.backup_recovery_restart_failed",
+            };
         }
         result
     }
@@ -575,6 +612,8 @@ mod tests {
         clear_bridge_error: Option<&'static str>,
         reject_cancelled_work: bool,
         active_cancellation: Option<Cancellation>,
+        recovery_available: bool,
+        recovery_result: Option<AutomaticBackupRecoveryResult>,
     }
 
     impl Fake {
@@ -644,6 +683,19 @@ mod tests {
         fn cancel(&mut self, _: u64) {
             self.calls.push("cancel".into());
         }
+        fn automatic_backup_recovery_available(&self) -> bool {
+            self.recovery_available
+        }
+        fn restore_automatic_backup(
+            &mut self,
+            _: u64,
+            _: &Cancellation,
+        ) -> AutomaticBackupRecoveryResult {
+            self.calls.push("restore".into());
+            self.recovery_result
+                .take()
+                .unwrap_or(AutomaticBackupRecoveryResult::Unavailable)
+        }
     }
 
     #[test]
@@ -708,6 +760,85 @@ mod tests {
                 "worker"
             ]
         );
+    }
+
+    #[test]
+    fn verified_migration_recovery_restores_then_restarts_serially() {
+        let fake = Fake {
+            outcomes: VecDeque::from([
+                Ok(EffectOutcome::Completed),
+                Ok(EffectOutcome::Completed),
+                Ok(EffectOutcome::Completed),
+                Ok(EffectOutcome::Incompatible(Incompatibility::Migration)),
+            ]),
+            recovery_available: true,
+            recovery_result: Some(AutomaticBackupRecoveryResult::Restored),
+            ..Default::default()
+        };
+        let mut coordinator = Coordinator::new(fake);
+        coordinator.start().unwrap();
+        assert!(coordinator.automatic_backup_recovery_available());
+
+        assert_eq!(
+            coordinator.restore_automatic_backup(),
+            AutomaticBackupRecoveryResult::Restored
+        );
+        assert_eq!(coordinator.lifecycle().phase(), &Phase::Ready);
+        assert_eq!(
+            coordinator.executor().names(),
+            [
+                "lock",
+                "runtime",
+                "database",
+                "verify",
+                "stop-database",
+                "release-lock",
+                "restore",
+                "lock",
+                "runtime",
+                "database",
+                "verify",
+                "api",
+                "configure-bridge",
+                "worker"
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_or_unverified_recovery_never_leaves_migration_incompatibility() {
+        let fake = Fake {
+            outcomes: VecDeque::from([
+                Ok(EffectOutcome::Completed),
+                Ok(EffectOutcome::Completed),
+                Ok(EffectOutcome::Completed),
+                Ok(EffectOutcome::Incompatible(Incompatibility::Migration)),
+            ]),
+            recovery_available: true,
+            recovery_result: Some(AutomaticBackupRecoveryResult::Failed {
+                code: "desktop.backup_recovery_invalid",
+            }),
+            ..Default::default()
+        };
+        let mut coordinator = Coordinator::new(fake);
+        coordinator.start().unwrap();
+        assert_eq!(
+            coordinator.restore_automatic_backup(),
+            AutomaticBackupRecoveryResult::Failed {
+                code: "desktop.backup_recovery_invalid"
+            }
+        );
+        assert_eq!(
+            coordinator.lifecycle().phase(),
+            &Phase::IncompatibleData(Incompatibility::Migration)
+        );
+
+        let mut unavailable = Coordinator::new(Fake::default());
+        assert_eq!(
+            unavailable.restore_automatic_backup(),
+            AutomaticBackupRecoveryResult::Unavailable
+        );
+        assert!(unavailable.executor().calls.is_empty());
     }
 
     #[test]

@@ -101,6 +101,27 @@ table in N-1, install and verify N against the same data root, then prove N-1 re
 database without mutation. That limitation is recorded in [EVALUATION.md](./EVALUATION.md) rather
 than being presented as a completed guarantee.
 
+### Interrupted desktop update recovery
+
+An interrupted desktop migration is not treated as a portable import. Once Schedule has created a
+pre-update backup, it records an exact receipt in the same durable lifecycle journal before any
+migration mutation: the attempt and recovery IDs, expected manifest digest, private dump filename,
+byte count, and SHA-256. Only an incompatible migration journal with that valid receipt enables the
+desktop’s explicit two-step **Restore automatic backup** action. The action cannot select an
+arbitrary path: its second step is an OS-native warning with an explicit **Restore backup**
+confirmation. Schedule never searches for a “most recent” dump. Legacy interrupted journals
+without a receipt remain incompatible and require operator diagnosis rather than an unsafe guess.
+
+Recovery takes a new private snapshot of the receipt-bound dump and verifies the recorded byte count
+and digest again. The bundled helper restores it into a fresh, cluster-marked staging database; it
+accepts only the recorded valid migration prefix or exact current ledger, migrates a prefix forward,
+and then requires the exact ledger before identity/OID-bound promotion. Promotion uses the same
+durable database-transition journal as import, retains the former active database within the bounded
+recovery policy, and reconciles an interruption before another transition. Missing or substituted
+backup bytes, an invalid restore, an unexpected ledger, or an uncertain promotion does not delete
+the active database or clear the lifecycle journal. Schedule stops its private PostgreSQL service
+before marking a successful restore and restarts through normal admission.
+
 ## Data that moves
 
 The policy is exhaustive: every current Schedule table is classified as portable or local-only, and
@@ -173,6 +194,16 @@ bounded previous-database retention, and journal cleanup:
 pnpm verify:desktop-portable-import
 ```
 
+Interrupted desktop-update recovery has its own real PostgreSQL drill. It restores only the
+lifecycle-bound pre-migration dump, verifies the exact migration ledger and application data,
+promotes by the journaled database identity, and proves the previous database remains retained:
+
+```powershell
+pnpm verify:desktop-migration-backup-recovery
+```
+
 The archive framing and migration fingerprint are OS-neutral and unit-tested with Windows and Linux
 producer metadata. Current CI runs the full database drill on Linux; a physical Windows-producer to
-Linux-consumer artifact handoff is not yet a CI claim.
+Linux-consumer artifact handoff is not yet a CI claim. Nor does the current repository retain golden
+archives from old released versions; version-1 archives still require their matching release before
+a normal update.

@@ -40,6 +40,7 @@ pub enum RuntimeState {
 pub struct RuntimeStatus {
     pub state: RuntimeState,
     pub generation: u64,
+    pub automatic_backup_recovery: bool,
 }
 
 impl Default for RuntimeStatus {
@@ -47,6 +48,7 @@ impl Default for RuntimeStatus {
         Self {
             state: RuntimeState::Idle,
             generation: 0,
+            automatic_backup_recovery: false,
         }
     }
 }
@@ -70,6 +72,7 @@ pub enum ShutdownOutcome {
 enum Command {
     Start,
     Retry,
+    RestoreAutomaticBackup,
     Stop,
     Shutdown,
     PortableExport {
@@ -223,6 +226,45 @@ impl RuntimeHost {
 
     pub fn retry(&self) -> Result<(), HostError> {
         self.send(Command::Retry)
+    }
+
+    pub fn restore_automatic_backup(&self) -> Result<(), HostError> {
+        let _admission = self.admission.lock().expect("runtime admission poisoned");
+        if self.shutdown_requested.load(Ordering::Acquire) {
+            return Err(HostError::ShuttingDown);
+        }
+        if !self.status().automatic_backup_recovery {
+            return Err(HostError::Unavailable);
+        }
+        if self.portable_export_in_flight.load(Ordering::Acquire)
+            || self.portable_import_in_flight.load(Ordering::Acquire)
+        {
+            return Err(HostError::Busy);
+        }
+        if self
+            .lifecycle_command_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(HostError::Busy);
+        }
+        self.cancellation.pre_arm();
+        let previous = self.status();
+        publish(
+            &self.status,
+            RuntimeState::Starting,
+            previous.generation,
+            false,
+        );
+        if self.commands.send(Command::RestoreAutomaticBackup).is_err() {
+            self.cancellation.clear_pre_arm();
+            self.lifecycle_command_in_flight
+                .store(false, Ordering::Release);
+            *self.status.write().expect("runtime status poisoned") = previous;
+            Err(HostError::Unavailable)
+        } else {
+            Ok(())
+        }
     }
 
     /// Cancellation is published before queuing the stop, so a synchronous
@@ -429,6 +471,7 @@ fn run_worker<E: EffectExecutor>(
                     status,
                     RuntimeState::Starting,
                     coordinator.lifecycle().generation(),
+                    false,
                 );
                 let _ = coordinator.start();
                 lifecycle_command_in_flight.store(false, Ordering::Release);
@@ -438,8 +481,19 @@ fn run_worker<E: EffectExecutor>(
                     status,
                     RuntimeState::Starting,
                     coordinator.lifecycle().generation(),
+                    false,
                 );
                 let _ = coordinator.retry();
+                lifecycle_command_in_flight.store(false, Ordering::Release);
+            }
+            Command::RestoreAutomaticBackup => {
+                publish(
+                    status,
+                    RuntimeState::Starting,
+                    coordinator.lifecycle().generation(),
+                    false,
+                );
+                let _ = coordinator.restore_automatic_backup();
                 lifecycle_command_in_flight.store(false, Ordering::Release);
             }
             Command::Stop => {
@@ -447,6 +501,7 @@ fn run_worker<E: EffectExecutor>(
                     status,
                     RuntimeState::Stopping,
                     coordinator.lifecycle().generation(),
+                    false,
                 );
                 let _ = coordinator.stop();
             }
@@ -455,6 +510,7 @@ fn run_worker<E: EffectExecutor>(
                     status,
                     RuntimeState::Stopping,
                     coordinator.lifecycle().generation(),
+                    false,
                 );
                 let outcome = shutdown_coordinator(coordinator);
                 publish_lifecycle(status, coordinator);
@@ -481,6 +537,7 @@ fn run_worker<E: EffectExecutor>(
                         status,
                         RuntimeState::RecoverableFailure,
                         coordinator.lifecycle().generation(),
+                        false,
                     );
                     publish_from_lifecycle = false;
                 }
@@ -526,11 +583,25 @@ fn publish_lifecycle<E: EffectExecutor>(
         | Phase::StartingApi
         | Phase::StartingWorker => RuntimeState::Starting,
     };
-    publish(status, state, lifecycle.generation());
+    publish(
+        status,
+        state,
+        lifecycle.generation(),
+        coordinator.automatic_backup_recovery_available(),
+    );
 }
 
-fn publish(status: &RwLock<RuntimeStatus>, state: RuntimeState, generation: u64) {
-    *status.write().expect("runtime status poisoned") = RuntimeStatus { state, generation };
+fn publish(
+    status: &RwLock<RuntimeStatus>,
+    state: RuntimeState,
+    generation: u64,
+    automatic_backup_recovery: bool,
+) {
+    *status.write().expect("runtime status poisoned") = RuntimeStatus {
+        state,
+        generation,
+        automatic_backup_recovery,
+    };
 }
 
 #[cfg(test)]
@@ -544,6 +615,7 @@ mod tests {
     use super::*;
     use crate::runtime::{
         coordinator::{Cancellation, EffectOutcome},
+        recovery::AutomaticBackupRecoveryResult,
         state::Effect,
     };
 
@@ -555,6 +627,8 @@ mod tests {
         panic_lock: bool,
         cleanup_failures: usize,
         portable_export_cancellations: Arc<Mutex<Vec<bool>>>,
+        migration_incompatible_once: bool,
+        recovery_available: bool,
     }
 
     impl EffectExecutor for Fake {
@@ -599,6 +673,12 @@ mod tests {
                 self.cleanup_failures -= 1;
                 return Err("transient cleanup failure");
             }
+            if name == "verify" && self.migration_incompatible_once {
+                self.migration_incompatible_once = false;
+                return Ok(EffectOutcome::Incompatible(
+                    crate::runtime::state::Incompatibility::Migration,
+                ));
+            }
             Ok(if name == "verify" {
                 EffectOutcome::DatabaseVerified {
                     needs_migration: false,
@@ -631,6 +711,17 @@ mod tests {
                 .push(cancellation.is_cancelled());
             PortableExportResult::Unavailable
         }
+        fn automatic_backup_recovery_available(&self) -> bool {
+            self.recovery_available
+        }
+        fn restore_automatic_backup(
+            &mut self,
+            _: u64,
+            _: &Cancellation,
+        ) -> AutomaticBackupRecoveryResult {
+            self.calls.lock().unwrap().push("restore");
+            AutomaticBackupRecoveryResult::Restored
+        }
     }
 
     fn wait_for(host: &RuntimeHost, expected: RuntimeState) {
@@ -657,6 +748,7 @@ mod tests {
             status: Arc::new(RwLock::new(RuntimeStatus {
                 state: RuntimeState::Ready,
                 generation: 1,
+                automatic_backup_recovery: false,
             })),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
             completion: RuntimeCompletion::default(),
@@ -700,6 +792,41 @@ mod tests {
         wait_for(&host, RuntimeState::Ready);
         assert_eq!(host.status().generation, 2);
         host.join();
+    }
+
+    #[test]
+    fn recovery_is_admitted_only_for_a_verified_migration_backup() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let host = RuntimeHost::spawn(Fake {
+            calls: calls.clone(),
+            migration_incompatible_once: true,
+            recovery_available: true,
+            ..Default::default()
+        });
+        host.start().unwrap();
+        wait_for(&host, RuntimeState::IncompatibleData);
+        assert!(host.status().automatic_backup_recovery);
+
+        host.restore_automatic_backup().unwrap();
+        wait_for(&host, RuntimeState::Ready);
+        assert!(!host.status().automatic_backup_recovery);
+        assert_eq!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|&&call| call == "restore")
+                .count(),
+            1
+        );
+        host.join();
+
+        let unavailable = RuntimeHost::spawn(Fake::default());
+        assert_eq!(
+            unavailable.restore_automatic_backup(),
+            Err(HostError::Unavailable)
+        );
+        unavailable.join();
     }
 
     #[test]

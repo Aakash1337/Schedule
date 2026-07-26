@@ -1,4 +1,5 @@
-import { access, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, link, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -7,6 +8,8 @@ import {
   classifyDesktopImportRecoveryTopology,
   createGuardedDesktopVerificationDatabase,
   desktopMigrationInvocation,
+  desktopMigrationBackupRestoreInvocation,
+  desktopMigrationBackupRestoreSuccessPrefix,
   desktopPortableInspectSuccessPrefix,
   desktopPortableImportSuccessPrefix,
   desktopPortableRecoverySuccessPrefix,
@@ -18,10 +21,13 @@ import {
   exportDesktopPortableScheduleData,
   parseDesktopPortableExport,
   parseDesktopPortableCommand,
+  assertDesktopMigrationBackupSource,
+  readDesktopMigrationBackupRestoreEnvironment,
   readDesktopImportJournal,
   readDesktopPortableEnvironment,
   reclaimStaleDesktopVerificationDatabases,
   recoverDesktopPortableImport,
+  runDesktopPortableChild,
   runDesktopPortableCli,
   scavengeDesktopImportJournalTemporaries,
   selectStaleDesktopVerificationDatabases,
@@ -45,6 +51,193 @@ describe("desktop portable helper boundary", () => {
     expect(parseDesktopPortableCommand(["import", source])).toEqual({ kind: "import", source });
     expect(parseDesktopPortableCommand(["recover"])).toEqual({ kind: "recover" });
     expect(() => parseDesktopPortableCommand(["import", "data.schedule"])).toThrow(/invalid/);
+  });
+  it("accepts only an absolute dump path for automatic migration-backup recovery", () => {
+    const source = path.join(path.parse(process.cwd()).root, "backups", "attempt.dump");
+    expect(parseDesktopPortableCommand(["restore-backup", source])).toEqual({
+      kind: "restore-backup",
+      source,
+    });
+    expect(() => parseDesktopPortableCommand(["restore-backup", "attempt.dump"])).toThrow(
+      /migration backup/,
+    );
+    expect(() => parseDesktopPortableCommand(["restore-backup", `${source}.txt`])).toThrow(
+      /migration backup/,
+    );
+  });
+  it("settles after its deadline when a descendant retains the output pipes", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "schedule-retained-pipe-test-"));
+    const pidFile = path.join(directory, "descendant.pid");
+    const childScript = [
+      "const { spawn } = require('node:child_process');",
+      "const { writeFileSync } = require('node:fs');",
+      "const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], {",
+      "  detached: true,",
+      "  stdio: ['ignore', process.stdout, process.stderr],",
+      "});",
+      "writeFileSync(process.argv[1], String(child.pid));",
+      "child.unref();",
+    ].join("\n");
+    const started = Date.now();
+    let descendantPid: number | undefined;
+    const completion = runDesktopPortableChild(
+      process.execPath,
+      ["-e", childScript, pidFile],
+      {
+        PATH: process.env.PATH ?? "",
+        SystemRoot: process.env.SystemRoot ?? "",
+      },
+      1_500,
+    ).catch((error: unknown) => error);
+    try {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const value = await readFile(pidFile, "utf8").catch(() => "");
+        if (/^[1-9]\d*$/.test(value)) {
+          descendantPid = Number(value);
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(descendantPid).toBeTypeOf("number");
+      expect(await completion).toEqual(new Error("desktop portable export failed"));
+      expect(Date.now() - started).toBeLessThan(2_500);
+    } finally {
+      if (descendantPid !== undefined) {
+        try {
+          process.kill(descendantPid, "SIGKILL");
+        } catch {
+          // The timeout path may already have closed the descendant.
+        }
+      }
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it("requires a bounded lifecycle identity, byte count, and bundled pg_restore path", () => {
+    const root = path.parse(process.cwd()).root;
+    const base = {
+      DATABASE_URL: "postgres://owner:secret@127.0.0.1/schedule",
+      SCHEDULE_ADMIN_DATABASE_URL: "postgres://admin:secret@127.0.0.1/postgres",
+      SCHEDULE_NODE_EXECUTABLE: path.join(root, "runtime", "node"),
+      SCHEDULE_MIGRATION_ENTRYPOINT: path.join(root, "runtime", "database", "migrate.js"),
+      SCHEDULE_APPLICATION_VERSION: "1.2.3",
+      SCHEDULE_DATABASE_NAME: "schedule",
+      SCHEDULE_CLUSTER_ADMIN_ROLE: "schedule_admin",
+      SCHEDULE_OWNER_ROLE: "schedule_owner",
+      SCHEDULE_RUNTIME_ROLE: "schedule_runtime",
+      SCHEDULE_EXPECTED_ARCHIVE_ID: "01234567-89ab-4cde-8fab-0123456789ab",
+      SCHEDULE_EXPECTED_ARCHIVE_SHA256: "a".repeat(64),
+      SCHEDULE_PORTABLE_IMPORT_JOURNAL: path.join(root, "runtime", "import-journal.json"),
+      SCHEDULE_EXPECTED_BACKUP_BYTES: "42",
+      SCHEDULE_PG_RESTORE_EXECUTABLE: path.join(root, "runtime", "pg_restore"),
+    };
+    expect(readDesktopMigrationBackupRestoreEnvironment(base)).toMatchObject({
+      expectedBackupBytes: 42,
+      pgRestoreExecutable: base.SCHEDULE_PG_RESTORE_EXECUTABLE,
+    });
+    expect(() =>
+      readDesktopMigrationBackupRestoreEnvironment({
+        ...base,
+        SCHEDULE_EXPECTED_BACKUP_BYTES: "0",
+      }),
+    ).toThrow(/invalid/);
+    expect(() =>
+      readDesktopMigrationBackupRestoreEnvironment({
+        ...base,
+        SCHEDULE_PG_RESTORE_EXECUTABLE: "pg_restore",
+      }),
+    ).toThrow(/invalid/);
+  });
+  it("builds a shell-free pg_restore invocation with credentials only in its environment", () => {
+    const root = path.parse(process.cwd()).root;
+    const environment = readDesktopMigrationBackupRestoreEnvironment({
+      DATABASE_URL: "postgres://owner:source-secret@127.0.0.1/schedule",
+      SCHEDULE_ADMIN_DATABASE_URL: "postgres://admin:restore-secret@127.0.0.1/postgres",
+      SCHEDULE_NODE_EXECUTABLE: path.join(root, "runtime", "node"),
+      SCHEDULE_MIGRATION_ENTRYPOINT: path.join(root, "runtime", "database", "migrate.js"),
+      SCHEDULE_APPLICATION_VERSION: "1.2.3",
+      SCHEDULE_DATABASE_NAME: "schedule",
+      SCHEDULE_CLUSTER_ADMIN_ROLE: "schedule_admin",
+      SCHEDULE_OWNER_ROLE: "schedule_owner",
+      SCHEDULE_RUNTIME_ROLE: "schedule_runtime",
+      SCHEDULE_EXPECTED_ARCHIVE_ID: "01234567-89ab-4cde-8fab-0123456789ab",
+      SCHEDULE_EXPECTED_ARCHIVE_SHA256: "a".repeat(64),
+      SCHEDULE_PORTABLE_IMPORT_JOURNAL: path.join(root, "runtime", "import-journal.json"),
+      SCHEDULE_EXPECTED_BACKUP_BYTES: "42",
+      SCHEDULE_PG_RESTORE_EXECUTABLE: path.join(root, "runtime", "pg_restore"),
+    });
+    const backup = path.join(root, "backups", "attempt.dump");
+    const invocation = desktopMigrationBackupRestoreInvocation(
+      environment,
+      `schedule_restore_${"a".repeat(32)}`,
+      backup,
+    );
+    expect(invocation.args).toEqual([
+      "--exit-on-error",
+      "--single-transaction",
+      "--no-owner",
+      "--no-privileges",
+      "--no-tablespaces",
+      "--dbname",
+      `schedule_restore_${"a".repeat(32)}`,
+      backup,
+    ]);
+    expect(invocation.args).not.toContain("--clean");
+    expect(invocation.args.join(" ")).not.toContain("restore-secret");
+    expect(invocation.args.join(" ")).not.toContain("source-secret");
+    expect(invocation.env).toMatchObject({
+      PGCONNECT_TIMEOUT: "5",
+      PGHOST: "127.0.0.1",
+      PGDATABASE: `schedule_restore_${"a".repeat(32)}`,
+      PGUSER: "owner",
+      PGPASSWORD: "source-secret",
+    });
+  });
+  it("admits only an unchanged regular backup with the lifecycle-bound size and digest", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "schedule-backup-source-test-"));
+    const source = path.join(directory, "attempt.dump");
+    const payload = Buffer.from("bounded backup payload");
+    try {
+      await writeFile(source, payload);
+      const digest = createHash("sha256").update(payload).digest("hex");
+      await expect(
+        assertDesktopMigrationBackupSource(source, payload.length, digest),
+      ).resolves.toBe(source);
+      await expect(
+        assertDesktopMigrationBackupSource(source, payload.length + 1, digest),
+      ).rejects.toThrow(/invalid/);
+      await expect(
+        assertDesktopMigrationBackupSource(source, payload.length, "b".repeat(64)),
+      ).rejects.toThrow(/invalid/);
+      const hardlink = path.join(directory, "attempt-hardlink.dump");
+      await link(source, hardlink);
+      await expect(
+        assertDesktopMigrationBackupSource(source, payload.length, digest),
+      ).rejects.toThrow(/invalid/);
+      await expect(
+        assertDesktopMigrationBackupSource(hardlink, payload.length, digest),
+      ).rejects.toThrow(/invalid/);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it.runIf(process.platform !== "win32")("rejects a symlinked migration backup", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "schedule-backup-symlink-test-"));
+    const source = path.join(directory, "attempt.dump");
+    const linked = path.join(directory, "linked.dump");
+    const payload = Buffer.from("bounded backup payload");
+    try {
+      await writeFile(source, payload);
+      await symlink(source, linked);
+      await expect(
+        assertDesktopMigrationBackupSource(
+          linked,
+          payload.length,
+          createHash("sha256").update(payload).digest("hex"),
+        ),
+      ).rejects.toThrow(/invalid/);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
   it("treats a missing import journal as a database-free recovery no-op", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "schedule-import-no-journal-test-"));
@@ -588,6 +781,42 @@ describe("desktop portable helper boundary", () => {
     expect(stdout).toEqual([`${desktopPortableImportSuccessPrefix}{"previousRetained":true}\n`]);
   });
 
+  it("emits the exact bounded automatic-backup recovery protocol only after promotion succeeds", async () => {
+    const root = path.parse(process.cwd()).root;
+    const source = path.join(root, "backups", "attempt.dump");
+    const environment = {
+      DATABASE_URL: "postgres://source@localhost/schedule",
+      SCHEDULE_ADMIN_DATABASE_URL: "postgres://admin@localhost/postgres",
+      SCHEDULE_NODE_EXECUTABLE: path.join(root, "runtime", "node"),
+      SCHEDULE_MIGRATION_ENTRYPOINT: path.join(root, "runtime", "database", "dist", "migrate.js"),
+      SCHEDULE_APPLICATION_VERSION: "1.2.3",
+      SCHEDULE_DATABASE_NAME: "schedule",
+      SCHEDULE_CLUSTER_ADMIN_ROLE: "schedule_admin",
+      SCHEDULE_OWNER_ROLE: "schedule_owner",
+      SCHEDULE_RUNTIME_ROLE: "schedule_runtime",
+      SCHEDULE_EXPECTED_ARCHIVE_ID: "01234567-89ab-4cde-8fab-0123456789ab",
+      SCHEDULE_EXPECTED_ARCHIVE_SHA256: "a".repeat(64),
+      SCHEDULE_PORTABLE_IMPORT_JOURNAL: path.join(root, "runtime", "import-journal.json"),
+      SCHEDULE_EXPECTED_BACKUP_BYTES: "42",
+      SCHEDULE_PG_RESTORE_EXECUTABLE: path.join(root, "runtime", "pg_restore"),
+    };
+    const stdout: string[] = [];
+    await expect(
+      runDesktopPortableCli(["restore-backup", source], environment, {
+        stdout: (value) => stdout.push(value),
+        stderr: () => undefined,
+        restoreBackup: async (actualSource, parsed) => {
+          expect(actualSource).toBe(source);
+          expect(parsed.expectedBackupBytes).toBe(42);
+          return { previousRetained: true };
+        },
+      }),
+    ).resolves.toBe(true);
+    expect(stdout).toEqual([
+      `${desktopMigrationBackupRestoreSuccessPrefix}{"previousRetained":true}\n`,
+    ]);
+  });
+
   it("emits a bounded inspection record without exposing the selected path", async () => {
     const root = path.parse(process.cwd()).root;
     const source = path.join(root, "private", "selected.schedule");
@@ -736,7 +965,7 @@ describe("desktop portable helper boundary", () => {
       }),
     ).resolves.toBe(true);
     expect(stdout).toEqual([
-      `${desktopPortableRecoverySuccessPrefix}{"recovered":true,"committed":true}\n`,
+      `${desktopPortableRecoverySuccessPrefix}{"recovered":true,"committed":true,"archiveId":"01234567-89ab-4cde-8fab-0123456789ab"}\n`,
     ]);
   });
 });
