@@ -18,6 +18,7 @@ import {
 } from "./backup-database.js";
 import {
   assertPostgresVerifierReady,
+  parseNativePostgresVerifier,
   redactVerifierCredentials,
   runVerifierPsql,
   verifierDatabaseUrl,
@@ -31,6 +32,14 @@ const cleanupDatabasePattern =
   /^schedule_(previous|rejected|restore|schema|verify|outbox_verify|weekday_verify)_[a-f0-9]{32}$/;
 const disposableNoncePattern = /^[a-f0-9]{32}$/;
 const repositoryCommandOutputLimit = 64 * 1024;
+
+function assertComposeArchiveRestore(): void {
+  if (parseNativePostgresVerifier() !== null) {
+    throw new Error(
+      "Custom-format backup restore is Compose-only; native verifier mode cannot be combined with pg_restore.",
+    );
+  }
+}
 
 export const disposableRecoveryVerificationSentinel =
   "schedule-disposable-recovery-state-machine-v1";
@@ -287,6 +296,7 @@ export async function restoreArchiveIntoDatabase(
   databaseName: string,
 ): Promise<void> {
   quoteIdentifier(databaseName);
+  assertComposeArchiveRestore();
   await runComposeCommand(
     [
       "exec",
@@ -1048,6 +1058,7 @@ export interface RestoreResult {
 }
 
 export async function restoreScheduleDatabase(backupPath: string): Promise<RestoreResult> {
+  assertComposeArchiveRestore();
   const names: RestoreRoleNames = {
     activeDatabase: composeDatabaseName,
     stagingDatabase: createDatabaseIdentifier("schedule_restore_"),
@@ -1069,6 +1080,7 @@ export async function restoreDisposableScheduleDatabase(
   plan: DisposableRecoveryPlan,
 ): Promise<DisposableRestoreResult> {
   assertDisposableRecoveryPlan(plan);
+  assertComposeArchiveRestore();
   await assertPostgresVerifierReady("postgres");
   await assertDisposableRecoveryPreflight(plan, "restore");
   await restoreDatabaseUsingRoles(backupPath, plan);
