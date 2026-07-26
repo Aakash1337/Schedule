@@ -56,7 +56,7 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:webhook-delivery`           | Verify webhook lifecycle, subscriptions, fan-out, redrive, and rollback     | Yes, disposable only            |
 | `pnpm verify:notification-core`          | Verify six sources, exact-once concurrency, invalidation, and tenant guards | Yes                             |
 | `pnpm verify:notification-materializer`  | Verify bounded automatic ticks, replay, skips, and delivery separation      | Yes, disposable only            |
-| `pnpm verify:notification-delivery`      | Verify fenced claims/receipts, retries, expiry, and invalidation            | Yes, disposable only            |
+| `pnpm verify:notification-delivery`      | Verify fenced claims/receipts, retries, redrive, expiry, and invalidation   | Yes, disposable only            |
 | `pnpm verify:notification-migrations`    | Upgrade populated reminder/delivery state through migration 0027            | Yes, disposable only            |
 | `pnpm verify:local-model-advisor`        | Opt-in smoke check against the configured local Ollama/Gemma provider       | Ollama and an allowlisted model |
 | `pnpm verify:backup-restore`             | Verify archive/schema/content/sequence fidelity                             | Yes                             |
@@ -637,6 +637,9 @@ The audit deliberately leaves these visible instead of turning them into false g
   concurrent exclusion, retry/dead-letter, indexed expiry fencing/recovery, source invalidation,
   bounded receipts, audits, occurrence uniqueness, cross-tenant rejection, and a workspace-scoped,
   product-safe execution-history projection that omits claim, lease, credential, and provider data.
+  Product-side dead-letter redrive has unit, route, browser, and disposable-PostgreSQL evidence for
+  database-time requeue, stable identity, immutable attempt history with cumulative counts,
+  tenant isolation, atomic audit, one-use claim authorization, and no direct provider call.
   Its opt-in local materializer has unit evidence for disabled mode, bounded sequential cycles,
   failure isolation, non-overlap, abort behavior, and sibling-service supervision, plus disposable
   PostgreSQL evidence for catch-up boundaries, concurrent exact-once ticks, recreated-pool restart
@@ -661,8 +664,7 @@ The audit deliberately leaves these visible instead of turning them into false g
   composition, and database closure. Delivered
   tombstone cleanup remains disabled until Schedule exposes an authoritative replay retention
   watermark. It still has no concrete external provider/account binding, a live authenticated
-  provider client, provider-specific conclusive reconciliation, live phone verification, or
-  dead-letter redrive control;
+  provider client, provider-specific conclusive reconciliation, or live phone verification;
 - worker observability has unit and disposable-PostgreSQL evidence for loopback-only binding,
   liveness/readiness separation, fixed-cardinality Prometheus text, live outbox/reminder queue
   aggregates, materialization/outbox instrumentation, private-data exclusion, database-failure

@@ -183,6 +183,10 @@ class MemoryNotificationRepository implements NotificationRepository {
     return [];
   }
 
+  async redriveDeadLetterDelivery() {
+    return { kind: "not_found" } as const;
+  }
+
   async insertIntent(intent: NotificationIntent): Promise<NotificationIntent> {
     const existing = this.intents.get(intent.occurrenceKey);
     if (existing !== undefined) return existing;

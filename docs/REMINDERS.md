@@ -139,6 +139,7 @@ bounded recovery does not degrade into a full delivery-command scan.
 | `processing`     | `delivered` receipt before lease expiry             | `delivered`                   |
 | `processing`     | retryable failure before the attempt limit          | delayed `pending`             |
 | `processing`     | permanent failure or retryable failure at the limit | `dead_letter`                 |
+| `dead_letter`    | explicit redrive                                    | `pending`                     |
 | `processing`     | lease expires                                       | same command may be reclaimed |
 | any open command | source/policy invalidation                          | `invalidated`                 |
 
@@ -155,6 +156,16 @@ in flight outside its transaction. A receipt arriving before that claim's lease 
 attempt outcome while the command remains `invalidated`; an abandoned invalidated attempt is closed
 as `lease_expired` after the lease. This claim-commit boundary is the documented unavoidable race.
 The adapter should minimize work between claim and its deduplicated side effect.
+
+Dead-letter redrive is an explicit, workspace-scoped operator action. It transitions the existing
+command from `dead_letter` to `pending` using PostgreSQL's current time, clears claim/lease and
+completion fields, and preserves the stable delivery/intent/dedupe identity. Attempt history remains
+immutable, while the cumulative attempt count is never reset. The transition writes an audit event
+and a durable, one-use authorization that the next successful claim consumes atomically. A pending
+command at or above a runtime's attempt limit remains unclaimable without that explicit authorization.
+It returns not-found when the workspace or delivery is absent and a conflict when the delivery is not
+currently dead-lettered (including a concurrent redrive). Redrive only makes the command claimable;
+it never calls a provider or performs an external send.
 
 ## Local API
 
@@ -282,5 +293,4 @@ Not yet implemented in this slice:
 - a live authenticated Hermes/WhatsApp, email, push, or other provider client and human/account
   binding;
 - provider-specific conclusive reconciliation and external provider/account bootstrap;
-- dead-letter redrive controls;
 - hosted-user authorization for these local product routes.

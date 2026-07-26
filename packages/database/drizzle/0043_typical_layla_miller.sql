@@ -1,0 +1,2 @@
+ALTER TABLE "notification_delivery_commands" ADD COLUMN "redrive_requested_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "notification_delivery_commands" ADD CONSTRAINT "notification_delivery_commands_redrive_authorization_valid" CHECK ("notification_delivery_commands"."redrive_requested_at" IS NULL OR "notification_delivery_commands"."status" = 'pending');

@@ -1485,6 +1485,8 @@ export const notificationDeliveryCommands = pgTable(
     currentClaimToken: uuid("current_claim_token"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
+    /** One-use operator authorization for one otherwise exhausted dead-letter redrive. */
+    redriveRequestedAt: timestamp("redrive_requested_at", { withTimezone: true }),
     lastFailureCode: varchar("last_failure_code", { length: 80 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1539,6 +1541,10 @@ export const notificationDeliveryCommands = pgTable(
         OR
         (${table.status} = 'invalidated' AND ${table.completedAt} IS NOT NULL AND ((${table.currentClaimToken} IS NULL AND ${table.leaseExpiresAt} IS NULL) OR (${table.currentClaimToken} IS NOT NULL AND ${table.leaseExpiresAt} IS NOT NULL)))
       )`,
+    ),
+    check(
+      "notification_delivery_commands_redrive_authorization_valid",
+      sql`${table.redriveRequestedAt} IS NULL OR ${table.status} = 'pending'`,
     ),
     check(
       "notification_delivery_commands_timestamps_valid",

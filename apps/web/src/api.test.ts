@@ -77,6 +77,21 @@ describe("web API client", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
+  it("redrives a notification delivery through the bodyless product command route", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 204 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.redriveNotificationDelivery("workspace-1", "delivery/1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/notification-deliveries/delivery%2F1/redrives",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).not.toHaveProperty("body");
+  });
+
   it("uses the same-origin workspace endpoint", async () => {
     const fetchMock = vi.fn(
       async () =>
