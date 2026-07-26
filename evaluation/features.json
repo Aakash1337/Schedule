@@ -40,7 +40,10 @@
     "notification-delivery": { "command": "pnpm verify:database", "ci": true },
     "notification-migrations": { "command": "pnpm verify:database", "ci": true },
     "backup-restore": { "command": "pnpm verify:backup-restore", "ci": true },
-    "portable-migration": { "command": "pnpm verify:portable-migration", "ci": true },
+    "portable-migration": {
+      "command": "pnpm verify:portable-migration -- --import \"$RUNNER_TEMP/portable-windows-producer/windows-produced.schedule\"",
+      "ci": true
+    },
     "desktop-portable-import": {
       "command": "pnpm verify:desktop-portable-import",
       "ci": true
@@ -1162,6 +1165,9 @@
         "file": "docs/PORTABLE_MIGRATION.md",
         "anchor": "## Data that moves"
       },
+      "limitations": [
+        "CI hands a physical archive from native PostgreSQL on Windows to disposable PostgreSQL on Linux, but it does not install desktop releases or prove an N-1-to-N upgrade. Old released-version golden archives are not retained; a version-1 archive still requires its matching release before a normal upgrade."
+      ],
       "evidence": [
         {
           "level": "unit",

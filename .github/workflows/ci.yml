@@ -87,14 +87,129 @@ jobs:
         run: pnpm verify:hermes-adapter
       - name: Verify complete backup and restore path
         run: pnpm verify:backup-restore
-      - name: Verify portable export and import against PostgreSQL
-        run: pnpm verify:portable-migration
       - name: Verify desktop portable import crash recovery against PostgreSQL
         run: pnpm verify:desktop-portable-import
       - name: Verify desktop migration-backup recovery against PostgreSQL
         run: pnpm verify:desktop-migration-backup-recovery
       - name: Verify restore, promotion, rollback, and cleanup state machine
         run: pnpm verify:recovery-state-machine
+      - name: PostgreSQL diagnostics
+        if: failure()
+        run: docker compose logs --no-color postgres
+      - name: Remove disposable PostgreSQL Compose service
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  portable-windows-producer:
+    name: Portable archive producer (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      CI: true
+      NODE_ENV: test
+      PRODUCT_API_MODE: local_unauthenticated
+      PGHOST: 127.0.0.1
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: root
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Start the preinstalled native PostgreSQL service
+        shell: pwsh
+        run: |
+          $services = @(Get-Service -Name "postgresql-x64-*" -ErrorAction SilentlyContinue)
+          if ($services.Count -ne 1) {
+            throw "Expected exactly one preinstalled PostgreSQL service, found $($services.Count)."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:PGBIN) -or -not (Test-Path -LiteralPath (Join-Path $env:PGBIN "pg_isready.exe"))) {
+            throw "PGBIN must point to the preinstalled PostgreSQL bin directory."
+          }
+          Set-Service -Name $services[0].Name -StartupType Manual
+          Start-Service -Name $services[0].Name
+          $pgIsReady = Join-Path $env:PGBIN "pg_isready.exe"
+          $ready = $false
+          for ($attempt = 1; $attempt -le 30; $attempt++) {
+            & $pgIsReady --host=127.0.0.1 --port=5432 --username=postgres --dbname=postgres
+            if ($LASTEXITCODE -eq 0) {
+              $ready = $true
+              break
+            }
+            Start-Sleep -Seconds 1
+          }
+          if (-not $ready) {
+            throw "The preinstalled PostgreSQL service did not become ready within 30 seconds."
+          }
+          $databaseUrl = "postgres://postgres:root@127.0.0.1:5432/postgres"
+          "SCHEDULE_VERIFIER_POSTGRES_BIN=$env:PGBIN" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SCHEDULE_VERIFIER_DATABASE_URL=$databaseUrl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DATABASE_URL=$databaseUrl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - run: pnpm install --frozen-lockfile
+      - name: Build workspace packages
+        run: pnpm build:packages
+      - name: Export a Windows-produced portable archive
+        shell: pwsh
+        run: pnpm verify:portable-migration -- --export "$env:RUNNER_TEMP\windows-produced.schedule"
+      - name: Upload Windows-produced portable archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: portable-windows-producer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-produced.schedule
+          if-no-files-found: error
+          retention-days: 1
+      - name: Stop the native PostgreSQL service
+        if: always()
+        shell: pwsh
+        run: |
+          $services = @(Get-Service -Name "postgresql-x64-*" -ErrorAction SilentlyContinue)
+          if ($services.Count -eq 1 -and $services[0].Status -ne "Stopped") {
+            Stop-Service -Name $services[0].Name -ErrorAction Continue
+          }
+
+  portable-linux-consumer:
+    name: Portable archive consumer and rollback (Linux)
+    needs: portable-windows-producer
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CI: true
+      COMPOSE_PROJECT_NAME: schedule-portable-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+      DATABASE_URL: postgres://schedule:schedule@127.0.0.1:5432/schedule
+      NODE_ENV: test
+      PRODUCT_API_MODE: local_unauthenticated
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: actions/download-artifact@v8
+        with:
+          name: portable-windows-producer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/portable-windows-producer
+      - run: pnpm install --frozen-lockfile
+      - name: Start disposable PostgreSQL Compose service
+        run: docker compose up -d --wait postgres
+      - name: Build workspace packages
+        run: pnpm build:packages
+      - name: Import the Windows-produced archive and verify rollback
+        run: pnpm verify:portable-migration -- --import "$RUNNER_TEMP/portable-windows-producer/windows-produced.schedule"
       - name: PostgreSQL diagnostics
         if: failure()
         run: docker compose logs --no-color postgres

@@ -10,7 +10,8 @@ import {
   desktopVerificationDatabaseOwnershipMarker,
   exportDesktopPortableScheduleData,
 } from "../packages/database/src/desktop-portable.js";
-import { assertComposeDatabaseReady, repositoryRoot } from "./backup-database.js";
+import { repositoryRoot } from "./backup-database.js";
+import { assertPostgresVerifierReady, verifierDatabaseUrl } from "./postgres-verifier.js";
 import { withPreparedPortableArchive } from "./portable-archive.js";
 import {
   exportPortableScheduleData,
@@ -392,10 +393,7 @@ async function produceArchive(archivePath: string): Promise<void> {
     );
     await runPsql("postgres", `CREATE DATABASE ${quoteIdentifier(unmarkedStale)};`);
 
-    const databaseUrl = new URL(
-      process.env.DATABASE_URL ?? "postgres://schedule:schedule@127.0.0.1:5432/schedule",
-    );
-    databaseUrl.pathname = `/${sourcePlan.activeDatabase}`;
+    const databaseUrl = new URL(verifierDatabaseUrl(sourcePlan.activeDatabase));
     const adminDatabaseUrl = new URL(databaseUrl);
     adminDatabaseUrl.pathname = "/postgres";
     const result = await exportDesktopPortableScheduleData(archivePath, {
@@ -583,7 +581,7 @@ function parseMode(
 }
 
 const mode = parseMode(process.argv.slice(2));
-await assertComposeDatabaseReady("postgres");
+await assertPostgresVerifierReady("postgres");
 if (mode.kind === "export") {
   await produceArchive(path.resolve(mode.archivePath));
   console.log(`Portable migration producer verification passed: ${path.resolve(mode.archivePath)}`);

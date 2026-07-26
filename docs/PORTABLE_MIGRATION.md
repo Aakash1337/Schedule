@@ -206,7 +206,8 @@ pnpm verify:desktop-migration-backup-recovery
 ```
 
 The archive framing and migration fingerprint are OS-neutral and unit-tested with Windows and Linux
-producer metadata. Current CI runs the full database drill on Linux; a physical Windows-producer to
-Linux-consumer artifact handoff is not yet a CI claim. Nor does the current repository retain golden
-archives from old released versions; version-1 archives still require their matching release before
-a normal update.
+producer metadata. CI also creates a physical archive from the native PostgreSQL service on a Windows
+runner, hands that exact artifact to an independent Linux runner, and verifies import plus rollback
+against disposable PostgreSQL there. This is a cross-OS archive handoff, not an installed desktop
+release-update test. The repository does not retain golden archives from old released versions;
+version-1 archives still require their matching release before a normal update.

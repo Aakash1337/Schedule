@@ -600,11 +600,11 @@ The audit deliberately leaves these visible instead of turning them into false g
   after marker publication, at prepared state, every independently committed promotion mutation,
   and the committed receipt boundary, then checks exact recovery,
   retained-database bounds, and journal cleanup. It runs the source helper rather than an installed
-  desktop artifact. CI does not yet hand a physical artifact from a Windows producer to a Linux
-  consumer. Checksums are not signatures, old
-  archive-version golden fixtures are not yet retained, and a version-1 archive must currently be
-  imported with its matching release before a normal upgrade, so archive custody and matching-release
-  availability remain part of this trust boundary;
+  desktop artifact. CI also exports one physical archive from native PostgreSQL on a Windows runner,
+  transfers it to an independent Linux runner, and proves import plus rollback against disposable
+  PostgreSQL. Checksums are not signatures, old archive-version golden fixtures are not yet retained,
+  and a version-1 archive must currently be imported with its matching release before a normal
+  upgrade, so archive custody and matching-release availability remain part of this trust boundary;
 - worker process-kill recovery covers crashes before a side effect and after an idempotent side
   effect but before acknowledgement; future external consumers must still enforce event-ID
   idempotency at their own durability boundary;

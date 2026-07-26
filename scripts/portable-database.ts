@@ -13,13 +13,8 @@ import {
   shouldRemovePortableExportResult,
   type PortableDataTableV1,
 } from "../packages/database/src/index.js";
-import {
-  assertComposeDatabaseReady,
-  composeDatabaseName,
-  composeDatabaseUser,
-  createTimestamp,
-  repositoryRoot,
-} from "./backup-database.js";
+import { composeDatabaseName, createTimestamp, repositoryRoot } from "./backup-database.js";
+import { assertPostgresVerifierReady, verifierDatabaseUrl } from "./postgres-verifier.js";
 import {
   assertScheduleDatabase,
   cleanupGeneratedRecoveryDatabase,
@@ -111,12 +106,7 @@ interface PortableColumnCatalog {
 
 function databaseUrlFor(databaseName: string): string {
   quoteIdentifier(databaseName);
-  const url = new URL(
-    process.env.DATABASE_URL ??
-      `postgres://${composeDatabaseUser}:${composeDatabaseUser}@127.0.0.1:5432/${composeDatabaseName}`,
-  );
-  url.pathname = `/${databaseName}`;
-  return url.toString();
+  return verifierDatabaseUrl(databaseName);
 }
 
 function portableCastSql(column: PortableCatalogColumnRow): string {
@@ -625,7 +615,7 @@ export async function exportPortableScheduleData(
   databaseName = composeDatabaseName,
 ): Promise<PortableExportResult> {
   quoteIdentifier(databaseName);
-  await assertComposeDatabaseReady(databaseName);
+  await assertPostgresVerifierReady(databaseName);
   await assertScheduleDatabase(databaseName, { requireCurrentMigrations: true });
   return exportVerifiedPortableDatabase({
     outputPath,
@@ -657,7 +647,7 @@ export async function importPortableScheduleData(
     {
       assertDatabaseName: quoteIdentifier,
       assertActiveDatabase: async (databaseName) => {
-        await assertComposeDatabaseReady(databaseName);
+        await assertPostgresVerifierReady(databaseName);
         await assertScheduleDatabase(databaseName, { requireCurrentMigrations: true });
       },
       schemaSignal: portableSchemaSignal,
