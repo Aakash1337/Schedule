@@ -1956,6 +1956,11 @@ export async function recoverDesktopPortableImport(
       "schedule-portable-import-recovery-commit",
       async (sql) => {
         await sql.unsafe(
+          `ALTER DATABASE ${postgresIdentifier(journal.previous.name)} WITH ALLOW_CONNECTIONS false`,
+        );
+        await sql`SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity
+          WHERE datname = ${journal.previous.name} AND pid <> pg_catalog.pg_backend_pid()`;
+        await sql.unsafe(
           `ALTER DATABASE ${postgresIdentifier(journal.active.name)} WITH ALLOW_CONNECTIONS true`,
         );
       },

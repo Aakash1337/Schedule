@@ -479,6 +479,16 @@ async function verifyFault(
     );
     await runFaultChild(image, scenario, fault, index);
     const committed = committedFaults.has(fault);
+    if (fault === "committed") {
+      const previous = (await ownedDatabases(target)).filter((name) =>
+        name.startsWith("schedule_previous_"),
+      );
+      assert.equal(previous.length, 1, "committed fault must retain exactly one prior database");
+      await runPsql(
+        "postgres",
+        `ALTER DATABASE ${quoteIdentifier(previous[0]!)} WITH ALLOW_CONNECTIONS true;`,
+      );
+    }
     if (committed) await rename(backup.path, `${backup.path}.withheld`);
     await runRecoveryRunner(image, scenario, !committed);
     await assertRecovered(target, ledger, fault);
