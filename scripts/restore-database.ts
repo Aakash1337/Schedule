@@ -5,7 +5,6 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
-  assertComposeDatabaseReady,
   composeDatabaseName,
   composeDatabaseService,
   composeDatabaseUser,
@@ -17,6 +16,14 @@ import {
   verifyBackup,
   withPreparedRestoreArchive,
 } from "./backup-database.js";
+import {
+  assertPostgresVerifierReady,
+  parseNativePostgresVerifier,
+  redactVerifierCredentials,
+  runVerifierPsql,
+  verifierDatabaseUrl,
+  verifierDatabaseUser,
+} from "./postgres-verifier.js";
 
 const restoreConfirmation = "replace-schedule";
 const rollbackConfirmation = "rollback-to-retained";
@@ -24,6 +31,15 @@ const retainedDatabasePattern = /^schedule_(previous|rejected)_[a-f0-9]{32}$/;
 const cleanupDatabasePattern =
   /^schedule_(previous|rejected|restore|schema|verify|outbox_verify|weekday_verify)_[a-f0-9]{32}$/;
 const disposableNoncePattern = /^[a-f0-9]{32}$/;
+const repositoryCommandOutputLimit = 64 * 1024;
+
+function assertComposeArchiveRestore(): void {
+  if (parseNativePostgresVerifier() !== null) {
+    throw new Error(
+      "Custom-format backup restore is Compose-only; native verifier mode cannot be combined with pg_restore.",
+    );
+  }
+}
 
 export const disposableRecoveryVerificationSentinel =
   "schedule-disposable-recovery-state-machine-v1";
@@ -184,23 +200,7 @@ export async function runPsql(
   options: PsqlExecutionOptions = {},
 ): Promise<string> {
   quoteIdentifier(databaseName);
-  return runComposeCommand([
-    "exec",
-    "-T",
-    composeDatabaseService,
-    "psql",
-    "--username",
-    composeDatabaseUser,
-    "--dbname",
-    databaseName,
-    "--no-psqlrc",
-    "--set=ON_ERROR_STOP=1",
-    "--tuples-only",
-    "--no-align",
-    ...(options.quiet ? ["--quiet"] : []),
-    "--command",
-    statement,
-  ]);
+  return runVerifierPsql(databaseName, statement, options);
 }
 
 export async function databaseExists(databaseName: string): Promise<boolean> {
@@ -245,7 +245,7 @@ export async function createEmptyDatabase(databaseName: string): Promise<void> {
   const database = quoteIdentifier(databaseName);
   await runPsql(
     "postgres",
-    `CREATE DATABASE ${database} OWNER ${quoteIdentifier(composeDatabaseUser)};`,
+    `CREATE DATABASE ${database} OWNER ${quoteIdentifier(verifierDatabaseUser())};`,
   );
 }
 
@@ -296,6 +296,7 @@ export async function restoreArchiveIntoDatabase(
   databaseName: string,
 ): Promise<void> {
   quoteIdentifier(databaseName);
+  assertComposeArchiveRestore();
   await runComposeCommand(
     [
       "exec",
@@ -611,7 +612,7 @@ async function restoreSequenceStates(
 
 function databaseUrl(databaseName: string): string {
   quoteIdentifier(databaseName);
-  return `postgres://${composeDatabaseUser}:${composeDatabaseUser}@127.0.0.1:5432/${databaseName}`;
+  return verifierDatabaseUrl(databaseName);
 }
 
 async function runRepositoryCommand(
@@ -630,33 +631,59 @@ async function runRepositoryCommand(
   await new Promise<void>((resolve, reject) => {
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
+    let outputSize = 0;
+    let outputTruncated = false;
+    const add = (chunks: Buffer[], chunk: Buffer) => {
+      const available = repositoryCommandOutputLimit - outputSize;
+      if (available <= 0) {
+        outputTruncated = true;
+        return;
+      }
+      chunks.push(chunk.subarray(0, available));
+      outputSize += Math.min(chunk.length, available);
+      if (chunk.length > available) outputTruncated = true;
+    };
+    const environment: NodeJS.ProcessEnv = {
+      ...process.env,
+      NODE_ENV: "test",
+      PRODUCT_API_MODE: "local_unauthenticated",
+    };
+    for (const key of Object.keys(environment)) {
+      const normalized = key.toUpperCase();
+      if (
+        normalized.startsWith("PG") ||
+        normalized === "SCHEDULE_VERIFIER_POSTGRES_BIN" ||
+        normalized.endsWith("DATABASE_URL")
+      ) {
+        delete environment[key];
+      }
+    }
+    environment.DATABASE_URL = targetDatabaseUrl;
     const child = spawn(executable, commandArgs, {
       cwd: repositoryRoot,
-      env: {
-        ...process.env,
-        DATABASE_URL: targetDatabaseUrl,
-        NODE_ENV: "test",
-        PRODUCT_API_MODE: "local_unauthenticated",
-      },
+      env: environment,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
-    child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.stdout?.on("data", (chunk: Buffer) => add(stdout, chunk));
+    child.stderr?.on("data", (chunk: Buffer) => add(stderr, chunk));
     child.once("error", reject);
     child.once("close", (code) => {
       if (code === 0) {
         resolve();
         return;
       }
-      const output = Buffer.concat([...stdout, ...stderr])
-        .toString("utf8")
-        .replaceAll(targetDatabaseUrl, "[DATABASE_URL]")
-        .replaceAll(`${composeDatabaseUser}:${composeDatabaseUser}`, "[REDACTED]")
-        .trim();
+      const output = redactVerifierCredentials(
+        Buffer.concat([...stdout, ...stderr])
+          .toString("utf8")
+          .replaceAll(targetDatabaseUrl, "[DATABASE_URL]")
+          .replaceAll(`${composeDatabaseUser}:${composeDatabaseUser}`, "[REDACTED]")
+          .trim(),
+      );
+      const diagnostic = `${output}${outputTruncated ? `${output === "" ? "" : "\n"}[output truncated]` : ""}`;
       reject(
         new Error(
-          `${label} failed with exit code ${String(code)}${output === "" ? "" : `: ${output}`}`,
+          `${label} failed with exit code ${String(code)}${diagnostic === "" ? "" : `: ${diagnostic}`}`,
         ),
       );
     });
@@ -1031,13 +1058,14 @@ export interface RestoreResult {
 }
 
 export async function restoreScheduleDatabase(backupPath: string): Promise<RestoreResult> {
+  assertComposeArchiveRestore();
   const names: RestoreRoleNames = {
     activeDatabase: composeDatabaseName,
     stagingDatabase: createDatabaseIdentifier("schedule_restore_"),
     previousDatabase: createDatabaseIdentifier("schedule_previous_"),
     referenceDatabase: createDatabaseIdentifier("schedule_schema_"),
   };
-  await assertComposeDatabaseReady();
+  await assertPostgresVerifierReady();
   await restoreDatabaseUsingRoles(backupPath, names);
   return { previousDatabase: names.previousDatabase, activeDatabase: composeDatabaseName };
 }
@@ -1052,7 +1080,8 @@ export async function restoreDisposableScheduleDatabase(
   plan: DisposableRecoveryPlan,
 ): Promise<DisposableRestoreResult> {
   assertDisposableRecoveryPlan(plan);
-  await assertComposeDatabaseReady("postgres");
+  assertComposeArchiveRestore();
+  await assertPostgresVerifierReady("postgres");
   await assertDisposableRecoveryPreflight(plan, "restore");
   await restoreDatabaseUsingRoles(backupPath, plan);
   return { previousDatabase: plan.previousDatabase, activeDatabase: plan.activeDatabase };
@@ -1216,7 +1245,7 @@ export async function rollbackToRetainedDatabase(
     rejectedDatabase: createDatabaseIdentifier("schedule_rejected_"),
     referenceDatabase: createDatabaseIdentifier("schedule_schema_"),
   };
-  await assertComposeDatabaseReady("postgres");
+  await assertPostgresVerifierReady("postgres");
   await assertRoleExistence(
     [
       [names.activeDatabase, true],
@@ -1241,7 +1270,7 @@ export async function rollbackDisposableScheduleDatabase(
   plan: DisposableRecoveryPlan,
 ): Promise<DisposableRollbackResult> {
   assertDisposableRecoveryPlan(plan);
-  await assertComposeDatabaseReady("postgres");
+  await assertPostgresVerifierReady("postgres");
   await assertDisposableRecoveryPreflight(plan, "rollback");
   await validateRetainedRollbackDatabase(plan.previousDatabase, plan.referenceDatabase);
   await rollbackDatabaseNames(plan, postgresRecoveryOperations);
@@ -1294,7 +1323,7 @@ async function cleanupDatabaseInternal(
 
 export async function cleanupGeneratedRecoveryDatabase(databaseName: string): Promise<void> {
   assertCleanupDatabaseIdentifier(databaseName);
-  await assertComposeDatabaseReady("postgres");
+  await assertPostgresVerifierReady("postgres");
   await cleanupDatabaseInternal(databaseName, postgresRecoveryOperations, true);
 }
 
@@ -1303,7 +1332,7 @@ export async function cleanupDisposableRecoveryDatabase(
   role: DisposableRecoveryRole,
 ): Promise<void> {
   const databaseName = disposableRecoveryDatabaseName(plan, role);
-  await assertComposeDatabaseReady("postgres");
+  await assertPostgresVerifierReady("postgres");
   await cleanupDatabaseInternal(databaseName, postgresRecoveryOperations, true);
 }
 
@@ -1311,7 +1340,7 @@ export async function initializeDisposableRecoveryActiveDatabase(
   plan: DisposableRecoveryPlan,
 ): Promise<void> {
   assertDisposableRecoveryPlan(plan);
-  await assertComposeDatabaseReady("postgres");
+  await assertPostgresVerifierReady("postgres");
   await assertDisposableRecoveryPreflight(plan, "initialize");
   await createEmptyDatabase(plan.activeDatabase);
   let originalError: unknown;

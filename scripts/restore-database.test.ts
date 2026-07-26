@@ -6,6 +6,7 @@ import {
   cleanupOwnedRestoreStagingAfterFailure,
   createDisposableRecoveryPlan,
   promoteDisposableRecoveryStaging,
+  restoreDisposableScheduleDatabase,
   rollbackDisposableRecoveryNames,
   type RecoveryDatabaseOperations,
 } from "./restore-database.js";
@@ -123,6 +124,24 @@ describe("disposable recovery plan", () => {
       new RegExp(`rejected=${plan.rejectedDatabase} expected absent`),
     );
     expect(checked).toHaveLength(5);
+  });
+
+  it("fails closed before mixing native SQL with Compose archive restore", async () => {
+    const previousBin = process.env.SCHEDULE_VERIFIER_POSTGRES_BIN;
+    const previousUrl = process.env.SCHEDULE_VERIFIER_DATABASE_URL;
+    process.env.SCHEDULE_VERIFIER_POSTGRES_BIN = process.cwd();
+    process.env.SCHEDULE_VERIFIER_DATABASE_URL =
+      "postgres://verifier:secret@localhost:5432/postgres";
+    try {
+      await expect(
+        restoreDisposableScheduleDatabase("unused.dump", createDisposableRecoveryPlan()),
+      ).rejects.toThrow(/Compose-only/);
+    } finally {
+      if (previousBin === undefined) delete process.env.SCHEDULE_VERIFIER_POSTGRES_BIN;
+      else process.env.SCHEDULE_VERIFIER_POSTGRES_BIN = previousBin;
+      if (previousUrl === undefined) delete process.env.SCHEDULE_VERIFIER_DATABASE_URL;
+      else process.env.SCHEDULE_VERIFIER_DATABASE_URL = previousUrl;
+    }
   });
 });
 
