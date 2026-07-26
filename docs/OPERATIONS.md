@@ -687,9 +687,11 @@ when testing against a disposable PostgreSQL instance.
 GitHub CI keeps static checks and PostgreSQL integration checks in separate jobs. The integration job
 starts a fresh PostgreSQL 17 Compose project, applies every migration, and runs the planner, local
 product API, integration gateway, outbox lease/fencing, outbound webhook, plan-state and
-weekday-migration upgrades, complete recovery-archive round-trip, portable migration, and recovery
-state-machine verifiers. Diagnostics are captured on failure, and the job always removes the
-disposable database volume.
+weekday-migration upgrades, complete recovery-archive round-trip, desktop portable-import
+crash-recovery, receipt-bound migration-backup recovery, and recovery state-machine verifiers.
+Separate producer and consumer jobs transfer one physical `.schedule` archive from native PostgreSQL
+on Windows to disposable PostgreSQL on Linux, then prove import and rollback. Diagnostics are
+captured on failure, and every database job removes its disposable database state.
 
 Migration `0012` adds weekday range, uniqueness, and exclusion/preference overlap constraints. It
 removes out-of-range legacy values, deduplicates in first-occurrence order, and resolves overlaps in
