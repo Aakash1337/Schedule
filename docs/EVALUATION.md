@@ -62,7 +62,7 @@ drill job results establish whether that evidence actually passed in a particula
 | `pnpm verify:backup-restore`                    | Verify archive/schema/content/sequence fidelity                             | Yes                             |
 | `pnpm verify:portable-migration`                | Verify durable migration, exclusions, replacement, and rollback             | Yes, disposable only            |
 | `pnpm verify:desktop-portable-import`           | Process-kill desktop import and recover every committed database transition | Yes, disposable only            |
-| `pnpm verify:desktop-migration-backup-recovery` | Verify receipt-bound pre-update backup restore and staged promotion         | Yes, disposable only            |
+| `pnpm verify:desktop-migration-backup-recovery` | Process-exit and recover receipt-bound update-backup promotion              | Yes, disposable only            |
 | `pnpm verify:migration-policy`                  | Reject rewritten history, manifest aliases, and unreviewed risky SQL        | No                              |
 | `pnpm verify:migration-ledger`                  | Prove serialized migration and fail-closed live-ledger admission            | Yes, disposable only            |
 | `pnpm verify:recovery-state-machine`            | Exercise restore, promotion, rollback, and cleanup                          | Yes, disposable only            |
@@ -560,10 +560,12 @@ The audit deliberately leaves these visible instead of turning them into false g
 - desktop lifecycle and unit coverage now exercise receipt-bound automatic recovery of an interrupted
   update: a valid journal receipt is required, the private dump snapshot is rehashed, a fresh staging
   database is restored/migrated/validated, and the identity-bound promotion path retains the former
-  database. This is not yet a process-kill or installed-release drill. In particular, desktop
-  lifecycle smoke does not install a populated N-1 release, install N over it, compare every durable
-  content/sequence signal, and prove that reinstalling N-1 fails closed without mutation on Windows
-  and Linux;
+  database. A disposable PostgreSQL drill also terminates the recovery helper at every durable
+  allocation, staging, promotion, and commit boundary, restarts it with the same receipt, and proves
+  exact data, ledger, sequence, role, retention-lock, and cleanup state. This is not yet an
+  installed-release drill. In particular, desktop lifecycle smoke does not install a populated N-1
+  release, install N over it, compare every durable content/sequence signal, and prove that
+  reinstalling N-1 fails closed without mutation on Windows and Linux;
 - desktop and command-line migration admission now treat the immutable complete live ledger as the
   authoritative exact, valid-prefix, ahead, or divergent compatibility decision. The database-wide
   migration lock and installed runtime execute-path still need the populated cross-release evidence
@@ -572,9 +574,8 @@ The audit deliberately leaves these visible instead of turning them into false g
   `0004`, `0024`, `0031`, `0032`, and `0041`; only those exact LF hashes, their deterministic CRLF
   equivalents, and the canonical LF/CRLF pair at each position are accepted. Every other
   timestamp/hash pair must match the immutable manifest;
-- PostgreSQL recovery verifies successful swap/rollback paths, including the reusable promotion
-  journal used by automatic desktop backup recovery, while compensation fault injection for the
-  automatic-backup path is currently unit/operation-level rather than process-kill testing;
+- PostgreSQL recovery verifies successful swap/rollback paths, including process-exit reconciliation
+  at every durable seam in the reusable promotion journal used by automatic desktop backup recovery;
 - backup rejection covers empty, plain-SQL, truncated, schema-only, and migration-ledger-filtered
   archives plus caller-path replacement; it does not authenticate a structurally complete foreign
   Schedule archive, so backup custody remains part of the recovery trust boundary;

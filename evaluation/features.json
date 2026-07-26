@@ -1109,7 +1109,7 @@
         "anchor": "## Data lifecycle and recovery"
       },
       "limitations": [
-        "Recovery admits only a durable, attempt-bound pre-update backup receipt. It does not select arbitrary files, discover a latest backup, or recover legacy interrupted migration journals without a receipt. The new disposable drill is not yet a process-kill or installed N-1-to-N release drill."
+        "Recovery admits only a durable, attempt-bound pre-update backup receipt. It does not select arbitrary files, discover a latest backup, or recover legacy interrupted migration journals without a receipt. The process-exit drill exercises the source helper against disposable PostgreSQL, not an installed N-1-to-N release."
       ],
       "evidence": [
         {

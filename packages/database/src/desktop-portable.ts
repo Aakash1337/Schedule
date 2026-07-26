@@ -1956,10 +1956,12 @@ export async function recoverDesktopPortableImport(
       "schedule-portable-import-recovery-commit",
       async (sql) => {
         await sql.unsafe(
-          `ALTER DATABASE ${postgresIdentifier(journal.active.name)} WITH ALLOW_CONNECTIONS true`,
+          `ALTER DATABASE ${postgresIdentifier(journal.previous.name)} WITH ALLOW_CONNECTIONS false`,
         );
+        await sql`SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity
+          WHERE datname = ${journal.previous.name} AND pid <> pg_catalog.pg_backend_pid()`;
         await sql.unsafe(
-          `ALTER DATABASE ${postgresIdentifier(journal.previous.name)} WITH ALLOW_CONNECTIONS true`,
+          `ALTER DATABASE ${postgresIdentifier(journal.active.name)} WITH ALLOW_CONNECTIONS true`,
         );
       },
     );
@@ -1976,7 +1978,7 @@ export async function recoverDesktopPortableImport(
       !sameImportIdentity(finalCatalog.get(journal.previous.name), journal.previous) ||
       finalCatalog.get(journal.previous.name)?.marker !== previousMarker ||
       finalCatalog.get(journal.active.name)?.allowConnections !== true ||
-      finalCatalog.get(journal.previous.name)?.allowConnections !== true
+      finalCatalog.get(journal.previous.name)?.allowConnections !== false
     ) {
       throw new Error("desktop portable import recovery failed");
     }
@@ -2418,6 +2420,7 @@ export async function restoreDesktopMigrationBackup(
   );
   await dependencies.fault?.("allocation-written");
   await createEmbeddedImportDatabase(environment, stagingDatabase);
+  await dependencies.fault?.("staging-created");
   const stagingOid = await embeddedDatabaseIdentity(environment.adminDatabaseUrl, stagingDatabase);
   if (stagingOid === null) throw new Error("desktop migration backup restore failed");
   const stagingIdentity = { name: stagingDatabase, oid: stagingOid, owner: environment.ownerRole };

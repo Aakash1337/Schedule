@@ -194,9 +194,12 @@ bounded previous-database retention, and journal cleanup:
 pnpm verify:desktop-portable-import
 ```
 
-Interrupted desktop-update recovery has its own real PostgreSQL drill. It restores only the
-lifecycle-bound pre-migration dump, verifies the exact migration ledger and application data,
-promotes by the journaled database identity, and proves the previous database remains retained:
+Interrupted desktop-update recovery has its own real PostgreSQL drill. It terminates the helper at
+each durable allocation, unmarked and marked staging, prepared, promotion-mutation, and committed
+boundary, then retries with the exact same receipt. Every retry must restore or reconcile without
+replaying a completed restore, verify the exact migration ledger, application data, sequence, and
+runtime-role access, remove its journal and staging database, and keep exactly one connection-locked
+previous database:
 
 ```powershell
 pnpm verify:desktop-migration-backup-recovery

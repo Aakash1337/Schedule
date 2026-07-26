@@ -192,6 +192,9 @@ retained within the existing bounded policy. Any missing receipt, changed bytes,
 helper/protocol error, or uncertain promotion leaves the journal and data in place and keeps startup
 fail-closed. Recovery stops the private PostgreSQL service before recording the restored state, then
 restarts through normal admission; it never clears the journal merely because recovery was requested.
+The disposable PostgreSQL recovery drill terminates and restarts the helper at every durable staging
+and promotion boundary, then verifies exact data and bounded retained-database state. It exercises
+the packaged helper protocol and journal reconciliation, not an installed N-1-to-N desktop update.
 
 The application identifier and its `data` child are a tested storage compatibility boundary: a
 future release must not rename either without an explicit copy, validation, and atomic-switch
