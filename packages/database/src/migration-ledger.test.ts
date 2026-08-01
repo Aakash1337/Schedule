@@ -101,7 +101,7 @@ describe("migration ledger compatibility", () => {
     expect(loaded.entries.at(-1)).toMatchObject({
       tag: "0045_mixed_guardsmen",
       createdAt: 1_785_198_344_931,
-      sha256: "38de7dec6ea0c3a2eb3e685ec8b6ef295df340b3496f90efecc78a62729689b0",
+      sha256: "382991dc68fd3c0776d5812ba26b952b81d3449edf25dadb90db2537aae6099a",
       compatibleSha256: [],
     });
     expect(loaded.entries.at(-2)).toMatchObject({

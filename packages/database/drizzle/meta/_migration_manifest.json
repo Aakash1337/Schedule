@@ -46,6 +46,6 @@
     { "tag": "0042_reconcile_historical_schema", "createdAt": 1784596200000, "sha256": "c6772a23bfc4b7bf4c5ff7096418b2bceb7359219116b3113ae7f4cc0ef99140", "compatibleSha256": [] },
     { "tag": "0043_typical_layla_miller", "createdAt": 1785030133844, "sha256": "9317d3a781f5569d65caedfa3f328205ff8da86c7b2a6b4be3f90aa8debabc44", "compatibleSha256": [] },
     { "tag": "0044_orphan_dead_letter_cutoff", "createdAt": 1785031000000, "sha256": "42a150793f46b1d750ebe34b6589fe4877ed43820f3f56c4d8fe9d9ef95127d6", "compatibleSha256": [] },
-    { "tag": "0045_mixed_guardsmen", "createdAt": 1785198344931, "sha256": "38de7dec6ea0c3a2eb3e685ec8b6ef295df340b3496f90efecc78a62729689b0", "compatibleSha256": [] }
+    { "tag": "0045_mixed_guardsmen", "createdAt": 1785198344931, "sha256": "382991dc68fd3c0776d5812ba26b952b81d3449edf25dadb90db2537aae6099a", "compatibleSha256": [] }
   ]
 }

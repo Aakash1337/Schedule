@@ -24,8 +24,14 @@ CREATE TABLE "routine_groups" (
 	CONSTRAINT "routine_groups_version_positive" CHECK ("routine_groups"."version" > 0)
 );
 --> statement-breakpoint
+-- schedule-migration-review: destructive-data-change
+-- schedule-migration-reason: the new membership-to-group tenant foreign key changes no existing data
 ALTER TABLE "routine_group_memberships" ADD CONSTRAINT "routine_group_memberships_group_tenant_fk" FOREIGN KEY ("workspace_id","group_id") REFERENCES "public"."routine_groups"("workspace_id","id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+-- schedule-migration-review: destructive-data-change
+-- schedule-migration-reason: the new membership-to-routine tenant foreign key changes no existing data
 ALTER TABLE "routine_group_memberships" ADD CONSTRAINT "routine_group_memberships_routine_tenant_fk" FOREIGN KEY ("workspace_id","routine_id") REFERENCES "public"."routines"("workspace_id","id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+-- schedule-migration-review: destructive-data-change
+-- schedule-migration-reason: the new group-to-workspace tenant foreign key changes no existing data
 ALTER TABLE "routine_groups" ADD CONSTRAINT "routine_groups_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "routine_group_memberships_routine_idx" ON "routine_group_memberships" USING btree ("workspace_id","routine_id","group_id");--> statement-breakpoint
 CREATE INDEX "routine_groups_workspace_created_idx" ON "routine_groups" USING btree ("workspace_id","created_at","id");
