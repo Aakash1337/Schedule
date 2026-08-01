@@ -44,6 +44,8 @@ import {
   planMutations,
   routineDurationInsightFeedbackEvents,
   routineDurationInsightFeedbackKind,
+  routineGroupMemberships,
+  routineGroups,
   routinePlanningFeedbackEvents,
   routinePlanningFeedbackKind,
   routineSelectionPreferenceFeedbackEvents,
@@ -69,6 +71,8 @@ describe("database schema", () => {
     expect(getTableName(scheduleBlocks)).toBe("schedule_blocks");
     expect(getTableName(outboxEvents)).toBe("outbox_events");
     expect(getTableName(routines)).toBe("routines");
+    expect(getTableName(routineGroups)).toBe("routine_groups");
+    expect(getTableName(routineGroupMemberships)).toBe("routine_group_memberships");
     expect(getTableName(activityEvents)).toBe("activity_events");
     expect(getTableName(dailyPlans)).toBe("daily_plans");
     expect(getTableName(dailyPlanItems)).toBe("daily_plan_items");
@@ -723,6 +727,48 @@ describe("database schema", () => {
     );
   });
 
+  it("stores tenant-bound routine groups with many-to-many cascade-only membership", () => {
+    const groupConfig = getTableConfig(routineGroups);
+    const membershipConfig = getTableConfig(routineGroupMemberships);
+    const migration = readFileSync(
+      new URL("../drizzle/0045_mixed_guardsmen.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(groupConfig.uniqueConstraints.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "routine_groups_workspace_id_id_uq",
+        "routine_groups_workspace_name_uq",
+      ]),
+    );
+    expect(groupConfig.checks.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "routine_groups_name_nonempty",
+        "routine_groups_normalized_name_nonempty",
+        "routine_groups_description_valid",
+        "routine_groups_version_positive",
+      ]),
+    );
+    expect(membershipConfig.primaryKeys[0]?.getName()).toBe("routine_group_memberships_pk");
+    expect(membershipConfig.foreignKeys.map((constraint) => constraint.getName())).toEqual(
+      expect.arrayContaining([
+        "routine_group_memberships_group_tenant_fk",
+        "routine_group_memberships_routine_tenant_fk",
+      ]),
+    );
+    expect(migration).toContain('CREATE TABLE "routine_groups"');
+    expect(migration).toContain('CREATE TABLE "routine_group_memberships"');
+    expect(migration).toContain(
+      'ALTER TYPE "public"."plan_mutation_kind" ADD VALUE \'add_routine\'',
+    );
+    expect(migration).toContain(
+      'CONSTRAINT "routine_group_memberships_group_tenant_fk" FOREIGN KEY ("workspace_id","group_id") REFERENCES "public"."routine_groups"("workspace_id","id") ON DELETE cascade',
+    );
+    expect(migration).toContain(
+      'CONSTRAINT "routine_group_memberships_routine_tenant_fk" FOREIGN KEY ("workspace_id","routine_id") REFERENCES "public"."routines"("workspace_id","id") ON DELETE cascade',
+    );
+  });
+
   it("models unified planner sources with tenant-scoped foreign keys", () => {
     const itemConfig = getTableConfig(dailyPlanItems);
     const activityConfig = getTableConfig(activityEvents);
@@ -801,6 +847,7 @@ describe("database schema", () => {
     expect(planMutationKind.enumValues).toEqual([
       "regenerate",
       "replace",
+      "add_routine",
       "feedback",
       "feedback_reset",
       "alternative_select",

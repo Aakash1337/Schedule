@@ -224,6 +224,7 @@ describe("PostgresUnitOfWork", () => {
 
     expect(repositories).toContain("workItemDependencies");
     expect(repositories).toContain("routineDurationInsightFeedback");
+    expect(repositories).toContain("routineGroups");
   });
 
   it("wires hosted reauthorization into one product transaction", async () => {

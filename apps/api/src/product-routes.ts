@@ -4,11 +4,13 @@ import { maximumDailyPlanFitUsageOutcomes } from "@schedule/application";
 import type {
   AddWorkItemDependencyCommand,
   AddWorkItemDependencyResult,
+  AddRoutineToPlanCommand,
   ApproveRoutineDurationInsightCommand,
   ApplyRoutinePlanningFeedbackCommand,
   ActivityHistoryCursor,
   ActivityHistoryPage,
   CreateRoutineCommand,
+  CreateRoutineGroupCommand,
   CreateScheduleBlockCommand,
   CreateWorkItemCommand,
   CreateWorkspaceCommand,
@@ -34,6 +36,8 @@ import type {
   ListRoutineActivityQuery,
   ListDailyPlanFitUsageOutcomesQuery,
   ListRoutinesQuery,
+  ListRoutineGroupsQuery,
+  ListRoutineGroupMembershipsQuery,
   ListNotificationIntentsQuery,
   ListNotificationDeliveriesQuery,
   NotificationDeliveryHistoryItem,
@@ -59,8 +63,11 @@ import type {
   ResetRoutineDurationInsightDismissalCommand,
   ResetRoutinePlanningFeedbackCommand,
   SetPlanItemLockCommand,
+  ReplaceRoutineGroupMembershipsCommand,
   SelectDailyPlanAlternativeCommand,
   UpdateRoutineCommand,
+  UpdateRoutineGroupCommand,
+  DeleteRoutineGroupCommand,
   UpdateNotificationRuleCommand,
   UpdateOneOffReminderCommand,
   CancelOneOffReminderCommand,
@@ -97,6 +104,7 @@ import {
   oneOffReminderId,
   planItemId,
   routineId,
+  routineGroupId,
   routineDurationInsightKeyPattern,
   scheduleBlockId,
   workItemId,
@@ -114,6 +122,8 @@ import {
   type OneOffReminder,
   type PlanningOutcomes,
   type Routine,
+  type RoutineGroup,
+  type RoutineGroupMembership,
   type RoutineDurationInsight,
   type RoutineDurationInsightFeedback,
   type ScheduleBlock,
@@ -147,6 +157,7 @@ export interface ProductServices {
   getWorkspace(query: GetWorkspaceQuery): Promise<Workspace>;
   listWorkspaces(query: ListWorkspacesQuery): Promise<WorkspacePage>;
   createRoutine(command: CreateRoutineCommand): Promise<Routine>;
+  createRoutineGroup(command: CreateRoutineGroupCommand): Promise<RoutineGroup>;
   createWorkItem(command: CreateWorkItemCommand): Promise<WorkItem>;
   getWorkItem(query: GetWorkItemQuery): Promise<WorkItem>;
   listWorkItems(query: ListWorkItemsQuery): Promise<WorkItemPage>;
@@ -182,6 +193,13 @@ export interface ProductServices {
   ): Promise<RoutineDurationInsightFeedback>;
   updateRoutine(command: UpdateRoutineCommand): Promise<Routine>;
   listRoutines(query: ListRoutinesQuery): Promise<readonly Routine[]>;
+  updateRoutineGroup(command: UpdateRoutineGroupCommand): Promise<RoutineGroup>;
+  deleteRoutineGroup(command: DeleteRoutineGroupCommand): Promise<void>;
+  listRoutineGroups(query: ListRoutineGroupsQuery): Promise<readonly RoutineGroup[]>;
+  listRoutineGroupMemberships(
+    query: ListRoutineGroupMembershipsQuery,
+  ): Promise<readonly RoutineGroupMembership[]>;
+  replaceRoutineGroupMemberships(command: ReplaceRoutineGroupMembershipsCommand): Promise<void>;
   listRoutineActivity(query: ListRoutineActivityQuery): Promise<ActivityHistoryPage>;
   recordActivityEvent(command: RecordActivityEventCommand): Promise<ActivityEvent>;
   recordPlanItemActivity(command: RecordPlanItemActivityCommand): Promise<PlanItemActivityResult>;
@@ -195,6 +213,7 @@ export interface ProductServices {
   ): Promise<DailyPlanAlternativesResult>;
   selectDailyPlanAlternative(command: SelectDailyPlanAlternativeCommand): Promise<CurrentDailyPlan>;
   replacePlanItem(command: ReplacePlanItemCommand): Promise<CurrentDailyPlan>;
+  addRoutineToPlan(command: AddRoutineToPlanCommand): Promise<CurrentDailyPlan>;
   applyRoutineFeedback(command: ApplyRoutinePlanningFeedbackCommand): Promise<CurrentDailyPlan>;
   resetRoutineFeedback(command: ResetRoutinePlanningFeedbackCommand): Promise<CurrentDailyPlan>;
   getDailyPlan(query: GetDailyPlanQuery): Promise<DailyPlan | null>;
@@ -343,6 +362,7 @@ const ianaTimeZone = z
 const workspaceParams = z.strictObject({ workspaceId: uuid });
 const naturalLanguageProposalParams = z.strictObject({ workspaceId: uuid, proposalId: uuid });
 const routineParams = z.strictObject({ workspaceId: uuid, routineId: uuid });
+const routineGroupParams = z.strictObject({ workspaceId: uuid, groupId: uuid });
 const workItemParams = z.strictObject({ workspaceId: uuid, workItemId: uuid });
 const workItemDependencyParams = z.strictObject({
   workspaceId: uuid,
@@ -595,6 +615,36 @@ const routineQuery = z.strictObject({
   status: z.enum(["active", "paused", "archived"]).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(100),
   offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
+const routineGroupBody = z.strictObject({
+  name: z.string().trim().min(1).max(80),
+  description: z.string().trim().max(500).nullable().default(null),
+});
+const routineGroupQuery = z.strictObject({
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
+const updateRoutineGroupBody = z
+  .strictObject({
+    expectedVersion: z.number().int().positive().max(2_147_483_647),
+    name: z.string().trim().min(1).max(80).optional(),
+    description: z.string().trim().max(500).nullable().optional(),
+  })
+  .refine((body) => body.name !== undefined || body.description !== undefined, {
+    message: "At least one group change is required.",
+  });
+const deleteRoutineGroupBody = z.strictObject({
+  expectedVersion: z.number().int().positive().max(2_147_483_647),
+});
+const routineGroupIdSelection = z
+  .array(uuid)
+  .max(100)
+  .refine((ids) => new Set(ids).size === ids.length, {
+    message: "Group identifiers must be unique.",
+  });
+const replaceRoutineGroupMembershipsBody = z.strictObject({
+  expectedGroupIds: routineGroupIdSelection,
+  groupIds: routineGroupIdSelection,
 });
 const routineSelectionPreferenceQuery = z.strictObject({
   timeZone: z.string().trim().min(1).max(80),
@@ -1467,6 +1517,74 @@ export async function registerProductRoutes(
     });
   });
 
+  app.post("/v1/workspaces/:workspaceId/routine-groups", async (request, reply) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const body = parseRequest(routineGroupBody, request.body);
+    const created = await services.createRoutineGroup({
+      workspaceId: workspaceId(params.workspaceId),
+      name: body.name,
+      description: body.description,
+    });
+    return reply.code(201).send(created);
+  });
+
+  app.get("/v1/workspaces/:workspaceId/routine-groups", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(routineGroupQuery, request.query);
+    const items = await services.listRoutineGroups({
+      workspaceId: workspaceId(params.workspaceId),
+      limit: query.limit,
+      offset: query.offset,
+    });
+    return { items, page: { limit: query.limit, offset: query.offset } };
+  });
+
+  app.patch("/v1/workspaces/:workspaceId/routine-groups/:groupId", async (request) => {
+    const params = parseRequest(routineGroupParams, request.params);
+    const body = parseRequest(updateRoutineGroupBody, request.body);
+    return services.updateRoutineGroup({
+      workspaceId: workspaceId(params.workspaceId),
+      groupId: routineGroupId(params.groupId),
+      expectedVersion: body.expectedVersion,
+      ...(body.name === undefined ? {} : { name: body.name }),
+      ...(body.description === undefined ? {} : { description: body.description }),
+    });
+  });
+
+  app.delete("/v1/workspaces/:workspaceId/routine-groups/:groupId", async (request, reply) => {
+    const params = parseRequest(routineGroupParams, request.params);
+    const body = parseRequest(deleteRoutineGroupBody, request.body);
+    await services.deleteRoutineGroup({
+      workspaceId: workspaceId(params.workspaceId),
+      groupId: routineGroupId(params.groupId),
+      expectedVersion: body.expectedVersion,
+    });
+    return reply.code(204).send();
+  });
+
+  app.get("/v1/workspaces/:workspaceId/routine-group-memberships", async (request) => {
+    const params = parseRequest(workspaceParams, request.params);
+    const query = parseRequest(routineGroupQuery, request.query);
+    const items = await services.listRoutineGroupMemberships({
+      workspaceId: workspaceId(params.workspaceId),
+      limit: query.limit,
+      offset: query.offset,
+    });
+    return { items, page: { limit: query.limit, offset: query.offset } };
+  });
+
+  app.put("/v1/workspaces/:workspaceId/routines/:routineId/groups", async (request) => {
+    const params = parseRequest(routineParams, request.params);
+    const body = parseRequest(replaceRoutineGroupMembershipsBody, request.body);
+    await services.replaceRoutineGroupMemberships({
+      workspaceId: workspaceId(params.workspaceId),
+      routineId: routineId(params.routineId),
+      expectedGroupIds: body.expectedGroupIds.map(routineGroupId),
+      groupIds: body.groupIds.map(routineGroupId),
+    });
+    return { groupIds: body.groupIds };
+  });
+
   app.post("/v1/workspaces/:workspaceId/routines", async (request, reply) => {
     const params = parseRequest(workspaceParams, request.params);
     const body = parseRequest(routineBody, request.body);
@@ -1896,6 +2014,26 @@ export async function registerProductRoutes(
       return { ...publicPlan(result.plan), headVersion: result.headVersion };
     });
   });
+
+  app.post(
+    "/v1/workspaces/:workspaceId/plans/:date/routines/:routineId/additions",
+    async (request) => {
+      const params = parseRequest(planRoutineParams, request.params);
+      const body = parseRequest(planMutationBody, request.body);
+      const key = parseRequest(idempotencyKey, request.headers["idempotency-key"]);
+      return runPlanningOperation(async () => {
+        const result = await services.addRoutineToPlan({
+          workspaceId: workspaceId(params.workspaceId),
+          expectedPlanId: dailyPlanId(body.expectedPlanId),
+          expectedHeadVersion: body.expectedHeadVersion,
+          routineId: routineId(params.routineId),
+          request: mutationPlanningRequest(params.workspaceId, params.date, body.request),
+          idempotencyKey: key,
+        });
+        return { ...publicPlan(result.plan), headVersion: result.headVersion };
+      });
+    },
+  );
 
   app.post(
     "/v1/workspaces/:workspaceId/plans/:date/items/:itemId/routine-feedback",

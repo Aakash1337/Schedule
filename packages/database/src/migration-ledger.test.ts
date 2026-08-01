@@ -97,17 +97,17 @@ async function withMetadataFixture(
 describe("migration ledger compatibility", () => {
   it("loads the committed manifest and pins every historical compatibility hash", async () => {
     const loaded = await loadMigrationManifest(migrationsFolder);
-    expect(loaded.entries).toHaveLength(45);
+    expect(loaded.entries).toHaveLength(46);
     expect(loaded.entries.at(-1)).toMatchObject({
-      tag: "0044_orphan_dead_letter_cutoff",
-      createdAt: 1_785_031_000_000,
-      sha256: "42a150793f46b1d750ebe34b6589fe4877ed43820f3f56c4d8fe9d9ef95127d6",
+      tag: "0045_mixed_guardsmen",
+      createdAt: 1_785_198_344_931,
+      sha256: "38de7dec6ea0c3a2eb3e685ec8b6ef295df340b3496f90efecc78a62729689b0",
       compatibleSha256: [],
     });
     expect(loaded.entries.at(-2)).toMatchObject({
-      tag: "0043_typical_layla_miller",
-      createdAt: 1_785_030_133_844,
-      sha256: "9317d3a781f5569d65caedfa3f328205ff8da86c7b2a6b4be3f90aa8debabc44",
+      tag: "0044_orphan_dead_letter_cutoff",
+      createdAt: 1_785_031_000_000,
+      sha256: "42a150793f46b1d750ebe34b6589fe4877ed43820f3f56c4d8fe9d9ef95127d6",
       compatibleSha256: [],
     });
     expect(

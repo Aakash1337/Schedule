@@ -23,7 +23,7 @@ import type { WorkItemId } from "./ids.js";
 import { isTerminalPlanItemActivityState } from "./plan-item-activity.js";
 
 export type PlanMutationKind =
-  "regenerate" | "replace" | "feedback" | "feedback_reset" | "alternative_select";
+  "regenerate" | "replace" | "add_routine" | "feedback" | "feedback_reset" | "alternative_select";
 
 export interface ReplanDailyPlanInput extends Pick<
   GenerateDailyPlanInput,
@@ -44,6 +44,8 @@ export interface ReplanDailyPlanInput extends Pick<
   readonly excludedWorkItemIds?: readonly WorkItemId[];
   /** Preferred typed exclusion API; legacy id arrays remain supported. */
   readonly excludedSources?: readonly PlanSource[];
+  /** Explicit user choice that must be added to the residual plan. */
+  readonly requiredRoutineId?: RoutineId;
   readonly kind: PlanMutationKind;
   /** Opaque key returned by previewReplanDailyPlanAlternatives. */
   readonly selectedAlternativeKey?: string;
@@ -178,6 +180,18 @@ function replanDailyPlanInternal(
   );
   const remainingMaximumMinutes = input.request.maximumMinutes - anchoredMinutes;
   const remainingMaximumTasks = input.request.maximumTaskCount - input.anchoredItems.length;
+  if (input.requiredRoutineId !== undefined) {
+    invariant(
+      !anchorSources.has(`routine:${input.requiredRoutineId}`),
+      "planning.required_routine_already_present",
+      "The selected routine is already retained in this plan.",
+    );
+    invariant(
+      remainingMaximumMinutes >= 1 && remainingMaximumTasks >= 1,
+      "planning.required_routine_does_not_fit",
+      "The selected routine does not fit the remaining time and task limits.",
+    );
+  }
   const residualWindows = input.request.availableWindows
     .map((window, originalIndex) => ({
       originalIndex,
@@ -234,6 +248,9 @@ function replanDailyPlanInternal(
       : { routineSelectionPreferenceFeedback: input.routineSelectionPreferenceFeedback }),
     ...(input.config === undefined ? {} : { config: input.config }),
     ...(input.generatedAt === undefined ? {} : { generatedAt: input.generatedAt }),
+    ...(input.requiredRoutineId === undefined
+      ? {}
+      : { requiredRoutineId: input.requiredRoutineId }),
   };
   const residual = (() => {
     if (input.selectedAlternativeKey !== undefined) {
@@ -289,6 +306,7 @@ function replanDailyPlanInternal(
     excludedRoutineIds: [...new Set(input.excludedRoutineIds ?? [])].sort(),
     excludedWorkItemIds: [...new Set(input.excludedWorkItemIds ?? [])].sort(),
     excludedSources: [...new Set((input.excludedSources ?? []).map(planSourceKey))].sort(),
+    requiredRoutineId: input.requiredRoutineId ?? null,
     workItemDependencies: canonicalWorkItemDependencies.map((dependency) => ({
       ...dependency,
       createdAt: dependency.createdAt.toISOString(),

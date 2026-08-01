@@ -3,10 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api";
-import { browserTimeZone } from "../date";
+import { browserTimeZone, localDateTimeToIso, todayKey } from "../date";
 import type {
+  CurrentDailyPlan,
   Routine,
   RoutineDurationInsight,
+  RoutineGroup,
   RoutineSelectionPreferenceState,
   Workspace,
 } from "../types";
@@ -14,15 +16,23 @@ import { RoutinesView } from "./RoutinesView";
 
 const apiMocks = vi.hoisted(() => ({
   approveRoutineDurationInsight: vi.fn(),
+  addRoutineToPlan: vi.fn(),
+  createRoutineGroup: vi.fn(),
   createRoutine: vi.fn(),
+  deleteRoutineGroup: vi.fn(),
   dismissRoutineDurationInsight: vi.fn(),
   getRoutine: vi.fn(),
   getRoutineDurationInsight: vi.fn(),
   getRoutineSelectionPreference: vi.fn(),
+  getCurrentPlan: vi.fn(),
+  listRoutineGroupMemberships: vi.fn(),
+  listRoutineGroups: vi.fn(),
   listRoutineActivity: vi.fn(),
   listRoutines: vi.fn(),
   recordRoutineSelectionPreference: vi.fn(),
   resetRoutineDurationInsightDismissal: vi.fn(),
+  replaceRoutineGroups: vi.fn(),
+  updateRoutineGroup: vi.fn(),
   updateRoutine: vi.fn(),
 }));
 
@@ -82,6 +92,68 @@ const routine: Routine = {
   updatedAt: "2026-07-12T09:00:00.000Z",
 };
 
+const languagesGroup: RoutineGroup = {
+  id: "group-languages",
+  workspaceId: workspace.id,
+  name: "Languages",
+  description: "Languages I am learning",
+  version: 1,
+  createdAt: "2026-07-12T09:00:00.000Z",
+  updatedAt: "2026-07-12T09:00:00.000Z",
+};
+
+const projectsGroup: RoutineGroup = {
+  ...languagesGroup,
+  id: "group-projects",
+  name: "Projects",
+  description: "Active projects",
+};
+
+function currentPlan(items: CurrentDailyPlan["items"] = []): CurrentDailyPlan {
+  const date = todayKey();
+  return {
+    id: "plan-today",
+    workspaceId: workspace.id,
+    date,
+    timeZone: browserTimeZone(),
+    items,
+    totalMinutes: items.reduce((total, item) => total + item.scheduledMinutes, 0),
+    fitness: 0,
+    algorithmVersion: "planner-v1",
+    configVersion: "weights-v4",
+    prngVersion: "xorshift32-v1",
+    seed: "today-original",
+    requestRevision: 1,
+    inputHash: "input-hash",
+    exclusions: [],
+    warnings: [],
+    generatedAt: "2026-07-27T12:00:00.000Z",
+    headVersion: 2,
+    request: {
+      workspaceId: workspace.id,
+      date,
+      timeZone: browserTimeZone(),
+      availableWindows: [
+        {
+          startsAt: localDateTimeToIso(date, "08:00"),
+          endsAt: localDateTimeToIso(date, "10:00"),
+        },
+      ],
+      targetMinutes: 60,
+      minimumMinutes: 0,
+      maximumMinutes: 120,
+      targetTaskCount: 2,
+      minimumTaskCount: 0,
+      maximumTaskCount: 4,
+      fitPreference: "balanced",
+      energy: null,
+      availableContexts: ["home"],
+      seed: "today-original",
+      requestRevision: 1,
+    },
+  };
+}
+
 function routineDurationInsight(
   overrides: Partial<RoutineDurationInsight> = {},
 ): RoutineDurationInsight {
@@ -135,6 +207,15 @@ beforeEach(() => {
     items: [routine],
     page: { limit: 200, offset: 0 },
   });
+  apiMocks.listRoutineGroups.mockResolvedValue({
+    items: [],
+    page: { limit: 200, offset: 0 },
+  });
+  apiMocks.listRoutineGroupMemberships.mockResolvedValue({
+    items: [],
+    page: { limit: 200, offset: 0 },
+  });
+  apiMocks.replaceRoutineGroups.mockResolvedValue({ groupIds: [] });
   apiMocks.getRoutineDurationInsight.mockResolvedValue(routineDurationInsight());
   apiMocks.getRoutineSelectionPreference.mockResolvedValue(routineSelectionPreference());
 });
@@ -1091,6 +1172,312 @@ describe("routine pool", () => {
         name: `Choose ${hostileTitle} more often in future plans`,
       }),
     ).toBeInTheDocument();
+  });
+
+  it("filters the routine pool by overarching group and saves multi-group membership", async () => {
+    const user = userEvent.setup();
+    apiMocks.listRoutineGroups.mockResolvedValue({
+      items: [languagesGroup, projectsGroup],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.listRoutineGroupMemberships.mockResolvedValue({
+      items: [
+        {
+          workspaceId: workspace.id,
+          groupId: languagesGroup.id,
+          routineId: routine.id,
+          createdAt: "2026-07-12T09:00:00.000Z",
+        },
+      ],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.updateRoutine.mockResolvedValue({ ...routine, version: 3 });
+    apiMocks.replaceRoutineGroups.mockResolvedValue({
+      groupIds: [languagesGroup.id, projectsGroup.id],
+    });
+
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+
+    const groupFilter = await screen.findByRole("combobox", { name: "Group" });
+    await waitFor(() => expect(groupFilter).toBeEnabled());
+    await user.selectOptions(groupFilter, projectsGroup.id);
+    expect(await screen.findByText("No active routines in Projects")).toBeInTheDocument();
+    expect(screen.queryByText(routine.title)).not.toBeInTheDocument();
+
+    await user.selectOptions(groupFilter, languagesGroup.id);
+    const routineButton = (await screen.findByText(routine.title)).closest("button");
+    if (routineButton === null) throw new Error("Routine selection button was not rendered.");
+    await user.click(routineButton);
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+
+    expect(screen.getByRole("checkbox", { name: languagesGroup.name })).toBeChecked();
+    const projects = screen.getByRole("checkbox", { name: projectsGroup.name });
+    expect(projects).not.toBeChecked();
+    await user.click(projects);
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() =>
+      expect(apiMocks.replaceRoutineGroups).toHaveBeenCalledWith(
+        workspace.id,
+        routine.id,
+        [languagesGroup.id],
+        [languagesGroup.id, projectsGroup.id],
+      ),
+    );
+  });
+
+  it("creates, renames, and deliberately deletes an overarching group", async () => {
+    const user = userEvent.setup();
+    const renamed = { ...languagesGroup, name: "Language learning", version: 2 };
+    apiMocks.createRoutineGroup.mockResolvedValue(languagesGroup);
+    apiMocks.updateRoutineGroup.mockResolvedValue(renamed);
+    apiMocks.deleteRoutineGroup.mockResolvedValue(undefined);
+
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Manage groups" }));
+    await user.type(screen.getByRole("textbox", { name: "New group name" }), "Languages");
+    await user.type(
+      screen.getByRole("textbox", { name: /Description/ }),
+      "Languages I am learning",
+    );
+    await user.click(screen.getByRole("button", { name: "Create group" }));
+
+    expect((await screen.findAllByText("Languages")).length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const name = screen.getByRole("textbox", { name: "Group name" });
+    await user.clear(name);
+    await user.type(name, "Language learning");
+    await user.click(screen.getByRole("button", { name: "Save group" }));
+
+    expect((await screen.findAllByText("Language learning")).length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: "Delete Language learning" }));
+    expect(screen.getByText("Delete this group?")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Delete group" }));
+
+    await waitFor(() =>
+      expect(apiMocks.deleteRoutineGroup).toHaveBeenCalledWith(workspace.id, languagesGroup.id, 2),
+    );
+    expect(screen.queryAllByText("Language learning")).toHaveLength(0);
+  });
+
+  it("does not let a late group load overwrite a newly created group", async () => {
+    const user = userEvent.setup();
+    const groupRequest = deferred<{
+      items: readonly RoutineGroup[];
+      page: { limit: number; offset: number };
+    }>();
+    const membershipRequest = deferred<{
+      items: readonly [];
+      page: { limit: number; offset: number };
+    }>();
+    apiMocks.listRoutineGroups.mockReturnValue(groupRequest.promise);
+    apiMocks.listRoutineGroupMemberships.mockReturnValue(membershipRequest.promise);
+    apiMocks.createRoutineGroup.mockResolvedValue(languagesGroup);
+
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Manage groups" }));
+    await user.type(screen.getByRole("textbox", { name: "New group name" }), "Languages");
+    await user.click(screen.getByRole("button", { name: "Create group" }));
+    expect((await screen.findAllByText(languagesGroup.name)).length).toBeGreaterThan(0);
+
+    await act(async () => {
+      groupRequest.resolve({ items: [], page: { limit: 200, offset: 0 } });
+      membershipRequest.resolve({ items: [], page: { limit: 200, offset: 0 } });
+      await Promise.all([groupRequest.promise, membershipRequest.promise]);
+    });
+
+    expect(screen.getAllByText(languagesGroup.name).length).toBeGreaterThan(0);
+  });
+
+  it("ignores a group save that completes after the workspace changes", async () => {
+    const user = userEvent.setup();
+    const saveRequest = deferred<RoutineGroup>();
+    const secondWorkspace: Workspace = { ...workspace, id: "workspace-2", name: "Work" };
+    apiMocks.createRoutineGroup.mockReturnValue(saveRequest.promise);
+
+    const view = render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Manage groups" }));
+    await user.type(screen.getByRole("textbox", { name: "New group name" }), "Languages");
+    await user.click(screen.getByRole("button", { name: "Create group" }));
+    await waitFor(() =>
+      expect(apiMocks.createRoutineGroup).toHaveBeenCalledWith(
+        workspace.id,
+        expect.objectContaining({ name: "Languages" }),
+      ),
+    );
+
+    view.rerender(<RoutinesView workspace={secondWorkspace} onNavigate={vi.fn()} />);
+    await act(async () => {
+      saveRequest.resolve(languagesGroup);
+      await saveRequest.promise;
+    });
+
+    expect(screen.queryByText(languagesGroup.name)).not.toBeInTheDocument();
+  });
+
+  it("reloads a stale membership selection before allowing a retry", async () => {
+    const user = userEvent.setup();
+    const languagesMembership = {
+      workspaceId: workspace.id,
+      groupId: languagesGroup.id,
+      routineId: routine.id,
+      createdAt: "2026-07-12T09:00:00.000Z",
+    };
+    const projectsMembership = { ...languagesMembership, groupId: projectsGroup.id };
+    apiMocks.listRoutineGroups.mockResolvedValue({
+      items: [languagesGroup, projectsGroup],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.listRoutineGroupMemberships
+      .mockResolvedValueOnce({
+        items: [languagesMembership],
+        page: { limit: 200, offset: 0 },
+      })
+      .mockResolvedValue({
+        items: [projectsMembership],
+        page: { limit: 200, offset: 0 },
+      });
+    apiMocks.updateRoutine.mockResolvedValue({ ...routine, version: 3 });
+    apiMocks.replaceRoutineGroups
+      .mockRejectedValueOnce(
+        new ApiError(409, "routine_group.membership_conflict", "Changed elsewhere.", null),
+      )
+      .mockResolvedValueOnce({ groupIds: [projectsGroup.id, languagesGroup.id] });
+
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    const routineButton = (await screen.findByText(routine.title)).closest("button");
+    if (routineButton === null) throw new Error("Routine selection button was not rendered.");
+    await user.click(routineButton);
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.click(screen.getByRole("checkbox", { name: projectsGroup.name }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(
+      await screen.findByText(
+        /its groups changed elsewhere\. Current group selections were reloaded/,
+      ),
+    ).toBeInTheDocument();
+    const languages = screen.getByRole("checkbox", { name: languagesGroup.name });
+    expect(languages).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: projectsGroup.name })).toBeChecked();
+
+    await user.click(languages);
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(apiMocks.replaceRoutineGroups).toHaveBeenCalledTimes(2));
+    expect(apiMocks.replaceRoutineGroups).toHaveBeenNthCalledWith(
+      2,
+      workspace.id,
+      routine.id,
+      [projectsGroup.id],
+      [projectsGroup.id, languagesGroup.id],
+    );
+  });
+
+  it("keeps pending group choices when a conflict reload fails", async () => {
+    const user = userEvent.setup();
+    const languagesMembership = {
+      workspaceId: workspace.id,
+      groupId: languagesGroup.id,
+      routineId: routine.id,
+      createdAt: "2026-07-12T09:00:00.000Z",
+    };
+    apiMocks.listRoutineGroups
+      .mockResolvedValueOnce({
+        items: [languagesGroup, projectsGroup],
+        page: { limit: 200, offset: 0 },
+      })
+      .mockRejectedValueOnce(new Error("offline"));
+    apiMocks.listRoutineGroupMemberships.mockResolvedValue({
+      items: [languagesMembership],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.updateRoutine.mockResolvedValue({ ...routine, version: 3 });
+    apiMocks.replaceRoutineGroups.mockRejectedValueOnce(
+      new ApiError(409, "routine_group.membership_conflict", "Changed elsewhere.", null),
+    );
+
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    const routineButton = (await screen.findByText(routine.title)).closest("button");
+    if (routineButton === null) throw new Error("Routine selection button was not rendered.");
+    await user.click(routineButton);
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.click(screen.getByRole("checkbox", { name: projectsGroup.name }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(
+      await screen.findByText(/current groups could not be reloaded\. Close and reopen the editor/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: languagesGroup.name })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: projectsGroup.name })).toBeChecked();
+  });
+
+  it("adds a selected group routine to Today using the current plan settings", async () => {
+    const user = userEvent.setup();
+    const plan = currentPlan();
+    const addedPlan = currentPlan([
+      {
+        id: "plan-item-spanish",
+        sourceType: "routine",
+        routineId: routine.id,
+        workItemId: null,
+        title: routine.title,
+        position: 0,
+        windowIndex: 0,
+        scheduledMinutes: 30,
+        partialSession: false,
+        score: 100,
+        scoreComponents: {},
+        reasons: ["explicitly selected"],
+        locked: false,
+        activityState: "pending",
+        lastActivityEventId: null,
+        activityUpdatedAt: null,
+      },
+    ]);
+    apiMocks.listRoutineGroups.mockResolvedValue({
+      items: [languagesGroup],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.listRoutineGroupMemberships.mockResolvedValue({
+      items: [
+        {
+          workspaceId: workspace.id,
+          groupId: languagesGroup.id,
+          routineId: routine.id,
+          createdAt: "2026-07-12T09:00:00.000Z",
+        },
+      ],
+      page: { limit: 200, offset: 0 },
+    });
+    apiMocks.getCurrentPlan.mockResolvedValue(plan);
+    apiMocks.addRoutineToPlan.mockResolvedValue({ ...addedPlan, headVersion: 3 });
+
+    render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    const groupFilter = await screen.findByRole("combobox", { name: "Group" });
+    await waitFor(() => expect(groupFilter).toBeEnabled());
+    await user.selectOptions(groupFilter, languagesGroup.id);
+    await user.click(await screen.findByRole("button", { name: `Add ${routine.title} to Today` }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      `${routine.title} was added to Today.`,
+    );
+    expect(apiMocks.getCurrentPlan).toHaveBeenCalledWith(workspace.id, plan.date);
+    expect(apiMocks.addRoutineToPlan).toHaveBeenCalledWith(
+      workspace.id,
+      plan.date,
+      routine.id,
+      expect.objectContaining({
+        expectedPlanId: plan.id,
+        expectedHeadVersion: plan.headVersion,
+        request: expect.objectContaining({
+          timeZone: plan.timeZone,
+          targetMinutes: plan.request?.targetMinutes,
+          targetTaskCount: plan.request?.targetTaskCount,
+          seed: expect.stringContaining(`today:${plan.date}:revision:2:`),
+        }),
+      }),
+      expect.any(String),
+    );
   });
 
   it("supports arrow-key navigation across status tabs", async () => {

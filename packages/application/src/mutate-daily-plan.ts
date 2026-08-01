@@ -37,6 +37,9 @@ export type RegenerateDailyPlanCommand = BaseMutationCommand;
 export interface ReplacePlanItemCommand extends BaseMutationCommand {
   readonly targetItemId: PlanItemId;
 }
+export interface AddRoutineToPlanCommand extends BaseMutationCommand {
+  readonly routineId: RoutineId;
+}
 export interface ApplyRoutinePlanningFeedbackCommand extends BaseMutationCommand {
   readonly targetItemId: PlanItemId;
   readonly kind: RoutinePlanningFeedbackSuppressionKind;
@@ -163,6 +166,10 @@ export class MutateDailyPlan {
     return this.execute("replace", command, { targetItemId: command.targetItemId });
   }
 
+  addRoutine(command: AddRoutineToPlanCommand): Promise<CurrentDailyPlan> {
+    return this.execute("add_routine", command, { routineId: command.routineId });
+  }
+
   applyRoutineFeedback(command: ApplyRoutinePlanningFeedbackCommand): Promise<CurrentDailyPlan> {
     return this.execute("feedback", command, {
       targetItemId: command.targetItemId,
@@ -237,6 +244,26 @@ export class MutateDailyPlan {
         ) {
           throw new DomainError("planning.source_mismatch", "Mutation request scope is invalid.");
         }
+        if (
+          kind === "add_routine" &&
+          details.routineId !== undefined &&
+          current.plan.items.some(
+            (item) => item.sourceType === "routine" && item.routineId === details.routineId,
+          )
+        ) {
+          await dailyPlans.insertMutation({
+            workspaceId: command.workspaceId,
+            date: command.request.date,
+            idempotencyKey,
+            payloadHash: hash,
+            kind,
+            sourcePlanId: current.plan.id,
+            resultPlanId: current.plan.id,
+            resultHeadVersion: current.headVersion,
+            createdAt: now,
+          });
+          return current;
+        }
         let anchors = current.plan.items.filter(
           (item) => item.locked && !isTerminalPlanItemActivityState(item.activityState),
         );
@@ -244,7 +271,19 @@ export class MutateDailyPlan {
         let excludedWorkItemIds: NonNullable<DailyPlan["items"][number]["workItemId"]>[] = [];
         let feedbackRoutineId: RoutineId | null = null;
         let feedbackSourceItemId: PlanItemId | null = null;
-        if (kind === "replace") {
+        let requiredRoutineId: RoutineId | undefined;
+        if (kind === "add_routine") {
+          requiredRoutineId = details.routineId;
+          if (requiredRoutineId === undefined) {
+            throw new DomainError(
+              "planning.required_routine_not_found",
+              "A routine is required for this plan command.",
+            );
+          }
+          anchors = current.plan.items.filter(
+            (item) => !isTerminalPlanItemActivityState(item.activityState),
+          );
+        } else if (kind === "replace") {
           const target = current.plan.items.find((item) => item.id === details.targetItemId);
           if (target === undefined) {
             throw new DomainError("planning.item_not_found", "The plan item does not exist.");
@@ -352,6 +391,12 @@ export class MutateDailyPlan {
           planningWorkItemGraph.workItems.length,
         );
         assertPlanningWorkItemDependencyPoolSize(planningWorkItemGraph.dependencies.length);
+        if (
+          requiredRoutineId !== undefined &&
+          !routineCandidates.some((candidate) => candidate.id === requiredRoutineId)
+        ) {
+          throw new DomainError("routine.not_found", "The routine does not exist.");
+        }
         let routineFeedback = priorFeedback;
         if (feedbackRoutineId !== null) {
           const routine = routineCandidates.find((candidate) => candidate.id === feedbackRoutineId);
@@ -401,6 +446,7 @@ export class MutateDailyPlan {
           anchoredItems: anchors,
           excludedRoutineIds,
           excludedWorkItemIds,
+          ...(requiredRoutineId === undefined ? {} : { requiredRoutineId }),
           kind,
           generatedAt: now,
         });

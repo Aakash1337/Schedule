@@ -126,7 +126,21 @@ inferred or model-generated learning.
 
 ## 4. Organization and tags
 
-The application supports free-form tags, but algorithmically meaningful properties use structured dimensions:
+Each workspace can contain up to 100 user-defined **overarching groups**, such as **Languages** or
+**Projects**. A routine may belong to any number of groups, so **Practice Spanish** and **Study
+Japanese** can both live under Languages while one routine may also appear in another collection.
+Group names are case-insensitively unique within a workspace. Group membership is independent from
+the routine's versioned scheduling policy: organizing a routine does not create a false routine edit,
+and deleting a group deletes only its memberships, never the routines it contained.
+
+Groups are organizational and do not silently affect planner eligibility or score. From a selected
+group, the user can explicitly add one active routine to the current Today plan. That mutation keeps
+all current non-terminal items, uses the plan's existing time/task settings, and requires the selected
+routine to satisfy ordinary cadence, context, and capacity rules. It is optimistic, atomic, and
+idempotent; a routine already represented in Today is a successful no-op.
+
+The application also supports custom category, context, and free-form tag values, while
+algorithmically meaningful properties use structured dimensions:
 
 | Dimension  | Examples                            | Planning purpose              |
 | ---------- | ----------------------------------- | ----------------------------- |
@@ -138,7 +152,8 @@ The application supports free-form tags, but algorithmically meaningful properti
 | Category   | health, work, learning, maintenance | Maintain balance              |
 | Preference | enjoyable, neutral, unpleasant      | Avoid fatigue and reward bias |
 
-Custom categories and values may be added later. Display labels must remain distinct from behavioral rules so renaming a tag does not silently change the algorithm.
+Display labels and overarching groups remain distinct from behavioral rules so renaming or moving a
+group does not silently change the algorithm.
 
 ## 5. Cadence policy
 
@@ -659,6 +674,9 @@ Success is not simply "more tasks completed." Useful measures include realistic 
   stale-calendar rejection, and the submitted windows preserved as deterministic planner input
 - Implemented: deterministic, read-only comparison of up to three distinct alternatives and an
   explicit, optimistic, idempotent selection that preserves locked nonterminal items
+- Implemented: workspace-defined, many-to-many routine groups with filtering, versioned group
+  management, conflict-safe atomic membership replacement, and explicit group-to-Today routine
+  selection
 - Implemented: "why selected" details on current and alternative items
 
 ### Phase 3 — Transparent adaptation

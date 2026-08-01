@@ -24,6 +24,8 @@ import type {
   PlanSettings,
   PlanningOutcomes,
   Routine,
+  RoutineGroup,
+  RoutineGroupMembership,
   RoutineDurationInsight,
   RoutineDurationInsightFeedback,
   RoutinePlanningFeedbackSuppressionKind,
@@ -435,6 +437,57 @@ export const api = {
 
   listRoutines: (workspaceId: string, status?: RoutineStatus, signal?: AbortSignal) =>
     listAllOffsetPages<Routine>(workspacePath(workspaceId, "/routines"), { status }, signal),
+
+  listRoutineGroups: (workspaceId: string, signal?: AbortSignal) =>
+    listAllOffsetPages<RoutineGroup>(workspacePath(workspaceId, "/routine-groups"), {}, signal),
+
+  listRoutineGroupMemberships: (workspaceId: string, signal?: AbortSignal) =>
+    listAllOffsetPagesBy<RoutineGroupMembership>(
+      workspacePath(workspaceId, "/routine-group-memberships"),
+      {},
+      (membership) => `${membership.groupId}:${membership.routineId}`,
+      signal,
+    ),
+
+  createRoutineGroup: (
+    workspaceId: string,
+    input: { readonly name: string; readonly description: string | null },
+  ) =>
+    request<RoutineGroup>(workspacePath(workspaceId, "/routine-groups"), {
+      method: "POST",
+      json: input,
+    }),
+
+  updateRoutineGroup: (
+    workspaceId: string,
+    groupId: string,
+    input: {
+      readonly expectedVersion: number;
+      readonly name?: string;
+      readonly description?: string | null;
+    },
+  ) =>
+    request<RoutineGroup>(
+      workspacePath(workspaceId, `/routine-groups/${encodeURIComponent(groupId)}`),
+      { method: "PATCH", json: input },
+    ),
+
+  deleteRoutineGroup: (workspaceId: string, groupId: string, expectedVersion: number) =>
+    request<void>(workspacePath(workspaceId, `/routine-groups/${encodeURIComponent(groupId)}`), {
+      method: "DELETE",
+      json: { expectedVersion },
+    }),
+
+  replaceRoutineGroups: (
+    workspaceId: string,
+    routineId: string,
+    expectedGroupIds: readonly string[],
+    groupIds: readonly string[],
+  ) =>
+    request<{ readonly groupIds: readonly string[] }>(
+      workspacePath(workspaceId, `/routines/${encodeURIComponent(routineId)}/groups`),
+      { method: "PUT", json: { expectedGroupIds, groupIds } },
+    ),
 
   getRoutine: (workspaceId: string, routineId: string, signal?: AbortSignal) =>
     request<Routine>(
@@ -955,6 +1008,21 @@ export const api = {
   ) =>
     request<CurrentDailyPlan>(
       workspacePath(workspaceId, `/plans/${date}/items/${encodeURIComponent(itemId)}/replacement`),
+      { method: "POST", json: input, idempotencyKey },
+    ),
+
+  addRoutineToPlan: (
+    workspaceId: string,
+    date: string,
+    routineId: string,
+    input: { expectedPlanId: string; expectedHeadVersion: number; request: PlanSettings },
+    idempotencyKey: string,
+  ) =>
+    request<CurrentDailyPlan>(
+      workspacePath(
+        workspaceId,
+        `/plans/${date}/routines/${encodeURIComponent(routineId)}/additions`,
+      ),
       { method: "POST", json: input, idempotencyKey },
     ),
 

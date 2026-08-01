@@ -1090,3 +1090,80 @@ describe("deterministic daily planning", () => {
     );
   });
 });
+
+describe("required routine selection", () => {
+  it("includes an eligible explicit choice even when a higher-scoring routine would win", () => {
+    const preferred = routine("preferred", { priority: "critical" });
+    const selected = routine("selected", { priority: "low" });
+    const plan = generateDailyPlan({
+      request: request("required-choice", {
+        targetMinutes: 30,
+        maximumMinutes: 30,
+        targetTaskCount: 1,
+        maximumTaskCount: 1,
+      }),
+      routines: [preferred, selected],
+      requiredRoutineId: selected.id,
+      events: [],
+      generatedAt,
+    });
+
+    expect(plan.items).toHaveLength(1);
+    expect(plan.items[0]?.routineId).toBe(selected.id);
+    expect(plan.inputSnapshot).toMatchObject({ requiredRoutineId: selected.id });
+  });
+
+  it("fails clearly when an explicit choice is ineligible or cannot fit", () => {
+    const paused = routine("paused-required", { status: "paused" });
+    expect(() =>
+      generateDailyPlan({
+        request: request("required-paused", {
+          targetMinutes: 30,
+          maximumMinutes: 30,
+          targetTaskCount: 1,
+          maximumTaskCount: 1,
+        }),
+        routines: [paused],
+        requiredRoutineId: paused.id,
+        events: [],
+        generatedAt,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "planning.required_routine_ineligible" }));
+
+    const long = routine("long-required", { expectedMinutes: 90 });
+    expect(() =>
+      generateDailyPlan({
+        request: request("required-long", {
+          availableWindows: [
+            {
+              startsAt: new Date("2026-07-15T08:00:00.000Z"),
+              endsAt: new Date("2026-07-15T08:30:00.000Z"),
+            },
+          ],
+          targetMinutes: 30,
+          maximumMinutes: 30,
+          targetTaskCount: 1,
+          maximumTaskCount: 1,
+        }),
+        routines: [long],
+        requiredRoutineId: long.id,
+        events: [],
+        generatedAt,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "planning.required_routine_ineligible" }));
+  });
+
+  it("rejects a missing required routine identifier", () => {
+    const first = routine("required-first");
+    const second = routine("required-second");
+    const input = {
+      request: request("required-invalid"),
+      routines: [first, second],
+      events: [],
+      generatedAt,
+    };
+    expect(() =>
+      generateDailyPlan({ ...input, requiredRoutineId: routineId("missing") }),
+    ).toThrowError(expect.objectContaining({ code: "planning.required_routine_not_found" }));
+  });
+});

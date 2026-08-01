@@ -56,6 +56,7 @@ export * from "./get-routine-selection-preference-state.js";
 export * from "./get-scheduling-advice.js";
 export * from "./list-routine-activity.js";
 export * from "./list-routines.js";
+export * from "./routine-group-management.js";
 export * from "./mutate-daily-plan.js";
 export * from "./planning-candidates.js";
 export * from "./ports.js";

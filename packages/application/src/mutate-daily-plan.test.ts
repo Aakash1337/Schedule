@@ -99,6 +99,7 @@ describe("MutateDailyPlan", () => {
         insert: async (_routine: Routine) => undefined,
         save: async () => undefined,
       },
+      routineGroups: {} as TransactionContext["routineGroups"],
       activityEvents: {
         lockRoutineActivity: async () => undefined,
         findById: async () => null,
@@ -238,6 +239,75 @@ describe("MutateDailyPlan", () => {
     expect(retry).toEqual(first);
     expect(test.unitOfWorkOptions()).toBeUndefined();
     expect(test.invalidatedTargets).toEqual([`daily_plan:${test.source.id}`]);
+  });
+
+  it("adds an explicitly selected routine without displacing current nonterminal items", async () => {
+    const test = harness();
+    const expandedRequest = createDailyPlanningRequest({
+      workspaceId: workspace,
+      date: "2026-07-15",
+      timeZone: "UTC",
+      availableWindows: [
+        {
+          startsAt: new Date("2026-07-15T08:00:00.000Z"),
+          endsAt: new Date("2026-07-15T09:30:00.000Z"),
+        },
+      ],
+      targetMinutes: 90,
+      maximumMinutes: 90,
+      targetTaskCount: 3,
+      maximumTaskCount: 3,
+      seed: "manual-add",
+    });
+    const command = {
+      workspaceId: workspace,
+      expectedPlanId: test.source.id,
+      expectedHeadVersion: 2,
+      routineId: routines[2]!.id,
+      request: expandedRequest,
+      idempotencyKey: "add-alternative",
+    };
+
+    const first = await test.useCase.addRoutine(command);
+    const replay = await test.useCase.addRoutine(command);
+
+    expect(first.plan.items.map((item) => item.routineId)).toEqual(
+      expect.arrayContaining(routines.map((candidate) => candidate.id)),
+    );
+    expect(first.plan.items).toHaveLength(3);
+    expect(replay).toEqual(first);
+    expect(first.headVersion).toBe(3);
+    expect(test.mutations()).toHaveLength(1);
+    expect(test.mutations()[0]).toMatchObject({
+      kind: "add_routine",
+      sourcePlanId: test.source.id,
+      resultPlanId: first.plan.id,
+      resultHeadVersion: 3,
+    });
+    expect(test.invalidatedTargets).toEqual([`daily_plan:${test.source.id}`]);
+  });
+
+  it("records an idempotent no-op when the selected routine is already represented", async () => {
+    const test = harness();
+    const represented = test.source.items[0]!.routineId!;
+    const result = await test.useCase.addRoutine({
+      workspaceId: workspace,
+      expectedPlanId: test.source.id,
+      expectedHeadVersion: 2,
+      routineId: represented,
+      request,
+      idempotencyKey: "add-existing",
+    });
+
+    expect(result).toEqual({ plan: test.source, headVersion: 2 });
+    expect(test.mutations()).toHaveLength(1);
+    expect(test.mutations()[0]).toMatchObject({
+      kind: "add_routine",
+      sourcePlanId: test.source.id,
+      resultPlanId: test.source.id,
+      resultHeadVersion: 2,
+    });
+    expect(test.invalidatedTargets).toEqual([]);
   });
 
   it("loads dependencies during regeneration and excludes an unmet unlocked dependent", async () => {

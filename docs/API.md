@@ -173,6 +173,12 @@ hosted-account protocol.
 | `GET`    | `/v1/workspaces/{workspaceId}/routines?status=active&limit=100&offset=0`                       | List a bounded routine page (`200`)                       |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Retrieve one routine (`200` or `404`)                     |
 | `PATCH`  | `/v1/workspaces/{workspaceId}/routines/{routineId}`                                            | Version-checked partial update (`200` or `409`)           |
+| `POST`   | `/v1/workspaces/{workspaceId}/routine-groups`                                                  | Create an overarching routine group (`201`)               |
+| `GET`    | `/v1/workspaces/{workspaceId}/routine-groups?limit=100&offset=0`                               | List a bounded group page                                 |
+| `PATCH`  | `/v1/workspaces/{workspaceId}/routine-groups/{groupId}`                                        | Version-checked group update                              |
+| `DELETE` | `/v1/workspaces/{workspaceId}/routine-groups/{groupId}`                                        | Delete a group but retain its routines (`204`)            |
+| `GET`    | `/v1/workspaces/{workspaceId}/routine-group-memberships?limit=100&offset=0`                    | List bounded many-to-many memberships                     |
+| `PUT`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/groups`                                     | Compare-and-swap all group memberships (`200` or `409`)   |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/selection-preference?timeZone={iana}`       | Read explicit future-plan preference state                |
 | `POST`   | `/v1/workspaces/{workspaceId}/routines/{routineId}/selection-preference`                       | Append a versioned future-plan preference                 |
 | `GET`    | `/v1/workspaces/{workspaceId}/routines/{routineId}/duration-insight`                           | Derive a read-only insight (`200` or `404`)               |
@@ -197,6 +203,7 @@ hosted-account protocol.
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/alternative-previews`                         | Preview up to three distinct plans without writing        |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/alternative-selections`                       | Select one still-current alternative idempotently         |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/replacement`                   | Replace one unlocked item                                 |
+| `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/routines/{routineId}/additions`               | Add one eligible routine to Today                         |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/items/{itemId}/routine-feedback`              | Suppress one pending routine and replan                   |
 | `POST`   | `/v1/workspaces/{workspaceId}/plans/{YYYY-MM-DD}/routines/{routineId}/routine-feedback-resets` | Reset routine feedback and replan                         |
 
@@ -340,6 +347,27 @@ imply that a notification was sent. Source, policy, or target invalidation also 
 dead-letter command, preventing redrive of an obsolete snapshot.
 
 Routine updates require `expectedVersion`. Scalar fields are partial; if `tags`, `duration`, or `cadence` is supplied, that nested object is a complete replacement. A real change increments the routine version once. A semantic no-op returns the current routine without writing or incrementing its version. A stale version returns `409 routine.version_conflict`. The update takes the same per-routine advisory lock used by activity and duration-insight commands, then reloads and saves under read committed so a manual edit cannot race an approval, dismissal, reset, or evidence append. This generic `PATCH` is still the manual editing path; it does not assert that a duration-insight suggestion is current.
+
+Routine groups are workspace-owned organizational resources. Names are normalized for
+case-insensitive uniqueness, descriptions are optional, and a workspace is bounded to 100 groups.
+Group updates and deletes require `expectedVersion`; a stale version or duplicate normalized name
+returns `409`. Membership is many-to-many. `PUT .../routines/{routineId}/groups` accepts both
+`expectedGroupIds` and the desired `groupIds`, validates both as bounded unique sets, and replaces the
+complete set in one transaction only when the current set still matches the expected set. A stale
+editor receives
+`409 routine_group.membership_conflict` instead of silently overwriting another edit. Membership
+changes do not increment the routine version. Deleting a group cascades only its membership rows and
+does not delete or edit any routine.
+
+`POST .../plans/{date}/routines/{routineId}/additions` requires the current plan ID, positive head
+version, complete reusable plan settings, and an `Idempotency-Key`. It takes the day lock, preserves
+every current non-terminal item as an anchor, and requests the selected routine as the one required
+residual candidate. The routine must still be active and satisfy its cadence, date, context, duration,
+time-window, minute, and task-count constraints; the command never bypasses ordinary eligibility.
+Failure to place it rejects the whole mutation without creating a revision. If Today already contains
+that routine, the command records and replays a successful no-op receipt. Otherwise it creates one
+immutable next revision and advances the head once. Stale plan/head identity and semantic key reuse
+return `409`.
 
 Routine selection preference is a separate append-only stream. `GET .../selection-preference`
 requires an explicit IANA `timeZone` and returns only `routineId`, `feedbackVersion`,

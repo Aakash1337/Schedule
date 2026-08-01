@@ -326,6 +326,72 @@
       ]
     },
     {
+      "id": "routine-group-organization",
+      "status": "implemented",
+      "risk": "high",
+      "contract": { "file": "docs/PRODUCT.md", "anchor": "## 4. Organization and tags" },
+      "evidence": [
+        {
+          "level": "unit",
+          "file": "packages/domain/src/routine-group.test.ts",
+          "command": "unit",
+          "anchors": [
+            "canonicalizes display names and produces a case-insensitive uniqueness key",
+            "treats blank descriptions as absent and advances versions only for real changes"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/routine-group-management.test.ts",
+          "command": "unit",
+          "anchors": [
+            "supports versioned group CRUD and relationship-only deletion",
+            "uses conflict-safe replacement semantics and validates batch selections"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "packages/application/src/mutate-daily-plan.test.ts",
+          "command": "unit",
+          "anchors": [
+            "adds an explicitly selected routine without displacing current nonterminal items",
+            "records an idempotent no-op when the selected routine is already represented"
+          ]
+        },
+        {
+          "level": "unit",
+          "file": "apps/api/src/product-routes.test.ts",
+          "command": "unit",
+          "anchors": [
+            "manages routine groups, memberships, and deletion without deleting routines",
+            "adds one selected routine to Today through an idempotent plan mutation"
+          ]
+        },
+        {
+          "level": "component",
+          "file": "apps/web/src/views/RoutinesView.test.tsx",
+          "command": "unit",
+          "anchors": [
+            "filters the routine pool by overarching group and saves multi-group membership",
+            "creates, renames, and deliberately deletes an overarching group",
+            "adds a selected group routine to Today using the current plan settings"
+          ]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-product-api.ts",
+          "command": "product-api",
+          "anchors": ["routine-groups-and-add-to-today-postgres-api verification passed"]
+        },
+        {
+          "level": "integration",
+          "file": "scripts/verify-portable-migration.ts",
+          "command": "portable-migration",
+          "anchors": ["portable-routine-groups-and-memberships"]
+        }
+      ]
+    },
+    {
       "id": "work-board-management",
       "status": "implemented",
       "risk": "high",

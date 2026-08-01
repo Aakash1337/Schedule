@@ -50,6 +50,13 @@ without writing anything. Choosing one is explicit, optimistic, and idempotent: 
 the opaque candidate under the day lock, preserves locked nonterminal work, rejects stale choices,
 and stores one immutable next revision.
 
+The routine pool supports workspace-defined overarching groups such as **Languages** and
+**Projects**, with many-to-many membership and filtering. Group organization is deliberately separate
+from scheduling tags and never changes planner scoring on its own. Selecting a group exposes an
+explicit **Add to Today** action for each active routine; it preserves current non-terminal plan
+items, reuses the current plan settings, respects ordinary eligibility and capacity, and is
+optimistic and idempotent. Deleting a group never deletes its routines.
+
 Routines also have explicit **More often**, **Less often**, and **Reset preference** controls. Each
 choice appends a reversible, version-fenced ranking event for future plans. The bounded score is
 visible in planner explanations; it never changes cadence, eligibility, duration, activity history,

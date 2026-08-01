@@ -1,13 +1,17 @@
 import {
   Archive,
   CalendarClock,
+  Check,
+  FolderTree,
   History,
+  ListPlus,
   Pause,
   Pencil,
   Play,
   Plus,
   RefreshCw,
   Tag,
+  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -21,8 +25,8 @@ import {
 } from "react";
 
 import { api, ApiError, newIdempotencyKey } from "../api";
-import { Button, EmptyState, ErrorNotice, PageHeader, PageSkeleton } from "../components/ui";
-import { browserTimeZone, formatDay, formatMinutes, formatTime } from "../date";
+import { Button, EmptyState, ErrorNotice, Field, PageHeader, PageSkeleton } from "../components/ui";
+import { browserTimeZone, formatDay, formatMinutes, formatTime, todayKey } from "../date";
 import {
   createRoutineDraft,
   parseRoutineDraft,
@@ -32,7 +36,11 @@ import {
 } from "./RoutineEditor";
 import type {
   ActivityEvent,
+  CurrentDailyPlan,
+  PlanSettings,
   Routine,
+  RoutineGroup,
+  RoutineGroupMembership,
   RoutineDurationInsight,
   RoutineSelectionPreferenceKind,
   RoutineSelectionPreferenceState,
@@ -79,6 +87,24 @@ function routinesQueryKey(workspaceId: string, status: RoutineStatus): string {
   return JSON.stringify([workspaceId, status]);
 }
 
+function retainedPlanSettings(plan: CurrentDailyPlan): PlanSettings | null {
+  if (plan.request === null) return null;
+  return {
+    timeZone: plan.request.timeZone,
+    availableWindows: plan.request.availableWindows,
+    targetMinutes: plan.request.targetMinutes,
+    minimumMinutes: plan.request.minimumMinutes,
+    maximumMinutes: plan.request.maximumMinutes,
+    targetTaskCount: plan.request.targetTaskCount,
+    minimumTaskCount: plan.request.minimumTaskCount,
+    maximumTaskCount: plan.request.maximumTaskCount,
+    fitPreference: plan.request.fitPreference,
+    energy: plan.request.energy,
+    availableContexts: plan.request.availableContexts,
+    seed: plan.request.seed,
+  };
+}
+
 export function RoutinesView({ workspace }: WorkspaceViewProps) {
   const [activeStatus, setActiveStatus] = useState<RoutineStatus>("active");
   const [routines, setRoutines] = useState<readonly Routine[]>([]);
@@ -88,6 +114,27 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [conflictMessage, setConflictMessage] = useState<string | null>(null);
   const [busyRoutineId, setBusyRoutineId] = useState<string | null>(null);
+  const [groups, setGroups] = useState<readonly RoutineGroup[]>([]);
+  const [memberships, setMemberships] = useState<readonly RoutineGroupMembership[]>([]);
+  const [groupsLoading, setGroupsLoading] = useState(true);
+  const [groupsError, setGroupsError] = useState<string | null>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [groupManagerOpen, setGroupManagerOpen] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<RoutineGroup | null>(null);
+  const [groupName, setGroupName] = useState("");
+  const [groupDescription, setGroupDescription] = useState("");
+  const [groupBusy, setGroupBusy] = useState(false);
+  const [groupDeleteConfirmationId, setGroupDeleteConfirmationId] = useState<string | null>(null);
+  const [editorGroupIds, setEditorGroupIds] = useState<readonly string[]>([]);
+  const [editorExpectedGroupIds, setEditorExpectedGroupIds] = useState<readonly string[]>([]);
+  const groupsLoadRequest = useRef(0);
+  const groupsMutationRevision = useRef(0);
+  const [planBusyRoutineId, setPlanBusyRoutineId] = useState<string | null>(null);
+  const [planAnnouncement, setPlanAnnouncement] = useState<string | null>(null);
+  const pendingPlanAddition = useRef<{
+    readonly identity: string;
+    readonly idempotencyKey: string;
+  } | null>(null);
 
   const [draft, setDraft] = useState<RoutineDraft | null>(null);
   const [editingRoutine, setEditingRoutine] = useState<Routine | null>(null);
@@ -141,10 +188,35 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
   const activeQueryKey = routinesQueryKey(workspace.id, activeStatus);
   const activeQueryKeyRef = useRef(activeQueryKey);
   activeQueryKeyRef.current = activeQueryKey;
+  const workspaceIdRef = useRef(workspace.id);
+  workspaceIdRef.current = workspace.id;
 
+  const groupsByRoutineId = useMemo(() => {
+    const result = new Map<string, string[]>();
+    for (const membership of memberships) {
+      const current = result.get(membership.routineId) ?? [];
+      current.push(membership.groupId);
+      result.set(membership.routineId, current);
+    }
+    return result;
+  }, [memberships]);
+  const groupsById = useMemo(() => new Map(groups.map((group) => [group.id, group])), [groups]);
+  const visibleRoutines = useMemo(
+    () =>
+      selectedGroupId === null
+        ? routines
+        : routines.filter((routine) =>
+            (groupsByRoutineId.get(routine.id) ?? []).includes(selectedGroupId),
+          ),
+    [groupsByRoutineId, routines, selectedGroupId],
+  );
+  const selectedGroup = useMemo(
+    () => groups.find((group) => group.id === selectedGroupId) ?? null,
+    [groups, selectedGroupId],
+  );
   const selectedRoutine = useMemo(
-    () => routines.find((routine) => routine.id === selectedRoutineId) ?? null,
-    [routines, selectedRoutineId],
+    () => visibleRoutines.find((routine) => routine.id === selectedRoutineId) ?? null,
+    [selectedRoutineId, visibleRoutines],
   );
   const selectedRoutineInsightId = selectedRoutine?.id ?? null;
   const selectedRoutineInsightVersion = selectedRoutine?.version ?? null;
@@ -311,6 +383,53 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     [activeStatus, workspace.id],
   );
 
+  const loadGroups = useCallback(
+    async (signal?: AbortSignal) => {
+      const requestId = ++groupsLoadRequest.current;
+      const mutationRevision = groupsMutationRevision.current;
+      const requestIsActive = () =>
+        signal?.aborted !== true &&
+        groupsLoadRequest.current === requestId &&
+        groupsMutationRevision.current === mutationRevision;
+      setGroupsLoading(true);
+      setGroupsError(null);
+      try {
+        const [groupPage, membershipPage] = await Promise.all([
+          api.listRoutineGroups(workspace.id, signal),
+          api.listRoutineGroupMemberships(workspace.id, signal),
+        ]);
+        if (!requestIsActive()) return null;
+        setGroups(groupPage.items);
+        setMemberships(membershipPage.items);
+        setSelectedGroupId((current) =>
+          current === null || groupPage.items.some((group) => group.id === current)
+            ? current
+            : null,
+        );
+        return { groups: groupPage.items, memberships: membershipPage.items };
+      } catch (error) {
+        if (requestIsActive() && !isAbortError(error)) {
+          setGroupsError(requestError(error, "Routine groups could not be loaded."));
+        }
+        return null;
+      } finally {
+        if (signal?.aborted !== true && groupsLoadRequest.current === requestId) {
+          setGroupsLoading(false);
+        }
+      }
+    },
+    [workspace.id],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setGroups([]);
+    setMemberships([]);
+    setSelectedGroupId(null);
+    void loadGroups(controller.signal);
+    return () => controller.abort();
+  }, [loadGroups]);
+
   useEffect(() => {
     const controller = new AbortController();
     setRoutines([]);
@@ -353,6 +472,17 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     setFormError(null);
     setConflictMessage(null);
     setMutationError(null);
+    setGroupManagerOpen(false);
+    setEditingGroup(null);
+    setGroupName("");
+    setGroupDescription("");
+    setGroupBusy(false);
+    setGroupDeleteConfirmationId(null);
+    setEditorGroupIds([]);
+    setEditorExpectedGroupIds([]);
+    setPlanBusyRoutineId(null);
+    setPlanAnnouncement(null);
+    pendingPlanAddition.current = null;
   }, [workspace.id]);
 
   function resetActivity() {
@@ -402,6 +532,9 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setEditingRoutine(null);
     setDraft(createRoutineDraft());
+    const initialGroupIds = selectedGroupId === null ? [] : [selectedGroupId];
+    setEditorGroupIds(initialGroupIds);
+    setEditorExpectedGroupIds([]);
     setFormError(null);
     setConflictMessage(null);
   }
@@ -412,6 +545,9 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     selectRoutine(routine.id);
     setEditingRoutine(routine);
     setDraft(routineDraftFromRoutine(routine));
+    const currentGroupIds = groupsByRoutineId.get(routine.id) ?? [];
+    setEditorGroupIds(currentGroupIds);
+    setEditorExpectedGroupIds(currentGroupIds);
     setFormError(null);
     setConflictMessage(null);
   }
@@ -421,6 +557,8 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     setEditingRoutine(null);
     setFormError(null);
     setConflictMessage(null);
+    setEditorGroupIds([]);
+    setEditorExpectedGroupIds([]);
     window.setTimeout(() => {
       const opener = editorOpenerRef.current;
       if (opener?.isConnected === true) opener.focus();
@@ -487,6 +625,61 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
               cadence: result.payload.cadence,
             });
       if (activeQueryKeyRef.current !== requestKey) return;
+      try {
+        await api.replaceRoutineGroups(
+          workspace.id,
+          saved.id,
+          editorExpectedGroupIds,
+          editorGroupIds,
+        );
+      } catch (error) {
+        if (activeQueryKeyRef.current !== requestKey) return;
+        setRoutines((current) => {
+          const exists = current.some((routine) => routine.id === saved.id);
+          return exists
+            ? current.map((routine) => (routine.id === saved.id ? saved : routine))
+            : [saved, ...current];
+        });
+        setEditingRoutine(saved);
+        setDraft(routineDraftFromRoutine(saved));
+        if (error instanceof ApiError && error.status === 409) {
+          const snapshot = await loadGroups();
+          if (activeQueryKeyRef.current !== requestKey) return;
+          if (snapshot === null) {
+            setFormError(
+              "The routine was saved and its groups changed elsewhere, but current groups could not be reloaded. Close and reopen the editor before retrying group changes.",
+            );
+            return;
+          }
+          const currentGroupIds = snapshot.memberships
+            .filter((membership) => membership.routineId === saved.id)
+            .map((membership) => membership.groupId);
+          setEditorGroupIds(currentGroupIds);
+          setEditorExpectedGroupIds(currentGroupIds);
+          setFormError(
+            "The routine was saved, but its groups changed elsewhere. Current group selections were reloaded; review and retry your group changes.",
+          );
+          return;
+        }
+        setFormError(
+          `The routine was saved, but its groups were not updated. Retry to finish organizing it. ${requestError(
+            error,
+            "",
+          )}`.trim(),
+        );
+        return;
+      }
+      groupsMutationRevision.current += 1;
+      const membershipTime = new Date().toISOString();
+      setMemberships((current) => [
+        ...current.filter((membership) => membership.routineId !== saved.id),
+        ...editorGroupIds.map((groupId) => ({
+          workspaceId: workspace.id,
+          groupId,
+          routineId: saved.id,
+          createdAt: membershipTime,
+        })),
+      ]);
 
       closeEditor();
       if (saved.status !== activeStatus) {
@@ -841,10 +1034,187 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     }
   }
 
+  function resetGroupForm() {
+    setEditingGroup(null);
+    setGroupName("");
+    setGroupDescription("");
+    setGroupDeleteConfirmationId(null);
+  }
+
+  function editGroup(group: RoutineGroup) {
+    setEditingGroup(group);
+    setGroupName(group.name);
+    setGroupDescription(group.description ?? "");
+    setGroupDeleteConfirmationId(null);
+  }
+
+  async function saveGroup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const requestWorkspaceId = workspace.id;
+    const requestIsActive = () => workspaceIdRef.current === requestWorkspaceId;
+    const name = groupName.trim();
+    if (name.length === 0) {
+      setGroupsError("Give the group a name.");
+      return;
+    }
+    setGroupBusy(true);
+    setGroupsError(null);
+    try {
+      const saved =
+        editingGroup === null
+          ? await api.createRoutineGroup(requestWorkspaceId, {
+              name,
+              description: groupDescription.trim() || null,
+            })
+          : await api.updateRoutineGroup(requestWorkspaceId, editingGroup.id, {
+              expectedVersion: editingGroup.version,
+              name,
+              description: groupDescription.trim() || null,
+            });
+      if (!requestIsActive()) return;
+      groupsMutationRevision.current += 1;
+      setGroups((current) =>
+        [...current.filter((group) => group.id !== saved.id), saved].sort((left, right) =>
+          left.name.localeCompare(right.name),
+        ),
+      );
+      setSelectedGroupId(saved.id);
+      resetGroupForm();
+    } catch (error) {
+      if (!requestIsActive()) return;
+      if (error instanceof ApiError && error.status === 409) {
+        await loadGroups();
+        setGroupsError("That group changed elsewhere. Current groups were reloaded.");
+      } else {
+        setGroupsError(requestError(error, "The group could not be saved."));
+      }
+    } finally {
+      if (requestIsActive()) setGroupBusy(false);
+    }
+  }
+
+  async function deleteGroup(group: RoutineGroup) {
+    const requestWorkspaceId = workspace.id;
+    const requestIsActive = () => workspaceIdRef.current === requestWorkspaceId;
+    setGroupBusy(true);
+    setGroupsError(null);
+    try {
+      await api.deleteRoutineGroup(requestWorkspaceId, group.id, group.version);
+      if (!requestIsActive()) return;
+      groupsMutationRevision.current += 1;
+      setGroups((current) => current.filter((candidate) => candidate.id !== group.id));
+      setMemberships((current) => current.filter((membership) => membership.groupId !== group.id));
+      setEditorGroupIds((current) => current.filter((id) => id !== group.id));
+      setEditorExpectedGroupIds((current) => current.filter((id) => id !== group.id));
+      setSelectedGroupId((current) => (current === group.id ? null : current));
+      resetGroupForm();
+    } catch (error) {
+      if (!requestIsActive()) return;
+      if (error instanceof ApiError && error.status === 409) {
+        await loadGroups();
+        setGroupsError("That group changed elsewhere. Current groups were reloaded.");
+      } else {
+        setGroupsError(requestError(error, "The group could not be deleted."));
+      }
+    } finally {
+      if (requestIsActive()) setGroupBusy(false);
+    }
+  }
+
+  async function addRoutineToToday(routine: Routine) {
+    setPlanBusyRoutineId(routine.id);
+    setMutationError(null);
+    setPlanAnnouncement(null);
+    const date = todayKey();
+    try {
+      const current = await api.getCurrentPlan(workspace.id, date);
+      if (
+        current.items.some((item) => item.sourceType === "routine" && item.routineId === routine.id)
+      ) {
+        pendingPlanAddition.current = null;
+        setPlanAnnouncement(`${routine.title} is already in Today.`);
+        return;
+      }
+      const settings = retainedPlanSettings(current);
+      if (settings === null) {
+        throw new Error("Today has no reusable planning settings. Regenerate it from Today first.");
+      }
+      const identity = `${current.id}:${current.headVersion}:add-routine:${routine.id}`;
+      const pending =
+        pendingPlanAddition.current?.identity === identity
+          ? pendingPlanAddition.current
+          : { identity, idempotencyKey: newIdempotencyKey() };
+      pendingPlanAddition.current = pending;
+      const result = await api.addRoutineToPlan(
+        workspace.id,
+        date,
+        routine.id,
+        {
+          expectedPlanId: current.id,
+          expectedHeadVersion: current.headVersion,
+          request: {
+            ...settings,
+            seed: `today:${date}:revision:${current.requestRevision + 1}:${pending.idempotencyKey}`,
+          },
+        },
+        pending.idempotencyKey,
+      );
+      if (
+        !result.items.some((item) => item.sourceType === "routine" && item.routineId === routine.id)
+      ) {
+        throw new Error("The planner returned without the selected routine.");
+      }
+      pendingPlanAddition.current = null;
+      setPlanAnnouncement(`${routine.title} was added to Today.`);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        try {
+          const latest = await api.getCurrentPlan(workspace.id, date);
+          if (
+            latest.items.some(
+              (item) => item.sourceType === "routine" && item.routineId === routine.id,
+            )
+          ) {
+            pendingPlanAddition.current = null;
+            setPlanAnnouncement(`${routine.title} was added to Today.`);
+            return;
+          }
+          pendingPlanAddition.current = null;
+          setMutationError("Today changed while this routine was being added. Try again.");
+        } catch (refreshError) {
+          setMutationError(requestError(refreshError, "Today changed and could not be refreshed."));
+        }
+      } else {
+        setMutationError(
+          requestError(
+            error,
+            "The routine could not be added. Create or refresh Today, then try again.",
+          ),
+        );
+      }
+    } finally {
+      setPlanBusyRoutineId(null);
+    }
+  }
+
   function statusActions(routine: Routine, compact: boolean) {
     const busy = busyRoutineId === routine.id;
     return (
       <div className={compact ? "routines-item-actions" : "routines-detail-actions"}>
+        {routine.status === "active" && selectedGroupId !== null ? (
+          <Button
+            type="button"
+            variant="quiet"
+            busy={planBusyRoutineId === routine.id}
+            disabled={planBusyRoutineId !== null || busyRoutineId !== null}
+            onClick={() => void addRoutineToToday(routine)}
+            aria-label={`Add ${routine.title} to Today`}
+            title="Add to Today"
+          >
+            <ListPlus size={15} aria-hidden="true" />
+            {compact ? null : "Add to Today"}
+          </Button>
+        ) : null}
         {routine.status === "active" ? (
           <Button
             type="button"
@@ -1288,17 +1658,32 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
         title="Routine pool"
         description="Shape repeatable activities with realistic duration and cadence rules. The daily planner uses this pool without treating every routine as a fixed appointment."
         actions={
-          draft === null ? (
-            <Button type="button" variant="primary" onClick={openCreate}>
-              <Plus size={16} aria-hidden="true" />
-              New routine
+          <div className="routines-header-actions">
+            <Button
+              type="button"
+              variant="quiet"
+              onClick={() => {
+                setGroupManagerOpen((current) => !current);
+                resetGroupForm();
+              }}
+              aria-expanded={groupManagerOpen}
+              aria-controls="routine-groups-manager"
+            >
+              <FolderTree size={16} aria-hidden="true" />
+              {groupManagerOpen ? "Close groups" : "Manage groups"}
             </Button>
-          ) : (
-            <Button type="button" variant="quiet" onClick={closeEditor}>
-              <X size={16} aria-hidden="true" />
-              Close form
-            </Button>
-          )
+            {draft === null ? (
+              <Button type="button" variant="primary" onClick={openCreate}>
+                <Plus size={16} aria-hidden="true" />
+                New routine
+              </Button>
+            ) : (
+              <Button type="button" variant="quiet" onClick={closeEditor}>
+                <X size={16} aria-hidden="true" />
+                Close form
+              </Button>
+            )}
+          </div>
         }
       />
 
@@ -1316,6 +1701,32 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
       {mutationError === null ? null : (
         <ErrorNotice message={mutationError} onDismiss={() => setMutationError(null)} />
       )}
+      {groupsError === null ? null : (
+        <ErrorNotice
+          message={groupsError}
+          onDismiss={() => setGroupsError(null)}
+          action={
+            <Button type="button" variant="quiet" onClick={() => void loadGroups()}>
+              <RefreshCw size={15} aria-hidden="true" />
+              Reload groups
+            </Button>
+          }
+        />
+      )}
+      {planAnnouncement === null ? null : (
+        <div className="routines-plan-announcement" role="status" aria-live="polite">
+          <Check size={17} aria-hidden="true" />
+          <span>{planAnnouncement}</span>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={() => setPlanAnnouncement(null)}
+            aria-label="Dismiss plan notice"
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
+      )}
       {conflictMessage === null ? null : (
         <div className="routines-conflict" role="status">
           <RefreshCw size={17} aria-hidden="true" />
@@ -1330,6 +1741,128 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
           </button>
         </div>
       )}
+
+      {groupManagerOpen ? (
+        <section
+          className="routines-groups-manager"
+          id="routine-groups-manager"
+          aria-labelledby="routine-groups-manager-heading"
+        >
+          <div className="routines-groups-manager-heading">
+            <div>
+              <p className="eyebrow">Organization</p>
+              <h2 id="routine-groups-manager-heading">Overarching groups</h2>
+              <p>
+                Create collections such as Languages or Projects. Deleting one never deletes its
+                routines.
+              </p>
+            </div>
+          </div>
+          <form className="routines-group-form" onSubmit={(event) => void saveGroup(event)}>
+            <Field label={editingGroup === null ? "New group name" : "Group name"}>
+              <input
+                required
+                maxLength={80}
+                disabled={groupBusy}
+                value={groupName}
+                onChange={(event) => setGroupName(event.target.value)}
+                placeholder="Languages"
+              />
+            </Field>
+            <Field label="Description" hint="Optional">
+              <input
+                maxLength={500}
+                disabled={groupBusy}
+                value={groupDescription}
+                onChange={(event) => setGroupDescription(event.target.value)}
+                placeholder="Skills I am learning"
+              />
+            </Field>
+            <div className="routines-group-form-actions">
+              {editingGroup === null ? null : (
+                <Button type="button" variant="quiet" disabled={groupBusy} onClick={resetGroupForm}>
+                  Cancel
+                </Button>
+              )}
+              <Button type="submit" variant="primary" busy={groupBusy}>
+                {editingGroup === null ? "Create group" : "Save group"}
+              </Button>
+            </div>
+          </form>
+          {groupsLoading ? <PageSkeleton rows={2} /> : null}
+          {!groupsLoading && groups.length === 0 ? (
+            <p className="routines-groups-manager-empty">
+              No groups yet. Create one above, then assign routines from their editor.
+            </p>
+          ) : null}
+          {groups.length > 0 ? (
+            <ul className="routines-groups-list">
+              {groups.map((group) => {
+                const count = memberships.filter(
+                  (membership) => membership.groupId === group.id,
+                ).length;
+                const confirming = groupDeleteConfirmationId === group.id;
+                return (
+                  <li key={group.id}>
+                    <div>
+                      <strong>{group.name}</strong>
+                      <span>
+                        {count} {count === 1 ? "routine" : "routines"}
+                      </span>
+                      {group.description === null ? null : <p>{group.description}</p>}
+                    </div>
+                    <div className="routines-group-row-actions">
+                      {confirming ? (
+                        <>
+                          <span>Delete this group?</span>
+                          <Button
+                            type="button"
+                            variant="quiet"
+                            disabled={groupBusy}
+                            onClick={() => setGroupDeleteConfirmationId(null)}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="danger"
+                            busy={groupBusy}
+                            onClick={() => void deleteGroup(group)}
+                          >
+                            <Trash2 size={15} aria-hidden="true" />
+                            Delete group
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button
+                            type="button"
+                            variant="quiet"
+                            disabled={groupBusy}
+                            onClick={() => editGroup(group)}
+                          >
+                            <Pencil size={15} aria-hidden="true" />
+                            Edit
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="quiet"
+                            disabled={groupBusy}
+                            onClick={() => setGroupDeleteConfirmationId(group.id)}
+                            aria-label={`Delete ${group.name}`}
+                          >
+                            <Trash2 size={15} aria-hidden="true" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+        </section>
+      ) : null}
 
       {draft === null ? null : (
         <form className="routines-editor" onSubmit={(event) => void handleSubmit(event)}>
@@ -1357,6 +1890,9 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
             disabled={formBusy}
             autoFocus
             onChange={(changes) => patchDraft(changes)}
+            groups={groups}
+            selectedGroupIds={editorGroupIds}
+            onSelectedGroupIdsChange={setEditorGroupIds}
           />
 
           <div className="routines-editor-footer">
@@ -1389,6 +1925,32 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
         ))}
       </div>
 
+      <div className="routines-group-filter">
+        <Field label="Group">
+          <select
+            disabled={groupsLoading || groupBusy || formBusy}
+            value={selectedGroupId ?? ""}
+            onChange={(event) => {
+              setSelectedGroupId(event.target.value || null);
+              setSelectedRoutineId(null);
+              setPlanAnnouncement(null);
+            }}
+          >
+            <option value="">All routines</option>
+            {groups.map((group) => (
+              <option key={group.id} value={group.id}>
+                {group.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <p>
+          {selectedGroup === null
+            ? "Browse the full pool."
+            : `${selectedGroup.name}: choose a routine below and add it directly to Today.`}
+        </p>
+      </div>
+
       <div
         className="routines-workspace"
         id="routine-pool-panel"
@@ -1397,12 +1959,14 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
       >
         <section className="routines-pool" aria-label={`${titleCase(activeStatus)} routines`}>
           {loading ? <PageSkeleton rows={4} /> : null}
-          {!loading && routines.length === 0 && loadError === null ? (
+          {!loading && visibleRoutines.length === 0 && loadError === null ? (
             <EmptyState
               title={
-                activeStatus === "active"
-                  ? "Build your routine pool"
-                  : `No ${activeStatus} routines`
+                selectedGroup !== null
+                  ? `No ${activeStatus} routines in ${selectedGroup.name}`
+                  : activeStatus === "active"
+                    ? "Build your routine pool"
+                    : `No ${activeStatus} routines`
               }
               action={
                 activeStatus === "active" ? (
@@ -1414,13 +1978,15 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
               }
             >
               {activeStatus === "active"
-                ? "Add repeatable activities with cadence and duration rules. They become candidates for the daily plan."
+                ? selectedGroup === null
+                  ? "Add repeatable activities with cadence and duration rules. They become candidates for the daily plan."
+                  : "Add a routine here or edit an existing routine to place it in this group."
                 : `Routines moved to ${activeStatus} will appear here.`}
             </EmptyState>
           ) : null}
-          {!loading && routines.length > 0 ? (
+          {!loading && visibleRoutines.length > 0 ? (
             <div className="routines-list">
-              {routines.map((routine) => (
+              {visibleRoutines.map((routine) => (
                 <article
                   className={`routines-item${selectedRoutineId === routine.id ? " routines-item-selected" : ""}`}
                   key={routine.id}
@@ -1446,8 +2012,18 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
                       </span>
                       <span>{formatMinutes(routine.duration.expectedMinutes)} expected</span>
                     </span>
-                    {routine.tags.categories.length === 0 ? null : (
+                    {(groupsByRoutineId.get(routine.id) ?? []).length === 0 &&
+                    routine.tags.categories.length === 0 ? null : (
                       <span className="routines-item-tags">
+                        {(groupsByRoutineId.get(routine.id) ?? [])
+                          .slice(0, 3)
+                          .map((groupId) => groupsById.get(groupId))
+                          .filter((group): group is RoutineGroup => group !== undefined)
+                          .map((group) => (
+                            <span className="routines-item-group" key={group.id}>
+                              {group.name}
+                            </span>
+                          ))}
                         {routine.tags.categories.slice(0, 3).map((category) => (
                           <span key={category}>{category}</span>
                         ))}
@@ -1526,6 +2102,21 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
               {durationInsightSection(selectedRoutine)}
 
               <div className="routines-tag-groups">
+                <div>
+                  <h3>Groups</h3>
+                  {(groupsByRoutineId.get(selectedRoutine.id) ?? []).length === 0 ? (
+                    <p className="routines-detail-no-groups">Not assigned to a group.</p>
+                  ) : (
+                    <div className="routines-chips routines-chips-groups">
+                      {(groupsByRoutineId.get(selectedRoutine.id) ?? [])
+                        .map((groupId) => groupsById.get(groupId))
+                        .filter((group): group is RoutineGroup => group !== undefined)
+                        .map((group) => (
+                          <span key={group.id}>{group.name}</span>
+                        ))}
+                    </div>
+                  )}
+                </div>
                 <div>
                   <h3>Planning signals</h3>
                   <div className="routines-chips">

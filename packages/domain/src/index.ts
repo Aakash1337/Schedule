@@ -13,6 +13,7 @@ export * from "./hosted-login-transaction.js";
 export * from "./ids.js";
 export * from "./notification-policy.js";
 export * from "./routine.js";
+export * from "./routine-group.js";
 export * from "./routine-duration-insight.js";
 export * from "./routine-duration-insight-feedback.js";
 export * from "./routine-planning-feedback.js";

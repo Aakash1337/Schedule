@@ -115,6 +115,7 @@ export const dailyPlanFitInsightFeedbackKind = pgEnum("daily_plan_fit_insight_fe
 export const planMutationKind = pgEnum("plan_mutation_kind", [
   "regenerate",
   "replace",
+  "add_routine",
   "feedback",
   "feedback_reset",
   "alternative_select",
@@ -1701,6 +1702,68 @@ export const dailyPlanHeads = pgTable(
       foreignColumns: [dailyPlans.workspaceId, dailyPlans.id],
     }).onDelete("cascade"),
     check("daily_plan_heads_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
+export const routineGroups = pgTable(
+  "routine_groups",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 80 }).notNull(),
+    normalizedName: varchar("normalized_name", { length: 80 }).notNull(),
+    description: varchar("description", { length: 500 }),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("routine_groups_workspace_id_id_uq").on(table.workspaceId, table.id),
+    unique("routine_groups_workspace_name_uq").on(table.workspaceId, table.normalizedName),
+    index("routine_groups_workspace_created_idx").on(table.workspaceId, table.createdAt, table.id),
+    check("routine_groups_name_nonempty", sql`char_length(btrim(${table.name})) BETWEEN 1 AND 80`),
+    check(
+      "routine_groups_normalized_name_nonempty",
+      sql`char_length(btrim(${table.normalizedName})) BETWEEN 1 AND 80`,
+    ),
+    check(
+      "routine_groups_description_valid",
+      sql`${table.description} IS NULL OR char_length(btrim(${table.description})) BETWEEN 1 AND 500`,
+    ),
+    check("routine_groups_version_positive", sql`${table.version} > 0`),
+  ],
+);
+
+export const routineGroupMemberships = pgTable(
+  "routine_group_memberships",
+  {
+    workspaceId: uuid("workspace_id").notNull(),
+    groupId: uuid("group_id").notNull(),
+    routineId: uuid("routine_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      name: "routine_group_memberships_pk",
+      columns: [table.workspaceId, table.groupId, table.routineId],
+    }),
+    foreignKey({
+      name: "routine_group_memberships_group_tenant_fk",
+      columns: [table.workspaceId, table.groupId],
+      foreignColumns: [routineGroups.workspaceId, routineGroups.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "routine_group_memberships_routine_tenant_fk",
+      columns: [table.workspaceId, table.routineId],
+      foreignColumns: [routines.workspaceId, routines.id],
+    }).onDelete("cascade"),
+    index("routine_group_memberships_routine_idx").on(
+      table.workspaceId,
+      table.routineId,
+      table.groupId,
+    ),
   ],
 );
 

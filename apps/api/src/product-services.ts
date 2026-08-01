@@ -3,6 +3,7 @@ import {
   ApproveRoutineDurationInsight,
   CancelNaturalLanguageProposal,
   CreateRoutine,
+  CreateRoutineGroup,
   CreateNotificationRule,
   CreateOneOffReminder,
   CreateScheduleBlock,
@@ -33,6 +34,8 @@ import {
   ListNotificationRules,
   ListOneOffReminders,
   ListRoutines,
+  ListRoutineGroups,
+  ListRoutineGroupMemberships,
   ListScheduleBlocks,
   ListWorkItemDependencies,
   ListWorkItemChildren,
@@ -50,10 +53,13 @@ import {
   ResetDailyPlanFitInsightDismissal,
   ResetRoutineDurationInsightDismissal,
   SetPlanItemLock,
+  ReplaceRoutineGroupMemberships,
+  DeleteRoutineGroup,
   DeleteScheduleBlock,
   UpdateScheduleBlock,
   UpdateWorkItem,
   UpdateRoutine,
+  UpdateRoutineGroup,
   UpdateNotificationRule,
   UpdateNaturalLanguageProposal,
   UpdateOneOffReminder,
@@ -90,6 +96,7 @@ export function createProductServices(
   const getWorkspace = new GetWorkspace(unitOfWork);
   const listWorkspaces = new ListWorkspaces(unitOfWork);
   const createRoutine = new CreateRoutine(unitOfWork, clock);
+  const createRoutineGroup = new CreateRoutineGroup(unitOfWork, clock);
   const createWorkItem = new CreateWorkItem(unitOfWork, clock);
   const getWorkItem = new GetWorkItem(unitOfWork);
   const listWorkItems = new ListWorkItems(unitOfWork);
@@ -109,6 +116,11 @@ export function createProductServices(
   const getRoutineDurationInsight = new GetRoutineDurationInsight(unitOfWork, clock);
   const updateRoutine = new UpdateRoutine(unitOfWork, clock);
   const listRoutines = new ListRoutines(unitOfWork);
+  const updateRoutineGroup = new UpdateRoutineGroup(unitOfWork, clock);
+  const deleteRoutineGroup = new DeleteRoutineGroup(unitOfWork);
+  const listRoutineGroups = new ListRoutineGroups(unitOfWork);
+  const listRoutineGroupMemberships = new ListRoutineGroupMemberships(unitOfWork);
+  const replaceRoutineGroupMemberships = new ReplaceRoutineGroupMemberships(unitOfWork, clock);
   const listRoutineActivity = new ListRoutineActivity(unitOfWork);
   const recordActivityEvent = new RecordActivityEvent(unitOfWork, clock);
   const recordPlanItemActivity = new RecordPlanItemActivity(unitOfWork, clock);
@@ -187,6 +199,7 @@ export function createProductServices(
     getWorkspace: (query) => getWorkspace.execute(query),
     listWorkspaces: (query) => listWorkspaces.execute(query),
     createRoutine: (command) => createRoutine.execute(command),
+    createRoutineGroup: (command) => createRoutineGroup.execute(command),
     createWorkItem: (command) => createWorkItem.execute(command),
     getWorkItem: (query) => getWorkItem.execute(query),
     listWorkItems: (query) => listWorkItems.execute(query),
@@ -204,6 +217,11 @@ export function createProductServices(
     getRoutineDurationInsight: (query) => getRoutineDurationInsight.execute(query),
     updateRoutine: (command) => updateRoutine.execute(command),
     listRoutines: (query) => listRoutines.execute(query),
+    updateRoutineGroup: (command) => updateRoutineGroup.execute(command),
+    deleteRoutineGroup: (command) => deleteRoutineGroup.execute(command),
+    listRoutineGroups: (query) => listRoutineGroups.execute(query),
+    listRoutineGroupMemberships: (query) => listRoutineGroupMemberships.execute(query),
+    replaceRoutineGroupMemberships: (command) => replaceRoutineGroupMemberships.execute(command),
     listRoutineActivity: (query) => listRoutineActivity.execute(query),
     recordActivityEvent: (command) => recordActivityEvent.execute(command),
     recordPlanItemActivity: (command) => recordPlanItemActivity.execute(command),
@@ -225,6 +243,7 @@ export function createProductServices(
     setPlanItemLock: (command) => setPlanItemLock.execute(command),
     regenerateDailyPlan: (command) => mutateDailyPlan.regenerate(command),
     replacePlanItem: (command) => mutateDailyPlan.replace(command),
+    addRoutineToPlan: (command) => mutateDailyPlan.addRoutine(command),
     applyRoutineFeedback: (command) => mutateDailyPlan.applyRoutineFeedback(command),
     resetRoutineFeedback: (command) => mutateDailyPlan.resetRoutineFeedback(command),
     getDailyPlan: (query) => getDailyPlan.execute(query),
