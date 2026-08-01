@@ -23,6 +23,7 @@ const app = await buildApp({
 let createdWorkspaceId: string | null = null;
 let isolatedWorkspaceId: string | null = null;
 let feedbackWorkspaceId: string | null = null;
+let routineGroupWorkspaceId: string | null = null;
 let releaseConcurrencyLock: (() => void) | null = null;
 let heldLock: Promise<unknown> | null = null;
 
@@ -52,9 +53,12 @@ function hasDatabaseConstraint(error: unknown, code: string, constraintName: str
 }
 
 async function removeWorkspace(): Promise<void> {
-  const workspaceIds = [createdWorkspaceId, isolatedWorkspaceId, feedbackWorkspaceId].filter(
-    (workspaceId): workspaceId is string => workspaceId !== null,
-  );
+  const workspaceIds = [
+    createdWorkspaceId,
+    isolatedWorkspaceId,
+    feedbackWorkspaceId,
+    routineGroupWorkspaceId,
+  ].filter((workspaceId): workspaceId is string => workspaceId !== null);
   if (workspaceIds.length === 0) return;
   await connection.sql.begin(async (sql) => {
     await sql`select set_config('schedule.allow_activity_event_mutation', 'on', true)`;
@@ -3653,6 +3657,7 @@ try {
     });
     assert.equal(groupWorkspaceResponse.statusCode, 201, groupWorkspaceResponse.body);
     const groupWorkspaceId = groupWorkspaceResponse.json<{ id: string }>().id;
+    routineGroupWorkspaceId = groupWorkspaceId;
     const createGroupRoutine = async (title: string) => {
       const response = await app.inject({
         method: "POST",
