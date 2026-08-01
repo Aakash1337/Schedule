@@ -1515,6 +1515,18 @@ describe("local product API", () => {
     expect(response.json()).toMatchObject({ error: { code: "request.validation_failed" } });
   });
 
+  it("rejects routine-group names whose normalized key exceeds the storage bound", async () => {
+    const app = await appWith(createHarness().services);
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/routine-groups`,
+      payload: { name: "İ".repeat(80) },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({ error: { code: "routine_group.name_invalid" } });
+  });
+
   it("rejects stale routine-group batch replacements", async () => {
     const app = await appWith(createHarness().services);
     const membershipPath = `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/groups`;

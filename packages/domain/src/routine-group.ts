@@ -33,6 +33,11 @@ function canonicalGroupName(value: string): string {
     "routine_group.name_invalid",
     "Group names cannot contain control characters.",
   );
+  invariant(
+    name.toLocaleLowerCase("en-US").length <= ROUTINE_GROUP_NAME_MAX_LENGTH,
+    "routine_group.name_invalid",
+    `Group names must remain within ${ROUTINE_GROUP_NAME_MAX_LENGTH} characters after normalization.`,
+  );
   return name;
 }
 

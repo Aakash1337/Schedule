@@ -154,6 +154,33 @@ function currentPlan(items: CurrentDailyPlan["items"] = []): CurrentDailyPlan {
   };
 }
 
+function planContainingRoutine(plan: CurrentDailyPlan, selected: Routine): CurrentDailyPlan {
+  return {
+    ...plan,
+    items: [
+      {
+        id: `plan-item-${selected.id}`,
+        sourceType: "routine",
+        routineId: selected.id,
+        workItemId: null,
+        title: selected.title,
+        position: 0,
+        windowIndex: 0,
+        scheduledMinutes: 30,
+        partialSession: false,
+        score: 100,
+        scoreComponents: {},
+        reasons: ["explicitly selected"],
+        locked: false,
+        activityState: "pending",
+        lastActivityEventId: null,
+        activityUpdatedAt: null,
+      },
+    ],
+    totalMinutes: 30,
+  };
+}
+
 function routineDurationInsight(
   overrides: Partial<RoutineDurationInsight> = {},
 ): RoutineDurationInsight {
@@ -1414,26 +1441,7 @@ describe("routine pool", () => {
   it("adds a selected group routine to Today using the current plan settings", async () => {
     const user = userEvent.setup();
     const plan = currentPlan();
-    const addedPlan = currentPlan([
-      {
-        id: "plan-item-spanish",
-        sourceType: "routine",
-        routineId: routine.id,
-        workItemId: null,
-        title: routine.title,
-        position: 0,
-        windowIndex: 0,
-        scheduledMinutes: 30,
-        partialSession: false,
-        score: 100,
-        scoreComponents: {},
-        reasons: ["explicitly selected"],
-        locked: false,
-        activityState: "pending",
-        lastActivityEventId: null,
-        activityUpdatedAt: null,
-      },
-    ]);
+    const addedPlan = planContainingRoutine(plan, routine);
     apiMocks.listRoutineGroups.mockResolvedValue({
       items: [languagesGroup],
       page: { limit: 200, offset: 0 },
@@ -1477,6 +1485,97 @@ describe("routine pool", () => {
         }),
       }),
       expect.any(String),
+    );
+  });
+
+  it("ignores a late add-to-Today completion after the workspace changes", async () => {
+    const user = userEvent.setup();
+    const firstAddition = deferred<CurrentDailyPlan>();
+    const secondAddition = deferred<CurrentDailyPlan>();
+    const secondWorkspace: Workspace = { ...workspace, id: "workspace-2", name: "Work" };
+    const secondRoutine: Routine = {
+      ...routine,
+      id: "routine-2",
+      workspaceId: secondWorkspace.id,
+      title: "Build portfolio",
+    };
+    const secondGroup: RoutineGroup = {
+      ...projectsGroup,
+      id: "group-work-projects",
+      workspaceId: secondWorkspace.id,
+    };
+    const firstPlan = currentPlan();
+    const secondPlan: CurrentDailyPlan = {
+      ...currentPlan(),
+      id: "plan-work-today",
+      workspaceId: secondWorkspace.id,
+      request: { ...currentPlan().request!, workspaceId: secondWorkspace.id },
+    };
+    apiMocks.listRoutines.mockImplementation((workspaceId: string) =>
+      Promise.resolve({
+        items: workspaceId === workspace.id ? [routine] : [secondRoutine],
+        page: { limit: 200, offset: 0 },
+      }),
+    );
+    apiMocks.listRoutineGroups.mockImplementation((workspaceId: string) =>
+      Promise.resolve({
+        items: workspaceId === workspace.id ? [languagesGroup] : [secondGroup],
+        page: { limit: 200, offset: 0 },
+      }),
+    );
+    apiMocks.listRoutineGroupMemberships.mockImplementation((workspaceId: string) =>
+      Promise.resolve({
+        items: [
+          {
+            workspaceId,
+            groupId: workspaceId === workspace.id ? languagesGroup.id : secondGroup.id,
+            routineId: workspaceId === workspace.id ? routine.id : secondRoutine.id,
+            createdAt: "2026-07-12T09:00:00.000Z",
+          },
+        ],
+        page: { limit: 200, offset: 0 },
+      }),
+    );
+    apiMocks.getCurrentPlan.mockImplementation((workspaceId: string) =>
+      Promise.resolve(workspaceId === workspace.id ? firstPlan : secondPlan),
+    );
+    apiMocks.addRoutineToPlan.mockImplementation((workspaceId: string) =>
+      workspaceId === workspace.id ? firstAddition.promise : secondAddition.promise,
+    );
+
+    const view = render(<RoutinesView workspace={workspace} onNavigate={vi.fn()} />);
+    const firstFilter = await screen.findByRole("combobox", { name: "Group" });
+    await waitFor(() => expect(firstFilter).toBeEnabled());
+    await user.selectOptions(firstFilter, languagesGroup.id);
+    await user.click(screen.getByRole("button", { name: `Add ${routine.title} to Today` }));
+    await waitFor(() => expect(apiMocks.addRoutineToPlan).toHaveBeenCalledTimes(1));
+
+    view.rerender(<RoutinesView workspace={secondWorkspace} onNavigate={vi.fn()} />);
+    const secondFilter = await screen.findByRole("combobox", { name: "Group" });
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: secondGroup.name })).toBeInTheDocument(),
+    );
+    await user.selectOptions(secondFilter, secondGroup.id);
+    const secondAdd = screen.getByRole("button", {
+      name: `Add ${secondRoutine.title} to Today`,
+    });
+    await user.click(secondAdd);
+    await waitFor(() => expect(apiMocks.addRoutineToPlan).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      firstAddition.resolve(planContainingRoutine(firstPlan, routine));
+      await firstAddition.promise;
+    });
+    expect(screen.queryByText(`${routine.title} was added to Today.`)).not.toBeInTheDocument();
+    expect(secondAdd).toHaveAttribute("aria-busy", "true");
+    expect(secondAdd).toBeDisabled();
+
+    await act(async () => {
+      secondAddition.resolve(planContainingRoutine(secondPlan, secondRoutine));
+      await secondAddition.promise;
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      `${secondRoutine.title} was added to Today.`,
     );
   });
 

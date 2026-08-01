@@ -131,6 +131,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
   const groupsMutationRevision = useRef(0);
   const [planBusyRoutineId, setPlanBusyRoutineId] = useState<string | null>(null);
   const [planAnnouncement, setPlanAnnouncement] = useState<string | null>(null);
+  const planAdditionRequest = useRef(0);
   const pendingPlanAddition = useRef<{
     readonly identity: string;
     readonly idempotencyKey: string;
@@ -480,6 +481,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
     setGroupDeleteConfirmationId(null);
     setEditorGroupIds([]);
     setEditorExpectedGroupIds([]);
+    planAdditionRequest.current += 1;
     setPlanBusyRoutineId(null);
     setPlanAnnouncement(null);
     pendingPlanAddition.current = null;
@@ -1122,12 +1124,18 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
   }
 
   async function addRoutineToToday(routine: Routine) {
+    const requestWorkspaceId = workspace.id;
+    const requestId = planAdditionRequest.current + 1;
+    planAdditionRequest.current = requestId;
+    const requestIsActive = () =>
+      workspaceIdRef.current === requestWorkspaceId && planAdditionRequest.current === requestId;
     setPlanBusyRoutineId(routine.id);
     setMutationError(null);
     setPlanAnnouncement(null);
     const date = todayKey();
     try {
-      const current = await api.getCurrentPlan(workspace.id, date);
+      const current = await api.getCurrentPlan(requestWorkspaceId, date);
+      if (!requestIsActive()) return;
       if (
         current.items.some((item) => item.sourceType === "routine" && item.routineId === routine.id)
       ) {
@@ -1146,7 +1154,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
           : { identity, idempotencyKey: newIdempotencyKey() };
       pendingPlanAddition.current = pending;
       const result = await api.addRoutineToPlan(
-        workspace.id,
+        requestWorkspaceId,
         date,
         routine.id,
         {
@@ -1159,6 +1167,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
         },
         pending.idempotencyKey,
       );
+      if (!requestIsActive()) return;
       if (
         !result.items.some((item) => item.sourceType === "routine" && item.routineId === routine.id)
       ) {
@@ -1167,9 +1176,11 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
       pendingPlanAddition.current = null;
       setPlanAnnouncement(`${routine.title} was added to Today.`);
     } catch (error) {
+      if (!requestIsActive()) return;
       if (error instanceof ApiError && error.status === 409) {
         try {
-          const latest = await api.getCurrentPlan(workspace.id, date);
+          const latest = await api.getCurrentPlan(requestWorkspaceId, date);
+          if (!requestIsActive()) return;
           if (
             latest.items.some(
               (item) => item.sourceType === "routine" && item.routineId === routine.id,
@@ -1182,6 +1193,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
           pendingPlanAddition.current = null;
           setMutationError("Today changed while this routine was being added. Try again.");
         } catch (refreshError) {
+          if (!requestIsActive()) return;
           setMutationError(requestError(refreshError, "Today changed and could not be refreshed."));
         }
       } else {
@@ -1193,7 +1205,7 @@ export function RoutinesView({ workspace }: WorkspaceViewProps) {
         );
       }
     } finally {
-      setPlanBusyRoutineId(null);
+      if (requestIsActive()) setPlanBusyRoutineId(null);
     }
   }
 

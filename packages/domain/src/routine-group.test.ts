@@ -62,6 +62,9 @@ describe("routine groups", () => {
     expect(() => createRoutineGroup({ ...base, name: "x".repeat(81) })).toThrowError(
       expect.objectContaining({ code: "routine_group.name_invalid" }),
     );
+    expect(() => createRoutineGroup({ ...base, name: "İ".repeat(80) })).toThrowError(
+      expect.objectContaining({ code: "routine_group.name_invalid" }),
+    );
     expect(() => createRoutineGroup({ ...base, name: "Projects\u0000" })).toThrowError(
       expect.objectContaining({ code: "routine_group.name_invalid" }),
     );
