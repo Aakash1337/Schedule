@@ -8,6 +8,7 @@ import {
   createStructuredTags,
   createWorkspace,
   routineGroupNameKey,
+  routineGroupId,
   routineId,
   workspaceId,
   type RoutineGroup,
@@ -48,8 +49,13 @@ describe("routine group management", () => {
         findById: async (_workspaceId: string, id: string) => (id === routine.id ? routine : null),
       },
       routineGroups: {
-        findById: async (_workspaceId: string, id: string) =>
-          groups.find((group) => group.id === id) ?? null,
+        findById: async (targetWorkspaceId: string, id: string) =>
+          groups.find((group) => group.workspaceId === targetWorkspaceId && group.id === id) ??
+          null,
+        findByIds: async (targetWorkspaceId: string, ids: readonly string[]) =>
+          groups.filter(
+            (group) => group.workspaceId === targetWorkspaceId && ids.includes(group.id),
+          ),
         list: async () => groups,
         listMemberships: async () => memberships,
         insert: async (group: RoutineGroup) => {
@@ -133,6 +139,10 @@ describe("routine group management", () => {
       workspaceId: test.workspace.id,
       name: "  Languages ",
     });
+    expect(languages.name).toBe("Languages");
+    await expect(
+      test.create.execute({ workspaceId: test.workspace.id, name: "languages" }),
+    ).rejects.toMatchObject({ code: "routine_group.name_conflict" });
     const projects = await test.create.execute({
       workspaceId: test.workspace.id,
       name: "Projects",
@@ -190,7 +200,21 @@ describe("routine group management", () => {
         expectedGroupIds: [group.id],
         groupIds: [group.id, group.id],
       }),
-    ).rejects.toMatchObject({ code: "routine_group.membership_selection_invalid" });
+    ).rejects.toMatchObject({
+      code: "routine_group.membership_selection_invalid",
+      message: "Routine group identifiers must be unique.",
+    });
+    await expect(
+      test.replaceMemberships.execute({
+        workspaceId: test.workspace.id,
+        routineId: test.routine.id,
+        expectedGroupIds: [group.id],
+        groupIds: Array.from({ length: 101 }, (_, index) => routineGroupId(`group-${index}`)),
+      }),
+    ).rejects.toMatchObject({
+      code: "routine_group.membership_selection_invalid",
+      message: "Routine groups must contain at most 100 unique group identifiers.",
+    });
     await expect(
       test.replaceMemberships.execute({
         workspaceId: test.workspace.id,
@@ -200,5 +224,12 @@ describe("routine group management", () => {
       }),
     ).rejects.toMatchObject({ code: "routine_group.membership_conflict" });
     expect(test.memberships()).toHaveLength(1);
+    await test.replaceMemberships.execute({
+      workspaceId: test.workspace.id,
+      routineId: test.routine.id,
+      expectedGroupIds: [group.id],
+      groupIds: [],
+    });
+    expect(test.memberships()).toHaveLength(0);
   });
 });

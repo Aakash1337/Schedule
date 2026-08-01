@@ -83,7 +83,13 @@ function page(
 
 function membershipSelection(groupIds: readonly RoutineGroupId[]): readonly RoutineGroupId[] {
   const uniqueIds = [...new Set(groupIds)];
-  if (uniqueIds.length !== groupIds.length || uniqueIds.length > 100) {
+  if (uniqueIds.length !== groupIds.length) {
+    throw new DomainError(
+      "routine_group.membership_selection_invalid",
+      "Routine group identifiers must be unique.",
+    );
+  }
+  if (uniqueIds.length > 100) {
     throw new DomainError(
       "routine_group.membership_selection_invalid",
       "Routine groups must contain at most 100 unique group identifiers.",
@@ -210,10 +216,9 @@ export class ReplaceRoutineGroupMemberships {
       if ((await routines.findById(command.workspaceId, command.routineId)) === null) {
         throw new DomainError("routine.not_found", "The routine does not exist.");
       }
-      for (const groupId of groupIds) {
-        if ((await routineGroups.findById(command.workspaceId, groupId)) === null) {
-          throw new DomainError("routine_group.not_found", "A selected group does not exist.");
-        }
+      const selectedGroups = await routineGroups.findByIds(command.workspaceId, groupIds);
+      if (selectedGroups.length !== groupIds.length) {
+        throw new DomainError("routine_group.not_found", "A selected group does not exist.");
       }
       await routineGroups.replaceRoutineMemberships(
         command.workspaceId,

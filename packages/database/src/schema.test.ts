@@ -756,6 +756,17 @@ describe("database schema", () => {
         "routine_group_memberships_routine_tenant_fk",
       ]),
     );
+    expect(
+      membershipConfig.foreignKeys.map((constraint) => ({
+        name: constraint.getName(),
+        onDelete: constraint.onDelete,
+      })),
+    ).toEqual(
+      expect.arrayContaining([
+        { name: "routine_group_memberships_group_tenant_fk", onDelete: "cascade" },
+        { name: "routine_group_memberships_routine_tenant_fk", onDelete: "cascade" },
+      ]),
+    );
     expect(migration).toContain('CREATE TABLE "routine_groups"');
     expect(migration).toContain('CREATE TABLE "routine_group_memberships"');
     expect(migration).toContain(

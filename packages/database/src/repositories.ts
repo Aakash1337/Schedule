@@ -2911,6 +2911,18 @@ class PostgresRoutineGroupRepository implements RoutineGroupRepository {
     return row === undefined ? null : mapRoutineGroup(row);
   }
 
+  async findByIds(
+    workspace: WorkspaceId,
+    ids: readonly RoutineGroup["id"][],
+  ): Promise<readonly RoutineGroup[]> {
+    if (ids.length === 0) return [];
+    const rows = await this.database
+      .select()
+      .from(routineGroups)
+      .where(and(eq(routineGroups.workspaceId, workspace), inArray(routineGroups.id, ids)));
+    return rows.map(mapRoutineGroup);
+  }
+
   async list(
     workspace: WorkspaceId,
     limit: number,
@@ -3036,6 +3048,15 @@ class PostgresRoutineGroupRepository implements RoutineGroupRepository {
     groupIds: readonly RoutineGroup["id"][],
     createdAt: Date,
   ): Promise<void> {
+    const lockedRoutine = await this.database
+      .select({ id: routines.id })
+      .from(routines)
+      .where(and(eq(routines.workspaceId, workspace), eq(routines.id, routine)))
+      .limit(1)
+      .for("update");
+    if (lockedRoutine.length === 0) {
+      throw new DomainError("routine.not_found", "The routine does not exist.");
+    }
     const currentRows = await this.database
       .select({ groupId: routineGroupMemberships.groupId })
       .from(routineGroupMemberships)

@@ -76,13 +76,13 @@ const portableFixtureSql = `
   INSERT INTO public.routine_groups (
     id, workspace_id, name, normalized_name, description, created_at, updated_at
   ) VALUES (
-    '10000000-0000-0000-0000-000000000025', '${workspaceId}', 'Languages',
+    '10000000-0000-0000-0000-000000000027', '${workspaceId}', 'Languages',
     'languages', 'Skills I am learning', '2026-07-15T12:00:00Z', '2026-07-15T12:00:00Z'
   );
   INSERT INTO public.routine_group_memberships (
     workspace_id, group_id, routine_id, created_at
   ) VALUES (
-    '${workspaceId}', '10000000-0000-0000-0000-000000000025',
+    '${workspaceId}', '10000000-0000-0000-0000-000000000027',
     '10000000-0000-0000-0000-000000000004', '2026-07-15T12:00:00Z'
   );
   INSERT INTO public.recurrence_series (

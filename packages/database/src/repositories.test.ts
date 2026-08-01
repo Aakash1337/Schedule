@@ -227,6 +227,38 @@ describe("PostgresUnitOfWork", () => {
     expect(repositories).toContain("routineGroups");
   });
 
+  it("locks a routine before comparing its group memberships", async () => {
+    const targetWorkspace = workspaceId("group-workspace");
+    const targetRoutine = routineId("group-routine");
+    const forUpdate = vi.fn().mockResolvedValue([{ id: targetRoutine }]);
+    const lockLimit = vi.fn().mockReturnValue({ for: forUpdate });
+    const lockWhere = vi.fn().mockReturnValue({ limit: lockLimit });
+    const membershipWhere = vi.fn().mockResolvedValue([]);
+    const select = vi
+      .fn()
+      .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: lockWhere }) })
+      .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: membershipWhere }) });
+    const transaction = vi.fn(async (operation: (database: unknown) => Promise<unknown>) =>
+      operation({ select }),
+    );
+    const connection = { db: { transaction } } as unknown as DatabaseConnection;
+
+    await new PostgresUnitOfWork(connection).run(({ routineGroups }) =>
+      routineGroups.replaceRoutineMemberships(
+        targetWorkspace,
+        targetRoutine,
+        [],
+        [],
+        new Date("2026-07-27T12:00:00.000Z"),
+      ),
+    );
+
+    expect(forUpdate).toHaveBeenCalledWith("update");
+    expect(forUpdate.mock.invocationCallOrder[0]!).toBeLessThan(
+      membershipWhere.mock.invocationCallOrder[0]!,
+    );
+  });
+
   it("wires hosted reauthorization into one product transaction", async () => {
     const transaction = vi.fn(async (operation: (transaction: unknown) => Promise<unknown>) =>
       operation({}),

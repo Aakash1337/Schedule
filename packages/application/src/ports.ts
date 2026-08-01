@@ -210,6 +210,10 @@ export interface RoutineRepository {
 
 export interface RoutineGroupRepository {
   findById(workspaceId: WorkspaceId, id: RoutineGroupId): Promise<RoutineGroup | null>;
+  findByIds(
+    workspaceId: WorkspaceId,
+    ids: readonly RoutineGroupId[],
+  ): Promise<readonly RoutineGroup[]>;
   list(workspaceId: WorkspaceId, limit: number, offset: number): Promise<readonly RoutineGroup[]>;
   listMemberships(
     workspaceId: WorkspaceId,
