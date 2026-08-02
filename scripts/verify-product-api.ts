@@ -23,6 +23,7 @@ const app = await buildApp({
 let createdWorkspaceId: string | null = null;
 let isolatedWorkspaceId: string | null = null;
 let feedbackWorkspaceId: string | null = null;
+let routineGroupWorkspaceId: string | null = null;
 let releaseConcurrencyLock: (() => void) | null = null;
 let heldLock: Promise<unknown> | null = null;
 
@@ -52,9 +53,12 @@ function hasDatabaseConstraint(error: unknown, code: string, constraintName: str
 }
 
 async function removeWorkspace(): Promise<void> {
-  const workspaceIds = [createdWorkspaceId, isolatedWorkspaceId, feedbackWorkspaceId].filter(
-    (workspaceId): workspaceId is string => workspaceId !== null,
-  );
+  const workspaceIds = [
+    createdWorkspaceId,
+    isolatedWorkspaceId,
+    feedbackWorkspaceId,
+    routineGroupWorkspaceId,
+  ].filter((workspaceId): workspaceId is string => workspaceId !== null);
   if (workspaceIds.length === 0) return;
   await connection.sql.begin(async (sql) => {
     await sql`select set_config('schedule.allow_activity_event_mutation', 'on', true)`;
@@ -3643,6 +3647,222 @@ try {
     `;
     assert.equal(staleFeedbackPlanRevisionCountAfter[0]?.count, 1);
     process.stdout.write("temporary-routine-feedback-postgres-api verification passed\n");
+  }
+
+  {
+    const groupWorkspaceResponse = await app.inject({
+      method: "POST",
+      url: "/v1/workspaces",
+      payload: { name: "Routine groups verification" },
+    });
+    assert.equal(groupWorkspaceResponse.statusCode, 201, groupWorkspaceResponse.body);
+    const groupWorkspaceId = groupWorkspaceResponse.json<{ id: string }>().id;
+    routineGroupWorkspaceId = groupWorkspaceId;
+    const createGroupRoutine = async (title: string) => {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/workspaces/${groupWorkspaceId}/routines`,
+        payload: {
+          title,
+          tags: { priority: "medium", contexts: ["computer"] },
+          duration: { minimumMinutes: 30, expectedMinutes: 30, maximumMinutes: 30 },
+          cadence: { period: "week", targetCompletions: 3, maximumCompletions: 4 },
+        },
+      });
+      assert.equal(response.statusCode, 201, response.body);
+      return response.json<{ id: string }>().id;
+    };
+    const spanishRoutineId = await createGroupRoutine("Practice Spanish");
+    const japaneseRoutineId = await createGroupRoutine("Study Japanese");
+    const groupPlanningSettings = {
+      timeZone: "UTC",
+      availableWindows: [
+        {
+          startsAt: "2026-07-20T08:00:00.000Z",
+          endsAt: "2026-07-20T09:00:00.000Z",
+        },
+      ],
+      targetMinutes: 30,
+      maximumMinutes: 60,
+      targetTaskCount: 1,
+      maximumTaskCount: 2,
+      availableContexts: ["computer"],
+      seed: "routine-groups-initial",
+    };
+    const initialGroupPlanResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${groupWorkspaceId}/plans`,
+      payload: {
+        ...groupPlanningSettings,
+        date: "2026-07-20",
+        requestRevision: 1,
+      },
+    });
+    assert.equal(initialGroupPlanResponse.statusCode, 200, initialGroupPlanResponse.body);
+    const initialGroupPlan = initialGroupPlanResponse.json<{
+      id: string;
+      items: { routineId: string }[];
+    }>();
+    assert.equal(initialGroupPlan.items.length, 1);
+    const initiallySelectedRoutineId = initialGroupPlan.items[0]!.routineId;
+    const routineToAdd =
+      initiallySelectedRoutineId === spanishRoutineId ? japaneseRoutineId : spanishRoutineId;
+
+    const createGroupResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${groupWorkspaceId}/routine-groups`,
+      payload: { name: "Languages", description: "Languages I am learning" },
+    });
+    assert.equal(createGroupResponse.statusCode, 201, createGroupResponse.body);
+    const createdGroup = createGroupResponse.json<{ id: string; version: number }>();
+    const duplicateGroupResponse = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${groupWorkspaceId}/routine-groups`,
+      payload: { name: "  languages  " },
+    });
+    assert.equal(duplicateGroupResponse.statusCode, 409, duplicateGroupResponse.body);
+    assert.equal(
+      duplicateGroupResponse.json<{ error: { code: string } }>().error.code,
+      "routine_group.name_conflict",
+    );
+
+    const replaceGroupsPath = `/v1/workspaces/${groupWorkspaceId}/routines/${routineToAdd}/groups`;
+    const assignedGroupResponse = await app.inject({
+      method: "PUT",
+      url: replaceGroupsPath,
+      payload: { expectedGroupIds: [], groupIds: [createdGroup.id] },
+    });
+    const assignedGroupReplay = await app.inject({
+      method: "PUT",
+      url: replaceGroupsPath,
+      payload: {
+        expectedGroupIds: [createdGroup.id],
+        groupIds: [createdGroup.id],
+      },
+    });
+    assert.deepEqual(assignedGroupResponse.json(), { groupIds: [createdGroup.id] });
+    assert.deepEqual(assignedGroupReplay.json(), { groupIds: [createdGroup.id] });
+    const groupMembershipsResponse = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${groupWorkspaceId}/routine-group-memberships`,
+    });
+    assert.deepEqual(
+      groupMembershipsResponse
+        .json<{ items: { groupId: string; routineId: string }[] }>()
+        .items.map(({ groupId, routineId }) => ({ groupId, routineId })),
+      [{ groupId: createdGroup.id, routineId: routineToAdd }],
+    );
+    const staleGroupReplacement = await app.inject({
+      method: "PUT",
+      url: replaceGroupsPath,
+      payload: { expectedGroupIds: [], groupIds: [] },
+    });
+    assert.equal(staleGroupReplacement.statusCode, 409, staleGroupReplacement.body);
+    assert.equal(
+      staleGroupReplacement.json<{ error: { code: string } }>().error.code,
+      "routine_group.membership_conflict",
+    );
+    const removedGroups = await app.inject({
+      method: "PUT",
+      url: replaceGroupsPath,
+      payload: { expectedGroupIds: [createdGroup.id], groupIds: [] },
+    });
+    assert.equal(removedGroups.statusCode, 200, removedGroups.body);
+    assert.deepEqual(removedGroups.json(), { groupIds: [] });
+    const restoredGroup = await app.inject({
+      method: "PUT",
+      url: replaceGroupsPath,
+      payload: { expectedGroupIds: [], groupIds: [createdGroup.id] },
+    });
+    assert.deepEqual(restoredGroup.json(), { groupIds: [createdGroup.id] });
+
+    const renamedGroupResponse = await app.inject({
+      method: "PATCH",
+      url: `/v1/workspaces/${groupWorkspaceId}/routine-groups/${createdGroup.id}`,
+      payload: { expectedVersion: 1, name: "Language learning" },
+    });
+    assert.equal(renamedGroupResponse.statusCode, 200, renamedGroupResponse.body);
+    assert.equal(renamedGroupResponse.json<{ version: number }>().version, 2);
+
+    const additionPayload = {
+      expectedPlanId: initialGroupPlan.id,
+      expectedHeadVersion: 1,
+      request: {
+        ...groupPlanningSettings,
+        seed: "routine-groups-addition",
+      },
+    };
+    const additionPath = `/v1/workspaces/${groupWorkspaceId}/plans/2026-07-20/routines/${routineToAdd}/additions`;
+    const addedRoutineResponse = await app.inject({
+      method: "POST",
+      url: additionPath,
+      headers: { "idempotency-key": "routine-groups-add-to-today" },
+      payload: additionPayload,
+    });
+    assert.equal(addedRoutineResponse.statusCode, 200, addedRoutineResponse.body);
+    const addedRoutinePlan = addedRoutineResponse.json<{
+      id: string;
+      headVersion: number;
+      items: { routineId: string }[];
+    }>();
+    assert.equal(addedRoutinePlan.headVersion, 2);
+    assert.deepEqual(
+      addedRoutinePlan.items.map((item) => item.routineId).sort(),
+      [spanishRoutineId, japaneseRoutineId].sort(),
+    );
+    const additionReplay = await app.inject({
+      method: "POST",
+      url: additionPath,
+      headers: { "idempotency-key": "routine-groups-add-to-today" },
+      payload: additionPayload,
+    });
+    assert.deepEqual(additionReplay.json(), addedRoutineResponse.json());
+    const alreadyPresentResponse = await app.inject({
+      method: "POST",
+      url: additionPath,
+      headers: { "idempotency-key": "routine-groups-already-present" },
+      payload: {
+        ...additionPayload,
+        expectedPlanId: addedRoutinePlan.id,
+        expectedHeadVersion: 2,
+        request: { ...additionPayload.request, seed: "routine-groups-already-present" },
+      },
+    });
+    assert.equal(alreadyPresentResponse.statusCode, 200, alreadyPresentResponse.body);
+    assert.equal(alreadyPresentResponse.json<{ id: string }>().id, addedRoutinePlan.id);
+    assert.equal(alreadyPresentResponse.json<{ headVersion: number }>().headVersion, 2);
+
+    const deleteGroupResponse = await app.inject({
+      method: "DELETE",
+      url: `/v1/workspaces/${groupWorkspaceId}/routine-groups/${createdGroup.id}`,
+      payload: { expectedVersion: 2 },
+    });
+    assert.equal(deleteGroupResponse.statusCode, 204, deleteGroupResponse.body);
+    const retainedRoutines = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${groupWorkspaceId}/routines?status=active`,
+    });
+    assert.deepEqual(
+      retainedRoutines
+        .json<{ items: { id: string }[] }>()
+        .items.map((item) => item.id)
+        .sort(),
+      [spanishRoutineId, japaneseRoutineId].sort(),
+    );
+    const [groupPersistence] = await connection.sql<
+      { group_count: number; membership_count: number; mutation_count: number }[]
+    >`
+      select
+        (select count(*)::int from routine_groups where workspace_id = ${groupWorkspaceId}) as group_count,
+        (select count(*)::int from routine_group_memberships where workspace_id = ${groupWorkspaceId}) as membership_count,
+        (select count(*)::int from plan_mutations where workspace_id = ${groupWorkspaceId} and kind = 'add_routine') as mutation_count
+    `;
+    assert.deepEqual(groupPersistence, {
+      group_count: 0,
+      membership_count: 0,
+      mutation_count: 2,
+    });
+    process.stdout.write("routine-groups-and-add-to-today-postgres-api verification passed\n");
   }
 
   const stalePlanRevision = await app.inject(planRequest);

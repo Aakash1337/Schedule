@@ -71,6 +71,7 @@ import type {
   PlanningWorkItemGraph,
   RecordPlanItemActivityInput,
   RoutineDurationInsightFeedbackRepository,
+  RoutineGroupRepository,
   RoutineSelectionPreferenceFeedbackRepository,
   RoutineRepository,
   ScheduleBlockRepository,
@@ -109,6 +110,8 @@ import {
   recordActivityEvent,
   reversePlanItemCompletion,
   routineId,
+  routineGroupId,
+  routineGroupNameKey,
   routineDurationInsightFeedbackId,
   routinePlanningFeedbackId,
   routineSelectionPreferenceFeedbackId,
@@ -141,6 +144,8 @@ import {
   type PlanWarning,
   type PlanningWorkItemDependency,
   type Routine,
+  type RoutineGroup,
+  type RoutineGroupMembership,
   type RoutineId,
   type RoutineDurationInsightFeedback,
   type RoutinePlanningFeedback,
@@ -185,6 +190,8 @@ import {
   routineDurationInsightFeedbackEvents,
   routinePlanningFeedbackEvents,
   routineSelectionPreferenceFeedbackEvents,
+  routineGroupMemberships,
+  routineGroups,
   routines,
   scheduleBlocks,
   workItemDependencies,
@@ -202,6 +209,8 @@ type WorkItemDependencyRow = typeof workItemDependencies.$inferSelect;
 type WorkspaceRow = typeof workspaces.$inferSelect;
 type ScheduleBlockRow = typeof scheduleBlocks.$inferSelect;
 type RoutineRow = typeof routines.$inferSelect;
+type RoutineGroupRow = typeof routineGroups.$inferSelect;
+type RoutineGroupMembershipRow = typeof routineGroupMemberships.$inferSelect;
 type ActivityEventRow = typeof activityEvents.$inferSelect;
 type RoutineDurationInsightFeedbackEventRow =
   typeof routineDurationInsightFeedbackEvents.$inferSelect;
@@ -960,6 +969,27 @@ function mapRoutine(row: RoutineRow): Routine {
     version: row.version,
     createdAt: new Date(row.createdAt),
     updatedAt: new Date(row.updatedAt),
+  };
+}
+
+function mapRoutineGroup(row: RoutineGroupRow): RoutineGroup {
+  return {
+    id: routineGroupId(row.id),
+    workspaceId: workspaceId(row.workspaceId),
+    name: row.name,
+    description: row.description,
+    version: row.version,
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+  };
+}
+
+function mapRoutineGroupMembership(row: RoutineGroupMembershipRow): RoutineGroupMembership {
+  return {
+    workspaceId: workspaceId(row.workspaceId),
+    groupId: routineGroupId(row.groupId),
+    routineId: routineId(row.routineId),
+    createdAt: new Date(row.createdAt),
   };
 }
 
@@ -2866,6 +2896,211 @@ class PostgresRoutineRepository implements RoutineRepository {
         "The routine changed before this update could be saved.",
       );
     }
+  }
+}
+
+class PostgresRoutineGroupRepository implements RoutineGroupRepository {
+  constructor(private readonly database: DatabaseExecutor) {}
+
+  async findById(workspace: WorkspaceId, id: RoutineGroup["id"]): Promise<RoutineGroup | null> {
+    const [row] = await this.database
+      .select()
+      .from(routineGroups)
+      .where(and(eq(routineGroups.workspaceId, workspace), eq(routineGroups.id, id)))
+      .limit(1);
+    return row === undefined ? null : mapRoutineGroup(row);
+  }
+
+  async findByIds(
+    workspace: WorkspaceId,
+    ids: readonly RoutineGroup["id"][],
+  ): Promise<readonly RoutineGroup[]> {
+    if (ids.length === 0) return [];
+    const rows = await this.database
+      .select()
+      .from(routineGroups)
+      .where(and(eq(routineGroups.workspaceId, workspace), inArray(routineGroups.id, ids)));
+    return rows.map(mapRoutineGroup);
+  }
+
+  async list(
+    workspace: WorkspaceId,
+    limit: number,
+    offset: number,
+  ): Promise<readonly RoutineGroup[]> {
+    const rows = await this.database
+      .select()
+      .from(routineGroups)
+      .where(eq(routineGroups.workspaceId, workspace))
+      .orderBy(asc(routineGroups.name), asc(routineGroups.id))
+      .limit(limit)
+      .offset(offset);
+    return rows.map(mapRoutineGroup);
+  }
+
+  async listMemberships(
+    workspace: WorkspaceId,
+    limit: number,
+    offset: number,
+  ): Promise<readonly RoutineGroupMembership[]> {
+    const rows = await this.database
+      .select()
+      .from(routineGroupMemberships)
+      .where(eq(routineGroupMemberships.workspaceId, workspace))
+      .orderBy(asc(routineGroupMemberships.groupId), asc(routineGroupMemberships.routineId))
+      .limit(limit)
+      .offset(offset);
+    return rows.map(mapRoutineGroupMembership);
+  }
+
+  async insert(group: RoutineGroup): Promise<void> {
+    const [total] = await this.database
+      .select({ value: count() })
+      .from(routineGroups)
+      .where(eq(routineGroups.workspaceId, group.workspaceId));
+    if ((total?.value ?? 0) >= 100) {
+      throw new DomainError(
+        "routine_group.workspace_limit_reached",
+        "A workspace cannot contain more than 100 groups.",
+      );
+    }
+    try {
+      await this.database.insert(routineGroups).values({
+        id: group.id,
+        workspaceId: group.workspaceId,
+        name: group.name,
+        normalizedName: routineGroupNameKey(group.name),
+        description: group.description,
+        version: group.version,
+        createdAt: group.createdAt,
+        updatedAt: group.updatedAt,
+      });
+    } catch (error) {
+      if (databaseErrorConstraint(error) === "routine_groups_workspace_name_uq") {
+        throw new DomainError(
+          "routine_group.name_conflict",
+          "A group with this name already exists.",
+        );
+      }
+      throw error;
+    }
+  }
+
+  async save(group: RoutineGroup, expectedVersion: number): Promise<void> {
+    try {
+      const updated = await this.database
+        .update(routineGroups)
+        .set({
+          name: group.name,
+          normalizedName: routineGroupNameKey(group.name),
+          description: group.description,
+          version: group.version,
+          updatedAt: group.updatedAt,
+        })
+        .where(
+          and(
+            eq(routineGroups.workspaceId, group.workspaceId),
+            eq(routineGroups.id, group.id),
+            eq(routineGroups.version, expectedVersion),
+          ),
+        )
+        .returning({ id: routineGroups.id });
+      if (updated.length === 0) {
+        throw new DomainError(
+          "routine_group.version_conflict",
+          "The group changed before this update could be saved.",
+        );
+      }
+    } catch (error) {
+      if (databaseErrorConstraint(error) === "routine_groups_workspace_name_uq") {
+        throw new DomainError(
+          "routine_group.name_conflict",
+          "A group with this name already exists.",
+        );
+      }
+      throw error;
+    }
+  }
+
+  async delete(group: RoutineGroup, expectedVersion: number): Promise<void> {
+    const deleted = await this.database
+      .delete(routineGroups)
+      .where(
+        and(
+          eq(routineGroups.workspaceId, group.workspaceId),
+          eq(routineGroups.id, group.id),
+          eq(routineGroups.version, expectedVersion),
+        ),
+      )
+      .returning({ id: routineGroups.id });
+    if (deleted.length === 0) {
+      throw new DomainError(
+        "routine_group.version_conflict",
+        "The group changed before this delete could be saved.",
+      );
+    }
+  }
+
+  async replaceRoutineMemberships(
+    workspace: WorkspaceId,
+    routine: RoutineId,
+    expectedGroupIds: readonly RoutineGroup["id"][],
+    groupIds: readonly RoutineGroup["id"][],
+    createdAt: Date,
+  ): Promise<void> {
+    const lockedRoutine = await this.database
+      .select({ id: routines.id })
+      .from(routines)
+      .where(and(eq(routines.workspaceId, workspace), eq(routines.id, routine)))
+      .limit(1)
+      .for("update");
+    if (lockedRoutine.length === 0) {
+      throw new DomainError("routine.not_found", "The routine does not exist.");
+    }
+    const currentRows = await this.database
+      .select({ groupId: routineGroupMemberships.groupId })
+      .from(routineGroupMemberships)
+      .where(
+        and(
+          eq(routineGroupMemberships.workspaceId, workspace),
+          eq(routineGroupMemberships.routineId, routine),
+        ),
+      );
+    const currentGroupIds = currentRows.map(({ groupId }) => groupId).sort();
+    const expected = [...expectedGroupIds].sort();
+    if (
+      currentGroupIds.length !== expected.length ||
+      currentGroupIds.some((groupId, index) => groupId !== expected[index])
+    ) {
+      throw new DomainError(
+        "routine_group.membership_conflict",
+        "The routine's groups changed before this update could be applied.",
+      );
+    }
+    const desired = [...groupIds].sort();
+    if (
+      currentGroupIds.length === desired.length &&
+      currentGroupIds.every((groupId, index) => groupId === desired[index])
+    ) {
+      return;
+    }
+    await this.database
+      .delete(routineGroupMemberships)
+      .where(
+        and(
+          eq(routineGroupMemberships.workspaceId, workspace),
+          eq(routineGroupMemberships.routineId, routine),
+        ),
+      );
+    if (groupIds.length === 0) return;
+    await this.database.insert(routineGroupMemberships).values(
+      groupIds.map((groupId) => ({
+        workspaceId: workspace,
+        groupId,
+        routineId: routine,
+        createdAt,
+      })),
+    );
   }
 }
 
@@ -5167,6 +5402,7 @@ function createTransactionContext(database: DatabaseExecutor): TransactionContex
     scheduleBlocks: new PostgresScheduleBlockRepository(database),
     auditEvents: new PostgresAuditEventRepository(database),
     routines: new PostgresRoutineRepository(database),
+    routineGroups: new PostgresRoutineGroupRepository(database),
     activityEvents: new PostgresActivityEventRepository(database),
     routineDurationInsightFeedback: new PostgresRoutineDurationInsightFeedbackRepository(database),
     dailyPlanFitInsightFeedback: new PostgresDailyPlanFitInsightFeedbackRepository(database),

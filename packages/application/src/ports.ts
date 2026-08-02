@@ -14,6 +14,9 @@ import type {
   OneOffReminder,
   OneOffReminderId,
   Routine,
+  RoutineGroup,
+  RoutineGroupId,
+  RoutineGroupMembership,
   RoutineDurationInsightFeedback,
   RoutineId,
   RoutinePlanningFeedback,
@@ -203,6 +206,31 @@ export interface RoutineRepository {
   listPlanningCandidates(workspaceId: WorkspaceId, date: LocalDate): Promise<readonly Routine[]>;
   insert(routine: Routine): Promise<void>;
   save(routine: Routine, expectedVersion: number): Promise<void>;
+}
+
+export interface RoutineGroupRepository {
+  findById(workspaceId: WorkspaceId, id: RoutineGroupId): Promise<RoutineGroup | null>;
+  findByIds(
+    workspaceId: WorkspaceId,
+    ids: readonly RoutineGroupId[],
+  ): Promise<readonly RoutineGroup[]>;
+  list(workspaceId: WorkspaceId, limit: number, offset: number): Promise<readonly RoutineGroup[]>;
+  listMemberships(
+    workspaceId: WorkspaceId,
+    limit: number,
+    offset: number,
+  ): Promise<readonly RoutineGroupMembership[]>;
+  insert(group: RoutineGroup): Promise<void>;
+  save(group: RoutineGroup, expectedVersion: number): Promise<void>;
+  delete(group: RoutineGroup, expectedVersion: number): Promise<void>;
+  /** Atomically replaces every group relationship for one routine. */
+  replaceRoutineMemberships(
+    workspaceId: WorkspaceId,
+    routineId: RoutineId,
+    expectedGroupIds: readonly RoutineGroupId[],
+    groupIds: readonly RoutineGroupId[],
+    createdAt: Date,
+  ): Promise<void>;
 }
 
 export interface ActivityHistoryCursor {
@@ -486,6 +514,7 @@ export interface TransactionContext {
   readonly scheduleBlocks: ScheduleBlockRepository;
   readonly auditEvents: AuditEventRepository;
   readonly routines: RoutineRepository;
+  readonly routineGroups: RoutineGroupRepository;
   readonly activityEvents: ActivityEventRepository;
   readonly routineDurationInsightFeedback: RoutineDurationInsightFeedbackRepository;
   readonly dailyPlanFitInsightFeedback: DailyPlanFitInsightFeedbackRepository;

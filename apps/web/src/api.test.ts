@@ -191,6 +191,109 @@ describe("web API client", () => {
     );
   });
 
+  it("aggregates stable routine-group and membership pages", async () => {
+    const groups = Array.from({ length: 201 }, (_, index) => ({
+      id: `group-${index}`,
+      name: `Group ${index}`,
+    }));
+    const memberships = Array.from({ length: 201 }, (_, index) => ({
+      groupId: `group-${index}`,
+      routineId: `routine-${index}`,
+    }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const offset = url.endsWith("offset=200") ? 200 : 0;
+      const items = url.includes("routine-group-memberships") ? memberships : groups;
+      return pageResponse(items.slice(offset, offset + 200), offset);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const groupPage = await api.listRoutineGroups("workspace-1");
+    const membershipPage = await api.listRoutineGroupMemberships("workspace-1");
+
+    expect(groupPage.items).toHaveLength(201);
+    expect(membershipPage.items).toHaveLength(201);
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/routine-groups?limit=200&offset=200",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/workspaces/workspace-1/routine-group-memberships?limit=200&offset=200",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("uses exact group-management and add-to-Today routes", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, options?: RequestInit) => {
+      if (options?.method === "DELETE") return new Response(null, { status: 204 });
+      return new Response(JSON.stringify({ id: "resource-1", headVersion: 3, groupIds: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const groupInput = { name: "Languages", description: "Languages I am learning" };
+    const groupUpdate = { expectedVersion: 1, name: "Language learning" };
+    const planInput = {
+      expectedPlanId: "plan-1",
+      expectedHeadVersion: 2,
+      request: {
+        timeZone: "UTC",
+        availableWindows: [],
+        targetMinutes: 60,
+        targetTaskCount: 2,
+        fitPreference: "balanced" as const,
+        energy: null,
+        availableContexts: [],
+        seed: "group-addition",
+      },
+    };
+
+    await api.createRoutineGroup("workspace-1", groupInput);
+    await api.updateRoutineGroup("workspace-1", "language/group", groupUpdate);
+    await api.replaceRoutineGroups("workspace-1", "routine/1", [], ["language/group"]);
+    await api.addRoutineToPlan(
+      "workspace-1",
+      "2026-07-31",
+      "routine/1",
+      planInput,
+      "add-routine-1",
+    );
+    await api.deleteRoutineGroup("workspace-1", "language/group", 2);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/v1/workspaces/workspace-1/routine-groups",
+      expect.objectContaining({ method: "POST", body: JSON.stringify(groupInput) }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/v1/workspaces/workspace-1/routine-groups/language%2Fgroup",
+      expect.objectContaining({ method: "PATCH", body: JSON.stringify(groupUpdate) }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/v1/workspaces/workspace-1/routines/routine%2F1/groups",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ expectedGroupIds: [], groupIds: ["language/group"] }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/v1/workspaces/workspace-1/plans/2026-07-31/routines/routine%2F1/additions",
+      expect.objectContaining({ method: "POST", body: JSON.stringify(planInput) }),
+    );
+    const additionOptions = fetchMock.mock.calls[3]?.[1];
+    expect((additionOptions?.headers as Headers).get("Idempotency-Key")).toBe("add-routine-1");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      "/v1/workspaces/workspace-1/routine-groups/language%2Fgroup",
+      expect.objectContaining({ method: "DELETE", body: JSON.stringify({ expectedVersion: 2 }) }),
+    );
+  });
+
   it("creates, lists, reparents, and detaches subtasks through hierarchy routes", async () => {
     const child = { id: "child-1", parentWorkItemId: "parent/1" };
     let requestNumber = 0;

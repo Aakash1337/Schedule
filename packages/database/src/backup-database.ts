@@ -50,6 +50,8 @@ export const expectedScheduleTables = [
   "plan_mutations",
   "recurrence_series",
   "routine_duration_insight_feedback_events",
+  "routine_group_memberships",
+  "routine_groups",
   "routine_planning_feedback_events",
   "routine_selection_preference_feedback_events",
   "routines",

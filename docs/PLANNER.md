@@ -182,6 +182,16 @@ The highest generated revision becomes the authoritative per-day head. Plan item
 
 Regeneration and replacement take the per-day transaction lock, resolve command idempotency before checking the head, and allocate `current revision + 1` on the server. Retained non-terminal items normally preserve position, window, duration, lock state, and typed source identity. On regeneration, an unlocked work item with a currently unmet prerequisite is removed from retention and excluded from residual selection. A locked nonterminal item remains anchored under the existing user-authority rules; terminal items remain excluded under the existing replan rules. Retained items' occupied time and source identities are removed from the residual planner input. Replacement anchors every sibling and excludes the target source. The resulting snapshot hashes the source plan, anchors, exclusions, canonical dependency projections, and residual planner input; the source revision is never mutated. Adding or removing an edge alone never changes the current revision or Today head.
 
+An explicit routine addition uses the same immutable mutation path but anchors every current
+non-terminal item, whether locked or unlocked. The request may identify at most one required routine.
+That identity is included in the deterministic input snapshot and is evaluated before ordinary
+candidate limiting. A required routine receives ordering priority only after passing the same active
+status, lifecycle-date, cadence maximum, spacing, weekday, context, feedback, duration, time-window,
+minute-bound, and task-bound checks as any other candidate. If it is missing, ineligible, or cannot
+fit beside the anchors, the planner fails the command atomically rather than returning a plan without
+it. If it is already represented by a current item, the application records an idempotent successful
+no-op instead of allocating a redundant revision.
+
 Temporary routine feedback uses the same per-day transaction lock, optimistic plan/head identity,
 workspace-and-date-scoped idempotency ledger, and immutable revision path. Applying feedback is limited to an
 unlocked, pending routine plan item; work items and terminal or started routine items are rejected.

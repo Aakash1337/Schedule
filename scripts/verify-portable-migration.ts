@@ -73,6 +73,18 @@ const portableFixtureSql = `
     '10000000-0000-0000-0000-000000000004', '${workspaceId}', 'routine', 30, 30,
     30, 'week', 1, 1, '2026-07-15T12:00:00Z', '2026-07-15T12:00:00Z'
   );
+  INSERT INTO public.routine_groups (
+    id, workspace_id, name, normalized_name, description, created_at, updated_at
+  ) VALUES (
+    '10000000-0000-0000-0000-000000000027', '${workspaceId}', 'Languages',
+    'languages', 'Skills I am learning', '2026-07-15T12:00:00Z', '2026-07-15T12:00:00Z'
+  );
+  INSERT INTO public.routine_group_memberships (
+    workspace_id, group_id, routine_id, created_at
+  ) VALUES (
+    '${workspaceId}', '10000000-0000-0000-0000-000000000027',
+    '10000000-0000-0000-0000-000000000004', '2026-07-15T12:00:00Z'
+  );
   INSERT INTO public.recurrence_series (
     id, workspace_id, rule, local_start, time_zone, duration_minutes, created_at, updated_at
   ) VALUES (
@@ -482,6 +494,23 @@ async function consumeArchive(archivePath: string): Promise<void> {
     for (const table of portableDataPolicyV1.includedTables) {
       assert.ok((counts[table] ?? 0) > 0, `portable fixture table is empty after import: ${table}`);
     }
+    const routineGroupSignal = (
+      await runPsql(
+        targetPlan.activeDatabase,
+        `SELECT group_row.name || '|' || group_row.normalized_name || '|' || membership.routine_id::text
+         FROM public.routine_groups AS group_row
+         JOIN public.routine_group_memberships AS membership
+           ON membership.workspace_id = group_row.workspace_id
+          AND membership.group_id = group_row.id
+         WHERE group_row.workspace_id = '${workspaceId}'
+         ORDER BY group_row.id, membership.routine_id;`,
+      )
+    ).trim();
+    assert.equal(
+      routineGroupSignal,
+      "Languages|languages|10000000-0000-0000-0000-000000000004",
+      "portable-routine-groups-and-memberships",
+    );
     const normalized = (
       await runPsql(
         targetPlan.activeDatabase,

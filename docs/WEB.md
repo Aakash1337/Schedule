@@ -104,9 +104,9 @@ The application uses a persistent desktop rail and a compact mobile navigation b
    visible planner pressure but cannot make ineligible or over-capacity work appear in Today. Each
    card also lists its parent, direct subtasks, completion progress, and direct prerequisites.
 3. **Routines** manages the reusable activity pool, including structured tags, duration policy,
-   cadence, status, activity history, and transparent duration calibration. The selected routine
-   reports whether it needs more completed sessions, supports the current estimate, has a material
-   in-range suggestion, or needs manual range review.
+   cadence, status, activity history, transparent duration calibration, and workspace-defined
+   overarching groups. The selected routine reports whether it needs more completed sessions,
+   supports the current estimate, has a material in-range suggestion, or needs manual range review.
 4. **Calendar** presents one-time schedule blocks in a week-first agenda. Blocks may link to a work
    item, but remain independently editable. Date and time fields use the browser's IANA time zone so
    the displayed wall time and persisted instant cannot disagree.
@@ -118,6 +118,29 @@ The application uses a persistent desktop rail and a compact mobile navigation b
 
 Workspace creation is the first-run path. Returning sessions restore the last selected workspace and
 open Today.
+
+## Routine groups and quick Today selection
+
+The Routines header opens an inline **Manage groups** panel. A group has a required name, optional
+description, independent optimistic version, and a visible routine count. Create and rename happen
+in place. Delete requires a second deliberate action and explains that routines are retained.
+
+The group selector filters the active, paused, or archived routine pool without replacing the status
+tabs. A routine editor shows every group as an accessible checkbox, supports multiple memberships,
+and compare-and-swaps the complete membership set only after the routine itself is authoritative. If
+another editor changes that set first, the current choices reload for deliberate review instead of
+being overwritten. A newly created
+routine opened from a selected group starts with that group checked. Group chips remain visible in
+the list and selected-routine details; scheduling tags retain their separate presentation.
+
+Selecting a group exposes **Add to Today** only for active routines. The client first reads the
+current browser-local Today plan, returns a quiet success when the routine is already present, and
+otherwise reuses its exact planning settings with a fresh deterministic seed. One pending
+idempotency identity is retained across ambiguous retry. Success verifies that the server response
+actually contains the chosen routine and announces it inline. A stale head triggers one authoritative
+refresh; the client reports whether another writer already added the routine or asks the user to try
+again. Ineligible or over-capacity routines remain unchanged and surface the planner's error rather
+than silently weakening cadence or capacity rules.
 
 ## Mutation and conflict contract
 

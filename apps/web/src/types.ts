@@ -222,6 +222,23 @@ export interface Routine {
   readonly updatedAt: string;
 }
 
+export interface RoutineGroup {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly name: string;
+  readonly description: string | null;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface RoutineGroupMembership {
+  readonly workspaceId: string;
+  readonly groupId: string;
+  readonly routineId: string;
+  readonly createdAt: string;
+}
+
 export type RoutineSelectionPreferenceKind = "more_often" | "less_often" | "reset";
 
 /** Explicit, reversible influence on this routine's selection in future plans. */

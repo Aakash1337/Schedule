@@ -10,6 +10,7 @@ import {
   createCadencePolicy,
   createDurationRange,
   createRoutine,
+  createRoutineGroup,
   createScheduleBlock,
   createStructuredTags,
   createWorkItem,
@@ -21,9 +22,11 @@ import {
   planItemId,
   recordActivityEvent,
   routineId,
+  routineGroupId,
   routineDurationInsightFeedbackId,
   scheduleBlockId,
   updateRoutine as applyRoutineUpdate,
+  updateRoutineGroup as applyRoutineGroupUpdate,
   updateScheduleBlock as applyScheduleBlockUpdate,
   updateWorkItem as applyWorkItemUpdate,
   workItemId,
@@ -45,6 +48,7 @@ import type { ProductServices } from "./product-routes.js";
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 const workspaceUuid = "11111111-1111-4111-8111-111111111111";
 const routineUuid = "22222222-2222-4222-8222-222222222222";
+const routineGroupUuid = "12121212-1212-4121-8121-121212121212";
 const eventUuid = "33333333-3333-4333-8333-333333333333";
 const planUuid = "44444444-4444-4444-8444-444444444444";
 const workItemUuid = "55555555-5555-4555-8555-555555555555";
@@ -235,6 +239,8 @@ afterEach(async () => {
 
 function createHarness(overrides: Partial<ProductServices> = {}) {
   let storedPlan: DailyPlan | null = null;
+  let storedRoutineGroup: ReturnType<typeof createRoutineGroup> | null = null;
+  let storedRoutineGroupMembership = false;
   let storedWorkItem: ReturnType<typeof createWorkItem> | null = null;
   let storedDependency: WorkItemDependency | null = null;
   let storedScheduleBlock: ReturnType<typeof createScheduleBlock> | null = null;
@@ -293,6 +299,14 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       offset: query.offset ?? 0,
     }),
     createRoutine: async (command) => createRoutine({ ...command, id: routine.id }),
+    createRoutineGroup: async (command) => {
+      storedRoutineGroup = createRoutineGroup({
+        ...command,
+        id: routineGroupId(routineGroupUuid),
+        now: new Date("2026-07-15T12:00:00.000Z"),
+      });
+      return storedRoutineGroup;
+    },
     createWorkItem: async (command) => {
       storedWorkItem = createWorkItem({
         ...command,
@@ -471,6 +485,51 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
         now: new Date("2026-07-15T12:00:00.000Z"),
       }),
     listRoutines: async () => [routine],
+    updateRoutineGroup: async (command) => {
+      if (storedRoutineGroup === null) {
+        throw new DomainError("routine_group.not_found", "Missing.");
+      }
+      if (command.expectedVersion !== storedRoutineGroup.version) {
+        throw new DomainError("routine_group.version_conflict", "The group changed.");
+      }
+      storedRoutineGroup = applyRoutineGroupUpdate(storedRoutineGroup, {
+        ...(command.name === undefined ? {} : { name: command.name }),
+        ...(command.description === undefined ? {} : { description: command.description }),
+        now: new Date("2026-07-15T12:01:00.000Z"),
+      });
+      return storedRoutineGroup;
+    },
+    deleteRoutineGroup: async (command) => {
+      if (storedRoutineGroup === null) {
+        throw new DomainError("routine_group.not_found", "Missing.");
+      }
+      if (command.expectedVersion !== storedRoutineGroup.version) {
+        throw new DomainError("routine_group.version_conflict", "The group changed.");
+      }
+      storedRoutineGroup = null;
+      storedRoutineGroupMembership = false;
+    },
+    listRoutineGroups: async () => (storedRoutineGroup === null ? [] : [storedRoutineGroup]),
+    listRoutineGroupMemberships: async () =>
+      storedRoutineGroup !== null && storedRoutineGroupMembership
+        ? [
+            {
+              workspaceId: workspace.id,
+              groupId: storedRoutineGroup.id,
+              routineId: routine.id,
+              createdAt: new Date("2026-07-15T12:02:00.000Z"),
+            },
+          ]
+        : [],
+    replaceRoutineGroupMemberships: async (command) => {
+      const currentGroupIds =
+        storedRoutineGroup !== null && storedRoutineGroupMembership ? [storedRoutineGroup.id] : [];
+      if ([...command.expectedGroupIds].sort().join(":") !== currentGroupIds.sort().join(":")) {
+        throw new DomainError("routine_group.membership_conflict", "The routine's groups changed.");
+      }
+      storedRoutineGroupMembership =
+        storedRoutineGroup !== null && command.groupIds.includes(storedRoutineGroup.id);
+    },
     listRoutineActivity: async () => ({ items: [activity], nextCursor: null }),
     recordActivityEvent: async (command) =>
       recordActivityEvent({
@@ -547,6 +606,10 @@ function createHarness(overrides: Partial<ProductServices> = {}) {
       return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
     },
     replacePlanItem: async (command) => {
+      if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
+      return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
+    },
+    addRoutineToPlan: async (command) => {
       if (storedPlan === null) throw new DomainError("planning.current_not_found", "Missing.");
       return { plan: storedPlan, headVersion: command.expectedHeadVersion + 1 };
     },
@@ -1361,6 +1424,133 @@ describe("local product API", () => {
     expect(empty.statusCode).toBe(400);
     expect(stale.statusCode).toBe(409);
     expect(stale.json()).toMatchObject({ error: { code: "routine.version_conflict" } });
+  });
+
+  it("manages routine groups, memberships, and deletion without deleting routines", async () => {
+    const app = await appWith(createHarness().services);
+    const groupsPath = `/v1/workspaces/${workspaceUuid}/routine-groups`;
+    const membershipsPath = `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/groups`;
+
+    const created = await app.inject({
+      method: "POST",
+      url: groupsPath,
+      payload: { name: "Languages", description: "Languages I am actively learning" },
+    });
+    const listed = await app.inject({ method: "GET", url: groupsPath });
+    const assigned = await app.inject({
+      method: "PUT",
+      url: membershipsPath,
+      payload: { expectedGroupIds: [], groupIds: [routineGroupUuid] },
+    });
+    const assignedAgain = await app.inject({
+      method: "PUT",
+      url: membershipsPath,
+      payload: {
+        expectedGroupIds: [routineGroupUuid],
+        groupIds: [routineGroupUuid],
+      },
+    });
+    const memberships = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/routine-group-memberships`,
+    });
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: `${groupsPath}/${routineGroupUuid}`,
+      payload: { expectedVersion: 1, name: "Language learning" },
+    });
+    const replaced = await app.inject({
+      method: "PUT",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/groups`,
+      payload: { expectedGroupIds: [routineGroupUuid], groupIds: [] },
+    });
+    const removedMemberships = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/routine-group-memberships`,
+    });
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `${groupsPath}/${routineGroupUuid}`,
+      payload: { expectedVersion: 2 },
+    });
+    const retainedRoutine = await app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}`,
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      id: routineGroupUuid,
+      name: "Languages",
+      version: 1,
+    });
+    expect(listed.json()).toMatchObject({
+      items: [{ id: routineGroupUuid }],
+      page: { limit: 100, offset: 0 },
+    });
+    expect(assigned.json()).toEqual({ groupIds: [routineGroupUuid] });
+    expect(assignedAgain.json()).toEqual({ groupIds: [routineGroupUuid] });
+    expect(memberships.json().items).toMatchObject([
+      { groupId: routineGroupUuid, routineId: routineUuid },
+    ]);
+    expect(renamed.json()).toMatchObject({ name: "Language learning", version: 2 });
+    expect(replaced.json()).toEqual({ groupIds: [] });
+    expect(removedMemberships.json().items).toEqual([]);
+    expect(deleted.statusCode).toBe(204);
+    expect(retainedRoutine.statusCode).toBe(200);
+  });
+
+  it("rejects duplicate routine-group batch assignments before service execution", async () => {
+    const app = await appWith(createHarness().services);
+    const response = await app.inject({
+      method: "PUT",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/groups`,
+      payload: {
+        expectedGroupIds: [],
+        groupIds: [routineGroupUuid, routineGroupUuid],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: "request.validation_failed" } });
+  });
+
+  it("rejects routine-group names whose normalized key exceeds the storage bound", async () => {
+    const app = await appWith(createHarness().services);
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/routine-groups`,
+      payload: { name: "İ".repeat(80) },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({ error: { code: "routine_group.name_invalid" } });
+  });
+
+  it("rejects stale routine-group batch replacements", async () => {
+    const app = await appWith(createHarness().services);
+    const membershipPath = `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/groups`;
+    await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/routine-groups`,
+      payload: { name: "Languages" },
+    });
+    await app.inject({
+      method: "PUT",
+      url: membershipPath,
+      payload: { expectedGroupIds: [], groupIds: [routineGroupUuid] },
+    });
+
+    const response = await app.inject({
+      method: "PUT",
+      url: `/v1/workspaces/${workspaceUuid}/routines/${routineUuid}/groups`,
+      payload: { expectedGroupIds: [], groupIds: [] },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: { code: "routine_group.membership_conflict" },
+    });
   });
 
   it("returns the initial routine selection preference state for an explicit time zone", async () => {
@@ -2580,6 +2770,64 @@ describe("local product API", () => {
     expect(invalidKind.statusCode).toBe(400);
     expect(reset.statusCode).toBe(200);
     expect(reset.json()).toMatchObject({ id: planUuid, headVersion: 3 });
+  });
+
+  it("adds one selected routine to Today through an idempotent plan mutation", async () => {
+    let received: Parameters<ProductServices["addRoutineToPlan"]>[0] | null = null;
+    const app = await appWith(
+      createHarness({
+        addRoutineToPlan: async (command) => {
+          received = command;
+          return {
+            plan: generateDailyPlan({
+              id: command.expectedPlanId,
+              request: command.request,
+              routines: [routine],
+              events: [],
+              generatedAt: new Date("2026-07-15T07:00:00.000Z"),
+            }),
+            headVersion: command.expectedHeadVersion + 1,
+          };
+        },
+      }).services,
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${workspaceUuid}/plans/2026-07-15/routines/${routineUuid}/additions`,
+      headers: { "idempotency-key": "add-language-to-today" },
+      payload: {
+        expectedPlanId: planUuid,
+        expectedHeadVersion: 3,
+        request: {
+          timeZone: "UTC",
+          availableWindows: [
+            { startsAt: "2026-07-15T08:00:00.000Z", endsAt: "2026-07-15T09:00:00.000Z" },
+          ],
+          targetMinutes: 30,
+          targetTaskCount: 1,
+          availableContexts: ["computer"],
+          seed: "add-language-api",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      id: planUuid,
+      headVersion: 4,
+      items: [{ routineId: routineUuid }],
+    });
+    expect(received).toMatchObject({
+      workspaceId: workspace.id,
+      routineId: routine.id,
+      expectedPlanId: dailyPlanId(planUuid),
+      expectedHeadVersion: 3,
+      idempotencyKey: "add-language-to-today",
+      request: {
+        date: localDate("2026-07-15"),
+        seed: "add-language-api",
+      },
+    });
   });
 
   it("returns 404 for an absent exact plan and 409 for idempotency conflicts", async () => {

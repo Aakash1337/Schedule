@@ -127,7 +127,8 @@ before marking a successful restore and restarts through normal admission.
 The policy is exhaustive: every current Schedule table is classified as portable or local-only, and
 a test fails whenever a new table is added without an explicit decision. The portable set includes:
 
-- workspaces, work items, dependencies, routines, recurrence, and schedule blocks;
+- workspaces, work items, dependencies, routines, overarching routine groups and memberships,
+  recurrence, and schedule blocks;
 - every daily-plan revision, plan item, current item state, mutation, and activity event;
 - reminder profiles, rules, and one-off reminder definitions;
 - audit history and planner interaction history;
@@ -176,10 +177,10 @@ Unit tests enforce the exhaustive table policy, strict archive framing, corrupti
 rejection, symlink and overwrite refusal, exact dump catalog, archive-ID- and exact-byte-bound
 confirmation, durable journal transitions, every promotion crash seam, bounded recovery topology,
 and explicit replacement confirmation.
-The real PostgreSQL drill creates fixtures in every portable table, including AI proposals and all
-four long-term feedback streams, exports them, imports them into an independent database, proves
-secret and transient tables are empty, verifies normalization and exact content signals, replaces an
-existing database, and exercises rollback:
+The real PostgreSQL drill creates fixtures in every portable table, including routine groups and
+memberships, AI proposals, and all four long-term feedback streams; exports them; imports them into
+an independent database; proves secret and transient tables are empty; verifies normalization and
+exact content signals; replaces an existing database; and exercises rollback:
 
 ```powershell
 pnpm verify:portable-migration

@@ -67,6 +67,7 @@ describe("createProductServices", () => {
     });
 
     expect(Object.keys(services).sort()).toEqual([
+      "addRoutineToPlan",
       "addWorkItemDependency",
       "applyRoutineFeedback",
       "approveRoutineDurationInsight",
@@ -77,9 +78,11 @@ describe("createProductServices", () => {
       "createNotificationRule",
       "createOneOffReminder",
       "createRoutine",
+      "createRoutineGroup",
       "createScheduleBlock",
       "createWorkItem",
       "createWorkspace",
+      "deleteRoutineGroup",
       "deleteScheduleBlock",
       "dismissDailyPlanFitInsight",
       "dismissRoutineDurationInsight",
@@ -104,6 +107,8 @@ describe("createProductServices", () => {
       "listNotificationRules",
       "listOneOffReminders",
       "listRoutineActivity",
+      "listRoutineGroupMemberships",
+      "listRoutineGroups",
       "listRoutines",
       "listScheduleBlocks",
       "listWorkItemChildren",
@@ -119,6 +124,7 @@ describe("createProductServices", () => {
       "regenerateDailyPlan",
       "removeWorkItemDependency",
       "replacePlanItem",
+      "replaceRoutineGroupMemberships",
       "resetDailyPlanFitInsightDismissal",
       "resetRoutineDurationInsightDismissal",
       "resetRoutineFeedback",
@@ -128,6 +134,7 @@ describe("createProductServices", () => {
       "updateNotificationRule",
       "updateOneOffReminder",
       "updateRoutine",
+      "updateRoutineGroup",
       "updateScheduleBlock",
       "updateWorkItem",
     ]);

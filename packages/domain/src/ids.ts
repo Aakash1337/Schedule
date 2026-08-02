@@ -8,6 +8,7 @@ export type WorkspaceId = BrandedId<"WorkspaceId">;
 export type WorkItemId = BrandedId<"WorkItemId">;
 export type ScheduleBlockId = BrandedId<"ScheduleBlockId">;
 export type RoutineId = BrandedId<"RoutineId">;
+export type RoutineGroupId = BrandedId<"RoutineGroupId">;
 export type ActivityEventId = BrandedId<"ActivityEventId">;
 export type DailyPlanId = BrandedId<"DailyPlanId">;
 export type PlanItemId = BrandedId<"PlanItemId">;
@@ -40,6 +41,9 @@ export const scheduleBlockId = (value: string = randomUUID()): ScheduleBlockId =
   toId(value, "ScheduleBlockId");
 
 export const routineId = (value: string = randomUUID()): RoutineId => toId(value, "RoutineId");
+
+export const routineGroupId = (value: string = randomUUID()): RoutineGroupId =>
+  toId(value, "RoutineGroupId");
 
 export const activityEventId = (value: string = randomUUID()): ActivityEventId =>
   toId(value, "ActivityEventId");

@@ -322,6 +322,11 @@ export interface GenerateDailyPlanInput {
   readonly routineFeedback?: readonly RoutinePlanningFeedback[];
   /** Explicit user ranking signals. These never affect cadence or eligibility. */
   readonly routineSelectionPreferenceFeedback?: readonly RoutineSelectionPreferenceFeedback[];
+  /**
+   * An explicit user choice that must be present in the result. Required routines still pass
+   * ordinary eligibility and hard-capacity checks; omission is an error rather than a soft miss.
+   */
+  readonly requiredRoutineId?: RoutineId;
   readonly config?: PlannerConfig;
   readonly generatedAt?: Date;
 }
@@ -1085,12 +1090,21 @@ function planFitness(
 function buildCandidatePlan(
   order: readonly Candidate[],
   request: DailyPlanningRequest,
+  requiredSourceKeys: ReadonlySet<string>,
 ): CandidatePlan {
   const remainingWindows = request.availableWindows.map(windowMinutes);
   const placements: MutablePlacement[] = [];
   let totalMinutes = 0;
+  const ordered = [
+    ...order
+      .filter((candidate) => requiredSourceKeys.has(planSourceKey(candidate.source)))
+      .sort((left, right) =>
+        planSourceKey(left.source).localeCompare(planSourceKey(right.source), "en"),
+      ),
+    ...order.filter((candidate) => !requiredSourceKeys.has(planSourceKey(candidate.source))),
+  ];
 
-  for (const candidate of order) {
+  for (const candidate of ordered) {
     if (placements.length >= request.maximumTaskCount) break;
     if (placements.length >= request.targetTaskCount && totalMinutes >= request.targetMinutes) {
       break;
@@ -1291,6 +1305,7 @@ function createInputSnapshot(
   events: readonly ActivityEvent[],
   routineFeedback: readonly RoutinePlanningFeedback[],
   routineSelectionPreferenceFeedback: readonly RoutineSelectionPreferenceFeedback[],
+  requiredRoutineId: RoutineId | undefined,
   config: PlannerConfig,
 ): JsonValue {
   const canonicalRoutines = [...routines].sort((left, right) =>
@@ -1308,6 +1323,7 @@ function createInputSnapshot(
     ...(routineSelectionPreferenceFeedback.length === 0
       ? {}
       : { routineSelectionPreferenceFeedback }),
+    ...(requiredRoutineId === undefined ? {} : { requiredRoutineId }),
     routines: canonicalRoutines,
     workItemDependencies,
     workItems: canonicalWorkItems,
@@ -1439,6 +1455,14 @@ function planDailyAlternatives(
     );
     routineIds.add(routine.id);
   }
+  invariant(
+    input.requiredRoutineId === undefined || routineIds.has(input.requiredRoutineId),
+    "planning.required_routine_not_found",
+    "A required routine must belong to the planning candidate pool.",
+  );
+  const requiredSourceKeys = new Set(
+    input.requiredRoutineId === undefined ? [] : [`routine:${input.requiredRoutineId}`],
+  );
   const workItemIds = new Set<WorkItemId>();
   for (const workItem of input.workItems ?? []) {
     invariant(
@@ -1534,6 +1558,14 @@ function planDailyAlternatives(
       ),
     }));
   const evaluations = [...routineEvaluations, ...workItemEvaluations];
+  const requiredEvaluations = routineEvaluations.filter(
+    ({ routine }) => routine.id === input.requiredRoutineId,
+  );
+  invariant(
+    requiredEvaluations.every(({ evaluation }) => evaluation.eligible),
+    "planning.required_routine_ineligible",
+    "The selected routine is not eligible for this plan date and request.",
+  );
   const exclusions = evaluations
     .filter(({ evaluation }) => !evaluation.eligible)
     .map(({ routine, workItem, source, evaluation }) => ({
@@ -1545,13 +1577,14 @@ function planDailyAlternatives(
   const warnings: PlanWarning[] = [];
   if (eligible.length > config.maxCandidates) {
     warnings.push("candidate_limit_applied");
-    eligible = eligible
-      .sort(
-        (left, right) =>
-          right.evaluation.score - left.evaluation.score ||
-          planSourceKey(left.source).localeCompare(planSourceKey(right.source), "en"),
-      )
-      .slice(0, config.maxCandidates);
+    const ranked = eligible.sort(
+      (left, right) =>
+        right.evaluation.score - left.evaluation.score ||
+        planSourceKey(left.source).localeCompare(planSourceKey(right.source), "en"),
+    );
+    const required = ranked.filter(({ source }) => requiredSourceKeys.has(planSourceKey(source)));
+    const ordinary = ranked.filter(({ source }) => !requiredSourceKeys.has(planSourceKey(source)));
+    eligible = [...required, ...ordinary.slice(0, config.maxCandidates - required.length)];
   }
   if (eligible.length === 0) warnings.push("no_eligible_routines");
 
@@ -1585,10 +1618,23 @@ function planDailyAlternatives(
       right.evaluation.score - left.evaluation.score ||
       planSourceKey(left.source).localeCompare(planSourceKey(right.source), "en"),
   );
-  const deterministicPlan = buildCandidatePlan(scoreOrder, input.request);
+  const deterministicPlan = buildCandidatePlan(scoreOrder, input.request, requiredSourceKeys);
+  invariant(
+    [...requiredSourceKeys].every((key) =>
+      deterministicPlan.placements.some(
+        (placement) => planSourceKey(placement.candidate.source) === key,
+      ),
+    ),
+    "planning.required_routine_does_not_fit",
+    "The selected routine does not fit the remaining time and task limits.",
+  );
   candidatePlans.set(deterministicPlan.key, deterministicPlan);
   for (let iteration = 0; iteration < config.searchIterations; iteration += 1) {
-    const candidatePlan = buildCandidatePlan(weightedOrder(candidates, random), input.request);
+    const candidatePlan = buildCandidatePlan(
+      weightedOrder(candidates, random),
+      input.request,
+      requiredSourceKeys,
+    );
     const current = candidatePlans.get(candidatePlan.key);
     if (current === undefined || candidatePlan.fitness > current.fitness) {
       candidatePlans.set(candidatePlan.key, candidatePlan);
@@ -1604,6 +1650,7 @@ function planDailyAlternatives(
     input.events,
     canonicalFeedback,
     canonicalSelectionPreferenceFeedback,
+    input.requiredRoutineId,
     config,
   );
   const baseInputHash = createHash("sha256").update(JSON.stringify(inputSnapshot)).digest("hex");

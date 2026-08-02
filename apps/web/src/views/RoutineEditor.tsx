@@ -6,6 +6,7 @@ import type {
   EnergyLevel,
   PreferenceLevel,
   Routine,
+  RoutineGroup,
   RoutinePriority,
   RoutineStatus,
 } from "../types";
@@ -259,6 +260,9 @@ export function RoutineFields({
   autoFocus = false,
   status,
   onStatusChange,
+  groups,
+  selectedGroupIds = [],
+  onSelectedGroupIdsChange,
 }: {
   readonly draft: RoutineDraft;
   readonly onChange: (changes: Partial<RoutineDraft>) => void;
@@ -266,6 +270,9 @@ export function RoutineFields({
   readonly autoFocus?: boolean;
   readonly status?: RoutineStatus;
   readonly onStatusChange?: (status: RoutineStatus) => void;
+  readonly groups?: readonly RoutineGroup[];
+  readonly selectedGroupIds?: readonly string[];
+  readonly onSelectedGroupIdsChange?: (groupIds: readonly string[]) => void;
 }) {
   const toggleWeekday = (kind: "preferred" | "excluded", weekday: number) => {
     const selected = kind === "preferred" ? draft.preferredWeekdays : draft.excludedWeekdays;
@@ -329,6 +336,39 @@ export function RoutineFields({
           </Field>
         </div>
       </section>
+      {groups === undefined || onSelectedGroupIdsChange === undefined ? null : (
+        <section className="routines-form-section" aria-labelledby="routine-groups-heading">
+          <div className="routines-section-heading">
+            <h3 id="routine-groups-heading">Groups</h3>
+            <p>Use overarching collections for quick browsing and manual plan choices.</p>
+          </div>
+          <fieldset className="routines-groups-fieldset">
+            <legend className="sr-only">Group membership</legend>
+            {groups.length === 0 ? (
+              <p className="routines-groups-empty">Create a group from the routine pool first.</p>
+            ) : (
+              <div className="routines-groups-checks">
+                {groups.map((group) => (
+                  <label key={group.id}>
+                    <input
+                      type="checkbox"
+                      disabled={disabled}
+                      checked={selectedGroupIds.includes(group.id)}
+                      onChange={(event) => {
+                        const next = event.target.checked
+                          ? [...selectedGroupIds, group.id]
+                          : selectedGroupIds.filter((id) => id !== group.id);
+                        onSelectedGroupIdsChange(next);
+                      }}
+                    />
+                    <span>{group.name}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </fieldset>
+        </section>
+      )}
       <section className="routines-form-section" aria-labelledby="routine-tags-heading">
         <div className="routines-section-heading">
           <h3 id="routine-tags-heading">Planning signals</h3>
